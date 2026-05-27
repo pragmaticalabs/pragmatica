@@ -67,7 +67,6 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
-import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -122,13 +121,15 @@ public final class MembershipFsm {
     /// drift policy.
     private final HlcClock hlcClock;
 
-    /// Topology-observation refactor Step 4 — aggregator-snapshot supplier. Consulted at every
-    /// `reducer.apply(...)` call site to build a per-event `ReachabilityGate`. The supplier is
-    /// expected to be cheap (the aggregator returns a pre-built snapshot reference); the gate
-    /// itself reads `snapshot.states().get(peer)` once per consultation. Cold-start fallback:
-    /// when the supplier returns `Option.none()`, the gate returns `true` (permissive) so the
-    /// pre-Step-4 behavior is preserved before the first snapshot is produced.
-    private final Supplier<Option<AggregatedReachabilitySnapshot>> aggregatorSnapshotSupplier;
+    /// #231 leader-side φ-accrual handoff — per-peer φ-warmth predicate consulted at every
+    /// event-driven `reducer.apply(...)` call site to build the reducer's `(ON_DUTY, SwimFaulty)`
+    /// liveness decision. Production wiring supplies `phiDetector::isWarm` (the SAME shared
+    /// detector PhiObserver feeds and reads), so warm/cold is consistent between the reducer's
+    /// SWIM-false-positive suppression and PhiObserver's silence-driven decommission. A cold peer
+    /// (unknown / still warming, including every peer on a follower) yields `false` → SWIM owns the
+    /// death decision, matching the pre-handoff permissive behavior. The command path passes
+    /// `PhiWarmth.COLD` (commands never consult φ).
+    private final PhiWarmth phiWarmth;
     private final ReentrantLock fsmLock = new ReentrantLock();
 
     private final Map<NodeId, MembershipFsmState> fsmStates = new ConcurrentHashMap<>();
@@ -179,7 +180,7 @@ public final class MembershipFsm {
                           TimerScheduler scheduler,
                           BooleanSupplier isLeader,
                           HlcClock hlcClock,
-                          Supplier<Option<AggregatedReachabilitySnapshot>> aggregatorSnapshotSupplier) {
+                          PhiWarmth phiWarmth) {
         this.self = self;
         this.config = config;
         this.reducer = reducer;
@@ -190,7 +191,7 @@ public final class MembershipFsm {
         this.scheduler = scheduler;
         this.isLeader = isLeader;
         this.hlcClock = hlcClock;
-        this.aggregatorSnapshotSupplier = aggregatorSnapshotSupplier;
+        this.phiWarmth = phiWarmth;
     }
 
     /// Read-only factory (no-op writes). Useful for tests that only exercise the reducer +
@@ -208,7 +209,7 @@ public final class MembershipFsm {
                              defaultScheduler(),
                              NEVER_LEADER,
                              defaultHlcClock(self),
-                             NO_AGGREGATOR_SNAPSHOT);
+                             PhiWarmth.COLD);
     }
 
     /// Write-capable factory. When `isLeader.getAsBoolean()` returns `true`, operator events
@@ -231,14 +232,15 @@ public final class MembershipFsm {
                              scheduler,
                              isLeader,
                              defaultHlcClock(self),
-                             NO_AGGREGATOR_SNAPSHOT);
+                             PhiWarmth.COLD);
     }
 
     /// RC1 Step 4 — production factory with explicit `HlcClock`. The FSM shares the node-wide
     /// HLC instance with other subsystems (generation snapshots, governor announcer, etc.) —
     /// every emitted FSM event is causally ordered against every other HLC-stamped action of
-    /// this node. Defaults the aggregator-snapshot supplier to a cold-start (`Option.none()`)
-    /// stub — call the supplier-accepting overload from production wiring.
+    /// this node. Defaults the φ-warmth predicate to `PhiWarmth.COLD` (SWIM owns liveness) —
+    /// call the φ-warmth-accepting overload from production wiring to enable the leader-side
+    /// φ-accrual handoff.
     public static MembershipFsm membershipFsm(NodeId self,
                                               MembershipFsmConfig config,
                                               LifecycleSnapshotReader lifecycleSnapshotReader,
@@ -257,15 +259,15 @@ public final class MembershipFsm {
                              scheduler,
                              isLeader,
                              hlcClock,
-                             NO_AGGREGATOR_SNAPSHOT);
+                             PhiWarmth.COLD);
     }
 
-    /// Topology-observation refactor Step 4 — full production factory accepting an aggregator-
-    /// snapshot supplier. Each reducer call site builds a per-event `ReachabilityGate` from the
-    /// current snapshot (cold-start fallback returns a permissive gate). Production wiring
-    /// (`AetherNode.buildMembershipFsm`) passes `reachabilityAggregator::currentSnapshot` — the
-    /// PURE read path, so re-entrant gate evaluation during event processing never dispatches
-    /// snapshot listeners back into this FSM.
+    /// #231 leader-side φ-accrual handoff — full production factory accepting a φ-warmth
+    /// predicate. Each event-driven reducer call site consults it at the `(ON_DUTY, SwimFaulty)`
+    /// cell to decide whether φ owns liveness (warm → SWIM false-positive suppressed) or SWIM does
+    /// (cold). Production wiring (`AetherNode.buildMembershipFsm`) passes `phiDetector::isWarm` —
+    /// the SAME shared detector PhiObserver feeds, so the reducer's suppression and PhiObserver's
+    /// silence-driven decommission agree on warm/cold for every peer.
     public static MembershipFsm membershipFsm(NodeId self,
                                               MembershipFsmConfig config,
                                               LifecycleSnapshotReader lifecycleSnapshotReader,
@@ -275,7 +277,7 @@ public final class MembershipFsm {
                                               TimerScheduler scheduler,
                                               BooleanSupplier isLeader,
                                               HlcClock hlcClock,
-                                              Supplier<Option<AggregatedReachabilitySnapshot>> aggregatorSnapshotSupplier) {
+                                              PhiWarmth phiWarmth) {
         var reducer = ClusterMembershipReducer.clusterMembershipReducer(config);
 
         return new MembershipFsm(self,
@@ -288,7 +290,7 @@ public final class MembershipFsm {
                                  scheduler,
                                  isLeader,
                                  hlcClock,
-                                 aggregatorSnapshotSupplier);
+                                 phiWarmth);
     }
 
     /// Custom-reducer factory (test-only — lets callers inject a reducer with deterministic
@@ -308,7 +310,7 @@ public final class MembershipFsm {
                                  defaultScheduler(),
                                  NEVER_LEADER,
                                  defaultHlcClock(self),
-                                 NO_AGGREGATOR_SNAPSHOT);
+                                 PhiWarmth.COLD);
     }
 
     /// Custom-reducer + custom-clock factory (test-only — lets adversarial tests inject a
@@ -329,7 +331,7 @@ public final class MembershipFsm {
                                  defaultScheduler(),
                                  NEVER_LEADER,
                                  hlcClock,
-                                 NO_AGGREGATOR_SNAPSHOT);
+                                 PhiWarmth.COLD);
     }
 
     public Promise<Unit> start() {
@@ -861,7 +863,7 @@ public final class MembershipFsm {
     private void processFsmEventLocked(MembershipFsmEvent event) {
         var peer = event.peer();
         var current = resolveState(peer);
-        var outcome = reducer.apply(current, event, currentReachabilityGate());
+        var outcome = reducer.apply(current, event, phiWarmth);
         fsmStates.put(peer, outcome.newState());
         // Symmetry with processOperatorEventLocked: apply effects even on the shadow path so a
         // reducer-emitted ScheduleTimer or EmitDomainEvent doesn't silently disappear. Writes
@@ -902,7 +904,7 @@ public final class MembershipFsm {
     private void processOperatorEventLocked(MembershipFsmEvent event) {
         var peer = event.peer();
         var current = resolveState(peer);
-        var outcome = reducer.apply(current, event, currentReachabilityGate());
+        var outcome = reducer.apply(current, event, phiWarmth);
 
         if (outcome.writes().isEmpty()) {
             applyEffectsLocked(outcome.effects());
@@ -988,8 +990,8 @@ public final class MembershipFsm {
     /// command was ACCEPTED (a real lifecycle write was proposed and committed); a reducer
     /// no-op, a non-leader receiver of a promotion command (see `isPromotionCommand`), or a
     /// consensus rejection yields `false`, which the routing `LifecycleWriter` surfaces as
-    /// `CommandApplied(accepted=false)`. Commands do not consult the reachability gate (only the
-    /// two ON_DUTY decommission event cells do), so `ReachabilityGate.ALWAYS_CONFIRMED` is passed.
+    /// `CommandApplied(accepted=false)`. Commands do not consult φ-warmth (only the `(ON_DUTY,
+    /// SwimFaulty)` event cell does), so `PhiWarmth.COLD` is passed.
     public Promise<Boolean> applyLifecycleCommand(LifecycleCommand command) {
         if (isPromotionCommand(command) && !isLeader.getAsBoolean()) {
             log.warn("MembershipFsm: promotion command {} for {} received on non-leader — no-op "
@@ -1006,7 +1008,7 @@ public final class MembershipFsm {
         List<KVCommand<AetherKey>> resolvedWrites;
         try {
             prior = resolveState(command.peer());
-            outcome = reducer.apply(prior, command, ReachabilityGate.ALWAYS_CONFIRMED);
+            outcome = reducer.apply(prior, command, PhiWarmth.COLD);
 
             if (outcome.writes().isEmpty()) {
                 applyEffectsLocked(outcome.effects());
@@ -1631,29 +1633,6 @@ public final class MembershipFsm {
     };
 
     private static final BooleanSupplier NEVER_LEADER = () -> false;
-
-    /// Cold-start default for test factories: no aggregator snapshot available. The reducer's
-    /// `(ON_DUTY, SwimFaulty)` and `(ON_DUTY, TransportUnreachable)` cells fall back to the
-    /// permissive (pre-Step-4) behavior when the supplier returns `Option.none()`.
-    private static final Supplier<Option<AggregatedReachabilitySnapshot>> NO_AGGREGATOR_SNAPSHOT = Option::none;
-
-    /// Topology-observation refactor Step 4 — build a per-event `ReachabilityGate` from the
-    /// current aggregator snapshot. Returns a permissive gate (always `true`) when the supplier
-    /// reports `Option.none()` (cold start, no snapshot yet — preserves pre-Step-4 behavior).
-    /// Otherwise returns `true` only when the snapshot entry for `peer` is UNREACHABLE; REACHABLE
-    /// and UNKNOWN both gate to `false` (a confirmed cluster-wide failure is required).
-    private ReachabilityGate currentReachabilityGate() {
-        var snapshotOpt = aggregatorSnapshotSupplier.get();
-
-        return snapshotOpt.fold(() -> ReachabilityGate.ALWAYS_CONFIRMED,
-                                snapshot -> peer -> isUnreachableInSnapshot(snapshot, peer));
-    }
-
-    private static boolean isUnreachableInSnapshot(AggregatedReachabilitySnapshot snapshot, NodeId peer) {
-        var entry = snapshot.states().get(peer);
-
-        return entry != null && entry.kind() == ReachabilityKind.UNREACHABLE;
-    }
 
     /// RC1 Step 4 — default per-node `HlcClock` for test-only factories that do not accept an
     /// explicit clock. Production wiring (`AetherNode.buildMembershipFsm`) MUST pass the node's

@@ -100,25 +100,25 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
     /// through `applyCommand` which dispatches per-command-type then per-state.
     ///
     /// Adopters that drive the reducer with raw events MAY continue using the existing
-    /// `apply(state, event, gate)` overload; new call sites should prefer this overload to
+    /// `apply(state, event, warmth)` overload; new call sites should prefer this overload to
     /// route either branch uniformly.
-    public Outcome apply(MembershipFsmState state, MembershipFsmInput input, ReachabilityGate gate) {
+    public Outcome apply(MembershipFsmState state, MembershipFsmInput input, PhiWarmth warmth) {
         return switch (input) {
-            case MembershipFsmEvent event -> apply(state, event, gate);
+            case MembershipFsmEvent event -> apply(state, event, warmth);
             case LifecycleCommand command -> applyCommand(state, command);
         };
     }
 
-    /// Topology-observation refactor Step 4 — `gate` is consulted only by the two ON_DUTY
-    /// decommission cells (`SwimFaulty` and `TransportUnreachable`). All other cells ignore
-    /// `gate` and behave identically to the pre-Step-4 reducer. Callers that do not need
-    /// aggregator-quorum gating may pass `ReachabilityGate.ALWAYS_CONFIRMED`.
-    public Outcome apply(MembershipFsmState state, MembershipFsmEvent event, ReachabilityGate gate) {
+    /// #231 leader-side φ-accrual handoff — `warmth` is consulted only by the `(ON_DUTY,
+    /// SwimFaulty)` cell. All other cells ignore `warmth` and behave identically to the
+    /// pre-handoff reducer. Callers that do not have φ data (or do not want φ to own liveness,
+    /// e.g. the command path) may pass `PhiWarmth.COLD`, which preserves the SWIM-owns behavior.
+    public Outcome apply(MembershipFsmState state, MembershipFsmEvent event, PhiWarmth warmth) {
         return switch (state) {
             case Untracked s -> applyUntracked(s, event);
             case Provisioning s -> applyProvisioning(s, event);
             case Joining s -> applyJoining(s, event);
-            case OnDuty s -> applyOnDuty(s, event, gate);
+            case OnDuty s -> applyOnDuty(s, event, warmth);
             case Draining s -> applyDraining(s, event);
             case Stopped s -> applyStopped(s, event);
         };
@@ -170,18 +170,24 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
         };
     }
 
-    private Outcome applyOnDuty(OnDuty state, MembershipFsmEvent event, ReachabilityGate gate) {
-        // Decommissioning a LIVE ON_DUTY node requires gate co-confirmation: a single transient
-        // SWIM/transport signal must NOT remove a healthy node (a momentary leader→follower SWIM
-        // gap would otherwise STOP the node, CTM frees the slot as DEAD, and a replacement is
-        // over-provisioned). The gate confirms unreachability across both planes
-        // (SWIM-not-HEALTHY AND transport-unreachable) before allowing decommission.
-        // φ-accrual will refine this co-confirmation later (#231).
+    private Outcome applyOnDuty(OnDuty state, MembershipFsmEvent event, PhiWarmth warmth) {
+        // #231 leader-side φ-accrual handoff. The leader is the SOLE prober (only it sends
+        // ClusterSync pings / receives pongs) and SOLE lifecycle writer, so there is no quorum to
+        // co-confirm against — the leader's own per-peer pong stream IS the observation and φ on
+        // that stream IS the debounce. Liveness ownership splits per-peer on φ-warmth:
+        //   - φ WARM → φ owns liveness. A SwimFaulty while φ still hears the peer's pongs is a SWIM
+        //     false-positive (the peer is ponging → alive) → nop. Once the peer truly goes silent,
+        //     φ saturates and PhiObserver (leader-local) issues ForceDecommission directly.
+        //   - φ COLD (unknown / still warming) → φ has nothing to say → trust SWIM, decommission.
+        //     This matches the pre-handoff ALWAYS_CONFIRMED behavior for the cold-start window.
+        // TransportUnreachable is UNGATED — a closed QUIC channel is definitive and non-flapping,
+        // needing no warmth check. SwimDeparted is unconditional (explicit leave). The 30s
+        // OnDutyFaulty reconciler remains the backstop for any death the live path misses.
         return switch (event) {
             case SwimHealthy _ -> Outcome.nop(state);
-            case SwimFaulty e -> gate.isConfirmedUnreachable(state.peer())
-                                 ? onDutyToStopped(state, e.at(), REASON_SWIM_FAULTY, StopReason.FORCED)
-                                 : Outcome.nop(state);
+            case SwimFaulty e -> warmth.isWarm(state.peer())
+                                 ? Outcome.nop(state)
+                                 : onDutyToStopped(state, e.at(), REASON_SWIM_FAULTY, StopReason.FORCED);
             case SwimDeparted e -> onDutyToStopped(state, e.at(), REASON_SWIM_DEPARTED, StopReason.FORCED);
             // A late/duplicate SlotClaimed for an already-ON_DUTY peer is benign (auto-heal
             // replacement re-claim / event re-delivery): nop rather than illegal() — a
@@ -190,9 +196,7 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
             case DrainOutcome _ -> illegal(state, event);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
             case TransportReachable _ -> Outcome.nop(state);
-            case TransportUnreachable e -> gate.isConfirmedUnreachable(state.peer())
-                                           ? onDutyToStopped(state, e.at(), REASON_TRANSPORT_FAILURE, StopReason.FORCED)
-                                           : Outcome.nop(state);
+            case TransportUnreachable e -> onDutyToStopped(state, e.at(), REASON_TRANSPORT_FAILURE, StopReason.FORCED);
         };
     }
 

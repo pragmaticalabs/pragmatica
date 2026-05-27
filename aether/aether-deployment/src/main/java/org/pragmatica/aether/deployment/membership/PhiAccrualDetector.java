@@ -52,10 +52,26 @@ public interface PhiAccrualDetector {
     /// Whether `peer` is suspected at monotonic `nowMs`: `phi(peer, nowMs) > threshold`.
     boolean suspected(NodeId peer, long nowMs);
 
+    /// Whether φ is meaningful for `peer` — i.e. the window holds at least `minSamples`
+    /// inter-arrival intervals. This is the exact negation of the warmup guard that forces
+    /// [`#phi`] to 0.0: a cold peer (unknown, or still in warmup with fewer than `minSamples`
+    /// intervals) is not warm; once warm, φ reflects real surprisal rather than the warmup
+    /// floor. The reducer uses this to decide whether φ owns liveness for `peer` (warm) or SWIM
+    /// still does (cold). Returns `false` for an unknown peer or one still in warmup.
+    ///
+    /// No `nowMs` parameter: warmth is purely a function of accumulated sample count, which does
+    /// not change with elapsed time, so a monotonic clock would be a dead argument here.
+    boolean isWarm(NodeId peer);
+
     /// Drop all accumulated state for `peer` (e.g. on decommission). A subsequent `heartbeat`
     /// restarts warmup from zero.
     @Contract
     void forget(NodeId peer);
+
+    /// Drop all accumulated state (e.g. on leadership transition so a re-promoted leader re-warms
+    /// from scratch rather than acting on stale pre-demotion intervals).
+    @Contract
+    void clear();
 
     /// Construct a detector with the supplied tuning parameters.
     static PhiAccrualDetector phiAccrualDetector(PhiAccrualConfig config) {
@@ -93,10 +109,23 @@ record PhiAccrualDetectorState(PhiAccrualConfig config, Map<NodeId, PeerWindow> 
         return phi(peer, nowMs) > config.threshold();
     }
 
+    @Override
+    public boolean isWarm(NodeId peer) {
+        return Option.option(windows.get(peer))
+                     .map(window -> window.isWarm(config.minSamples()))
+                     .or(false);
+    }
+
     @Contract
     @Override
     public void forget(NodeId peer) {
         windows.remove(peer);
+    }
+
+    @Contract
+    @Override
+    public void clear() {
+        windows.clear();
     }
 }
 
@@ -116,6 +145,7 @@ final class PeerWindow {
         this.intervals = new ArrayDeque<>(capacity);
     }
 
+    @Contract
     synchronized void record(long nowMs) {
         if (hasArrival) {
             push(nowMs - lastArrivalMs);
@@ -137,6 +167,13 @@ final class PeerWindow {
         return -Math.log10(Math.max(pLater, tinyEpsilon));
     }
 
+    /// Exact negation of the [`#phi`] warmup guard: φ is meaningful once at least `minSamples`
+    /// intervals have accrued. Mirrors the `!hasArrival || intervals.size() < minSamples` check
+    /// so warmth and the warmup floor can never disagree.
+    synchronized boolean isWarm(int minSamples) {
+        return hasArrival && intervals.size() >= minSamples;
+    }
+
     private double stdDev(int count, double mean, double sigmaFloorMillis) {
         var variance = Math.max(0.0, (sumOfSquares / count) - (mean * mean));
 
@@ -155,6 +192,7 @@ final class PeerWindow {
                : 1.0 - 1.0 / (1.0 + e);
     }
 
+    @Contract
     private void push(long interval) {
         if (intervals.size() == capacity) {
             var evicted = intervals.removeFirst();

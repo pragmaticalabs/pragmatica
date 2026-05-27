@@ -23,9 +23,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StopReason;
-import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
-import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot.ReachabilityKind;
-import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot.ReachabilityState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.consensus.NodeId;
@@ -47,14 +44,14 @@ import java.util.function.Function;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// Topology-observation refactor Step 4 — aggregator-quorum gate at the two ON_DUTY
-/// decommission cells (spec §16 scenarios S04 brief flap, S05 partition, S13 SWIM-only failure,
-/// S17 aggregator-quorum lost).
+/// #231 leader-side φ-accrual handoff — the `PhiWarmth` predicate at the `(ON_DUTY, SwimFaulty)`
+/// cell (replaces the former aggregator-quorum `ReachabilityGate`).
 ///
-/// Six cases covering the gate's truth table at the (state, event) sites that consult it,
-/// plus an end-to-end cold-start fallback assertion via `MembershipFsm` with an
-/// `Option.none()` supplier.
-class ReducerAggregatorGateTest {
+/// The handoff splits liveness ownership per-peer on φ-warmth: φ WARM → φ owns (a still-ponging
+/// peer survives a SWIM false-positive → nop); φ COLD → SWIM owns (decommission, matching the
+/// pre-handoff permissive behavior). `(ON_DUTY, TransportUnreachable)` is UNGATED — a closed QUIC
+/// channel is definitive regardless of warmth. `(JOINING, TransportUnreachable)` stays UNGATED.
+class ReducerPhiWarmthTest {
     private static final NodeId PEER = NodeId.nodeId("peer-1").unwrap();
 
     private static final NodeId SELF = NodeId.nodeId("self-node").unwrap();
@@ -62,8 +59,6 @@ class ReducerAggregatorGateTest {
     private static final HlcTimestamp T0 = at(1_000L);
 
     private static final HlcTimestamp T1 = at(2_000L);
-
-    private static final long NOW_MS = 2_000L;
 
     private static HlcTimestamp at(long millis) {
         return new HlcTimestamp(HlcTimestamp.pack(millis * 1000L, 0), new NodeId("test"));
@@ -77,14 +72,14 @@ class ReducerAggregatorGateTest {
         return ClusterMembershipReducer.clusterMembershipReducer(MembershipFsmConfig.defaultMembershipFsmConfig());
     }
 
-    @Nested @DisplayName("(OnDuty, SwimFaulty) gated by aggregator quorum")
+    @Nested @DisplayName("(OnDuty, SwimFaulty) gated by φ-warmth")
     class OnDutySwimFaulty {
-        @Test void gateAllows_swimFaultyDecommissions_singleWrite() {
-            // Case 1: confirmed UNREACHABLE → decommission fires, exactly one Put(DECOMMISSIONED).
+        @Test void phiCold_swimFaultyDecommissions_singleWrite() {
+            // φ COLD → SWIM owns liveness → decommission fires, exactly one Put(STOPPED). Matches
+            // the pre-handoff ALWAYS_CONFIRMED + SwimFaulty → STOPPED behavior.
             var state = MembershipFsmState.onDuty(PEER, ms(T0));
-            ReachabilityGate gate = peer -> true;
 
-            var outcome = reducer().apply(state, new SwimFaulty(PEER, 1L, T1), gate);
+            var outcome = reducer().apply(state, new SwimFaulty(PEER, 1L, T1), PhiWarmth.COLD);
 
             assertThat(outcome.newState()).isInstanceOf(Stopped.class);
             assertThat(outcome.newState()).isEqualTo(MembershipFsmState.stopped(PEER, ms(T1), StopReason.FORCED, true));
@@ -93,12 +88,12 @@ class ReducerAggregatorGateTest {
             assertLifecyclePut(outcome.writes().get(0), NodeLifecycleState.STOPPED);
         }
 
-        @Test void gateBlocks_swimFaultyIsNop_zeroWrites() {
-            // Case 2: not confirmed UNREACHABLE (S04 brief flap, S13 SWIM-only failure) → nop.
+        @Test void phiWarm_swimFaultyIsNop_zeroWrites() {
+            // φ WARM → φ owns liveness → a SwimFaulty while φ still hears the peer's pongs is a SWIM
+            // false-positive → nop (the peer is ponging, so it is alive).
             var state = MembershipFsmState.onDuty(PEER, ms(T0));
-            ReachabilityGate gate = peer -> false;
 
-            var outcome = reducer().apply(state, new SwimFaulty(PEER, 1L, T1), gate);
+            var outcome = reducer().apply(state, new SwimFaulty(PEER, 1L, T1), PhiWarmth.WARM);
 
             assertThat(outcome.newState()).isEqualTo(state);
             assertThat(outcome.writes()).isEmpty();
@@ -106,14 +101,13 @@ class ReducerAggregatorGateTest {
         }
     }
 
-    @Nested @DisplayName("(OnDuty, TransportUnreachable) gated by aggregator quorum")
+    @Nested @DisplayName("(OnDuty, TransportUnreachable) is UNGATED")
     class OnDutyTransportUnreachable {
-        @Test void gateAllows_transportUnreachableDecommissions_singleWrite() {
-            // Case 3: confirmed UNREACHABLE → decommission fires with transport-failure reason.
+        @Test void phiCold_transportUnreachableDecommissions_singleWrite() {
+            // A closed QUIC channel is definitive — fires regardless of φ-warmth (φ COLD here).
             var state = MembershipFsmState.onDuty(PEER, ms(T0));
-            ReachabilityGate gate = peer -> true;
 
-            var outcome = reducer().apply(state, new TransportUnreachable(PEER, T1), gate);
+            var outcome = reducer().apply(state, new TransportUnreachable(PEER, T1), PhiWarmth.COLD);
 
             assertThat(outcome.newState()).isInstanceOf(Stopped.class);
             // swimDriven=false because transport-failure is NOT a SWIM reason.
@@ -122,29 +116,28 @@ class ReducerAggregatorGateTest {
             assertLifecyclePut(outcome.writes().get(0), NodeLifecycleState.STOPPED);
         }
 
-        @Test void gateBlocks_transportUnreachableIsNop_zeroWrites() {
-            // Case 4: not confirmed UNREACHABLE (S05 partition, S17 quorum lost) → nop.
+        @Test void phiWarm_transportUnreachableStillDecommissions_singleWrite() {
+            // Even with φ WARM the transport cell fires — warmth gates only the SwimFaulty cell,
+            // never the definitive closed-channel signal.
             var state = MembershipFsmState.onDuty(PEER, ms(T0));
-            ReachabilityGate gate = peer -> false;
 
-            var outcome = reducer().apply(state, new TransportUnreachable(PEER, T1), gate);
+            var outcome = reducer().apply(state, new TransportUnreachable(PEER, T1), PhiWarmth.WARM);
 
-            assertThat(outcome.newState()).isEqualTo(state);
-            assertThat(outcome.writes()).isEmpty();
-            assertThat(outcome.effects()).isEmpty();
+            assertThat(outcome.newState()).isInstanceOf(Stopped.class);
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.stopped(PEER, ms(T1), StopReason.FORCED, false));
+            assertThat(outcome.writes()).hasSize(1);
+            assertLifecyclePut(outcome.writes().get(0), NodeLifecycleState.STOPPED);
         }
     }
 
-    @Nested @DisplayName("Gate scope: JOINING TransportUnreachable stays UNGATED")
+    @Nested @DisplayName("Scope: JOINING TransportUnreachable stays UNGATED")
     class JoiningTransportUnreachableUngated {
-        @Test void joining_transportUnreachable_ignoresGate_decommissions() {
-            // Case 5: even with a `false` gate, the JOINING cell fires DECOMMISSIONED.
-            // JOINING has no SWIM-HEALTHY history; transport is its primary detection signal
-            // (the original bug we set out to fix; spec §16 scenario S01).
+        @Test void joining_transportUnreachable_ignoresWarmth_decommissions() {
+            // Even with φ WARM, the JOINING cell fires STOPPED. JOINING has no SWIM-HEALTHY
+            // history; transport is its primary detection signal (the original bug; spec §16 S01).
             var state = MembershipFsmState.joining(PEER, ms(T0), Option.some("slot-1"));
-            ReachabilityGate gate = peer -> false;  // blocked, but irrelevant here
 
-            var outcome = reducer().apply(state, new TransportUnreachable(PEER, T1), gate);
+            var outcome = reducer().apply(state, new TransportUnreachable(PEER, T1), PhiWarmth.WARM);
 
             assertThat(outcome.newState()).isInstanceOf(Stopped.class);
             // Durable slots (#230, spec §3.1): a JOINING node stopping writes the lifecycle STOPPED
@@ -156,13 +149,12 @@ class ReducerAggregatorGateTest {
         }
     }
 
-    @Nested @DisplayName("End-to-end cold-start fallback via MembershipFsm")
-    class ColdStartFallback {
-        @Test void noSnapshot_swimFaultyOnOnDuty_writesDecommissioned() {
-            // Case 6: the supplier returns Option.none() → the FSM falls back to the permissive
-            // ALWAYS_CONFIRMED gate → the (ON_DUTY, SwimFaulty) cell decommissions as in the
-            // pre-Step-4 reducer. This is the cold-start fallback path (new leader, periodic
-            // emission has not yet produced its first snapshot).
+    @Nested @DisplayName("End-to-end φ-warmth via MembershipFsm")
+    class EndToEnd {
+        @Test void phiCold_swimFaultyOnOnDuty_writesStopped() {
+            // The FSM is constructed with PhiWarmth.COLD → SWIM owns → the (ON_DUTY, SwimFaulty)
+            // cell decommissions, matching the cold-start / never-warmed behavior (new leader,
+            // detector has not yet warmed any peer).
             var lifecycleSnapshot = new FakeLifecycleSnapshot();
             lifecycleSnapshot.put(PEER, NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, ms(T0)));
             var slotSnapshot = new FakeSlotSnapshot();
@@ -176,12 +168,10 @@ class ReducerAggregatorGateTest {
                                                    new NoOpScheduler(),
                                                    () -> true,
                                                    org.pragmatica.hlc.HlcClock.hlcClock(SELF),
-                                                   Option::none);  // cold-start: no snapshot
+                                                   PhiWarmth.COLD);
             fsm.start().await();
             assertThat(fsm.get(PEER).unwrap()).isInstanceOf(OnDuty.class);
 
-            // SWIM-faulty arrives on a leader with no aggregator snapshot → cold-start fallback
-            // → permissive gate → DECOMMISSIONED write.
             fsm.onSwimObservation(new org.pragmatica.swim.SwimObservation.FaultyObserved(PEER, 1L));
 
             assertThat(commandApplier.calls).hasSize(1);
@@ -189,15 +179,14 @@ class ReducerAggregatorGateTest {
             assertThat(fsm.get(PEER).unwrap()).isInstanceOf(Stopped.class);
         }
 
-        @Test void quorumSnapshotReachable_swimFaultyOnOnDuty_isNop() {
-            // Companion assertion: a snapshot that reports REACHABLE for the peer blocks the
-            // SWIM-faulty decommission (S13 SWIM-only failure — confirms the gate is not just
-            // a vacuous pass-through under the cold-start fallback).
+        @Test void phiWarm_swimFaultyOnOnDuty_isNop() {
+            // The FSM is constructed with PhiWarmth.WARM → φ owns → the (ON_DUTY, SwimFaulty) cell
+            // is a nop (the still-ponging peer survives the SWIM false-positive). Confirms the
+            // warm branch is wired end-to-end through the FSM, not just at the reducer.
             var lifecycleSnapshot = new FakeLifecycleSnapshot();
             lifecycleSnapshot.put(PEER, NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, ms(T0)));
             var slotSnapshot = new FakeSlotSnapshot();
             var commandApplier = new RecordingCommandApplier();
-            var reachableSnapshot = snapshotOf(Map.entry(PEER, ReachabilityKind.REACHABLE));
             var fsm = MembershipFsm.membershipFsm(SELF,
                                                    MembershipFsmConfig.defaultMembershipFsmConfig(),
                                                    lifecycleSnapshot,
@@ -207,7 +196,7 @@ class ReducerAggregatorGateTest {
                                                    new NoOpScheduler(),
                                                    () -> true,
                                                    org.pragmatica.hlc.HlcClock.hlcClock(SELF),
-                                                   () -> Option.some(reachableSnapshot));
+                                                   PhiWarmth.WARM);
             fsm.start().await();
 
             fsm.onSwimObservation(new org.pragmatica.swim.SwimObservation.FaultyObserved(PEER, 1L));
@@ -215,12 +204,6 @@ class ReducerAggregatorGateTest {
             assertThat(commandApplier.calls).isEmpty();
             assertThat(fsm.get(PEER).unwrap()).isInstanceOf(OnDuty.class);
         }
-    }
-
-    private static AggregatedReachabilitySnapshot snapshotOf(Map.Entry<NodeId, ReachabilityKind> entry) {
-        var states = new LinkedHashMap<NodeId, ReachabilityState>();
-        states.put(entry.getKey(), new ReachabilityState(entry.getKey(), entry.getValue(), 1, NOW_MS));
-        return new AggregatedReachabilitySnapshot(NOW_MS, states);
     }
 
     private static void assertLifecyclePut(KVCommand<AetherKey> command, NodeLifecycleState expected) {

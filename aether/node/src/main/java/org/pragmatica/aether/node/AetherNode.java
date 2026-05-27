@@ -48,6 +48,7 @@ import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.deployment.schema.SchemaPolicy;
 import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
 import org.pragmatica.aether.deployment.membership.ReachabilityAggregator;
+import org.pragmatica.aether.deployment.membership.PhiAccrualDetector;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.delegation.TaskAssignmentError;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
@@ -1127,13 +1128,36 @@ public interface AetherNode extends ManageableNode {
         peerObservationStore.setCapSupplier(() -> Math.max(periodicConfig.capFloor().getAsInt(),
                                                            clusterNode.topologyManager().topology().size() * 4));
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
-        // #231 Stage 2a (OBSERVE only): LEADER-SIDE φ-accrual feed. The pong stream is
-        // leader-centric in steady state — only the leader sustains a full per-peer stream, so
-        // φ is fed ONLY while this node is the leader (followers' streams stall and would falsely
-        // climb to the suspicion ceiling). The observer self-gates on isLeaderSupplier and resets
-        // detector state across leadership transitions. PURE INSTRUMENTATION — nothing reads
-        // suspected()/phi() to drive action here; only heartbeat-feed + periodic logging.
-        var phiObserver = PhiObserver.phiObserver(config.self(), isLeaderSupplier);
+        // #231 leader-side φ-accrual: the SHARED detector is fed by PhiObserver's leader-gated pong
+        // stream AND read by MembershipFsm's φ-warmth predicate (phiDetector::isWarm), so the
+        // reducer's (ON_DUTY, SwimFaulty) SWIM-false-positive suppression and PhiObserver's
+        // silence-driven decommission agree on warm/cold for every peer. The pong stream is
+        // leader-centric — only the leader sustains a full per-peer stream — so φ is fed (and acted
+        // on) ONLY while this node is the leader; PhiObserver self-gates on isLeaderSupplier and
+        // clear()s the detector across leadership transitions to avoid the §12.8 stale-window
+        // mass-eviction cascade. On each tick the leader force-decommissions any tracked ON_DUTY
+        // peer that φ reports warm-and-suspected (truly silent), via the FSM-routed lifecycle
+        // writer. The ON_DUTY-tracked-peer set is derived from kvTrackedPeersSupplier, filtered to
+        // lifecycle state == ON_DUTY and self-excluded.
+        var phiDetector = PhiAccrualDetector.phiAccrualDetector();
+        Supplier<Set<NodeId>> onDutyPeersSupplier = () -> {
+            var peers = new java.util.HashSet<NodeId>();
+            kvStore.forEach(AetherKey.NodeLifecycleKey.class,
+                            AetherValue.NodeLifecycleValue.class,
+                            (key, value) -> {
+                                if (value.state() == AetherValue.NodeLifecycleState.ON_DUTY
+                                    && !key.nodeId().equals(config.self())) {
+                                peers.add(key.nodeId());
+                            }
+                            });
+
+            return Set.copyOf(peers);
+        };
+        var phiObserver = PhiObserver.phiObserver(config.self(),
+                                                  isLeaderSupplier,
+                                                  phiDetector,
+                                                  onDutyPeersSupplier,
+                                                  peer -> emitForceDecommission(ctmLifecycleWriterRef.get(), peer));
         metricsCollector.addPongListener(pong -> phiObserver.onPong(pong.sender()));
         // Leader/spokesman-gated aggregator ingest. Tier-1 pongs (from core members)
         // arrive when this node is the cluster leader; Tier-2 pongs (from governors)
@@ -1301,16 +1325,19 @@ public interface AetherNode extends ManageableNode {
                                                                                                                           inFlightProbe);
         // MembershipFsm wiring (spec §9 — post-E.8 always active). Constructed AFTER
         // drainCoordinator so the FSM can route InvokeDrain effects through the real coordinator.
-        // Step 4: also wired with `reachabilityAggregator::currentSnapshot` (the PURE read
-        // path — no listener dispatch) so the reducer can apply
-        // the aggregator-quorum gate at the two ON_DUTY decommission cells (S04/S05/S13/S17).
+        // #231: wired with `phiDetector::isWarm` (the SHARED leader-side φ detector PhiObserver
+        // feeds) so the reducer's `(ON_DUTY, SwimFaulty)` cell suppresses SWIM false-positives
+        // while φ still hears the peer's pongs (warm), and trusts SWIM while φ is cold. On a
+        // follower the detector is cold for every peer → `isWarm`=false → SwimFaulty→STOPPED,
+        // matching the old permissive cold-start gate — safe because lifecycle writes are
+        // leader-gated inside the FSM regardless.
         var membershipFsm = buildMembershipFsm(config.self(),
                                                kvStore,
                                                clusterCommandApplier,
                                                drainCoordinator,
                                                isLeaderSupplier,
                                                hlcClock,
-                                               reachabilityAggregator);
+                                               phiDetector::isWarm);
         // Bind the forward-ref so the FSM-routed ctmLifecycleWriter (built above) can dispatch
         // commands into the now-constructed sovereign FSM.
         membershipFsmRef.set(membershipFsm);
@@ -2200,7 +2227,7 @@ public interface AetherNode extends ManageableNode {
                                                     org.pragmatica.aether.deployment.drain.DrainCoordinator drainCoordinator,
                                                     BooleanSupplier isLeaderSupplier,
                                                     HlcClock hlcClock,
-                                                    org.pragmatica.aether.deployment.membership.ReachabilityAggregator reachabilityAggregator) {
+                                                    org.pragmatica.aether.deployment.membership.fsm.PhiWarmth phiWarmth) {
         var fsmConfig = MembershipFsmConfig.defaultMembershipFsmConfig();
         MembershipFsm.LifecycleSnapshotReader lifecycleSnapshot = consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
                                                                                               AetherValue.NodeLifecycleValue.class,
@@ -2219,7 +2246,7 @@ public interface AetherNode extends ManageableNode {
                                            scheduler,
                                            isLeaderSupplier,
                                            hlcClock,
-                                           reachabilityAggregator::currentSnapshot);
+                                           phiWarmth);
     }
 
     /// Self-bootstrap (Bootstrap-correction 2026-05-12; spec §6 step 7). SWIM does not observe
@@ -2335,6 +2362,29 @@ public interface AetherNode extends ManageableNode {
         writer.applyCommand(command)
               .onFailure(cause -> LOG.warn("ForceOnDuty for {} (signalled by {}) failed: {}",
                                             candidate, sender, cause.message()));
+    }
+
+    /// #231 leader-side φ-accrual actuator — `ForceDecommissionSink` impl. Emits
+    /// `LifecycleCommand.ForceDecommission(STOPPED, FORCED)` for a peer that PhiObserver reports
+    /// warm-and-suspected (truly silent on the leader's pong stream). Mirrors `emitForceOnDuty`:
+    /// the HLC stamp uses `HlcTimestamp.ZERO` (Phase 1 PR-A convention; proper HLC threading is
+    /// follow-up #6 in the cluster-convergence-reconciler initiative) and audit logging lives
+    /// downstream in the FSM-routed writer. When the writer ref is unbound (pre-wiring window),
+    /// this collapses to a no-op so an early φ-tick does not NPE — safe because φ can only mark a
+    /// peer warm-and-suspected long after the node is fully assembled. Re-issue is idempotent
+    /// (`applyForceDecommission` is a nop once the peer is STOPPED), so a periodic re-fire
+    /// self-heals a lost write rather than corrupting state.
+    private static void emitForceDecommission(org.pragmatica.aether.deployment.cluster.LifecycleWriter writer,
+                                              NodeId peer) {
+        if (writer == null) {return;}
+        var command = new org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDecommission(
+                peer,
+                AetherValue.StopReason.FORCED,
+                org.pragmatica.lang.utils.Causes.cause("phi-accrual silence (leader-side) for " + peer),
+                org.pragmatica.hlc.HlcTimestamp.ZERO);
+        writer.applyCommand(command)
+              .onFailure(cause -> LOG.warn("ForceDecommission (phi-silence) for {} failed: {}",
+                                            peer, cause.message()));
     }
 
     /// Phase 2 PR-B (cluster-convergence-reconciler) — clears the local readiness tracker once

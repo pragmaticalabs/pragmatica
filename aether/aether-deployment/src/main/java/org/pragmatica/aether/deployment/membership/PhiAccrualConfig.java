@@ -22,10 +22,23 @@ package org.pragmatica.aether.deployment.membership;
 ///                         after a peer first connects.
 /// @param sigmaFloorMillis σ floor. The window stddev is clamped to at least this value before
 ///                         computing the tail, preventing divide-by-zero and over-tight
-///                         suspicion on near-constant intervals (§5E "generous σ").
+///                         suspicion on near-constant intervals (§5E "generous σ"). The floor is
+///                         CADENCE-AWARE: at the 1s ping cadence a single arrival that lands one
+///                         whole cadence late (≈+1000ms past μ) must read as a modest surprise,
+///                         NOT a near-certain death. With a 50ms floor that late arrival is ≈20σ
+///                         → φ saturates at the 9.0 cap on a SINGLE missed cadence, so one
+///                         GC/scheduler hiccup or a single dropped pong instantly crosses
+///                         Φ_evict=8.0. A 200ms floor turns the same late arrival into ≈1σ — a
+///                         barely-surprising blip — so transient jitter, brief stalls, and the
+///                         heavier tail/loss of cloud links no longer trip eviction; sustained
+///                         multi-cadence silence still climbs past Φ_evict as elapsed grows.
 /// @param threshold        Φ_evict — suspicion level above which [`PhiAccrualDetector#suspected`]
 ///                         returns true (§5E: "e.g. 8").
 public record PhiAccrualConfig(int windowSize, int minSamples, double sigmaFloorMillis, double threshold) {
-    /// §5E reference configuration: K=100, K_min=8, σ-floor=50ms, Φ_evict=8.0.
-    public static final PhiAccrualConfig DEFAULT = new PhiAccrualConfig(100, 8, 50.0, 8.0);
+    /// Reference configuration: K=100, K_min=8, σ-floor=200ms (cadence-aware, see
+    /// `sigmaFloorMillis`), Φ_evict=8.0. The σ-floor was raised from the §5E sketch's 50ms to
+    /// 200ms so a single ~1-cadence-late pong reads as ≈1σ rather than ≈20σ, giving the leader-side
+    /// actuator (`PhiObserver`) headroom for cloud jitter and packet loss before a peer is ever
+    /// considered suspected on any single tick.
+    public static final PhiAccrualConfig DEFAULT = new PhiAccrualConfig(100, 8, 200.0, 8.0);
 }

@@ -62,7 +62,7 @@ class PhiAccrualDetectorTest {
         var last = feedSteady(detector, PEER, 0L, 30);
 
         // Sample within the unsaturated band (just past μ≈1000ms, before the -log10 floor caps
-        // φ at 9.0); the σ floor of 50ms makes φ climb steeply here.
+        // φ at 9.0); the σ floor (200ms) makes φ climb steadily here.
         var phiShort = detector.phi(PEER, last + 1_050L);
         var phiMedium = detector.phi(PEER, last + 1_100L);
         var phiLong = detector.phi(PEER, last + 1_150L);
@@ -125,6 +125,41 @@ class PhiAccrualDetectorTest {
         detector.forget(PEER);
 
         assertThat(detector.phi(PEER, last + 5_000L)).isZero();
+    }
+
+    @Test
+    void isWarm_unknownPeer_isFalse() {
+        var detector = PhiAccrualDetector.phiAccrualDetector(CONFIG);
+
+        assertThat(detector.isWarm(PEER)).isFalse();
+    }
+
+    @Test
+    void isWarm_belowMinSamples_isFalseAndPhiZero() {
+        var detector = PhiAccrualDetector.phiAccrualDetector(CONFIG);
+        // minSamples=8 intervals → need 9 heartbeats; feed 8 → only 7 intervals (still warmup).
+        var last = feedSteady(detector, PEER, 0L, CONFIG.minSamples());
+
+        assertThat(detector.isWarm(PEER)).isFalse();
+        // Anchor the equivalence: cold ⇔ phi forced to zero.
+        assertThat(detector.phi(PEER, last)).isZero();
+    }
+
+    @Test
+    void isWarm_atExactlyMinSamples_isTrue() {
+        var detector = PhiAccrualDetector.phiAccrualDetector(CONFIG);
+        // minSamples intervals require minSamples + 1 heartbeats (boundary).
+        feedSteady(detector, PEER, 0L, CONFIG.minSamples() + 1);
+
+        assertThat(detector.isWarm(PEER)).isTrue();
+    }
+
+    @Test
+    void isWarm_aboveMinSamples_isTrue() {
+        var detector = PhiAccrualDetector.phiAccrualDetector(CONFIG);
+        feedSteady(detector, PEER, 0L, 30);
+
+        assertThat(detector.isWarm(PEER)).isTrue();
     }
 
     private static long feedAlternating(PhiAccrualDetector detector,
