@@ -54,7 +54,7 @@
 - **Pre-conditions:** Cluster A non-destructive, 5 nodes, NODE_COUNT=5, blueprint `test-persistence` pre-pushed by harness. Each test file creates its own `$STREAM_NAME` (timestamped).
 - **Side effects:** Creates streams; never destroys them (next test run reuses or creates new names). Drives sustained publish load (`test_sustained_stream_publish`). Does not scale the cluster.
 - **Cleanup discipline:** No explicit EXIT trap; relies on `restore_cluster_baseline` between suites in the runner. Streams remain in KV-store as residue — `test_multiple_streams_isolation` exercises but does not delete the second stream.
-- **Task readiness demotion:** `test_cluster_ready` across all four files warn-demotes `wait_for_all_tasks_active`. Replication then runs against a possibly half-ready cluster. RC2 follow-up.
+- **Readiness gate:** `test_cluster_ready` across all four files calls `wait_for_all_tasks_active` (warn-demoted). Post control-plane-removal this helper delegates to `wait_for_cluster_ready` (member count + leader elected + active core floor — see test-readiness-contract.md §1.1), so the prior "half-ready cluster" race is gone: the gate now verifies real cluster readiness, not task-group assignment.
 
 ---
 

@@ -93,8 +93,8 @@ test_read_from_non_governor_node() {
     # differ: cloud has one VM per node with mgmt on a fixed port (CLOUD_MGMT_PORT,
     # default 8080), so the alt host is the node's own public IP. Docker-remote
     # collocates all 5 nodes on TARGET_HOST and host-maps a per-node port range
-    # (MGMT_PORT + index). Mirrors the convention in `reassign_task_group`
-    # (lib/cluster.sh:1402-1407).
+    # (MGMT_PORT + index) — the standard docker-remote node→port derivation used
+    # throughout lib/cluster.sh.
     local alt_endpoint
     if [ "${ENV_TYPE:-}" = "cloud" ]; then
         local alt_ip

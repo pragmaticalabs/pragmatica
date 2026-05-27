@@ -2102,100 +2102,30 @@ stream_publish() {
 }
 
 # ---------------------------------------------------------------------------
-# Task Delegation
+# Control-plane readiness gate
 # ---------------------------------------------------------------------------
-cluster_tasks() {
-    api_get "/api/cluster/tasks"
-}
-
-task_assignment_count() {
-    local tasks
-    tasks=$(cluster_tasks)
-    # Count `"group":"<name>"` value-pairs, not bare `"group"` tokens. The prior
-    # `grep -o '"group"' | wc -l` over-counted: any nested object with a `"group"`
-    # field (error responses, audit entries, future schema additions) inflated the
-    # count. Requiring a string value ensures we only match assignment records.
-    printf '%s' "$tasks" | grep -oE '"group"[[:space:]]*:[[:space:]]*"[^"]+"' | wc -l | tr -d ' '
-}
-
-task_group_status() {
-    local group="$1"
-    # Drive the canonical CLI surface — `aether cluster tasks status <group>` fetches
-    # the full assignments list, filters to the matching group client-side, and (in
-    # --format value mode) emits the single status field. Falls back to UNASSIGNED on
-    # CLI error so callers wrapping this in a `wait_for` predicate keep their existing
-    # truth-table.
-    aether_failover cluster tasks status "$group" --format value --field assignments.0.status 2>/dev/null || echo "UNASSIGNED"
-}
-
-task_group_node() {
-    local group="$1"
-    local tasks
-    tasks=$(cluster_tasks)
-    printf '%s' "$tasks" | grep -o "\"group\"[[:space:]]*:[[:space:]]*\"${group}\"[^}]*\"assignedTo\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | grep -o '"assignedTo"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"assignedTo"[[:space:]]*:[[:space:]]*"//' | sed 's/"$//'
-}
-
-reassign_task_group() {
-    # TaskAssignmentCoordinator is leader-bound, so we must hit the leader directly.
-    local group="$1" target="$2"
-    local leader leader_url
-    leader=$(cluster_leader)
-    if [ -z "$leader" ] || [ "$leader" = "none" ]; then
-        log_warn "No leader available for reassign" >&2
-        return 1
-    fi
-    if [ "$ENV_TYPE" = "cloud" ]; then
-        local leader_ip
-        leader_ip=$(cloud_public_ip "$leader") || return 1
-        # Cloud uses fixed mgmt port 8080 on each VM (no per-node offset). The exported
-        # MGMT_PORT is docker-specific (5150 / 5160 host-mapped), unusable on cloud.
-        leader_url="http://${leader_ip}:${CLOUD_MGMT_PORT:-8080}"
-    else
-        local node_num
-        # Leader is a full NodeId post-migration (e.g. aether-a-node-1); strip everything
-        # up to and including the last "node-" to get the numeric ordinal. Plain
-        # 's/node-//' left "aether-a-1", which the arithmetic below then evaluated as a
-        # variable named "aether" → "aether: unbound variable" under set -u.
-        node_num=$(echo "$leader" | sed 's/.*node-//')
-        local port=$((MGMT_PORT + node_num - 1))
-        leader_url="http://${TARGET_HOST}:${port}"
-    fi
-    # Use _api_call so HTTP errors (NOT_LEADER, INVALID_NODE, etc.) surface as warnings
-    # on stderr instead of being silently swallowed by curl -sf.
-    _api_call PUT "${leader_url}/api/cluster/tasks/reassign/${group}" "{\"targetNode\":\"${target}\"}"
-}
-
+# Historical name retained for the ~11 suite callers that use it as their
+# "Cluster ready" precondition. The distributed task-group assignment model it
+# originally polled (`GET /api/cluster/tasks`, counting `assignments[].status ==
+# ACTIVE`) was REMOVED: control-plane components (CDM, scaling, streaming, …) are
+# now LEADER-PINNED — they activate on the elected leader rather than being
+# "assigned" to task groups across nodes. The `/api/cluster/tasks` endpoint is
+# gone (404).
+#
+# New semantics: "cluster ready for control-plane ops" == a leader is elected AND
+# the expected number of nodes are healthy/ON_DUTY. That is exactly the composite
+# contract `wait_for_cluster_ready` already enforces (member count ≥ expected,
+# leader elected, active core floor ≥ expected-1; see test-readiness-contract.md
+# §1.1), so we delegate to it rather than re-deriving readiness here.
+#
+# Arg mapping (preserves the legacy call sites unchanged):
+#   $1 timeout      — passed straight through.
+#   $2 min_active   — was "min task groups ACTIVE"; now "min healthy nodes". Callers
+#                     pass the cluster's expected node count (default NODE_COUNT).
 wait_for_all_tasks_active() {
     local timeout="${1:-60}"
-    local min_active="${2:-5}"
-    # Use `-1` sentinel on parse error instead of `|| echo 0`. Previously a json parse
-    # failure produced "0", and `[ 0 -ge ${min_active} ]` was simply false — the predicate
-    # behaved the same as "0 active so far", so a broken cluster looked like "warming up"
-    # and ate the whole timeout. With `-1`, the predicate `[ -1 -ge N ]` is false for any
-    # positive N (same outcome), but the sentinel is now distinguishable in diagnostic
-    # output if the predicate is ever instrumented.
-    wait_for "all task groups ACTIVE" \
-        "[ \$(json_count_matching \"\$(cluster_tasks)\" assignments status ACTIVE 2>/dev/null || echo -1) -ge ${min_active} ]" \
-        "$timeout"
-}
-
-wait_for_task_active() {
-    local group="$1" timeout="${2:-30}"
-    wait_for "task group ${group} ACTIVE" \
-        "[ \"\$(task_group_status ${group})\" = 'ACTIVE' ]" \
-        "$timeout"
-}
-
-# Predicate that requires both an exact node assignment AND ACTIVE status. Use
-# this after `reassign_task_group target` to avoid the stale-ACTIVE race where
-# `wait_for_task_active` returns immediately on the prior ACTIVE entry before
-# consensus has propagated the new assignment, leading the test to read the old
-# `task_group_node` value.
-wait_for_task_assigned() {
-    local group="$1" target="$2" timeout="${3:-30}"
-    wait_for "task group ${group} ACTIVE on ${target}" \
-        "[ \"\$(task_group_node ${group})\" = '${target}' ] && [ \"\$(task_group_status ${group})\" = 'ACTIVE' ]" \
-        "$timeout"
+    local expected="${2:-${NODE_COUNT:-5}}"
+    wait_for_cluster_ready "$timeout" "$expected"
 }
 
 # ---------------------------------------------------------------------------
