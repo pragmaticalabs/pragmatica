@@ -922,7 +922,12 @@ public class RabiaEngine<C extends Command> {
 
     private void doHandleSyncRequest(SyncRequest request) {
         var state = engineState.get();
-        if (state.isActive() || state.isObserving()) {
+        // A Paused responder retains its full in-memory protocol state (stateMachine,
+        // currentPhase, pendingBatches) so it can serve the SAME live-equivalent payload an
+        // active/observing node would. Only genuinely stateless engines (Stopped/Syncing) fall
+        // back to the persisted/empty snapshot, which omits pendingBatches and would otherwise
+        // leave a joiner unable to re-propose an in-flight batch.
+        if (state.isActive() || state.isObserving() || state.isPaused()) {
             stateMachine.makeSnapshot()
                         .map(snapshot -> new SyncResponse<>(self,
                                                             savedState(snapshot,
