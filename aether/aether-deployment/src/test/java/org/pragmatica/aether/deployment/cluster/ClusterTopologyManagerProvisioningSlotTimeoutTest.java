@@ -123,7 +123,8 @@ class ClusterTopologyManagerProvisioningSlotTimeoutTest {
 
     /// Provisioning into an EMPTY slot stamps the FILLING marker (`spawnedAtMs`/`deadlineMs`)
     /// before the provider call. With 3 ON_DUTY occupants reseeded into slots 0-2, slots 3-4 are
-    /// EMPTY and get filled — each FILLING slot carries a future deadline.
+    /// EMPTY and get filled — each FILLING slot carries a fresh `spawnedAtMs` (expiry is derived
+    /// from `spawnedAtMs + provisioningTimeout`, #230 deadline remodel — no stored deadline).
     @Test
     void provisionDispatch_stampsFillingMarkerWithDeadline() throws InterruptedException {
         var timeout = timeSpan(30).seconds();
@@ -135,14 +136,14 @@ class ClusterTopologyManagerProvisioningSlotTimeoutTest {
         assertThat(lifecycleManager.provisionCount.get())
                 .as("two EMPTY slots (3-4) provisioned for the 3-of-5 cluster")
                 .isGreaterThanOrEqualTo(1);
-        var minExpectedDeadline = dispatchTimeMs + timeout.millis() - 1000L;
+        var minExpectedSpawnedAt = dispatchTimeMs - 1000L;
         var fillingSlots = clusterStore.slots()
                                        .values()
                                        .stream()
                                        .filter(slot -> slot.spawnedAtMs() > 0L)
                                        .toList();
         assertThat(fillingSlots).as("at least one slot carries a FILLING marker").isNotEmpty();
-        assertThat(fillingSlots).allMatch(slot -> slot.deadlineMs() >= minExpectedDeadline);
+        assertThat(fillingSlots).allMatch(slot -> slot.spawnedAtMs() >= minExpectedSpawnedAt);
         assertThat(fillingSlots).allMatch(slot -> slot.occupantEpoch() >= 1L);
     }
 

@@ -306,9 +306,19 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private SlotOccupancy classifyEmptyOrFilling(ProvisioningSlotValue slot, long nowMs) {
-        return slot.deadlineMs() >= nowMs && slot.spawnedAtMs() > 0L
+        return slot.spawnedAtMs() > 0L && !isProvisioningExpired(slot, nowMs)
                ? SlotOccupancy.FILLING
                : SlotOccupancy.EMPTY;
+    }
+
+    /// The slot's FILLING-marker has outlived the auto-heal `provisioningTimeout` measured from its
+    /// stamped `spawnedAtMs`. Replaces the formerly-stored derived `deadlineMs` instant: expiry is
+    /// computed at check time as `now > spawnedAtMs + provisioningTimeout` (single source of truth =
+    /// the shared auto-heal `TimeSpan`; #230 deadline remodel). `spawnedAtMs > 0` guards against a
+    /// never-stamped EMPTY slot (mirrors the prior `deadlineMs > 0` intent).
+    private boolean isProvisioningExpired(ProvisioningSlotValue slot, long nowMs) {
+        return slot.spawnedAtMs() > 0L
+               && nowMs > slot.spawnedAtMs() + autoHealConfig.provisioningTimeout().millis();
     }
 
     /// Classifies an OCCUPIED slot on the DECIDE plane (`lifecycleReader` — the sovereign-FSM
@@ -1037,7 +1047,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void bindExistingNodeToSlot(IndexedSlot slot, NodeId existing, long nowMs) {
         var bound = new ProvisioningSlotValue(nowMs,
-                                              nowMs + autoHealConfig.provisioningTimeout().millis(),
                                               Option.some(existing),
                                               slot.value().occupantEpoch() + 1L,
                                               slot.value().supersededNodeId());
@@ -1363,7 +1372,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         return isDisconnectedOccupant(value, connected)
                && classifyOccupancy(value, view, nowMs) == SlotOccupancy.FILLING
-               && isDeadlineLapsed(value, nowMs);
+               && isProvisioningExpired(value, nowMs);
     }
 
     /// The slot is occupied AND its occupant has already left the connected set.
@@ -1373,18 +1382,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                     .or(false);
     }
 
-    /// The stamped FILLING-marker deadline has lapsed. `deadlineMs > 0` mirrors the unassigned-path
-    /// `spawnedAtMs > 0` intent — never reclaim a slot with no deadline stamped.
-    private static boolean isDeadlineLapsed(ProvisioningSlotValue value, long nowMs) {
-        return value.deadlineMs() > 0L && value.deadlineMs() < nowMs;
-    }
-
     @Contract
     private void freeSlot(IndexedSlot slot) {
-        var nowMs = nowMs();
         var deadOccupant = slot.value().assignedNodeId();
-        var freed = new ProvisioningSlotValue(nowMs,
-                                              nowMs,
+        // Reset to the EMPTY sentinel (`spawnedAtMs = 0`) so the slot reclassifies EMPTY on the next
+        // reconcile pass — behavior-preserving for the prior `deadlineMs = nowMs` force-expire, now
+        // that expiry is derived from `spawnedAtMs + provisioningTimeout` (#230 deadline remodel).
+        // `occupantEpoch` is preserved and `supersededNodeId` records the freed dead occupant.
+        var freed = new ProvisioningSlotValue(0L,
                                               Option.none(),
                                               slot.value().occupantEpoch(),
                                               deadOccupant);
@@ -1448,7 +1453,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", contextBase).unwrap();
         var spec = computePlacementHint().map(baseSpec::withPlacement).or(baseSpec);
         var filling = new ProvisioningSlotValue(nowMs,
-                                                deadlineMs,
                                                 Option.none(),
                                                 slot.value().occupantEpoch() + 1L,
                                                 slot.value().supersededNodeId());
@@ -1510,7 +1514,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void assignOccupant(IndexedSlot slot, NodeId realId) {
         var assigned = new ProvisioningSlotValue(slot.value().spawnedAtMs(),
-                                                 slot.value().deadlineMs(),
                                                  Option.some(realId),
                                                  slot.value().occupantEpoch(),
                                                  slot.value().supersededNodeId());
@@ -1525,7 +1528,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private static ProvisioningSlotValue emptySlotValue() {
-        return new ProvisioningSlotValue(0L, 0L, Option.none(), 0L, Option.none());
+        return new ProvisioningSlotValue(0L, Option.none(), 0L, Option.none());
     }
 
     private boolean stabilityElapsed(long nowMs) {

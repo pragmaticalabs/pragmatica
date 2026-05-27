@@ -455,7 +455,7 @@ class KVStoreSerializerTest {
     @Nested
     class ProvisioningSlotCodec {
         @Test
-        void parseProvisioningSlot_legacyThreeFields_defaultsEpochZeroAndNoSuperseded() {
+        void parseProvisioningSlot_legacyThreeFields_dropsDeadlineDefaultsEpochZeroAndNoSuperseded() {
             var legacy = "1000|61000|node-occupant";
 
             KVStoreSerializer.parseProvisioningSlotEntry("0", legacy)
@@ -463,7 +463,6 @@ class KVStoreSerializerTest {
                              .onSuccess(entry -> {
                                  var value = (ProvisioningSlotValue) entry.getValue();
                                  assertThat(value.spawnedAtMs()).isEqualTo(1000L);
-                                 assertThat(value.deadlineMs()).isEqualTo(61000L);
                                  assertThat(value.assignedNodeId()).isEqualTo(Option.some(NodeId.nodeId("node-occupant").unwrap()));
                                  assertThat(value.occupantEpoch()).isEqualTo(0L);
                                  assertThat(value.supersededNodeId().isPresent()).isFalse();
@@ -485,9 +484,25 @@ class KVStoreSerializerTest {
         }
 
         @Test
-        void roundTrip_fiveFieldFenced_preservesAllFields() {
+        void parseProvisioningSlot_legacyFiveFieldFenced_dropsDeadlinePreservesFencedFields() {
+            // Legacy 5-field wire `(spawnedAtMs|deadlineMs|assignedNodeId|occupantEpoch|supersededNodeId)`
+            // — the stored deadline (62000) is discarded; expiry is derived now (#230).
+            var legacy = "2000|62000|node-new|7|node-dead";
+
+            KVStoreSerializer.parseProvisioningSlotEntry("1", legacy)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> {
+                                 var value = (ProvisioningSlotValue) entry.getValue();
+                                 assertThat(value.spawnedAtMs()).isEqualTo(2000L);
+                                 assertThat(value.assignedNodeId()).isEqualTo(Option.some(NodeId.nodeId("node-new").unwrap()));
+                                 assertThat(value.occupantEpoch()).isEqualTo(7L);
+                                 assertThat(value.supersededNodeId()).isEqualTo(Option.some(NodeId.nodeId("node-dead").unwrap()));
+                             });
+        }
+
+        @Test
+        void roundTrip_currentFourField_preservesAllFields() {
             var original = new ProvisioningSlotValue(2000L,
-                                                     62000L,
                                                      Option.some(NodeId.nodeId("node-new").unwrap()),
                                                      7L,
                                                      Option.some(NodeId.nodeId("node-dead").unwrap()));
@@ -500,9 +515,8 @@ class KVStoreSerializerTest {
         }
 
         @Test
-        void roundTrip_fiveFieldNoOccupantNoSuperseded_preservesEpoch() {
+        void roundTrip_currentFourFieldNoOccupantNoSuperseded_preservesEpoch() {
             var original = new ProvisioningSlotValue(3000L,
-                                                     63000L,
                                                      Option.none(),
                                                      4L,
                                                      Option.none());
@@ -516,7 +530,7 @@ class KVStoreSerializerTest {
 
         @Test
         void parseProvisioningSlot_wrongFieldCount_returnsParseFailure() {
-            KVStoreSerializer.parseProvisioningSlotEntry("0", "1000|61000|node|7")
+            KVStoreSerializer.parseProvisioningSlotEntry("0", "1000|61000")
                              .onSuccess(_ -> Assertions.fail());
         }
     }

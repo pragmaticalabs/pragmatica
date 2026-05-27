@@ -129,8 +129,8 @@ class ClusterTopologyManagerStaleFillingReclaimTest {
     /// selected for refill (bound to a connected node this same pass under universal slot-fill).
     @Test
     void reconcile_assignedSlotFillingPastDeadlineAndOccupantDisconnected_freesAndRefills() {
-        var pastDeadline = System.currentTimeMillis() - 60_000L;
-        clusterStore.putSlot(0, slotAssignedTo(PEER_E, pastDeadline));
+        var spawnedLongAgo = System.currentTimeMillis() - 120_000L;
+        clusterStore.putSlot(0, slotAssignedTo(PEER_E, spawnedLongAgo));
         clusterStore.installJoining(PEER_E);
         publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
         ctm.activate();
@@ -151,8 +151,8 @@ class ClusterTopologyManagerStaleFillingReclaimTest {
     /// (safety gate: CTM never reclaims a node it can still reach).
     @Test
     void reconcile_assignedSlotFillingButOccupantConnected_keepsSlot() {
-        var pastDeadline = System.currentTimeMillis() - 60_000L;
-        clusterStore.putSlot(0, slotAssignedTo(PEER_A, pastDeadline));
+        var spawnedLongAgo = System.currentTimeMillis() - 120_000L;
+        clusterStore.putSlot(0, slotAssignedTo(PEER_A, spawnedLongAgo));
         clusterStore.installJoining(PEER_A);
         publishOnDuty(Set.of(SELF, PEER_B, PEER_C, PEER_D));
         ctm.activate();
@@ -163,11 +163,12 @@ class ClusterTopologyManagerStaleFillingReclaimTest {
                 .isEqualTo(Option.some(PEER_A));
     }
 
-    /// Same shape, but the deadline has NOT lapsed — the grace window is honored, slot kept.
+    /// Same shape, but the provisioning window has NOT lapsed — the grace window is honored, slot
+    /// kept. A just-spawned FILLING marker is within `spawnedAtMs + provisioningTimeout`.
     @Test
     void reconcile_assignedSlotFillingWithinDeadline_keepsSlot() {
-        var futureDeadline = System.currentTimeMillis() + 60_000L;
-        clusterStore.putSlot(0, slotAssignedTo(PEER_E, futureDeadline));
+        var spawnedJustNow = System.currentTimeMillis();
+        clusterStore.putSlot(0, slotAssignedTo(PEER_E, spawnedJustNow));
         clusterStore.installJoining(PEER_E);
         publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
         ctm.activate();
@@ -182,8 +183,8 @@ class ClusterTopologyManagerStaleFillingReclaimTest {
     /// and disconnected is reclaimed exactly like the JOINING case.
     @Test
     void reconcile_assignedSlotFillingAbsentLifecyclePastDeadline_freesAndRefills() {
-        var pastDeadline = System.currentTimeMillis() - 60_000L;
-        clusterStore.putSlot(0, slotAssignedTo(PEER_E, pastDeadline));
+        var spawnedLongAgo = System.currentTimeMillis() - 120_000L;
+        clusterStore.putSlot(0, slotAssignedTo(PEER_E, spawnedLongAgo));
         // No lifecycle atom for PEER_E — classifyOccupied falls back to FILLING.
         publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
         ctm.activate();
@@ -197,9 +198,8 @@ class ClusterTopologyManagerStaleFillingReclaimTest {
                 .contains(PEER_E);
     }
 
-    private static ProvisioningSlotValue slotAssignedTo(NodeId occupant, long deadlineMs) {
-        var spawnedAtMs = deadlineMs - 30_000L;
-        return new ProvisioningSlotValue(spawnedAtMs, deadlineMs, Option.some(occupant), 1L, Option.none());
+    private static ProvisioningSlotValue slotAssignedTo(NodeId occupant, long spawnedAtMs) {
+        return new ProvisioningSlotValue(spawnedAtMs, Option.some(occupant), 1L, Option.none());
     }
 
     private ProvisioningSlotValue slotValue(int index) {

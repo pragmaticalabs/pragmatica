@@ -1481,17 +1481,21 @@ import static org.pragmatica.lang.Option.none;
         FAILED
     }
 
-    /// Canonical field order: `(spawnedAtMs, deadlineMs, assignedNodeId, occupantEpoch, supersededNodeId)`.
+    /// Canonical field order: `(spawnedAtMs, assignedNodeId, occupantEpoch, supersededNodeId)`.
     ///
-    /// `occupantEpoch` is a monotonic, slot-local generation counter; `0` means empty/never-occupied.
-    /// `supersededNodeId` records the predecessor occupant this assignment replaced; `none()` on first fill.
+    /// `spawnedAtMs` is the wall-clock instant (epoch millis) the slot's current FILLING/occupied
+    /// generation was stamped; `0` means EMPTY/never-stamped. The FILLING-marker EXPIRY is NOT
+    /// stored — it is derived at check time as `spawnedAtMs + autoHealConfig.provisioningTimeout()`
+    /// (the single source of truth for the timeout is the shared auto-heal `TimeSpan`; per the
+    /// project rule, derived deadline instants are not persisted). `occupantEpoch` is a monotonic,
+    /// slot-local generation counter; `0` means empty/never-occupied. `supersededNodeId` records the
+    /// predecessor occupant this assignment replaced; `none()` on first fill.
     ///
-    /// Backward compatibility (slot-based-membership-convergence-spec §4.2): the legacy 3-arg
-    /// construction sites still compile via the overloaded 3-arg constructor and the
-    /// `provisioningSlotValue(..)` factories, which default `occupantEpoch = 0` and
-    /// `supersededNodeId = none()`. Mirrors the `NodeLifecycleValue` trailing-field pattern.
+    /// Backward compatibility (slot-based-membership-convergence-spec §4.2): the legacy
+    /// construction sites that passed a `deadlineMs` argument still compile via the deadline-arg
+    /// constructors and `provisioningSlotValue(..)` factories below, which discard the now-derived
+    /// deadline. Mirrors the `NodeLifecycleValue` trailing-field pattern.
     record ProvisioningSlotValue(long spawnedAtMs,
-                                 long deadlineMs,
                                  Option<NodeId> assignedNodeId,
                                  long occupantEpoch,
                                  Option<NodeId> supersededNodeId) implements AetherValue {
@@ -1500,24 +1504,45 @@ import static org.pragmatica.lang.Option.none;
             if (supersededNodeId == null) {supersededNodeId = Option.none();}
         }
 
-        /// Backward-compatible 3-arg constructor — preserves pre-fence call sites.
-        /// Defaults `occupantEpoch = 0`, `supersededNodeId = none()`.
+        /// Backward-compatible constructor — preserves call sites that passed the now-derived
+        /// `deadlineMs` (discarded). Defaults `occupantEpoch = 0`, `supersededNodeId = none()`.
         public ProvisioningSlotValue(long spawnedAtMs, long deadlineMs, Option<NodeId> assignedNodeId) {
-            this(spawnedAtMs, deadlineMs, assignedNodeId, 0L, Option.none());
+            this(spawnedAtMs, assignedNodeId, 0L, Option.none());
         }
 
+        /// Backward-compatible 5-arg constructor — preserves the pre-remodel fenced-form call sites
+        /// that passed `deadlineMs` at position 1 (discarded; expiry is derived now).
+        public ProvisioningSlotValue(long spawnedAtMs,
+                                     long deadlineMs,
+                                     Option<NodeId> assignedNodeId,
+                                     long occupantEpoch,
+                                     Option<NodeId> supersededNodeId) {
+            this(spawnedAtMs, assignedNodeId, occupantEpoch, supersededNodeId);
+        }
+
+        public static ProvisioningSlotValue provisioningSlotValue(long spawnedAtMs) {
+            return new ProvisioningSlotValue(spawnedAtMs, Option.none(), 0L, Option.none());
+        }
+
+        /// Backward-compatible factory — `deadlineMs` discarded (derived).
         public static ProvisioningSlotValue provisioningSlotValue(long spawnedAtMs, long deadlineMs) {
-            return new ProvisioningSlotValue(spawnedAtMs, deadlineMs, Option.none(), 0L, Option.none());
+            return new ProvisioningSlotValue(spawnedAtMs, Option.none(), 0L, Option.none());
         }
 
         public static ProvisioningSlotValue provisioningSlotValue(long spawnedAtMs,
+                                                                  NodeId assignedNodeId) {
+            return new ProvisioningSlotValue(spawnedAtMs, Option.option(assignedNodeId), 0L, Option.none());
+        }
+
+        /// Backward-compatible factory — `deadlineMs` discarded (derived).
+        public static ProvisioningSlotValue provisioningSlotValue(long spawnedAtMs,
                                                                   long deadlineMs,
                                                                   NodeId assignedNodeId) {
-            return new ProvisioningSlotValue(spawnedAtMs, deadlineMs, Option.option(assignedNodeId), 0L, Option.none());
+            return new ProvisioningSlotValue(spawnedAtMs, Option.option(assignedNodeId), 0L, Option.none());
         }
 
         public ProvisioningSlotValue withAssignedNode(NodeId nodeId) {
-            return new ProvisioningSlotValue(spawnedAtMs, deadlineMs, Option.option(nodeId), occupantEpoch, supersededNodeId);
+            return new ProvisioningSlotValue(spawnedAtMs, Option.option(nodeId), occupantEpoch, supersededNodeId);
         }
     }
 

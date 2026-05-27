@@ -371,9 +371,11 @@ class ClusterTopologyManagerProvisioningSlotKvMirrorTest {
         }
 
         void replaceAllSlotsWithLapsed() {
-            var nowMs = System.currentTimeMillis();
+            // spawnedAt well past the default 60s provisioningTimeout so the derived expiry
+            // (spawnedAt + provisioningTimeout) is lapsed regardless of timeout (#230 remodel).
+            var spawnedLongAgo = System.currentTimeMillis() - 600_000L;
             var lapsed = new LinkedHashMap<ProvisioningSlotKey, ProvisioningSlotValue>();
-            slotKv.forEach((key, _) -> lapsed.put(key, ProvisioningSlotValue.provisioningSlotValue(nowMs - 10_000L, nowMs - 1L)));
+            slotKv.forEach((key, _) -> lapsed.put(key, ProvisioningSlotValue.provisioningSlotValue(spawnedLongAgo)));
             slotKv.clear();
             slotKv.putAll(lapsed);
         }

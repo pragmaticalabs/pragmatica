@@ -244,10 +244,10 @@ import static org.pragmatica.lang.Result.success;
     }
 
     static String serializeProvisioningSlot(ProvisioningSlotValue v) {
-        return v.spawnedAtMs() + PIPE + v.deadlineMs() + PIPE + v.assignedNodeId().map(NodeId::id)
-                                                                                .or("") + PIPE + v.occupantEpoch() + PIPE + v.supersededNodeId()
-                                                                                                                                            .map(NodeId::id)
-                                                                                                                                            .or("");
+        return v.spawnedAtMs() + PIPE + v.assignedNodeId().map(NodeId::id)
+                                                          .or("") + PIPE + v.occupantEpoch() + PIPE + v.supersededNodeId()
+                                                                                                       .map(NodeId::id)
+                                                                                                       .or("");
     }
 
     private static String serializeDhtPartitionOwnership(DhtPartitionOwnershipValue v) {
@@ -636,27 +636,48 @@ import static org.pragmatica.lang.Result.success;
                           .mapError(_ -> Causes.cause("Unknown lifecycle state: " + raw));
     }
 
-    /// Deserializes a provisioning-slot value. Tolerates BOTH the 3-field legacy form
-    /// `(spawnedAtMs|deadlineMs|assignedNodeId)` — defaulting `occupantEpoch = 0`,
-    /// `supersededNodeId = none()` — AND the 5-field fenced form
-    /// `(spawnedAtMs|deadlineMs|assignedNodeId|occupantEpoch|supersededNodeId)`.
+    /// Deserializes a provisioning-slot value. Tolerates THREE wire forms, disambiguated by field
+    /// count (slot-based-membership-convergence-spec §4.2; deadline-remodel #230 backward-compat):
+    /// — 4-field CURRENT form `(spawnedAtMs|assignedNodeId|occupantEpoch|supersededNodeId)`;
+    /// — 3-field legacy `(spawnedAtMs|deadlineMs|assignedNodeId)` — the stored `deadlineMs` is
+    ///   DISCARDED (expiry is now derived from `spawnedAtMs + provisioningTimeout`);
+    /// — 5-field legacy fenced `(spawnedAtMs|deadlineMs|assignedNodeId|occupantEpoch|supersededNodeId)`
+    ///   — likewise drops the stored `deadlineMs`.
     /// Mirrors the `NodeLifecycleValue` trailing-field backward-compat (no envelope bump, spec §7).
     static Result<Map.Entry<AetherKey, AetherValue>> parseProvisioningSlotEntry(String identity, String raw) {
         var parts = raw.split("\\|", - 1);
-        if (parts.length != 3 && parts.length != 5) {return parseFailure("provisioning-slot value requires 3 or 5 fields, got " + parts.length);}
+        var key = ProvisioningSlotKey.provisioningSlotKey(identity);
+
+        return switch (parts.length) {
+            case 4 -> success(entry(key, parseCurrentProvisioningSlot(parts)));
+            case 3, 5 -> success(entry(key, parseLegacyProvisioningSlot(parts)));
+            default -> parseFailure("provisioning-slot value requires 3, 4, or 5 fields, got " + parts.length);
+        };
+    }
+
+    /// 4-field CURRENT form `(spawnedAtMs|assignedNodeId|occupantEpoch|supersededNodeId)`.
+    private static ProvisioningSlotValue parseCurrentProvisioningSlot(String[] parts) {
+        return new ProvisioningSlotValue(Long.parseLong(parts[0]),
+                                         parseOptionalNodeId(parts[1]),
+                                         Long.parseLong(parts[2]),
+                                         parseOptionalNodeId(parts[3]));
+    }
+
+    /// Legacy `(spawnedAtMs|deadlineMs|assignedNodeId[|occupantEpoch|supersededNodeId])`. The
+    /// stored `deadlineMs` at position 1 is DISCARDED (expiry is derived now). The fenced fields
+    /// default to `occupantEpoch = 0`, `supersededNodeId = none()` in the 3-field form.
+    private static ProvisioningSlotValue parseLegacyProvisioningSlot(String[] parts) {
         var occupantEpoch = parts.length >= 5
-                           ? Long.parseLong(parts[3])
-                           : 0L;
+                          ? Long.parseLong(parts[3])
+                          : 0L;
         var supersededNodeId = parts.length >= 5
                              ? parseOptionalNodeId(parts[4])
                              : Option.<NodeId>none();
-        var key = ProvisioningSlotKey.provisioningSlotKey(identity);
-        var value = new ProvisioningSlotValue(Long.parseLong(parts[0]),
-                                              Long.parseLong(parts[1]),
-                                              parseOptionalNodeId(parts[2]),
-                                              occupantEpoch,
-                                              supersededNodeId);
-        return success(entry(key, value));
+
+        return new ProvisioningSlotValue(Long.parseLong(parts[0]),
+                                         parseOptionalNodeId(parts[2]),
+                                         occupantEpoch,
+                                         supersededNodeId);
     }
 
     private static Option<NodeId> parseOptionalNodeId(String raw) {
