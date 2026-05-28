@@ -7,7 +7,6 @@ package org.pragmatica.aether.api.routes;
 import org.pragmatica.aether.api.ManagementApiResponses.PromoteNodeRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.PromoteNodeResponse;
 import org.pragmatica.aether.api.OperationalEvent;
-import org.pragmatica.aether.deployment.audit.CommandLifecycleEvent;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDecommission;
@@ -643,7 +642,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     private Promise<LifecycleCommandResponse> dispatchOperatorCommand(LifecycleCommand command) {
         var node = nodeSupplier.get();
         return node.lifecycleWriter()
-                   .applyCommand(command, CommandLifecycleEvent.SOURCE_OPERATOR)
+                   .applyCommand(command)
                    .map(_ -> buildLifecycleCommandResponse(command, true))
                    .onSuccess(_ -> auditAndEmitLifecycleTransition(operatorCommandTransitionResult(command),
                                                                    operatorCommandResultingState(command)));
@@ -653,7 +652,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
         return new LifecycleCommandResponse(accepted,
                                             command.getClass().getSimpleName(),
                                             commandPeerId(command),
-                                            "see /api/audit/commands?source=operator");
+                                            "operator dispatch accepted");
     }
 
     private static TransitionResult operatorCommandTransitionResult(LifecycleCommand command) {

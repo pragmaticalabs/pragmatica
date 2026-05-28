@@ -6,8 +6,6 @@ package org.pragmatica.aether.deployment.reconciler;
 
 import org.pragmatica.aether.config.ReconcilerConfig;
 import org.pragmatica.aether.config.RuleSpec;
-import org.pragmatica.aether.deployment.audit.CommandLifecycleEvent;
-import org.pragmatica.aether.deployment.audit.CommandLifecycleEvent.CommandReceived;
 import org.pragmatica.aether.deployment.cluster.LifecycleWriter;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDecommission;
@@ -29,7 +27,6 @@ import org.pragmatica.aether.deployment.reconciler.rules.ReconciliationRule;
 import org.pragmatica.aether.deployment.reconciler.rules.ReconciliationSnapshot;
 import org.pragmatica.aether.deployment.reconciler.rules.StoppedZombie;
 import org.pragmatica.aether.deployment.reconciler.rules.SwimLifecycleGap;
-import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DrainDeadlineKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.JoinDeadlineKey;
@@ -103,7 +100,6 @@ record LifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
                                  Supplier<Map<NodeId, SwimHealth>> swimHealthSnapshot,
                                  Supplier<Set<NodeId>> activeSyncHolds,
                                  LifecycleWriter lifecycleWriter,
-                                 StreamPublisher<CommandLifecycleEvent> auditPublisher,
                                  MembershipFsmConfig fsmConfig,
                                  ReconcilerConfig config,
                                  HlcClock hlcClock,
@@ -134,7 +130,6 @@ record LifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
                                                                Supplier<Map<NodeId, SwimHealth>> swimHealthSnapshot,
                                                                Supplier<Set<NodeId>> activeSyncHolds,
                                                                LifecycleWriter lifecycleWriter,
-                                                               StreamPublisher<CommandLifecycleEvent> auditPublisher,
                                                                MembershipFsmConfig fsmConfig,
                                                                ReconcilerConfig config,
                                                                HlcClock hlcClock,
@@ -153,7 +148,6 @@ record LifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
                                              swimHealthSnapshot,
                                              activeSyncHolds,
                                              lifecycleWriter,
-                                             auditPublisher,
                                              fsmConfig,
                                              config,
                                              hlcClock,
@@ -347,7 +341,7 @@ record LifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
     }
 
     @Contract private void applyCommandEnforcing(ReconciliationAction action) {
-        lifecycleWriter.applyCommand(action.command(), CommandLifecycleEvent.SOURCE_RECONCILER)
+        lifecycleWriter.applyCommand(action.command())
                        .onFailure(cause -> log.warn("Reconciler: enforce failed for {} on {}: {}",
                                                     commandType(action.command()),
                                                     action.peer().id(),
@@ -355,15 +349,10 @@ record LifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
     }
 
     @Contract private void publishAuditOnly(ReconciliationAction action) {
-        var event = new CommandReceived(commandType(action.command()),
-                                        action.peer().id(),
-                                        reasonTag(action.command()),
-                                        action.justification().message(),
-                                        CommandLifecycleEvent.SOURCE_RECONCILER,
-                                        clock.getAsLong());
-        auditPublisher.publish(event)
-                      .onFailure(cause -> log.debug("Reconciler: audit publish failed (dry-run): {}",
-                                                     cause.message()));
+        log.debug("Reconciler: dry-run {} on {} ({})",
+                  commandType(action.command()),
+                  action.peer().id(),
+                  reasonTag(action.command()));
     }
 
     @Contract private void recordDecision(ReconciliationRule rule,

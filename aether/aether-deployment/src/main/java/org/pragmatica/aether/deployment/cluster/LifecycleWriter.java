@@ -4,16 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
-import org.pragmatica.aether.deployment.audit.CommandLifecycleEvent;
-import org.pragmatica.aether.deployment.audit.CommandLifecycleEvent.CommandApplied;
-import org.pragmatica.aether.deployment.audit.CommandLifecycleEvent.CommandReceived;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDecommission;
-import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDrain;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceOnDuty;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.RecordJoining;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.RequestReJoin;
-import org.pragmatica.aether.slice.StreamPublisher;
+import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDrain;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -23,7 +19,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StopReason;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
-import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -50,13 +45,12 @@ import org.slf4j.LoggerFactory;
 /// `commandApplier`; metadata (host/port/observedCoreEpoch/transitionedAt/provisioningSource)
 /// is preserved from the prior `NodeLifecycleValue` when available.
 ///
-/// **Convergence-reconciler spec (Phase 1, §6).** `applyCommand` is the new single-ingress
-/// entry point: each `LifecycleCommand` (operator/reconciler/CTM/drain intent) maps to the
-/// corresponding state-transition write. The legacy `request*` methods remain for now to keep
-/// the migration additive — they will be folded into `applyCommand` once all kind-2 producers
-/// are converted. Future work (per plan §1.4): route `applyCommand` through the FSM reducer
-/// so command-on-illegal-state is no-op + audit rather than unconditional overwrite, and
-/// publish `CommandReceived` / `CommandApplied` to the `audit.lifecycle.commands` topic.
+/// **E2 Phase 2c-α.1a (2026-05-28).** The `audit.lifecycle.commands` publisher and the
+/// per-emitter `source` tag (`SOURCE_OPERATOR` / `SOURCE_RECONCILER` / `SOURCE_CTM` / ...) have
+/// been deleted. Audit-event publishing was the only consumer of the `source` argument, so
+/// `applyCommand` collapses to a single arity. Lifecycle execution paths are unchanged —
+/// reducer-routed FSM dispatch (the production path) and the direct test fixture both still
+/// propose KV writes via `commandApplier`; only the observability tee is gone.
 public interface LifecycleWriter {
     Promise<Unit> requestDrain(NodeId target);
     Promise<Unit> requestDecommission(NodeId target);
@@ -72,33 +66,15 @@ public interface LifecycleWriter {
     ///
     /// The default implementation delegates to the legacy `request*` methods so existing
     /// `DirectLifecycleWriter` instances pick up the new API without changes. Implementations
-    /// that need reducer-routing or audit-stream publication should override.
-    ///
-    /// Equivalent to `applyCommand(command, CommandLifecycleEvent.SOURCE_UNKNOWN)` —
-    /// preserved for backward compatibility with legacy call sites (CTM scale-down, drain
-    /// coordinator, bootstrap) that have not yet been migrated to thread their own source
-    /// tag. Phase 3 PR-C (Phase 4-5 readiness): new emitter sites SHOULD use the
-    /// source-tagged overload so the `audit.lifecycle.commands` topic can distinguish
-    /// operator/reconciler/CTM-emitted commands.
+    /// that need reducer-routing should override.
     default Promise<Unit> applyCommand(LifecycleCommand command) {
         return dispatchCommandToLegacyWriters(command);
     }
 
-    /// Source-tagged variant of `applyCommand(LifecycleCommand)`. The `source` string flows
-    /// onto the `audit.lifecycle.commands` payload (`CommandReceived.source` /
-    /// `CommandApplied.source`) so downstream consumers can distinguish reconciler-emitted
-    /// commands from operator/drain-coordinator/CTM-emitted ones. The default
-    /// implementation discards `source` and delegates to the legacy per-variant
-    /// `request*` methods; `DirectLifecycleWriter` overrides to thread the tag onto the
-    /// emitted audit events.
-    default Promise<Unit> applyCommand(LifecycleCommand command, String source) {
-        return dispatchCommandToLegacyWriters(command);
-    }
-
-    /// Shared dispatch — used by both `applyCommand` defaults to avoid mutual recursion
-    /// across the two arities. `DirectLifecycleWriter` overrides both arities and routes
-    /// through `dispatchCommand(...)` directly, so this helper is only invoked by
-    /// non-overriding implementations (legacy fixtures, hand-rolled writers).
+    /// Shared dispatch — used by the `applyCommand` default to avoid mutual recursion.
+    /// `DirectLifecycleWriter` and `FsmRoutedLifecycleWriter` override `applyCommand` and route
+    /// through their own dispatcher directly, so this helper is only invoked by non-overriding
+    /// implementations (legacy fixtures, hand-rolled writers).
     private Promise<Unit> dispatchCommandToLegacyWriters(LifecycleCommand command) {
         return switch (command) {
             case ForceDecommission cmd -> requestDecommission(cmd.peer());
@@ -112,37 +88,31 @@ public interface LifecycleWriter {
     /// `RecordJoining` write target. The default `DirectLifecycleWriter` overrides; this
     /// stub keeps the interface compilable for hand-rolled writer implementations.
     default Promise<Unit> requestRecordJoining(NodeId target) {
-        return Promise.failure(Causes.cause("requestRecordJoining not supported by " + getClass().getSimpleName()));
+        return Causes.cause("requestRecordJoining not supported by " + getClass().getSimpleName()).promise();
     }
 
     /// `RequestReJoin` write target — removes the lifecycle entry so the peer can re-enter
     /// JOINING on the next slot-claim / SwimHealthy / RecordJoining event.
     default Promise<Unit> requestReJoin(NodeId target) {
-        return Promise.failure(Causes.cause("requestReJoin not supported by " + getClass().getSimpleName()));
+        return Causes.cause("requestReJoin not supported by " + getClass().getSimpleName()).promise();
     }
 
     /// Builds a direct KV-writing `LifecycleWriter`. Writes are unconditional `Put` commands
     /// proposed via `commandApplier`; the prior value (when present) is consulted to preserve
-    /// non-state metadata across transitions. The `auditPublisher` is invoked for every
-    /// `LifecycleCommand` flowing through `applyCommand(...)` (CommandReceived on entry,
-    /// CommandApplied after the underlying write resolves); publish results are fire-and-forget
-    /// — `applyCommand` does not wait on them.
+    /// non-state metadata across transitions.
     static LifecycleWriter directLifecycleWriter(Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
-                                                  Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                  StreamPublisher<CommandLifecycleEvent> auditPublisher) {
-        return new DirectLifecycleWriter(lifecycleReader, commandApplier, auditPublisher);
+                                                  Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier) {
+        return new DirectLifecycleWriter(lifecycleReader, commandApplier);
     }
 
     /// Builds an FSM-routed `LifecycleWriter`. Every command is dispatched through
     /// `commandIngress` (`MembershipFsm::applyLifecycleCommand`), making the membership FSM the
-    /// sovereign single writer of lifecycle KV: illegal command-on-state is a no-op + audit
-    /// (`CommandApplied(accepted=false)`) rather than an unconditional overwrite. `clock` stamps
-    /// a fresh HLC timestamp onto the timestamp-less legacy `request*` commands. Replaces
-    /// `directLifecycleWriter` in production wiring; the direct variant remains for tests.
+    /// sovereign single writer of lifecycle KV: illegal command-on-state is a no-op rather than
+    /// an unconditional overwrite. `clock` stamps a fresh HLC timestamp onto the timestamp-less
+    /// legacy `request*` commands.
     static LifecycleWriter fsmRoutedLifecycleWriter(Function<LifecycleCommand, Promise<Boolean>> commandIngress,
-                                                     Supplier<HlcTimestamp> clock,
-                                                     StreamPublisher<CommandLifecycleEvent> auditPublisher) {
-        return new FsmRoutedLifecycleWriter(commandIngress, clock, auditPublisher);
+                                                     Supplier<HlcTimestamp> clock) {
+        return new FsmRoutedLifecycleWriter(commandIngress, clock);
     }
 }
 
@@ -151,14 +121,11 @@ final class DirectLifecycleWriter implements LifecycleWriter {
 
     private final Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader;
     private final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier;
-    private final StreamPublisher<CommandLifecycleEvent> auditPublisher;
 
     DirectLifecycleWriter(Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
-                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                          StreamPublisher<CommandLifecycleEvent> auditPublisher) {
+                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier) {
         this.lifecycleReader = lifecycleReader;
         this.commandApplier = commandApplier;
-        this.auditPublisher = auditPublisher;
     }
 
     @Override public Promise<Unit> requestDrain(NodeId target) {
@@ -188,80 +155,17 @@ final class DirectLifecycleWriter implements LifecycleWriter {
                               .mapToUnit();
     }
 
-    /// Override the default `applyCommand` so STOPPED writes triggered by
-    /// `ForceDecommission` carry the `StopReason` sidecar on the resulting `NodeLifecycleValue`,
-    /// and every command flowing through this writer is recorded on the
-    /// `audit.lifecycle.commands` stream (CommandReceived on entry, CommandApplied after the
-    /// underlying KV write resolves). Audit publishes are fire-and-forget — failures inside
-    /// the audit path do not affect the lifecycle write outcome.
+    /// Override the default `applyCommand` so STOPPED writes triggered by `ForceDecommission`
+    /// carry the `StopReason` sidecar on the resulting `NodeLifecycleValue`. Audit-event
+    /// publication was removed in E2 Phase 2c-α.1a.
     @Override public Promise<Unit> applyCommand(LifecycleCommand command) {
-        return applyCommand(command, CommandLifecycleEvent.SOURCE_UNKNOWN);
-    }
-
-    @Override public Promise<Unit> applyCommand(LifecycleCommand command, String source) {
-        publishReceived(command, source);
-        return dispatchCommand(command).onSuccess(_ -> publishApplied(command, source, true))
-                                       .onFailure(_ -> publishApplied(command, source, false));
+        return dispatchCommand(command);
     }
 
     private Promise<Unit> dispatchCommand(LifecycleCommand command) {
         return (command instanceof ForceDecommission cmd)
                ? forceLifecycleWrite(cmd.peer(), NodeLifecycleState.STOPPED, Option.some(cmd.reason()))
                : LifecycleWriter.super.applyCommand(command);
-    }
-
-    @Contract private void publishReceived(LifecycleCommand command, String source) {
-        auditPublisher.publish(new CommandReceived(commandType(command),
-                                                   peerId(command),
-                                                   reasonTag(command),
-                                                   justificationMessage(command),
-                                                   source,
-                                                   System.currentTimeMillis()));
-    }
-
-    @Contract private void publishApplied(LifecycleCommand command, String source, boolean accepted) {
-        auditPublisher.publish(new CommandApplied(commandType(command),
-                                                  peerId(command),
-                                                  reasonTag(command),
-                                                  justificationMessage(command),
-                                                  source,
-                                                  System.currentTimeMillis(),
-                                                  accepted));
-    }
-
-    private static String commandType(LifecycleCommand command) {
-        return command.getClass()
-                      .getSimpleName();
-    }
-
-    private static String peerId(LifecycleCommand command) {
-        return switch (command) {
-            case ForceDecommission cmd -> cmd.peer()
-                                             .toString();
-            case ForceDrain cmd -> cmd.peer()
-                                      .toString();
-            case ForceOnDuty cmd -> cmd.peer()
-                                       .toString();
-            case RecordJoining cmd -> cmd.peer()
-                                         .toString();
-            case RequestReJoin cmd -> cmd.peer()
-                                         .toString();
-        };
-    }
-
-    private static String reasonTag(LifecycleCommand command) {
-        return switch (command) {
-            case ForceDecommission cmd -> cmd.reason()
-                                             .name();
-            case ForceDrain cmd -> cmd.reason()
-                                      .name();
-            case ForceOnDuty _, RecordJoining _, RequestReJoin _ -> "";
-        };
-    }
-
-    private static String justificationMessage(LifecycleCommand command) {
-        return command.justification()
-                      .message();
     }
 
     private Promise<Unit> forceLifecycleWrite(NodeId target,

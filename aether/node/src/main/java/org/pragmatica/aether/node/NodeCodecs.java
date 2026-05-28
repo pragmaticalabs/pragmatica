@@ -57,11 +57,6 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.aether.http.handler.HandlerCodecs.CODECS);
         all.addAll(org.pragmatica.aether.http.handler.security.SecurityCodecs.CODECS);
         all.addAll(org.pragmatica.swim.SwimCodecs.CODECS);
-        // Deployment-module audit events (CommandLifecycleEvent.CommandReceived/CommandApplied).
-        // The deployment module is not a slice, so its @Codec types are registered here at the
-        // system level rather than through the slice-DI resources.toml path. Backs the
-        // `audit.lifecycle.commands` StreamPublisher used by LifecycleWriter / the reconciler.
-        all.addAll(org.pragmatica.aether.deployment.audit.AuditCodecsDeployment.CODECS);
         all.add(methodNameCodec());
         all.add(inetSocketAddressCodec());
         all.add(timeSpanCodec());

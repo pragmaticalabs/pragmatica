@@ -5,11 +5,9 @@
 package org.pragmatica.aether.deployment.reconciler;
 
 import org.pragmatica.aether.config.ReconcilerConfig;
-import org.pragmatica.aether.deployment.audit.CommandLifecycleEvent;
 import org.pragmatica.aether.deployment.cluster.LifecycleWriter;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmConfig;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent;
-import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
@@ -106,7 +104,6 @@ public interface LifecycleReconciler {
                                                    Supplier<Map<NodeId, SwimHealth>> swimHealthSnapshot,
                                                    Supplier<Set<NodeId>> activeSyncHolds,
                                                    LifecycleWriter lifecycleWriter,
-                                                   StreamPublisher<CommandLifecycleEvent> auditPublisher,
                                                    MembershipFsmConfig fsmConfig,
                                                    ReconcilerConfig config,
                                                    HlcClock hlcClock,
@@ -117,7 +114,6 @@ public interface LifecycleReconciler {
                                    swimHealthSnapshot,
                                    activeSyncHolds,
                                    lifecycleWriter,
-                                   auditPublisher,
                                    fsmConfig,
                                    config,
                                    hlcClock,
@@ -137,7 +133,6 @@ public interface LifecycleReconciler {
                                                    Supplier<Map<NodeId, SwimHealth>> swimHealthSnapshot,
                                                    Supplier<Set<NodeId>> activeSyncHolds,
                                                    LifecycleWriter lifecycleWriter,
-                                                   StreamPublisher<CommandLifecycleEvent> auditPublisher,
                                                    MembershipFsmConfig fsmConfig,
                                                    ReconcilerConfig config,
                                                    HlcClock hlcClock,
@@ -149,7 +144,6 @@ public interface LifecycleReconciler {
                                                                    swimHealthSnapshot,
                                                                    activeSyncHolds,
                                                                    lifecycleWriter,
-                                                                   auditPublisher,
                                                                    fsmConfig,
                                                                    config,
                                                                    hlcClock,

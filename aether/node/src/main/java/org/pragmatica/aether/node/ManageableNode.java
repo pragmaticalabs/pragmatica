@@ -8,7 +8,6 @@ import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.deployment.DeploymentMap;
-import org.pragmatica.aether.deployment.audit.RecentCommandsBuffer;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.LifecycleWriter;
@@ -122,13 +121,6 @@ public interface ManageableNode {
     InFlightRequestTracker inFlightRequestTracker();
     DrainCoordinator drainCoordinator();
     NodeLifecycle nodeLifecycle();
-
-    /// Phase 3 PR-C (cluster-convergence-reconciler) — in-memory ring buffer of the most
-    /// recent `audit.lifecycle.commands` events seen by this node. Backs the
-    /// `GET /api/audit/commands` operator endpoint. Population is via a tee on the
-    /// outgoing `audit.lifecycle.commands` publisher so every command emitted from this
-    /// node lands in the buffer regardless of whether the stream write succeeded.
-    RecentCommandsBuffer recentCommandsBuffer();
 
     MembershipFsm membershipFsm();
 

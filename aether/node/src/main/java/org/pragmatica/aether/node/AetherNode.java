@@ -112,8 +112,6 @@ import org.pragmatica.aether.storage.DelegatedStorageAdapter;
 import org.pragmatica.aether.storage.DhtStorageTier;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
-import org.pragmatica.aether.deployment.audit.AuditLifecycleStreams;
-import org.pragmatica.aether.deployment.audit.CommandLifecycleEvent;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.DefaultStreamPublisher;
 import org.pragmatica.aether.stream.StreamError;
@@ -611,7 +609,6 @@ public interface AetherNode extends ManageableNode {
                           Option<DHTClient> dhtClient,
                           Option<DHTNode> dhtNode,
                           Supplier<AetherValue.ClusterPhase> clusterPhaseSupplier,
-                          org.pragmatica.aether.deployment.audit.RecentCommandsBuffer recentCommandsBuffer,
                           Option<org.pragmatica.aether.deployment.reconciler.LifecycleReconciler> lifecycleReconciler,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
@@ -1255,25 +1252,11 @@ public interface AetherNode extends ManageableNode {
         // Direct lifecycle writes for transitions not owned by the FSM operator-event path
         // (requestActivate, requestFailedDrain) and for CTM-initiated drain/decommission
         // (which the FSM does not yet own — those still bypass FSM-driven InvokeDrain).
-        // The real `audit.lifecycle.commands` StreamPublisher is constructed after
-        // `streamPartitionManager` is built (see below). Until that happens publishes are
-        // dropped — the deployment module is not a slice, so we cannot route through the
-        // slice-DI `resources.toml` -> `StreamPublisherFactory` path; instead the node-boot
-        // code owns provisioning + binding directly. The AtomicReference indirection lets
-        // `LifecycleWriter` capture a stable publisher view before the manager exists.
-        var auditLifecycleCommandPublisherRef = new AtomicReference<StreamPublisher<CommandLifecycleEvent>>(_ -> Promise.unitPromise());
-        // Phase 3 PR-C: in-memory ring buffer over the same audit events the writer publishes
-        // to the stream. Backs `GET /api/audit/commands`. Capacity 1024 covers operator
-        // inspection windows comfortably (events at 16KB max ⇒ 16MB worst-case footprint).
-        var recentCommandsBuffer = org.pragmatica.aether.deployment.audit.RecentCommandsBuffer.recentCommandsBuffer(1024);
-        StreamPublisher<CommandLifecycleEvent> auditLifecycleCommandPublisher = event -> {
-            recentCommandsBuffer.record(event);
-            return Option.option(auditLifecycleCommandPublisherRef.get())
-                         .fold(Promise::<Unit>unitPromise, p -> p.publish(event));
-        };
+        // E2 Phase 2c-α.1a (2026-05-28): audit-stream publisher and the in-memory
+        // RecentCommandsBuffer were deleted; the lifecycle writer no longer tees to an
+        // observability stream.
         var ctmLifecycleWriter = LifecycleWriter.fsmRoutedLifecycleWriter(command -> membershipFsmRef.get().applyLifecycleCommand(command),
-                                                                          hlcClock::now,
-                                                                          auditLifecycleCommandPublisher);
+                                                                          hlcClock::now);
         // Bind the forward-ref so the Phase 2 PR-B `readyCandidateSink` (wired above) can emit
         // `LifecycleCommand.ForceOnDuty` once the lifecycle writer exists.
         ctmLifecycleWriterRef.set(ctmLifecycleWriter);
@@ -1344,7 +1327,6 @@ public interface AetherNode extends ManageableNode {
                         .or(java.util.Map.of()),
             syncHoldRegistry::activeHolds,
             ctmLifecycleWriter,
-            auditLifecycleCommandPublisher,
             org.pragmatica.aether.deployment.membership.fsm.MembershipFsmConfig.defaultMembershipFsmConfig(),
             org.pragmatica.aether.config.ReconcilerConfig.defaults(),
             hlcClock,
@@ -1916,14 +1898,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                 streamPartitionManager::onStreamConfigPut).onRemove(AetherKey.StreamConfigKey.class,
                                                                                                                                                                     streamPartitionManager::onStreamConfigRemove).build();
         allEntries.addAll(streamConfigKvRouter.asRouteEntries());
-        // Provision the `audit.lifecycle.commands` topic + bind the real publisher behind
-        // the AtomicReference set up earlier (see `auditLifecycleCommandPublisherRef`). The
-        // deployment module is not a slice, so we cannot reuse the slice-DI
-        // `resources.toml` -> `StreamPublisherFactory.provision(...)` path; the node owns
-        // provisioning directly. `createStream` is idempotent across the cluster: the
-        // leader's KV `Put` for `StreamConfigKey` replicates via Rabia and the
-        // `streamConfigKvRouter` wired above hydrates the entry on every follower.
-        provisionAuditLifecycleCommandPublisher(streamPartitionManager, serializer, auditLifecycleCommandPublisherRef);
+        // E2 Phase 2c-α.1a (2026-05-28): `audit.lifecycle.commands` stream provisioning
+        // deleted alongside the audit publisher and RecentCommandsBuffer.
         var streamSegmentIndex = new SegmentIndex();
         var streamWatermarkTracker = WatermarkTracker.watermarkTracker();
         var streamStorage = createStreamStorage(dhtClientOption);
@@ -2048,7 +2024,6 @@ public interface AetherNode extends ManageableNode {
                                   dhtClientOption,
                                   Option.some(dhtNode),
                                   effectivePhaseSupplier,
-                                  recentCommandsBuffer,
                                   Option.some(lifecycleReconciler),
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
@@ -2157,7 +2132,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                       dhtClientOption,
                                                                                                       Option.some(dhtNode),
                                                                                                       effectivePhaseSupplier,
-                                                                                                      recentCommandsBuffer,
                                                                                                       Option.some(lifecycleReconciler),
                                                                                                       startTimeMs);
                                                                             }
@@ -2259,36 +2233,6 @@ public interface AetherNode extends ManageableNode {
         if (notification.state() != ClusterStateNotification.State.PASSIVE) {return;}
 
         drainProcedure.initiate(DrainReason.QUORUM_LOSS);
-    }
-
-    /// Provision the `audit.lifecycle.commands` topic on the local `StreamPartitionManager`
-    /// and bind a `DefaultStreamPublisher` into the supplied `AtomicReference`. `createStream`
-    /// returns `STREAM_ALREADY_EXISTS` on the non-leader nodes once the leader's
-    /// `StreamConfigKey` write has replicated; that outcome is benign — the partition entry
-    /// is hydrated by the `streamConfigKvRouter` already wired above, so the publisher can
-    /// append locally either way.
-    @Contract
-    private static void provisionAuditLifecycleCommandPublisher(StreamPartitionManager streamPartitionManager,
-                                                                Serializer serializer,
-                                                                AtomicReference<StreamPublisher<CommandLifecycleEvent>> ref) {
-        streamPartitionManager.createStream(AuditLifecycleStreams.AUDIT_LIFECYCLE_COMMANDS)
-                              .onFailure(cause -> logAuditStreamProvisionOutcome(cause));
-        var publisher = DefaultStreamPublisher.<CommandLifecycleEvent>streamPublisher(streamPartitionManager,
-                                                                                       serializer,
-                                                                                       AuditLifecycleStreams.TOPIC_AUDIT_LIFECYCLE_COMMANDS,
-                                                                                       AuditLifecycleStreams.AUDIT_PARTITIONS,
-                                                                                       Option.none());
-        ref.set(publisher);
-    }
-
-    /// `STREAM_ALREADY_EXISTS` is benign on followers (leader's KV write replicated first);
-    /// other causes (e.g. `STREAM_MEMORY_EXCEEDED`) leave the publisher unable to append and
-    /// must surface in logs so audit-drop is observable.
-    @Contract
-    private static void logAuditStreamProvisionOutcome(Cause cause) {
-        if (cause == StreamError.General.STREAM_ALREADY_EXISTS) {return;}
-        LOG.warn("Audit lifecycle stream provisioning failed: {} — CommandLifecycleEvent publishes will be dropped",
-                 cause.message());
     }
 
     @SuppressWarnings("unchecked")

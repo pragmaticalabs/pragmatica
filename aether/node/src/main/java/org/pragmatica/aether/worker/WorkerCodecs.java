@@ -62,10 +62,6 @@ public sealed interface WorkerCodecs {
         all.addAll(org.pragmatica.aether.worker.network.NetworkCodecsNode.CODECS);
         all.addAll(org.pragmatica.dht.DhtCodecs.CODECS);
         all.addAll(SwimCodecs.CODECS);
-        // Deployment-module audit events — registered system-level (deployment is not a slice).
-        // Kept in sync with NodeCodecs so a worker hosting an `audit.lifecycle.commands` stream
-        // replica can (de)serialize CommandLifecycleEvent during stream forwarding/replication.
-        all.addAll(org.pragmatica.aether.deployment.audit.AuditCodecsDeployment.CODECS);
         all.add(inetSocketAddressCodec());
         var requiredTypes = collectRequiredTypes();
 

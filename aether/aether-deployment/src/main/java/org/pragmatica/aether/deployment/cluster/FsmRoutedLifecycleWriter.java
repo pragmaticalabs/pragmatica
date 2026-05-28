@@ -4,9 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
-import org.pragmatica.aether.deployment.audit.CommandLifecycleEvent;
-import org.pragmatica.aether.deployment.audit.CommandLifecycleEvent.CommandApplied;
-import org.pragmatica.aether.deployment.audit.CommandLifecycleEvent.CommandReceived;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDecommission;
@@ -14,11 +11,9 @@ import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDra
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceOnDuty;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.RecordJoining;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.RequestReJoin;
-import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StopReason;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
-import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -33,9 +28,9 @@ import java.util.function.Supplier;
 /// directly. The reducer owns lifecycle transitions, so an illegal command-on-state — e.g.
 /// `ForceOnDuty` against a `STOPPED+FORCED` peer (the S01 re-projection) — is a no-op rather than
 /// the unconditional overwrite the legacy `DirectLifecycleWriter` performed. The ingress returns
-/// whether the command was ACCEPTED; this writer publishes `CommandReceived` on entry and
-/// `CommandApplied(accepted)` after, preserving the audit contract (a reducer no-op surfaces as
-/// `accepted=false` — the `decision=ILLEGAL_TRANSITION` observability the spec asks for).
+/// whether the command was ACCEPTED; this writer maps that to `Unit` and discards the boolean
+/// (reducer no-ops are observable via FSM/KV inspection rather than an audit-stream tee since
+/// E2 Phase 2c-α.1a deleted the audit publisher).
 ///
 /// The legacy `request*` methods map to the matching `LifecycleCommand`, stamping a fresh HLC
 /// timestamp from `clock` — they carry none of their own, and the stamp flows to the resulting
@@ -44,27 +39,15 @@ import java.util.function.Supplier;
 final class FsmRoutedLifecycleWriter implements LifecycleWriter {
     private final Function<LifecycleCommand, Promise<Boolean>> commandIngress;
     private final Supplier<HlcTimestamp> clock;
-    private final StreamPublisher<CommandLifecycleEvent> auditPublisher;
 
     FsmRoutedLifecycleWriter(Function<LifecycleCommand, Promise<Boolean>> commandIngress,
-                             Supplier<HlcTimestamp> clock,
-                             StreamPublisher<CommandLifecycleEvent> auditPublisher) {
+                             Supplier<HlcTimestamp> clock) {
         this.commandIngress = commandIngress;
         this.clock = clock;
-        this.auditPublisher = auditPublisher;
     }
 
     @Override public Promise<Unit> applyCommand(LifecycleCommand command) {
-        return applyCommand(command, CommandLifecycleEvent.SOURCE_UNKNOWN);
-    }
-
-    @Override public Promise<Unit> applyCommand(LifecycleCommand command, String source) {
-        publishReceived(command, source);
-
-        return commandIngress.apply(command)
-                             .onSuccess(accepted -> publishApplied(command, source, accepted))
-                             .onFailure(_ -> publishApplied(command, source, false))
-                             .mapToUnit();
+        return commandIngress.apply(command).mapToUnit();
     }
 
     @Override public Promise<Unit> requestDrain(NodeId target) {
@@ -105,39 +88,5 @@ final class FsmRoutedLifecycleWriter implements LifecycleWriter {
         return applyCommand(new RequestReJoin(target,
                                               Causes.cause("requestReJoin " + target.id()),
                                               clock.get()));
-    }
-
-    @Contract
-    private void publishReceived(LifecycleCommand command, String source) {
-        auditPublisher.publish(new CommandReceived(commandType(command),
-                                                   command.peer().toString(),
-                                                   reasonTag(command),
-                                                   command.justification().message(),
-                                                   source,
-                                                   System.currentTimeMillis()));
-    }
-
-    @Contract
-    private void publishApplied(LifecycleCommand command, String source, boolean accepted) {
-        auditPublisher.publish(new CommandApplied(commandType(command),
-                                                  command.peer().toString(),
-                                                  reasonTag(command),
-                                                  command.justification().message(),
-                                                  source,
-                                                  System.currentTimeMillis(),
-                                                  accepted));
-    }
-
-    private static String commandType(LifecycleCommand command) {
-        return command.getClass()
-                      .getSimpleName();
-    }
-
-    private static String reasonTag(LifecycleCommand command) {
-        return switch (command) {
-            case ForceDecommission cmd -> cmd.reason().name();
-            case ForceDrain cmd -> cmd.reason().name();
-            case ForceOnDuty _, RecordJoining _, RequestReJoin _ -> "";
-        };
     }
 }
