@@ -22,7 +22,7 @@ import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeJoined;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeJoining;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -47,7 +47,7 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
     Promise<Unit> deactivate();
     boolean isActive();
     @MessageReceiver@Contract void onMembershipDecision(MembershipDecision decision);
-    @MessageReceiver@Contract void onQuorumStateChange(QuorumStateNotification notification);
+    @MessageReceiver@Contract void onQuorumStateChange(ClusterStateNotification notification);
     @Contract void stop();
     @Contract void recordObservedEpoch(NodeId nodeId, Epoch epoch);
     Map<NodeId, Epoch> observedEpochs();
@@ -313,11 +313,11 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
         context.dispatch(new ClusterFsmEvent.NodeGone(removed, newTopology));
     }
 
-    @Override@Contract public void onQuorumStateChange(QuorumStateNotification notification) {
+    @Override@Contract public void onQuorumStateChange(ClusterStateNotification notification) {
         if (!notification.advanceSequence(context.quorumSequence())) {return;}
         switch (notification.state()){
-            case ESTABLISHED -> context.dispatch(new ClusterFsmEvent.QuorumEstablished());
-            case DISAPPEARED -> context.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+            case ACTIVE -> context.dispatch(new ClusterFsmEvent.QuorumEstablished());
+            case PASSIVE -> context.dispatch(new ClusterFsmEvent.QuorumDisappeared());
         }
     }
 

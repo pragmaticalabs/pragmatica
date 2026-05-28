@@ -17,7 +17,7 @@ import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.concurrent.CancellableTask;
 
 import java.util.List;
@@ -37,7 +37,7 @@ public interface DeploymentMetricsScheduler {
     boolean isActive();
 
     @MessageReceiver@Contract void onMembershipDecision(MembershipDecision decision);
-    @MessageReceiver@Contract void onQuorumStateChange(QuorumStateNotification notification);
+    @MessageReceiver@Contract void onQuorumStateChange(ClusterStateNotification notification);
     @Contract void stop();
 
     static DeploymentMetricsScheduler deploymentMetricsScheduler(NodeId self,
@@ -112,12 +112,12 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
         }
     }
 
-    @Override@Contract public void onQuorumStateChange(QuorumStateNotification notification) {
+    @Override@Contract public void onQuorumStateChange(ClusterStateNotification notification) {
         if (!notification.advanceSequence(quorumSequence)) {
-            log.debug("Ignoring stale QuorumStateNotification: {}", notification);
+            log.debug("Ignoring stale ClusterStateNotification: {}", notification);
             return;
         }
-        if (notification.state() == QuorumStateNotification.State.DISAPPEARED) {
+        if (notification.state() == ClusterStateNotification.State.PASSIVE) {
             log.info("Quorum disappeared, stopping deployment metrics scheduler");
             stopPinging();
         }

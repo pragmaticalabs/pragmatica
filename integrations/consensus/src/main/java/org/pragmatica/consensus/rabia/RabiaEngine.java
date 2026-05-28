@@ -25,7 +25,9 @@ import org.pragmatica.consensus.rabia.RabiaEngineIO.SubmitCommands;
 import org.pragmatica.consensus.rabia.RabiaPersistence.SavedState;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.NewBatch;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.*;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusActive;
+import org.pragmatica.consensus.rabia.ConsensusEvent.ConsensusPassive;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Cause;
@@ -91,7 +93,17 @@ public class RabiaEngine<C extends Command> {
     private final TimeSpan phaseStallCheck;
     private volatile boolean activationAuthorized;
     private volatile boolean observerMode;
-    private final AtomicHolder<QuorumStateNotification> pendingQuorum = AtomicHolder.atomicHolder();
+    private final AtomicHolder<ClusterStateNotification> pendingQuorum = AtomicHolder.atomicHolder();
+    /// Sink for engine-level `ConsensusEvent` emissions. The default no-op consumer keeps
+    /// existing test constructors working; production wiring (`RabiaNode`) injects
+    /// `ConsensusBridge.consensusBridge(router)` so the consensus engine becomes the
+    /// authoritative source for `ClusterStateNotification` (E2 Phase 2c.0, 2026-05-28).
+    private final Consumer<ConsensusEvent> consensusEventListener;
+    /// Single-fire-per-transition gate for `ConsensusActive` / `ConsensusPassive`. Tracks the
+    /// last published "active" sense; the consumer fires only on true edges
+    /// (false → true emits `ConsensusActive`, true → false emits `ConsensusPassive`).
+    /// Initialized `false` because every engine starts in `Stopped` (not active).
+    private final java.util.concurrent.atomic.AtomicBoolean lastPublishedActive = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     // Single-thread executor with DiscardPolicy to silently drop tasks after shutdown
     private final ExecutorService executor = new ThreadPoolExecutor(1,
@@ -207,15 +219,7 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// Creates a new Rabia consensus engine with all parameters including persistence and phase stall check.
-    ///
-    /// @param topologyManager The topology manager for node communication
-    /// @param network         The network implementation
-    /// @param stateMachine    The state machine to apply commands to
-    /// @param config          Configuration for the consensus engine
-    /// @param metrics         Metrics collector for observability
-    /// @param activationGated Whether consensus activation requires explicit authorization
-    /// @param persistence     The persistence implementation for state backup
-    /// @param phaseStallCheck Interval for checking phase stalls
+    /// Equivalent to the full-arity constructor with a no-op `consensusEventListener`.
     public RabiaEngine(TopologyManager topologyManager,
                        ClusterNetwork network,
                        StateMachine<C> stateMachine,
@@ -224,6 +228,39 @@ public class RabiaEngine<C extends Command> {
                        boolean activationGated,
                        RabiaPersistence<C> persistence,
                        TimeSpan phaseStallCheck) {
+        this(topologyManager, network, stateMachine, config, metrics, activationGated, persistence, phaseStallCheck, RabiaEngine::ignoreConsensusEvent);
+    }
+
+    /// Default no-op consumer used by legacy constructors that do not wire a
+    /// `consensusEventListener`. Marked `@Contract` because the void return is intentional
+    /// (sink semantics).
+    @Contract
+    private static void ignoreConsensusEvent(ConsensusEvent event) {
+    }
+
+    /// Creates a new Rabia consensus engine with all parameters including persistence,
+    /// phase stall check, and a `consensusEventListener` for engine-level state transitions.
+    ///
+    /// @param topologyManager          The topology manager for node communication
+    /// @param network                  The network implementation
+    /// @param stateMachine             The state machine to apply commands to
+    /// @param config                   Configuration for the consensus engine
+    /// @param metrics                  Metrics collector for observability
+    /// @param activationGated          Whether consensus activation requires explicit authorization
+    /// @param persistence              The persistence implementation for state backup
+    /// @param phaseStallCheck          Interval for checking phase stalls
+    /// @param consensusEventListener   Sink for `ConsensusActive` / `ConsensusPassive` events;
+    ///                                 typically `ConsensusBridge.consensusBridge(router)` in
+    ///                                 production wiring
+    public RabiaEngine(TopologyManager topologyManager,
+                       ClusterNetwork network,
+                       StateMachine<C> stateMachine,
+                       ProtocolConfig config,
+                       ConsensusMetrics metrics,
+                       boolean activationGated,
+                       RabiaPersistence<C> persistence,
+                       TimeSpan phaseStallCheck,
+                       Consumer<ConsensusEvent> consensusEventListener) {
         this.self = topologyManager.self()
                                    .id();
         this.topologyManager = topologyManager;
@@ -236,26 +273,28 @@ public class RabiaEngine<C extends Command> {
         this.activationAuthorized = !activationGated;
         this.persistence = persistence;
         this.phaseStallCheck = phaseStallCheck;
+        this.consensusEventListener = Option.option(consensusEventListener)
+                                            .or(RabiaEngine::ignoreConsensusEvent);
         this.cleanupTask = Option.some(SharedScheduler.scheduleAtFixedRate(this::cleanupOldPhases,
                                                                            config.cleanupInterval()));
     }
 
     @MessageReceiver
-    public void quorumState(QuorumStateNotification quorumStateNotification) {
-        if (!quorumStateNotification.advanceSequence(quorumSequence)) {
-            log.debug("Ignoring stale QuorumStateNotification: {}", quorumStateNotification);
+    public void clusterState(ClusterStateNotification clusterStateNotification) {
+        if (!clusterStateNotification.advanceSequence(quorumSequence)) {
+            log.debug("Ignoring stale ClusterStateNotification: {}", clusterStateNotification);
             return;
         }
-        log.trace("Node {} received quorum state {}", self, quorumStateNotification);
-        switch (quorumStateNotification.state()) {
-            case ESTABLISHED -> handleEstablished(quorumStateNotification);
-            case DISAPPEARED -> pauseForQuorumLoss();
+        log.trace("Node {} received cluster state {}", self, clusterStateNotification);
+        switch (clusterStateNotification.state()) {
+            case ACTIVE -> handleClusterActive(clusterStateNotification);
+            case PASSIVE -> pauseForQuorumLoss();
         }
     }
 
-    private void handleEstablished(QuorumStateNotification notification) {
+    private void handleClusterActive(ClusterStateNotification notification) {
         if (activationGated && !activationAuthorized) {
-            log.info("Node {}: quorum established but activation gated, storing notification", self);
+            log.info("Node {}: cluster active but activation gated, storing notification", self);
             pendingQuorum.set(notification);
             return;
         }
@@ -283,7 +322,7 @@ public class RabiaEngine<C extends Command> {
         activationAuthorized = true;
         var pending = pendingQuorum.getAndClear();
         if (pending.isPresent()) {
-            log.info("Node {}: replaying stored quorum notification", self);
+            log.info("Node {}: replaying stored cluster-state notification", self);
             clusterConnected();
         } else if (engineState.get().isObserving()) {
             executor.execute(this::promoteObserverToActive);
@@ -293,6 +332,7 @@ public class RabiaEngine<C extends Command> {
     private void promoteObserverToActive() {
         var oldState = engineState.getAndSet(new EngineState.Idle());
         exitState(oldState);
+        notifyConsensusStateTransition();
         log.info("Node {} promoted from observer to active in phase {}", self, currentPhase.get());
         executor.execute(this::startPhase);
     }
@@ -316,8 +356,8 @@ public class RabiaEngine<C extends Command> {
     // Side-effect callback for `Option.onPresent` — void inherent. Triggered by
     // `pendingQuorum.getAndClear()` consumer chain in `authorizeObservation()`.
     @Contract
-    private void replayQuorumForObserver(QuorumStateNotification notification) {
-        log.info("Node {}: replaying stored quorum notification for observer mode", self);
+    private void replayQuorumForObserver(ClusterStateNotification notification) {
+        log.info("Node {}: replaying stored cluster-state notification for observer mode", self);
         clusterConnected();
     }
 
@@ -339,6 +379,7 @@ public class RabiaEngine<C extends Command> {
                                                   .randomize(SCALE));
         var oldState = engineState.getAndSet(new EngineState.Syncing(task));
         exitState(oldState);
+        notifyConsensusStateTransition();
     }
 
     /// Membership-architecture-spec §4.5 / §7.3 — quorum-loss handler.
@@ -368,6 +409,7 @@ public class RabiaEngine<C extends Command> {
         }
         var oldState = engineState.getAndSet(new EngineState.Paused());
         exitState(oldState);
+        notifyConsensusStateTransition();
         persistence.save(stateMachine,
                          currentPhase.get(),
                          pendingBatches.values())
@@ -391,6 +433,7 @@ public class RabiaEngine<C extends Command> {
             return;
         }
         engineState.set(new EngineState.Idle());
+        notifyConsensusStateTransition();
         log.info("Node {} resumed from pause (quorum returned). currentPhase={}, pendingBatches={}",
                  self, currentPhase.get(), pendingBatches.size());
         // Drain any far-future Decisions that were buffered while Paused. Decisions with
@@ -430,6 +473,7 @@ public class RabiaEngine<C extends Command> {
                  self, newConfig.members(), existing.map(ClusterConfig::members).or(List.of()));
         var oldState = engineState.getAndSet(new EngineState.Stopped());
         exitState(oldState);
+        notifyConsensusStateTransition();
         persistence.save(stateMachine, Phase.ZERO, List.of())
                    .onFailure(cause -> log.error("Node {} failed to persist empty state on reconfigure: {}", self, cause));
         phases.clear();
@@ -591,6 +635,7 @@ public class RabiaEngine<C extends Command> {
         cleanupTask.onPresent(task -> task.cancel(false));
         var oldState = engineState.getAndSet(new EngineState.Stopped());
         exitState(oldState);
+        notifyConsensusStateTransition();
         // Synchronously fail in-flight promises BEFORE executor.shutdown(); otherwise
         // shutdownAndReset() may execute concurrently with the DiscardPolicy and leave
         // callers (e.g. publisher.runApply) waiting on cluster.apply(...) Promises forever.
@@ -701,6 +746,7 @@ public class RabiaEngine<C extends Command> {
             stallDetector.cancel(false);
             return;
         }
+        notifyConsensusStateTransition();
         var phaseData = getOrCreatePhaseData(phase);
         phaseData.registerProposal(self, batch);
         network.broadcast(new Propose<>(self, phase, batch));
@@ -744,6 +790,7 @@ public class RabiaEngine<C extends Command> {
                                                   .randomize(SCALE));
         var oldState = engineState.getAndSet(new EngineState.Syncing(task));
         exitState(oldState);
+        notifyConsensusStateTransition();
     }
 
     private void processAccumulatedSyncResponses() {
@@ -828,6 +875,7 @@ public class RabiaEngine<C extends Command> {
         }
         var oldState = engineState.getAndSet(new EngineState.Idle());
         exitState(oldState);
+        notifyConsensusStateTransition();
         startPromise.get()
                     .succeed(Unit.unit());
         syncResponses.clear();
@@ -843,6 +891,7 @@ public class RabiaEngine<C extends Command> {
     private void activateAsObserver() {
         var oldState = engineState.getAndSet(new EngineState.Observing());
         exitState(oldState);
+        notifyConsensusStateTransition();
         startPromise.get()
                     .succeed(Unit.unit());
         syncResponses.clear();
@@ -856,6 +905,33 @@ public class RabiaEngine<C extends Command> {
             case EngineState.InPhase(var stallDetector) -> stallDetector.cancel(false);
             case EngineState.Syncing(var syncTask) -> syncTask.cancel(false);
             default -> {}
+        }
+    }
+
+    /// Re-evaluates whether the engine is currently in an `Active` phase (`Idle | InPhase`)
+    /// and emits a `ConsensusEvent` ONLY on edge transitions. Idempotent within an
+    /// active-/passive-phase window: the same edge will not fire twice. Called from every
+    /// state-mutation site.
+    ///
+    /// E2 Phase 2c.0 (2026-05-28): `RabiaEngine` is the authoritative source for "consensus
+    /// engine is genuinely operational" semantics. The bridge translates these into
+    /// `ClusterStateNotification.ACTIVE` / `PASSIVE` on the cluster `MessageRouter`.
+    @Contract
+    private void notifyConsensusStateTransition() {
+        var nowActive = engineState.get().isActive();
+        var prev = lastPublishedActive.get();
+        if (nowActive == prev) {
+            return;
+        }
+        if (!lastPublishedActive.compareAndSet(prev, nowActive)) {
+            return;
+        }
+        if (nowActive) {
+            log.debug("Node {}: emitting ConsensusActive", self);
+            consensusEventListener.accept(new ConsensusActive(self));
+        } else {
+            log.debug("Node {}: emitting ConsensusPassive", self);
+            consensusEventListener.accept(new ConsensusPassive(self));
         }
     }
 
@@ -1030,6 +1106,7 @@ public class RabiaEngine<C extends Command> {
             stallDetector.cancel(false);
             return;
         }
+        notifyConsensusStateTransition();
         Option.option(pendingBatches.firstEntry())
               .onPresent(batchEntry -> broadcastOwnProposal(proposalPhase, phaseData, batchEntry.getValue()));
         // Broadcast locked value if present (same as startPhase does)
@@ -1322,6 +1399,7 @@ public class RabiaEngine<C extends Command> {
         if (oldState instanceof EngineState.InPhase) {
             engineState.set(new EngineState.Idle());
             exitState(oldState);
+            notifyConsensusStateTransition();
         }
         // Lock policy: always lock V1 (critical for liveness), always lock carry-forward (spec),
         // lock V0 only when no pending batches (prevents self-reinforcing deadlock).
@@ -1339,6 +1417,7 @@ public class RabiaEngine<C extends Command> {
     private void advancePhaseAsObserver(Phase nextPhase) {
         var oldState = engineState.getAndSet(new EngineState.Observing());
         exitState(oldState);
+        notifyConsensusStateTransition();
         log.trace("Node {} (observer) advancing to phase {}", self, nextPhase);
     }
 

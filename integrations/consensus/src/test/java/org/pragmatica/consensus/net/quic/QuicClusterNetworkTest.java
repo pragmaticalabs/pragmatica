@@ -38,7 +38,7 @@ import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.NodeState;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -300,7 +300,7 @@ class QuicClusterNetworkTest {
         router.addRoute(TransportObservation.PeerJoined.class, _ -> {});
         router.addRoute(TransportObservation.PeerDisconnected.class, _ -> {});
         router.addRoute(TransportObservation.SelfShutdown.class, _ -> {});
-        router.addRoute(QuorumStateNotification.class, _ -> {});
+        router.addRoute(ClusterStateNotification.class, _ -> {});
         router.addRoute(NetworkServiceMessage.Send.class, _ -> {});
         router.addRoute(NetworkServiceMessage.ConnectedNodesList.class, _ -> {});
         return router;

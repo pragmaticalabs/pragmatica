@@ -1242,9 +1242,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     // --- Internal: view change ---
 
     /// QUIC is pure transport — peer-link state, peerLinks table, hello handshakes, message
-    /// routing. Membership and quorum decisions are owned by `TopologyObserver` (canonical
-    /// publisher of `QuorumStateNotification` and `MembershipDecision`, fed by SWIM via
-    /// `HealthReconciler`).
+    /// routing. Membership decisions are owned by `TopologyObserver` (canonical publisher of
+    /// `MembershipDecision`, fed by SWIM via `HealthReconciler`). Cluster-state notifications
+    /// (`ClusterStateNotification`) are owned by `RabiaEngine`/`ConsensusBridge`.
     ///
     /// This method is the **canonical source of `TransportObservation` for the QUIC
     /// transport** (`ObservationSource.QUIC`). Each emission is a *local* observation —
@@ -1346,7 +1346,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // topology and its offline buffer is preserved. Only REMOVED (authoritative departure
         // via DisconnectNode) drops the peer from the quorum count. Without this, a brief QUIC
         // flap on any peer pushes `activeConnectedCount` below quorum and routes a spurious
-        // `QuorumStateNotification.DISAPPEARED`, which calls `LeaderManager.stop()` and clears
+        // `ClusterStateNotification.PASSIVE`, which calls `LeaderManager.stop()` and clears
         // `currentLeader` — then SWIM FAULTY on the (real) dead leader fires too late for the
         // "follower detects dead leader" re-election path, because `currentLeader` is already
         // empty and the narrow match fails.

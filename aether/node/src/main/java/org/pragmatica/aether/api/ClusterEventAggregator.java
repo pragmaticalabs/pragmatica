@@ -20,7 +20,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.topology.MembershipDecision;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -273,15 +273,15 @@ public final class ClusterEventAggregator {
                                                                                                                                      Map.of()));
     }
 
-    public void onQuorumStateChange(QuorumStateNotification event) {
+    public void onQuorumStateChange(ClusterStateNotification event) {
         if (!event.advanceSequence(quorumSequence)) {return;}
         if (!isLeaderSupplier.getAsBoolean()) {return;}
         switch (event.state()) {
-            case ESTABLISHED -> publisher.publish(ClusterEventValue.EventType.QUORUM_ESTABLISHED,
+            case ACTIVE -> publisher.publish(ClusterEventValue.EventType.QUORUM_ESTABLISHED,
                                                   ClusterEventValue.Severity.INFO,
                                                   "Quorum established",
                                                   Map.of());
-            case DISAPPEARED -> publisher.publish(ClusterEventValue.EventType.QUORUM_LOST,
+            case PASSIVE -> publisher.publish(ClusterEventValue.EventType.QUORUM_LOST,
                                                   ClusterEventValue.Severity.CRITICAL,
                                                   "Quorum lost",
                                                   Map.of());

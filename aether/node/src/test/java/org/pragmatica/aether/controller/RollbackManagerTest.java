@@ -291,6 +291,6 @@ class RollbackManagerTest {
         @Override public void peerObservedFaulty(org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty p) {}
         @Override public void peerReconnected(org.pragmatica.consensus.topology.TransportObservation.PeerReconnected p) {}
         @Override public void selfShutdown(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown s) {}
-        @Override public void watchQuorumState(org.pragmatica.consensus.topology.QuorumStateNotification q) {}
+        @Override public void watchClusterState(org.pragmatica.consensus.topology.ClusterStateNotification q) {}
     }
 }

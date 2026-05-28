@@ -18,7 +18,7 @@ import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.topology.MembershipDecision;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -144,7 +144,7 @@ class ClusterSyncSchedulerPeriodicEmissionTest {
                                                         () -> 64);
         var scheduler = newScheduler(network, collector, tightConfig);
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A)));
-        scheduler.onQuorumStateChange(QuorumStateNotification.established());
+        scheduler.onQuorumStateChange(ClusterStateNotification.active());
 
         pollUntil(() -> collector.invocations().size() >= 2, 2_000L);
 
@@ -163,11 +163,11 @@ class ClusterSyncSchedulerPeriodicEmissionTest {
                                                         () -> 64);
         var scheduler = newScheduler(network, collector, tightConfig);
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A)));
-        scheduler.onQuorumStateChange(QuorumStateNotification.established());
+        scheduler.onQuorumStateChange(ClusterStateNotification.active());
 
         pollUntil(() -> !collector.invocations().isEmpty(), 2_000L);
 
-        scheduler.onQuorumStateChange(QuorumStateNotification.disappeared());
+        scheduler.onQuorumStateChange(ClusterStateNotification.passive());
         var countAfterStop = collector.invocations().size();
         sleepQuietly(500L);
         var countAfterWait = collector.invocations().size();

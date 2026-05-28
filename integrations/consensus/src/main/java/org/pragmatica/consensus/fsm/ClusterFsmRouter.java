@@ -8,7 +8,7 @@
 package org.pragmatica.consensus.fsm;
 
 import org.pragmatica.consensus.leader.LeaderNotification;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.statemachine.Fsm;
@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /// - `TransportObservation.PeerObservedFaulty` → `ClusterFsmEvent.NodeGone` (FAULTY treated as departure)
 /// - `TransportObservation.PeerReconnected` → no FSM event (transparent)
 /// - `TransportObservation.SelfShutdown` → `ClusterFsmEvent.QuorumDisappeared` (topology empty by contract)
-/// - `QuorumStateNotification` stale-sequence dedup via `advanceSequence` — applied here once
+/// - `ClusterStateNotification` stale-sequence dedup via `advanceSequence` — applied here once
 ///   so individual FSMs do not repeat the check.
 public final class ClusterFsmRouter {
     private ClusterFsmRouter() {}
@@ -50,8 +50,8 @@ public final class ClusterFsmRouter {
                         ClusterFsmRouter::ignoreReconnect);
         router.addRoute(TransportObservation.SelfShutdown.class,
                         notification -> fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared()));
-        router.addRoute(QuorumStateNotification.class,
-                        notification -> dispatchQuorumState(fsm, notification, quorumSequence));
+        router.addRoute(ClusterStateNotification.class,
+                        notification -> dispatchClusterState(fsm, notification, quorumSequence));
         router.addRoute(LeaderNotification.LeaderChange.class,
                         notification -> fsm.dispatch(new ClusterFsmEvent.LeaderChange(notification.leaderId(),
                                                                                       notification.localNodeIsLeader())));
@@ -61,15 +61,15 @@ public final class ClusterFsmRouter {
         // Transparent — peer was already known to upstream consumers via prior PeerJoined.
     }
 
-    private static <S extends FsmState<S, ClusterFsmEvent>> void dispatchQuorumState(Fsm<S, ClusterFsmEvent> fsm,
-                                                                                      QuorumStateNotification notification,
+    private static <S extends FsmState<S, ClusterFsmEvent>> void dispatchClusterState(Fsm<S, ClusterFsmEvent> fsm,
+                                                                                      ClusterStateNotification notification,
                                                                                       AtomicLong quorumSequence) {
         if (!notification.advanceSequence(quorumSequence)) {
             return;
         }
         switch (notification.state()) {
-            case ESTABLISHED -> fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());
-            case DISAPPEARED -> fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+            case ACTIVE -> fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());
+            case PASSIVE -> fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
         }
     }
 }

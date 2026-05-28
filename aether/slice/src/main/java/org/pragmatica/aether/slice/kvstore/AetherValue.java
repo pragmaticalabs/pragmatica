@@ -1632,7 +1632,7 @@ import static org.pragmatica.lang.Option.none;
             /// from `ACTIVE` to `DRAINING` (membership-architecture-spec.md §16.1, scenarios
             /// S19/S20). Severity WARNING — operational event indicating the node is about
             /// to halt because it observed sustained-below-quorum visibility,
-            /// `QuorumStateNotification.DISAPPEARED`, or `RabiaEngine.Paused`. The originator
+            /// `ClusterStateNotification.DISAPPEARED`, or `RabiaEngine.Paused`. The originator
             /// in `nodeId` is the draining node, NOT the cluster leader; this event is
             /// intentionally NOT leader-gated because a partition victim is the only source
             /// of truth for "I am self-draining" and may not even be able to reach the leader.

@@ -30,7 +30,7 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.netty.NettyClusterNetwork;
 import org.pragmatica.consensus.rabia.RabiaPersistence.SavedState;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.lang.Option;
@@ -339,7 +339,7 @@ class RabiaNetworkPerformanceTest {
             router.addRoute(RabiaProtocolMessage.Asynchronous.SyncRequest.class, engine::handleSyncRequest);
             router.addRoute(RabiaProtocolMessage.Asynchronous.NewBatch.class,
                             msg -> engine.handleNewBatch((RabiaProtocolMessage.Asynchronous.NewBatch<TestCommand>) msg));
-            router.addRoute(QuorumStateNotification.class, engine::quorumState);
+            router.addRoute(ClusterStateNotification.class, engine::clusterState);
 
             // Start network first, then topology manager (order matters!)
             return network.start()

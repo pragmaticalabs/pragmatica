@@ -152,7 +152,7 @@ class CoreSwimHealthDetectorTest {
     /// The previous body of `addObservationListener` did
     ///     `protocol().onPresent(p -> p.addObservationListener(consumer))`
     /// which silently dropped the listener when `protocol()` was empty (the
-    /// case at AetherNode init time, before `QuorumStateNotification` arrives).
+    /// case at AetherNode init time, before `ClusterStateNotification` arrives).
     /// Both `healthReconciler::onSwimObservation` and
     /// `eventAggregator::onSwimObservation` were registered through this hole,
     /// so neither one received any observations and the cluster events ring
@@ -176,7 +176,7 @@ class CoreSwimHealthDetectorTest {
 
             // Register BEFORE start() — the production-equivalent of an AetherNode
             // init-time `swimHealthDetector.addObservationListener(...)` call before
-            // QuorumStateNotification arrives.
+            // ClusterStateNotification arrives.
             freshDetector.addObservationListener(listener);
 
             // Drive through the production start() path, which constructs a real

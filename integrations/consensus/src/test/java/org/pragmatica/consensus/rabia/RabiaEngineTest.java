@@ -30,7 +30,7 @@ import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.*;
 import org.pragmatica.consensus.topology.NodeState;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.net.tcp.Server;
@@ -78,7 +78,7 @@ class RabiaEngineTest {
     }
 
     private void activateEngine() throws InterruptedException {
-        engine.quorumState(QuorumStateNotification.established());
+        engine.clusterState(ClusterStateNotification.active());
         // Wait for sync to occur and send quorum sync responses
         Thread.sleep(150); // Allow sync request to be sent
         // Send sync responses from other nodes
@@ -175,7 +175,7 @@ class RabiaEngineTest {
         }
 
         private void activate(RabiaEngine<TestCommand> target) throws InterruptedException {
-            target.quorumState(QuorumStateNotification.established());
+            target.clusterState(ClusterStateNotification.active());
             Thread.sleep(150);
             target.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
             target.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
@@ -193,7 +193,7 @@ class RabiaEngineTest {
             // engine retains all in-memory state ready for resume on the next ESTABLISHED.
             activateEngine();
 
-            engine.quorumState(QuorumStateNotification.disappeared());
+            engine.clusterState(ClusterStateNotification.passive());
             Thread.sleep(50);
 
             assertThat(engine.isPaused()).as("engine should be paused after DISAPPEARED").isTrue();
@@ -212,7 +212,7 @@ class RabiaEngineTest {
 
         @Test
         void sync_request_broadcast_on_quorum_established() throws InterruptedException {
-            engine.quorumState(QuorumStateNotification.established());
+            engine.clusterState(ClusterStateNotification.active());
             Thread.sleep(150);
 
             var hasSyncRequest = network.getMessages().stream()
@@ -589,7 +589,7 @@ class RabiaEngineTest {
         void gated_engine_stays_stopped_on_quorum_established() throws InterruptedException {
             var gatedEngine = new RabiaEngine<>(topologyManager, network, stateMachine,
                                                  ProtocolConfig.testConfig(), ConsensusMetrics.noop(), true);
-            gatedEngine.quorumState(QuorumStateNotification.established());
+            gatedEngine.clusterState(ClusterStateNotification.active());
             Thread.sleep(100);
 
             assertThat(gatedEngine.isActive()).as("Gated engine should stay inactive").isFalse();
@@ -600,7 +600,7 @@ class RabiaEngineTest {
         void gated_engine_activates_after_authorize() throws InterruptedException {
             var gatedEngine = new RabiaEngine<>(topologyManager, network, stateMachine,
                                                  ProtocolConfig.testConfig(), ConsensusMetrics.noop(), true);
-            gatedEngine.quorumState(QuorumStateNotification.established());
+            gatedEngine.clusterState(ClusterStateNotification.active());
             Thread.sleep(100);
 
             assertThat(gatedEngine.isActive()).isFalse();
@@ -621,7 +621,7 @@ class RabiaEngineTest {
         void ungated_engine_activates_normally() throws InterruptedException {
             var ungatedEngine = new RabiaEngine<>(topologyManager, network, stateMachine,
                                                    ProtocolConfig.testConfig(), ConsensusMetrics.noop(), false);
-            ungatedEngine.quorumState(QuorumStateNotification.established());
+            ungatedEngine.clusterState(ClusterStateNotification.active());
             Thread.sleep(200);
 
             ungatedEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
@@ -637,9 +637,9 @@ class RabiaEngineTest {
             var gatedEngine = new RabiaEngine<>(topologyManager, network, stateMachine,
                                                  ProtocolConfig.testConfig(), ConsensusMetrics.noop(), true);
             // Even when gated, DISAPPEARED should propagate normally
-            gatedEngine.quorumState(QuorumStateNotification.established());
+            gatedEngine.clusterState(ClusterStateNotification.active());
             Thread.sleep(50);
-            gatedEngine.quorumState(QuorumStateNotification.disappeared());
+            gatedEngine.clusterState(ClusterStateNotification.passive());
             Thread.sleep(50);
 
             assertThat(gatedEngine.isActive()).isFalse();

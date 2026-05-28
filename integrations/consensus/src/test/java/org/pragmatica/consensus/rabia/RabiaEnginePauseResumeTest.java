@@ -31,7 +31,7 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.topology.NodeState;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -89,7 +89,7 @@ class RabiaEnginePauseResumeTest {
     }
 
     private void activateEngine() throws InterruptedException {
-        engine.quorumState(QuorumStateNotification.established());
+        engine.clusterState(ClusterStateNotification.active());
         Thread.sleep(150);
         engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
         engine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
@@ -116,7 +116,7 @@ class RabiaEnginePauseResumeTest {
             assertThat(phaseBeforePause).as("phase should advance past ZERO after a Decision").isNotEqualTo(Phase.ZERO);
 
             // Quorum loss → Paused.
-            engine.quorumState(QuorumStateNotification.disappeared());
+            engine.clusterState(ClusterStateNotification.passive());
             Thread.sleep(80);
 
             assertThat(engine.isPaused()).as("DISAPPEARED must transition to Paused").isTrue();
@@ -135,7 +135,7 @@ class RabiaEnginePauseResumeTest {
             assertThat(phaseDuringPause).as("Decision applied while Paused must advance phase").isEqualTo(phaseBeforePause.successor());
 
             // Quorum return → resume to Active without re-syncing. Same phase carries.
-            engine.quorumState(QuorumStateNotification.established());
+            engine.clusterState(ClusterStateNotification.active());
             Thread.sleep(80);
 
             assertThat(engine.isActive()).as("ESTABLISHED after Paused must resume to Active").isTrue();
@@ -148,12 +148,12 @@ class RabiaEnginePauseResumeTest {
         @Test
         void resume_doesNotTriggerSync() throws InterruptedException {
             activateEngine();
-            engine.quorumState(QuorumStateNotification.disappeared());
+            engine.clusterState(ClusterStateNotification.passive());
             Thread.sleep(80);
             assertThat(engine.isPaused()).isTrue();
 
             network.clearMessages();
-            engine.quorumState(QuorumStateNotification.established());
+            engine.clusterState(ClusterStateNotification.active());
             Thread.sleep(100);
 
             // The cold-start path broadcasts a SyncRequest. Resume from Paused MUST NOT.
@@ -268,13 +268,13 @@ class RabiaEnginePauseResumeTest {
             assertThat(engine.isPaused()).isFalse();
 
             // Paused.
-            engine.quorumState(QuorumStateNotification.disappeared());
+            engine.clusterState(ClusterStateNotification.passive());
             Thread.sleep(80);
             assertThat(engine.isActive()).isFalse();
             assertThat(engine.isPaused()).isTrue();
 
             // Resumed → Active.
-            engine.quorumState(QuorumStateNotification.established());
+            engine.clusterState(ClusterStateNotification.active());
             Thread.sleep(80);
             assertThat(engine.isActive()).isTrue();
             assertThat(engine.isPaused()).isFalse();
@@ -289,7 +289,7 @@ class RabiaEnginePauseResumeTest {
             // the protocol).
             activateEngine();
 
-            engine.quorumState(QuorumStateNotification.disappeared());
+            engine.clusterState(ClusterStateNotification.passive());
             Thread.sleep(80);
             assertThat(engine.isPaused()).isTrue();
 

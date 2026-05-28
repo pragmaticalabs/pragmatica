@@ -20,7 +20,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderNotification;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -81,11 +81,11 @@ class ScheduledTaskManagerTest {
     }
 
     private void establishQuorum() {
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
     }
 
     private void loseQuorum() {
-        manager.onQuorumStateChange(QuorumStateNotification.disappeared());
+        manager.onQuorumStateChange(ClusterStateNotification.passive());
     }
 
     @Nested
@@ -439,6 +439,6 @@ class ScheduledTaskManagerTest {
         @Override public void peerObservedFaulty(org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty p) {}
         @Override public void peerReconnected(org.pragmatica.consensus.topology.TransportObservation.PeerReconnected p) {}
         @Override public void selfShutdown(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown s) {}
-        @Override public void watchQuorumState(QuorumStateNotification q) {}
+        @Override public void watchClusterState(ClusterStateNotification q) {}
     }
 }

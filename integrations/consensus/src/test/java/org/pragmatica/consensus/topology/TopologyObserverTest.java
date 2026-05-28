@@ -122,16 +122,16 @@ class TopologyObserverTest {
         }
     }
 
-    /// `TopologyObserver` is the canonical publisher of `QuorumStateNotification`.
+    /// `TopologyObserver` is the canonical publisher of `ClusterStateNotification`.
     /// QUIC/Netty transports do not publish quorum state. After R4 the observer
     /// is a pure projection: edge transitions are computed from `MembershipView`
     /// via the snapshot source plus the seeded `nodeStatesById` map (legacy fallback
     /// for tests / non-Aether `RabiaNode` usage where no snapshot source is wired).
     @Nested
     class QuorumStatePublishing {
-        private static MessageRouter.MutableRouter routerCapturing(List<QuorumStateNotification> sink) {
+        private static MessageRouter.MutableRouter routerCapturing(List<ClusterStateNotification> sink) {
             var router = MessageRouter.mutable();
-            router.addRoute(QuorumStateNotification.class, sink::add);
+            router.addRoute(ClusterStateNotification.class, sink::add);
             return router;
         }
 
@@ -140,7 +140,7 @@ class TopologyObserverTest {
             // RC1-9 audit Step 5: snapshot is the SOLE source of healthy-count truth.
             // Tests must seed a synthetic snapshot reflecting the configured core set;
             // start() then publishes ESTABLISHED based on snapshot.healthyOnDutyCount.
-            var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
+            var notifications = new CopyOnWriteArrayList<ClusterStateNotification>();
             var router = routerCapturing(notifications);
 
             var observer = TopologyObserver.topologyObserver(baseConfig(), router, fullQuorumSnapshotSource()).unwrap();
@@ -150,13 +150,13 @@ class TopologyObserverTest {
                 .as("start() with full-quorum config publishes established once")
                 .hasSize(1);
             assertThat(notifications.getFirst().state())
-                .isEqualTo(QuorumStateNotification.State.ESTABLISHED);
+                .isEqualTo(ClusterStateNotification.State.ACTIVE);
         }
 
         @Test
         void start_belowQuorum_doesNotRouteEstablished() {
             // Self-only legacy config — peers=0, +1=1 < quorum=2 → no edge fires.
-            var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
+            var notifications = new CopyOnWriteArrayList<ClusterStateNotification>();
             var router = routerCapturing(notifications);
             var config = new TopologyConfig(SELF,
                                             3,
@@ -177,7 +177,7 @@ class TopologyObserverTest {
             // RC1-9 audit Step 5: seed the snapshot before construction so the ESTABLISHED
             // edge can be computed at start(). Constructor still does NOT publish; only
             // start() may.
-            var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
+            var notifications = new CopyOnWriteArrayList<ClusterStateNotification>();
             var router = routerCapturing(notifications);
 
             var observer = TopologyObserver.topologyObserver(baseConfig(), router, fullQuorumSnapshotSource()).unwrap();
@@ -192,7 +192,7 @@ class TopologyObserverTest {
                 .as("start() publishes the initial edge after the router is fully wired")
                 .hasSize(1);
             assertThat(notifications.getFirst().state())
-                .isEqualTo(QuorumStateNotification.State.ESTABLISHED);
+                .isEqualTo(ClusterStateNotification.State.ACTIVE);
         }
 
         @Test
@@ -202,7 +202,7 @@ class TopologyObserverTest {
             // construction time and is populated by node bootstrap before `start()`.
             // RC1-9 audit Step 5: snapshot must be seeded for ESTABLISHED edge to fire.
             var delegate = MessageRouter.DelegateRouter.delegate();
-            var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
+            var notifications = new CopyOnWriteArrayList<ClusterStateNotification>();
 
             var observer = TopologyObserver.topologyObserver(baseConfig(), delegate, fullQuorumSnapshotSource()).unwrap();
             assertThat(notifications)
@@ -218,7 +218,7 @@ class TopologyObserverTest {
                 .as("start() with fully-wired router publishes initial established edge")
                 .hasSize(1);
             assertThat(notifications.getFirst().state())
-                .isEqualTo(QuorumStateNotification.State.ESTABLISHED);
+                .isEqualTo(ClusterStateNotification.State.ACTIVE);
         }
     }
 

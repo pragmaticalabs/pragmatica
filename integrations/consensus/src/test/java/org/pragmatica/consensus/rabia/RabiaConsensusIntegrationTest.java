@@ -33,7 +33,7 @@ import org.pragmatica.consensus.rabia.RabiaPersistence.SavedState;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.*;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.*;
 import org.pragmatica.consensus.topology.NodeState;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -504,7 +504,7 @@ class RabiaConsensusIntegrationTest {
 
         void activateNode(NodeId nodeId) throws InterruptedException {
             var engine = engines.get(nodeId);
-            engine.quorumState(QuorumStateNotification.established());
+            engine.clusterState(ClusterStateNotification.active());
             Thread.sleep(150); // Allow sync request to be sent
 
             // Send sync responses from other nodes to trigger activation
@@ -518,7 +518,7 @@ class RabiaConsensusIntegrationTest {
 
         void activateAll() throws InterruptedException {
             for (var engine : engines.values()) {
-                engine.quorumState(QuorumStateNotification.established());
+                engine.clusterState(ClusterStateNotification.active());
             }
             Thread.sleep(150);
 

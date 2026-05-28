@@ -28,7 +28,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -254,7 +254,7 @@ class ScheduledTaskRoutesInjectTest {
     private static ScheduledTaskManager stubManager() {
         return new ScheduledTaskManager() {
             @Override public void onLeaderChange(LeaderChange leaderChange) {}
-            @Override public void onQuorumStateChange(QuorumStateNotification notification) {}
+            @Override public void onQuorumStateChange(ClusterStateNotification notification) {}
             @Override public int activeTimerCount() { return 0; }
             @Override public void stop() {}
         };

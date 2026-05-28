@@ -46,7 +46,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.ClusterNetwork;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.http.CommonContentType;
@@ -121,7 +121,7 @@ public interface AppHttpServer {
     boolean isRouteReady();
 
     @Contract
-    void onQuorumStateChange(QuorumStateNotification notification);
+    void onQuorumStateChange(ClusterStateNotification notification);
 
     @MessageReceiver
     @Contract
@@ -629,8 +629,8 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     @Override
     @Contract
-    public void onQuorumStateChange(QuorumStateNotification notification) {
-        var established = notification.state() == QuorumStateNotification.State.ESTABLISHED;
+    public void onQuorumStateChange(ClusterStateNotification notification) {
+        var established = notification.state() == ClusterStateNotification.State.ACTIVE;
         quorumEstablished = established;
 
         if (established) {

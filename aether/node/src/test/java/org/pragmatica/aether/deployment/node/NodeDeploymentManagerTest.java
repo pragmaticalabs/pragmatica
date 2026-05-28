@@ -22,7 +22,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.lang.Option;
@@ -73,7 +73,7 @@ class NodeDeploymentManagerTest {
     void onNodeArtifactPut_processesCommand_afterQuorumEstablished() {
         var artifact = createTestArtifact();
 
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
         sendNodeArtifactPut(artifact, SliceState.LOAD);
 
         assertThat(sliceStore.loadCalls).containsExactly(artifact);
@@ -83,8 +83,8 @@ class NodeDeploymentManagerTest {
     void onNodeArtifactPut_ignoresCommand_afterQuorumDisappeared() {
         var artifact = createTestArtifact();
 
-        manager.onQuorumStateChange(QuorumStateNotification.established());
-        manager.onQuorumStateChange(QuorumStateNotification.disappeared());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
+        manager.onQuorumStateChange(ClusterStateNotification.passive());
 
         sendNodeArtifactPut(artifact, SliceState.LOAD);
 
@@ -98,7 +98,7 @@ class NodeDeploymentManagerTest {
         var artifact = createTestArtifact();
         var otherNode = NodeId.randomNodeId();
 
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
         sendNodeArtifactPut(otherNode, artifact, SliceState.LOAD);
 
         assertThat(sliceStore.loadCalls).isEmpty();
@@ -108,7 +108,7 @@ class NodeDeploymentManagerTest {
     void onNodeArtifactPut_processesKey_forOwnNode() {
         var artifact = createTestArtifact();
 
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
         sendNodeArtifactPut(artifact, SliceState.LOAD);
 
         assertThat(sliceStore.loadCalls).containsExactly(artifact);
@@ -120,7 +120,7 @@ class NodeDeploymentManagerTest {
     void onNodeArtifactPut_triggersLoading_forLoadState() {
         var artifact = createTestArtifact();
 
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
         sendNodeArtifactPut(artifact, SliceState.LOAD);
 
         assertThat(sliceStore.loadCalls).containsExactly(artifact);
@@ -132,7 +132,7 @@ class NodeDeploymentManagerTest {
 
         sliceStore.markAsLoadedWithSlice(artifact);
 
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
         sendNodeArtifactPut(artifact, SliceState.ACTIVATE);
 
         assertThat(sliceStore.activateCalls).containsExactly(artifact);
@@ -144,7 +144,7 @@ class NodeDeploymentManagerTest {
 
         sliceStore.markAsLoadedWithSlice(artifact);
 
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
         sendNodeArtifactPut(artifact, SliceState.DEACTIVATE);
 
         assertThat(sliceStore.deactivateCalls).containsExactly(artifact);
@@ -154,7 +154,7 @@ class NodeDeploymentManagerTest {
     void onNodeArtifactPut_triggersUnloading_forUnloadState() {
         var artifact = createTestArtifact();
 
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
         sendNodeArtifactPut(artifact, SliceState.UNLOAD);
 
         assertThat(sliceStore.unloadCalls).containsExactly(artifact);
@@ -164,7 +164,7 @@ class NodeDeploymentManagerTest {
     void onNodeArtifactPut_ignoresTransitionalStates() {
         var artifact = createTestArtifact();
 
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
 
         sendNodeArtifactPut(artifact, SliceState.LOADING);
         sendNodeArtifactPut(artifact, SliceState.ACTIVATING);
@@ -181,7 +181,7 @@ class NodeDeploymentManagerTest {
     void onNodeArtifactPut_recordsButNoAction_forLoadedState() {
         var artifact = createTestArtifact();
 
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
         sendNodeArtifactPut(artifact, SliceState.LOADED);
 
         assertThat(sliceStore.loadCalls).isEmpty();
@@ -192,7 +192,7 @@ class NodeDeploymentManagerTest {
     void onNodeArtifactPut_recordsButNoAction_forActiveState() {
         var artifact = createTestArtifact();
 
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
         sendNodeArtifactPut(artifact, SliceState.ACTIVE);
 
         assertThat(sliceStore.loadCalls).isEmpty();
@@ -203,7 +203,7 @@ class NodeDeploymentManagerTest {
     void onNodeArtifactPut_recordsButNoAction_forFailedState() {
         var artifact = createTestArtifact();
 
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
         sendNodeArtifactPut(artifact, SliceState.FAILED);
 
         assertThat(sliceStore.unloadCalls).isEmpty();
@@ -215,7 +215,7 @@ class NodeDeploymentManagerTest {
     void onNodeArtifactPut_transitionsToLoaded_afterSuccessfulLoad() {
         var artifact = createTestArtifact();
 
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
         sendNodeArtifactPut(artifact, SliceState.LOAD);
 
         // State transitions written via consensus
@@ -230,7 +230,7 @@ class NodeDeploymentManagerTest {
 
         sliceStore.markAsLoadedWithSlice(artifact);
 
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
         clusterNode.appliedCommands.clear();
         sendNodeArtifactPut(artifact, SliceState.ACTIVATE);
 
@@ -242,7 +242,7 @@ class NodeDeploymentManagerTest {
     void onNodeArtifactPut_transitionsToLoaded_afterSuccessfulDeactivation() {
         var artifact = createTestArtifact();
 
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
         clusterNode.appliedCommands.clear();
         sendNodeArtifactPut(artifact, SliceState.DEACTIVATE);
 
@@ -255,7 +255,7 @@ class NodeDeploymentManagerTest {
 
         sliceStore.failNextLoad = true;
 
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
         clusterNode.appliedCommands.clear();
         sendNodeArtifactPut(artifact, SliceState.LOAD);
 
@@ -269,7 +269,7 @@ class NodeDeploymentManagerTest {
     void onNodeArtifactRemove_triggersCleanup_forActiveSlice() {
         var artifact = createTestArtifact();
 
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
 
         sendNodeArtifactPut(artifact, SliceState.ACTIVE);
         sliceStore.deactivateCalls.clear();
@@ -283,7 +283,7 @@ class NodeDeploymentManagerTest {
     void onNodeArtifactRemove_noCleanup_forNonActiveSlice() {
         var artifact = createTestArtifact();
 
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
 
         sendNodeArtifactPut(artifact, SliceState.LOADED);
 
@@ -306,8 +306,8 @@ class NodeDeploymentManagerTest {
     void onQuorumStateChange_reversedDeliveryOrder_ignoresStaleDisappeared() {
         setUp();
 
-        var earlyEstablished = QuorumStateNotification.established();
-        var lateDisappeared = QuorumStateNotification.disappeared();
+        var earlyEstablished = ClusterStateNotification.active();
+        var lateDisappeared = ClusterStateNotification.passive();
 
         manager.onQuorumStateChange(lateDisappeared);
         assertThat(manager.isActive()).isFalse();

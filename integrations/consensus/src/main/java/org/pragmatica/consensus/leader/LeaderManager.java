@@ -14,7 +14,7 @@ import org.pragmatica.consensus.leader.fsm.LeaderElectionContext;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionFsm;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionState;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
 import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
 import org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty;
@@ -82,7 +82,7 @@ public interface LeaderManager {
     void selfShutdown(SelfShutdown selfShutdown);
 
     @MessageReceiver
-    void watchQuorumState(QuorumStateNotification quorumState);
+    void watchClusterState(ClusterStateNotification clusterState);
 
     /// Handler for submitting leader proposals through consensus.
     @FunctionalInterface
@@ -301,17 +301,17 @@ public interface LeaderManager {
         }
 
         @Override
-        public void watchQuorumState(QuorumStateNotification quorumState) {
-            if (!quorumState.advanceSequence(context.quorumSequence())) {
+        public void watchClusterState(ClusterStateNotification clusterState) {
+            if (!clusterState.advanceSequence(context.quorumSequence())) {
                 return;
             }
-            switch (quorumState.state()) {
-                case ESTABLISHED -> onQuorumEstablished();
-                case DISAPPEARED -> fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+            switch (clusterState.state()) {
+                case ACTIVE -> onClusterActive();
+                case PASSIVE -> fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
             }
         }
 
-        private void onQuorumEstablished() {
+        private void onClusterActive() {
             fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());
             if (localMode) {
                 fsm.dispatch(new LeaderElectionEvents.ConsensusReady());

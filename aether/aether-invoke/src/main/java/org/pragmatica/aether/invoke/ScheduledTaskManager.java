@@ -15,7 +15,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions;
@@ -46,7 +46,7 @@ import org.slf4j.LoggerFactory;
 
 @Contract public interface ScheduledTaskManager {
     @MessageReceiver void onLeaderChange(LeaderChange leaderChange);
-    @MessageReceiver void onQuorumStateChange(QuorumStateNotification notification);
+    @MessageReceiver void onQuorumStateChange(ClusterStateNotification notification);
     int activeTimerCount();
     void stop();
 
@@ -365,9 +365,9 @@ import org.slf4j.LoggerFactory;
             fsm.dispatch(new ClusterFsmEvent.LeaderChange(leaderChange.leaderId(), leaderChange.localNodeIsLeader()));
         }
 
-        @Override public void onQuorumStateChange(QuorumStateNotification notification) {
+        @Override public void onQuorumStateChange(ClusterStateNotification notification) {
             if (!notification.advanceSequence(ctx.quorumSequence)) {return;}
-            if (notification.state() == QuorumStateNotification.State.ESTABLISHED) {fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());} else {fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());}
+            if (notification.state() == ClusterStateNotification.State.ACTIVE) {fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());} else {fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());}
         }
 
         @Override public int activeTimerCount() {

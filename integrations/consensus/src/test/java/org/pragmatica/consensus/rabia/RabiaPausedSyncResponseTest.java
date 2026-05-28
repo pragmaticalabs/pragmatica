@@ -31,7 +31,7 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequ
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.topology.NodeState;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -90,7 +90,7 @@ class RabiaPausedSyncResponseTest {
     }
 
     private void activateEngine() throws InterruptedException {
-        engine.quorumState(QuorumStateNotification.established());
+        engine.clusterState(ClusterStateNotification.active());
         Thread.sleep(150);
         engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
         engine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
@@ -135,7 +135,7 @@ class RabiaPausedSyncResponseTest {
 
         // Quorum loss → Paused. State (currentPhase + pendingBatches) is retained AND a snapshot
         // is persisted at this instant.
-        engine.quorumState(QuorumStateNotification.disappeared());
+        engine.clusterState(ClusterStateNotification.passive());
         Thread.sleep(80);
         assertThat(engine.isPaused()).as("DISAPPEARED must transition to Paused").isTrue();
 

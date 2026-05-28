@@ -42,7 +42,7 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncRespo
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound1;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound2;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.consensus.topology.TransportObservation;
@@ -292,7 +292,16 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                              clientSsl,
                                              config.clusterFormation());
         var activationGated = config.activationGated();
-        var consensus = new RabiaEngine<>(topologyManager, network, stateMachine, config.protocol(), metrics, activationGated, persistence);
+        var consensusBridge = org.pragmatica.consensus.rabia.ConsensusBridge.consensusBridge(delegateRouter);
+        var consensus = new RabiaEngine<>(topologyManager,
+                                          network,
+                                          stateMachine,
+                                          config.protocol(),
+                                          metrics,
+                                          activationGated,
+                                          persistence,
+                                          RabiaEngine.DEFAULT_PHASE_STALL_CHECK,
+                                          consensusBridge);
         // Create leader manager - for consensus mode, we wire the proposal handler
         // Extract expected cluster members for deterministic leader selection
         var expectedCluster = config.topology()
@@ -381,8 +390,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         // IMPORTANT: Order matters! Consensus must activate BEFORE LeaderManager emits LeaderChange.
         // LeaderChange handlers (e.g., ClusterDeploymentManager) may immediately call cluster.apply(),
         // which requires the consensus engine to be active.
-        allEntries.add(route(QuorumStateNotification.class, consensus::quorumState));
-        allEntries.add(route(QuorumStateNotification.class, leaderManager::watchQuorumState));
+        allEntries.add(route(ClusterStateNotification.class, consensus::clusterState));
+        allEntries.add(route(ClusterStateNotification.class, leaderManager::watchClusterState));
         // NOTE: Leader election commit handling (ValuePut<LeaderKey, LeaderValue> -> onLeaderCommitted)
         // is done by AetherNode.handleLeaderCommit(), not here. RabiaNode only provides the consensus
         // infrastructure; the application layer (AetherNode) wires the leader commit notifications.

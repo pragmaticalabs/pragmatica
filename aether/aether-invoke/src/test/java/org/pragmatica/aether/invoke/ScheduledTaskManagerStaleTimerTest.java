@@ -17,7 +17,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Option;
 
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -65,11 +65,11 @@ class ScheduledTaskManagerStaleTimerTest {
     }
 
     private void establishQuorum() {
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
     }
 
     private void loseQuorum() {
-        manager.onQuorumStateChange(QuorumStateNotification.disappeared());
+        manager.onQuorumStateChange(ClusterStateNotification.passive());
     }
 
     @Test

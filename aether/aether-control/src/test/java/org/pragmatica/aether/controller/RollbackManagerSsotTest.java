@@ -21,7 +21,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Option;
@@ -182,6 +182,6 @@ class RollbackManagerSsotTest {
         @Override public void peerObservedFaulty(TransportObservation.PeerObservedFaulty p) {}
         @Override public void peerReconnected(TransportObservation.PeerReconnected p) {}
         @Override public void selfShutdown(TransportObservation.SelfShutdown s) {}
-        @Override public void watchQuorumState(QuorumStateNotification q) {}
+        @Override public void watchClusterState(ClusterStateNotification q) {}
     }
 }

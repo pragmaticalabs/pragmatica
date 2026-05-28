@@ -542,20 +542,17 @@ public interface TopologyObserver extends TopologyManager {
                                            .count();
             }
 
-            /// Canonical edge-transition publisher for `QuorumStateNotification`.
+            /// Updates the `quorumEstablished` atomic so that `inQuorum()` and the
+            /// `publishMembershipDeltas` gate read the latest local view. Does NOT emit any
+            /// notification: E2 Phase 2c.0 (2026-05-28) makes `RabiaEngine`/`ConsensusBridge`
+            /// the sole authoritative emitter of `ClusterStateNotification`. The observer's
+            /// `quorumEstablished` flag is retained because it remains the local-view input
+            /// to the RC1 Step 5 membership-decision gate.
             ///
-            /// Phase A (commit `5c29a104f`) made SWIM the canonical source for membership
-            /// observations: SWIM observations flow through HealthReconciler → topology KV
-            /// atoms → `TopologyObserver`. This method completes the symmetric counterpart
-            /// for the quorum-loss path: QUIC/Netty transports no longer publish quorum
-            /// state — they only manage peer-link state. The observer owns the quorum view
-            /// because it already has all the bookkeeping (`quorumSize`, `nodeStatesById`,
-            /// health states).
-            ///
-            /// Idempotent: only fires on `false → true` (established) or `true → false`
-            /// (disappeared) edge transitions. SWIM filters transient flap upstream via
+            /// Idempotent: only fires on `false → true` (active) or `true → false`
+            /// (passive) edge transitions via CAS. SWIM filters transient flap upstream via
             /// its suspect-window so the observer sees only post-filtered membership
-            /// decisions — no debounce needed here.
+            /// decisions.
             ///
             /// The peer count excludes self; the `+ 1` adds self as the implicitly-healthy
             /// observer. This matches the formula previously used by `QuicClusterNetwork`
@@ -563,13 +560,9 @@ public interface TopologyObserver extends TopologyManager {
             ///
             /// Startup gate: this method short-circuits while `started` is false. The
             /// constructor seeds `coreNodes` (including self) via `addNode`, which would
-            /// otherwise route through this publisher before the production
+            /// otherwise route through this evaluator before the production
             /// `MessageRouter.DelegateRouter` has had its delegate field populated by the
-            /// node bootstrap wiring — causing an NPE on `delegate.route(...)`. `start()`
-            /// flips `started=true` and immediately invokes this method once so the initial
-            /// edge state (established or disappeared) is published exactly once after the
-            /// router is fully wired. Subsequent KV-driven mutations (snapshot updates,
-            /// cluster-size changes) follow the normal idempotent edge-transition rules.
+            /// node bootstrap wiring.
             private void evaluateQuorumState() {
                 if (!started.get()) {
                     return;
@@ -580,13 +573,11 @@ public interface TopologyObserver extends TopologyManager {
                 log.debug("Quorum evaluation: healthyActivePeers+1={} threshold={}", peers + 1, quorum);
                 if (haveQuorum) {
                     if (quorumEstablished.compareAndSet(false, true)) {
-                        log.info("Quorum established");
-                        router.route(QuorumStateNotification.established());
+                        log.info("Quorum established (local view; notification suppressed — owned by RabiaEngine/ConsensusBridge)");
                     }
                 } else {
                     if (quorumEstablished.compareAndSet(true, false)) {
-                        log.warn("Quorum lost");
-                        router.route(QuorumStateNotification.disappeared());
+                        log.warn("Quorum lost (local view; notification suppressed — owned by RabiaEngine/ConsensusBridge)");
                     }
                 }
                 publishMembershipDeltas();

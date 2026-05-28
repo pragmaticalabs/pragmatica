@@ -397,9 +397,10 @@ public class NettyClusterNetwork implements ClusterNetwork {
     }
 
     /// Netty is pure transport — peer-link state, peerLinks table, hello handshakes,
-    /// message routing. Membership and quorum decisions are owned by `TopologyObserver`
-    /// (canonical publisher of `QuorumStateNotification` and `MembershipDecision`, fed
-    /// by SWIM via `HealthReconciler`).
+    /// message routing. Membership decisions are owned by `TopologyObserver` (canonical
+    /// publisher of `MembershipDecision`, fed by SWIM via `HealthReconciler`).
+    /// Cluster-state notifications (`ClusterStateNotification`) are owned by
+    /// `RabiaEngine`/`ConsensusBridge`.
     ///
     /// This method is the **canonical source of `TransportObservation` for the Netty
     /// transport** (`ObservationSource.NETTY`). Each emission is a *local* observation

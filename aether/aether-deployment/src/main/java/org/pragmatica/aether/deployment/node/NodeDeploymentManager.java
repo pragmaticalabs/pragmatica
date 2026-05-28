@@ -36,7 +36,7 @@ import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.topology.MembershipDecision;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -73,7 +73,7 @@ public interface NodeDeploymentManager {
 
     @Contract
     @MessageReceiver
-    void onQuorumStateChange(QuorumStateNotification quorumStateNotification);
+    void onQuorumStateChange(ClusterStateNotification quorumStateNotification);
 
     @Contract
     @MessageReceiver
@@ -485,21 +485,21 @@ public interface NodeDeploymentManager {
 
         @Contract
         @Override
-        public void onQuorumStateChange(QuorumStateNotification quorumStateNotification) {
+        public void onQuorumStateChange(ClusterStateNotification quorumStateNotification) {
             if (!quorumStateNotification.advanceSequence(ctx.quorumSequence())) {
-                log.info("Node {} ignoring stale QuorumStateNotification: {}",
+                log.info("Node {} ignoring stale ClusterStateNotification: {}",
                          ctx.self().id(),
                          quorumStateNotification);
                 return;
             }
 
-            log.info("Node {} received QuorumStateNotification: {}",
+            log.info("Node {} received ClusterStateNotification: {}",
                      ctx.self().id(),
                      quorumStateNotification);
 
             switch (quorumStateNotification.state()) {
-                case ESTABLISHED -> dispatchQuorumEstablished();
-                case DISAPPEARED -> ctx.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+                case ACTIVE -> dispatchQuorumEstablished();
+                case PASSIVE -> ctx.dispatch(new ClusterFsmEvent.QuorumDisappeared());
             }
         }
 

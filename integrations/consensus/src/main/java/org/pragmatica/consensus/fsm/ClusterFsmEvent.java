@@ -20,7 +20,7 @@ import java.util.List;
 /// `ClusterFsmEvent`, whether cluster-generated or domain-specific.
 ///
 /// [`ClusterFsmRouter`] maps `MessageRouter` notifications (`TransportObservation`,
-/// `QuorumStateNotification`, `LeaderNotification.LeaderChange`) into the concrete records
+/// `ClusterStateNotification`, `LeaderNotification.LeaderChange`) into the concrete records
 /// below and dispatches them to the target FSM. (`ClusterFsmRouter` consumes the local
 /// transport stream because the leader-election FSM needs a fast-path during cluster
 /// bootstrap before consensus exists. For canonical decisions, see `MembershipDecision`.)

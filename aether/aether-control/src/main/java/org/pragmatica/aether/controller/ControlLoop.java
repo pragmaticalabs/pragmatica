@@ -31,7 +31,7 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeJoined;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -58,7 +58,7 @@ import org.slf4j.LoggerFactory;
     @MessageReceiver void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
     @MessageReceiver void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
     @MessageReceiver void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
-    @MessageReceiver void onQuorumStateChange(QuorumStateNotification notification);
+    @MessageReceiver void onQuorumStateChange(ClusterStateNotification notification);
     void registerBlueprint(Artifact artifact, int instances, int minInstances);
     void unregisterBlueprint(Artifact artifact);
     ControllerConfig configuration();
@@ -153,14 +153,14 @@ import org.slf4j.LoggerFactory;
             }
         }
 
-        @Override public void onQuorumStateChange(QuorumStateNotification notification) {
+        @Override public void onQuorumStateChange(ClusterStateNotification notification) {
             if (!notification.advanceSequence(ctx.quorumSequence())) {
-                log.debug("Ignoring stale QuorumStateNotification: {}", notification);
+                log.debug("Ignoring stale ClusterStateNotification: {}", notification);
                 return;
             }
             switch (notification.state()){
-                case ESTABLISHED -> fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());
-                case DISAPPEARED -> fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+                case ACTIVE -> fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());
+                case PASSIVE -> fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
             }
         }
 

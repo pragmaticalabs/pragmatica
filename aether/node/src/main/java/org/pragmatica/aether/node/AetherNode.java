@@ -179,7 +179,7 @@ import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyConfig;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTAntiEntropy;
@@ -665,7 +665,7 @@ public interface AetherNode extends ManageableNode {
             @Override
             public Promise<Unit> stop() {
                 log.info("Stopping Aether node {}", self());
-                router.route(QuorumStateNotification.disappeared());
+                router.route(ClusterStateNotification.passive());
                 router.quiesce();
                 controlLoop.stop();
                 metricsScheduler.stop();
@@ -2248,15 +2248,15 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    /// E2 Phase 2b (2026-05-28): bridge `QuorumStateNotification.DISAPPEARED` into the §8.2
+    /// E2 Phase 2b (2026-05-28): bridge `ClusterStateNotification.DISAPPEARED` into the §8.2
     /// `DrainProcedure`. Replaces the Phase 1 routing through
     /// `SelfDrainCoordinator.onQuorumDisappeared` + `.onRabiaPaused` (Rabia's `Paused` fires
     /// on the same DISAPPEARED signal — both legacy entry points collapsed into the single
     /// `initiate(QUORUM_LOSS)` call by the CAS guard).
     @Contract
-    private static void routeQuorumDisappearedToDrain(QuorumStateNotification notification,
+    private static void routeQuorumDisappearedToDrain(ClusterStateNotification notification,
                                                        DrainProcedure drainProcedure) {
-        if (notification.state() != QuorumStateNotification.State.DISAPPEARED) {return;}
+        if (notification.state() != ClusterStateNotification.State.PASSIVE) {return;}
 
         drainProcedure.initiate(DrainReason.QUORUM_LOSS);
     }
@@ -3043,19 +3043,19 @@ public interface AetherNode extends ManageableNode {
         kvRouterBuilder.onPut(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupPut);
         kvRouterBuilder.onRemove(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupRemove);
         entries.addAll(kvRouterBuilder.build().asRouteEntries());
-        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
-        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, controlLoop::onQuorumStateChange));
-        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, metricsScheduler::onQuorumStateChange));
-        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
+        entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
+        entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, controlLoop::onQuorumStateChange));
+        entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, metricsScheduler::onQuorumStateChange));
+        entries.add(MessageRouter.Entry.route(ClusterStateNotification.class,
                                               deploymentMetricsScheduler::onQuorumStateChange));
-        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, scheduledTaskManager::onQuorumStateChange));
-        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, appHttpServer::onQuorumStateChange));
-        // E2 Phase 2b (2026-05-28): the consensus-derived `QuorumStateNotification.DISAPPEARED`
+        entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, scheduledTaskManager::onQuorumStateChange));
+        entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, appHttpServer::onQuorumStateChange));
+        // E2 Phase 2b (2026-05-28): the consensus-derived `ClusterStateNotification.DISAPPEARED`
         // signal is bridged directly into the §8.2 `DrainProcedure`. Rabia's `Paused` state
         // fires on the same DISAPPEARED signal — both legacy `onQuorumDisappeared` /
         // `onRabiaPaused` entry points collapse into the single `initiate(QUORUM_LOSS)` call
         // (single-shot CAS makes the duplicate harmless).
-        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
+        entries.add(MessageRouter.Entry.route(ClusterStateNotification.class,
                                               notification -> routeQuorumDisappearedToDrain(notification,
                                                                                             drainProcedure)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
@@ -3074,7 +3074,7 @@ public interface AetherNode extends ManageableNode {
                                               change -> toggleDeploymentMetricsOnLeaderChange(change, deploymentMetricsScheduler)));
         // #231 Step 2 — SCALING (ControlLoop, TTMManager, RollbackManager), STRATEGIES (AbTestManager),
         // and DeploymentManager leader-pinned. ControlLoop did NOT previously receive LeaderChange
-        // (only QuorumStateNotification + MembershipDecision), so this toggle is additive — no duplicate.
+        // (only ClusterStateNotification + MembershipDecision), so this toggle is additive — no duplicate.
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> toggleControlLoopOnLeaderChange(change, controlLoop)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
@@ -3192,7 +3192,7 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
                                               eventAggregator::onPeerJoined));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
-        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, eventAggregator::onQuorumStateChange));
+        entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, eventAggregator::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               eventAggregator::onSliceFailure));

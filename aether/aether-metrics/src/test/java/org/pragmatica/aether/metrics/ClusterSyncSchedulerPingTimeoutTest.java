@@ -10,7 +10,7 @@ import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.List;
@@ -41,7 +41,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A)));
-        scheduler.onQuorumStateChange(QuorumStateNotification.established());
+        scheduler.onQuorumStateChange(ClusterStateNotification.active());
 
         scheduler.sendPingsNow();
         scheduler.sendPingsNow();
@@ -70,7 +70,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A)));
-        scheduler.onQuorumStateChange(QuorumStateNotification.established());
+        scheduler.onQuorumStateChange(ClusterStateNotification.active());
 
         scheduler.sendPingsNow();
         scheduler.sendPingsNow();
@@ -91,7 +91,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A)));
-        scheduler.onQuorumStateChange(QuorumStateNotification.established());
+        scheduler.onQuorumStateChange(ClusterStateNotification.active());
 
         scheduler.sendPingsNow();
         scheduler.sendPingsNow();
@@ -115,7 +115,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B)));
-        scheduler.onQuorumStateChange(QuorumStateNotification.established());
+        scheduler.onQuorumStateChange(ClusterStateNotification.active());
 
         scheduler.sendPingsNow();
         scheduler.onPongReceived(PEER_B);
