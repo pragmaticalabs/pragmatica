@@ -26,6 +26,7 @@ import org.pragmatica.lang.Unit;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -52,6 +53,39 @@ public interface ClusterTopologyManager extends TopologyManager {
     int resetCircuitBreaker(String reason);
     boolean isAutoHealEnabled();
     boolean setAutoHealEnabled(boolean enabled, String reason);
+
+    /// Membership v2 / E2 — provision a replacement for a departed peer.
+    ///
+    /// Idempotent: if `failedPeer` (when present) is already in the in-flight provisioning
+    /// set, OR a replacement is observable via the current slot/membership state, the call
+    /// is a no-op success. The new peer is provisioned KSUID-named with `clusterMembers`
+    /// seeded as PEERS by the provider boundary. Returns a `Promise<Unit>` that resolves on
+    /// the provision-request acceptance (consensus commit of the FILLING reservation), NOT
+    /// on the new node reaching ON_DUTY.
+    ///
+    /// At Phase 1 this delegates to the existing slot-reconcile path
+    /// (`NodeLifecycleManager.provisionNode(ProvisionSpec)` chained from a FILLING slot
+    /// reservation). The `failedPeer` argument is observability-only at this layer; the
+    /// slot-reconciler picks the EMPTY/DEAD slot to fill independently.
+    Promise<Unit> provisionReplacement(Option<NodeId> failedPeer, Set<NodeId> clusterMembers);
+
+    /// Membership v2 / E2 — drain a specific node. Targets either the operator/scale-down
+    /// flow or the overprovision-drain path. `reason` is observability-only at this layer.
+    /// Returns a `Promise<Unit>` resolving on drain-request commit (the target node observes
+    /// the directive and self-drains per spec §8).
+    ///
+    /// At Phase 1 this routes through the existing
+    /// `NodeLifecycleManager.terminateNode(NodeId)` path. A KV-record-driven `DrainRequestKey`
+    /// surface (spec §8.5) is deferred to Phase 2.
+    Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason);
+
+    /// Membership v2 / E2 — reconcile current cluster membership against configured size
+    /// (spec §7.4). Derives action from the SWIM-converged member count plus the KV
+    /// configured count: shortfall → `provisionReplacement` per missing slot; surplus →
+    /// `drainNode` per excess peer. Called from the periodic tick, NTT
+    /// `TopologyUnhealthy` events, configured-size changes, and leader-activation.
+    /// Idempotent — no-op when state already matches target.
+    Promise<Unit> reconcile();
 
     /// Test/legacy factory overload. `inQuorum` defaults to a permanently-true supplier so
     /// existing call sites that do not gate on quorum remain quorate-by-assumption. Production

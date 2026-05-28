@@ -4,13 +4,18 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.ntt;
 
+import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
 
+import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -19,6 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
+import java.util.function.Supplier;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -79,6 +85,8 @@ public final class LeaderReconciler {
     private final LocalQuorumWatcher localQuorumWatcher;
     private final IntSupplier clusterMembershipCountSupplier;
     private final IntSupplier configuredCoreCountSupplier;
+    private final Supplier<Set<NodeId>> currentClusterMembersSupplier;
+    private final ClusterTopologyManager ctm;
     private final TimeSource timeSource;
     private final NttTimerScheduler scheduler;
 
@@ -93,6 +101,8 @@ public final class LeaderReconciler {
                              LocalQuorumWatcher localQuorumWatcher,
                              IntSupplier clusterMembershipCountSupplier,
                              IntSupplier configuredCoreCountSupplier,
+                             Supplier<Set<NodeId>> currentClusterMembersSupplier,
+                             ClusterTopologyManager ctm,
                              TimeSource timeSource,
                              NttTimerScheduler scheduler) {
         this.membershipConfig = membershipConfig;
@@ -102,6 +112,8 @@ public final class LeaderReconciler {
         this.localQuorumWatcher = localQuorumWatcher;
         this.clusterMembershipCountSupplier = clusterMembershipCountSupplier;
         this.configuredCoreCountSupplier = configuredCoreCountSupplier;
+        this.currentClusterMembersSupplier = currentClusterMembersSupplier;
+        this.ctm = ctm;
         this.timeSource = timeSource;
         this.scheduler = scheduler;
     }
@@ -112,13 +124,17 @@ public final class LeaderReconciler {
                                                     NodeTopologyTracker ntt,
                                                     LocalQuorumWatcher localQuorumWatcher,
                                                     IntSupplier clusterMembershipCountSupplier,
-                                                    IntSupplier configuredCoreCountSupplier) {
+                                                    IntSupplier configuredCoreCountSupplier,
+                                                    Supplier<Set<NodeId>> currentClusterMembersSupplier,
+                                                    ClusterTopologyManager ctm) {
         return new LeaderReconciler(membershipConfig,
                                     provisioningTimeout,
                                     ntt,
                                     localQuorumWatcher,
                                     clusterMembershipCountSupplier,
                                     configuredCoreCountSupplier,
+                                    currentClusterMembersSupplier,
+                                    ctm,
                                     TimeSource.system(),
                                     SharedScheduler::schedule);
     }
@@ -131,6 +147,8 @@ public final class LeaderReconciler {
                                                     LocalQuorumWatcher localQuorumWatcher,
                                                     IntSupplier clusterMembershipCountSupplier,
                                                     IntSupplier configuredCoreCountSupplier,
+                                                    Supplier<Set<NodeId>> currentClusterMembersSupplier,
+                                                    ClusterTopologyManager ctm,
                                                     TimeSource timeSource,
                                                     NttTimerScheduler scheduler) {
         return new LeaderReconciler(membershipConfig,
@@ -139,6 +157,8 @@ public final class LeaderReconciler {
                                     localQuorumWatcher,
                                     clusterMembershipCountSupplier,
                                     configuredCoreCountSupplier,
+                                    currentClusterMembersSupplier,
+                                    ctm,
                                     timeSource,
                                     scheduler);
     }
@@ -234,15 +254,79 @@ public final class LeaderReconciler {
 
         var clusterMembershipCount = clusterMembershipCountSupplier.getAsInt();
         var configuredCoreCount = configuredCoreCountSupplier.getAsInt();
+        var currentMembers = currentClusterMembersSupplier.get();
+        var effective = clusterMembershipCount + inFlightProvisioning.size();
+
+        var peersToProvision = computePeersToProvision(configuredCoreCount, effective);
+        var peersToDrain = computePeersToDrain(currentMembers, configuredCoreCount, effective);
+
+        dispatchProvisionActions(now, peersToProvision, currentMembers);
+        dispatchDrainActions(peersToDrain);
+
         var intent = ReconcileIntent.reconcileIntent(now,
                                                      trigger,
                                                      clusterMembershipCount,
                                                      configuredCoreCount,
-                                                     Set.of(),
-                                                     Set.of(),
+                                                     peersToProvision,
+                                                     peersToDrain,
                                                      inFlightProvisioning.size());
 
         reconcileListener.accept(intent);
+    }
+
+    /// Compute the set of synthetic placeholder NodeIds representing each missing slot the
+    /// leader-pinned reconciler should request a provision for. At Phase 1 we don't yet have
+    /// peer-specific identity for shortfall slots (the slot reconciler picks the slot to fill);
+    /// each missing slot is represented by a fresh placeholder NodeId so the observability
+    /// surface (intent log + tests) sees a non-empty set whose cardinality equals the gap.
+    private Set<NodeId> computePeersToProvision(int configuredCoreCount, int effective) {
+        if (effective >= configuredCoreCount) {
+            return Set.of();
+        }
+        var gap = configuredCoreCount - effective;
+        var placeholders = new LinkedHashSet<NodeId>();
+
+        for (var i = 0; i < gap; i++) {
+            placeholders.add(NodeId.randomNodeId());
+        }
+        return Set.copyOf(placeholders);
+    }
+
+    /// Pick `(effective - configured)` drain victims from the observed member set using a
+    /// stable iteration-order heuristic ("newest-joined-first" approximated by ordering on
+    /// NodeId — Phase 2 will replace with the spec §7.4 deterministic ordering keyed on
+    /// lifecycle generation).
+    private Set<NodeId> computePeersToDrain(Set<NodeId> currentMembers, int configuredCoreCount, int effective) {
+        if (effective <= configuredCoreCount) {
+            return Set.of();
+        }
+        var excess = effective - configuredCoreCount;
+        var ordered = new LinkedHashSet<NodeId>();
+
+        currentMembers.stream().sorted(Comparator.comparing(NodeId::id).reversed()).limit(excess).forEach(ordered::add);
+
+        return Set.copyOf(ordered);
+    }
+
+    @Contract
+    private void dispatchProvisionActions(long nowNanos, Set<NodeId> peersToProvision, Set<NodeId> currentMembers) {
+        peersToProvision.forEach(placeholder -> dispatchSingleProvision(nowNanos, placeholder, currentMembers));
+    }
+
+    @Contract
+    private void dispatchSingleProvision(long nowNanos, NodeId placeholder, Set<NodeId> currentMembers) {
+        inFlightProvisioning.put(placeholder, nowNanos);
+        ctm.provisionReplacement(Option.none(), currentMembers).onFailure(cause -> inFlightProvisioning.remove(placeholder));
+    }
+
+    @Contract
+    private void dispatchDrainActions(Set<NodeId> peersToDrain) {
+        peersToDrain.forEach(this::dispatchSingleDrain);
+    }
+
+    @Contract
+    private void dispatchSingleDrain(NodeId peerId) {
+        ctm.drainNode(peerId, DrainReason.OVERPROVISION_PARTITION_HEAL);
     }
 
     @Contract

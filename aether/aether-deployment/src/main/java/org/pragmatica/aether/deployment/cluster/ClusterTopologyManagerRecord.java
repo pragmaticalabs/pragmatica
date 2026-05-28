@@ -75,6 +75,7 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.consensus.net.NodeInfo.LABEL_HOSTNAME;
 import static org.pragmatica.consensus.net.NodeInfo.LABEL_INSTANCE_TYPE;
 import static org.pragmatica.consensus.net.NodeInfo.LABEL_ZONE;
+import static org.pragmatica.lang.Unit.unit;
 
 
 record ClusterTopologyManagerRecord(TopologyObserver observer,
@@ -350,7 +351,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // simply reclassifies HEALTHY. The next reconcile observes the filled slot.
         if (stateRef.get() instanceof NodeReconcilerState.Reconciling) {
             log.info("Node {} reached ON_DUTY, checking reconciliation progress", nodeId);
-            reconcile();
+            reconcileInternal();
         }
     }
 
@@ -363,7 +364,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var windowMs = autoHealConfig.provisionStabilityWindow().millis();
         realActualStableSinceMs.set(nowMs - windowMs);
         log.debug("CTM: ClusterConfigKey changed, bypassing stability gate, triggering immediate reconciliation");
-        reconcile();
+        reconcileInternal();
     }
 
     @Contract
@@ -385,7 +386,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         log.warn("CTM: Self-shutdown observed for {}, triggering immediate reconciliation", selfShutdown.nodeId());
         maybeBumpAnchorOnHealthyOnDutyEdge("self-shutdown " + selfShutdown.nodeId());
-        reconcile();
+        reconcileInternal();
     }
 
     @Contract
@@ -397,7 +398,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             resetProvisioningCircuit("phase transition to NORMAL");
             log.info("CTM: cluster phase transitioned to NORMAL — provisioning resumed (stability window restarted from zero)");
 
-            if (active.get()) {reconcile();}
+            if (active.get()) {reconcileInternal();}
 
             return;
         }
@@ -411,21 +412,21 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private void handleNodeJoined(NodeJoined joined) {
         log.info("CTM: Node {} joined, triggering reconciliation", joined.nodeId());
         maybeBumpAnchorOnHealthyOnDutyEdge("node-joined " + joined.nodeId());
-        reconcile();
+        reconcileInternal();
     }
 
     @Contract
     private void handleNodeRemoved(NodeRemoved removed) {
         log.info("CTM: Node {} removed, triggering reconciliation", removed.nodeId());
         maybeBumpAnchorOnHealthyOnDutyEdge("node-removed " + removed.nodeId());
-        reconcile();
+        reconcileInternal();
     }
 
     @Contract
     private void handleNodeDecommissioned(NodeDecommissioned decommissioned) {
         log.warn("CTM: Node {} decommissioned, triggering immediate reconciliation", decommissioned.nodeId());
         maybeBumpAnchorOnHealthyOnDutyEdge("node-decommissioned " + decommissioned.nodeId());
-        reconcile();
+        reconcileInternal();
     }
 
     @Contract
@@ -526,7 +527,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var prev = consecutiveProvisioningFailures.get();
         resetProvisioningCircuit("operator: " + reason);
 
-        if (active.get() && stateRef.get() instanceof NodeReconcilerState.Reconciling) {reconcile();}
+        if (active.get() && stateRef.get() instanceof NodeReconcilerState.Reconciling) {reconcileInternal();}
 
         return prev;
     }
@@ -558,9 +559,66 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                  ? "enabled"
                  : "disabled");
 
-        if (enabled && active.get() && stateRef.get() instanceof NodeReconcilerState.Reconciling) {reconcile();}
+        if (enabled && active.get() && stateRef.get() instanceof NodeReconcilerState.Reconciling) {reconcileInternal();}
 
         return prev;
+    }
+
+    /// Membership v2 / E2 Phase 1 — provision a replacement, idempotent.
+    ///
+    /// Delegates to the existing slot-reconcile path. The slot reconciler picks the
+    /// EMPTY/DEAD slot to fill from observed slot-state independently of `failedPeer`;
+    /// `failedPeer` is observability-only at this layer. `clusterMembers` is unused at
+    /// Phase 1 — the provider boundary derives PEERS from the existing
+    /// `buildProvisionContext` flow. Phase 2 will replace the slot path with a direct
+    /// `NodeLifecycleManager.provisionNode` call sourced from `clusterMembers`.
+    @Override
+    public Promise<Unit> provisionReplacement(Option<NodeId> failedPeer, Set<NodeId> clusterMembers) {
+        return triggerReconcileForProvisionReplacement(failedPeer, clusterMembers);
+    }
+
+    /// Membership v2 / E2 Phase 1 — drain a specific node.
+    ///
+    /// Routes through the existing `terminateSingleNode` (drain → terminate → decommission)
+    /// chain. `reason` is observability-only at Phase 1; a KV-record-driven
+    /// `DrainRequestKey` surface (spec §8.5) is Phase 2.
+    @Override
+    public Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
+        return triggerDrainNode(targetNodeId, reason);
+    }
+
+    /// Membership v2 / E2 Phase 1 — public reconcile, idempotent. Fires the existing
+    /// internal slot-reconcile path (which performs the spec §7.4 SWIM-converged-count vs
+    /// configured-count diff and dispatches provision/drain actions through the
+    /// `NodeLifecycleManager`). Returns immediately with `Promise<Unit>` success — the
+    /// internal reconcile is fire-and-forget and reports its own actions through
+    /// `NodeReconcilerState` and the slot KV.
+    @Override
+    public Promise<Unit> reconcile() {
+        return triggerReconcile();
+    }
+
+    private Promise<Unit> triggerReconcileForProvisionReplacement(Option<NodeId> failedPeer, Set<NodeId> clusterMembers) {
+        log.info("CTM v2: provisionReplacement requested (failedPeer={}, clusterMembers.size={})",
+                 failedPeer,
+                 clusterMembers.size());
+        reconcileInternal();
+
+        return Promise.success(unit());
+    }
+
+    private Promise<Unit> triggerDrainNode(NodeId targetNodeId, DrainReason reason) {
+        log.info("CTM v2: drainNode requested (target={}, reason={})", targetNodeId, reason);
+        terminateSingleNode(targetNodeId);
+
+        return Promise.success(unit());
+    }
+
+    private Promise<Unit> triggerReconcile() {
+        log.debug("CTM v2: reconcile requested");
+        reconcileInternal();
+
+        return Promise.success(unit());
     }
 
     private static long computeProvisioningBackoffMs(int failureCount) {
@@ -611,14 +669,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         if (configured <= 0) {
             log.info("CTM: seed skipped — no configured cluster size at activation; awaiting snapshot bump");
-            reconcile();
+            reconcileInternal();
 
             return;
         }
         if (!indexedSlots().isEmpty()) {
             log.info("CTM: existing slots present at activation — preserving bindings (no wipe/rebind); reconciling for configured={}",
                      configured);
-            reconcile();
+            reconcileInternal();
 
             return;
         }
@@ -648,7 +706,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                       // Run the activation reconcile only AFTER the complete empty seed write-set
                       // has committed, so the universal fill observes the slot set (not a stale
                       // pre-commit map) and binds the connected seeds.
-                      .onResult(_ -> reconcile());
+                      .onResult(_ -> reconcileInternal());
     }
 
     @SuppressWarnings("unchecked")
@@ -723,7 +781,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         log.info("CTM: Leader failover detected ({}/{}), enabling immediate reconciliation", effectiveActual, desired);
-        reconcile();
+        reconcileInternal();
     }
 
     @Contract
@@ -831,11 +889,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private void handleFormationCooldownExpired(int actual, int desired) {
         log.info("CTM: Formation cooldown expired, cluster at {}/{}, enabling reconciliation", actual, desired);
         transitionTo(new NodeReconcilerState.Converged());
-        reconcile();
+        reconcileInternal();
     }
 
     @Contract
-    private void reconcile() {
+    private void reconcileInternal() {
         if (!active.get()) {return;}
 
         var currentState = stateRef.get();
@@ -1591,7 +1649,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private void handleTerminationSuccess(NodeId nodeId) {
         log.info("CTM: Node {} terminated successfully", nodeId);
         writeDecommissionedAtom(nodeId);
-        reconcile();
+        reconcileInternal();
     }
 
     @Contract
@@ -1689,7 +1747,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     private void scheduleSafetyNetPoll() {
-        safetyNetTimer.set(SharedScheduler.scheduleAtFixedRate(this::reconcile, autoHealConfig.retryInterval()));
+        safetyNetTimer.set(SharedScheduler.scheduleAtFixedRate(this::reconcileInternal, autoHealConfig.retryInterval()));
     }
 
     @Contract

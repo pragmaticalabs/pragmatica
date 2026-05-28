@@ -7,14 +7,29 @@ package org.pragmatica.aether.deployment.membership.ntt;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.aether.deployment.cluster.DrainReason;
+import org.pragmatica.aether.deployment.cluster.NodeReconcilerState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.consensus.topology.NodeState;
+import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.TimeSource;
+import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.swim.SwimObservation.DepartedObserved;
 
+import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.ScheduledFuture;
@@ -22,12 +37,14 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.deployment.membership.MembershipConfig.membershipConfig;
 import static org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler.leaderReconciler;
 import static org.pragmatica.aether.deployment.membership.ntt.LocalQuorumWatcher.localQuorumWatcher;
 import static org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker.nodeTopologyTracker;
+import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
@@ -45,6 +62,8 @@ class LeaderReconcilerTest {
     private RecordingListener listener;
     private MutableIntSupplier clusterMembershipCount;
     private MutableIntSupplier configuredCoreCount;
+    private MutableMembersSupplier currentMembers;
+    private RecordingCtm ctm;
     private NodeTopologyTracker ntt;
     private LocalQuorumWatcher localQuorum;
     private LeaderReconciler reconciler;
@@ -56,6 +75,8 @@ class LeaderReconcilerTest {
         listener = new RecordingListener();
         clusterMembershipCount = new MutableIntSupplier(0);
         configuredCoreCount = new MutableIntSupplier(0);
+        currentMembers = new MutableMembersSupplier(Set.of());
+        ctm = new RecordingCtm();
         ntt = nodeTopologyTracker(membershipConfig(), timeSource, scheduler);
         localQuorum = localQuorumWatcher(membershipConfig(), timeSource, scheduler);
         reconciler = leaderReconciler(membershipConfig(),
@@ -64,6 +85,8 @@ class LeaderReconcilerTest {
                                       localQuorum,
                                       clusterMembershipCount,
                                       configuredCoreCount,
+                                      currentMembers,
+                                      ctm,
                                       timeSource,
                                       scheduler);
         reconciler.setReconcileListener(listener);
@@ -98,8 +121,12 @@ class LeaderReconcilerTest {
             assertThat(emitted.trigger()).isEqualTo(ReconcileTrigger.LEADER_ACTIVATION);
             assertThat(emitted.clusterMembershipCount()).isEqualTo(3);
             assertThat(emitted.configuredCoreCount()).isEqualTo(5);
-            assertThat(emitted.peersToProvision()).isEmpty();
+            // E2 Phase 1 — shortfall of 2 surfaces 2 provision placeholders; no drain.
+            assertThat(emitted.peersToProvision()).hasSize(2);
             assertThat(emitted.peersToDrain()).isEmpty();
+            // CTM received 2 provisionReplacement calls, no drainNode calls.
+            assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+            assertThat(ctm.drainNodeCalls()).isEmpty();
 
             // The reconciler scheduled exactly one new task (the first periodic tick).
             // (The quorum-watcher will also have scheduled one because coreCount=5 puts
@@ -259,9 +286,10 @@ class LeaderReconcilerTest {
             var intent = listener.events().getFirst();
             assertThat(intent.clusterMembershipCount()).isEqualTo(3);
             assertThat(intent.configuredCoreCount()).isEqualTo(5);
-            assertThat(intent.inFlightProvisioningCount()).isZero();
-            // E1 placeholders.
-            assertThat(intent.peersToProvision()).isEmpty();
+            // After reconcile fires we've tracked 2 in-flight provisioning placeholders.
+            assertThat(intent.inFlightProvisioningCount()).isEqualTo(2);
+            // E2 Phase 1 — shortfall of 2 surfaces 2 provision placeholders; no drain.
+            assertThat(intent.peersToProvision()).hasSize(2);
             assertThat(intent.peersToDrain()).isEmpty();
         }
 
@@ -269,12 +297,17 @@ class LeaderReconcilerTest {
         void overprovisionedSnapshot_intentReflectsObservedAndConfiguredCounts() {
             configuredCoreCount.set(3);
             clusterMembershipCount.set(5);
+            currentMembers.set(Set.of(PEER_A, PEER_B, NodeId.randomNodeId(), NodeId.randomNodeId(), NodeId.randomNodeId()));
 
             reconciler.activate();
 
             var intent = listener.events().getFirst();
             assertThat(intent.clusterMembershipCount()).isEqualTo(5);
             assertThat(intent.configuredCoreCount()).isEqualTo(3);
+            // E2 Phase 1 — surplus of 2 surfaces 2 drain victims; no provision.
+            assertThat(intent.peersToDrain()).hasSize(2);
+            assertThat(intent.peersToProvision()).isEmpty();
+            assertThat(ctm.drainNodeCalls()).hasSize(2);
         }
     }
 
@@ -285,21 +318,20 @@ class LeaderReconcilerTest {
             configuredCoreCount.set(5);
             clusterMembershipCount.set(3);
             reconciler.activate();
+            // E2 Phase 1: activate at shortfall=2 inserts 2 in-flight provisioning
+            // placeholders for the missing slots.
+            assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(2);
             listener.clear();
-
-            // Inject a stale in-flight provisioning entry directly via reflection-free
-            // path: there's no Stage 6 producer yet, so verify the eviction by simulating
-            // the production hook through a controlled state — we model the entry as
-            // already evicted, validating the snapshot stays clean. The path that
-            // produces in-flight entries is wired in Stage 6; the eviction predicate
-            // (`nowNanos - timestamp > tickPeriod.nanos()`) is tested by the absence of
-            // entries after a long advance: even if a hypothetical entry existed it would
-            // be evicted by the next reconcile.
+            // Saturate cluster so the next reconcile produces no new shortfall and the
+            // observed inFlight count after eviction is exactly zero.
+            clusterMembershipCount.set(5);
             timeSource.advanceTimeMillis(EXPECTED_TICK_PERIOD.millis() * 3);
 
             reconciler.onTopologyUnhealthy(new TopologyUnhealthyEvent(PEER_B, timeSource.nanoTime()));
 
             assertThat(listener.events()).hasSize(1);
+            // Stale entries past `tickPeriod.nanos()` evicted at the head of the reconcile;
+            // shortfall=0 since cluster now matches configured.
             assertThat(listener.events().getFirst().inFlightProvisioningCount()).isZero();
             assertThat(reconciler.inFlightProvisioningCount()).isZero();
         }
@@ -338,6 +370,200 @@ class LeaderReconcilerTest {
         @Contract
         void set(int newValue) {
             value.set(newValue);
+        }
+    }
+
+    private static final class MutableMembersSupplier implements Supplier<Set<NodeId>> {
+        private volatile Set<NodeId> value;
+
+        MutableMembersSupplier(Set<NodeId> initial) {
+            this.value = Set.copyOf(initial);
+        }
+
+        @Override
+        public Set<NodeId> get() {
+            return value;
+        }
+
+        @Contract
+        void set(Set<NodeId> next) {
+            value = Set.copyOf(next);
+        }
+    }
+
+    /// Recording `ClusterTopologyManager` stub. Phase 1 verification surface for
+    /// `provisionReplacement` / `drainNode` / `reconcile` v2 calls. All other interface
+    /// methods return safe defaults (only the v2 surface is exercised by these tests).
+    private static final class RecordingCtm implements ClusterTopologyManager {
+        private final List<NodeId> drainNodeCalls = new CopyOnWriteArrayList<>();
+        private final List<Option<NodeId>> provisionReplacementCalls = new CopyOnWriteArrayList<>();
+        private final List<DrainReason> drainReasons = new CopyOnWriteArrayList<>();
+        private final AtomicInteger reconcileCount = new AtomicInteger(0);
+
+        List<NodeId> drainNodeCalls() {
+            return List.copyOf(drainNodeCalls);
+        }
+
+        List<Option<NodeId>> provisionReplacementCalls() {
+            return List.copyOf(provisionReplacementCalls);
+        }
+
+        List<DrainReason> drainReasons() {
+            return List.copyOf(drainReasons);
+        }
+
+        int reconcileCount() {
+            return reconcileCount.get();
+        }
+
+        @Override
+        public Promise<Unit> provisionReplacement(Option<NodeId> failedPeer, Set<NodeId> clusterMembers) {
+            provisionReplacementCalls.add(failedPeer);
+            return Promise.success(unit());
+        }
+
+        @Override
+        public Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
+            drainNodeCalls.add(targetNodeId);
+            drainReasons.add(reason);
+            return Promise.success(unit());
+        }
+
+        @Override
+        public Promise<Unit> reconcile() {
+            reconcileCount.incrementAndGet();
+            return Promise.success(unit());
+        }
+
+        @Override
+        public NodeReconcilerState reconcilerState() {
+            return new NodeReconcilerState.Inactive("stub");
+        }
+
+        @Override
+        public Promise<Unit> setDesiredSize(int size) {
+            return Promise.success(unit());
+        }
+
+        @Override
+        public int desiredSize() {
+            return 0;
+        }
+
+        @Override
+        public int configuredSize() {
+            return 0;
+        }
+
+        @Override
+        @Contract
+        public void onNodeReady(NodeId nodeId) {}
+
+        @Override
+        @Contract
+        public void onMembershipDecision(MembershipDecision decision) {}
+
+        @Override
+        @Contract
+        public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {}
+
+        @Override
+        @Contract
+        public void onClusterConfigChanged() {}
+
+        @Override
+        @Contract
+        public void onClusterPhaseChanged(ClusterPhase newPhase) {}
+
+        @Override
+        @Contract
+        public void activate() {}
+
+        @Override
+        @Contract
+        public void deactivate() {}
+
+        @Override
+        @Contract
+        public TopologyObserver observer() {
+            return null; // test stub — observer() is never called by LeaderReconciler Phase 1
+        }
+
+        @Override
+        public CircuitBreakerState circuitBreakerState() {
+            return new CircuitBreakerState(0, 0, 0L, false);
+        }
+
+        @Override
+        public int resetCircuitBreaker(String reason) {
+            return 0;
+        }
+
+        @Override
+        public boolean isAutoHealEnabled() {
+            return true;
+        }
+
+        @Override
+        public boolean setAutoHealEnabled(boolean enabled, String reason) {
+            return true;
+        }
+
+        // TopologyManager surface — not exercised by Phase 1 tests; safe defaults.
+        @Override
+        @Contract
+        public NodeInfo self() {
+            return null; // test stub — self() never invoked by LeaderReconciler Phase 1
+        }
+
+        @Override
+        public Option<NodeInfo> get(NodeId id) {
+            return Option.none();
+        }
+
+        @Override
+        public int clusterSize() {
+            return 0;
+        }
+
+        @Override
+        public Option<NodeId> reverseLookup(SocketAddress socketAddress) {
+            return Option.none();
+        }
+
+        @Override
+        public Promise<Unit> start() {
+            return Promise.success(unit());
+        }
+
+        @Override
+        public Promise<Unit> stop() {
+            return Promise.success(unit());
+        }
+
+        @Override
+        public TimeSpan pingInterval() {
+            return timeSpan(1).seconds();
+        }
+
+        @Override
+        public TimeSpan helloTimeout() {
+            return timeSpan(1).seconds();
+        }
+
+        @Override
+        public Option<TlsConfig> tls() {
+            return Option.none();
+        }
+
+        @Override
+        public Option<NodeState> getState(NodeId id) {
+            return Option.none();
+        }
+
+        @Override
+        public List<NodeId> topology() {
+            return List.of();
         }
     }
 

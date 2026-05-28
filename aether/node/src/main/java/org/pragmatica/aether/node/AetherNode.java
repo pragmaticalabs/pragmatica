@@ -47,6 +47,7 @@ import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler;
 import org.pragmatica.aether.deployment.membership.ntt.LocalQuorumWatcher;
 import org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker;
 import org.pragmatica.aether.deployment.membership.ntt.NttObservationFlag;
+import org.pragmatica.aether.deployment.membership.ntt.QuorumLossIntent;
 import org.pragmatica.aether.deployment.membership.phase.ClusterPhaseView;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
@@ -1814,6 +1815,11 @@ public interface AetherNode extends ManageableNode {
             var timeSource = TimeSource.system();
             IntSupplier clusterMembershipCountSupplier = () -> clusterNode.network().connectedNodeCount() + 1;
             IntSupplier configuredCoreCountSupplier = () -> config.topology().coreNodes().size();
+            Supplier<Set<NodeId>> currentClusterMembersSupplier = () -> {
+                var members = new java.util.HashSet<NodeId>(clusterNode.network().connectedPeers());
+                members.add(config.self());
+                return Set.copyOf(members);
+            };
             var ntt = NodeTopologyTracker.nodeTopologyTracker(membershipConfig, timeSource, SharedScheduler::schedule);
             var localQuorumWatcher = LocalQuorumWatcher.localQuorumWatcher(membershipConfig, timeSource, SharedScheduler::schedule);
             var divergenceLogger = DivergenceLogger.divergenceLogger(timeSource);
@@ -1823,11 +1829,20 @@ public interface AetherNode extends ManageableNode {
                                                                      localQuorumWatcher,
                                                                      clusterMembershipCountSupplier,
                                                                      configuredCoreCountSupplier,
+                                                                     currentClusterMembersSupplier,
+                                                                     clusterTopologyManager,
                                                                      timeSource,
                                                                      SharedScheduler::schedule);
             swimHealthDetector.addObservationListener(ntt::onSwimObservation);
             ntt.setOnTimerFireListener(leaderReconciler::onTopologyUnhealthy);
-            localQuorumWatcher.setQuorumLossListener(leaderReconciler::onQuorumLossIntent);
+            // E2 Phase 1: chain self-drain into the leaderless quorum-loss observation so a
+            // local quorum-loss observation triggers the existing hard-quorum-loss drain in
+            // addition to the leader-reconciler observation. Replaces the prior single-listener
+            // wiring `localQuorumWatcher.setQuorumLossListener(leaderReconciler::onQuorumLossIntent)`.
+            Consumer<QuorumLossIntent> quorumLossChain =
+                ((Consumer<QuorumLossIntent>) leaderReconciler::onQuorumLossIntent)
+                    .andThen(intent -> selfDrainCoordinator.onQuorumDisappeared());
+            localQuorumWatcher.setQuorumLossListener(quorumLossChain);
             leaderReconciler.setReconcileListener(divergenceLogger::observeNttIntent);
             membershipFsm.addDecisionListener(divergenceLogger::observeFsmDecision);
             var sweepPeriod = leaderReconciler.tickPeriod();
