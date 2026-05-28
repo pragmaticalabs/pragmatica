@@ -36,12 +36,13 @@ import org.pragmatica.aether.node.lifecycle.NodeState;
 import org.pragmatica.aether.node.lifecycle.NodeStateChanged;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
+import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
-import org.pragmatica.aether.deployment.drain.SelfDrainConfig;
-import org.pragmatica.aether.deployment.drain.SelfDrainCoordinator;
+import org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmConfig;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
+import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler;
 import org.pragmatica.aether.deployment.membership.ntt.LocalQuorumWatcher;
 import org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker;
@@ -324,9 +325,10 @@ public interface AetherNode extends ManageableNode {
     }
 
     /// Overload for single-JVM hosting (Forge / Ember). The `jvmExit` hook is invoked by
-    /// the node's `SelfDrainCoordinator` when the drain phase completes — production passes
-    /// `Runtime.getRuntime().halt(2)`, in-JVM hosts pass a per-node callback that stops the
-    /// node gracefully and removes it from the host's registry without taking down the JVM.
+    /// the node's `DrainProcedure` (membership v2 spec §8.2) when the drain phase completes
+    /// — production passes `Runtime.getRuntime().halt(2)`, in-JVM hosts pass a per-node
+    /// callback that stops the node gracefully and removes it from the host's registry
+    /// without taking down the JVM.
     static Result<AetherNode> aetherNode(AetherNodeConfig config, Runnable jvmExit) {
         var delegateRouter = MessageRouter.DelegateRouter.delegate();
         var nodeCodec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
@@ -1172,44 +1174,27 @@ public interface AetherNode extends ManageableNode {
         java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> clusterCommandApplier = commands -> clusterNode.apply(commands);
         var leaderAwareSnapshotSource = snapshotSource;
         // Drain infrastructure: tracker is shared with NodeLifecycleRoutes (/api/node/inflight).
-        // ConsensusDrainCoordinator is constructed below once ctmLifecycleWriter exists.
+        // The DRAINING-atom-writing ConsensusDrainCoordinator was removed in Phase 2b — the
+        // FSM-integrated DrainCoordinator wired into MembershipFsm/CTM is now a no-op stub.
+        // The §8.2 unified drain procedure is owned by DrainProcedure (constructed below).
         var inFlightTrackerForDrain = InFlightRequestTracker.inFlightRequestTracker();
-        // Topology-observation refactor Step 5: node-side self-drain coordinator. Watches three
-        // independent triggers (periodic 1Hz connectivity check, QuorumStateNotification.DISAPPEARED,
-        // Rabia paused) and on the first one to fire kicks off an uninterruptible drain that
-        // gates the in-flight tracker, awaits ≤ inflightGrace, then invokes `jvmExit`.
-        // membership-architecture-spec.md §16.1 (S19/S20). No KV/consensus dependency — a
-        // partition victim cannot use either anyway.
+        // E2 Phase 2b (2026-05-28): DrainProcedure replaces SelfDrainCoordinator's execution
+        // surface. It is a *pure procedure* — no triggers, no periodic ticks, no orphan
+        // checker. The single caller in Phase 2b is the LocalQuorumWatcher quorum-loss
+        // listener wired further down. Operator-initiated drain (DrainRequestKey) and
+        // FSM-routed drain land in Phase 6.
         //
-        // `jvmExit` is threaded in from the factory: production is `Runtime.getRuntime().halt(2)`,
-        // single-JVM hosts (Forge/Ember) pass a per-node callback that stops the node gracefully
-        // and removes it from the host's registry without taking down the whole test JVM.
+        // `jvmExit` is threaded in from the factory: production is
+        // `Runtime.getRuntime().halt(2)`, single-JVM hosts (Forge/Ember) pass a per-node
+        // callback that stops the node gracefully without taking down the whole test JVM.
         //
-        // T3.1: SELF_DRAIN_INITIATED cluster event surface. The `ClusterEventLogPublisher` is
-        // constructed downstream (after rabiaTermSupplier and clusterCommandApplier are wired)
-        // so we forward-declare it via an AtomicReference resolved lazily inside the publisher
-        // lambda. The lambda is invoked only at the ACTIVE→DRAINING transition, by which time
-        // the ref is always populated. NOT leader-gated: the draining node itself is the only
-        // authoritative source for "I'm self-draining" — a partition victim cannot rely on the
-        // leader to surface this on its behalf.
-        var eventLogPublisherForDrainRef = new AtomicReference<ClusterEventLogPublisher>();
-        org.pragmatica.aether.deployment.drain.SelfDrainEventPublisher selfDrainEventSink = (type, severity, message, details) -> {
-            var publisher = eventLogPublisherForDrainRef.get();
-            if (publisher == null) {return;}
-            publisher.publish(type, severity, message, details);
-        };
-        var selfDrainCoordinator = SelfDrainCoordinator.selfDrainCoordinator(config.self(),
-                                                                             () -> clusterNode.network()
-                                                                                              .connectedPeers(),
-                                                                             () -> clusterNode.topologyManager()
-                                                                                              .quorumSize(),
-                                                                             inFlightTrackerForDrain,
-                                                                             SelfDrainConfig.selfDrainConfig(),
-                                                                             jvmExit,
-                                                                             selfDrainEventSink);
-        SharedScheduler.scheduleAtFixedRate(selfDrainCoordinator::onConnectivityChange,
-                                            TimeSpan.timeSpan(1).seconds(),
-                                            TimeSpan.timeSpan(1).seconds());
+        // `swimLeaveEmitter` is a no-op for Phase 2b — the SWIM `LEAVE` acceleration wiring
+        // (spec §8.2 step 3) lands in Phase 6 once the SwimHealthDetector exposes a
+        // `voluntaryLeave` API. The drain still halts the node; LEAVE is purely an
+        // acceleration of peer-side suspect aging, not a correctness requirement.
+        var drainProcedure = DrainProcedure.drainProcedure(inFlightTrackerForDrain,
+                                                            () -> {},
+                                                            jvmExit);
         java.util.function.Supplier<java.util.Map<AetherKey.ProvisioningSlotKey, AetherValue.ProvisioningSlotValue>> slotReader = () -> {
             var collected = new java.util.LinkedHashMap<AetherKey.ProvisioningSlotKey, AetherValue.ProvisioningSlotValue>();
             kvStore.forEach(AetherKey.ProvisioningSlotKey.class, AetherValue.ProvisioningSlotValue.class, collected::put);
@@ -1292,13 +1277,12 @@ public interface AetherNode extends ManageableNode {
         // Bind the forward-ref so the Phase 2 PR-B `readyCandidateSink` (wired above) can emit
         // `LifecycleCommand.ForceOnDuty` once the lifecycle writer exists.
         ctmLifecycleWriterRef.set(ctmLifecycleWriter);
-        org.pragmatica.lang.Functions.Fn1<Promise<Integer>, NodeId> inFlightProbe = targetNodeId -> targetNodeId.equals(config.self()
-                                                                                                                              .id())
-                                                                                                    ? Promise.success(inFlightTrackerForDrain.count())
-                                                                                                    : Promise.success(0);
-        var drainCoordinator = org.pragmatica.aether.deployment.drain.ConsensusDrainCoordinator.consensusDrainCoordinator(ctmLifecycleWriter,
-                                                                                                                          lifecycleReader::apply,
-                                                                                                                          inFlightProbe);
+        // E2 Phase 2b (2026-05-28): ConsensusDrainCoordinator deleted. The FSM-integrated
+        // DrainCoordinator path remains structurally (used by MembershipFsm `InvokeDrain` and
+        // CTM `drainNode`) but the implementation is now a no-op stub. The §8.2 unified drain
+        // procedure runs through `drainProcedure` above, NOT through this interface. Phase 2c
+        // removes the FSM-routed drain entirely.
+        var drainCoordinator = new NoOpDrainCoordinator();
         // MembershipFsm wiring (spec §9 — post-E.8 always active). Constructed AFTER
         // drainCoordinator so the FSM can route InvokeDrain effects through the real coordinator.
         // E2 Phase 2a (2026-05-28): the leader-side φ-accrual handoff (#231) is removed; the
@@ -1339,57 +1323,12 @@ public interface AetherNode extends ManageableNode {
                                                                                    // (anti-flood) and defers to SelfDrainCoordinator to dissolve the
                                                                                    // minority partition.
                                                                                    ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum());
-        // slot-based-core-membership-redesign §5: core-only orphan self-drain. A core node
-        // with no durable slot binding removes ITSELF (there is no leader-side surplus reaper,
-        // §6). The OrphanSelfDrainChecker reads the local-KV slot bindings (via the same
-        // `slotReader` the CTM uses) and evaluates the full §5 predicate; on fire it calls
-        // `SelfDrainCoordinator.onOrphanDetected(..)`, which executes the KV-free drain. The
-        // checker — not the coordinator — owns the KV read, preserving the coordinator's
-        // no-KV/consensus invariant.
-        //
-        //   * core-role gate (strict, FIRST): `!clusterNode.isObserving()`. A worker enters
-        //     observer mode (`authorizeObservation()`), so an observing node short-circuits and
-        //     never touches the slot-binding logic (Scope). A core node is active or pre-active,
-        //     never observing.
-        //   * `rabia.isActive()` excludes the Syncing/Paused/Stopped stale-view windows.
-        //   * `inQuorum()` is the committed-healthy quorum bit — same source the CTM uses; below
-        //     quorum the orphan decision is suppressed and the SelfDrainCoordinator quorum-loss
-        //     trigger owns the outcome (mutually exclusive).
-        //   * `slotOccupants` = the set of `assignedNodeId`s across the durable slot atoms.
-        //   * `connectedMembers` = the SWIM/transport-derived connected core node ids (the SAME
-        //     signal the CTM universal fill uses), plus self. A slot whose occupant is NOT in this
-        //     set is dead/disconnected → NOT live-filled → `liveFilled < configured` → the node
-        //     WAITS (it could be rebound there) rather than false-draining (§5 dynamic predicate).
-        java.util.function.Supplier<java.util.Set<NodeId>> slotOccupantsSupplier = () -> {
-            var bound = new java.util.HashSet<NodeId>();
-            slotReader.get().values().forEach(slot -> slot.assignedNodeId().onPresent(bound::add));
-            return bound;
-        };
-        var orphanTopologyObserver = (org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager();
-        java.util.function.Supplier<java.util.Set<NodeId>> connectedMembersSupplier = () -> {
-            var connected = new java.util.HashSet<NodeId>();
-            orphanTopologyObserver.topology()
-                                  .stream()
-                                  .filter(id -> !orphanTopologyObserver.isPassive(id))
-                                  .filter(id -> orphanTopologyObserver.getState(id)
-                                                                      .map(state -> state.health() == org.pragmatica.consensus.topology.NodeHealth.HEALTHY)
-                                                                      .or(false))
-                                  .forEach(connected::add);
-            connected.add(config.self());
-            return connected;
-        };
-        var orphanSelfDrainChecker = org.pragmatica.aether.deployment.drain.OrphanSelfDrainChecker.orphanSelfDrainChecker(
-            config.self(),
-            () -> !clusterNode.isObserving(),
-            clusterNode::isActive,
-            orphanTopologyObserver.inQuorum(),
-            slotOccupantsSupplier,
-            connectedMembersSupplier,
-            clusterTopologyManager::configuredSize,
-            selfDrainCoordinator::onOrphanDetected);
-        SharedScheduler.scheduleAtFixedRate(orphanSelfDrainChecker::check,
-                                            TimeSpan.timeSpan(5).seconds(),
-                                            TimeSpan.timeSpan(5).seconds());
+        // E2 Phase 2b (2026-05-28): OrphanSelfDrainChecker deleted. The §5 orphan-slot
+        // predicate was an artifact of the slot-based-core-membership-redesign that v2 makes
+        // moot: NTT now drives the only departure-detection path (§6) and the §8 unified
+        // drain handles dissolution of surplus nodes without a periodic KV-driven check.
+        // The `slotOccupants` and `connectedMembers` suppliers below are dead-on-arrival
+        // and removed; Phase 2c drops the durable slot KV records entirely.
         // `LifecycleReconciler`. Dormant on construction; activated on leader gain via
         // `toggleReconcilerOnLeaderChange` (registered alongside the CTM toggle further down
         // in `assembleNode`). Pulls live SWIM from `swimHealthDetector` (set on quorum) and
@@ -1453,10 +1392,10 @@ public interface AetherNode extends ManageableNode {
                                                                                   hlcClock,
                                                                                   rabiaTermSupplier::get,
                                                                                   clusterCommandApplier);
-        // T3.1: surface the publisher to the SelfDrainCoordinator's lazy-resolving lambda
-        // forward-declared upstream. By this point the publisher is fully wired; the
-        // coordinator's lambda will resolve the ref on the first ACTIVE→DRAINING transition.
-        eventLogPublisherForDrainRef.set(eventLogPublisher);
+        // E2 Phase 2b (2026-05-28): the SELF_DRAIN_INITIATED event-publish hop is gone with
+        // SelfDrainCoordinator. The Slice enum value `SELF_DRAIN_INITIATED` is preserved on
+        // the wire for compatibility; Phase 6 wires the DrainProcedure's `swimLeaveEmitter`
+        // and any observability surface (a publisher hop here is no longer required).
         var eventAggregator = ClusterEventAggregator.clusterEventAggregator(ClusterEventAggregatorConfig.defaultConfig(),
                                                                             clusterTopologyManager.observer()::clusterSize,
                                                                             eventLogPublisher,
@@ -1602,7 +1541,7 @@ public interface AetherNode extends ManageableNode {
                                                 consumerGroupCoordinator,
                                                 consumerGroupRegistry,
                                                 membershipFsm,
-                                                selfDrainCoordinator,
+                                                drainProcedure,
                                                 managementServerRef,
                                                 config.self(),
                                                 readinessTracker,
@@ -1792,12 +1731,13 @@ public interface AetherNode extends ManageableNode {
                                                          leaderReconciler.onSwimMemberHealthy(h.peer());
                                                      }
                                                  });
-        // E2 Phase 1: chain self-drain into the leaderless quorum-loss observation so a
-        // local quorum-loss observation triggers the existing hard-quorum-loss drain in
-        // addition to the leader-reconciler observation.
+        // E2 Phase 2b (2026-05-28): LocalQuorumWatcher quorum-loss now drives the §8.2
+        // unified `DrainProcedure` directly. The intermediate hop through
+        // `selfDrainCoordinator.onQuorumDisappeared` is gone; trigger detection
+        // (LocalQuorumWatcher) and procedure execution (DrainProcedure) are separated.
         Consumer<QuorumLossIntent> quorumLossChain =
             ((Consumer<QuorumLossIntent>) leaderReconciler::onQuorumLossIntent)
-                .andThen(intent -> selfDrainCoordinator.onQuorumDisappeared());
+                .andThen(intent -> drainProcedure.initiate(DrainReason.QUORUM_LOSS));
         localQuorumWatcher.setQuorumLossListener(quorumLossChain);
         Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(localQuorumWatcher::onPeerConnected);
         Consumer<NodeId> nttDisconnectTap = localQuorumWatcher::onPeerDisconnected;
@@ -2308,18 +2248,17 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    /// Topology-observation refactor Step 5: bridge `QuorumStateNotification.DISAPPEARED` into
-    /// the local `SelfDrainCoordinator`. Both `onQuorumDisappeared` and `onRabiaPaused` are
-    /// invoked because Rabia's `EngineState.Paused` fires on the same DISAPPEARED signal and the
-    /// coordinator surface keeps the two trigger paths distinct for forward compatibility with
-    /// a future Rabia-direct paused listener.
+    /// E2 Phase 2b (2026-05-28): bridge `QuorumStateNotification.DISAPPEARED` into the §8.2
+    /// `DrainProcedure`. Replaces the Phase 1 routing through
+    /// `SelfDrainCoordinator.onQuorumDisappeared` + `.onRabiaPaused` (Rabia's `Paused` fires
+    /// on the same DISAPPEARED signal — both legacy entry points collapsed into the single
+    /// `initiate(QUORUM_LOSS)` call by the CAS guard).
     @Contract
-    private static void routeQuorumDisappearedToSelfDrain(QuorumStateNotification notification,
-                                                          SelfDrainCoordinator selfDrainCoordinator) {
+    private static void routeQuorumDisappearedToDrain(QuorumStateNotification notification,
+                                                       DrainProcedure drainProcedure) {
         if (notification.state() != QuorumStateNotification.State.DISAPPEARED) {return;}
 
-        selfDrainCoordinator.onQuorumDisappeared();
-        selfDrainCoordinator.onRabiaPaused();
+        drainProcedure.initiate(DrainReason.QUORUM_LOSS);
     }
 
     /// Provision the `audit.lifecycle.commands` topic on the local `StreamPartitionManager`
@@ -3025,7 +2964,7 @@ public interface AetherNode extends ManageableNode {
                                                                     ConsumerGroupCoordinator consumerGroupCoordinator,
                                                                     ConsumerGroupRegistry consumerGroupRegistry,
                                                                     MembershipFsm membershipFsm,
-                                                                    SelfDrainCoordinator selfDrainCoordinator,
+                                                                    DrainProcedure drainProcedure,
                                                                     java.util.concurrent.atomic.AtomicReference<Option<ManagementServer>> managementServerRef,
                                                                     NodeId self,
                                                                     org.pragmatica.aether.metrics.NodeReadinessTracker readinessTracker,
@@ -3111,15 +3050,14 @@ public interface AetherNode extends ManageableNode {
                                               deploymentMetricsScheduler::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, scheduledTaskManager::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, appHttpServer::onQuorumStateChange));
-        // Topology-observation refactor Step 5: self-drain is wired to both branches of the
-        // QuorumStateNotification stream. `DISAPPEARED` triggers the immediate hard drain path
-        // (`onQuorumDisappeared`); Rabia's `Paused` state fires on the same DISAPPEARED signal,
-        // so `onRabiaPaused` is invoked from the same handler to keep the surface symmetric
-        // with the spec §16.1 trigger list (a future Rabia-direct paused listener can route to
-        // `onRabiaPaused` without changing the FSM).
+        // E2 Phase 2b (2026-05-28): the consensus-derived `QuorumStateNotification.DISAPPEARED`
+        // signal is bridged directly into the §8.2 `DrainProcedure`. Rabia's `Paused` state
+        // fires on the same DISAPPEARED signal — both legacy `onQuorumDisappeared` /
+        // `onRabiaPaused` entry points collapse into the single `initiate(QUORUM_LOSS)` call
+        // (single-shot CAS makes the duplicate harmless).
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
-                                              notification -> routeQuorumDisappearedToSelfDrain(notification,
-                                                                                                selfDrainCoordinator)));
+                                              notification -> routeQuorumDisappearedToDrain(notification,
+                                                                                            drainProcedure)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               consumerGroupCoordinator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,

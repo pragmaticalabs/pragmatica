@@ -5,17 +5,25 @@
 package org.pragmatica.aether.deployment.cluster;
 
 
-/// Membership v2 / E2 — drain-action reason used by [`ClusterTopologyManager#drainNode`].
-/// Observability-only at this layer: surfaces *why* the leader requested a node drain so
-/// audit/log/metrics consumers can distinguish operator-initiated from auto-remediation
-/// flows.
+/// Membership v2 / E2 — drain-action reason used by both [`ClusterTopologyManager#drainNode`]
+/// (leader-pinned, operator/auto-remediation reasons) and the §8.2 unified [`DrainProcedure`]
+/// (node-local, local-trigger reasons). Observability-only at this layer: surfaces *why* a
+/// drain was started so audit/log/metrics consumers can distinguish operator-initiated from
+/// auto-remediation and local-trigger flows.
 ///
+/// **Leader-pinned (drainNode) reasons**:
 /// - [`#OPERATOR_COMMAND`] — explicit operator-initiated scale-down or decommission.
 /// - [`#OVERPROVISION_SCALE_DOWN`] — configured size shrunk; surplus peers must drain.
 /// - [`#OVERPROVISION_PARTITION_HEAL`] — observed member-set exceeds configured count
 ///   after a partition heal; the leader-pinned reconciler picked drain victims.
+///
+/// **Local-trigger (DrainProcedure) reasons** (E2 Phase 2b):
+/// - [`#QUORUM_LOSS`] — local node observed `localQuorumCount < threshold` for
+///   `quorumLossDrainThreshold`; spec §8.1.
 public enum DrainReason {
     OPERATOR_COMMAND,
     OVERPROVISION_SCALE_DOWN,
-    OVERPROVISION_PARTITION_HEAL
+    OVERPROVISION_PARTITION_HEAL,
+    QUORUM_LOSS
 }
+

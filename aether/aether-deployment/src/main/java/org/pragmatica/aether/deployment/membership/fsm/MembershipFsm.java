@@ -87,6 +87,15 @@ import static org.pragmatica.lang.Option.some;
 /// rejection, local state is left untouched — the next KV notification (or replay on
 /// node restart) will reconcile it.
 ///
+/// **E2 Phase 2b (2026-05-28) — orphaned drain machinery.** With `ConsensusDrainCoordinator`
+/// and `SelfDrainCoordinator` deleted, the FSM-routed `DrainCoordinator` it consumes is now
+/// a `NoOpDrainCoordinator` stub — `prepareDrain` / `awaitDrainAck` resolve immediately, so
+/// no `DRAINING` lifecycle KV atom is ever written by the membership layer. The §8.2 unified
+/// drain procedure executes outside this FSM (via `DrainProcedure` in `membership.ntt`).
+/// The `Draining` lifecycle state + `InvokeDrain` effect + `awaitDrainAndFeedback` resume
+/// path are all dead code in Phase 2b and removed wholesale in Phase 2c when this entire
+/// FSM is deleted (spec §10).
+///
 /// **Leader-takeover protocol resume (spec §6.2 steps 4–5).** On `start()`, after the KV
 /// replay, the new leader resumes in-flight protocols for every peer in DRAINING or JOINING:
 /// — `DRAINING` → `drainCoordinator.awaitDrainAck(peer, remainingDrainTimeout)` is called and
