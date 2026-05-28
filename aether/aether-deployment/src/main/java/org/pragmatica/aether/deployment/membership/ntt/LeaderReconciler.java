@@ -288,8 +288,21 @@ public final class LeaderReconciler {
         var currentMembers = ntt.currentMembers();
         var effective = clusterMembershipCount + inFlightProvisioning.size();
 
-        var peersToProvision = computePeersToProvision(configuredCoreCount, effective);
-        var peersToDrain = computePeersToDrain(currentMembers, configuredCoreCount, effective);
+        // Quorum-safety guard (spec §7.2, §I5; sub-quorum-must-dissolve). A sub-quorum
+        // leader cannot distinguish "the majority died" from "I am the isolated minority",
+        // so it MUST NOT provision replacements — a partitioned minority that provisioned
+        // would spawn a phantom split-brain cluster. Below confirmed quorum the leader does
+        // nothing (no provision AND no drain); LocalQuorumWatcher's §8 self-drain dissolves
+        // the minority. The observability intent is still emitted so operators see the
+        // suppressed pass.
+        // TODO(2c-α.3): tighten the quorum signal to the QUIC-confirmed
+        //   LocalQuorumWatcher.isBelowThreshold() once ClusterConfigValue.coreCount is wired
+        //   into the watcher (currently dormant — configuredCoreCount unset). The SWIM
+        //   membership count used here has a brief stale window post-partition (spec §11
+        //   residual edge, self-corrected by self-drain).
+        var quorumSafe = clusterMembershipCount >= quorumThreshold(configuredCoreCount);
+        var peersToProvision = quorumSafe ? computePeersToProvision(configuredCoreCount, effective) : Set.<NodeId>of();
+        var peersToDrain = quorumSafe ? computePeersToDrain(currentMembers, configuredCoreCount, effective) : Set.<NodeId>of();
 
         dispatchProvisionActions(now, peersToProvision, currentMembers);
         dispatchDrainActions(peersToDrain);
@@ -303,6 +316,14 @@ public final class LeaderReconciler {
                                                      inFlightProvisioning.size());
 
         reconcileListener.accept(intent);
+    }
+
+    /// Simple-majority quorum threshold over the configured core size — same formula as
+    /// [`LocalQuorumWatcher`] and `ClusterTopologyManagerRecord.quorumThreshold`
+    /// (`configured / 2 + 1`). A configured count `< 1` is treated as `1` (a single-node
+    /// cluster is its own quorum) so the guard never blocks the trivial bootstrap case.
+    private static int quorumThreshold(int configuredCoreCount) {
+        return configuredCoreCount < 1 ? 1 : configuredCoreCount / 2 + 1;
     }
 
     /// Compute the set of synthetic placeholder NodeIds representing each missing slot

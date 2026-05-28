@@ -347,6 +347,28 @@ class LeaderReconcilerTest {
             assertThat(intent.provisionCount()).isZero();
             assertThat(ctm.drainNodeCalls()).hasSize(2);
         }
+
+        /// Quorum-safety guard (spec §7.2, §I5; sub-quorum-must-dissolve). With
+        /// `configured=5` the quorum threshold is `5/2+1 = 3`; a membership of 2 (SELF +
+        /// PEER_A) is below quorum, so the reconciler MUST NOT provision replacements — a
+        /// partitioned minority that provisioned would spawn a phantom split-brain cluster.
+        /// The observability intent is still emitted (with `provisionCount==0`) and no
+        /// `provisionReplacement` actuation reaches the CTM.
+        @Test
+        void runReconcile_belowQuorum_suppressesProvisioning() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A);
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            var intent = listener.events().getFirst();
+            assertThat(intent.clusterMembershipCount()).isEqualTo(2);
+            assertThat(intent.configuredCoreCount()).isEqualTo(5);
+            assertThat(intent.provisionCount()).isZero();
+            assertThat(intent.drainCount()).isZero();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+        }
     }
 
     @Nested
