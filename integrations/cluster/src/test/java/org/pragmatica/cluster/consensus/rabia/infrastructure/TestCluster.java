@@ -14,7 +14,7 @@ import org.pragmatica.consensus.rabia.ProtocolConfig;
 import org.pragmatica.consensus.rabia.RabiaCodecs;
 import org.pragmatica.consensus.rabia.RabiaEngine;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.TcpCodecs;
@@ -113,12 +113,12 @@ public class TestCluster {
         var engine = new RabiaEngine<>(topologyManager, network, store, ProtocolConfig.testConfig());
 
         router.addRoute(KVStoreLocalIO.Request.Find.class, store::find);
-        router.addRoute(QuorumStateNotification.class, engine::quorumState);
+        router.addRoute(ClusterStateNotification.class, engine::clusterState);
 
         var stateChangePrinter = new StateChangePrinter(id);
         router.addRoute(KVStoreNotification.ValuePut.class, stateChangePrinter::accept);
 
-        // Register router BEFORE adding node to network to ensure QuorumStateNotification
+        // Register router BEFORE adding node to network to ensure ClusterStateNotification
         // is received by all nodes when quorum is reached
         stores.put(id, store);
         engines.put(id, engine);
