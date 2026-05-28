@@ -17,6 +17,7 @@ import org.pragmatica.aether.config.TimeoutsConfig;
 import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.invoke.ObservabilityConfig;
@@ -70,6 +71,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                HttpProtocol managementHttpProtocol,
                                Map<String, StorageConfig> storageConfig,
                                Option<BackupConfig> backupConfig,
+                               Option<MembershipConfig> membership,
                                StreamingConfig streaming,
                                ClusterFormationConfig clusterFormation) {
     public record DeploymentDefaults(TimeSpan canaryEvaluationInterval, List<CanaryStageConfig> defaultCanaryStages) {
@@ -81,7 +83,7 @@ public record AetherNodeConfig(TopologyConfig topology,
     public static final int MANAGEMENT_DISABLED = 0;
 
     public static SelfStage builder() {
-        return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax -> appHttp -> tls -> quicTls -> certificateProvider -> configProvider -> environment -> managementHttpProtocol -> storageConfig -> backupConfig -> streaming -> protocol -> sliceAction -> cache -> ttm -> rollback -> controllerConfig -> autoHeal -> observability -> atomicity -> activationGated -> timeouts -> workerConfig -> deploymentDefaults -> clusterFormation -> {
+        return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax -> appHttp -> tls -> quicTls -> certificateProvider -> configProvider -> environment -> managementHttpProtocol -> storageConfig -> backupConfig -> membership -> streaming -> protocol -> sliceAction -> cache -> ttm -> rollback -> controllerConfig -> autoHeal -> observability -> atomicity -> activationGated -> timeouts -> workerConfig -> deploymentDefaults -> clusterFormation -> {
             var effectiveClusterSize = coreMax > 0
                                        ? coreMax
                                        : coreNodes.size();
@@ -121,6 +123,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                         managementHttpProtocol,
                                         storageConfig,
                                         backupConfig,
+                                        membership,
                                         streaming,
                                         clusterFormation);
         };
@@ -219,14 +222,26 @@ public record AetherNodeConfig(TopologyConfig topology,
     }
 
     public interface WithBackupConfig {
-        WithStreaming backupConfig(Option<BackupConfig> config);
+        WithMembership backupConfig(Option<BackupConfig> config);
 
-        default WithStreaming backupConfig(BackupConfig config) {
+        default WithMembership backupConfig(BackupConfig config) {
             return backupConfig(Option.some(config));
         }
 
         default AetherNodeConfig build() {
             return backupConfig(Option.none()).build();
+        }
+    }
+
+    public interface WithMembership {
+        WithStreaming membership(Option<MembershipConfig> config);
+
+        default WithStreaming membership(MembershipConfig config) {
+            return membership(Option.some(config));
+        }
+
+        default AetherNodeConfig build() {
+            return membership(Option.none()).build();
         }
     }
 
