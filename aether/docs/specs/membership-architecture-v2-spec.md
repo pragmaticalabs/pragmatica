@@ -8,7 +8,7 @@ Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 **Status:** Foundation spec complete (8 scenarios settled). Implementation pending — see §13 migration plan.
 **Branch:** `experimental/membership-redesign` (from `release-1.0.0-rc1` HEAD `b96619ea2`).
 **Supersedes (when implemented):** the topology-management layer of `aether/docs/specs/membership-architecture-spec.md` — specifically the membership FSM, the slot-occupancy classifier, the reachability gates, the leader-pinned membership timers, and the drain coordinator's FSM integration. The **simple scheme at its base — SWIM, QUIC, Rabia, LeaderManager — is preserved unchanged**, and its reliability is the foundation this design builds on.
-**Implementation target:** RC2 (or later). Not an RC1 patch.
+**Implementation target:** RC1 (foundational work per the project's RC1 vs RC2 scope rule — anything affecting architecture or foundation belongs in RC1).
 
 ---
 
@@ -67,6 +67,8 @@ The current code conflates two distinct counts under the umbrella of "node count
 | **`clusterMembershipCount`** (cluster SWIM membership count) | SWIM's converged member set (after gossip + `ping-req`) | Cluster-consistent | Topology decisions: *is the cluster the right size against `configured`?* Drives CTM provisioning / reaping. |
 
 Under full connectivity these counts agree. Under **partial connectivity they diverge** — and that divergence is the right signal: it says "the cluster is intact, but *this* node is locally isolated." A node whose `localQuorumCount` drops below threshold self-drains (safety); a divergence in `clusterMembershipCount` from `configured` triggers CTM provisioning or drain. **Calling both "node count" without qualification is forbidden in v2 code.**
+
+**On `localQuorumCount` vs Rabia's voter-eligible set.** `localQuorumCount` per this definition counts QUIC-connected peers. Rabia's actually-voting set may briefly diverge (a `Paused` responder is QUIC-connected but not voting; a `Syncing` peer is QUIC-connected but catching up on the log). v2 accepts this approximation — `localQuorumCount` is the stable, decoupled signal; coupling it to RabiaEngine internals would reintroduce the parallel-state seam this redesign eliminates. If asymmetric Rabia-stall-with-QUIC-healthy is observed in chaos validation, address at the consensus layer (e.g., a Rabia-side health probe), not by changing this definition.
 
 ## 5. Formation flow (PEERS-via-SWIM unification)
 
@@ -139,6 +141,20 @@ CTM today is a ~1700-line slot state machine with `HEALTHY/FILLING/DEAD/EMPTY` c
 
 Slots become **positions, not records**: there are `configured` positions; each is occupied iff a member is in the SWIM-converged membership set; the count of empties is `configured − clusterMembershipCount`. No per-slot state to maintain.
 
+### 7.4 Reconciliation triggers (hybrid model)
+
+CTM acts via a hybrid trigger model — multiple wake-up sources, all converging on a single idempotent `reconcile()` derived from current state:
+
+- **`TopologyUnhealthy(peerId)` events** from local NTT (§6) — low-latency reaction to abrupt departure.
+- **`DrainRequestKey(nodeId)` writes** observed via KV subscription — operator-initiated drain (§8).
+- **`configured` size changes** observed via KV subscription — scale up/down (§12.8).
+- **Leader-activation map-drain** — when this node becomes leader, claim and process all pending entries in NTT's per-peer map (§6.1, I12); plus a SWIM-derived reconciliation pass as backstop for peers that departed before this node joined the cluster.
+- **Periodic tick** — every `provisioning_timeout × 1.5`, leader runs `reconcile()` unconditionally. Backstop for events that might be missed (leader-vacuum windows, post-handoff staleness, cold-boot-with-missing-peer scenarios). First tick fires immediately on leader activation; periodic thereafter.
+
+`reconcile()` derives its action from current `clusterMembershipCount`, `configured`, and a local-leader-only `inFlightProvisioning: Map<NodeId, Instant>` tracking peers this leader has provisioned within `provisioning_timeout × 1.5`. Entries past that window are assumed failed and removed; the next tick will re-provision if the shortfall persists.
+
+`inFlightProvisioning` is **not persisted to consensus**. On leader handoff this state is lost — new leader's tick may briefly double-provision (old leader provisioned X, new leader sees X not yet in SWIM, provisions a second replacement). Wasted-provisioning is self-correcting via the overprovision-drain path (§7.2 second bullet). The simpler model is preferred over a consensus-persisted provisioning intent.
+
 ## 8. Drain — the unified self-shutdown procedure
 
 Drain is a node-local procedure with a small set of triggers. The membership layer does not have a drain state machine; the membership-layer effect of any drain is identical to abrupt departure (observed silence).
@@ -153,7 +169,7 @@ Drain is a node-local procedure with a small set of triggers. The membership lay
 ### 8.2 The procedure (one procedure, regardless of trigger)
 1. **Stop accepting new work** (application layer). Existing in-flight work proceeds.
 2. **Drain in-flight** (application layer — slice migration, request completion, etc.). Outside this spec's scope.
-3. **Stop SWIM probes.** Once application drain is complete. *Order matters:* peers must continue routing during the drain window; only when application work is done should the node go silent.
+3. **Stop SWIM probes and emit one LEAVE message.** Once application drain is complete. *Order matters:* peers must continue routing during the drain window; only when application work is done should the node go silent. The LEAVE message is a SWIM-internal hint for peers to skip suspect-aging (transitioning the departing peer to FAULTY/Departed immediately rather than after `suspectTimeout × 3`); functional correctness does not depend on LEAVE delivery — silence-driven detection is the backstop.
 4. **Exit with `Runtime.halt(2)`.** Distinguishes self-drained exits from clean stop (0), SIGKILL (137), SIGTERM (143) for operator/test observability.
 
 From the cluster's perspective, step 3 *is* the departure signal — SWIM detects silence, converges on `Departed`, NTT fires, CTM reacts per §7.2. **There is no separate "voluntary LEAVE" SWIM message in v2.** Silence is the universal departure signal.
@@ -209,7 +225,7 @@ For implementation traceability, the following are removed (entire modules / cla
 | `Draining` lifecycle state + `DrainCoordinator` ↔ membership-FSM integration + `awaitDrainAck` as an FSM transition | Drain is node-local + KV-observable (§8) |
 | `SelfDrainCoordinator` as an FSM-integrated component | Replaced by a small local quorum observer that triggers §8 |
 | `DecommissionedAtomGc` | No lifecycle atoms to GC (subject to confirmation during implementation) |
-| SWIM voluntary `LEAVE` message handling | Silence is the universal departure signal (P2) |
+| SWIM voluntary `LEAVE` message **as a membership-layer state transition** (the FSM's Draining→Stopped path with `awaitDrainAck`) | Membership layer is cause-agnostic (P2). LEAVE is **preserved as a SWIM-internal acceleration of `DepartedObserved`** (peer skips suspect-aging on authenticated LEAVE receipt); see §8.2 step 3 |
 
 What remains: SWIM, QUIC, Rabia, `LeaderManager` (all unchanged), simplified CTM (§7), NTT (§6), per-node `LocalQuorumWatcher` (small observer that drives §8's quorum-loss trigger), `DrainRequestKey` KV record (operator drain commands).
 
@@ -226,6 +242,7 @@ What remains: SWIM, QUIC, Rabia, `LeaderManager` (all unchanged), simplified CTM
 - **I9:** Quorum-loss-triggered drain is uninterruptible.
 - **I10:** False-positive drain is preferable to false-negative split-brain. The `quorumLossDrainThreshold` window tunes the trade.
 - **I11:** Drain progress is node-local + KV-observable; it is **not** a cluster-wide FSM state.
+- **I12:** NTT holds pending `TopologyUnhealthy` events as a per-peer `Map<NodeId, TopologyUnhealthyEvent>`. The leader claims entries via remove-and-process (claim-then-process); SWIM-derived reconciliation in `reconcile()` is the backstop for events that fire during leader-vacuum windows. Local state only — not persisted to consensus.
 
 ## 12. Settled scenarios
 
@@ -314,6 +331,8 @@ Defaults proposed; refine during implementation against the chaos suite.
 - **Configuration mismatch fail-fast** — different nodes booting with different `coreCount` or `PEERS` lists should fail-fast (refuse to start) rather than silently misbehave. Boot-time validation, not a runtime concern.
 - **`MembershipDecision` event stream replacement** — components subscribing to today's "node added/removed" events (CDM, control loops, routing) need a clean emission point in v2. Proposal: a thin observer over SWIM convergence + configured-size changes, emitted from CTM. Interface spelled out during E2.
 - **Configured-size change observation race.** A `coreCount` change is consensus-replicated, so different nodes observe it at slightly different times (sub-second window during commit propagation). `LocalQuorumWatcher` uses the *current* observed `configured` to compute threshold — so during the window, two nodes might briefly compute quorum against different N. Idempotent and self-correcting (the change propagates within consensus-commit time, well inside `quorumLossDrainThreshold`), but worth being explicit so it doesn't surprise implementation.
+- **`membership.nttObservation` feature flag.** Controls NTT instrumentation during the E1-E4 migration ramp. Values: `off` (NTT inert, no observation — production default during initial E1 ramp); `universal` (full NTT observation active on every node, leader-only reaction). The flag exists so observation-only NTT code can land in rc1 without behavior change, then be ramped to `universal` once divergence-logger telemetry confirms NTT matches the existing FSM path. Removed entirely at post-cutover cleanup.
+- **Reconciliation-tick period.** Set to `provisioning_timeout × 1.5` by default — long enough that the prior tick's provisioning has had time to either complete (success, peer joined SWIM) or hit the readiness-gate timeout (failure), short enough that recovery feels prompt. 1× would risk acting before prior provisioning settled; 2× would feel sluggish. Goldilocks point.
 
 ## 15. Out of scope
 
@@ -342,3 +361,4 @@ Explicitly delimited so the boundary is clear:
 | 2026-05-28 | session author | Initial DRAFT — scenarios 1, 2/2a, 5 captured; pending 3, 3a, 5a, 5b, 6. |
 | 2026-05-28 | session author | Foundation spec finalized — all 8 scenarios settled. Added P2 (departure = silence), P3 (unified drain), R1–R3 design rules, I9–I11 invariants, drain section §8, full §12 scenario coverage, §14 tunable defaults, §15 out-of-scope. |
 | 2026-05-28 | session author | Final refinements: §2.1 trust model, §8.4 quorum-loss-drain consensus-unavailable caveat, §8.5 `DrainRequestKey` schema (HLC-timestamped), §14 configured-size observation race note. |
+| 2026-05-28 | session author | RC1-scope correction + implementation-consultation decisions: §1 retargeted to RC1; §4 `localQuorumCount` vs Rabia voter-set divergence note; §7.4 NEW (hybrid reconciliation triggers — NTT events + KV-subscribed configured/drain changes + leader-activation map-drain + periodic tick at `provisioning_timeout × 1.5` with local-only `inFlightProvisioning`); §8.2 step 3 amended (LEAVE preserved as SWIM acceleration); §10 LEAVE entry amended (delete only the FSM state-transition machinery, keep SWIM-internal LEAVE); I12 NEW (NTT per-peer claimable map, claim-then-process); §14 entries added for `membership.nttObservation` flag and reconciliation-tick period rationale. |
