@@ -24,18 +24,21 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
-import java.util.function.Supplier;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Leader-pinned reconciler (membership v2 spec §7.4 — E2 Phase 1.5: fully
-/// state-derived reconciliation). All trigger paths converge on a single CAS-debounced
-/// `triggerReconcile(trigger)` entry point; the periodic tick has been removed (the
-/// previous tick existed only because surplus had no event signal — now SWIM
-/// `HealthyObserved` provides it symmetrically with NTT for shortage).
+/// Leader-pinned reconciler (membership v2 spec §7.4 — E2 Phase 1.6: state-derived
+/// reconciliation sourcing membership from NTT). All trigger paths converge on a
+/// single CAS-debounced `triggerReconcile(trigger)` entry point; the periodic tick
+/// has been removed (the previous tick existed only because surplus had no event
+/// signal — now SWIM `HealthyObserved` provides it symmetrically with NTT for
+/// shortage). `clusterMembershipCount` and the current member set are both sourced
+/// from [`NodeTopologyTracker#currentMemberCount`] / [`NodeTopologyTracker#currentMembers`],
+/// which itself derives them from SWIM observations (freshest "who is in the
+/// cluster" signal).
 ///
 /// **Five trigger paths.**
 /// 1. [`#activate()`] on leader gain — schedules a single one-shot delayed
@@ -79,9 +82,7 @@ public final class LeaderReconciler {
     private final TimeSpan inFlightExpiry;
     private final NodeTopologyTracker ntt;
     private final LocalQuorumWatcher localQuorumWatcher;
-    private final IntSupplier clusterMembershipCountSupplier;
     private final IntSupplier configuredCoreCountSupplier;
-    private final Supplier<Set<NodeId>> currentClusterMembersSupplier;
     private final ClusterTopologyManager ctm;
     private final TimeSource timeSource;
     private final NttTimerScheduler scheduler;
@@ -97,9 +98,7 @@ public final class LeaderReconciler {
     private LeaderReconciler(MembershipConfig membershipConfig,
                              NodeTopologyTracker ntt,
                              LocalQuorumWatcher localQuorumWatcher,
-                             IntSupplier clusterMembershipCountSupplier,
                              IntSupplier configuredCoreCountSupplier,
-                             Supplier<Set<NodeId>> currentClusterMembersSupplier,
                              ClusterTopologyManager ctm,
                              TimeSource timeSource,
                              NttTimerScheduler scheduler) {
@@ -108,9 +107,7 @@ public final class LeaderReconciler {
         this.inFlightExpiry = leaderActivationDelay;
         this.ntt = ntt;
         this.localQuorumWatcher = localQuorumWatcher;
-        this.clusterMembershipCountSupplier = clusterMembershipCountSupplier;
         this.configuredCoreCountSupplier = configuredCoreCountSupplier;
-        this.currentClusterMembersSupplier = currentClusterMembersSupplier;
         this.ctm = ctm;
         this.timeSource = timeSource;
         this.scheduler = scheduler;
@@ -120,16 +117,12 @@ public final class LeaderReconciler {
     public static LeaderReconciler leaderReconciler(MembershipConfig membershipConfig,
                                                     NodeTopologyTracker ntt,
                                                     LocalQuorumWatcher localQuorumWatcher,
-                                                    IntSupplier clusterMembershipCountSupplier,
                                                     IntSupplier configuredCoreCountSupplier,
-                                                    Supplier<Set<NodeId>> currentClusterMembersSupplier,
                                                     ClusterTopologyManager ctm) {
         return new LeaderReconciler(membershipConfig,
                                     ntt,
                                     localQuorumWatcher,
-                                    clusterMembershipCountSupplier,
                                     configuredCoreCountSupplier,
-                                    currentClusterMembersSupplier,
                                     ctm,
                                     TimeSource.system(),
                                     SharedScheduler::schedule);
@@ -140,18 +133,14 @@ public final class LeaderReconciler {
     public static LeaderReconciler leaderReconciler(MembershipConfig membershipConfig,
                                                     NodeTopologyTracker ntt,
                                                     LocalQuorumWatcher localQuorumWatcher,
-                                                    IntSupplier clusterMembershipCountSupplier,
                                                     IntSupplier configuredCoreCountSupplier,
-                                                    Supplier<Set<NodeId>> currentClusterMembersSupplier,
                                                     ClusterTopologyManager ctm,
                                                     TimeSource timeSource,
                                                     NttTimerScheduler scheduler) {
         return new LeaderReconciler(membershipConfig,
                                     ntt,
                                     localQuorumWatcher,
-                                    clusterMembershipCountSupplier,
                                     configuredCoreCountSupplier,
-                                    currentClusterMembersSupplier,
                                     ctm,
                                     timeSource,
                                     scheduler);
@@ -294,9 +283,9 @@ public final class LeaderReconciler {
 
         evictExpiredInFlightEntries(now);
 
-        var clusterMembershipCount = clusterMembershipCountSupplier.getAsInt();
+        var clusterMembershipCount = ntt.currentMemberCount();
         var configuredCoreCount = configuredCoreCountSupplier.getAsInt();
-        var currentMembers = currentClusterMembersSupplier.get();
+        var currentMembers = ntt.currentMembers();
         var effective = clusterMembershipCount + inFlightProvisioning.size();
 
         var peersToProvision = computePeersToProvision(configuredCoreCount, effective);

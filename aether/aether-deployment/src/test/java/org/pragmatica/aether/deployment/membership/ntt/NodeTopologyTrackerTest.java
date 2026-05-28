@@ -25,10 +25,11 @@ import static org.pragmatica.aether.deployment.membership.MembershipConfig.membe
 import static org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker.nodeTopologyTracker;
 
 
-/// Unit tests for [`NodeTopologyTracker`] (E2 Phase 1.5) — timer-only mechanism;
-/// fire invokes a `Runnable onReconcileNeeded` callback. NTT no longer holds
-/// per-peer event records.
+/// Unit tests for [`NodeTopologyTracker`] (E2 Phase 1.6) — timer-only mechanism plus
+/// SWIM-sourced member-set tracking; fire invokes a `Runnable onReconcileNeeded`
+/// callback.
 class NodeTopologyTrackerTest {
+    private static final NodeId SELF = NodeId.randomNodeId();
     private static final NodeId PEER = NodeId.randomNodeId();
 
     private ManualScheduler scheduler;
@@ -39,7 +40,7 @@ class NodeTopologyTrackerTest {
     void setUp() {
         scheduler = new ManualScheduler();
         reconcileInvocations = new AtomicInteger(0);
-        ntt = nodeTopologyTracker(membershipConfig(), scheduler, reconcileInvocations::incrementAndGet);
+        ntt = nodeTopologyTracker(membershipConfig(), SELF, scheduler, reconcileInvocations::incrementAndGet);
     }
 
     @Nested
@@ -112,13 +113,78 @@ class NodeTopologyTrackerTest {
             assertThat(ntt.pendingTimerCount()).isEqualTo(1);
             assertThat(scheduler.pendingTasks()).hasSize(1);
         }
+    }
+
+    @Nested
+    class MemberSet {
+        @Test
+        void freshTracker_membersContainSelfOnly() {
+            assertThat(ntt.currentMembers()).containsExactly(SELF);
+            assertThat(ntt.currentMemberCount()).isEqualTo(1);
+        }
 
         @Test
-        void nonDepartedObservation_isIgnored() {
+        void onSwimObservation_addsHealthyPeer_toCurrentMembers() {
             ntt.onSwimObservation(new HealthyObserved(PEER, 1L));
 
-            assertThat(ntt.pendingTimerCount()).isZero();
+            assertThat(ntt.currentMembers()).containsExactlyInAnyOrder(SELF, PEER);
+            assertThat(ntt.currentMemberCount()).isEqualTo(2);
             assertThat(scheduler.pendingTasks()).isEmpty();
+        }
+
+        @Test
+        void onSwimObservation_departed_removesPeerFromMembers_andStartsTimer() {
+            ntt.onSwimObservation(new HealthyObserved(PEER, 1L));
+
+            ntt.onSwimObservation(new DepartedObserved(PEER, 2L));
+
+            assertThat(ntt.currentMembers()).containsExactly(SELF);
+            assertThat(ntt.currentMemberCount()).isEqualTo(1);
+            assertThat(ntt.pendingTimerCount()).isEqualTo(1);
+        }
+
+        @Test
+        void onSwimObservation_healthy_whilePendingTimer_cancelsTimer_andClearsPendingMap() {
+            ntt.onSwimObservation(new DepartedObserved(PEER, 1L));
+            assertThat(ntt.pendingTimerCount()).isEqualTo(1);
+            var armed = scheduler.pendingTasks().getFirst();
+
+            ntt.onSwimObservation(new HealthyObserved(PEER, 2L));
+
+            assertThat(ntt.pendingTimerCount()).isZero();
+            assertThat(armed.cancelled()).isTrue();
+            assertThat(ntt.currentMembers()).containsExactlyInAnyOrder(SELF, PEER);
+        }
+
+        @Test
+        void memberCount_reflectsAddRemoveSequence() {
+            var peerB = NodeId.randomNodeId();
+            var peerC = NodeId.randomNodeId();
+
+            ntt.onSwimObservation(new HealthyObserved(PEER, 1L));
+            ntt.onSwimObservation(new HealthyObserved(peerB, 1L));
+            ntt.onSwimObservation(new HealthyObserved(peerC, 1L));
+            assertThat(ntt.currentMemberCount()).isEqualTo(4);
+
+            ntt.onSwimObservation(new DepartedObserved(PEER, 2L));
+            assertThat(ntt.currentMemberCount()).isEqualTo(3);
+
+            ntt.onSwimObservation(new HealthyObserved(PEER, 3L));
+            assertThat(ntt.currentMemberCount()).isEqualTo(4);
+
+            ntt.onSwimObservation(new DepartedObserved(peerB, 2L));
+            ntt.onSwimObservation(new DepartedObserved(peerC, 2L));
+            assertThat(ntt.currentMemberCount()).isEqualTo(2);
+            assertThat(ntt.currentMembers()).containsExactlyInAnyOrder(SELF, PEER);
+        }
+
+        @Test
+        void duplicateHealthy_isIdempotent() {
+            ntt.onSwimObservation(new HealthyObserved(PEER, 1L));
+            ntt.onSwimObservation(new HealthyObserved(PEER, 2L));
+
+            assertThat(ntt.currentMembers()).containsExactlyInAnyOrder(SELF, PEER);
+            assertThat(ntt.currentMemberCount()).isEqualTo(2);
         }
     }
 

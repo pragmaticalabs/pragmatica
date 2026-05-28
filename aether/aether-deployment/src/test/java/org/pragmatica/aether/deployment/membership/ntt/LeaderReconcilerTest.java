@@ -24,6 +24,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.swim.SwimObservation.HealthyObserved;
 
 import java.net.SocketAddress;
 import java.util.ArrayList;
@@ -36,7 +37,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
-import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.deployment.membership.MembershipConfig.membershipConfig;
@@ -47,10 +47,12 @@ import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Unit tests for [`LeaderReconciler`] (E2 Phase 1.5) — fully state-derived
-/// reconciliation. No periodic tick; the leader-activation reconcile is a single
-/// delayed one-shot at `nttDepartureTimeout × 1.5`.
+/// Unit tests for [`LeaderReconciler`] (E2 Phase 1.6) — state-derived
+/// reconciliation sourcing membership from NTT. No periodic tick; the
+/// leader-activation reconcile is a single delayed one-shot at
+/// `nttDepartureTimeout × 1.5`.
 class LeaderReconcilerTest {
+    private static final NodeId SELF = NodeId.randomNodeId();
     private static final NodeId PEER_A = NodeId.randomNodeId();
     private static final NodeId PEER_B = NodeId.randomNodeId();
     private static final TimeSpan EXPECTED_ACTIVATION_DELAY =
@@ -60,9 +62,7 @@ class LeaderReconcilerTest {
     private TestTimeSource timeSource;
     private ManualScheduler scheduler;
     private RecordingListener listener;
-    private MutableIntSupplier clusterMembershipCount;
     private MutableIntSupplier configuredCoreCount;
-    private MutableMembersSupplier currentMembers;
     private RecordingCtm ctm;
     private NodeTopologyTracker ntt;
     private LocalQuorumWatcher localQuorum;
@@ -73,22 +73,27 @@ class LeaderReconcilerTest {
         timeSource = new TestTimeSource();
         scheduler = new ManualScheduler();
         listener = new RecordingListener();
-        clusterMembershipCount = new MutableIntSupplier(0);
         configuredCoreCount = new MutableIntSupplier(0);
-        currentMembers = new MutableMembersSupplier(Set.of());
         ctm = new RecordingCtm();
-        ntt = nodeTopologyTracker(membershipConfig(), scheduler);
+        ntt = nodeTopologyTracker(membershipConfig(), SELF, scheduler);
         localQuorum = localQuorumWatcher(membershipConfig(), timeSource, scheduler);
         reconciler = leaderReconciler(membershipConfig(),
                                       ntt,
                                       localQuorum,
-                                      clusterMembershipCount,
                                       configuredCoreCount,
-                                      currentMembers,
                                       ctm,
                                       timeSource,
                                       scheduler);
         reconciler.setReconcileListener(listener);
+    }
+
+    /// Feed N healthy peers into NTT — the reconciler's `clusterMembershipCount`
+    /// reads via `ntt.currentMemberCount()` (which includes `SELF` automatically).
+    @Contract
+    private void seedClusterWithPeers(NodeId... peers) {
+        for (var peer : peers) {
+            ntt.onSwimObservation(new HealthyObserved(peer, 1L));
+        }
     }
 
     @Nested
@@ -108,7 +113,7 @@ class LeaderReconcilerTest {
         @Test
         void activate_doesNotEmitImmediateIntent_schedulesOneShotDelayedReconcile() {
             configuredCoreCount.set(5);
-            clusterMembershipCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B);
 
             reconciler.activate();
 
@@ -124,7 +129,7 @@ class LeaderReconcilerTest {
         @Test
         void activationDelayFires_emitsLeaderActivationIntent_andDispatchesProvisions() {
             configuredCoreCount.set(5);
-            clusterMembershipCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B);
             reconciler.activate();
 
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
@@ -183,7 +188,7 @@ class LeaderReconcilerTest {
         @Test
         void onTopologyUnhealthy_whileLeader_emitsNttFireIntent_throughDebounce() {
             configuredCoreCount.set(5);
-            clusterMembershipCount.set(4);
+            seedClusterWithPeers(PEER_A, PEER_B, NodeId.randomNodeId());
             reconciler.activate();
             listener.clear();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().cancel(false);
@@ -224,8 +229,7 @@ class LeaderReconcilerTest {
         @Test
         void onSwimMemberHealthy_whileLeader_emitsMemberAppearedIntent() {
             configuredCoreCount.set(3);
-            clusterMembershipCount.set(5);
-            currentMembers.set(Set.of(PEER_A, PEER_B, NodeId.randomNodeId(), NodeId.randomNodeId(), NodeId.randomNodeId()));
+            seedClusterWithPeers(PEER_A, PEER_B, NodeId.randomNodeId(), NodeId.randomNodeId());
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().cancel(false);
             listener.clear();
@@ -254,7 +258,7 @@ class LeaderReconcilerTest {
         @Test
         void onConfigChange_whileLeader_emitsConfigChangeIntent() {
             configuredCoreCount.set(5);
-            clusterMembershipCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B);
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().cancel(false);
             listener.clear();
@@ -280,7 +284,7 @@ class LeaderReconcilerTest {
         @Test
         void rapidBurstOfTriggers_collapsesIntoAtMostTwoReconcilePasses() {
             configuredCoreCount.set(5);
-            clusterMembershipCount.set(4);
+            seedClusterWithPeers(PEER_A, PEER_B, NodeId.randomNodeId());
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().cancel(false);
             listener.clear();
@@ -315,7 +319,7 @@ class LeaderReconcilerTest {
         @Test
         void underprovisionedSnapshot_intentReflectsObservedAndConfiguredCounts() {
             configuredCoreCount.set(5);
-            clusterMembershipCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B);
 
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
@@ -331,8 +335,7 @@ class LeaderReconcilerTest {
         @Test
         void overprovisionedSnapshot_intentReflectsObservedAndConfiguredCounts() {
             configuredCoreCount.set(3);
-            clusterMembershipCount.set(5);
-            currentMembers.set(Set.of(PEER_A, PEER_B, NodeId.randomNodeId(), NodeId.randomNodeId(), NodeId.randomNodeId()));
+            seedClusterWithPeers(PEER_A, PEER_B, NodeId.randomNodeId(), NodeId.randomNodeId());
 
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
@@ -351,12 +354,12 @@ class LeaderReconcilerTest {
         @Test
         void staleInFlightEntryPastExpiryWindow_isEvictedOnNextReconcile() {
             configuredCoreCount.set(5);
-            clusterMembershipCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B);
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(2);
             listener.clear();
-            clusterMembershipCount.set(5);
+            seedClusterWithPeers(NodeId.randomNodeId(), NodeId.randomNodeId());
             timeSource.advanceTimeMillis(EXPECTED_ACTIVATION_DELAY.millis() * 3);
 
             reconciler.onTopologyUnhealthy();
@@ -401,24 +404,6 @@ class LeaderReconcilerTest {
         @Contract
         void set(int newValue) {
             value.set(newValue);
-        }
-    }
-
-    private static final class MutableMembersSupplier implements Supplier<Set<NodeId>> {
-        private volatile Set<NodeId> value;
-
-        MutableMembersSupplier(Set<NodeId> initial) {
-            this.value = Set.copyOf(initial);
-        }
-
-        @Override
-        public Set<NodeId> get() {
-            return value;
-        }
-
-        @Contract
-        void set(Set<NodeId> next) {
-            value = Set.copyOf(next);
         }
     }
 

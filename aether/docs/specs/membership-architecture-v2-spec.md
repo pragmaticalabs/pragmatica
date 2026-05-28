@@ -64,7 +64,7 @@ The current code conflates two distinct counts under the umbrella of "node count
 | Name | Source | Scope | Used for |
 |---|---|---|---|
 | **`localQuorumCount`** (local QUIC quorum count) | `QuicClusterNetwork.connectedNodeCount` (incl. self via +1) | Local per-node | Consensus liveness: *can this node reach enough peers to participate in a Rabia round?* Drives `QuorumStateNotification.ESTABLISHED` and quorum-loss-triggered self-drain. |
-| **`clusterMembershipCount`** (cluster SWIM membership count) | SWIM's converged member set (after gossip + `ping-req`) | Cluster-consistent | Topology decisions: *is the cluster the right size against `configured`?* Drives CTM provisioning / reaping. |
+| **`clusterMembershipCount`** (cluster SWIM membership count) | SWIM's converged member set (after gossip + `ping-req`), sourced in production via `NodeTopologyTracker.currentMemberCount()` | Cluster-consistent | Topology decisions: *is the cluster the right size against `configured`?* Drives CTM provisioning / reaping. |
 
 Under full connectivity these counts agree. Under **partial connectivity they diverge** — and that divergence is the right signal: it says "the cluster is intact, but *this* node is locally isolated." A node whose `localQuorumCount` drops below threshold self-drains (safety); a divergence in `clusterMembershipCount` from `configured` triggers CTM provisioning or drain. **Calling both "node count" without qualification is forbidden in v2 code.**
 
@@ -96,8 +96,11 @@ The single new component. NTT replaces the leader-pinned `JoinDeadlineExpired` t
 - **Runs on every node** in the cluster — universal, never leader-pinned.
 - **Inputs:**
   - SWIM converged departure notifications (`FAULTY` / `Departed` — post-gossip and post-`ping-req`; **not** local `SUSPECT` or direct-probe failure).
+  - SWIM converged healthy notifications (`HealthyObserved` — post-gossip; used for member-set tracking and as a timer-cancellation signal symmetric with QUIC reconnect).
   - QUIC reconnect events.
-- **State (per departed peer):** a single in-memory `ScheduledFuture<?>` (the pending one-shot timer). No event records, no claim queue, no persisted KV.
+- **State:**
+  - **Per departed peer** — a single in-memory `ScheduledFuture<?>` (the pending one-shot timer). No event records, no claim queue, no persisted KV.
+  - **Cluster member set** — an in-memory `Set<NodeId>` containing `self` (always) plus every peer for which a `HealthyObserved` has been observed since process start, minus any peer for which a `DepartedObserved` has subsequently arrived. SWIM-sourced, not persisted.
 - **Output:** invokes a constructor-injected `Runnable onReconcileNeeded` callback on timer expiry. NTT carries no payload to the callback — the reconcile is fully state-derived (E2 Phase 1.5).
 
 ### 6.2 Behavior
@@ -115,6 +118,15 @@ The current `JoinDeadlineExpired` mechanism is a *one-shot event sent to the lea
 NTT replaces transient leader-targeted events with **continuous local state derived from observable inputs**. The decision data (the pending timer) lives on every node identically. The action (CTM provisioning) is leader-specific, but the moment-of-action check ("am I leader? is it quorum-safe?") happens at the action site, not at event-generation time. Leader handoff during the timeout window is harmless: the new leader has been running the same timer locally; nothing is lost.
 
 This pattern (P4) is broadly applicable. Other leader-pinned timers (drain ack, join timeout, sync timeout, slot FILLING expiry) all collapse into this shape or disappear entirely.
+
+### 6.5 Member set tracking (E2 Phase 1.6)
+
+NTT maintains a SWIM-tracked `currentMembers: Set<NodeId>` populated from `HealthyObserved` (adds) / `DepartedObserved` (removes); `self` is included unconditionally. The set is the authoritative source for two consumer reads:
+
+- **`clusterMembershipCount`** (§4) — the leader reconciler reads `ntt.currentMemberCount()` per reconcile pass instead of approximating via `QuicClusterNetwork.connectedNodeCount + 1`. SWIM is fresher than QUIC: a peer enters SWIM gossip first, then QUIC dials lag, then Rabia voter inclusion lags more. Sourcing the count from SWIM via NTT gives the freshest "who is in this cluster right now" view, which is the right input for the provisioning decision.
+- **Provisioning seed-PEERS / drain selection** — `ntt.currentMembers()` returns an unmodifiable snapshot used as the seed-PEERS set when provisioning a replacement, and as the iteration domain when picking drain victims for the overprovisioned case.
+
+A `HealthyObserved` that arrives while an NTT departure timer is still pending for the same peer cancels the timer (symmetric with QUIC reconnect — both signals mean "peer is back"). Set semantics make `HealthyObserved` and `DepartedObserved` idempotent across duplicate gossip.
 
 ## 7. CTM, simplified
 
@@ -367,3 +379,4 @@ Explicitly delimited so the boundary is clear:
 | 2026-05-28 | session author | Final refinements: §2.1 trust model, §8.4 quorum-loss-drain consensus-unavailable caveat, §8.5 `DrainRequestKey` schema (HLC-timestamped), §14 configured-size observation race note. |
 | 2026-05-28 | session author | RC1-scope correction + implementation-consultation decisions: §1 retargeted to RC1; §4 `localQuorumCount` vs Rabia voter-set divergence note; §7.4 NEW (hybrid reconciliation triggers — NTT events + KV-subscribed configured/drain changes + leader-activation map-drain + periodic tick at `provisioning_timeout × 1.5` with local-only `inFlightProvisioning`); §8.2 step 3 amended (LEAVE preserved as SWIM acceleration); §10 LEAVE entry amended (delete only the FSM state-transition machinery, keep SWIM-internal LEAVE); I12 NEW (NTT per-peer claimable map, claim-then-process); §14 entries added for `membership.nttObservation` flag and reconciliation-tick period rationale. |
 | 2026-05-28 | session author | E2 Phase 1.5 simplification — NTT collapsed to per-peer one-shot timer map (no event records / claim queue / drain); reconciliation fully state-derived via CAS-debounced `triggerReconcile(trigger)`; periodic tick removed (surplus now event-signalled via SWIM `HealthyObserved`); leader-activation reconcile delayed by `nttDepartureTimeout × 1.5`. `ReconcileTrigger` updated (`NTT_DRAIN`→`NTT_FIRE`; `PERIODIC_TICK` removed; `MEMBER_APPEARED`, `CONFIG_CHANGE` added). `ReconcileIntent.peersToProvision`/`peersToDrain` replaced with `provisionCount`/`drainCount` (reconciler owns peer selection internally). §6/§7.4/§14/I12 rewritten. |
+| 2026-05-28 | session author | E2 Phase 1.6 — NTT becomes the authoritative cluster-membership source. NTT subscribes to both `DepartedObserved` and `HealthyObserved`; maintains `currentMembers: Set<NodeId>` (self always included). `LeaderReconciler` drops the QUIC-based `clusterMembershipCountSupplier` / `currentClusterMembersSupplier` constructor params and reads both `ntt.currentMemberCount()` and `ntt.currentMembers()` directly — SWIM is fresher than QUIC for the "who is in the cluster right now" view. `HealthyObserved` arriving while an NTT timer is pending cancels the timer (symmetric with QUIC reconnect). New §6.5 (member set tracking); §4 amended to note the production source; §6.1 inputs amended to include `HealthyObserved`. |

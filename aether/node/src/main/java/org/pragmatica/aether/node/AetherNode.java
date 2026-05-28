@@ -1813,27 +1813,19 @@ public interface AetherNode extends ManageableNode {
         var quicTapsOpt = Option.<NttQuicTaps>none();
         if (membershipConfig.nttObservation() == NttObservationFlag.UNIVERSAL) {
             var timeSource = TimeSource.system();
-            IntSupplier clusterMembershipCountSupplier = () -> clusterNode.network().connectedNodeCount() + 1;
             IntSupplier configuredCoreCountSupplier = () -> config.topology().coreNodes().size();
-            Supplier<Set<NodeId>> currentClusterMembersSupplier = () -> {
-                var members = new java.util.HashSet<NodeId>(clusterNode.network().connectedPeers());
-                members.add(config.self());
-                return Set.copyOf(members);
-            };
             var leaderReconcilerRef = new java.util.concurrent.atomic.AtomicReference<LeaderReconciler>();
             Runnable nttReconcileTrigger = () -> {
                 var current = leaderReconcilerRef.get();
                 if (current != null) {current.onTopologyUnhealthy();}
             };
-            var ntt = NodeTopologyTracker.nodeTopologyTracker(membershipConfig, SharedScheduler::schedule, nttReconcileTrigger);
+            var ntt = NodeTopologyTracker.nodeTopologyTracker(membershipConfig, config.self(), SharedScheduler::schedule, nttReconcileTrigger);
             var localQuorumWatcher = LocalQuorumWatcher.localQuorumWatcher(membershipConfig, timeSource, SharedScheduler::schedule);
             var divergenceLogger = DivergenceLogger.divergenceLogger(timeSource);
             var leaderReconciler = LeaderReconciler.leaderReconciler(membershipConfig,
                                                                      ntt,
                                                                      localQuorumWatcher,
-                                                                     clusterMembershipCountSupplier,
                                                                      configuredCoreCountSupplier,
-                                                                     currentClusterMembersSupplier,
                                                                      clusterTopologyManager,
                                                                      timeSource,
                                                                      SharedScheduler::schedule);
