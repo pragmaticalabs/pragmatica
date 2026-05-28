@@ -226,22 +226,22 @@ CTM does not act on `DrainRequestKey` directly; it only reacts to the resulting 
 
 For implementation traceability, the following are removed (entire modules / classes / mechanisms):
 
-| Removed | Reason |
-|---|---|
-| `MembershipFsm` + lifecycle states `Untracked` / `Provisioning` / `Joining` / `OnDuty` / `Draining` / `Stopped` | State derived from SWIM + QUIC, not maintained |
-| `ClusterMembershipReducer` | Pure-function reducer over the deleted lifecycle |
-| `ReachabilityGate.isConfirmedUnreachable` (2-plane gate) | SWIM convergence does this natively |
-| φ-accrual detector | SWIM is the detector |
-| `JoinDeadlineExpired` event + leader-pinned timer | NTT replaces |
-| Slot KV records (`ProvisioningSlotValue` with `occupantEpoch`/`supersededNodeId`) | Slots become count-derived positions |
-| `freeStaleFillingSlots` / `freeDeadSlots` / FILLING expiry | No FILLING state to reclaim |
-| `applyExternalLifecycleRemove` → `applyLifecycleRemoveWithSlot` re-bind chain | No parallel lifecycle to remove |
-| `(Untracked, SwimHealthy) → untrackedDirectToOnDuty` reducer cell (the resurrection vector) | No parallel lifecycle to write |
-| Static-PEERS pre-population of `topologyManager` for QUIC dialing | SWIM is the sole input (§5) |
-| `Draining` lifecycle state + `DrainCoordinator` ↔ membership-FSM integration + `awaitDrainAck` as an FSM transition | Drain is node-local + KV-observable (§8) |
-| `SelfDrainCoordinator` as an FSM-integrated component | Replaced by a small local quorum observer that triggers §8 |
-| `DecommissionedAtomGc` | No lifecycle atoms to GC (subject to confirmation during implementation) |
-| SWIM voluntary `LEAVE` message **as a membership-layer state transition** (the FSM's Draining→Stopped path with `awaitDrainAck`) | Membership layer is cause-agnostic (P2). LEAVE is **preserved as a SWIM-internal acceleration of `DepartedObserved`** (peer skips suspect-aging on authenticated LEAVE receipt); see §8.2 step 3 |
+| Removed | Reason | Status |
+|---|---|---|
+| `MembershipFsm` + lifecycle states `Untracked` / `Provisioning` / `Joining` / `OnDuty` / `Draining` / `Stopped` | State derived from SWIM + QUIC, not maintained | PENDING (Phase 2c) |
+| `ClusterMembershipReducer` | Pure-function reducer over the deleted lifecycle | PENDING (Phase 2c) |
+| `ReachabilityGate.isConfirmedUnreachable` (2-plane gate) | SWIM convergence does this natively | PENDING |
+| φ-accrual detector (`PhiAccrualDetector`, `PhiAccrualConfig`, `PhiObserver`, `PhiWarmth`) + DivergenceLogger + `FsmDecisionEvent`/`Type` + `NttObservationFlag` | SWIM is the detector; observation-only ramp completed | **DELETED (Phase 2a, 2026-05-28)** |
+| `JoinDeadlineExpired` event + leader-pinned timer | NTT replaces | PENDING (Phase 2c) |
+| Slot KV records (`ProvisioningSlotValue` with `occupantEpoch`/`supersededNodeId`) | Slots become count-derived positions | PENDING (Phase 2c) |
+| `freeStaleFillingSlots` / `freeDeadSlots` / FILLING expiry | No FILLING state to reclaim | PENDING (Phase 2c) |
+| `applyExternalLifecycleRemove` → `applyLifecycleRemoveWithSlot` re-bind chain | No parallel lifecycle to remove | PENDING (Phase 2c) |
+| `(Untracked, SwimHealthy) → untrackedDirectToOnDuty` reducer cell (the resurrection vector) | No parallel lifecycle to write | PENDING (Phase 2c) |
+| Static-PEERS pre-population of `topologyManager` for QUIC dialing | SWIM is the sole input (§5) | PENDING |
+| `Draining` lifecycle state + `DrainCoordinator` ↔ membership-FSM integration + `awaitDrainAck` as an FSM transition | Drain is node-local + KV-observable (§8) | PENDING (Phase 2b/c) |
+| `SelfDrainCoordinator` as an FSM-integrated component | Replaced by a small local quorum observer that triggers §8 | PENDING (Phase 2b) |
+| `DecommissionedAtomGc` | No lifecycle atoms to GC (subject to confirmation during implementation) | PENDING |
+| SWIM voluntary `LEAVE` message **as a membership-layer state transition** (the FSM's Draining→Stopped path with `awaitDrainAck`) | Membership layer is cause-agnostic (P2). LEAVE is **preserved as a SWIM-internal acceleration of `DepartedObserved`** (peer skips suspect-aging on authenticated LEAVE receipt); see §8.2 step 3 | PENDING |
 
 What remains: SWIM, QUIC, Rabia, `LeaderManager` (all unchanged), simplified CTM (§7), NTT (§6), per-node `LocalQuorumWatcher` (small observer that drives §8's quorum-loss trigger), `DrainRequestKey` KV record (operator drain commands).
 
@@ -380,3 +380,4 @@ Explicitly delimited so the boundary is clear:
 | 2026-05-28 | session author | RC1-scope correction + implementation-consultation decisions: §1 retargeted to RC1; §4 `localQuorumCount` vs Rabia voter-set divergence note; §7.4 NEW (hybrid reconciliation triggers — NTT events + KV-subscribed configured/drain changes + leader-activation map-drain + periodic tick at `provisioning_timeout × 1.5` with local-only `inFlightProvisioning`); §8.2 step 3 amended (LEAVE preserved as SWIM acceleration); §10 LEAVE entry amended (delete only the FSM state-transition machinery, keep SWIM-internal LEAVE); I12 NEW (NTT per-peer claimable map, claim-then-process); §14 entries added for `membership.nttObservation` flag and reconciliation-tick period rationale. |
 | 2026-05-28 | session author | E2 Phase 1.5 simplification — NTT collapsed to per-peer one-shot timer map (no event records / claim queue / drain); reconciliation fully state-derived via CAS-debounced `triggerReconcile(trigger)`; periodic tick removed (surplus now event-signalled via SWIM `HealthyObserved`); leader-activation reconcile delayed by `nttDepartureTimeout × 1.5`. `ReconcileTrigger` updated (`NTT_DRAIN`→`NTT_FIRE`; `PERIODIC_TICK` removed; `MEMBER_APPEARED`, `CONFIG_CHANGE` added). `ReconcileIntent.peersToProvision`/`peersToDrain` replaced with `provisionCount`/`drainCount` (reconciler owns peer selection internally). §6/§7.4/§14/I12 rewritten. |
 | 2026-05-28 | session author | E2 Phase 1.6 — NTT becomes the authoritative cluster-membership source. NTT subscribes to both `DepartedObserved` and `HealthyObserved`; maintains `currentMembers: Set<NodeId>` (self always included). `LeaderReconciler` drops the QUIC-based `clusterMembershipCountSupplier` / `currentClusterMembersSupplier` constructor params and reads both `ntt.currentMemberCount()` and `ntt.currentMembers()` directly — SWIM is fresher than QUIC for the "who is in the cluster right now" view. `HealthyObserved` arriving while an NTT timer is pending cancels the timer (symmetric with QUIC reconnect). New §6.5 (member set tracking); §4 amended to note the production source; §6.1 inputs amended to include `HealthyObserved`. |
+| 2026-05-28 | session author | E2 Phase 2a — peripheral deletions executed. Removed: φ-accrual stack (`PhiAccrualDetector`/`PhiAccrualConfig`/`PhiObserver`/`PhiWarmth` + tests + chaos spike), divergence-logger (`DivergenceLogger`/`FsmDecisionEvent`/`FsmDecisionType` + test), `NttObservationFlag` migration-ramp gate + `nttObservation` field on `MembershipConfig`/`MembershipConfigBinding` + Main lift helper. NTT/LocalQuorumWatcher/LeaderReconciler now wire unconditionally on every node. `ClusterMembershipReducer.apply(state, event)` drops the `PhiWarmth` parameter; `(ON_DUTY, SwimFaulty)` cell now decommissions unconditionally (SWIM trusted directly). `MembershipFsm` drops the `phiWarmth` field + `addDecisionListener` + decisionListeners machinery. `AetherNode.buildMembershipFsm` signature drops the `PhiWarmth` arg; `attachQuicConnectivityReporter` takes raw `Consumer<NodeId>` taps instead of `Option<NttQuicTaps>`; `NttQuicTaps` record + `emitForceDecommission` helper deleted. Spec §10 entries marked DELETED. |

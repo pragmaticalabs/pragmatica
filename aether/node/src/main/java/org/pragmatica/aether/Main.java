@@ -16,7 +16,6 @@ import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.config.Environment;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
-import org.pragmatica.aether.deployment.membership.ntt.NttObservationFlag;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.aether.node.AetherNode;
@@ -183,14 +182,7 @@ public record Main(String[] args) {
 
     private static MembershipConfig liftMembershipBinding(MembershipConfigBinding binding) {
         return new MembershipConfig(binding.nttDepartureTimeout(),
-                                    binding.quorumLossDrainThreshold(),
-                                    parseNttObservation(binding.nttObservation()));
-    }
-
-    private static NttObservationFlag parseNttObservation(String raw) {
-        return "universal".equalsIgnoreCase(raw)
-               ? NttObservationFlag.UNIVERSAL
-               : NttObservationFlag.OFF;
+                                    binding.quorumLossDrainThreshold());
     }
 
     private ConfigurationProvider buildConfigProvider(Path configPath) {

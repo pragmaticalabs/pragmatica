@@ -98,27 +98,22 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
     /// observed-fact branch (`MembershipFsmEvent`) and the operator-intent branch
     /// (`LifecycleCommand`). Events flow through the per-state event matrix; commands flow
     /// through `applyCommand` which dispatches per-command-type then per-state.
-    ///
-    /// Adopters that drive the reducer with raw events MAY continue using the existing
-    /// `apply(state, event, warmth)` overload; new call sites should prefer this overload to
-    /// route either branch uniformly.
-    public Outcome apply(MembershipFsmState state, MembershipFsmInput input, PhiWarmth warmth) {
+    public Outcome apply(MembershipFsmState state, MembershipFsmInput input) {
         return switch (input) {
-            case MembershipFsmEvent event -> apply(state, event, warmth);
+            case MembershipFsmEvent event -> apply(state, event);
             case LifecycleCommand command -> applyCommand(state, command);
         };
     }
 
-    /// #231 leader-side φ-accrual handoff — `warmth` is consulted only by the `(ON_DUTY,
-    /// SwimFaulty)` cell. All other cells ignore `warmth` and behave identically to the
-    /// pre-handoff reducer. Callers that do not have φ data (or do not want φ to own liveness,
-    /// e.g. the command path) may pass `PhiWarmth.COLD`, which preserves the SWIM-owns behavior.
-    public Outcome apply(MembershipFsmState state, MembershipFsmEvent event, PhiWarmth warmth) {
+    /// E2 Phase 2a (2026-05-28): the leader-side φ-accrual handoff (#231) is removed. The
+    /// `(ON_DUTY, SwimFaulty)` cell now trusts SWIM directly — a faulty observation
+    /// decommissions unconditionally. The reducer signature drops the `PhiWarmth` parameter.
+    public Outcome apply(MembershipFsmState state, MembershipFsmEvent event) {
         return switch (state) {
             case Untracked s -> applyUntracked(s, event);
             case Provisioning s -> applyProvisioning(s, event);
             case Joining s -> applyJoining(s, event);
-            case OnDuty s -> applyOnDuty(s, event, warmth);
+            case OnDuty s -> applyOnDuty(s, event);
             case Draining s -> applyDraining(s, event);
             case Stopped s -> applyStopped(s, event);
         };
@@ -170,24 +165,15 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
         };
     }
 
-    private Outcome applyOnDuty(OnDuty state, MembershipFsmEvent event, PhiWarmth warmth) {
-        // #231 leader-side φ-accrual handoff. The leader is the SOLE prober (only it sends
-        // ClusterSync pings / receives pongs) and SOLE lifecycle writer, so there is no quorum to
-        // co-confirm against — the leader's own per-peer pong stream IS the observation and φ on
-        // that stream IS the debounce. Liveness ownership splits per-peer on φ-warmth:
-        //   - φ WARM → φ owns liveness. A SwimFaulty while φ still hears the peer's pongs is a SWIM
-        //     false-positive (the peer is ponging → alive) → nop. Once the peer truly goes silent,
-        //     φ saturates and PhiObserver (leader-local) issues ForceDecommission directly.
-        //   - φ COLD (unknown / still warming) → φ has nothing to say → trust SWIM, decommission.
-        //     This matches the pre-handoff ALWAYS_CONFIRMED behavior for the cold-start window.
-        // TransportUnreachable is UNGATED — a closed QUIC channel is definitive and non-flapping,
-        // needing no warmth check. SwimDeparted is unconditional (explicit leave). The 30s
-        // OnDutyFaulty reconciler remains the backstop for any death the live path misses.
+    private Outcome applyOnDuty(OnDuty state, MembershipFsmEvent event) {
+        // E2 Phase 2a (2026-05-28): the leader-side φ-accrual handoff (#231) is removed. SWIM
+        // owns the liveness decision directly — a SwimFaulty on an ON_DUTY peer decommissions
+        // unconditionally, matching the pre-handoff ALWAYS_CONFIRMED behavior. TransportUnreachable
+        // remains UNGATED (a closed QUIC channel is definitive). SwimDeparted is unconditional
+        // (explicit leave). The 30s OnDutyFaulty reconciler remains the backstop.
         return switch (event) {
             case SwimHealthy _ -> Outcome.nop(state);
-            case SwimFaulty e -> warmth.isWarm(state.peer())
-                                 ? Outcome.nop(state)
-                                 : onDutyToStopped(state, e.at(), REASON_SWIM_FAULTY, StopReason.FORCED);
+            case SwimFaulty e -> onDutyToStopped(state, e.at(), REASON_SWIM_FAULTY, StopReason.FORCED);
             case SwimDeparted e -> onDutyToStopped(state, e.at(), REASON_SWIM_DEPARTED, StopReason.FORCED);
             // A late/duplicate SlotClaimed for an already-ON_DUTY peer is benign (auto-heal
             // replacement re-claim / event re-delivery): nop rather than illegal() — a

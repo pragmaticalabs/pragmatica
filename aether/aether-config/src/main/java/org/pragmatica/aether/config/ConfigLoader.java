@@ -92,9 +92,11 @@ public final class ConfigLoader {
 
     /// Membership v2 — Stage 6 wiring. Maps the optional `[membership]` TOML section into
     /// a [`MembershipConfigBinding`]. Defaults (spec §14) are applied per-field when a
-    /// key is absent, so a partial section is well-defined. When the section is absent
-    /// entirely the binding is left empty — [`org.pragmatica.aether.Main`] then defaults
-    /// `nttObservation = OFF` per the production-safe constraint.
+    /// key is absent, so a partial section is well-defined.
+    ///
+    /// E2 Phase 2a (2026-05-28): the `ntt_observation` migration-ramp feature flag is
+    /// removed from the binding shape; if present in TOML it is silently ignored. NTT
+    /// instrumentation now wires unconditionally.
     private static void populateMembershipConfig(TomlDocument doc, AetherConfig.Builder builder) {
         var hasSection = doc.sectionNames().stream().anyMatch("membership"::equals);
         if (!hasSection) {return;}
@@ -106,9 +108,7 @@ public final class ConfigLoader {
                                                 "membership",
                                                 "quorum_loss_drain_threshold",
                                                 MembershipConfigBinding.DEFAULT_QUORUM_LOSS_DRAIN_THRESHOLD);
-        var nttObservation = doc.getString("membership", "ntt_observation")
-                                .or(MembershipConfigBinding.DEFAULT_NTT_OBSERVATION);
-        builder.membership(new MembershipConfigBinding(nttTimeout, quorumLossThreshold, nttObservation));
+        builder.membership(new MembershipConfigBinding(nttTimeout, quorumLossThreshold));
     }
 
     private static void populateStreamingConfig(TomlDocument doc, AetherConfig.Builder builder) {

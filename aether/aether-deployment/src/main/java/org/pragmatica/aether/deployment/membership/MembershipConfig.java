@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership;
 
-import org.pragmatica.aether.deployment.membership.ntt.NttObservationFlag;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -20,15 +19,13 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// continuously for at least this long before quorum-loss-triggered self-drain
 /// commits. Preserves the S19 chaos-suite row. Default: 8s.
 ///
-/// `nttObservation` — migration-ramp feature flag controlling whether NTT
-/// instrumentation is active. Defaults to [`NttObservationFlag#OFF`] in rc1 so the
-/// new code path is dormant until explicitly enabled per cluster.
+/// E2 Phase 2a (2026-05-28): the `nttObservation` migration-ramp feature flag is
+/// removed. NTT/LocalQuorumWatcher/LeaderReconciler now wire unconditionally — the
+/// observation-only ramp completed in Phase 1.6.
 public record MembershipConfig(TimeSpan nttDepartureTimeout,
-                               TimeSpan quorumLossDrainThreshold,
-                               NttObservationFlag nttObservation) {
+                               TimeSpan quorumLossDrainThreshold) {
     public static MembershipConfig membershipConfig() {
         return new MembershipConfig(timeSpan(15).seconds(),
-                                    timeSpan(8).seconds(),
-                                    NttObservationFlag.OFF);
+                                    timeSpan(8).seconds());
     }
 }

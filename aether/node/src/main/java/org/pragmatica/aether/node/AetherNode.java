@@ -42,11 +42,9 @@ import org.pragmatica.aether.deployment.drain.SelfDrainCoordinator;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmConfig;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
-import org.pragmatica.aether.deployment.membership.ntt.DivergenceLogger;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler;
 import org.pragmatica.aether.deployment.membership.ntt.LocalQuorumWatcher;
 import org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker;
-import org.pragmatica.aether.deployment.membership.ntt.NttObservationFlag;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossIntent;
 import org.pragmatica.aether.deployment.membership.phase.ClusterPhaseView;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
@@ -55,7 +53,6 @@ import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.deployment.schema.SchemaPolicy;
 import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
 import org.pragmatica.aether.deployment.membership.ReachabilityAggregator;
-import org.pragmatica.aether.deployment.membership.PhiAccrualDetector;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.delegation.TaskAssignmentError;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
@@ -614,7 +611,6 @@ public interface AetherNode extends ManageableNode {
                           Supplier<AetherValue.ClusterPhase> clusterPhaseSupplier,
                           org.pragmatica.aether.deployment.audit.RecentCommandsBuffer recentCommandsBuffer,
                           Option<org.pragmatica.aether.deployment.reconciler.LifecycleReconciler> lifecycleReconciler,
-                          PhiObserver phiObserver,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
@@ -652,7 +648,6 @@ public interface AetherNode extends ManageableNode {
             public Promise<Unit> start() {
                 log.info("Starting Aether node {}", self());
                 snapshotCollector.start();
-                phiObserver.start();
                 SliceRuntime.setSliceInvoker(sliceInvoker);
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::start);
 
@@ -676,7 +671,6 @@ public interface AetherNode extends ManageableNode {
                 ttmManager.stop();
                 scheduledTaskManager.stop();
                 snapshotCollector.stop();
-                phiObserver.stop();
                 SliceRuntime.clear();
                 streamPartitionManager.close();
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::stop);
@@ -1139,37 +1133,8 @@ public interface AetherNode extends ManageableNode {
         peerObservationStore.setCapSupplier(() -> Math.max(periodicConfig.capFloor().getAsInt(),
                                                            clusterNode.topologyManager().topology().size() * 4));
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
-        // #231 leader-side φ-accrual: the SHARED detector is fed by PhiObserver's leader-gated pong
-        // stream AND read by MembershipFsm's φ-warmth predicate (phiDetector::isWarm), so the
-        // reducer's (ON_DUTY, SwimFaulty) SWIM-false-positive suppression and PhiObserver's
-        // silence-driven decommission agree on warm/cold for every peer. The pong stream is
-        // leader-centric — only the leader sustains a full per-peer stream — so φ is fed (and acted
-        // on) ONLY while this node is the leader; PhiObserver self-gates on isLeaderSupplier and
-        // clear()s the detector across leadership transitions to avoid the §12.8 stale-window
-        // mass-eviction cascade. On each tick the leader force-decommissions any tracked ON_DUTY
-        // peer that φ reports warm-and-suspected (truly silent), via the FSM-routed lifecycle
-        // writer. The ON_DUTY-tracked-peer set is derived from kvTrackedPeersSupplier, filtered to
-        // lifecycle state == ON_DUTY and self-excluded.
-        var phiDetector = PhiAccrualDetector.phiAccrualDetector();
-        Supplier<Set<NodeId>> onDutyPeersSupplier = () -> {
-            var peers = new java.util.HashSet<NodeId>();
-            kvStore.forEach(AetherKey.NodeLifecycleKey.class,
-                            AetherValue.NodeLifecycleValue.class,
-                            (key, value) -> {
-                                if (value.state() == AetherValue.NodeLifecycleState.ON_DUTY
-                                    && !key.nodeId().equals(config.self())) {
-                                peers.add(key.nodeId());
-                            }
-                            });
-
-            return Set.copyOf(peers);
-        };
-        var phiObserver = PhiObserver.phiObserver(config.self(),
-                                                  isLeaderSupplier,
-                                                  phiDetector,
-                                                  onDutyPeersSupplier,
-                                                  peer -> emitForceDecommission(ctmLifecycleWriterRef.get(), peer));
-        metricsCollector.addPongListener(pong -> phiObserver.onPong(pong.sender()));
+        // E2 Phase 2a (2026-05-28): leader-side φ-accrual (#231) is removed. SWIM owns the
+        // liveness decision directly; the v2 NTT path is the replacement debounce.
         // Leader/spokesman-gated aggregator ingest. Tier-1 pongs (from core members)
         // arrive when this node is the cluster leader; Tier-2 pongs (from governors)
         // arrive when this node is an active spokesman. Both feed the same
@@ -1336,19 +1301,14 @@ public interface AetherNode extends ManageableNode {
                                                                                                                           inFlightProbe);
         // MembershipFsm wiring (spec §9 — post-E.8 always active). Constructed AFTER
         // drainCoordinator so the FSM can route InvokeDrain effects through the real coordinator.
-        // #231: wired with `phiDetector::isWarm` (the SHARED leader-side φ detector PhiObserver
-        // feeds) so the reducer's `(ON_DUTY, SwimFaulty)` cell suppresses SWIM false-positives
-        // while φ still hears the peer's pongs (warm), and trusts SWIM while φ is cold. On a
-        // follower the detector is cold for every peer → `isWarm`=false → SwimFaulty→STOPPED,
-        // matching the old permissive cold-start gate — safe because lifecycle writes are
-        // leader-gated inside the FSM regardless.
+        // E2 Phase 2a (2026-05-28): the leader-side φ-accrual handoff (#231) is removed; the
+        // FSM trusts SWIM's `(ON_DUTY, SwimFaulty)` directly.
         var membershipFsm = buildMembershipFsm(config.self(),
                                                kvStore,
                                                clusterCommandApplier,
                                                drainCoordinator,
                                                isLeaderSupplier,
-                                               hlcClock,
-                                               phiDetector::isWarm);
+                                               hlcClock);
         // Bind the forward-ref so the FSM-routed ctmLifecycleWriter (built above) can dispatch
         // commands into the now-constructed sovereign FSM.
         membershipFsmRef.set(membershipFsm);
@@ -1801,62 +1761,48 @@ public interface AetherNode extends ManageableNode {
                                                     announceJoinTrigger);
         swimHealthDetector.addObservationListener(membershipFsm::onSwimObservation);
         // ---------------------------------------------------------------------
-        // Membership v2 E1 — observation-only NTT wiring (spec §6, §7.4, §13).
-        // Gated on `membership.nttObservation = universal`; OFF (default) = zero
-        // behavior change. When UNIVERSAL: NTT + LocalQuorumWatcher +
-        // LeaderReconciler + DivergenceLogger are constructed and listeners
-        // registered; they observe SWIM + QUIC and emit structured
-        // `[v2-divergence]` log lines comparing NTT-side decisions against the
-        // existing FSM path. No actual provisioning / drain at E1.
-        // ---------------------------------------------------------------------
+        // Membership v2 — NTT wiring (spec §6, §7.4). E2 Phase 2a (2026-05-28) made the
+        // observation unconditional: NTT + LocalQuorumWatcher + LeaderReconciler are
+        // constructed and listeners registered on every node. The migration-ramp
+        // observation-flag and DivergenceLogger are gone.
         var membershipConfig = config.membership().or(MembershipConfig::membershipConfig);
-        var quicTapsOpt = Option.<NttQuicTaps>none();
-        if (membershipConfig.nttObservation() == NttObservationFlag.UNIVERSAL) {
-            var timeSource = TimeSource.system();
-            IntSupplier configuredCoreCountSupplier = () -> config.topology().coreNodes().size();
-            var leaderReconcilerRef = new java.util.concurrent.atomic.AtomicReference<LeaderReconciler>();
-            Runnable nttReconcileTrigger = () -> {
-                var current = leaderReconcilerRef.get();
-                if (current != null) {current.onTopologyUnhealthy();}
-            };
-            var ntt = NodeTopologyTracker.nodeTopologyTracker(membershipConfig, config.self(), SharedScheduler::schedule, nttReconcileTrigger);
-            var localQuorumWatcher = LocalQuorumWatcher.localQuorumWatcher(membershipConfig, timeSource, SharedScheduler::schedule);
-            var divergenceLogger = DivergenceLogger.divergenceLogger(timeSource);
-            var leaderReconciler = LeaderReconciler.leaderReconciler(membershipConfig,
-                                                                     ntt,
-                                                                     localQuorumWatcher,
-                                                                     configuredCoreCountSupplier,
-                                                                     clusterTopologyManager,
-                                                                     timeSource,
-                                                                     SharedScheduler::schedule);
-            leaderReconcilerRef.set(leaderReconciler);
-            swimHealthDetector.addObservationListener(ntt::onSwimObservation);
-            // E2 Phase 1.5 — symmetric "surplus appeared" trigger: a SWIM HealthyObserved
-            // signals a peer became reachable; if the leader is in surplus the reconcile
-            // will dispatch drains. NTT catches shortage (DepartedObserved), this catches
-            // surplus.
-            swimHealthDetector.addObservationListener(obs -> {
-                                                         if (obs instanceof SwimObservation.HealthyObserved h) {
-                                                             leaderReconciler.onSwimMemberHealthy(h.peer());
-                                                         }
-                                                     });
-            // E2 Phase 1: chain self-drain into the leaderless quorum-loss observation so a
-            // local quorum-loss observation triggers the existing hard-quorum-loss drain in
-            // addition to the leader-reconciler observation.
-            Consumer<QuorumLossIntent> quorumLossChain =
-                ((Consumer<QuorumLossIntent>) leaderReconciler::onQuorumLossIntent)
-                    .andThen(intent -> selfDrainCoordinator.onQuorumDisappeared());
-            localQuorumWatcher.setQuorumLossListener(quorumLossChain);
-            leaderReconciler.setReconcileListener(divergenceLogger::observeNttIntent);
-            membershipFsm.addDecisionListener(divergenceLogger::observeFsmDecision);
-            var sweepPeriod = TimeSpan.timeSpan(30L).seconds();
-            SharedScheduler.scheduleAtFixedRate(divergenceLogger::runCorrelationSweep, sweepPeriod, sweepPeriod);
-            Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(localQuorumWatcher::onPeerConnected);
-            Consumer<NodeId> nttDisconnectTap = localQuorumWatcher::onPeerDisconnected;
-            quicTapsOpt = Option.some(new NttQuicTaps(nttConnectTap, nttDisconnectTap));
-            aetherEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                                        change -> toggleNttReconcilerOnLeaderChange(change, leaderReconciler)));
-        }
+        IntSupplier configuredCoreCountSupplier = () -> config.topology().coreNodes().size();
+        var leaderReconcilerRef = new java.util.concurrent.atomic.AtomicReference<LeaderReconciler>();
+        Runnable nttReconcileTrigger = () -> {
+            var current = leaderReconcilerRef.get();
+            if (current != null) {current.onTopologyUnhealthy();}
+        };
+        var ntt = NodeTopologyTracker.nodeTopologyTracker(membershipConfig, config.self(), SharedScheduler::schedule, nttReconcileTrigger);
+        var localQuorumWatcher = LocalQuorumWatcher.localQuorumWatcher(membershipConfig, TimeSource.system(), SharedScheduler::schedule);
+        var leaderReconciler = LeaderReconciler.leaderReconciler(membershipConfig,
+                                                                 ntt,
+                                                                 localQuorumWatcher,
+                                                                 configuredCoreCountSupplier,
+                                                                 clusterTopologyManager,
+                                                                 TimeSource.system(),
+                                                                 SharedScheduler::schedule);
+        leaderReconcilerRef.set(leaderReconciler);
+        swimHealthDetector.addObservationListener(ntt::onSwimObservation);
+        // E2 Phase 1.5 — symmetric "surplus appeared" trigger: a SWIM HealthyObserved
+        // signals a peer became reachable; if the leader is in surplus the reconcile
+        // will dispatch drains. NTT catches shortage (DepartedObserved), this catches
+        // surplus.
+        swimHealthDetector.addObservationListener(obs -> {
+                                                     if (obs instanceof SwimObservation.HealthyObserved h) {
+                                                         leaderReconciler.onSwimMemberHealthy(h.peer());
+                                                     }
+                                                 });
+        // E2 Phase 1: chain self-drain into the leaderless quorum-loss observation so a
+        // local quorum-loss observation triggers the existing hard-quorum-loss drain in
+        // addition to the leader-reconciler observation.
+        Consumer<QuorumLossIntent> quorumLossChain =
+            ((Consumer<QuorumLossIntent>) leaderReconciler::onQuorumLossIntent)
+                .andThen(intent -> selfDrainCoordinator.onQuorumDisappeared());
+        localQuorumWatcher.setQuorumLossListener(quorumLossChain);
+        Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(localQuorumWatcher::onPeerConnected);
+        Consumer<NodeId> nttDisconnectTap = localQuorumWatcher::onPeerDisconnected;
+        aetherEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                    change -> toggleNttReconcilerOnLeaderChange(change, leaderReconciler)));
         membershipFsm.setSwimHealthGate(nodeId -> swimHealthDetector.healthOf(nodeId) == SwimHealth.HEALTHY);
         // SwimProtocol → router wire-up: SWIM-detected FAULTY peers are forwarded to the
         // cluster-wide `TransportObservation` stream so subscribers (LeaderManager,
@@ -1957,7 +1903,8 @@ public interface AetherNode extends ManageableNode {
                                        peerObservationStore,
                                        leaderEpochSupplier,
                                        reachabilityAggregator,
-                                       quicTapsOpt);
+                                       nttConnectTap,
+                                       nttDisconnectTap);
         attachQuicPeerStateListener(clusterNode.network(), swimHealthDetector);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForPublisher(change,
@@ -2163,7 +2110,6 @@ public interface AetherNode extends ManageableNode {
                                   effectivePhaseSupplier,
                                   recentCommandsBuffer,
                                   Option.some(lifecycleReconciler),
-                                  phiObserver,
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
         nodeDeploymentManager.setSelfReadySignal(nodeLifecycle::signalReady);
@@ -2273,7 +2219,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                       effectivePhaseSupplier,
                                                                                                       recentCommandsBuffer,
                                                                                                       Option.some(lifecycleReconciler),
-                                                                                                      phiObserver,
                                                                                                       startTimeMs);
                                                                             }
                                                                                 return node;
@@ -2298,8 +2243,7 @@ public interface AetherNode extends ManageableNode {
                                                     java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                     org.pragmatica.aether.deployment.drain.DrainCoordinator drainCoordinator,
                                                     BooleanSupplier isLeaderSupplier,
-                                                    HlcClock hlcClock,
-                                                    org.pragmatica.aether.deployment.membership.fsm.PhiWarmth phiWarmth) {
+                                                    HlcClock hlcClock) {
         var fsmConfig = MembershipFsmConfig.defaultMembershipFsmConfig();
         MembershipFsm.LifecycleSnapshotReader lifecycleSnapshot = consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
                                                                                               AetherValue.NodeLifecycleValue.class,
@@ -2317,8 +2261,7 @@ public interface AetherNode extends ManageableNode {
                                            drainCoordinator,
                                            scheduler,
                                            isLeaderSupplier,
-                                           hlcClock,
-                                           phiWarmth);
+                                           hlcClock);
     }
 
     /// Self-bootstrap (Bootstrap-correction 2026-05-12; spec §6 step 7). SWIM does not observe
@@ -2434,29 +2377,6 @@ public interface AetherNode extends ManageableNode {
         writer.applyCommand(command)
               .onFailure(cause -> LOG.warn("ForceOnDuty for {} (signalled by {}) failed: {}",
                                             candidate, sender, cause.message()));
-    }
-
-    /// #231 leader-side φ-accrual actuator — `ForceDecommissionSink` impl. Emits
-    /// `LifecycleCommand.ForceDecommission(STOPPED, FORCED)` for a peer that PhiObserver reports
-    /// warm-and-suspected (truly silent on the leader's pong stream). Mirrors `emitForceOnDuty`:
-    /// the HLC stamp uses `HlcTimestamp.ZERO` (Phase 1 PR-A convention; proper HLC threading is
-    /// follow-up #6 in the cluster-convergence-reconciler initiative) and audit logging lives
-    /// downstream in the FSM-routed writer. When the writer ref is unbound (pre-wiring window),
-    /// this collapses to a no-op so an early φ-tick does not NPE — safe because φ can only mark a
-    /// peer warm-and-suspected long after the node is fully assembled. Re-issue is idempotent
-    /// (`applyForceDecommission` is a nop once the peer is STOPPED), so a periodic re-fire
-    /// self-heals a lost write rather than corrupting state.
-    private static void emitForceDecommission(org.pragmatica.aether.deployment.cluster.LifecycleWriter writer,
-                                              NodeId peer) {
-        if (writer == null) {return;}
-        var command = new org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDecommission(
-                peer,
-                AetherValue.StopReason.FORCED,
-                org.pragmatica.lang.utils.Causes.cause("phi-accrual silence (leader-side) for " + peer),
-                org.pragmatica.hlc.HlcTimestamp.ZERO);
-        writer.applyCommand(command)
-              .onFailure(cause -> LOG.warn("ForceDecommission (phi-silence) for {} failed: {}",
-                                            peer, cause.message()));
     }
 
     /// Phase 2 PR-B (cluster-convergence-reconciler) — clears the local readiness tracker once
@@ -2598,7 +2518,8 @@ public interface AetherNode extends ManageableNode {
                                                        PeerObservationBuffer buffer,
                                                        Supplier<Epoch> epochSupplier,
                                                        ReachabilityAggregator reachabilityAggregator,
-                                                       Option<NttQuicTaps> nttTaps) {
+                                                       Consumer<NodeId> onNttConnect,
+                                                       Consumer<NodeId> onNttDisconnect) {
         if (! (network instanceof QuicClusterNetwork quicNetwork)) {return;}
 
         PeerConnectivityReporter reporter = new PeerConnectivityReporter() {
@@ -2614,7 +2535,7 @@ public interface AetherNode extends ManageableNode {
                 if (isLeaderSupplier.getAsBoolean()) {
                     reachabilityAggregator.ingestSelfTransition(peerId, ReachabilityKind.UNREACHABLE, now);
                 }
-                nttTaps.onPresent(t -> t.onDisconnect().accept(peerId));
+                onNttDisconnect.accept(peerId);
             }
 
             @Override
@@ -2629,7 +2550,7 @@ public interface AetherNode extends ManageableNode {
                 if (isLeaderSupplier.getAsBoolean()) {
                     reachabilityAggregator.ingestSelfTransition(peerId, ReachabilityKind.REACHABLE, now);
                 }
-                nttTaps.onPresent(t -> t.onConnect().accept(peerId));
+                onNttConnect.accept(peerId);
             }
         };
         QuicClusterNetwork.ObservedEpochSupplier epochAdapter = new QuicClusterNetwork.ObservedEpochSupplier() {
@@ -2697,23 +2618,15 @@ public interface AetherNode extends ManageableNode {
         if (change.localNodeIsLeader()) {reconciler.activate();} else {reconciler.deactivate();}
     }
 
-    /// Membership v2 E1 — leader-pin the NTT-side `LeaderReconciler`. Activate on leader gain
+    /// Membership v2 — leader-pin the NTT-side `LeaderReconciler`. Activate on leader gain
     /// (drain NTT map, fire initial reconcile tick, start periodic ticks); deactivate on
     /// leader loss (cancel ticks, clear in-flight provisioning). Mirrors
-    /// `toggleReconcilerOnLeaderChange`. Wired only when `membership.nttObservation = universal`.
+    /// `toggleReconcilerOnLeaderChange`.
     @SuppressWarnings("JBCT-RET-01")
     private static void toggleNttReconcilerOnLeaderChange(LeaderNotification.LeaderChange change,
                                                           LeaderReconciler reconciler) {
         if (change.localNodeIsLeader()) {reconciler.activate();} else {reconciler.deactivate();}
     }
-
-    /// Membership v2 E1 — pair of QUIC connectivity taps wired into
-    /// `attachQuicConnectivityReporter` when `membership.nttObservation = universal`. The
-    /// connect tap fires `NodeTopologyTracker.onQuicReconnect` (cancels pending NTT timer)
-    /// AND `LocalQuorumWatcher.onPeerConnected` (raises local-quorum count). The disconnect
-    /// tap fires `LocalQuorumWatcher.onPeerDisconnected` (lowers local-quorum count). When
-    /// the flag is OFF the tap-option is `none()` and the reporter's invocations are no-ops.
-    record NttQuicTaps(Consumer<NodeId> onConnect, Consumer<NodeId> onDisconnect) {}
 
     /// #231 Step 2 — leader-pin the remaining control-plane components. Each mirrors
     /// toggleCtmOnLeaderChange:

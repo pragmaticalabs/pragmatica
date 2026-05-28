@@ -7,8 +7,6 @@ package org.pragmatica.aether.deployment.membership.fsm;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
 import org.pragmatica.aether.deployment.membership.fsm.ClusterMembershipReducer.Outcome;
-import org.pragmatica.aether.deployment.membership.ntt.FsmDecisionEvent;
-import org.pragmatica.aether.deployment.membership.ntt.FsmDecisionType;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceOnDuty;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.RecordJoining;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.CancelDrain;
@@ -68,7 +66,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
-import java.util.function.Consumer;
 import java.util.function.Function;
 
 import org.slf4j.Logger;
@@ -124,15 +121,6 @@ public final class MembershipFsm {
     /// drift policy.
     private final HlcClock hlcClock;
 
-    /// #231 leader-side φ-accrual handoff — per-peer φ-warmth predicate consulted at every
-    /// event-driven `reducer.apply(...)` call site to build the reducer's `(ON_DUTY, SwimFaulty)`
-    /// liveness decision. Production wiring supplies `phiDetector::isWarm` (the SAME shared
-    /// detector PhiObserver feeds and reads), so warm/cold is consistent between the reducer's
-    /// SWIM-false-positive suppression and PhiObserver's silence-driven decommission. A cold peer
-    /// (unknown / still warming, including every peer on a follower) yields `false` → SWIM owns the
-    /// death decision, matching the pre-handoff permissive behavior. The command path passes
-    /// `PhiWarmth.COLD` (commands never consult φ).
-    private final PhiWarmth phiWarmth;
     private final ReentrantLock fsmLock = new ReentrantLock();
 
     private final Map<NodeId, MembershipFsmState> fsmStates = new ConcurrentHashMap<>();
@@ -173,16 +161,6 @@ public final class MembershipFsm {
     private final AtomicBoolean started = new AtomicBoolean();
     private volatile Function<NodeId, Boolean> swimHealthGate = ignored -> false;
 
-    /// Stage 6 (membership v2 §7.4 wiring) — decision listeners fired AFTER the existing log
-    /// emission in [`#logFsmOutcome`], [`#logOperatorOutcome`], [`#logCommandOutcome`] so the
-    /// divergence-logger (and any future observer) can side-by-side an NTT-side
-    /// [`org.pragmatica.aether.deployment.membership.ntt.ReconcileIntent`] with the FSM-side
-    /// decision. The listener invocation is fire-and-forget — exceptions from a listener are
-    /// caught at the call site so a buggy observer cannot corrupt FSM bookkeeping. The list is
-    /// a [`java.util.concurrent.CopyOnWriteArrayList`] so concurrent fires + register are
-    /// safe and lock-free on the hot read path.
-    private final java.util.List<Consumer<FsmDecisionEvent>> decisionListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
-
     private MembershipFsm(NodeId self,
                           MembershipFsmConfig config,
                           ClusterMembershipReducer reducer,
@@ -192,8 +170,7 @@ public final class MembershipFsm {
                           DrainCoordinator drainCoordinator,
                           TimerScheduler scheduler,
                           BooleanSupplier isLeader,
-                          HlcClock hlcClock,
-                          PhiWarmth phiWarmth) {
+                          HlcClock hlcClock) {
         this.self = self;
         this.config = config;
         this.reducer = reducer;
@@ -204,7 +181,6 @@ public final class MembershipFsm {
         this.scheduler = scheduler;
         this.isLeader = isLeader;
         this.hlcClock = hlcClock;
-        this.phiWarmth = phiWarmth;
     }
 
     /// Read-only factory (no-op writes). Useful for tests that only exercise the reducer +
@@ -221,8 +197,7 @@ public final class MembershipFsm {
                              NO_OP_DRAIN_COORDINATOR,
                              defaultScheduler(),
                              NEVER_LEADER,
-                             defaultHlcClock(self),
-                             PhiWarmth.COLD);
+                             defaultHlcClock(self));
     }
 
     /// Write-capable factory. When `isLeader.getAsBoolean()` returns `true`, operator events
@@ -244,16 +219,13 @@ public final class MembershipFsm {
                              drainCoordinator,
                              scheduler,
                              isLeader,
-                             defaultHlcClock(self),
-                             PhiWarmth.COLD);
+                             defaultHlcClock(self));
     }
 
     /// RC1 Step 4 — production factory with explicit `HlcClock`. The FSM shares the node-wide
     /// HLC instance with other subsystems (generation snapshots, governor announcer, etc.) —
     /// every emitted FSM event is causally ordered against every other HLC-stamped action of
-    /// this node. Defaults the φ-warmth predicate to `PhiWarmth.COLD` (SWIM owns liveness) —
-    /// call the φ-warmth-accepting overload from production wiring to enable the leader-side
-    /// φ-accrual handoff.
+    /// this node.
     public static MembershipFsm membershipFsm(NodeId self,
                                               MembershipFsmConfig config,
                                               LifecycleSnapshotReader lifecycleSnapshotReader,
@@ -263,34 +235,6 @@ public final class MembershipFsm {
                                               TimerScheduler scheduler,
                                               BooleanSupplier isLeader,
                                               HlcClock hlcClock) {
-        return membershipFsm(self,
-                             config,
-                             lifecycleSnapshotReader,
-                             slotSnapshotReader,
-                             commandApplier,
-                             drainCoordinator,
-                             scheduler,
-                             isLeader,
-                             hlcClock,
-                             PhiWarmth.COLD);
-    }
-
-    /// #231 leader-side φ-accrual handoff — full production factory accepting a φ-warmth
-    /// predicate. Each event-driven reducer call site consults it at the `(ON_DUTY, SwimFaulty)`
-    /// cell to decide whether φ owns liveness (warm → SWIM false-positive suppressed) or SWIM does
-    /// (cold). Production wiring (`AetherNode.buildMembershipFsm`) passes `phiDetector::isWarm` —
-    /// the SAME shared detector PhiObserver feeds, so the reducer's suppression and PhiObserver's
-    /// silence-driven decommission agree on warm/cold for every peer.
-    public static MembershipFsm membershipFsm(NodeId self,
-                                              MembershipFsmConfig config,
-                                              LifecycleSnapshotReader lifecycleSnapshotReader,
-                                              SlotSnapshotReader slotSnapshotReader,
-                                              Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                              DrainCoordinator drainCoordinator,
-                                              TimerScheduler scheduler,
-                                              BooleanSupplier isLeader,
-                                              HlcClock hlcClock,
-                                              PhiWarmth phiWarmth) {
         var reducer = ClusterMembershipReducer.clusterMembershipReducer(config);
 
         return new MembershipFsm(self,
@@ -302,8 +246,7 @@ public final class MembershipFsm {
                                  drainCoordinator,
                                  scheduler,
                                  isLeader,
-                                 hlcClock,
-                                 phiWarmth);
+                                 hlcClock);
     }
 
     /// Custom-reducer factory (test-only — lets callers inject a reducer with deterministic
@@ -322,8 +265,7 @@ public final class MembershipFsm {
                                  NO_OP_DRAIN_COORDINATOR,
                                  defaultScheduler(),
                                  NEVER_LEADER,
-                                 defaultHlcClock(self),
-                                 PhiWarmth.COLD);
+                                 defaultHlcClock(self));
     }
 
     /// Custom-reducer + custom-clock factory (test-only — lets adversarial tests inject a
@@ -343,8 +285,7 @@ public final class MembershipFsm {
                                  NO_OP_DRAIN_COORDINATOR,
                                  defaultScheduler(),
                                  NEVER_LEADER,
-                                 hlcClock,
-                                 PhiWarmth.COLD);
+                                 hlcClock);
     }
 
     public Promise<Unit> start() {
@@ -555,17 +496,6 @@ public final class MembershipFsm {
                               }
                               });
         }
-    }
-
-    /// Stage 6 (membership v2 §7.4 wiring) — register a consumer for FSM-side decisions.
-    /// The listener is fired AFTER each of [`#logFsmOutcome`], [`#logOperatorOutcome`],
-    /// [`#logCommandOutcome`] so observers (the divergence-logger today; future metrics or
-    /// equivalence checkers) see every committed-or-no-op transition. Multiple listeners are
-    /// allowed — call once per observer. The FSM itself never reads the list; behaviour is
-    /// unchanged when no listener is registered.
-    @Contract
-    public void addDecisionListener(Consumer<FsmDecisionEvent> listener) {
-        decisionListeners.add(listener);
     }
 
     private boolean isSelfAlreadyOnDuty() {
@@ -910,7 +840,7 @@ public final class MembershipFsm {
     private void processFsmEventLocked(MembershipFsmEvent event) {
         var peer = event.peer();
         var current = resolveState(peer);
-        var outcome = reducer.apply(current, event, phiWarmth);
+        var outcome = reducer.apply(current, event);
         fsmStates.put(peer, outcome.newState());
         // Symmetry with processOperatorEventLocked: apply effects even on the shadow path so a
         // reducer-emitted ScheduleTimer or EmitDomainEvent doesn't silently disappear. Writes
@@ -951,7 +881,7 @@ public final class MembershipFsm {
     private void processOperatorEventLocked(MembershipFsmEvent event) {
         var peer = event.peer();
         var current = resolveState(peer);
-        var outcome = reducer.apply(current, event, phiWarmth);
+        var outcome = reducer.apply(current, event);
 
         if (outcome.writes().isEmpty()) {
             applyEffectsLocked(outcome.effects());
@@ -1037,8 +967,7 @@ public final class MembershipFsm {
     /// command was ACCEPTED (a real lifecycle write was proposed and committed); a reducer
     /// no-op, a non-leader receiver of a promotion command (see `isPromotionCommand`), or a
     /// consensus rejection yields `false`, which the routing `LifecycleWriter` surfaces as
-    /// `CommandApplied(accepted=false)`. Commands do not consult φ-warmth (only the `(ON_DUTY,
-    /// SwimFaulty)` event cell does), so `PhiWarmth.COLD` is passed.
+    /// `CommandApplied(accepted=false)`.
     public Promise<Boolean> applyLifecycleCommand(LifecycleCommand command) {
         if (isPromotionCommand(command) && !isLeader.getAsBoolean()) {
             log.warn("MembershipFsm: promotion command {} for {} received on non-leader — no-op "
@@ -1055,7 +984,7 @@ public final class MembershipFsm {
         List<KVCommand<AetherKey>> resolvedWrites;
         try {
             prior = resolveState(command.peer());
-            outcome = reducer.apply(prior, command, PhiWarmth.COLD);
+            outcome = reducer.apply(prior, command);
 
             if (outcome.writes().isEmpty()) {
                 applyEffectsLocked(outcome.effects());
@@ -1122,7 +1051,6 @@ public final class MembershipFsm {
                  accepted ? "accepted" : "no-op (illegal-on-state / rejected)",
                  prior.getClass().getSimpleName(),
                  outcome.newState().getClass().getSimpleName());
-        fireDecisionListeners(buildCommandDecisionEvent(command, prior, outcome, accepted));
     }
 
     /// Resolves a peer's current FSM state for the reducer. On an `fsmStates` miss, re-derives
@@ -1586,7 +1514,6 @@ public final class MembershipFsm {
                  describe(outcome.newState()),
                  outcome.writes(),
                  outcome.effects());
-        fireDecisionListeners(buildEventDecisionEvent(event, priorState, outcome, false));
     }
 
     private void logOperatorOutcome(MembershipFsmEvent event,
@@ -1601,7 +1528,6 @@ public final class MembershipFsm {
                  outcome.writes().size(),
                  outcome.effects().size(),
                  writesApplied);
-        fireDecisionListeners(buildEventDecisionEvent(event, priorState, outcome, writesApplied));
     }
 
     private void logExternalLifecycleChange(NodeId peer,
@@ -1621,75 +1547,6 @@ public final class MembershipFsm {
         }
         return state.getClass()
                     .getSimpleName();
-    }
-
-    /// Stage 6 — fire all registered listeners with the constructed [`FsmDecisionEvent`].
-    /// Each listener invocation is wrapped so a misbehaving observer cannot poison the FSM
-    /// or starve sibling listeners. The FSM has no behaviour change beyond this call.
-    @Contract
-    private void fireDecisionListeners(FsmDecisionEvent event) {
-        decisionListeners.forEach(listener -> safelyFireListener(listener, event));
-    }
-
-    @Contract
-    @SuppressWarnings("JBCT-EXC-01")
-    private void safelyFireListener(Consumer<FsmDecisionEvent> listener, FsmDecisionEvent event) {
-        try {
-            listener.accept(event);
-        } catch (RuntimeException ex) {
-            log.warn("MembershipFsm: decisionListener {} threw {} — observer fault, FSM unaffected",
-                     listener.getClass().getName(),
-                     ex.toString());
-        }
-    }
-
-    private FsmDecisionEvent buildEventDecisionEvent(MembershipFsmEvent event,
-                                                     MembershipFsmState prior,
-                                                     Outcome outcome,
-                                                     boolean writesApplied) {
-        var observedAt = hlcClock.now().physicalMicros() * 1000L;
-        var type = classifyEventOutcome(outcome, writesApplied);
-        var peerId = some(event.peer());
-        var reason = event.getClass().getSimpleName();
-
-        return FsmDecisionEvent.fsmDecisionEvent(observedAt, type, peerId, describe(prior), describe(outcome.newState()), reason);
-    }
-
-    private FsmDecisionEvent buildCommandDecisionEvent(LifecycleCommand command,
-                                                       MembershipFsmState prior,
-                                                       Outcome outcome,
-                                                       boolean accepted) {
-        var observedAt = hlcClock.now().physicalMicros() * 1000L;
-        var type = classifyCommandOutcome(outcome, accepted);
-        var peerId = some(command.peer());
-        var reason = command.getClass().getSimpleName();
-
-        return FsmDecisionEvent.fsmDecisionEvent(observedAt, type, peerId, describe(prior), describe(outcome.newState()), reason);
-    }
-
-    private static FsmDecisionType classifyEventOutcome(Outcome outcome, boolean writesApplied) {
-        if (!writesApplied || outcome.writes().isEmpty()) {
-            return FsmDecisionType.NO_ACTION;
-        }
-        return classifyByTargetState(outcome.newState());
-    }
-
-    private static FsmDecisionType classifyCommandOutcome(Outcome outcome, boolean accepted) {
-        if (!accepted || outcome.writes().isEmpty()) {
-            return FsmDecisionType.NO_ACTION;
-        }
-        return classifyByTargetState(outcome.newState());
-    }
-
-    private static FsmDecisionType classifyByTargetState(MembershipFsmState newState) {
-        return switch (newState) {
-            case MembershipFsmState.Joining _ -> FsmDecisionType.PROVISION;
-            case MembershipFsmState.OnDuty _ -> FsmDecisionType.PROVISION;
-            case MembershipFsmState.Provisioning _ -> FsmDecisionType.PROVISION;
-            case MembershipFsmState.Draining _ -> FsmDecisionType.DRAIN;
-            case MembershipFsmState.Stopped _ -> FsmDecisionType.DECOMMISSION;
-            case MembershipFsmState.Untracked _ -> FsmDecisionType.OTHER;
-        };
     }
 
     private record TimerHandle(NodeId peer, TimerKind kind) {}

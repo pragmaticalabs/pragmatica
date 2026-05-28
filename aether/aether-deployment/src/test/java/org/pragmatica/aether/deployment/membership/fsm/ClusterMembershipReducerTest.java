@@ -120,38 +120,38 @@ class ClusterMembershipReducerTest {
             // legacy consumers reading `NodeLifecycleKey` directly continue to function.
             // `MembershipView` is the canonical reader; the KV write is redundant with the
             // view's SWIM-derived ON_DUTY but is preserved for back-compat.
-            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
             assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, ms(T1)));
             assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.ON_DUTY, T1));
             assertEmitted(outcome, MembershipDomainEvent.NODE_ON_DUTY);
         }
 
         @Test void untracked_swimFaulty_isNop_bootstrapSafe() {
-            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
         }
 
         @Test void untracked_swimDeparted_isNop() {
-            assertNop(reducer.apply(state, new SwimDeparted(PEER, 1L, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SwimDeparted(PEER, 1L, T1)), state);
         }
 
         @Test void untracked_slotClaimed_entersJoining() {
-            var outcome = reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1));
             assertEntersJoining(outcome, Option.some(SLOT_ID), T1);
         }
 
         @Test void untracked_forceDrain_isNop_unknownPeer() {
-            assertNop(reducer.apply(state, forceDrain(T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, forceDrain(T1)), state);
         }
 
         @Test void untracked_forceDecommissionForced_writesDecommissioned() {
-            var outcome = reducer.apply(state, forceDecommissionForced(T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, forceDecommissionForced(T1));
             assertDecommissioned(outcome, T1, "operator-forced");
         }
 
         @Test void untracked_forceDecommissionGraceful_writesDecommissioned() {
             // Command-driven: ForceDecommission is unconditional on Untracked (writes
             // DECOMMISSIONED so external KV consumers see the operator's intent).
-            var outcome = reducer.apply(state, forceDecommissionGraceful(T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, forceDecommissionGraceful(T1));
             assertDecommissioned(outcome, T1, "graceful-stop");
         }
 
@@ -160,7 +160,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void untracked_joinDeadlineExpired_isNop() {
-            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
         }
     }
 
@@ -169,28 +169,28 @@ class ClusterMembershipReducerTest {
         private final Provisioning state = MembershipFsmState.provisioning(PEER, SLOT_ID);
 
         @Test void provisioning_swimHealthy_isNop() {
-            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
         }
 
         @Test void provisioning_swimFaulty_isNop() {
-            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
         }
 
         @Test void provisioning_swimDeparted_isNop() {
-            assertNop(reducer.apply(state, new SwimDeparted(PEER, 1L, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SwimDeparted(PEER, 1L, T1)), state);
         }
 
         @Test void provisioning_slotClaimed_entersJoining() {
-            var outcome = reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1));
             assertEntersJoining(outcome, Option.some(SLOT_ID), T1);
         }
 
         @Test void provisioning_forceDrain_isNop_notServingYet() {
-            assertNop(reducer.apply(state, forceDrain(T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, forceDrain(T1)), state);
         }
 
         @Test void provisioning_forceDecommissionForced_writesDecommissioned_slotPersists() {
-            var outcome = reducer.apply(state, forceDecommissionForced(T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, forceDecommissionForced(T1));
             assertDecommissioned(outcome, T1, "operator-forced");
             // Durable slots (D1): the reducer writes only the STOPPED lifecycle atom; CTM owns
             // slot occupancy (scale-down via removeSurplusSlots, failure-clearing via freeDeadSlots).
@@ -203,7 +203,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void provisioning_joinDeadlineExpired_isNop() {
-            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
         }
     }
 
@@ -212,7 +212,7 @@ class ClusterMembershipReducerTest {
         private final Joining state = MembershipFsmState.joining(PEER, ms(T0), Option.some(SLOT_ID));
 
         @Test void joining_swimHealthy_promotesToOnDuty_leaderInitiated() {
-            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
             assertOnDuty(outcome, T1);
             // Durable slots (D1): the slot is NOT removed on ON_DUTY — it persists and CTM
             // reclassifies it HEALTHY. The reducer writes only the lifecycle + join-deadline-clear.
@@ -224,7 +224,7 @@ class ClusterMembershipReducerTest {
 
         @Test void joining_swimHealthy_withoutSlot_writesLifecycleOnly() {
             var slotless = MembershipFsmState.joining(PEER, ms(T0), Option.none());
-            var outcome = reducer.apply(slotless, new SwimHealthy(PEER, 1L, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(slotless, new SwimHealthy(PEER, 1L, T1));
             assertOnDuty(outcome, T1);
             // Lifecycle Put (ON_DUTY) + JoinDeadlineKey Remove (Phase 1 step J co-write).
             // Durable slots (D1): the slot is never removed on ON_DUTY (slotted or slotless),
@@ -239,28 +239,28 @@ class ClusterMembershipReducerTest {
             // node SWIM-marked FAULTY is decommissioned fast rather than waiting out the join
             // deadline (~45-60s). Warmth is irrelevant here — JOINING has no φ history and the cell
             // does not consult it.
-            var outcome = reducer.apply(state, new SwimFaulty(PEER, 1L, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new SwimFaulty(PEER, 1L, T1));
             assertDecommissioned(outcome, T1, "swim-faulty");
         }
 
         @Test void joining_swimDeparted_writesDecommissioned() {
-            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1));
             assertDecommissioned(outcome, T1, "swim-departed");
         }
 
         @Test void joining_slotClaimed_isNop_idempotentReDelivery() {
-            assertNop(reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1)), state);
         }
 
         @Test void joining_forceDrain_isNop_drainsOnlyFromOnDuty() {
             // Command-driven: ForceDrain only acts on ON_DUTY. From Joining, it is a no-op —
             // operator must wait for the JOINING peer to either complete its join or time out
             // before issuing a drain. Force-decommission is the explicit short-circuit path.
-            assertNop(reducer.apply(state, forceDrain(T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, forceDrain(T1)), state);
         }
 
         @Test void joining_forceDecommissionGraceful_writesDecommissioned() {
-            var outcome = reducer.apply(state, forceDecommissionGraceful(T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, forceDecommissionGraceful(T1));
             assertDecommissioned(outcome, T1, "graceful-stop");
             // Durable slots (D1): JOINING-stop does NOT delete the slot atom; CTM clears the
             // occupant in place (DEAD → freeSlot). Reducer writes only the STOPPED lifecycle.
@@ -270,7 +270,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void joining_forceDecommissionForced_writesDecommissioned() {
-            var outcome = reducer.apply(state, forceDecommissionForced(T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, forceDecommissionForced(T1));
             assertDecommissioned(outcome, T1, "operator-forced");
         }
 
@@ -279,7 +279,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void joining_joinDeadlineExpired_writesDecommissioned_joinTimeout() {
-            var outcome = reducer.apply(state, new JoinDeadlineExpired(PEER, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new JoinDeadlineExpired(PEER, T1));
             assertDecommissioned(outcome, T1, "join-timeout");
             // Durable slots (D1): JOINING-stop does NOT delete the slot atom; CTM clears the
             // occupant in place. Reducer writes only the STOPPED lifecycle + join-deadline-clear.
@@ -294,41 +294,25 @@ class ClusterMembershipReducerTest {
         private final OnDuty state = MembershipFsmState.onDuty(PEER, ms(T0));
 
         @Test void onDuty_swimHealthy_isNop_reConfirmation() {
-            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
         }
 
         @Test void onDuty_swimFaulty_writesDecommissioned_smokingGun() {
-            // #231: φ COLD → SWIM owns liveness → SwimFaulty decommissions (matches pre-handoff
-            // ALWAYS_CONFIRMED behavior for the cold-start / never-warmed window).
-            var outcome = reducer.apply(state, new SwimFaulty(PEER, 1L, T1), PhiWarmth.COLD);
+            // E2 Phase 2a (2026-05-28): leader-side φ-accrual handoff (#231) removed. SWIM
+            // owns liveness directly — a SwimFaulty on ON_DUTY decommissions unconditionally.
+            var outcome = reducer.apply(state, new SwimFaulty(PEER, 1L, T1));
             assertDecommissioned(outcome, T1, "swim-faulty");
             assertThat(outcome.writes()).hasSize(1);
         }
 
-        @Test void onDuty_swimFaulty_phiWarm_isNop_phiOwnsLiveness() {
-            // #231: φ WARM → φ owns liveness. A SwimFaulty while φ still hears the peer's pongs is a
-            // SWIM false-positive (the peer is ponging → alive) → nop. φ-silence, not SWIM, drives
-            // the eventual decommission (PhiObserver issues ForceDecommission directly).
-            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1), PhiWarmth.WARM), state);
-        }
-
         @Test void onDuty_swimDeparted_writesDecommissioned() {
-            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1));
             assertDecommissioned(outcome, T1, "swim-departed");
         }
 
-        @Test void onDuty_transportUnreachable_writesDecommissioned_ungatedByPhiCold() {
-            // #231: TransportUnreachable is UNGATED — a closed QUIC channel is definitive and
-            // non-flapping. Fires regardless of φ-warmth (φ COLD here).
-            var outcome = reducer.apply(state, new TransportUnreachable(PEER, T1), PhiWarmth.COLD);
-            assertDecommissioned(outcome, T1, "transport-failure");
-            assertThat(outcome.writes()).hasSize(1);
-        }
-
-        @Test void onDuty_transportUnreachable_writesDecommissioned_ungatedByPhiWarm() {
-            // Mirror: even with φ WARM the transport cell still decommissions — warmth gates only
-            // the SwimFaulty cell, never the definitive closed-channel signal.
-            var outcome = reducer.apply(state, new TransportUnreachable(PEER, T1), PhiWarmth.WARM);
+        @Test void onDuty_transportUnreachable_writesDecommissioned() {
+            // TransportUnreachable is a definitive closed-channel signal — decommissions on contact.
+            var outcome = reducer.apply(state, new TransportUnreachable(PEER, T1));
             assertDecommissioned(outcome, T1, "transport-failure");
             assertThat(outcome.writes()).hasSize(1);
         }
@@ -337,17 +321,17 @@ class ClusterMembershipReducerTest {
             // Auto-heal replacement re-claim / late SlotClaimed re-delivery against an
             // already-ON_DUTY peer is benign — nop, not illegal (found via Spike-2, 2026-05-24:
             // the prior illegal() threw on the normal auto-heal path, aborting the FSM tick).
-            assertNop(reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1)), state);
         }
 
         @Test void onDuty_forceDrain_entersDraining() {
-            var outcome = reducer.apply(state, forceDrain(T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, forceDrain(T1));
             assertDraining(outcome, T1, DrainReason.OPERATOR_DRAIN);
             assertThat(outcome.effects()).contains(new InvokeDrain(PEER, DrainReason.OPERATOR_DRAIN));
         }
 
         @Test void onDuty_forceDecommissionForced_directToDecommissioned_noDrainCoordinator() {
-            var outcome = reducer.apply(state, forceDecommissionForced(T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, forceDecommissionForced(T1));
             assertDecommissioned(outcome, T1, "operator-forced");
             // Q2=A: force is a direct transition; no DrainCoordinator effect.
             assertThat(outcome.effects()).noneMatch(e -> e instanceof InvokeDrain);
@@ -359,7 +343,7 @@ class ClusterMembershipReducerTest {
             // pre-Phase-1 "graceful → enter Draining" path moved out of the FSM — graceful drain
             // is now driven by the operator API issuing ForceDrain first, then ForceDecommission
             // after the drain coordinator reports success.
-            var outcome = reducer.apply(state, forceDecommissionGraceful(T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, forceDecommissionGraceful(T1));
             assertDecommissioned(outcome, T1, "graceful-stop");
             assertThat(outcome.effects()).noneMatch(e -> e instanceof InvokeDrain);
         }
@@ -369,7 +353,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void onDuty_joinDeadlineExpired_isNop() {
-            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
         }
     }
 
@@ -378,15 +362,15 @@ class ClusterMembershipReducerTest {
         private final Draining state = MembershipFsmState.draining(PEER, ms(T0), DrainReason.OPERATOR_DRAIN);
 
         @Test void draining_swimHealthy_isNop_drainOwnsOutcome() {
-            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
         }
 
         @Test void draining_swimFaulty_isNop_drainOwnsOutcome() {
-            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
         }
 
         @Test void draining_swimDeparted_writesDecommissioned_hardOverridesDrain() {
-            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1));
             assertDecommissioned(outcome, T1, "swim-departed");
             assertThat(outcome.effects()).contains(new CancelDrain(PEER));
         }
@@ -395,34 +379,34 @@ class ClusterMembershipReducerTest {
             // A SlotClaimed re-delivered for a DRAINING peer is a benign idempotent re-projection
             // (CTM slot re-PUT / KV-notification replay). It must NOT throw — a throwing reducer
             // cell aborts the FSM tick on the KV-notification thread (mirrors ON_DUTY, Spike-2).
-            assertNop(reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1)), state);
         }
 
         @Test void draining_forceDrain_isNop_alreadyDraining() {
-            assertNop(reducer.apply(state, forceDrain(T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, forceDrain(T1)), state);
         }
 
         @Test void draining_forceDecommissionForced_cancelsDrainAndDecommissions() {
-            var outcome = reducer.apply(state, forceDecommissionForced(T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, forceDecommissionForced(T1));
             assertDecommissioned(outcome, T1, "operator-forced");
             assertThat(outcome.effects()).contains(new CancelDrain(PEER));
         }
 
         @Test void draining_forceDecommissionDrainFailed_cancelsDrainAndDecommissions() {
             // Used by the reconciler DrainTimeout rule to finalize a stuck drain.
-            var outcome = reducer.apply(state, forceDecommissionDrainFailed(T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, forceDecommissionDrainFailed(T1));
             assertDecommissioned(outcome, T1, "drain-hard-deadline");
             assertThat(outcome.effects()).contains(new CancelDrain(PEER));
         }
 
         @Test void draining_drainOutcomeSuccess_writesDecommissioned_emitsNodeDrained() {
-            var outcome = reducer.apply(state, new DrainOutcome(PEER, true, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new DrainOutcome(PEER, true, T1));
             assertDecommissioned(outcome, T1, null);  // null reason check — see assertion below
             assertEmitted(outcome, MembershipDomainEvent.NODE_DRAINED);
         }
 
         @Test void draining_drainOutcomeFailure_writesFailedDrain_emitsNodeDrainFailed() {
-            var outcome = reducer.apply(state, new DrainOutcome(PEER, false, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new DrainOutcome(PEER, false, T1));
             assertThat(outcome.newState()).isEqualTo(MembershipFsmState.stopped(PEER, ms(T1), StopReason.DRAIN_FAILED));
             // Phase 1 step J co-write: lifecycle Put + DrainDeadlineKey Remove on draining-exit.
             assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.STOPPED, T1, Option.some(StopReason.DRAIN_FAILED)),
@@ -431,7 +415,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void draining_joinDeadlineExpired_isNop() {
-            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
         }
     }
 
@@ -445,15 +429,15 @@ class ClusterMembershipReducerTest {
         private final Stopped state = MembershipFsmState.stopped(PEER, T_AGED, StopReason.FORCED);
 
         @Test void stopped_swimHealthy_isNop_zombie_pastTtl() {
-            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T_LATE), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T_LATE)), state);
         }
 
         @Test void stopped_swimFaulty_isNop() {
-            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
         }
 
         @Test void stopped_swimDeparted_isNop() {
-            assertNop(reducer.apply(state, new SwimDeparted(PEER, 1L, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SwimDeparted(PEER, 1L, T1)), state);
         }
 
         @Test void stopped_slotClaimed_isNop_idempotentReProjection() {
@@ -461,16 +445,16 @@ class ClusterMembershipReducerTest {
             // idempotent re-projection (CTM reseed re-binding a dead occupant / KV-notification
             // replay). It must NOT throw — a throwing reducer cell aborts the FSM tick on the
             // KV-notification thread, killing the apply loop (mirrors ON_DUTY, Spike-2 2026-05-24).
-            assertNop(reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1)), state);
         }
 
         @Test void stopped_forceDrain_isNop() {
-            assertNop(reducer.apply(state, forceDrain(T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, forceDrain(T1)), state);
         }
 
         @Test void stopped_forceDecommission_isNop_idempotent() {
-            assertNop(reducer.apply(state, forceDecommissionGraceful(T1), PhiWarmth.COLD), state);
-            assertNop(reducer.apply(state, forceDecommissionForced(T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, forceDecommissionGraceful(T1)), state);
+            assertNop(reducer.apply(state, forceDecommissionForced(T1)), state);
         }
 
         @Test void stopped_drainOutcome_isErr() {
@@ -478,7 +462,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void stopped_joinDeadlineExpired_isNop_waitingForGc() {
-            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
         }
     }
 
@@ -495,12 +479,12 @@ class ClusterMembershipReducerTest {
 
         @Test void stopped_swimHealthy_isNop_hSeriesNoRevival() {
             var state = MembershipFsmState.stopped(PEER, NOW - 30_000L, StopReason.FORCED);
-            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, NOW_HLC), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, NOW_HLC)), state);
         }
 
         @Test void stopped_swimHealthy_pastRetention_isNop_hSeriesNoRevival() {
             var state = MembershipFsmState.stopped(PEER, NOW - 600_000L, StopReason.FORCED);
-            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, NOW_HLC), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, NOW_HLC)), state);
         }
     }
 
@@ -509,35 +493,35 @@ class ClusterMembershipReducerTest {
         private final Stopped state = MembershipFsmState.stopped(PEER, ms(T0), StopReason.DRAIN_FAILED);
 
         @Test void stoppedDrainFailed_swimHealthy_isNop() {
-            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
         }
 
         @Test void stoppedDrainFailed_swimFaulty_isNop() {
-            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
         }
 
         @Test void stoppedDrainFailed_swimDeparted_writesDecommissioned() {
-            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1));
             assertDecommissioned(outcome, T1, "swim-departed");
         }
 
         @Test void stoppedDrainFailed_slotClaimed_isNop_idempotentReProjection() {
             // SlotClaimed re-delivered for a terminal STOPPED(DRAIN_FAILED) peer is a benign
             // idempotent re-projection — nop, not a throw (mirrors ON_DUTY, Spike-2 2026-05-24).
-            assertNop(reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1)), state);
         }
 
         @Test void stoppedDrainFailed_forceDrain_isNop_operatorRecoveryRequired() {
-            assertNop(reducer.apply(state, forceDrain(T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, forceDrain(T1)), state);
         }
 
         @Test void stoppedDrainFailed_forceDecommissionGraceful_clearsDrainFailedMarker() {
-            var outcome = reducer.apply(state, forceDecommissionGraceful(T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, forceDecommissionGraceful(T1));
             assertDecommissioned(outcome, T1, "graceful-stop");
         }
 
         @Test void stoppedDrainFailed_forceDecommissionForced_clearsDrainFailedMarker() {
-            var outcome = reducer.apply(state, forceDecommissionForced(T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, forceDecommissionForced(T1));
             assertDecommissioned(outcome, T1, "operator-forced");
         }
 
@@ -546,7 +530,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void stoppedDrainFailed_joinDeadlineExpired_isNop() {
-            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1), PhiWarmth.COLD), state);
+            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
         }
     }
 
@@ -558,16 +542,16 @@ class ClusterMembershipReducerTest {
         @Test void apply_isPure_sameInputsYieldEqualOutcomes() {
             var state = MembershipFsmState.onDuty(PEER, ms(T0));
             var event = new SwimFaulty(PEER, 1L, T1);
-            var first = reducer.apply(state, event, PhiWarmth.COLD);
-            var second = reducer.apply(state, event, PhiWarmth.COLD);
+            var first = reducer.apply(state, event);
+            var second = reducer.apply(state, event);
             assertThat(first).isEqualTo(second);
         }
 
         @Test void onDutyToDecommissioned_thenSwimFaulty_isNopFromTerminalState() {
             var state = MembershipFsmState.onDuty(PEER, ms(T0));
             var event = new SwimFaulty(PEER, 1L, T1);
-            var first = reducer.apply(state, event, PhiWarmth.COLD);
-            var second = reducer.apply(first.newState(), event, PhiWarmth.COLD);
+            var first = reducer.apply(state, event);
+            var second = reducer.apply(first.newState(), event);
             assertThat(second.writes()).isEmpty();
             assertThat(second.effects()).isEmpty();
             assertThat(second.newState()).isEqualTo(first.newState());
@@ -576,8 +560,8 @@ class ClusterMembershipReducerTest {
         @Test void joiningToOnDuty_thenSwimHealthy_isNopFromOnDuty() {
             var state = MembershipFsmState.joining(PEER, ms(T0), Option.some(SLOT_ID));
             var event = new SwimHealthy(PEER, 1L, T1);
-            var first = reducer.apply(state, event, PhiWarmth.COLD);
-            var second = reducer.apply(first.newState(), event, PhiWarmth.COLD);
+            var first = reducer.apply(state, event);
+            var second = reducer.apply(first.newState(), event);
             assertThat(second.writes()).isEmpty();
             assertThat(second.effects()).isEmpty();
         }
@@ -586,8 +570,8 @@ class ClusterMembershipReducerTest {
             // DrainOutcome is at-most-once per spec §4.1 row 4 — re-apply on Decommissioned is err.
             var state = MembershipFsmState.draining(PEER, ms(T0), DrainReason.OPERATOR_DRAIN);
             var event = new DrainOutcome(PEER, true, T1);
-            var first = reducer.apply(state, event, PhiWarmth.COLD);
-            assertThatThrownBy(() -> reducer.apply(first.newState(), event, PhiWarmth.COLD)).isInstanceOf(IllegalStateException.class);
+            var first = reducer.apply(state, event);
+            assertThatThrownBy(() -> reducer.apply(first.newState(), event)).isInstanceOf(IllegalStateException.class);
         }
     }
 
@@ -599,12 +583,12 @@ class ClusterMembershipReducerTest {
     class SmokingGunReplay {
         @Test void onDutyVictim_singleFaultyObservation_writesDecommissioned() {
             var state = MembershipFsmState.onDuty(PEER, ms(T0));
-            var outcome = reducer.apply(state, new SwimFaulty(PEER, 7L, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new SwimFaulty(PEER, 7L, T1));
             assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.STOPPED, T1, Option.some(StopReason.FORCED)));
             assertEmitted(outcome, MembershipDomainEvent.NODE_FAILED);
             // H.4 cure: subsequent SwimHealthy on the Stopped state is nop forever
             // (revival path eliminated). Re-apply SwimFaulty: also nop (already stopped).
-            var reapply = reducer.apply(outcome.newState(), new SwimFaulty(PEER, 7L, T2), PhiWarmth.COLD);
+            var reapply = reducer.apply(outcome.newState(), new SwimFaulty(PEER, 7L, T2));
             assertThat(reapply.writes()).isEmpty();
         }
     }
@@ -613,7 +597,7 @@ class ClusterMembershipReducerTest {
     class ForceDecommissionDirect {
         @Test void onDuty_forceDecommissionForced_singleAtomicWrite_noDrainCoordinator() {
             var state = MembershipFsmState.onDuty(PEER, ms(T0));
-            var outcome = reducer.apply(state, forceDecommissionForced(T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, forceDecommissionForced(T1));
 
             assertThat(outcome.newState()).isEqualTo(MembershipFsmState.stopped(PEER, ms(T1), StopReason.FORCED));
             assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.STOPPED, T1, Option.some(StopReason.FORCED)));
@@ -630,7 +614,7 @@ class ClusterMembershipReducerTest {
             // Post-bootstrap-correction 2026-05-12: JOINING is only reachable via SlotClaimed
             // (the slot-provisioning path), not via SwimHealthy from UNTRACKED.
             var state = MembershipFsmState.untracked(PEER);
-            var outcome = reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1));
 
             var expectedDelay = MembershipFsmConfig.DEFAULT_JOIN_DEADLINE;
             assertThat(outcome.effects()).contains(new ScheduleTimer(PEER, TimerKind.JOIN_DEADLINE, expectedDelay));
@@ -638,7 +622,7 @@ class ClusterMembershipReducerTest {
 
         @Test void joinDeadlineExpired_inJoining_transitionsToDecommissioned() {
             var state = MembershipFsmState.joining(PEER, ms(T0), Option.some(SLOT_ID));
-            var outcome = reducer.apply(state, new JoinDeadlineExpired(PEER, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new JoinDeadlineExpired(PEER, T1));
 
             assertThat(outcome.newState()).isEqualTo(MembershipFsmState.stopped(PEER, ms(T1), StopReason.FORCED));
             assertEmittedWithReason(outcome, MembershipDomainEvent.NODE_FAILED, "join-timeout");
@@ -648,17 +632,17 @@ class ClusterMembershipReducerTest {
         @Test void joiningExit_emitsCancelTimer_preventingStaleFire() {
             // Any exit from Joining must cancel the join-deadline timer (spec R4).
             var state = MembershipFsmState.joining(PEER, ms(T0), Option.some(SLOT_ID));
-            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
             assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
         }
 
         @Test void joinDeadlineExpired_outsideJoining_isHarmlessNop() {
             // Stale-fire after Joining exit must be a no-op against every non-Joining state.
             var onDuty = MembershipFsmState.onDuty(PEER, ms(T0));
-            assertNop(reducer.apply(onDuty, new JoinDeadlineExpired(PEER, T2), PhiWarmth.COLD), onDuty);
+            assertNop(reducer.apply(onDuty, new JoinDeadlineExpired(PEER, T2)), onDuty);
 
             var decommissioned = MembershipFsmState.stopped(PEER, ms(T0), StopReason.FORCED);
-            assertNop(reducer.apply(decommissioned, new JoinDeadlineExpired(PEER, T2), PhiWarmth.COLD), decommissioned);
+            assertNop(reducer.apply(decommissioned, new JoinDeadlineExpired(PEER, T2)), decommissioned);
         }
     }
 
@@ -668,7 +652,7 @@ class ClusterMembershipReducerTest {
             // No self-write event exists in MembershipFsmEvent vocabulary — verified at compile time
             // by the sealed hierarchy. This test asserts the leader-observed SwimHealthy fires the promotion.
             var state = MembershipFsmState.joining(PEER, ms(T0), Option.some(SLOT_ID));
-            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
 
             assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, ms(T1)));
             assertThat(outcome.writes()).contains(putLifecycle(NodeLifecycleState.ON_DUTY, T1));
@@ -683,9 +667,9 @@ class ClusterMembershipReducerTest {
             // produced by the leader's local SWIM. This test documents that semantic.
             var state = MembershipFsmState.joining(PEER, ms(T0), Option.none());
             var leaderObservation = new SwimHealthy(PEER, 1L, T1);  // observer identity is implicit
-            assertThat(reducer.apply(state, leaderObservation, PhiWarmth.COLD).newState()).isEqualTo(MembershipFsmState.onDuty(PEER, ms(T1)));
+            assertThat(reducer.apply(state, leaderObservation).newState()).isEqualTo(MembershipFsmState.onDuty(PEER, ms(T1)));
             // A second, different observer (also the leader, different incarnation) is nop on OnDuty.
-            var reapply = reducer.apply(MembershipFsmState.onDuty(PEER, ms(T1)), new SwimHealthy(LEADER, 2L, T2), PhiWarmth.COLD);
+            var reapply = reducer.apply(MembershipFsmState.onDuty(PEER, ms(T1)), new SwimHealthy(LEADER, 2L, T2));
             assertThat(reapply.writes()).isEmpty();
         }
     }
@@ -709,7 +693,7 @@ class ClusterMembershipReducerTest {
 
         @Test void transportEventsByStateTable_matchesSpecSection16() {
             for (var row : table()) {
-                var actual = reducer.apply(row.state(), row.event(), PhiWarmth.COLD);
+                var actual = reducer.apply(row.state(), row.event());
                 assertThat(actual.newState()).as("newState for %s", row.label()).isEqualTo(row.expected().newState());
                 assertThat(actual.writes()).as("writes for %s", row.label()).containsExactlyElementsOf(row.expected().writes());
                 assertThat(actual.effects()).as("effects for %s", row.label()).containsExactlyElementsOf(row.expected().effects());
@@ -784,14 +768,14 @@ class ClusterMembershipReducerTest {
             // TransportUnreachable) cell. Duplicates a table row by design — this test is
             // named for code-search visibility and is the canary for future regressions.
             var state = MembershipFsmState.stopped(PEER, ms(T0), StopReason.FORCED);
-            var outcome = reducer.apply(state, new TransportUnreachable(PEER, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new TransportUnreachable(PEER, T1));
             assertNop(outcome, state);
         }
 
         @Test void decommissioned_transportReachable_isNop_chaosRevivalDefense() {
             // Mirror canary for the reachable side — no revival, no writes.
             var state = MembershipFsmState.stopped(PEER, ms(T0), StopReason.FORCED);
-            var outcome = reducer.apply(state, new TransportReachable(PEER, T1), PhiWarmth.COLD);
+            var outcome = reducer.apply(state, new TransportReachable(PEER, T1));
             assertNop(outcome, state);
         }
     }
@@ -863,7 +847,7 @@ class ClusterMembershipReducerTest {
     }
 
     private void assertIllegal(MembershipFsmState state, MembershipFsmEvent event) {
-        assertThatThrownBy(() -> reducer.apply(state, event, PhiWarmth.COLD)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> reducer.apply(state, event)).isInstanceOf(IllegalStateException.class);
     }
 
     private static KVCommand<AetherKey> putLifecycle(NodeLifecycleState newState, HlcTimestamp at) {

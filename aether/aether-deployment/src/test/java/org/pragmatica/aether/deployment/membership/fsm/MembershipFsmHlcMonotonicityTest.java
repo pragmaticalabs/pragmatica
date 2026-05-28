@@ -77,10 +77,10 @@ class MembershipFsmHlcMonotonicityTest {
 
             var firstAt = clock.now();
             var firstOutcome = reducer.apply(MembershipFsmState.untracked(PEER_A),
-                                              new SlotClaimed(PEER_A, SLOT_A, firstAt), PhiWarmth.COLD);
+                                              new SlotClaimed(PEER_A, SLOT_A, firstAt));
             var secondAt = clock.now();
             var secondOutcome = reducer.apply(MembershipFsmState.untracked(PEER_B),
-                                               new SlotClaimed(PEER_B, SLOT_B, secondAt), PhiWarmth.COLD);
+                                               new SlotClaimed(PEER_B, SLOT_B, secondAt));
 
             var firstWrite = (NodeLifecycleValue) ((KVCommand.Put<?, ?>) firstOutcome.writes().get(0)).value();
             var secondWrite = (NodeLifecycleValue) ((KVCommand.Put<?, ?>) secondOutcome.writes().get(0)).value();
@@ -196,7 +196,7 @@ class MembershipFsmHlcMonotonicityTest {
             var reducer = ClusterMembershipReducer.clusterMembershipReducer(MembershipFsmConfig.defaultMembershipFsmConfig());
             var eventAt = clock.now();
             var outcome = reducer.apply(MembershipFsmState.untracked(PEER_A),
-                                         new SlotClaimed(PEER_A, SLOT_A, eventAt), PhiWarmth.COLD);
+                                         new SlotClaimed(PEER_A, SLOT_A, eventAt));
 
             // Phase 1 step J co-write: lifecycle Put (JOINING) + JoinDeadlineKey Put.
             assertThat(outcome.writes()).hasSize(2);

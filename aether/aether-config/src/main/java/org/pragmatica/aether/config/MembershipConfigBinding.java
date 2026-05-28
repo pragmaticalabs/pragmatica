@@ -25,18 +25,16 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// - `quorumLossDrainThreshold` — duration `localQuorumCount` must stay below
 ///   `coreCount/2+1` before a [`org.pragmatica.aether.deployment.membership.ntt.QuorumLossIntent`]
 ///   is emitted. Default: 8s.
-/// - `nttObservation` — the migration-ramp feature flag string (`"off"` | `"universal"`),
-///   parsed downstream against the deployment-side enum. Default: `"off"`.
+///
+/// E2 Phase 2a (2026-05-28): the `nttObservation` migration-ramp feature flag is removed.
+/// NTT/LocalQuorumWatcher/LeaderReconciler now wire unconditionally.
 public record MembershipConfigBinding(TimeSpan nttDepartureTimeout,
-                                      TimeSpan quorumLossDrainThreshold,
-                                      String nttObservation) {
-    public static final String DEFAULT_NTT_OBSERVATION = "off";
+                                      TimeSpan quorumLossDrainThreshold) {
     public static final TimeSpan DEFAULT_NTT_DEPARTURE_TIMEOUT = timeSpan(15).seconds();
     public static final TimeSpan DEFAULT_QUORUM_LOSS_DRAIN_THRESHOLD = timeSpan(8).seconds();
 
     public static MembershipConfigBinding membershipConfigBinding() {
         return new MembershipConfigBinding(DEFAULT_NTT_DEPARTURE_TIMEOUT,
-                                           DEFAULT_QUORUM_LOSS_DRAIN_THRESHOLD,
-                                           DEFAULT_NTT_OBSERVATION);
+                                           DEFAULT_QUORUM_LOSS_DRAIN_THRESHOLD);
     }
 }

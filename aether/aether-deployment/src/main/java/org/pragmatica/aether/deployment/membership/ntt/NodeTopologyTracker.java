@@ -31,11 +31,9 @@ import static org.pragmatica.lang.Option.option;
 /// the freshest provisioning seed-PEERS set.
 ///
 /// **Mechanism only.** NTT is universal — it runs on every node and observes regardless of
-/// leader status. The observation-only feature gate ([`NttObservationFlag`]) is enforced
-/// upstream by the wiring layer; NTT itself does not consult the flag. The reconcile
-/// trigger is intentionally a `Runnable` (no peer payload) because the post-fire reconcile
-/// reads cluster state from scratch — the *fact* that a timer fired is the only datum
-/// the trigger carries.
+/// leader status. The reconcile trigger is intentionally a `Runnable` (no peer payload)
+/// because the post-fire reconcile reads cluster state from scratch — the *fact* that a
+/// timer fired is the only datum the trigger carries.
 ///
 /// **Inputs.**
 /// - [`#onSwimObservation`] —
