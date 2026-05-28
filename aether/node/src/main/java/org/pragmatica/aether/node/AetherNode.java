@@ -213,6 +213,7 @@ import org.pragmatica.aether.environment.PeerInfo;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.security.CertificateBundle;
@@ -245,6 +246,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.IntSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -1797,6 +1799,45 @@ public interface AetherNode extends ManageableNode {
                                                     rotatingEncryptor,
                                                     announceJoinTrigger);
         swimHealthDetector.addObservationListener(membershipFsm::onSwimObservation);
+        // ---------------------------------------------------------------------
+        // Membership v2 E1 — observation-only NTT wiring (spec §6, §7.4, §13).
+        // Gated on `membership.nttObservation = universal`; OFF (default) = zero
+        // behavior change. When UNIVERSAL: NTT + LocalQuorumWatcher +
+        // LeaderReconciler + DivergenceLogger are constructed and listeners
+        // registered; they observe SWIM + QUIC and emit structured
+        // `[v2-divergence]` log lines comparing NTT-side decisions against the
+        // existing FSM path. No actual provisioning / drain at E1.
+        // ---------------------------------------------------------------------
+        var membershipConfig = config.membership().or(MembershipConfig::membershipConfig);
+        var quicTapsOpt = Option.<NttQuicTaps>none();
+        if (membershipConfig.nttObservation() == NttObservationFlag.UNIVERSAL) {
+            var timeSource = TimeSource.system();
+            IntSupplier clusterMembershipCountSupplier = () -> clusterNode.network().connectedNodeCount() + 1;
+            IntSupplier configuredCoreCountSupplier = () -> config.topology().coreNodes().size();
+            var ntt = NodeTopologyTracker.nodeTopologyTracker(membershipConfig, timeSource, SharedScheduler::schedule);
+            var localQuorumWatcher = LocalQuorumWatcher.localQuorumWatcher(membershipConfig, timeSource, SharedScheduler::schedule);
+            var divergenceLogger = DivergenceLogger.divergenceLogger(timeSource);
+            var leaderReconciler = LeaderReconciler.leaderReconciler(membershipConfig,
+                                                                     config.autoHeal().provisioningTimeout(),
+                                                                     ntt,
+                                                                     localQuorumWatcher,
+                                                                     clusterMembershipCountSupplier,
+                                                                     configuredCoreCountSupplier,
+                                                                     timeSource,
+                                                                     SharedScheduler::schedule);
+            swimHealthDetector.addObservationListener(ntt::onSwimObservation);
+            ntt.setOnTimerFireListener(leaderReconciler::onTopologyUnhealthy);
+            localQuorumWatcher.setQuorumLossListener(leaderReconciler::onQuorumLossIntent);
+            leaderReconciler.setReconcileListener(divergenceLogger::observeNttIntent);
+            membershipFsm.addDecisionListener(divergenceLogger::observeFsmDecision);
+            var sweepPeriod = leaderReconciler.tickPeriod();
+            SharedScheduler.scheduleAtFixedRate(divergenceLogger::runCorrelationSweep, sweepPeriod, sweepPeriod);
+            Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(localQuorumWatcher::onPeerConnected);
+            Consumer<NodeId> nttDisconnectTap = localQuorumWatcher::onPeerDisconnected;
+            quicTapsOpt = Option.some(new NttQuicTaps(nttConnectTap, nttDisconnectTap));
+            aetherEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                        change -> toggleNttReconcilerOnLeaderChange(change, leaderReconciler)));
+        }
         membershipFsm.setSwimHealthGate(nodeId -> swimHealthDetector.healthOf(nodeId) == SwimHealth.HEALTHY);
         // SwimProtocol → router wire-up: SWIM-detected FAULTY peers are forwarded to the
         // cluster-wide `TransportObservation` stream so subscribers (LeaderManager,
@@ -1896,7 +1937,8 @@ public interface AetherNode extends ManageableNode {
                                        isLeaderSupplier,
                                        peerObservationStore,
                                        leaderEpochSupplier,
-                                       reachabilityAggregator);
+                                       reachabilityAggregator,
+                                       quicTapsOpt);
         attachQuicPeerStateListener(clusterNode.network(), swimHealthDetector);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForPublisher(change,
@@ -2536,7 +2578,8 @@ public interface AetherNode extends ManageableNode {
                                                        BooleanSupplier isLeaderSupplier,
                                                        PeerObservationBuffer buffer,
                                                        Supplier<Epoch> epochSupplier,
-                                                       ReachabilityAggregator reachabilityAggregator) {
+                                                       ReachabilityAggregator reachabilityAggregator,
+                                                       Option<NttQuicTaps> nttTaps) {
         if (! (network instanceof QuicClusterNetwork quicNetwork)) {return;}
 
         PeerConnectivityReporter reporter = new PeerConnectivityReporter() {
@@ -2552,6 +2595,7 @@ public interface AetherNode extends ManageableNode {
                 if (isLeaderSupplier.getAsBoolean()) {
                     reachabilityAggregator.ingestSelfTransition(peerId, ReachabilityKind.UNREACHABLE, now);
                 }
+                nttTaps.onPresent(t -> t.onDisconnect().accept(peerId));
             }
 
             @Override
@@ -2566,6 +2610,7 @@ public interface AetherNode extends ManageableNode {
                 if (isLeaderSupplier.getAsBoolean()) {
                     reachabilityAggregator.ingestSelfTransition(peerId, ReachabilityKind.REACHABLE, now);
                 }
+                nttTaps.onPresent(t -> t.onConnect().accept(peerId));
             }
         };
         QuicClusterNetwork.ObservedEpochSupplier epochAdapter = new QuicClusterNetwork.ObservedEpochSupplier() {
@@ -2632,6 +2677,24 @@ public interface AetherNode extends ManageableNode {
                                                        org.pragmatica.aether.deployment.reconciler.LifecycleReconciler reconciler) {
         if (change.localNodeIsLeader()) {reconciler.activate();} else {reconciler.deactivate();}
     }
+
+    /// Membership v2 E1 — leader-pin the NTT-side `LeaderReconciler`. Activate on leader gain
+    /// (drain NTT map, fire initial reconcile tick, start periodic ticks); deactivate on
+    /// leader loss (cancel ticks, clear in-flight provisioning). Mirrors
+    /// `toggleReconcilerOnLeaderChange`. Wired only when `membership.nttObservation = universal`.
+    @SuppressWarnings("JBCT-RET-01")
+    private static void toggleNttReconcilerOnLeaderChange(LeaderNotification.LeaderChange change,
+                                                          LeaderReconciler reconciler) {
+        if (change.localNodeIsLeader()) {reconciler.activate();} else {reconciler.deactivate();}
+    }
+
+    /// Membership v2 E1 — pair of QUIC connectivity taps wired into
+    /// `attachQuicConnectivityReporter` when `membership.nttObservation = universal`. The
+    /// connect tap fires `NodeTopologyTracker.onQuicReconnect` (cancels pending NTT timer)
+    /// AND `LocalQuorumWatcher.onPeerConnected` (raises local-quorum count). The disconnect
+    /// tap fires `LocalQuorumWatcher.onPeerDisconnected` (lowers local-quorum count). When
+    /// the flag is OFF the tap-option is `none()` and the reporter's invocations are no-ops.
+    record NttQuicTaps(Consumer<NodeId> onConnect, Consumer<NodeId> onDisconnect) {}
 
     /// #231 Step 2 — leader-pin the remaining control-plane components. Each mirrors
     /// toggleCtmOnLeaderChange:
