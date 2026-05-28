@@ -9,12 +9,14 @@ import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.config.HttpProtocol;
+import org.pragmatica.aether.config.MembershipConfigBinding;
 import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.config.Environment;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
+import org.pragmatica.aether.deployment.membership.ntt.NttObservationFlag;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.aether.node.AetherNode;
@@ -71,7 +73,7 @@ public record Main(String[] args) {
         var coreMax = parseCoreMax(aetherConfig);
         var tlsBundle = resolveTls(nodeId, peers, aetherConfig).expect("Failed to resolve TLS configuration at node startup");
         var appHttpTls = aetherConfig.filter(AetherConfig::tlsEnabled).map(_ -> tlsBundle.tls());
-        var config = AetherNodeConfig.builder().self(nodeId).coreNodes(peers).managementPort(managementPort).sliceConfig(sliceConfig).artifactRepo(dhtConfig).coreMax(coreMax).appHttp(resolveAppHttp(aetherConfig)).tls(appHttpTls).quicTls(tlsBundle.tls()).certificateProvider(tlsBundle.provider()).configProvider(resolveConfigProvider()).environment(resolveEnvironment(aetherConfig)).managementHttpProtocol(resolveManagementHttpProtocol(aetherConfig)).storageConfig(resolveStorage(aetherConfig)).backupConfig(resolveBackup(aetherConfig)).membership(Option.<MembershipConfig>none()).streaming(resolveStreaming(aetherConfig)).build();
+        var config = AetherNodeConfig.builder().self(nodeId).coreNodes(peers).managementPort(managementPort).sliceConfig(sliceConfig).artifactRepo(dhtConfig).coreMax(coreMax).appHttp(resolveAppHttp(aetherConfig)).tls(appHttpTls).quicTls(tlsBundle.tls()).certificateProvider(tlsBundle.provider()).configProvider(resolveConfigProvider()).environment(resolveEnvironment(aetherConfig)).managementHttpProtocol(resolveManagementHttpProtocol(aetherConfig)).storageConfig(resolveStorage(aetherConfig)).backupConfig(resolveBackup(aetherConfig)).membership(resolveMembership(aetherConfig)).streaming(resolveStreaming(aetherConfig)).build();
         var node = AetherNode.aetherNode(config).expect("Failed to initialize Aether node at startup");
         registerShutdownHook(node);
         startNodeAndWait(node, nodeId);
@@ -168,6 +170,27 @@ public record Main(String[] args) {
     private static StreamingConfig resolveStreaming(Option<AetherConfig> aetherConfig) {
         return aetherConfig.map(AetherConfig::streaming)
                            .or(StreamingConfig.streamingConfig());
+    }
+
+    /// Membership v2 — Stage 6 wiring. Lifts the optional aether-config-side
+    /// [`MembershipConfigBinding`] into the aether-deployment-side
+    /// [`MembershipConfig`]. Absent → `none()` so [`AetherNodeConfig`] sees the same
+    /// "no `[membership]` section, defaults will be applied at use sites" signal it sees
+    /// today, preserving default-OFF behaviour exactly.
+    private static Option<MembershipConfig> resolveMembership(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.flatMap(AetherConfig::membership).map(Main::liftMembershipBinding);
+    }
+
+    private static MembershipConfig liftMembershipBinding(MembershipConfigBinding binding) {
+        return new MembershipConfig(binding.nttDepartureTimeout(),
+                                    binding.quorumLossDrainThreshold(),
+                                    parseNttObservation(binding.nttObservation()));
+    }
+
+    private static NttObservationFlag parseNttObservation(String raw) {
+        return "universal".equalsIgnoreCase(raw)
+               ? NttObservationFlag.UNIVERSAL
+               : NttObservationFlag.OFF;
     }
 
     private ConfigurationProvider buildConfigProvider(Path configPath) {

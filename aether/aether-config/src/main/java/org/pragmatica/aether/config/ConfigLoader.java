@@ -86,7 +86,29 @@ public final class ConfigLoader {
         populateCloudConfig(doc, builder);
         populateEndpointsConfig(doc, builder);
         populateStreamingConfig(doc, builder);
+        populateMembershipConfig(doc, builder);
         return builder;
+    }
+
+    /// Membership v2 — Stage 6 wiring. Maps the optional `[membership]` TOML section into
+    /// a [`MembershipConfigBinding`]. Defaults (spec §14) are applied per-field when a
+    /// key is absent, so a partial section is well-defined. When the section is absent
+    /// entirely the binding is left empty — [`org.pragmatica.aether.Main`] then defaults
+    /// `nttObservation = OFF` per the production-safe constraint.
+    private static void populateMembershipConfig(TomlDocument doc, AetherConfig.Builder builder) {
+        var hasSection = doc.sectionNames().stream().anyMatch("membership"::equals);
+        if (!hasSection) {return;}
+        var nttTimeout = parseTimeSpan(doc,
+                                       "membership",
+                                       "ntt_departure_timeout",
+                                       MembershipConfigBinding.DEFAULT_NTT_DEPARTURE_TIMEOUT);
+        var quorumLossThreshold = parseTimeSpan(doc,
+                                                "membership",
+                                                "quorum_loss_drain_threshold",
+                                                MembershipConfigBinding.DEFAULT_QUORUM_LOSS_DRAIN_THRESHOLD);
+        var nttObservation = doc.getString("membership", "ntt_observation")
+                                .or(MembershipConfigBinding.DEFAULT_NTT_OBSERVATION);
+        builder.membership(new MembershipConfigBinding(nttTimeout, quorumLossThreshold, nttObservation));
     }
 
     private static void populateStreamingConfig(TomlDocument doc, AetherConfig.Builder builder) {

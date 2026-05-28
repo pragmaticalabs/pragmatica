@@ -18,3 +18,13 @@ connection_timeout = "5s"
 max_lifetime = "30m"
 leak_detection_timeout = "0s"
 io_threads = 0
+
+# Membership v2 (spec §14) — observation-only NTT stack. Defaults are production-safe:
+# `nttObservation = "off"` keeps the rc1 code path dormant. Set `"universal"` to enable
+# the per-node NodeTopologyTracker + LocalQuorumWatcher + DivergenceLogger observation
+# ramp once cluster telemetry confirms it matches the existing FSM path.
+#
+# [membership]
+# ntt_departure_timeout = "15s"        # SWIM Departed → TopologyUnhealthy delay (default 15s)
+# quorum_loss_drain_threshold = "8s"   # below-quorum duration before QuorumLossIntent (default 8s)
+# ntt_observation = "off"              # "off" | "universal" (default "off" — no behaviour change)

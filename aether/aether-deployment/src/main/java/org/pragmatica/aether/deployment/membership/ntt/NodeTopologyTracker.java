@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.util.function.Consumer;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
@@ -65,10 +66,13 @@ import static org.pragmatica.lang.Option.some;
 /// NTT consumes a single-arg `NodeId` form because the term/counter epoch fields are leader-
 /// aggregator concerns; NTT only needs the identity that came up.
 public final class NodeTopologyTracker {
+    private static final Consumer<TopologyUnhealthyEvent> NOOP_FIRE_LISTENER = event -> {};
+
     private final MembershipConfig config;
     private final TimeSource timeSource;
     private final NttTimerScheduler scheduler;
     private final Map<NodeId, NttPendingEntry> entries = new ConcurrentHashMap<>();
+    private volatile Consumer<TopologyUnhealthyEvent> onTimerFireListener = NOOP_FIRE_LISTENER;
 
     private NodeTopologyTracker(MembershipConfig config, TimeSource timeSource, NttTimerScheduler scheduler) {
         this.config = config;
@@ -173,6 +177,15 @@ public final class NodeTopologyTracker {
         return (int) entries.values().stream().filter(entry -> entry.firedEvent().isPresent()).count();
     }
 
+    /// Stage 6 wiring hook — register a consumer fired once per timer expiry, alongside the
+    /// internal map-put of the [`TopologyUnhealthyEvent`]. Used by [`LeaderReconciler`] to
+    /// trigger an immediate reconcile pass without polling [`#claim`]. Non-blocking — the
+    /// listener runs on the scheduler thread that fired the timer.
+    @Contract
+    public void setOnTimerFireListener(Consumer<TopologyUnhealthyEvent> listener) {
+        onTimerFireListener = listener;
+    }
+
     private void scheduleIfAbsent(NodeId peerId) {
         entries.computeIfAbsent(peerId, this::armEntry);
     }
@@ -185,8 +198,10 @@ public final class NodeTopologyTracker {
 
     private void onTimerFire(NodeId peerId) {
         var firedAt = timeSource.nanoTime();
+        var event = new TopologyUnhealthyEvent(peerId, firedAt);
 
-        entries.computeIfPresent(peerId, (key, entry) -> entry.markFired(new TopologyUnhealthyEvent(key, firedAt)));
+        entries.computeIfPresent(peerId, (key, entry) -> entry.markFired(event));
+        onTimerFireListener.accept(event);
     }
 
     /// Per-peer state held in the entries map. Immutable record — every state transition

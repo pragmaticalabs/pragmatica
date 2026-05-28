@@ -7,6 +7,8 @@ package org.pragmatica.aether.deployment.membership.fsm;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
 import org.pragmatica.aether.deployment.membership.fsm.ClusterMembershipReducer.Outcome;
+import org.pragmatica.aether.deployment.membership.ntt.FsmDecisionEvent;
+import org.pragmatica.aether.deployment.membership.ntt.FsmDecisionType;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceOnDuty;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.RecordJoining;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.CancelDrain;
@@ -66,6 +68,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 import org.slf4j.Logger;
@@ -169,6 +172,16 @@ public final class MembershipFsm {
     private final Map<TimerHandle, ScheduledFuture<?>> pendingTimers = new ConcurrentHashMap<>();
     private final AtomicBoolean started = new AtomicBoolean();
     private volatile Function<NodeId, Boolean> swimHealthGate = ignored -> false;
+
+    /// Stage 6 (membership v2 §7.4 wiring) — decision listeners fired AFTER the existing log
+    /// emission in [`#logFsmOutcome`], [`#logOperatorOutcome`], [`#logCommandOutcome`] so the
+    /// divergence-logger (and any future observer) can side-by-side an NTT-side
+    /// [`org.pragmatica.aether.deployment.membership.ntt.ReconcileIntent`] with the FSM-side
+    /// decision. The listener invocation is fire-and-forget — exceptions from a listener are
+    /// caught at the call site so a buggy observer cannot corrupt FSM bookkeeping. The list is
+    /// a [`java.util.concurrent.CopyOnWriteArrayList`] so concurrent fires + register are
+    /// safe and lock-free on the hot read path.
+    private final java.util.List<Consumer<FsmDecisionEvent>> decisionListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     private MembershipFsm(NodeId self,
                           MembershipFsmConfig config,
@@ -542,6 +555,17 @@ public final class MembershipFsm {
                               }
                               });
         }
+    }
+
+    /// Stage 6 (membership v2 §7.4 wiring) — register a consumer for FSM-side decisions.
+    /// The listener is fired AFTER each of [`#logFsmOutcome`], [`#logOperatorOutcome`],
+    /// [`#logCommandOutcome`] so observers (the divergence-logger today; future metrics or
+    /// equivalence checkers) see every committed-or-no-op transition. Multiple listeners are
+    /// allowed — call once per observer. The FSM itself never reads the list; behaviour is
+    /// unchanged when no listener is registered.
+    @Contract
+    public void addDecisionListener(Consumer<FsmDecisionEvent> listener) {
+        decisionListeners.add(listener);
     }
 
     private boolean isSelfAlreadyOnDuty() {
@@ -1098,6 +1122,7 @@ public final class MembershipFsm {
                  accepted ? "accepted" : "no-op (illegal-on-state / rejected)",
                  prior.getClass().getSimpleName(),
                  outcome.newState().getClass().getSimpleName());
+        fireDecisionListeners(buildCommandDecisionEvent(command, prior, outcome, accepted));
     }
 
     /// Resolves a peer's current FSM state for the reducer. On an `fsmStates` miss, re-derives
@@ -1561,6 +1586,7 @@ public final class MembershipFsm {
                  describe(outcome.newState()),
                  outcome.writes(),
                  outcome.effects());
+        fireDecisionListeners(buildEventDecisionEvent(event, priorState, outcome, false));
     }
 
     private void logOperatorOutcome(MembershipFsmEvent event,
@@ -1575,6 +1601,7 @@ public final class MembershipFsm {
                  outcome.writes().size(),
                  outcome.effects().size(),
                  writesApplied);
+        fireDecisionListeners(buildEventDecisionEvent(event, priorState, outcome, writesApplied));
     }
 
     private void logExternalLifecycleChange(NodeId peer,
@@ -1594,6 +1621,75 @@ public final class MembershipFsm {
         }
         return state.getClass()
                     .getSimpleName();
+    }
+
+    /// Stage 6 — fire all registered listeners with the constructed [`FsmDecisionEvent`].
+    /// Each listener invocation is wrapped so a misbehaving observer cannot poison the FSM
+    /// or starve sibling listeners. The FSM has no behaviour change beyond this call.
+    @Contract
+    private void fireDecisionListeners(FsmDecisionEvent event) {
+        decisionListeners.forEach(listener -> safelyFireListener(listener, event));
+    }
+
+    @Contract
+    @SuppressWarnings("JBCT-EXC-01")
+    private void safelyFireListener(Consumer<FsmDecisionEvent> listener, FsmDecisionEvent event) {
+        try {
+            listener.accept(event);
+        } catch (RuntimeException ex) {
+            log.warn("MembershipFsm: decisionListener {} threw {} — observer fault, FSM unaffected",
+                     listener.getClass().getName(),
+                     ex.toString());
+        }
+    }
+
+    private FsmDecisionEvent buildEventDecisionEvent(MembershipFsmEvent event,
+                                                     MembershipFsmState prior,
+                                                     Outcome outcome,
+                                                     boolean writesApplied) {
+        var observedAt = hlcClock.now().physicalMicros() * 1000L;
+        var type = classifyEventOutcome(outcome, writesApplied);
+        var peerId = some(event.peer());
+        var reason = event.getClass().getSimpleName();
+
+        return FsmDecisionEvent.fsmDecisionEvent(observedAt, type, peerId, describe(prior), describe(outcome.newState()), reason);
+    }
+
+    private FsmDecisionEvent buildCommandDecisionEvent(LifecycleCommand command,
+                                                       MembershipFsmState prior,
+                                                       Outcome outcome,
+                                                       boolean accepted) {
+        var observedAt = hlcClock.now().physicalMicros() * 1000L;
+        var type = classifyCommandOutcome(outcome, accepted);
+        var peerId = some(command.peer());
+        var reason = command.getClass().getSimpleName();
+
+        return FsmDecisionEvent.fsmDecisionEvent(observedAt, type, peerId, describe(prior), describe(outcome.newState()), reason);
+    }
+
+    private static FsmDecisionType classifyEventOutcome(Outcome outcome, boolean writesApplied) {
+        if (!writesApplied || outcome.writes().isEmpty()) {
+            return FsmDecisionType.NO_ACTION;
+        }
+        return classifyByTargetState(outcome.newState());
+    }
+
+    private static FsmDecisionType classifyCommandOutcome(Outcome outcome, boolean accepted) {
+        if (!accepted || outcome.writes().isEmpty()) {
+            return FsmDecisionType.NO_ACTION;
+        }
+        return classifyByTargetState(outcome.newState());
+    }
+
+    private static FsmDecisionType classifyByTargetState(MembershipFsmState newState) {
+        return switch (newState) {
+            case MembershipFsmState.Joining _ -> FsmDecisionType.PROVISION;
+            case MembershipFsmState.OnDuty _ -> FsmDecisionType.PROVISION;
+            case MembershipFsmState.Provisioning _ -> FsmDecisionType.PROVISION;
+            case MembershipFsmState.Draining _ -> FsmDecisionType.DRAIN;
+            case MembershipFsmState.Stopped _ -> FsmDecisionType.DECOMMISSION;
+            case MembershipFsmState.Untracked _ -> FsmDecisionType.OTHER;
+        };
     }
 
     private record TimerHandle(NodeId peer, TimerKind kind) {}
