@@ -7,12 +7,9 @@ package org.pragmatica.aether.deployment.membership.ntt;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.TimeSource;
-import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.SwimObservation.DepartedObserved;
 import org.pragmatica.swim.SwimObservation.HealthyObserved;
 
@@ -21,26 +18,28 @@ import java.util.List;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.deployment.membership.MembershipConfig.membershipConfig;
 import static org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker.nodeTopologyTracker;
-import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Unit tests for [`NodeTopologyTracker`] — mechanism in isolation, no SWIM/QUIC wiring.
+/// Unit tests for [`NodeTopologyTracker`] (E2 Phase 1.5) — timer-only mechanism;
+/// fire invokes a `Runnable onReconcileNeeded` callback. NTT no longer holds
+/// per-peer event records.
 class NodeTopologyTrackerTest {
     private static final NodeId PEER = NodeId.randomNodeId();
 
-    private TestTimeSource timeSource;
     private ManualScheduler scheduler;
+    private AtomicInteger reconcileInvocations;
     private NodeTopologyTracker ntt;
 
     @BeforeEach
     void setUp() {
-        timeSource = new TestTimeSource();
         scheduler = new ManualScheduler();
-        ntt = nodeTopologyTracker(membershipConfig(), timeSource, scheduler);
+        reconcileInvocations = new AtomicInteger(0);
+        ntt = nodeTopologyTracker(membershipConfig(), scheduler, reconcileInvocations::incrementAndGet);
     }
 
     @Nested
@@ -50,44 +49,31 @@ class NodeTopologyTrackerTest {
             ntt.onSwimObservation(new DepartedObserved(PEER, 1L));
 
             assertThat(ntt.pendingTimerCount()).isEqualTo(1);
-            assertThat(ntt.firedEventCount()).isZero();
             assertThat(scheduler.pendingTasks()).hasSize(1);
             assertThat(scheduler.pendingTasks().getFirst().delay()).isEqualTo(membershipConfig().nttDepartureTimeout());
+            assertThat(reconcileInvocations.get()).isZero();
         }
 
         @Test
-        void timerFire_emitsClaimableEvent_afterDeadline() {
+        void timerFire_invokesReconcileTrigger_afterDeadline_andRemovesEntry() {
             ntt.onSwimObservation(new DepartedObserved(PEER, 1L));
-            timeSource.advanceTimeMillis(20_000);
+
             scheduler.fireAll();
 
-            assertThat(ntt.firedEventCount()).isEqualTo(1);
+            assertThat(reconcileInvocations.get()).isEqualTo(1);
             assertThat(ntt.pendingTimerCount()).isZero();
-
-            var claimed = ntt.claim(PEER);
-
-            assertThat(claimed.isPresent()).isTrue();
-            claimed.onPresent(event -> {
-                assertThat(event.peerId()).isEqualTo(PEER);
-                assertThat(event.firedAtNanos()).isEqualTo(timeSpan(20_000).millis().nanos());
-            });
-            assertThat(ntt.firedEventCount()).isZero();
         }
 
         @Test
-        void drainAllFiredEvents_returnsAllFired_andClearsMap() {
+        void multipleTimersFire_invokeTriggerOncePerExpiry() {
             var second = NodeId.randomNodeId();
 
             ntt.onSwimObservation(new DepartedObserved(PEER, 1L));
             ntt.onSwimObservation(new DepartedObserved(second, 1L));
-            timeSource.advanceTimeMillis(20_000);
             scheduler.fireAll();
 
-            var drained = ntt.drainAllFiredEvents();
-
-            assertThat(drained).hasSize(2);
-            assertThat(drained.stream().map(TopologyUnhealthyEvent::peerId)).containsExactlyInAnyOrder(PEER, second);
-            assertThat(ntt.firedEventCount()).isZero();
+            assertThat(reconcileInvocations.get()).isEqualTo(2);
+            assertThat(ntt.pendingTimerCount()).isZero();
         }
     }
 
@@ -102,23 +88,17 @@ class NodeTopologyTrackerTest {
             assertThat(ntt.pendingTimerCount()).isZero();
             assertThat(scheduler.pendingTasks().getFirst().cancelled()).isTrue();
 
-            // Even if the scheduler tried to fire (race window — scheduler has the task
-            // reference but cancel was called), nothing would land in the entries map.
             scheduler.fireAll();
 
-            assertThat(ntt.firedEventCount()).isZero();
+            assertThat(reconcileInvocations.get()).isZero();
         }
 
         @Test
-        void onQuicReconnect_clearsAlreadyFiredEvent() {
-            ntt.onSwimObservation(new DepartedObserved(PEER, 1L));
-            scheduler.fireAll();
-            assertThat(ntt.firedEventCount()).isEqualTo(1);
-
+        void onQuicReconnect_onUntracked_isNoOp() {
             ntt.onQuicReconnect(PEER);
 
-            assertThat(ntt.firedEventCount()).isZero();
-            assertThat(ntt.claim(PEER).isPresent()).isFalse();
+            assertThat(ntt.pendingTimerCount()).isZero();
+            assertThat(reconcileInvocations.get()).isZero();
         }
     }
 
@@ -139,34 +119,6 @@ class NodeTopologyTrackerTest {
 
             assertThat(ntt.pendingTimerCount()).isZero();
             assertThat(scheduler.pendingTasks()).isEmpty();
-        }
-
-        @Test
-        void claim_onMissingPeer_returnsNone() {
-            assertThat(ntt.claim(PEER).isPresent()).isFalse();
-        }
-
-        @Test
-        void claim_beforeTimerFires_returnsNone_andLeavesTimerArmed() {
-            ntt.onSwimObservation(new DepartedObserved(PEER, 1L));
-
-            assertThat(ntt.claim(PEER).isPresent()).isFalse();
-            assertThat(ntt.pendingTimerCount()).isEqualTo(1);
-        }
-    }
-
-    /// Controllable time source — advances only on explicit method calls.
-    private static final class TestTimeSource implements TimeSource {
-        private volatile long nanos = 0L;
-
-        @Override
-        public long nanoTime() {
-            return nanos;
-        }
-
-        @Contract
-        void advanceTimeMillis(long millis) {
-            nanos += TimeUnit.MILLISECONDS.toNanos(millis);
         }
     }
 

@@ -26,61 +26,57 @@ import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Leader-pinned reconciler (membership v2 spec §7.4). Combines the leader-activation
-/// orchestration with the periodic reconciliation tick and the live event ingresses
-/// for NTT [`TopologyUnhealthyEvent`] and [`LocalQuorumWatcher`] [`QuorumLossIntent`].
+/// Leader-pinned reconciler (membership v2 spec §7.4 — E2 Phase 1.5: fully
+/// state-derived reconciliation). All trigger paths converge on a single CAS-debounced
+/// `triggerReconcile(trigger)` entry point; the periodic tick has been removed (the
+/// previous tick existed only because surplus had no event signal — now SWIM
+/// `HealthyObserved` provides it symmetrically with NTT for shortage).
 ///
-/// **Four trigger paths** converge on a single idempotent `reconcile(trigger)` call:
-/// 1. [`#activate()`] on leader gain — drains the NTT map, emits one
-///    [`ReconcileTrigger#LEADER_ACTIVATION`] intent per drained event, then a final
-///    backstop activation intent (so a leader that activates against an empty NTT map
-///    still does one reconciliation pass). Schedules the first periodic tick.
-/// 2. [`#onTopologyUnhealthy(TopologyUnhealthyEvent)`] — wired by Stage 6 as a callback
-///    from NTT's claim/timer-fire path while leader. Ignored on non-leader nodes.
-/// 3. [`#onQuorumLossIntent(QuorumLossIntent)`] — wired by Stage 6 as a
-///    [`LocalQuorumWatcher`] listener. At E1 every node emits the intent (Stage 6 may
-///    add leader-only gating); only the leader's reconciler would trigger CTM-side
-///    action, but the observation-only log path runs everywhere.
-/// 4. Periodic tick at `provisioningTimeout × 1.5` — auto-rescheduled per fire while
-///    leader, cancelled on `deactivate()`.
+/// **Five trigger paths.**
+/// 1. [`#activate()`] on leader gain — schedules a single one-shot delayed
+///    [`ReconcileTrigger#LEADER_ACTIVATION`] reconcile at
+///    `nttDepartureTimeout × 1.5`. Reasoning: leader churn is invasive; let SWIM gossip
+///    + QUIC connections quiesce before reconciling. No immediate reconcile is emitted.
+/// 2. [`#onTopologyUnhealthy()`] — wired from NTT's timer-fire callback while leader.
+///    Non-leader nodes ignore. Trigger: [`ReconcileTrigger#NTT_FIRE`].
+/// 3. [`#onQuorumLossIntent(QuorumLossIntent)`] — wired from
+///    [`LocalQuorumWatcher`]. Emitted on every node. Trigger:
+///    [`ReconcileTrigger#QUORUM_LOSS`].
+/// 4. [`#onSwimMemberHealthy(NodeId)`] — wired from SWIM `HealthyObserved`. Catches
+///    the "surplus appeared" case (a peer became reachable; the leader may need to
+///    drain excess). Trigger: [`ReconcileTrigger#MEMBER_APPEARED`].
+/// 5. [`#onConfigChange()`] — placeholder entry point for KV-subscribed config changes
+///    (e.g., `coreCount`). Phase 2 hooks the actual subscription. Trigger:
+///    [`ReconcileTrigger#CONFIG_CHANGE`].
 ///
-/// **E1 observation-only.** The registered listener just logs. `peersToProvision` and
-/// `peersToDrain` are intentionally empty placeholders; Stage 6 wires actual KSUID
-/// generation, drain-selection, and CTM dispatch.
+/// **CAS-debounce.** A burst of trigger events collapses to at most two reconcile
+/// passes via the standard "in-flight + reschedule-requested" pair of [`AtomicBoolean`]s.
+/// First event sets `reconcileInFlight=true` and schedules the reconcile; subsequent
+/// events while reconcile is in flight set `rescheduleRequested=true`; when the in-flight
+/// reconcile completes, the flag is cleared and if `rescheduleRequested` was set, one
+/// follow-up reconcile is scheduled.
 ///
-/// **In-flight provisioning bookkeeping.** When Stage 6+ enables actual provisioning the
-/// reconciler tracks each provisioned peer with its provisioning-start timestamp. Per
-/// tick, entries past `provisioningTimeout × 1.5` are evicted (assumed failed) so they
-/// no longer mask the "underprovisioned" signal. At E1 the map starts and stays empty
-/// (no entries are ever inserted yet), but the eviction code path runs on every tick.
+/// **In-flight provisioning bookkeeping.** Per reconcile pass, entries past
+/// `nttDepartureTimeout × 1.5` are evicted (assumed failed) so they no longer mask the
+/// "underprovisioned" signal. The map is internal — exposed only via observability
+/// accessors.
 ///
-/// **Concurrency.** `isLeader` is an [`AtomicBoolean`]; `scheduledTickRef` is an
-/// [`AtomicReference`]; `inFlightProvisioning` is a [`ConcurrentHashMap`]. The listener
-/// reference is `volatile`. `activate` and `deactivate` are guarded by CAS on `isLeader`
-/// so concurrent toggles converge.
-///
-/// **Tick re-arming.** The injected [`NttTimerScheduler`] is one-shot (matching
-/// [`NodeTopologyTracker`] and [`LocalQuorumWatcher`]); each tick re-arms the next while
-/// `isLeader` is true.
-///
-/// **Source citations.**
-/// - `provisioningTimeout` default + accessor:
-///   `aether/environment-integration/src/main/java/org/pragmatica/aether/environment/AutoHealConfig.java:18,26`
-///   (`AutoHealConfig.provisioningTimeout()`, default 60s). Injected as
-///   `TimeSpan provisioningTimeout` to keep aether-deployment decoupled from
-///   environment-integration. Stage 6 wires from `AutoHealConfig`.
-/// - `clusterMembershipCount` source: injected as `IntSupplier` (Stage 6 binds it to
-///   a SWIM-converged member-set count; today's running code reads cluster size via
-///   `TopologyManager.clusterSize()` consumed by `ClusterTopologyManagerRecord`).
+/// **Concurrency.** `isLeader`, `reconcileInFlight`, `rescheduleRequested` are
+/// [`AtomicBoolean`]s; `activationFutureRef` is an [`AtomicReference`];
+/// `inFlightProvisioning` is a [`ConcurrentHashMap`]. The listener reference is
+/// `volatile`. `activate` and `deactivate` are guarded by CAS on `isLeader`.
 public final class LeaderReconciler {
     private static final Consumer<ReconcileIntent> NOOP_LISTENER = intent -> {};
+    private static final TimeSpan DEBOUNCE_DELAY = timeSpan(100L).millis();
 
     private final MembershipConfig membershipConfig;
-    private final TimeSpan provisioningTimeout;
-    private final TimeSpan tickPeriod;
+    private final TimeSpan leaderActivationDelay;
+    private final TimeSpan inFlightExpiry;
     private final NodeTopologyTracker ntt;
     private final LocalQuorumWatcher localQuorumWatcher;
     private final IntSupplier clusterMembershipCountSupplier;
@@ -91,12 +87,14 @@ public final class LeaderReconciler {
     private final NttTimerScheduler scheduler;
 
     private final AtomicBoolean isLeader = new AtomicBoolean(false);
-    private final AtomicReference<ScheduledFuture<?>> scheduledTickRef = new AtomicReference<>();
+    private final AtomicBoolean reconcileInFlight = new AtomicBoolean(false);
+    private final AtomicBoolean rescheduleRequested = new AtomicBoolean(false);
+    private final AtomicReference<ScheduledFuture<?>> activationFutureRef = new AtomicReference<>();
+    private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
     private final ConcurrentHashMap<NodeId, Long> inFlightProvisioning = new ConcurrentHashMap<>();
     private volatile Consumer<ReconcileIntent> reconcileListener = NOOP_LISTENER;
 
     private LeaderReconciler(MembershipConfig membershipConfig,
-                             TimeSpan provisioningTimeout,
                              NodeTopologyTracker ntt,
                              LocalQuorumWatcher localQuorumWatcher,
                              IntSupplier clusterMembershipCountSupplier,
@@ -106,8 +104,8 @@ public final class LeaderReconciler {
                              TimeSource timeSource,
                              NttTimerScheduler scheduler) {
         this.membershipConfig = membershipConfig;
-        this.provisioningTimeout = provisioningTimeout;
-        this.tickPeriod = computeTickPeriod(provisioningTimeout);
+        this.leaderActivationDelay = computeQuiesceDelay(membershipConfig.nttDepartureTimeout());
+        this.inFlightExpiry = leaderActivationDelay;
         this.ntt = ntt;
         this.localQuorumWatcher = localQuorumWatcher;
         this.clusterMembershipCountSupplier = clusterMembershipCountSupplier;
@@ -120,7 +118,6 @@ public final class LeaderReconciler {
 
     /// Production factory bound to the process-wide [`SharedScheduler`] and the system clock.
     public static LeaderReconciler leaderReconciler(MembershipConfig membershipConfig,
-                                                    TimeSpan provisioningTimeout,
                                                     NodeTopologyTracker ntt,
                                                     LocalQuorumWatcher localQuorumWatcher,
                                                     IntSupplier clusterMembershipCountSupplier,
@@ -128,7 +125,6 @@ public final class LeaderReconciler {
                                                     Supplier<Set<NodeId>> currentClusterMembersSupplier,
                                                     ClusterTopologyManager ctm) {
         return new LeaderReconciler(membershipConfig,
-                                    provisioningTimeout,
                                     ntt,
                                     localQuorumWatcher,
                                     clusterMembershipCountSupplier,
@@ -140,9 +136,8 @@ public final class LeaderReconciler {
     }
 
     /// Test factory accepting explicit [`TimeSource`] and [`NttTimerScheduler`] —
-    /// required for deterministic tick/fire without wall-clock advancement.
+    /// required for deterministic activation/debounce assertions.
     public static LeaderReconciler leaderReconciler(MembershipConfig membershipConfig,
-                                                    TimeSpan provisioningTimeout,
                                                     NodeTopologyTracker ntt,
                                                     LocalQuorumWatcher localQuorumWatcher,
                                                     IntSupplier clusterMembershipCountSupplier,
@@ -152,7 +147,6 @@ public final class LeaderReconciler {
                                                     TimeSource timeSource,
                                                     NttTimerScheduler scheduler) {
         return new LeaderReconciler(membershipConfig,
-                                    provisioningTimeout,
                                     ntt,
                                     localQuorumWatcher,
                                     clusterMembershipCountSupplier,
@@ -166,54 +160,70 @@ public final class LeaderReconciler {
     /// Activate the leader-pinned reconciler. Idempotent — if already active, returns
     /// without altering state.
     ///
-    /// On the leader-edge transition:
-    /// 1. Drain accumulated NTT fired events; emit one [`ReconcileTrigger#LEADER_ACTIVATION`]
-    ///    intent per drained event.
-    /// 2. Emit one final backstop [`ReconcileTrigger#LEADER_ACTIVATION`] intent (so a
-    ///    leader that activates against an empty NTT map still does one reconciliation
-    ///    pass — the spec §7.4 "freshly-elected leader must immediately reconcile"
-    ///    requirement).
-    /// 3. Schedule the first periodic tick at `tickPeriod`.
+    /// On the leader-edge transition: schedule a single one-shot delayed reconcile at
+    /// `nttDepartureTimeout × 1.5`. No immediate reconcile is emitted — the delay lets
+    /// SWIM gossip and QUIC connections quiesce before the first reconcile pass runs.
     @Contract
     public void activate() {
         if (!isLeader.compareAndSet(false, true)) {
             return;
         }
-        ntt.drainAllFiredEvents().forEach(event -> reconcile(ReconcileTrigger.LEADER_ACTIVATION));
-        reconcile(ReconcileTrigger.LEADER_ACTIVATION);
-        scheduleNextTick();
+        var future = scheduler.schedule(this::onActivationDelayFire, leaderActivationDelay);
+
+        activationFutureRef.set(future);
     }
 
-    /// Deactivate the leader-pinned reconciler. Idempotent. Cancels the pending periodic
-    /// tick and clears the in-flight provisioning map (the new leader will rebuild it from
-    /// observed state). Does NOT drain the NTT map — NTT runs universally on every node.
+    /// Deactivate the leader-pinned reconciler. Idempotent. Cancels the pending one-shot
+    /// activation reconcile and clears the in-flight provisioning map (the new leader
+    /// will rebuild it from observed state).
     @Contract
     public void deactivate() {
         if (!isLeader.compareAndSet(true, false)) {
             return;
         }
-        cancelPendingTick();
+        cancelPendingActivation();
         inFlightProvisioning.clear();
     }
 
-    /// Live-event ingress for NTT [`TopologyUnhealthyEvent`]. Stage 6 wires this from
-    /// the NTT claim/timer-fire path on the leader's process. Non-leader nodes ignore.
+    /// Live-event ingress for NTT timer-expiry. Stage 6 wires this from the NTT
+    /// reconcile-trigger callback. Non-leader nodes ignore.
     @Contract
-    public void onTopologyUnhealthy(TopologyUnhealthyEvent event) {
+    public void onTopologyUnhealthy() {
         if (!isLeader.get()) {
             return;
         }
-        reconcile(ReconcileTrigger.NTT_DRAIN);
+        triggerReconcile(ReconcileTrigger.NTT_FIRE);
     }
 
-    /// Live-event ingress for [`LocalQuorumWatcher`] [`QuorumLossIntent`]. Stage 6 wires
-    /// this from `LocalQuorumWatcher.setQuorumLossListener(...)` on every node. At E1
-    /// observation-only — every node emits the intent so the divergence-logger in Stage 5
-    /// can compare across nodes; only the leader would trigger actual §8 drain action in
+    /// Live-event ingress for [`LocalQuorumWatcher`] [`QuorumLossIntent`]. At E1
+    /// observation-only — every node emits the intent so the divergence-logger can
+    /// compare across nodes; only the leader would trigger actual §8 drain action in
     /// later stages.
     @Contract
     public void onQuorumLossIntent(QuorumLossIntent intent) {
-        reconcile(ReconcileTrigger.QUORUM_LOSS);
+        triggerReconcile(ReconcileTrigger.QUORUM_LOSS);
+    }
+
+    /// Live-event ingress for SWIM `HealthyObserved`. Catches the "surplus appeared"
+    /// case symmetrically with [`#onTopologyUnhealthy()`] catching shortage. Wired from
+    /// the SWIM observation listener filter. Non-leader nodes ignore.
+    @Contract
+    public void onSwimMemberHealthy(NodeId peerId) {
+        if (!isLeader.get()) {
+            return;
+        }
+        triggerReconcile(ReconcileTrigger.MEMBER_APPEARED);
+    }
+
+    /// Live-event ingress for KV-subscribed config changes (e.g., `coreCount`). Phase
+    /// 1.5 wires the entry point; Phase 2 hooks the actual subscription. Non-leader
+    /// nodes ignore.
+    @Contract
+    public void onConfigChange() {
+        if (!isLeader.get()) {
+            return;
+        }
+        triggerReconcile(ReconcileTrigger.CONFIG_CHANGE);
     }
 
     /// Register the consumer that receives every emitted [`ReconcileIntent`]. At E1 the
@@ -234,20 +244,52 @@ public final class LeaderReconciler {
         return inFlightProvisioning.size();
     }
 
-    /// Observability — the periodic tick period, computed once as
-    /// `provisioningTimeout × 1.5`.
-    public TimeSpan tickPeriod() {
-        return tickPeriod;
+    /// Observability — the one-shot leader-activation delay, computed once as
+    /// `nttDepartureTimeout × 1.5`.
+    public TimeSpan leaderActivationDelay() {
+        return leaderActivationDelay;
     }
 
-    /// Observability — read-only snapshot of the in-flight provisioning map. Stage 6 will
-    /// surface this through metrics.
+    /// Observability — read-only snapshot of the in-flight provisioning map. Stage 6
+    /// will surface this through metrics.
     public Map<NodeId, Long> inFlightProvisioningSnapshot() {
         return Map.copyOf(inFlightProvisioning);
     }
 
+    /// CAS-debounce entry point. First trigger schedules a short-debounced reconcile;
+    /// concurrent triggers during reconcile-in-flight flag a single follow-up pass.
     @Contract
-    private void reconcile(ReconcileTrigger trigger) {
+    private void triggerReconcile(ReconcileTrigger trigger) {
+        if (!reconcileInFlight.compareAndSet(false, true)) {
+            rescheduleRequested.set(true);
+            return;
+        }
+        pendingTriggerRef.set(some(trigger));
+        scheduler.schedule(this::runDebouncedReconcile, DEBOUNCE_DELAY);
+    }
+
+    @Contract
+    private void runDebouncedReconcile() {
+        var trigger = pendingTriggerRef.getAndSet(none()).or(ReconcileTrigger.NTT_FIRE);
+
+        runReconcileBody(trigger);
+        reconcileInFlight.set(false);
+        if (rescheduleRequested.compareAndSet(true, false)) {
+            triggerReconcile(ReconcileTrigger.NTT_FIRE);
+        }
+    }
+
+    @Contract
+    private void onActivationDelayFire() {
+        if (!isLeader.get()) {
+            return;
+        }
+        activationFutureRef.set(null);
+        runReconcileBody(ReconcileTrigger.LEADER_ACTIVATION);
+    }
+
+    @Contract
+    private void runReconcileBody(ReconcileTrigger trigger) {
         var now = timeSource.nanoTime();
 
         evictExpiredInFlightEntries(now);
@@ -267,18 +309,16 @@ public final class LeaderReconciler {
                                                      trigger,
                                                      clusterMembershipCount,
                                                      configuredCoreCount,
-                                                     peersToProvision,
-                                                     peersToDrain,
+                                                     peersToProvision.size(),
+                                                     peersToDrain.size(),
                                                      inFlightProvisioning.size());
 
         reconcileListener.accept(intent);
     }
 
-    /// Compute the set of synthetic placeholder NodeIds representing each missing slot the
-    /// leader-pinned reconciler should request a provision for. At Phase 1 we don't yet have
-    /// peer-specific identity for shortfall slots (the slot reconciler picks the slot to fill);
-    /// each missing slot is represented by a fresh placeholder NodeId so the observability
-    /// surface (intent log + tests) sees a non-empty set whose cardinality equals the gap.
+    /// Compute the set of synthetic placeholder NodeIds representing each missing slot
+    /// the reconciler should request a provision for. The reconciler owns peer selection
+    /// — observers only see the count via [`ReconcileIntent#provisionCount`].
     private Set<NodeId> computePeersToProvision(int configuredCoreCount, int effective) {
         if (effective >= configuredCoreCount) {
             return Set.of();
@@ -293,9 +333,8 @@ public final class LeaderReconciler {
     }
 
     /// Pick `(effective - configured)` drain victims from the observed member set using a
-    /// stable iteration-order heuristic ("newest-joined-first" approximated by ordering on
-    /// NodeId — Phase 2 will replace with the spec §7.4 deterministic ordering keyed on
-    /// lifecycle generation).
+    /// stable iteration-order heuristic. Internal — observers see only the count via
+    /// [`ReconcileIntent#drainCount`].
     private Set<NodeId> computePeersToDrain(Set<NodeId> currentMembers, int configuredCoreCount, int effective) {
         if (effective <= configuredCoreCount) {
             return Set.of();
@@ -331,64 +370,38 @@ public final class LeaderReconciler {
 
     @Contract
     private void evictExpiredInFlightEntries(long nowNanos) {
-        var expiryThresholdNanos = tickPeriod.nanos();
+        var expiryThresholdNanos = inFlightExpiry.nanos();
 
         inFlightProvisioning.entrySet().removeIf(entry -> nowNanos - entry.getValue() > expiryThresholdNanos);
     }
 
     @Contract
-    private void scheduleNextTick() {
-        if (!isLeader.get()) {
-            return;
-        }
-        var future = scheduler.schedule(this::onTickFire, tickPeriod);
-
-        scheduledTickRef.set(future);
-    }
-
-    @Contract
-    private void onTickFire() {
-        if (!isLeader.get()) {
-            return;
-        }
-        reconcile(ReconcileTrigger.PERIODIC_TICK);
-        scheduleNextTick();
-    }
-
-    @Contract
-    private void cancelPendingTick() {
-        var prev = scheduledTickRef.getAndSet(null);
+    private void cancelPendingActivation() {
+        var prev = activationFutureRef.getAndSet(null);
 
         if (prev != null) {
             prev.cancel(false);
         }
     }
 
-    private static TimeSpan computeTickPeriod(TimeSpan provisioningTimeout) {
-        return timeSpan(provisioningTimeout.nanos() * 3 / 2).nanos();
+    private static TimeSpan computeQuiesceDelay(TimeSpan nttDepartureTimeout) {
+        return timeSpan(nttDepartureTimeout.nanos() * 3 / 2).nanos();
     }
 
     /// Observability — the [`MembershipConfig`] this reconciler was constructed with.
-    /// Stage 6+ uses this for runtime-config inspection (drain-threshold etc.).
     public MembershipConfig membershipConfig() {
         return membershipConfig;
     }
 
-    /// Observability — the originally-injected `provisioningTimeout` (the canonical
-    /// source of truth from which `tickPeriod` is derived as `× 1.5`).
-    public TimeSpan provisioningTimeout() {
-        return provisioningTimeout;
-    }
-
-    /// Observability — the [`NodeTopologyTracker`] collaborator this reconciler drains
-    /// on activation.
+    /// Observability — the [`NodeTopologyTracker`] collaborator. NTT runs universally;
+    /// the reconciler reads its `pendingTimerCount` for metrics and consumes its
+    /// timer-fire reconcile-trigger callback (wired upstream).
     public NodeTopologyTracker ntt() {
         return ntt;
     }
 
-    /// Observability — the [`LocalQuorumWatcher`] collaborator. Stage 6 will register
-    /// `setQuorumLossListener(this::onQuorumLossIntent)` against this instance during
-    /// wiring; at E1 it is held for that future wire-up.
+    /// Observability — the [`LocalQuorumWatcher`] collaborator. Wired upstream via
+    /// `setQuorumLossListener(this::onQuorumLossIntent)`.
     public LocalQuorumWatcher localQuorumWatcher() {
         return localQuorumWatcher;
     }

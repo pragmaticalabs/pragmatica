@@ -12,7 +12,6 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.utils.TimeSource;
 
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -24,9 +23,9 @@ import static org.pragmatica.aether.deployment.membership.ntt.ReconcileIntent.re
 import static org.pragmatica.lang.Option.some;
 
 
-/// Unit tests for [`DivergenceLogger`] — Stage 5 / E1 observation-only correlation.
-/// Asserts on the structured log strings produced by the injected emit-callback rather
-/// than intercepting SLF4J.
+/// Unit tests for [`DivergenceLogger`] (E2 Phase 1.5) — NTT-side observations
+/// are now cluster-wide-only (intents no longer carry per-peer payload); FSM-side
+/// per-peer correlation continues to surface FSM_ONLY divergent verdicts.
 class DivergenceLoggerTest {
     private static final NodeId PEER_A = NodeId.randomNodeId();
     private static final NodeId PEER_B = NodeId.randomNodeId();
@@ -46,16 +45,16 @@ class DivergenceLoggerTest {
     @Nested
     class Observation {
         @Test
-        void observeNttIntent_logsStructuredLine_andBuffers() {
-            logger.observeNttIntent(provisionIntentFor(PEER_A));
+        void observeNttIntent_logsClusterWideStructuredLine_noBuffering() {
+            logger.observeNttIntent(provisionIntent());
 
-            assertThat(logger.bufferedNttCount()).isEqualTo(1);
+            assertThat(logger.bufferedNttCount()).isZero();
             assertThat(logger.bufferedFsmCount()).isZero();
             assertThat(collector.linesContaining("source=NTT")).hasSize(1);
             assertThat(collector.lastLine()).contains("[v2-divergence]")
                                             .contains("source=NTT")
-                                            .contains("peer=" + PEER_A.id())
-                                            .contains("trigger=NTT_DRAIN")
+                                            .contains("peer=<cluster-wide>")
+                                            .contains("trigger=NTT_FIRE")
                                             .contains("configured=5")
                                             .contains("observed=3")
                                             .contains("action=provision");
@@ -81,40 +80,6 @@ class DivergenceLoggerTest {
     @Nested
     class CorrelationSweep {
         @Test
-        void sweep_bothBufferedSamePeerWithinWindow_emitsAligned_andClearsBuffers() {
-            logger.observeNttIntent(provisionIntentFor(PEER_A));
-            timeSource.advanceMillis(500L);
-            logger.observeFsmDecision(provisionDecisionFor(PEER_A));
-
-            collector.clear();
-            logger.runCorrelationSweep();
-
-            assertThat(collector.linesContaining("verdict=ALIGNED")).hasSize(1);
-            assertThat(collector.lastLine()).contains("peer=" + PEER_A.id())
-                                            .contains("delta_ms=500")
-                                            .contains("fsm_type=PROVISION");
-            assertThat(logger.bufferedNttCount()).isZero();
-            assertThat(logger.bufferedFsmCount()).isZero();
-        }
-
-        @Test
-        void sweep_onlyNttBufferedPastWindow_emitsDivergentNttOnly_andDropsThatSide() {
-            logger.observeNttIntent(provisionIntentFor(PEER_A));
-            timeSource.advanceNanos(SECONDS_31);
-
-            collector.clear();
-            logger.runCorrelationSweep();
-
-            assertThat(collector.linesContaining("verdict=DIVERGENT")).hasSize(1);
-            assertThat(collector.lastLine()).contains("peer=" + PEER_A.id())
-                                            .contains("side=NTT_ONLY")
-                                            .contains("buffered_for_ms=31000")
-                                            .contains("trigger=NTT_DRAIN");
-            assertThat(logger.bufferedNttCount()).isZero();
-            assertThat(logger.bufferedFsmCount()).isZero();
-        }
-
-        @Test
         void sweep_onlyFsmBufferedPastWindow_emitsDivergentFsmOnly_andDropsThatSide() {
             logger.observeFsmDecision(decommissionDecisionFor(PEER_A));
             timeSource.advanceNanos(SECONDS_31);
@@ -128,66 +93,51 @@ class DivergenceLoggerTest {
                                             .contains("buffered_for_ms=31000")
                                             .contains("type=DECOMMISSION")
                                             .contains("reason=SwimFaulty");
-            assertThat(logger.bufferedNttCount()).isZero();
             assertThat(logger.bufferedFsmCount()).isZero();
         }
 
         @Test
-        void sweep_alignedThenSweepAgain_emitsNothingSecondTime() {
-            logger.observeNttIntent(provisionIntentFor(PEER_A));
-            logger.observeFsmDecision(provisionDecisionFor(PEER_A));
-
-            logger.runCorrelationSweep();
-            collector.clear();
-            logger.runCorrelationSweep();
-
-            assertThat(collector.allLines()).isEmpty();
-            assertThat(logger.bufferedNttCount()).isZero();
-            assertThat(logger.bufferedFsmCount()).isZero();
-        }
-
-        @Test
-        void sweep_withinWindow_bufferedOnlyOnOneSide_emitsNothing_keepsBuffer() {
-            logger.observeNttIntent(provisionIntentFor(PEER_A));
+        void sweep_fsmWithinWindow_emitsNothing_keepsBuffer() {
+            logger.observeFsmDecision(decommissionDecisionFor(PEER_A));
             timeSource.advanceMillis(1_000L);
 
             collector.clear();
             logger.runCorrelationSweep();
 
             assertThat(collector.allLines()).isEmpty();
-            assertThat(logger.bufferedNttCount()).isEqualTo(1);
+            assertThat(logger.bufferedFsmCount()).isEqualTo(1);
         }
 
         @Test
-        void sweep_twoPeers_independentlyEvaluated() {
-            logger.observeNttIntent(provisionIntentFor(PEER_A));
-            logger.observeFsmDecision(provisionDecisionFor(PEER_A));
-            logger.observeNttIntent(provisionIntentFor(PEER_B));
+        void sweep_twoFsmPeers_independentlyEvaluated() {
+            logger.observeFsmDecision(decommissionDecisionFor(PEER_A));
+            timeSource.advanceMillis(1_000L);
+            logger.observeFsmDecision(decommissionDecisionFor(PEER_B));
             timeSource.advanceNanos(SECONDS_31);
 
             collector.clear();
             logger.runCorrelationSweep();
 
-            assertThat(collector.linesContaining("verdict=ALIGNED")).hasSize(1);
-            assertThat(collector.linesContaining("peer=" + PEER_A.id())).anyMatch(line -> line.contains("ALIGNED"));
-            assertThat(collector.linesContaining("verdict=DIVERGENT")).hasSize(1);
-            assertThat(collector.linesContaining("peer=" + PEER_B.id())).anyMatch(line -> line.contains("DIVERGENT")
-                                                                                          && line.contains("side=NTT_ONLY"));
-            assertThat(logger.bufferedNttCount()).isZero();
+            assertThat(collector.linesContaining("verdict=DIVERGENT")).hasSize(2);
+            assertThat(collector.linesContaining("peer=" + PEER_A.id())).anyMatch(line -> line.contains("FSM_ONLY"));
+            assertThat(collector.linesContaining("peer=" + PEER_B.id())).anyMatch(line -> line.contains("FSM_ONLY"));
             assertThat(logger.bufferedFsmCount()).isZero();
+        }
+
+        @Test
+        void sweep_emptyBuffers_emitsNothing() {
+            logger.runCorrelationSweep();
+
+            assertThat(collector.allLines()).isEmpty();
         }
     }
 
-    private static ReconcileIntent provisionIntentFor(NodeId peer) {
-        return reconcileIntent(0L, ReconcileTrigger.NTT_DRAIN, 3, 5, Set.of(peer), Set.of(), 0);
+    private static ReconcileIntent provisionIntent() {
+        return reconcileIntent(0L, ReconcileTrigger.NTT_FIRE, 3, 5, 2, 0, 0);
     }
 
     private static FsmDecisionEvent decommissionDecisionFor(NodeId peer) {
         return fsmDecisionEvent(0L, FsmDecisionType.DECOMMISSION, some(peer), "OnDuty", "Stopped", "SwimFaulty");
-    }
-
-    private static FsmDecisionEvent provisionDecisionFor(NodeId peer) {
-        return fsmDecisionEvent(0L, FsmDecisionType.PROVISION, some(peer), "Joining", "OnDuty", "SwimHealthy");
     }
 
     /// Captures every line passed to the emit-callback for assertion-driven tests.
@@ -218,8 +168,7 @@ class DivergenceLoggerTest {
         }
     }
 
-    /// Controllable time source — advances only on explicit method calls. Matches the
-    /// shape used by [`LeaderReconcilerTest`].
+    /// Controllable time source — advances only on explicit method calls.
     private static final class TestTimeSource implements TimeSource {
         private volatile long nanos = 0L;
 

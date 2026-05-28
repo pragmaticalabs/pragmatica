@@ -24,7 +24,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.net.tcp.TlsConfig;
-import org.pragmatica.swim.SwimObservation.DepartedObserved;
 
 import java.net.SocketAddress;
 import java.util.ArrayList;
@@ -48,14 +47,15 @@ import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Unit tests for [`LeaderReconciler`] — mechanism in isolation. NTT and
-/// [`LocalQuorumWatcher`] are constructed live (same test scheduler) but no
-/// SWIM / QUIC wiring is exercised.
+/// Unit tests for [`LeaderReconciler`] (E2 Phase 1.5) — fully state-derived
+/// reconciliation. No periodic tick; the leader-activation reconcile is a single
+/// delayed one-shot at `nttDepartureTimeout × 1.5`.
 class LeaderReconcilerTest {
     private static final NodeId PEER_A = NodeId.randomNodeId();
     private static final NodeId PEER_B = NodeId.randomNodeId();
-    private static final TimeSpan PROVISIONING_TIMEOUT = timeSpan(60).seconds();
-    private static final TimeSpan EXPECTED_TICK_PERIOD = timeSpan(PROVISIONING_TIMEOUT.nanos() * 3 / 2).nanos();
+    private static final TimeSpan EXPECTED_ACTIVATION_DELAY =
+        timeSpan(membershipConfig().nttDepartureTimeout().nanos() * 3 / 2).nanos();
+    private static final TimeSpan DEBOUNCE_DELAY = timeSpan(100L).millis();
 
     private TestTimeSource timeSource;
     private ManualScheduler scheduler;
@@ -77,10 +77,9 @@ class LeaderReconcilerTest {
         configuredCoreCount = new MutableIntSupplier(0);
         currentMembers = new MutableMembersSupplier(Set.of());
         ctm = new RecordingCtm();
-        ntt = nodeTopologyTracker(membershipConfig(), timeSource, scheduler);
+        ntt = nodeTopologyTracker(membershipConfig(), scheduler);
         localQuorum = localQuorumWatcher(membershipConfig(), timeSource, scheduler);
         reconciler = leaderReconciler(membershipConfig(),
-                                      PROVISIONING_TIMEOUT,
                                       ntt,
                                       localQuorum,
                                       clusterMembershipCount,
@@ -95,92 +94,75 @@ class LeaderReconcilerTest {
     @Nested
     class DefaultState {
         @Test
-        void freshReconciler_isNotLeader_andSchedulesNoTicks() {
+        void freshReconciler_isNotLeader_andSchedulesNoActivation() {
             assertThat(reconciler.isLeader()).isFalse();
             assertThat(reconciler.inFlightProvisioningCount()).isZero();
-            assertThat(reconciler.tickPeriod()).isEqualTo(EXPECTED_TICK_PERIOD);
-            // Only the LocalQuorumWatcher / NTT collaborators may have scheduled tasks
-            // (they didn't here either — coreCount=0 means quorum-watcher is dormant).
+            assertThat(reconciler.leaderActivationDelay()).isEqualTo(EXPECTED_ACTIVATION_DELAY);
             assertThat(reconciler.inFlightProvisioningSnapshot()).isEmpty();
+            assertThat(scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY)).isEmpty();
         }
     }
 
     @Nested
     class LeaderActivation {
         @Test
-        void activate_emitsInitialIntent_andSchedulesFirstTick() {
+        void activate_doesNotEmitImmediateIntent_schedulesOneShotDelayedReconcile() {
             configuredCoreCount.set(5);
             clusterMembershipCount.set(3);
 
             reconciler.activate();
 
             assertThat(reconciler.isLeader()).isTrue();
-            // One LEADER_ACTIVATION intent (the backstop one; no NTT events drained).
+            // No immediate reconcile — the delay lets SWIM/QUIC quiesce.
+            assertThat(listener.events()).isEmpty();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+            assertThat(ctm.drainNodeCalls()).isEmpty();
+            // Exactly one one-shot scheduled at the activation delay.
+            assertThat(scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY)).hasSize(1);
+        }
+
+        @Test
+        void activationDelayFires_emitsLeaderActivationIntent_andDispatchesProvisions() {
+            configuredCoreCount.set(5);
+            clusterMembershipCount.set(3);
+            reconciler.activate();
+
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
             assertThat(listener.events()).hasSize(1);
             var emitted = listener.events().getFirst();
             assertThat(emitted.trigger()).isEqualTo(ReconcileTrigger.LEADER_ACTIVATION);
             assertThat(emitted.clusterMembershipCount()).isEqualTo(3);
             assertThat(emitted.configuredCoreCount()).isEqualTo(5);
-            // E2 Phase 1 — shortfall of 2 surfaces 2 provision placeholders; no drain.
-            assertThat(emitted.peersToProvision()).hasSize(2);
-            assertThat(emitted.peersToDrain()).isEmpty();
-            // CTM received 2 provisionReplacement calls, no drainNode calls.
+            assertThat(emitted.provisionCount()).isEqualTo(2);
+            assertThat(emitted.drainCount()).isZero();
             assertThat(ctm.provisionReplacementCalls()).hasSize(2);
-            assertThat(ctm.drainNodeCalls()).isEmpty();
-
-            // The reconciler scheduled exactly one new task (the first periodic tick).
-            // (The quorum-watcher will also have scheduled one because coreCount=5 puts
-            // us below threshold immediately.)
-            var reconcilerTicks = scheduler.tasksByDelay(EXPECTED_TICK_PERIOD);
-            assertThat(reconcilerTicks).hasSize(1);
-        }
-
-        @Test
-        void activate_drainsPreFiredNttEvents_emitsOneIntentPerDrainedPlusBackstop() {
-            configuredCoreCount.set(5);
-            clusterMembershipCount.set(2);
-
-            // Pre-populate NTT with one fired event.
-            ntt.onSwimObservation(new DepartedObserved(PEER_A, 1L));
-            scheduler.tasksByDelay(membershipConfig().nttDepartureTimeout()).getFirst().runIfLive();
-            assertThat(ntt.firedEventCount()).isEqualTo(1);
-
-            reconciler.activate();
-
-            // Two LEADER_ACTIVATION intents: one per drained event + the backstop.
-            assertThat(listener.events()).hasSize(2);
-            assertThat(listener.events()).allSatisfy(intent ->
-                assertThat(intent.trigger()).isEqualTo(ReconcileTrigger.LEADER_ACTIVATION));
-            assertThat(ntt.firedEventCount()).isZero();
         }
 
         @Test
         void activate_isIdempotent_secondCallNoOp() {
             configuredCoreCount.set(5);
             reconciler.activate();
-            var firstCount = listener.events().size();
-            var firstTickCount = scheduler.tasksByDelay(EXPECTED_TICK_PERIOD).size();
+            var firstCount = scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).size();
 
             reconciler.activate();
 
-            assertThat(listener.events()).hasSize(firstCount);
-            assertThat(scheduler.tasksByDelay(EXPECTED_TICK_PERIOD)).hasSize(firstTickCount);
+            assertThat(scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY)).hasSize(firstCount);
         }
     }
 
     @Nested
     class LeaderDeactivation {
         @Test
-        void deactivate_cancelsPendingTick_clearsLeaderFlag() {
+        void deactivate_cancelsPendingActivation_clearsLeaderFlag() {
             configuredCoreCount.set(5);
             reconciler.activate();
-            var tickTask = scheduler.tasksByDelay(EXPECTED_TICK_PERIOD).getFirst();
-            listener.clear();
+            var activationTask = scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst();
 
             reconciler.deactivate();
 
             assertThat(reconciler.isLeader()).isFalse();
-            assertThat(tickTask.cancelled()).isTrue();
+            assertThat(activationTask.cancelled()).isTrue();
             assertThat(reconciler.inFlightProvisioningCount()).isZero();
             assertThat(listener.events()).isEmpty();
         }
@@ -190,7 +172,7 @@ class LeaderReconcilerTest {
             reconciler.activate();
             reconciler.deactivate();
 
-            reconciler.deactivate(); // no exception, no state change
+            reconciler.deactivate();
 
             assertThat(reconciler.isLeader()).isFalse();
         }
@@ -199,26 +181,28 @@ class LeaderReconcilerTest {
     @Nested
     class TopologyUnhealthyIngress {
         @Test
-        void onTopologyUnhealthy_whileLeader_emitsNttDrainIntent() {
+        void onTopologyUnhealthy_whileLeader_emitsNttFireIntent_throughDebounce() {
             configuredCoreCount.set(5);
             clusterMembershipCount.set(4);
             reconciler.activate();
             listener.clear();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().cancel(false);
 
-            reconciler.onTopologyUnhealthy(new TopologyUnhealthyEvent(PEER_A, timeSource.nanoTime()));
+            reconciler.onTopologyUnhealthy();
+            scheduler.tasksByDelay(DEBOUNCE_DELAY).getFirst().runIfLive();
 
             assertThat(listener.events()).hasSize(1);
             var emitted = listener.events().getFirst();
-            assertThat(emitted.trigger()).isEqualTo(ReconcileTrigger.NTT_DRAIN);
+            assertThat(emitted.trigger()).isEqualTo(ReconcileTrigger.NTT_FIRE);
             assertThat(emitted.clusterMembershipCount()).isEqualTo(4);
             assertThat(emitted.configuredCoreCount()).isEqualTo(5);
         }
 
         @Test
         void onTopologyUnhealthy_whileNotLeader_emitsNothing() {
-            // No activate() — reconciler is not leader.
-            reconciler.onTopologyUnhealthy(new TopologyUnhealthyEvent(PEER_A, timeSource.nanoTime()));
+            reconciler.onTopologyUnhealthy();
 
+            assertThat(scheduler.tasksByDelay(DEBOUNCE_DELAY)).isEmpty();
             assertThat(listener.events()).isEmpty();
         }
     }
@@ -227,8 +211,8 @@ class LeaderReconcilerTest {
     class QuorumLossIngress {
         @Test
         void onQuorumLossIntent_emitsQuorumLossReconcileIntent_evenIfNotLeader() {
-            // QUORUM_LOSS at E1 is observation-only on every node; not gated by leadership.
             reconciler.onQuorumLossIntent(QuorumLossIntent.quorumLossIntent(timeSource.nanoTime(), 2, 3));
+            scheduler.tasksByDelay(DEBOUNCE_DELAY).getFirst().runIfLive();
 
             assertThat(listener.events()).hasSize(1);
             assertThat(listener.events().getFirst().trigger()).isEqualTo(ReconcileTrigger.QUORUM_LOSS);
@@ -236,41 +220,93 @@ class LeaderReconcilerTest {
     }
 
     @Nested
-    class PeriodicTick {
+    class MemberAppearedIngress {
         @Test
-        void periodicTickFires_afterTickPeriod_emitsPeriodicTickIntent_andReSchedules() {
-            configuredCoreCount.set(5);
+        void onSwimMemberHealthy_whileLeader_emitsMemberAppearedIntent() {
+            configuredCoreCount.set(3);
             clusterMembershipCount.set(5);
+            currentMembers.set(Set.of(PEER_A, PEER_B, NodeId.randomNodeId(), NodeId.randomNodeId(), NodeId.randomNodeId()));
             reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().cancel(false);
             listener.clear();
 
-            var firstTick = scheduler.tasksByDelay(EXPECTED_TICK_PERIOD).getFirst();
-            timeSource.advanceTimeMillis(EXPECTED_TICK_PERIOD.millis());
-            firstTick.runIfLive();
+            reconciler.onSwimMemberHealthy(PEER_A);
+            scheduler.tasksByDelay(DEBOUNCE_DELAY).getFirst().runIfLive();
 
             assertThat(listener.events()).hasSize(1);
-            assertThat(listener.events().getFirst().trigger()).isEqualTo(ReconcileTrigger.PERIODIC_TICK);
-
-            // The tick re-armed the next tick.
-            var ticks = scheduler.tasksByDelay(EXPECTED_TICK_PERIOD);
-            assertThat(ticks).hasSize(2);
-            assertThat(ticks.get(1).cancelled()).isFalse();
+            var emitted = listener.events().getFirst();
+            assertThat(emitted.trigger()).isEqualTo(ReconcileTrigger.MEMBER_APPEARED);
+            assertThat(emitted.drainCount()).isEqualTo(2);
+            assertThat(emitted.provisionCount()).isZero();
         }
 
         @Test
-        void periodicTickFires_afterDeactivate_doesNotEmit() {
+        void onSwimMemberHealthy_whileNotLeader_emitsNothing() {
+            reconciler.onSwimMemberHealthy(PEER_A);
+
+            assertThat(scheduler.tasksByDelay(DEBOUNCE_DELAY)).isEmpty();
+            assertThat(listener.events()).isEmpty();
+        }
+    }
+
+    @Nested
+    class ConfigChangeIngress {
+        @Test
+        void onConfigChange_whileLeader_emitsConfigChangeIntent() {
             configuredCoreCount.set(5);
+            clusterMembershipCount.set(3);
             reconciler.activate();
-            var firstTick = scheduler.tasksByDelay(EXPECTED_TICK_PERIOD).getFirst();
-            reconciler.deactivate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().cancel(false);
             listener.clear();
 
-            // Race: scheduler-thread fires a tick that survived the cancel-and-set window.
-            firstTick.runIfLive();
+            reconciler.onConfigChange();
+            scheduler.tasksByDelay(DEBOUNCE_DELAY).getFirst().runIfLive();
 
-            // (firstTick was cancelled via cancelPendingTick, so runIfLive is a no-op.
-            // But even if it ran, the isLeader-gate makes it emit nothing.)
+            assertThat(listener.events()).hasSize(1);
+            assertThat(listener.events().getFirst().trigger()).isEqualTo(ReconcileTrigger.CONFIG_CHANGE);
+        }
+
+        @Test
+        void onConfigChange_whileNotLeader_emitsNothing() {
+            reconciler.onConfigChange();
+
+            assertThat(scheduler.tasksByDelay(DEBOUNCE_DELAY)).isEmpty();
             assertThat(listener.events()).isEmpty();
+        }
+    }
+
+    @Nested
+    class CasDebounce {
+        @Test
+        void rapidBurstOfTriggers_collapsesIntoAtMostTwoReconcilePasses() {
+            configuredCoreCount.set(5);
+            clusterMembershipCount.set(4);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().cancel(false);
+            listener.clear();
+
+            // 5 rapid events: the first sets in-flight + schedules; the 4 others set
+            // rescheduleRequested. After the first reconcile completes and clears the
+            // in-flight flag, exactly one follow-up is scheduled.
+            reconciler.onTopologyUnhealthy();
+            reconciler.onTopologyUnhealthy();
+            reconciler.onTopologyUnhealthy();
+            reconciler.onTopologyUnhealthy();
+            reconciler.onTopologyUnhealthy();
+
+            var firstDebounced = scheduler.tasksByDelay(DEBOUNCE_DELAY);
+            assertThat(firstDebounced).hasSize(1);
+            firstDebounced.getFirst().runIfLive();
+
+            // First reconcile fired; the rescheduleRequested follow-up is now scheduled.
+            var followUps = scheduler.tasksByDelay(DEBOUNCE_DELAY);
+            assertThat(followUps).hasSize(2);
+            followUps.get(1).runIfLive();
+
+            assertThat(listener.events()).hasSize(2);
+
+            // After the follow-up runs, no new reschedule was set, so no further task.
+            assertThat(scheduler.tasksByDelay(DEBOUNCE_DELAY)).hasSize(2);
         }
     }
 
@@ -282,15 +318,14 @@ class LeaderReconcilerTest {
             clusterMembershipCount.set(3);
 
             reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
             var intent = listener.events().getFirst();
             assertThat(intent.clusterMembershipCount()).isEqualTo(3);
             assertThat(intent.configuredCoreCount()).isEqualTo(5);
-            // After reconcile fires we've tracked 2 in-flight provisioning placeholders.
             assertThat(intent.inFlightProvisioningCount()).isEqualTo(2);
-            // E2 Phase 1 — shortfall of 2 surfaces 2 provision placeholders; no drain.
-            assertThat(intent.peersToProvision()).hasSize(2);
-            assertThat(intent.peersToDrain()).isEmpty();
+            assertThat(intent.provisionCount()).isEqualTo(2);
+            assertThat(intent.drainCount()).isZero();
         }
 
         @Test
@@ -300,13 +335,13 @@ class LeaderReconcilerTest {
             currentMembers.set(Set.of(PEER_A, PEER_B, NodeId.randomNodeId(), NodeId.randomNodeId(), NodeId.randomNodeId()));
 
             reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
             var intent = listener.events().getFirst();
             assertThat(intent.clusterMembershipCount()).isEqualTo(5);
             assertThat(intent.configuredCoreCount()).isEqualTo(3);
-            // E2 Phase 1 — surplus of 2 surfaces 2 drain victims; no provision.
-            assertThat(intent.peersToDrain()).hasSize(2);
-            assertThat(intent.peersToProvision()).isEmpty();
+            assertThat(intent.drainCount()).isEqualTo(2);
+            assertThat(intent.provisionCount()).isZero();
             assertThat(ctm.drainNodeCalls()).hasSize(2);
         }
     }
@@ -318,20 +353,16 @@ class LeaderReconcilerTest {
             configuredCoreCount.set(5);
             clusterMembershipCount.set(3);
             reconciler.activate();
-            // E2 Phase 1: activate at shortfall=2 inserts 2 in-flight provisioning
-            // placeholders for the missing slots.
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(2);
             listener.clear();
-            // Saturate cluster so the next reconcile produces no new shortfall and the
-            // observed inFlight count after eviction is exactly zero.
             clusterMembershipCount.set(5);
-            timeSource.advanceTimeMillis(EXPECTED_TICK_PERIOD.millis() * 3);
+            timeSource.advanceTimeMillis(EXPECTED_ACTIVATION_DELAY.millis() * 3);
 
-            reconciler.onTopologyUnhealthy(new TopologyUnhealthyEvent(PEER_B, timeSource.nanoTime()));
+            reconciler.onTopologyUnhealthy();
+            scheduler.tasksByDelay(DEBOUNCE_DELAY).getFirst().runIfLive();
 
             assertThat(listener.events()).hasSize(1);
-            // Stale entries past `tickPeriod.nanos()` evicted at the head of the reconcile;
-            // shortfall=0 since cluster now matches configured.
             assertThat(listener.events().getFirst().inFlightProvisioningCount()).isZero();
             assertThat(reconciler.inFlightProvisioningCount()).isZero();
         }
@@ -391,9 +422,8 @@ class LeaderReconcilerTest {
         }
     }
 
-    /// Recording `ClusterTopologyManager` stub. Phase 1 verification surface for
-    /// `provisionReplacement` / `drainNode` / `reconcile` v2 calls. All other interface
-    /// methods return safe defaults (only the v2 surface is exercised by these tests).
+    /// Recording `ClusterTopologyManager` stub. Phase 1.5 verification surface for
+    /// `provisionReplacement` / `drainNode` / `reconcile` v2 calls.
     private static final class RecordingCtm implements ClusterTopologyManager {
         private final List<NodeId> drainNodeCalls = new CopyOnWriteArrayList<>();
         private final List<Option<NodeId>> provisionReplacementCalls = new CopyOnWriteArrayList<>();
@@ -486,7 +516,7 @@ class LeaderReconcilerTest {
         @Override
         @Contract
         public TopologyObserver observer() {
-            return null; // test stub — observer() is never called by LeaderReconciler Phase 1
+            return null;
         }
 
         @Override
@@ -509,11 +539,10 @@ class LeaderReconcilerTest {
             return true;
         }
 
-        // TopologyManager surface — not exercised by Phase 1 tests; safe defaults.
         @Override
         @Contract
         public NodeInfo self() {
-            return null; // test stub — self() never invoked by LeaderReconciler Phase 1
+            return null;
         }
 
         @Override

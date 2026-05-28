@@ -5,20 +5,24 @@
 package org.pragmatica.aether.deployment.membership.ntt;
 
 
-/// Trigger classification for a [`ReconcileIntent`] emission (spec §7.4 "hybrid
-/// reconciliation triggers"). The four converging paths into the leader-pinned
-/// reconcile loop:
+/// Trigger classification for a [`ReconcileIntent`] emission (spec §7.4 E2 Phase 1.5
+/// "fully state-derived reconcile"). All paths converge on a single idempotent CAS-
+/// debounced `triggerReconcile` call in [`LeaderReconciler`]:
 ///
-/// - [`#LEADER_ACTIVATION`] — drained NTT entries on leader gain + an initial backstop
-///   reconciliation tick fired synchronously by [`LeaderReconciler#activate()`].
-/// - [`#NTT_DRAIN`] — a live [`TopologyUnhealthyEvent`] arrived while this node is the
-///   leader (Stage 6 will adapt these from NTT's claim/fire path).
+/// - [`#LEADER_ACTIVATION`] — leader gained; reconcile is scheduled as a single one-shot
+///   pass after `nttDepartureTimeout × 1.5` so SWIM gossip + QUIC connections quiesce
+///   before reconciling. No immediate reconcile is emitted.
+/// - [`#NTT_FIRE`] — a per-peer NTT departure timer expired (replaces `NTT_DRAIN`; the
+///   reconcile is now state-derived so a single fire — not a map drain — is the unit).
 /// - [`#QUORUM_LOSS`] — a [`QuorumLossIntent`] arrived from [`LocalQuorumWatcher`].
-///   Emitted on every node (Stage 6 wiring); only the leader's reconciler acts on it.
-/// - [`#PERIODIC_TICK`] — the leader-pinned scheduled tick at `provisioningTimeout × 1.5`.
+/// - [`#MEMBER_APPEARED`] — a SWIM `HealthyObserved` was emitted (a peer became reachable);
+///   catches the "surplus appeared" case symmetrically with NTT catching shortage.
+/// - [`#CONFIG_CHANGE`] — a KV-subscribed config change (e.g., `coreCount`) was observed.
+///   Phase 1.5 wires the entry point; Phase 2 hooks the actual subscription.
 public enum ReconcileTrigger {
     LEADER_ACTIVATION,
-    NTT_DRAIN,
+    NTT_FIRE,
     QUORUM_LOSS,
-    PERIODIC_TICK
+    MEMBER_APPEARED,
+    CONFIG_CHANGE
 }

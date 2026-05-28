@@ -97,17 +97,17 @@ The single new component. NTT replaces the leader-pinned `JoinDeadlineExpired` t
 - **Inputs:**
   - SWIM converged departure notifications (`FAULTY` / `Departed` — post-gossip and post-`ping-req`; **not** local `SUSPECT` or direct-probe failure).
   - QUIC reconnect events.
-- **State (per departed peer):** a single in-memory `Deadline` (an instant). No persisted KV.
-- **Output:** local in-process notification `TopologyUnhealthy(peerId)`.
+- **State (per departed peer):** a single in-memory `ScheduledFuture<?>` (the pending one-shot timer). No event records, no claim queue, no persisted KV.
+- **Output:** invokes a constructor-injected `Runnable onReconcileNeeded` callback on timer expiry. NTT carries no payload to the callback — the reconcile is fully state-derived (E2 Phase 1.5).
 
 ### 6.2 Behavior
 - On SWIM `Departed(peer)` → start the NTT timer for `peer`.
 - On QUIC reconnect to `peer` → cancel the timer. *Note:* SWIM `Healthy` alone does NOT cancel — only an actually reconnected QUIC channel does. This is what filters SWIM lies (stale gossip about a vanished container) from real resurrections.
-- On timer expiry → emit `TopologyUnhealthy(peer)` locally.
+- On timer expiry → remove the per-peer map entry and invoke the reconcile-trigger callback.
 
 ### 6.3 Reaction
-- The leader's CTM listens to `TopologyUnhealthy`. On the event, CTM checks the quorum-safety predicate at the action site: *if I provision a replacement, will the resulting cluster still preserve confirmed-healthy quorum?* If yes, provision. If no (sub-quorum), do nothing — let self-drain handle dissolution.
-- Non-leader nodes ignore the event (or use it for observability only).
+- The leader's CTM listens to the reconcile-trigger callback and, on invocation, runs a state-derived reconcile: snapshot `clusterMembershipCount` / `configured` / `inFlightProvisioning`, derive shortage/surplus, dispatch provisioning/drain. The quorum-safety predicate is checked at the action site: *if I provision a replacement, will the resulting cluster still preserve confirmed-healthy quorum?* If yes, provision. If no (sub-quorum), do nothing — let self-drain handle dissolution.
+- Non-leader nodes' callbacks are no-ops at the reconciler entry point.
 
 ### 6.4 Why this fixes the leader-handoff bug class structurally
 The current `JoinDeadlineExpired` mechanism is a *one-shot event sent to the leader*. If the leader changes during the timeout window, the event is delivered to a non-leader and dropped (single-writer no-op). State is lost.
@@ -143,17 +143,21 @@ Slots become **positions, not records**: there are `configured` positions; each 
 
 ### 7.4 Reconciliation triggers (hybrid model)
 
-CTM acts via a hybrid trigger model — multiple wake-up sources, all converging on a single idempotent `reconcile()` derived from current state:
+CTM acts via a hybrid trigger model — multiple wake-up sources, all converging on a single idempotent **CAS-debounced** `reconcile()` derived from current state. Reconciliation is **fully state-derived**: triggers carry no per-peer payload — only the *fact* "something changed, re-derive intent from current `clusterMembershipCount` / `configured` / `inFlightProvisioning`".
 
-- **`TopologyUnhealthy(peerId)` events** from local NTT (§6) — low-latency reaction to abrupt departure.
-- **`DrainRequestKey(nodeId)` writes** observed via KV subscription — operator-initiated drain (§8).
-- **`configured` size changes** observed via KV subscription — scale up/down (§12.8).
-- **Leader-activation map-drain** — when this node becomes leader, claim and process all pending entries in NTT's per-peer map (§6.1, I12); plus a SWIM-derived reconciliation pass as backstop for peers that departed before this node joined the cluster.
-- **Periodic tick** — every `provisioning_timeout × 1.5`, leader runs `reconcile()` unconditionally. Backstop for events that might be missed (leader-vacuum windows, post-handoff staleness, cold-boot-with-missing-peer scenarios). First tick fires immediately on leader activation; periodic thereafter.
+- **`TopologyUnhealthy` events (NTT_FIRE)** from local NTT (§6) — low-latency reaction to abrupt departure. NTT's per-peer one-shot timer expires → NTT invokes a `Runnable onReconcileNeeded` callback (no event payload) → the leader-pinned reconciler debounces and reconciles.
+- **`HealthyObserved` events (MEMBER_APPEARED)** from SWIM — symmetric to NTT for the surplus case. A previously-departed node becoming reachable again signals the leader may need to drain excess. This trigger is the structural replacement for the periodic tick, which used to catch surplus implicitly.
+- **`QuorumLossIntent` events (QUORUM_LOSS)** from local `LocalQuorumWatcher`.
+- **`DrainRequestKey(nodeId)` writes and `configured` size changes (CONFIG_CHANGE)** observed via KV subscription — operator-initiated drain (§8) / scale up/down (§12.8). Phase 1.5 wires the entry point; Phase 2 hooks the actual subscription.
+- **Leader-activation delayed reconcile (LEADER_ACTIVATION)** — on leader gain the reconciler schedules a single one-shot reconcile at `nttDepartureTimeout × 1.5`. The delay lets SWIM gossip + QUIC connections quiesce after the invasive leader-handoff event before reconciling. No immediate reconcile is emitted.
 
-`reconcile()` derives its action from current `clusterMembershipCount`, `configured`, and a local-leader-only `inFlightProvisioning: Map<NodeId, Instant>` tracking peers this leader has provisioned within `provisioning_timeout × 1.5`. Entries past that window are assumed failed and removed; the next tick will re-provision if the shortfall persists.
+**No periodic tick.** The previous design relied on a `provisioning_timeout × 1.5` tick as a backstop. With surplus now event-signalled (MEMBER_APPEARED) and shortage signalled by NTT_FIRE, no symmetric gap remains — the tick was tracking absence of a signal, but every signal that mattered now has an event. Eliminating it removes a recurring source of redundant work and aligns with the spec principle of state-derivation over time-derivation.
 
-`inFlightProvisioning` is **not persisted to consensus**. On leader handoff this state is lost — new leader's tick may briefly double-provision (old leader provisioned X, new leader sees X not yet in SWIM, provisions a second replacement). Wasted-provisioning is self-correcting via the overprovision-drain path (§7.2 second bullet). The simpler model is preferred over a consensus-persisted provisioning intent.
+**CAS-debounce.** A burst of trigger events collapses to at most two reconcile passes via the standard "in-flight + reschedule-requested" pair of `AtomicBoolean`s. The first event sets `reconcileInFlight=true` and schedules the reconcile (small ~100ms debounce); subsequent events while reconcile is in flight set `rescheduleRequested=true`; when the in-flight reconcile completes the flag is cleared and if `rescheduleRequested` was set, one follow-up reconcile is scheduled.
+
+`reconcile()` derives its action from current `clusterMembershipCount`, `configured`, and a local-leader-only `inFlightProvisioning: Map<NodeId, Instant>` tracking peers this leader has provisioned within `nttDepartureTimeout × 1.5`. Entries past that window are evicted on every reconcile (assumed failed); the next event-driven reconcile will re-provision if the shortfall persists.
+
+`inFlightProvisioning` is **not persisted to consensus**. On leader handoff this state is lost — new leader's first reconcile (after the activation delay) may briefly double-provision (old leader provisioned X, new leader sees X not yet in SWIM, provisions a second replacement). Wasted-provisioning is self-correcting via the overprovision-drain path (§7.2 second bullet). The simpler model is preferred over a consensus-persisted provisioning intent.
 
 ## 8. Drain — the unified self-shutdown procedure
 
@@ -242,7 +246,7 @@ What remains: SWIM, QUIC, Rabia, `LeaderManager` (all unchanged), simplified CTM
 - **I9:** Quorum-loss-triggered drain is uninterruptible.
 - **I10:** False-positive drain is preferable to false-negative split-brain. The `quorumLossDrainThreshold` window tunes the trade.
 - **I11:** Drain progress is node-local + KV-observable; it is **not** a cluster-wide FSM state.
-- **I12:** NTT holds pending `TopologyUnhealthy` events as a per-peer `Map<NodeId, TopologyUnhealthyEvent>`. The leader claims entries via remove-and-process (claim-then-process); SWIM-derived reconciliation in `reconcile()` is the backstop for events that fire during leader-vacuum windows. Local state only — not persisted to consensus.
+- **I12:** NTT holds a per-peer `Map<NodeId, ScheduledFuture<?>>` of pending one-shot departure timers — no event records, no claim queue. On timer expiry NTT invokes a `Runnable onReconcileNeeded` callback (no payload); the leader-pinned reconciler is fully state-derived. Local state only — not persisted to consensus.
 
 ## 12. Settled scenarios
 
@@ -332,7 +336,7 @@ Defaults proposed; refine during implementation against the chaos suite.
 - **`MembershipDecision` event stream replacement** — components subscribing to today's "node added/removed" events (CDM, control loops, routing) need a clean emission point in v2. Proposal: a thin observer over SWIM convergence + configured-size changes, emitted from CTM. Interface spelled out during E2.
 - **Configured-size change observation race.** A `coreCount` change is consensus-replicated, so different nodes observe it at slightly different times (sub-second window during commit propagation). `LocalQuorumWatcher` uses the *current* observed `configured` to compute threshold — so during the window, two nodes might briefly compute quorum against different N. Idempotent and self-correcting (the change propagates within consensus-commit time, well inside `quorumLossDrainThreshold`), but worth being explicit so it doesn't surprise implementation.
 - **`membership.nttObservation` feature flag.** Controls NTT instrumentation during the E1-E4 migration ramp. Values: `off` (NTT inert, no observation — production default during initial E1 ramp); `universal` (full NTT observation active on every node, leader-only reaction). The flag exists so observation-only NTT code can land in rc1 without behavior change, then be ramped to `universal` once divergence-logger telemetry confirms NTT matches the existing FSM path. Removed entirely at post-cutover cleanup.
-- **Reconciliation-tick period.** Set to `provisioning_timeout × 1.5` by default — long enough that the prior tick's provisioning has had time to either complete (success, peer joined SWIM) or hit the readiness-gate timeout (failure), short enough that recovery feels prompt. 1× would risk acting before prior provisioning settled; 2× would feel sluggish. Goldilocks point.
+- **`leaderActivationDelay`.** Derived as `nttDepartureTimeout × 1.5` (default: 22.5s). On leader gain the reconciler schedules a single one-shot reconcile after this delay so SWIM gossip and QUIC connections quiesce before the first reconcile pass runs. The previous design ran an immediate reconcile on leader-activation plus a periodic `provisioning_timeout × 1.5` tick; both are eliminated in E2 Phase 1.5 because reconciliation is now fully state-derived (every signal that mattered has an event).
 
 ## 15. Out of scope
 
@@ -362,3 +366,4 @@ Explicitly delimited so the boundary is clear:
 | 2026-05-28 | session author | Foundation spec finalized — all 8 scenarios settled. Added P2 (departure = silence), P3 (unified drain), R1–R3 design rules, I9–I11 invariants, drain section §8, full §12 scenario coverage, §14 tunable defaults, §15 out-of-scope. |
 | 2026-05-28 | session author | Final refinements: §2.1 trust model, §8.4 quorum-loss-drain consensus-unavailable caveat, §8.5 `DrainRequestKey` schema (HLC-timestamped), §14 configured-size observation race note. |
 | 2026-05-28 | session author | RC1-scope correction + implementation-consultation decisions: §1 retargeted to RC1; §4 `localQuorumCount` vs Rabia voter-set divergence note; §7.4 NEW (hybrid reconciliation triggers — NTT events + KV-subscribed configured/drain changes + leader-activation map-drain + periodic tick at `provisioning_timeout × 1.5` with local-only `inFlightProvisioning`); §8.2 step 3 amended (LEAVE preserved as SWIM acceleration); §10 LEAVE entry amended (delete only the FSM state-transition machinery, keep SWIM-internal LEAVE); I12 NEW (NTT per-peer claimable map, claim-then-process); §14 entries added for `membership.nttObservation` flag and reconciliation-tick period rationale. |
+| 2026-05-28 | session author | E2 Phase 1.5 simplification — NTT collapsed to per-peer one-shot timer map (no event records / claim queue / drain); reconciliation fully state-derived via CAS-debounced `triggerReconcile(trigger)`; periodic tick removed (surplus now event-signalled via SWIM `HealthyObserved`); leader-activation reconcile delayed by `nttDepartureTimeout × 1.5`. `ReconcileTrigger` updated (`NTT_DRAIN`→`NTT_FIRE`; `PERIODIC_TICK` removed; `MEMBER_APPEARED`, `CONFIG_CHANGE` added). `ReconcileIntent.peersToProvision`/`peersToDrain` replaced with `provisionCount`/`drainCount` (reconciler owns peer selection internally). §6/§7.4/§14/I12 rewritten. |

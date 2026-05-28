@@ -10,9 +10,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.TimeSource;
 
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -20,7 +18,6 @@ import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
@@ -65,7 +62,6 @@ public final class DivergenceLogger {
     private final TimeSource timeSource;
     private final Consumer<String> emit;
 
-    private final ConcurrentHashMap<NodeId, BufferedNtt> nttBuffer = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<NodeId, BufferedFsm> fsmBuffer = new ConcurrentHashMap<>();
 
     private DivergenceLogger(TimeSource timeSource, Consumer<String> emit) {
@@ -86,15 +82,14 @@ public final class DivergenceLogger {
     }
 
     /// Invoked by `LeaderReconciler.setReconcileListener(...)` for every emitted intent.
-    /// Logs the intent, buffers it per-peer for the next [`#runCorrelationSweep`] (when the
-    /// intent targets a single peer; cluster-wide intents are logged but not correlated).
+    /// Logs the intent as a cluster-wide observation. NTT intents no longer carry per-peer
+    /// payload (E2 Phase 1.5 simplification — only the count delta is reported), so the
+    /// previous per-peer ALIGNED correlation against FSM decisions is no longer possible.
+    /// Phase 2 will likely retire this class entirely now that the reconcile is fully
+    /// state-derived.
     @Contract
     public void observeNttIntent(ReconcileIntent intent) {
         emit.accept(formatNttLine(intent));
-
-        var peers = collectIntentPeers(intent);
-        var observedNanos = timeSource.nanoTime();
-        peers.forEach(peer -> nttBuffer.put(peer, new BufferedNtt(observedNanos, intent)));
     }
 
     /// Invoked by Stage 6 from the FSM-side hook for every committed (or no-op'd) decision.
@@ -110,22 +105,20 @@ public final class DivergenceLogger {
         event.peerId().onPresent(peer -> fsmBuffer.put(peer, new BufferedFsm(observedNanos, event)));
     }
 
-    /// Walk both buffers; emit `verdict=ALIGNED` when both sides are present within the
-    /// correlation window (and drop both); emit `verdict=DIVERGENT` when only one side is
-    /// present past the window (and drop that side). Stage 6 schedules this on every
-    /// [`LeaderReconciler`] tick.
+    /// Walk the FSM-side buffer; emit `verdict=DIVERGENT side=FSM_ONLY` for any FSM
+    /// decision still buffered past the correlation window. NTT-side ALIGNED detection
+    /// was retired in E2 Phase 1.5 (no per-peer payload on the NTT side).
     @Contract
     public void runCorrelationSweep() {
         var now = timeSource.nanoTime();
         var windowNanos = CORRELATION_WINDOW.nanos();
 
-        Map.copyOf(nttBuffer).forEach((peer, ntt) -> evaluateNttPeer(peer, ntt, now, windowNanos));
         Map.copyOf(fsmBuffer).forEach((peer, fsm) -> evaluateLoneFsmPeer(peer, fsm, now, windowNanos));
     }
 
-    /// Observability — current size of the NTT-side correlation buffer.
+    /// Observability — NTT side no longer buffers per-peer. Returns 0 unconditionally.
     public int bufferedNttCount() {
-        return nttBuffer.size();
+        return 0;
     }
 
     /// Observability — current size of the FSM-side correlation buffer.
@@ -133,30 +126,7 @@ public final class DivergenceLogger {
         return fsmBuffer.size();
     }
 
-    private void evaluateNttPeer(NodeId peer, BufferedNtt ntt, long now, long windowNanos) {
-        var fsmOpt = option(fsmBuffer.get(peer));
-
-        fsmOpt.apply(() -> evaluateLoneNttPeer(peer, ntt, now, windowNanos),
-                     fsm -> emitAlignedAndClear(peer, ntt, fsm));
-    }
-
-    private void evaluateLoneNttPeer(NodeId peer, BufferedNtt ntt, long now, long windowNanos) {
-        if (now - ntt.observedAtNanos > windowNanos) {
-            emit.accept(formatDivergentNttOnly(peer, ntt, now));
-            nttBuffer.remove(peer);
-        }
-    }
-
-    private void emitAlignedAndClear(NodeId peer, BufferedNtt ntt, BufferedFsm fsm) {
-        emit.accept(formatAligned(peer, ntt, fsm));
-        nttBuffer.remove(peer);
-        fsmBuffer.remove(peer);
-    }
-
     private void evaluateLoneFsmPeer(NodeId peer, BufferedFsm fsm, long now, long windowNanos) {
-        if (nttBuffer.containsKey(peer)) {
-            return;
-        }
         if (now - fsm.observedAtNanos > windowNanos) {
             emit.accept(formatDivergentFsmOnly(peer, fsm, now));
             fsmBuffer.remove(peer);
@@ -165,7 +135,7 @@ public final class DivergenceLogger {
 
     private static String formatNttLine(ReconcileIntent intent) {
         return TAG
-               + " source=NTT  peer=" + describeIntentPeer(intent)
+               + " source=NTT  peer=<cluster-wide>"
                + " ts=" + intent.observedAtNanos()
                + " trigger=" + intent.trigger()
                + " configured=" + intent.configuredCoreCount()
@@ -183,30 +153,6 @@ public final class DivergenceLogger {
                + " stateAfter=" + event.fsmStateAfter();
     }
 
-    private static String formatAligned(NodeId peer, BufferedNtt ntt, BufferedFsm fsm) {
-        var deltaMs = TimeUnit.NANOSECONDS.toMillis(Math.abs(fsm.observedAtNanos - ntt.observedAtNanos));
-
-        return TAG
-               + " verdict=ALIGNED     peer=" + peer.id()
-               + " ntt_ts=" + ntt.observedAtNanos
-               + " fsm_ts=" + fsm.observedAtNanos
-               + " delta_ms=" + deltaMs
-               + " action=" + describeAction(ntt.intent)
-               + " fsm_type=" + fsm.event.type();
-    }
-
-    private static String formatDivergentNttOnly(NodeId peer, BufferedNtt ntt, long now) {
-        var bufferedMs = TimeUnit.NANOSECONDS.toMillis(now - ntt.observedAtNanos);
-
-        return TAG
-               + " verdict=DIVERGENT   peer=" + peer.id()
-               + " side=NTT_ONLY"
-               + " buffered_for_ms=" + bufferedMs
-               + " details=trigger=" + ntt.intent.trigger()
-               + ",configured=" + ntt.intent.configuredCoreCount()
-               + ",observed=" + ntt.intent.clusterMembershipCount();
-    }
-
     private static String formatDivergentFsmOnly(NodeId peer, BufferedFsm fsm, long now) {
         var bufferedMs = TimeUnit.NANOSECONDS.toMillis(now - fsm.observedAtNanos);
 
@@ -220,31 +166,13 @@ public final class DivergenceLogger {
                + ",stateAfter=" + fsm.event.fsmStateAfter();
     }
 
-    private static Set<NodeId> collectIntentPeers(ReconcileIntent intent) {
-        var combined = new HashSet<NodeId>();
-        combined.addAll(intent.peersToProvision());
-        combined.addAll(intent.peersToDrain());
-
-        return combined;
-    }
-
-    private static String describeIntentPeer(ReconcileIntent intent) {
-        var peers = collectIntentPeers(intent);
-
-        if (peers.isEmpty()) {
-            return "<cluster-wide>";
-        }
-
-        return peers.stream().map(NodeId::id).sorted().reduce((a, b) -> a + "," + b).orElse("<cluster-wide>");
-    }
-
     private static String describePeerOption(Option<NodeId> peerId) {
         return peerId.map(NodeId::id).or("<cluster-wide>");
     }
 
     private static String describeAction(ReconcileIntent intent) {
-        var provisionCount = intent.peersToProvision().size();
-        var drainCount = intent.peersToDrain().size();
+        var provisionCount = intent.provisionCount();
+        var drainCount = intent.drainCount();
 
         if (provisionCount == 0 && drainCount == 0) {
             return "none";
@@ -258,8 +186,6 @@ public final class DivergenceLogger {
 
         return "mixed";
     }
-
-    private record BufferedNtt(long observedAtNanos, ReconcileIntent intent) {}
 
     private record BufferedFsm(long observedAtNanos, FsmDecisionEvent event) {}
 }

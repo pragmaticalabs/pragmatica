@@ -1820,11 +1820,15 @@ public interface AetherNode extends ManageableNode {
                 members.add(config.self());
                 return Set.copyOf(members);
             };
-            var ntt = NodeTopologyTracker.nodeTopologyTracker(membershipConfig, timeSource, SharedScheduler::schedule);
+            var leaderReconcilerRef = new java.util.concurrent.atomic.AtomicReference<LeaderReconciler>();
+            Runnable nttReconcileTrigger = () -> {
+                var current = leaderReconcilerRef.get();
+                if (current != null) {current.onTopologyUnhealthy();}
+            };
+            var ntt = NodeTopologyTracker.nodeTopologyTracker(membershipConfig, SharedScheduler::schedule, nttReconcileTrigger);
             var localQuorumWatcher = LocalQuorumWatcher.localQuorumWatcher(membershipConfig, timeSource, SharedScheduler::schedule);
             var divergenceLogger = DivergenceLogger.divergenceLogger(timeSource);
             var leaderReconciler = LeaderReconciler.leaderReconciler(membershipConfig,
-                                                                     config.autoHeal().provisioningTimeout(),
                                                                      ntt,
                                                                      localQuorumWatcher,
                                                                      clusterMembershipCountSupplier,
@@ -1833,19 +1837,27 @@ public interface AetherNode extends ManageableNode {
                                                                      clusterTopologyManager,
                                                                      timeSource,
                                                                      SharedScheduler::schedule);
+            leaderReconcilerRef.set(leaderReconciler);
             swimHealthDetector.addObservationListener(ntt::onSwimObservation);
-            ntt.setOnTimerFireListener(leaderReconciler::onTopologyUnhealthy);
+            // E2 Phase 1.5 — symmetric "surplus appeared" trigger: a SWIM HealthyObserved
+            // signals a peer became reachable; if the leader is in surplus the reconcile
+            // will dispatch drains. NTT catches shortage (DepartedObserved), this catches
+            // surplus.
+            swimHealthDetector.addObservationListener(obs -> {
+                                                         if (obs instanceof SwimObservation.HealthyObserved h) {
+                                                             leaderReconciler.onSwimMemberHealthy(h.peer());
+                                                         }
+                                                     });
             // E2 Phase 1: chain self-drain into the leaderless quorum-loss observation so a
             // local quorum-loss observation triggers the existing hard-quorum-loss drain in
-            // addition to the leader-reconciler observation. Replaces the prior single-listener
-            // wiring `localQuorumWatcher.setQuorumLossListener(leaderReconciler::onQuorumLossIntent)`.
+            // addition to the leader-reconciler observation.
             Consumer<QuorumLossIntent> quorumLossChain =
                 ((Consumer<QuorumLossIntent>) leaderReconciler::onQuorumLossIntent)
                     .andThen(intent -> selfDrainCoordinator.onQuorumDisappeared());
             localQuorumWatcher.setQuorumLossListener(quorumLossChain);
             leaderReconciler.setReconcileListener(divergenceLogger::observeNttIntent);
             membershipFsm.addDecisionListener(divergenceLogger::observeFsmDecision);
-            var sweepPeriod = leaderReconciler.tickPeriod();
+            var sweepPeriod = TimeSpan.timeSpan(30L).seconds();
             SharedScheduler.scheduleAtFixedRate(divergenceLogger::runCorrelationSweep, sweepPeriod, sweepPeriod);
             Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(localQuorumWatcher::onPeerConnected);
             Consumer<NodeId> nttDisconnectTap = localQuorumWatcher::onPeerDisconnected;
