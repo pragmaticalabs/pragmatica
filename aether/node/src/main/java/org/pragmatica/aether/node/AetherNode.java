@@ -1054,13 +1054,12 @@ public interface AetherNode extends ManageableNode {
         Supplier<Set<NodeId>> kvTrackedPeersSupplier = () -> {
             var peers = new java.util.HashSet<NodeId>();
             peers.add(config.self());
-            kvStore.forEach(AetherKey.NodeLifecycleKey.class,
-                            AetherValue.NodeLifecycleValue.class,
-                            (key, value) -> {
-                                if (value.state() != AetherValue.NodeLifecycleState.STOPPED) {
-                                peers.add(key.nodeId());
-                            }
-                            });
+            // C-1 (membership v2): RA quorum-N is sourced from the NTT-derived generation snapshot
+            // (coreMembers are SWIM-converged members; never STOPPED) rather than scanning the
+            // FSM-written NodeLifecycleKey atom (being eliminated). Self is always included.
+            kvStore.getTyped(AetherKey.GenerationSnapshotKey.SINGLETON, AetherValue.GenerationSnapshotValue.class)
+                   .map(AetherValue.GenerationSnapshotValue::snapshot)
+                   .onPresent(snapshot -> peers.addAll(snapshot.coreMembers().keySet()));
 
             return Set.copyOf(peers);
         };
