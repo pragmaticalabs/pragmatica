@@ -58,6 +58,8 @@ class LeaderReconcilerTest {
     private static final NodeId PEER_D = NodeId.randomNodeId();
     private static final TimeSpan EXPECTED_ACTIVATION_DELAY =
         timeSpan(membershipConfig().nttDepartureTimeout().nanos() * 3 / 2).nanos();
+    private static final TimeSpan EXPECTED_INFLIGHT_EXPIRY =
+        timeSpan(membershipConfig().nttDepartureTimeout().nanos() * 3).nanos();
     private static final TimeSpan DEBOUNCE_DELAY = timeSpan(100L).millis();
 
     private TestTimeSource timeSource;
@@ -406,7 +408,7 @@ class LeaderReconcilerTest {
         @Test
         void staleInFlightEntryPastExpiryWindow_isEvictedOnNextReconcile() {
             // Arm at full membership (5), drop two peers to provision two (in-flight=2),
-            // then advance past the expiry window and reconcile — the stale entries evict.
+            // then advance PAST the (×3) expiry window and reconcile — the stale entries evict.
             configuredCoreCount.set(5);
             seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
             reconciler.activate();
@@ -417,7 +419,7 @@ class LeaderReconcilerTest {
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(2);
             listener.clear();
             seedClusterWithPeers(NodeId.randomNodeId(), NodeId.randomNodeId());
-            timeSource.advanceTimeMillis(EXPECTED_ACTIVATION_DELAY.millis() * 3);
+            timeSource.advanceTimeMillis(EXPECTED_INFLIGHT_EXPIRY.millis() + 1);
 
             reconciler.onTopologyUnhealthy();
             fireDebouncedReconcile();
@@ -425,6 +427,27 @@ class LeaderReconcilerTest {
             assertThat(listener.events()).hasSize(1);
             assertThat(listener.events().getFirst().inFlightProvisioningCount()).isZero();
             assertThat(reconciler.inFlightProvisioningCount()).isZero();
+        }
+
+        @Test
+        void freshInFlightEntryWithinExpiryWindow_isNotEvicted() {
+            // Arm at full membership (5), drop two peers to provision two (in-flight=2),
+            // then advance LESS than the (×3) expiry window and reconcile — entries survive.
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            removePeers(PEER_C, PEER_D);
+            reconciler.onTopologyUnhealthy();
+            fireDebouncedReconcile();
+            assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(2);
+            listener.clear();
+            timeSource.advanceTimeMillis(EXPECTED_INFLIGHT_EXPIRY.millis() - 1);
+
+            reconciler.onTopologyUnhealthy();
+            fireDebouncedReconcile();
+
+            assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(2);
         }
     }
 
@@ -489,9 +512,9 @@ class LeaderReconcilerTest {
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
             assertThat(ctm.provisionReplacementCalls()).hasSize(1);
 
-            // Recover to full membership and let the in-flight entry expire.
+            // Recover to full membership and let the in-flight entry expire (past ×3 window).
             seedClusterWithPeers(PEER_D);
-            timeSource.advanceTimeMillis(EXPECTED_ACTIVATION_DELAY.millis() * 3);
+            timeSource.advanceTimeMillis(EXPECTED_INFLIGHT_EXPIRY.millis() + 1);
             reconciler.onSwimMemberHealthy(PEER_D);
             fireDebouncedReconcile();
             assertThat(reconciler.inFlightProvisioningCount()).isZero();

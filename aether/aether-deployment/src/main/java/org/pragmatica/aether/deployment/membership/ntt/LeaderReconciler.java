@@ -65,9 +65,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// follow-up reconcile is scheduled.
 ///
 /// **In-flight provisioning bookkeeping.** Per reconcile pass, entries past
-/// `nttDepartureTimeout × 1.5` are evicted (assumed failed) so they no longer mask the
-/// "underprovisioned" signal. The map is internal — exposed only via observability
-/// accessors.
+/// `nttDepartureTimeout × 3` are evicted (assumed failed) so they no longer mask the
+/// "underprovisioned" signal. This expiry is decoupled from — and intentionally longer than —
+/// the `× 1.5` leader-activation quiesce delay: it must exceed a provisioned node's worst-case
+/// time-to-stable-membership (container boot + JVM + SWIM up-hysteresis) so the reconciler
+/// does not forget an in-flight node and re-provision a phantom replacement (the auto-heal
+/// provisioning storm). The map is internal — exposed only via observability accessors.
 ///
 /// **Arm-after-first-full-membership latch (safety-critical — Bug C).** The reconciler
 /// must NEVER provision a replacement for a configured core peer that has not yet joined
@@ -119,7 +122,7 @@ public final class LeaderReconciler {
                              NttTimerScheduler scheduler) {
         this.membershipConfig = membershipConfig;
         this.leaderActivationDelay = computeQuiesceDelay(membershipConfig.nttDepartureTimeout());
-        this.inFlightExpiry = leaderActivationDelay;
+        this.inFlightExpiry = computeInFlightExpiry(membershipConfig.nttDepartureTimeout());
         this.membershipView = membershipView;
         this.configuredCoreCountSupplier = configuredCoreCountSupplier;
         this.ctm = ctm;
@@ -430,6 +433,17 @@ public final class LeaderReconciler {
 
     private static TimeSpan computeQuiesceDelay(TimeSpan nttDepartureTimeout) {
         return timeSpan(nttDepartureTimeout.nanos() * 3 / 2).nanos();
+    }
+
+    /// In-flight provisioning entries expire at `nttDepartureTimeout × 3`. This window is
+    /// decoupled from (and deliberately longer than) the `× 1.5` leader-activation quiesce
+    /// delay: an in-flight entry must outlive a freshly provisioned node's WORST-CASE
+    /// time-to-stable-membership (container boot + JVM start + SWIM up-hysteresis), which can
+    /// run to tens of seconds. If the entry expired first, the reconciler would forget the
+    /// node it is still waiting on, re-observe the same deficit, and re-provision a phantom
+    /// replacement — the auto-heal provisioning storm this expiry exists to prevent.
+    private static TimeSpan computeInFlightExpiry(TimeSpan nttDepartureTimeout) {
+        return timeSpan(nttDepartureTimeout.nanos() * 3).nanos();
     }
 
     /// Observability — the [`MembershipConfig`] this reconciler was constructed with.

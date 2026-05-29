@@ -30,8 +30,27 @@ import java.util.concurrent.TimeUnit;
 ///
 /// `nttDepartureTimeout` maps onto the hysteresis window as
 /// `downHysteresis * sampleInterval` (spec §4 "mapping from nttDepartureTimeout onto the
-/// hysteresis window"); use [`#fromDepartureTimeout`] to derive a config from a legacy
-/// departure timeout while preserving the same effective debounce.
+/// hysteresis window"); use [`#fromDepartureTimeout(TimeSpan, TimeSpan)`] to derive a config
+/// from a legacy departure timeout while preserving the same effective debounce.
+///
+/// **Asymmetric hysteresis (UP fast, DOWN slow).** The UP edge (admitting a node into the
+/// stable member set) and the DOWN edge (dropping a node out of it) carry different risk and
+/// should be tuned independently:
+///
+/// - **UP should be FAST.** A node that is already SWIM-healthy is low-risk to admit — SWIM
+///   has its own failure detection, so a brief healthy streak is sufficient evidence. A slow
+///   UP edge actively hurts: it delays cluster formation and quorum recovery, and — critically
+///   for auto-heal — it makes a freshly provisioned replacement node appear in stable
+///   membership LATER than the leader reconciler's in-flight provisioning window expects.
+///   When the node materialises after the reconciler has already forgotten its in-flight
+///   entry, the reconciler re-provisions the same deficit, producing a phantom-node
+///   provisioning storm.
+/// - **DOWN must stay SLOW.** Dropping a node is destructive (it can trigger drains, leadership
+///   churn, and provisioning), so the DOWN edge must debounce transient blips (a missed gossip
+///   round, a GC pause) and only react to a genuinely sustained absence.
+///
+/// Use [`#fromDepartureTimeout(TimeSpan, TimeSpan, int)`] to keep the slow, departure-derived
+/// DOWN window while choosing a small, fast UP window.
 public record MembershipTrackerConfig(TimeSpan sampleInterval, int upHysteresis, int downHysteresis) {
     public MembershipTrackerConfig {
         if (upHysteresis < 1) {
@@ -59,6 +78,19 @@ public record MembershipTrackerConfig(TimeSpan sampleInterval, int upHysteresis,
     public static MembershipTrackerConfig fromDepartureTimeout(TimeSpan departureTimeout, TimeSpan sampleInterval) {
         var ticks = Math.max(1, (int) ceilDiv(departureTimeout.nanos(), Math.max(1, sampleInterval.nanos())));
         return new MembershipTrackerConfig(sampleInterval, ticks, ticks);
+    }
+
+    /// Derive an ASYMMETRIC config: the DOWN window stays the slow, safe departure debounce
+    /// (`downHysteresis = ceil(departureTimeout / sampleInterval)`, identical to the 2-arg
+    /// overload) while the UP window is set to the caller-supplied `upHysteresis` for fast
+    /// admit. See the type-level doc for why fast-UP / slow-DOWN is the correct asymmetry
+    /// (slow UP delays formation/quorum recovery and lets provisioned auto-heal nodes appear
+    /// after the reconciler's in-flight window, causing re-provisioning storms).
+    public static MembershipTrackerConfig fromDepartureTimeout(TimeSpan departureTimeout,
+                                                               TimeSpan sampleInterval,
+                                                               int upHysteresis) {
+        var downHysteresis = Math.max(1, (int) ceilDiv(departureTimeout.nanos(), Math.max(1, sampleInterval.nanos())));
+        return new MembershipTrackerConfig(sampleInterval, upHysteresis, downHysteresis);
     }
 
     private static long ceilDiv(long numerator, long denominator) {

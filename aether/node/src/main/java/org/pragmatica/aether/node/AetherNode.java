@@ -1514,8 +1514,14 @@ public interface AetherNode extends ManageableNode {
         // consensus via the forward-ref wired into the GenerationSnapshotSource above. The
         // hysteresis window is derived from the NTT departure timeout for behavioural parity
         // while both trackers run side-by-side (NTT is removed in P3).
+        // Asymmetric hysteresis (auto-heal storm fix): fast UP-admit (2 samples ≈ 1s) so a
+        // provisioned replacement node enters stable membership well inside the reconciler's
+        // in-flight window — preventing the re-provision death-spiral — and quorum recovers
+        // quickly; slow DOWN-drop (departure-timeout derived ≈ 15s) so transient blips don't
+        // evict a member.
         var membershipTrackerConfig = MembershipTrackerConfig.fromDepartureTimeout(membershipConfig.nttDepartureTimeout(),
-                                                                                   TimeSpan.timeSpan(500).millis());
+                                                                                   TimeSpan.timeSpan(500).millis(),
+                                                                                   2);
         // P3 (membership unification): quorum-loss self-drain is sourced from the unified
         // tracker's stable membership (no separate QUIC peer count). Constructed before the
         // tracker so the tracker's MembershipListener pushes the stable member count in; the
