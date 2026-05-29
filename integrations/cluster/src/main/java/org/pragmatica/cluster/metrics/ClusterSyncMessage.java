@@ -97,6 +97,11 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
     ///                            command path. `Option.none()` on the leader's own outgoing pongs
     ///                            and during steady state. See cluster-convergence-reconciler-spec
     ///                            §SYNCING.
+    /// @param incarnation         per-incarnation discriminator (changes on process restart, distinct
+    ///                            from `NodeId`) so the leader rejects a stale prior-incarnation pong
+    ///                            and never misattributes a fast-restart `DRAINING → SYNCING` flip to
+    ///                            one continuous life. `0L` for pre-migration peers. See
+    ///                            membership-architecture-v2-spec §7.5.3 / I14.
     record ClusterSyncPong(NodeId sender,
                            Map<String, Double> metrics,
                            long observedRabiaTerm,
@@ -106,7 +111,8 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
                            List<CommunityReport> communityReports,
                            List<PeerHealthObservation> peerHealth,
                            List<PeerConnectivityObservation> peerConnectivity,
-                           Option<NodeId> readyCandidate) implements ClusterSyncMessage {
+                           Option<NodeId> readyCandidate,
+                           long incarnation) implements ClusterSyncMessage {
         public ClusterSyncPong {
             if (lifecycleState == null) {lifecycleState = "";}
             communityReports = communityReports == null
@@ -125,7 +131,7 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
 
         /// Backward-compatible 9-arg constructor for call sites that pre-date the
         /// `readyCandidate` extension (Phase 2 PR-B of cluster-convergence-reconciler).
-        /// Defaults the candidate field to `Option.none()`.
+        /// Defaults the candidate field to `Option.none()` and incarnation to `0L`.
         public ClusterSyncPong(NodeId sender,
                                Map<String, Double> metrics,
                                long observedRabiaTerm,
@@ -136,13 +142,30 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
                                List<PeerHealthObservation> peerHealth,
                                List<PeerConnectivityObservation> peerConnectivity) {
             this(sender, metrics, observedRabiaTerm, observedEpochTerm, observedEpochCounter,
-                 lifecycleState, communityReports, peerHealth, peerConnectivity, Option.none());
+                 lifecycleState, communityReports, peerHealth, peerConnectivity, Option.none(), 0L);
+        }
+
+        /// Backward-compatible 10-arg constructor for call sites that pre-date the
+        /// `incarnation` extension (membership-architecture-v2-spec §7.5.3). Defaults
+        /// incarnation to `0L` so existing deserialization / call sites do not break.
+        public ClusterSyncPong(NodeId sender,
+                               Map<String, Double> metrics,
+                               long observedRabiaTerm,
+                               long observedEpochTerm,
+                               long observedEpochCounter,
+                               String lifecycleState,
+                               List<CommunityReport> communityReports,
+                               List<PeerHealthObservation> peerHealth,
+                               List<PeerConnectivityObservation> peerConnectivity,
+                               Option<NodeId> readyCandidate) {
+            this(sender, metrics, observedRabiaTerm, observedEpochTerm, observedEpochCounter,
+                 lifecycleState, communityReports, peerHealth, peerConnectivity, readyCandidate, 0L);
         }
 
         /// Backward-compatible factory for legacy call sites. Emits zero epoch,
-        /// empty lifecycle, no community reports, no peer observations.
+        /// empty lifecycle, no community reports, no peer observations, zero incarnation.
         public static ClusterSyncPong clusterSyncPong(NodeId sender, Map<String, Double> metrics) {
-            return new ClusterSyncPong(sender, metrics, 0L, 0L, 0L, "", List.of(), List.of(), List.of(), Option.none());
+            return new ClusterSyncPong(sender, metrics, 0L, 0L, 0L, "", List.of(), List.of(), List.of(), Option.none(), 0L);
         }
     }
 }

@@ -178,6 +178,7 @@ import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.aether.metrics.NodeReportedStateHolder;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTAntiEntropy;
@@ -1098,7 +1099,10 @@ public interface AetherNode extends ManageableNode {
         var membershipFsmRef = new AtomicReference<MembershipFsm>(null);
         ClusterSyncPongSignalFan.ReadyCandidateSink readyCandidateSink = (sender, candidate) ->
             emitForceOnDuty(ctmLifecycleWriterRef.get(), sender, candidate);
+        var nodeReportedStateHolder = NodeReportedStateHolder.nodeReportedStateHolder();
         metricsCollector.setReadinessTracker(readinessTracker);
+        metricsCollector.setNodeReportedStateSupplier(nodeReportedStateHolder::current);
+        metricsCollector.setIncarnationSupplier(org.pragmatica.aether.metrics.BootEpoch::bootEpoch);
         metricsCollector.setPongSignalFan(ClusterSyncPongSignalFan.clusterSyncPongSignalFan(stableHealthSink,
                                                                                             clusterNode.leaderManager(),
                                                                                             readyCandidateSink));
@@ -1719,12 +1723,16 @@ public interface AetherNode extends ManageableNode {
         // (LocalQuorumWatcher) and procedure execution (DrainProcedure) are separated.
         Consumer<QuorumLossIntent> quorumLossChain =
             ((Consumer<QuorumLossIntent>) leaderReconciler::onQuorumLossIntent)
-                .andThen(intent -> drainProcedure.initiate(DrainReason.QUORUM_LOSS));
+                .andThen(intent -> drainProcedure.initiate(DrainReason.QUORUM_LOSS))
+                .andThen(intent -> nodeReportedStateHolder.onDrainStarted());
         localQuorumWatcher.setQuorumLossListener(quorumLossChain);
         Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(localQuorumWatcher::onPeerConnected);
         Consumer<NodeId> nttDisconnectTap = localQuorumWatcher::onPeerDisconnected;
         aetherEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                     change -> toggleNttReconcilerOnLeaderChange(change, leaderReconciler)));
+        // B1 (membership v2 §7.5): node-reported readiness state tracks local consensus edges.
+        aetherEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class,
+                                                    n -> routeConsensusEdgeToReportedState(n, nodeReportedStateHolder)));
         membershipFsm.setSwimHealthGate(nodeId -> swimHealthDetector.healthOf(nodeId) == SwimHealth.HEALTHY);
         // SwimProtocol → router wire-up: SWIM-detected FAULTY peers are forwarded to the
         // cluster-wide `TransportObservation` stream so subscribers (LeaderManager,
@@ -2027,7 +2035,7 @@ public interface AetherNode extends ManageableNode {
                                   Option.some(lifecycleReconciler),
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
-        nodeDeploymentManager.setSelfReadySignal(nodeLifecycle::signalReady);
+        nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReady(nodeLifecycle::signalReady, nodeReportedStateHolder));
         // Self-bootstrap (Bootstrap-correction 2026-05-12): SWIM does not observe self, so the
         // leader's FSM never receives `SwimHealthy(self)` via the normal gossip path. When this
         // node's local lifecycle reaches ACTIVE, synthesize that observation into our own FSM.
@@ -2227,6 +2235,26 @@ public interface AetherNode extends ManageableNode {
     /// `SelfDrainCoordinator.onQuorumDisappeared` + `.onRabiaPaused` (Rabia's `Paused` fires
     /// on the same DISAPPEARED signal — both legacy entry points collapsed into the single
     /// `initiate(QUORUM_LOSS)` call by the CAS guard).
+    /// B1 (membership v2 §7.5): translate a local consensus-state edge into the node-reported
+    /// readiness state — ACTIVE → consensus-active, otherwise consensus-passive.
+    @Contract
+    private static void routeConsensusEdgeToReportedState(ClusterStateNotification notification,
+                                                          NodeReportedStateHolder holder) {
+        if (notification.state() == ClusterStateNotification.State.ACTIVE) {
+            holder.onConsensusActive();
+            return;
+        }
+        holder.onConsensusPassive();
+    }
+
+    /// B1 (membership v2 §7.5): the node's self-ready signal also marks subsystems ready for the
+    /// node-reported readiness state (READY requires consensus-active AND subsystems-ready).
+    @Contract
+    private static void markSubsystemsReady(Runnable signalReady, NodeReportedStateHolder holder) {
+        signalReady.run();
+        holder.onSubsystemsReady();
+    }
+
     @Contract
     private static void routeQuorumDisappearedToDrain(ClusterStateNotification notification,
                                                        DrainProcedure drainProcedure) {

@@ -142,6 +142,19 @@ public interface ClusterSyncCollector {
     /// which preserves pre-Phase-2 behaviour. See cluster-convergence-reconciler-spec §SYNCING.
     @Contract default void setReadinessTracker(NodeReadinessTracker tracker) {}
 
+    /// Membership v2 (§7.5.3) — wire the node-reported readiness state supplier so
+    /// `buildPong()` stamps `current().name()` (SYNCING|READY|DRAINING) onto
+    /// `ClusterSyncPong.lifecycleState` instead of the legacy `currentLifecycleState()`
+    /// default `() -> "ON_DUTY"`. Default no-op leaves the legacy supplier in place
+    /// (test doubles inherit; production wires in `AetherNode`).
+    @Contract default void setNodeReportedStateSupplier(Supplier<NodeReportedState> supplier) {}
+
+    /// Membership v2 (§7.5.3) — wire the per-incarnation discriminator stamped onto
+    /// `ClusterSyncPong.incarnation`. Default no-op leaves the field at `0L`
+    /// (pre-migration). Production wires in `AetherNode`, defaulting to
+    /// `BootEpoch::bootEpoch`. See [BootEpoch].
+    @Contract default void setIncarnationSupplier(java.util.function.LongSupplier supplier) {}
+
     static ClusterSyncCollector clusterSyncCollector(NodeId self, ClusterNetwork network) {
         return new ClusterSyncCollectorImpl(self, network, DEFAULT_slidingWindowMs);
     }
@@ -202,6 +215,20 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// `Option.none()` until `setReadinessTracker(...)` is wired by `AetherNode`.
     private final AtomicReference<NodeReadinessTracker> readinessTracker =
         new AtomicReference<>(NodeReadinessTracker.nodeReadinessTracker());
+
+    /// Membership v2 (§7.5.3) — node-reported readiness state supplier. `buildPong()`
+    /// stamps `current().name()` onto the pong's `lifecycleState` field, repurposing it
+    /// to carry SYNCING|READY|DRAINING. Default `Option.none()` keeps the legacy
+    /// `lifecycleStateSupplier` path until `setNodeReportedStateSupplier(...)` is wired.
+    private final AtomicReference<Option<Supplier<NodeReportedState>>> nodeReportedStateSupplier =
+        new AtomicReference<>(Option.none());
+
+    /// Membership v2 (§7.5.3) — per-incarnation discriminator supplier. `buildPong()`
+    /// stamps the value onto `ClusterSyncPong.incarnation`. Default `0L` (pre-migration)
+    /// until `setIncarnationSupplier(...)` wires `BootEpoch::bootEpoch` or the SWIM
+    /// incarnation in `AetherNode`.
+    private final AtomicReference<java.util.function.LongSupplier> incarnationSupplier =
+        new AtomicReference<>(() -> 0L);
 
     ClusterSyncCollectorImpl(NodeId self, ClusterNetwork network, long slidingWindowMs) {
         this.self = self;
@@ -375,6 +402,16 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
                              : tracker);
     }
 
+    @Override@Contract public void setNodeReportedStateSupplier(Supplier<NodeReportedState> supplier) {
+        nodeReportedStateSupplier.set(Option.option(supplier));
+    }
+
+    @Override@Contract public void setIncarnationSupplier(java.util.function.LongSupplier supplier) {
+        incarnationSupplier.set(supplier == null
+                                ? () -> 0L
+                                : supplier);
+    }
+
     @Override@Contract public void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs) {
         var buffer = peerObservationBuffer.get();
         var epoch = observedEpoch.get();
@@ -454,11 +491,23 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
                                    observedRabiaTerm.get(),
                                    epoch.rabiaTerm(),
                                    epoch.localCounter(),
-                                   currentLifecycleState(),
+                                   reportedLifecycleState(),
                                    collectCommunityReports(),
                                    buffer.drainHealth(),
                                    buffer.drainConnectivity(),
-                                   readinessTracker.get().candidate());
+                                   readinessTracker.get().candidate(),
+                                   incarnationSupplier.get().getAsLong());
+    }
+
+    /// Membership v2 (§7.5.3) — the string stamped onto the pong's `lifecycleState`
+    /// field. When a node-reported-state supplier is wired, the field carries the
+    /// `NodeReportedState` name (SYNCING|READY|DRAINING); otherwise it falls back to the
+    /// legacy `currentLifecycleState()` value, preserving pre-migration behaviour.
+    private String reportedLifecycleState() {
+        return nodeReportedStateSupplier.get()
+                                        .map(Supplier::get)
+                                        .map(NodeReportedState::name)
+                                        .or(this::currentLifecycleState);
     }
 
     private void collectCpuMetrics(Map<String, Double> metrics) {
