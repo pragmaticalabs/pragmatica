@@ -11,7 +11,6 @@ import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.GenerationReason;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 
@@ -43,7 +42,7 @@ class ClusterGenerationProjectorSwimHintOverrideTest {
         @Test
         void onDutyPeerWithFaultySwimHint_projectsAsFaulty() {
             var lifecycles = Map.of(NODE_A,
-                                     NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, "host-a", 9001));
+                                     MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-a", 9001));
             var swimHints = Map.of(NODE_A, HealthHint.FAULTY);
 
             var snapshot = projectWithSwimHints(lifecycles, swimHints);
@@ -54,7 +53,7 @@ class ClusterGenerationProjectorSwimHintOverrideTest {
         @Test
         void onDutyPeerWithSuspectedSwimHint_projectsAsSuspected() {
             var lifecycles = Map.of(NODE_A,
-                                     NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, "host-a", 9001));
+                                     MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-a", 9001));
             var swimHints = Map.of(NODE_A, HealthHint.SUSPECTED);
 
             var snapshot = projectWithSwimHints(lifecycles, swimHints);
@@ -65,7 +64,7 @@ class ClusterGenerationProjectorSwimHintOverrideTest {
         @Test
         void onDutyPeerWithHealthySwimHint_projectsAsHealthy() {
             var lifecycles = Map.of(NODE_A,
-                                     NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, "host-a", 9001));
+                                     MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-a", 9001));
             var swimHints = Map.of(NODE_A, HealthHint.HEALTHY);
 
             var snapshot = projectWithSwimHints(lifecycles, swimHints);
@@ -76,7 +75,7 @@ class ClusterGenerationProjectorSwimHintOverrideTest {
         @Test
         void absentSwimHint_fallsBackToLifecycleDerivedHint() {
             var lifecycles = Map.of(NODE_A,
-                                     NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING, "host-a", 9001));
+                                     MemberLifecycle.memberLifecycle(NodeLifecycleState.DRAINING, "host-a", 9001));
 
             var snapshot = projectWithSwimHints(lifecycles, Map.of());
 
@@ -90,7 +89,7 @@ class ClusterGenerationProjectorSwimHintOverrideTest {
         void drainingLifecycleWithFaultySwimHint_projectsAsFaulty_swimHintIsWorse() {
             // Lifecycle DRAINING -> SUSPECTED baseline; swim hint FAULTY is strictly worse.
             var lifecycles = Map.of(NODE_A,
-                                     NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING, "host-a", 9001));
+                                     MemberLifecycle.memberLifecycle(NodeLifecycleState.DRAINING, "host-a", 9001));
             var swimHints = Map.of(NODE_A, HealthHint.FAULTY);
 
             var snapshot = projectWithSwimHints(lifecycles, swimHints);
@@ -104,7 +103,7 @@ class ClusterGenerationProjectorSwimHintOverrideTest {
             // the node has left the cluster. Verify: member is absent from coreMembers,
             // swim hint is irrelevant.
             var lifecycles = Map.of(NODE_A,
-                                     NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED,
+                                     MemberLifecycle.memberLifecycle(NodeLifecycleState.STOPPED,
                                                                             "host-a",
                                                                             9001));
             var swimHints = Map.of(NODE_A, HealthHint.SUSPECTED);
@@ -117,9 +116,9 @@ class ClusterGenerationProjectorSwimHintOverrideTest {
         @Test
         void onDutyLifecycleWithFaultySwimHint_excludedFromHealthyOnDutyCount() {
             var lifecycles = Map.of(NODE_A,
-                                     NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, "host-a", 9001),
+                                     MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-a", 9001),
                                     NODE_B,
-                                     NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, "host-b", 9001));
+                                     MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-b", 9001));
             var swimHints = Map.of(NODE_A, HealthHint.FAULTY);
 
             var snapshot = projectWithSwimHints(lifecycles, swimHints);
@@ -140,7 +139,7 @@ class ClusterGenerationProjectorSwimHintOverrideTest {
         }
     }
 
-    private static ClusterGenerationSnapshot projectWithSwimHints(Map<NodeId, NodeLifecycleValue> lifecycles,
+    private static ClusterGenerationSnapshot projectWithSwimHints(Map<NodeId, MemberLifecycle> lifecycles,
                                                                   Map<NodeId, HealthHint> swimHints) {
         var input = ProjectionInput.projectionInput(1L,
                                                      0L,

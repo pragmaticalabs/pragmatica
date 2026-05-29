@@ -17,7 +17,6 @@ import org.pragmatica.aether.slice.generation.PartitionOwner;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
 import org.pragmatica.consensus.NodeId;
@@ -41,7 +40,7 @@ public interface ClusterGenerationProjector {
                            int desiredCoreSize,
                            GenerationReason reason,
                            HlcTimestamp now,
-                           Map<NodeId, NodeLifecycleValue> lifecycles,
+                           Map<NodeId, MemberLifecycle> lifecycles,
                            Map<String, GovernorAnnouncementValue> governors,
                            Map<String, DhtPartitionOwnershipValue> partitions,
                            Map<NodeId, SpokesmanValue> spokesmen,
@@ -71,7 +70,7 @@ public interface ClusterGenerationProjector {
                                                       int desiredCoreSize,
                                                       GenerationReason reason,
                                                       HlcTimestamp now,
-                                                      Map<NodeId, NodeLifecycleValue> lifecycles,
+                                                      Map<NodeId, MemberLifecycle> lifecycles,
                                                       Map<String, GovernorAnnouncementValue> governors,
                                                       Map<String, DhtPartitionOwnershipValue> partitions,
                                                       Map<NodeId, SpokesmanValue> spokesmen,
@@ -98,7 +97,7 @@ public interface ClusterGenerationProjector {
                                                       int desiredCoreSize,
                                                       GenerationReason reason,
                                                       HlcTimestamp now,
-                                                      Map<NodeId, NodeLifecycleValue> lifecycles,
+                                                      Map<NodeId, MemberLifecycle> lifecycles,
                                                       Map<String, GovernorAnnouncementValue> governors,
                                                       Map<String, DhtPartitionOwnershipValue> partitions,
                                                       Map<NodeId, SpokesmanValue> spokesmen,
@@ -127,7 +126,7 @@ public interface ClusterGenerationProjector {
                                                       int desiredCoreSize,
                                                       GenerationReason reason,
                                                       HlcTimestamp now,
-                                                      Map<NodeId, NodeLifecycleValue> lifecycles,
+                                                      Map<NodeId, MemberLifecycle> lifecycles,
                                                       Map<String, GovernorAnnouncementValue> governors,
                                                       Map<String, DhtPartitionOwnershipValue> partitions,
                                                       Map<NodeId, SpokesmanValue> spokesmen,
@@ -204,7 +203,7 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
         return Map.copyOf(result);
     }
 
-    private static CoreMember toCoreMember(NodeId nodeId, NodeLifecycleValue lifecycle, ProjectionInput input) {
+    private static CoreMember toCoreMember(NodeId nodeId, MemberLifecycle lifecycle, ProjectionInput input) {
         var lastSeen = input.lastSeenPerNode().getOrDefault(nodeId, Epoch.ZERO);
         var healthHint = deriveHealthHint(nodeId, lifecycle, input.swimHints());
 
@@ -213,13 +212,12 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
                                      lifecycle.port(),
                                      lifecycle.state(),
                                      healthHint,
-                                     lifecycle.observedCoreEpoch(),
-                                     lastSeen,
-                                     lifecycle.provisioningSource());
+                                     Epoch.ZERO,
+                                     lastSeen);
     }
 
     private static HealthHint deriveHealthHint(NodeId nodeId,
-                                               NodeLifecycleValue lifecycle,
+                                               MemberLifecycle lifecycle,
                                                Map<NodeId, HealthHint> swimHints) {
         var lifecycleHint = switch (lifecycle.state()) {
             case STOPPED -> HealthHint.FAULTY;

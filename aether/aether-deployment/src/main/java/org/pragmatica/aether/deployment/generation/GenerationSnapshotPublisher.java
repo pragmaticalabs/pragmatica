@@ -19,9 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GenerationSnapshotValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSource;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -30,7 +28,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.hlc.HlcClock;
-import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -266,17 +263,16 @@ public final class GenerationSnapshotPublisher {
     /// node draining); departed nodes simply are not in `memberSupplier` so they never
     /// appear (the projector's `STOPPED` filter is preserved but unused on this path).
     /// Address is sourced from the topology observer; absent → empty host / zero port
-    /// (display-only, matches the codebase default in `NodeLifecycleValue`).
-    private Map<NodeId, NodeLifecycleValue> deriveLifecyclesFromMembership() {
+    /// (display-only).
+    private Map<NodeId, MemberLifecycle> deriveLifecyclesFromMembership() {
         var draining = drainingSupplier.get();
-        var stamp = hlcClock.now();
-        var result = new LinkedHashMap<NodeId, NodeLifecycleValue>();
-        memberSupplier.get().forEach(nodeId -> result.put(nodeId, synthesizeLifecycle(nodeId, draining.contains(nodeId), stamp)));
+        var result = new LinkedHashMap<NodeId, MemberLifecycle>();
+        memberSupplier.get().forEach(nodeId -> result.put(nodeId, synthesizeLifecycle(nodeId, draining.contains(nodeId))));
 
         return Map.copyOf(result);
     }
 
-    private NodeLifecycleValue synthesizeLifecycle(NodeId nodeId, boolean isDraining, HlcTimestamp stamp) {
+    private MemberLifecycle synthesizeLifecycle(NodeId nodeId, boolean isDraining) {
         var address = addressResolver.apply(nodeId).map(NodeInfo::address);
         var host = address.map(NodeAddress::host).or("");
         var port = address.map(NodeAddress::port).or(0);
@@ -284,13 +280,7 @@ public final class GenerationSnapshotPublisher {
                     ? NodeLifecycleState.DRAINING
                     : NodeLifecycleState.ON_DUTY;
 
-        return new NodeLifecycleValue(state,
-                                      stamp.physicalMicros() / 1_000L,
-                                      host,
-                                      port,
-                                      Epoch.ZERO,
-                                      stamp,
-                                      ProvisioningSource.UNKNOWN);
+        return MemberLifecycle.memberLifecycle(state, host, port);
     }
 
     private static Map<String, GovernorAnnouncementValue> collectGovernors(Map<AetherKey, AetherValue> kv) {

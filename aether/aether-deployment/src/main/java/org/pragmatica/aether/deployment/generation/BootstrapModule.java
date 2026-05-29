@@ -434,12 +434,16 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                      .map(v -> ((ClusterConfigValue) v).coreCount());
     }
 
-    private static Map<NodeId, NodeLifecycleValue> collectLifecycles(Map<AetherKey, AetherValue> kv) {
+    private static Map<NodeId, MemberLifecycle> collectLifecycles(Map<AetherKey, AetherValue> kv) {
         return kv.entrySet()
                  .stream()
                  .filter(entry -> entry.getKey() instanceof NodeLifecycleKey && entry.getValue() instanceof NodeLifecycleValue)
                  .collect(Collectors.toUnmodifiableMap(entry -> ((NodeLifecycleKey) entry.getKey()).nodeId(),
-                                                       entry -> (NodeLifecycleValue) entry.getValue()));
+                                                       entry -> toMemberLifecycle((NodeLifecycleValue) entry.getValue())));
+    }
+
+    private static MemberLifecycle toMemberLifecycle(NodeLifecycleValue value) {
+        return MemberLifecycle.memberLifecycle(value.state(), value.host(), value.port());
     }
 
     private static Map<String, GovernorAnnouncementValue> collectGovernors(Map<AetherKey, AetherValue> kv) {
