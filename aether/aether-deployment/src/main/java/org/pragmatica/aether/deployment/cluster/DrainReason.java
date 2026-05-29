@@ -20,10 +20,14 @@ package org.pragmatica.aether.deployment.cluster;
 /// **Local-trigger (DrainProcedure) reasons** (E2 Phase 2b):
 /// - [`#QUORUM_LOSS`] — local node observed `localQuorumCount < threshold` for
 ///   `quorumLossDrainThreshold`; spec §8.1.
+/// - [`#COMMANDED`] — leader/CTM-commanded drain delivered via the cluster-sync ping
+///   `NodePingCommand.DRAIN` channel (membership-architecture-v2-spec B5a). The receiving
+///   node initiates its local `DrainProcedure` on each DRAIN ping (CAS-guarded, idempotent).
 public enum DrainReason {
     OPERATOR_COMMAND,
     OVERPROVISION_SCALE_DOWN,
     OVERPROVISION_PARTITION_HEAL,
-    QUORUM_LOSS
+    QUORUM_LOSS,
+    COMMANDED
 }
 

@@ -12,6 +12,7 @@ import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
 import org.pragmatica.cluster.metrics.ConnectivityState;
+import org.pragmatica.cluster.metrics.NodePingCommand;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.net.ClusterNetwork;
@@ -155,6 +156,14 @@ public interface ClusterSyncCollector {
     /// `BootEpoch::bootEpoch`. See [BootEpoch].
     @Contract default void setIncarnationSupplier(java.util.function.LongSupplier supplier) {}
 
+    /// Membership v2 (B5a) — wire the handler invoked whenever an inbound `ClusterSyncPing`
+    /// carries `NodePingCommand.DRAIN` (the command targets THIS node). Invoked AFTER the
+    /// existing fencing/metrics/eviction-hint handling. Production wires it in `AetherNode` to
+    /// `DrainProcedure.initiate(DrainReason.COMMANDED)` + `holder.onDrainStarted()`. The handler
+    /// MUST be idempotent — it is invoked on every DRAIN ping (DrainProcedure is CAS-guarded).
+    /// Default no-op leaves pre-B5a behavior unchanged (test doubles inherit).
+    @Contract default void setDrainCommandHandler(Runnable handler) {}
+
     static ClusterSyncCollector clusterSyncCollector(NodeId self, ClusterNetwork network) {
         return new ClusterSyncCollectorImpl(self, network, DEFAULT_slidingWindowMs);
     }
@@ -229,6 +238,12 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// incarnation in `AetherNode`.
     private final AtomicReference<java.util.function.LongSupplier> incarnationSupplier =
         new AtomicReference<>(() -> 0L);
+
+    /// Membership v2 (B5a) — handler invoked when an inbound DRAIN ping is received. Default
+    /// no-op until `setDrainCommandHandler(...)` wires the local `DrainProcedure`. Invoked on
+    /// every DRAIN ping; the handler must be idempotent (DrainProcedure is CAS-guarded).
+    private final AtomicReference<Runnable> drainCommandHandler =
+        new AtomicReference<>(() -> {});
 
     ClusterSyncCollectorImpl(NodeId self, ClusterNetwork network, long slidingWindowMs) {
         this.self = self;
@@ -338,6 +353,18 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
                   pong.observedEpochTerm(),
                   pong.observedEpochCounter());
         network.send(ping.sender(), pong);
+        // Membership v2 (B5a) — leader→node DRAIN command piggybacked on the ping. Acted on
+        // AFTER fencing/metrics/eviction handling and after the pong is sent so the leader
+        // still observes this incarnation's response. Idempotent: the wired handler guards
+        // against repeated DRAIN pings (DrainProcedure is CAS-guarded). NONE is a no-op.
+        handleDrainCommand(ping);
+    }
+
+    /// Membership v2 (B5a) — invoke the wired drain handler when the inbound ping commands DRAIN.
+    private void handleDrainCommand(ClusterSyncPing ping) {
+        if (ping.command() != NodePingCommand.DRAIN) {return;}
+        log.info("ClusterSync: received DRAIN command from {} — invoking local drain handler", ping.sender());
+        drainCommandHandler.get().run();
     }
 
     /// RC1 (S01 fix) — when SWIM says the suggested-evicted peer is observed locally as
@@ -410,6 +437,12 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         incarnationSupplier.set(supplier == null
                                 ? () -> 0L
                                 : supplier);
+    }
+
+    @Override@Contract public void setDrainCommandHandler(Runnable handler) {
+        drainCommandHandler.set(handler == null
+                                ? () -> {}
+                                : handler);
     }
 
     @Override@Contract public void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs) {

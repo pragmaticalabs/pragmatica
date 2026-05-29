@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
+import org.pragmatica.cluster.metrics.NodePingCommand;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.consensus.NodeId;
@@ -33,6 +34,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import org.slf4j.Logger;
@@ -62,6 +64,13 @@ public final class ClusterSyncContext {
     /// the node still RESPONDS to inbound pings. Defaults to always-leader for callers that don't
     /// supply it (single-pinger tests / standalone use), preserving prior behavior.
     private final BooleanSupplier isLeader;
+
+    /// Membership v2 (B5a) — leader-local predicate "should this peer be commanded to DRAIN?".
+    /// When it returns true for the ping target, `sendOnePing` stamps `NodePingCommand.DRAIN`
+    /// onto the outbound ping; otherwise `NONE`. Sourced from `DrainCommandRegistry::isDrainRequested`
+    /// in production. Defaults to `peer -> false` (no drain ever) so existing construction / tests
+    /// keep working with no behavior change.
+    private final Predicate<NodeId> drainRequested;
 
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
 
@@ -174,6 +183,36 @@ public final class ClusterSyncContext {
                               Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier,
                               PeriodicObservationConfig periodicConfig,
                               BooleanSupplier isLeader) {
+        this(fsm,
+             self,
+             network,
+             collector,
+             interval,
+             rabiaTermSupplier,
+             signalSink,
+             pingTimeoutThreshold,
+             epochSupplier,
+             observationStore,
+             reachabilitySnapshotSupplier,
+             periodicConfig,
+             isLeader,
+             peer -> false);
+    }
+
+    public ClusterSyncContext(Fsm<ClusterSyncState, ClusterFsmEvent> fsm,
+                              NodeId self,
+                              ClusterNetwork network,
+                              ClusterSyncCollector collector,
+                              TimeSpan interval,
+                              Supplier<Long> rabiaTermSupplier,
+                              HealthSignalSink signalSink,
+                              int pingTimeoutThreshold,
+                              Supplier<Epoch> epochSupplier,
+                              PeerObservationStore observationStore,
+                              Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier,
+                              PeriodicObservationConfig periodicConfig,
+                              BooleanSupplier isLeader,
+                              Predicate<NodeId> drainRequested) {
         this.fsm = fsm;
         this.self = self;
         this.network = network;
@@ -187,6 +226,9 @@ public final class ClusterSyncContext {
         this.isLeader = isLeader == null
                         ? () -> true
                         : isLeader;
+        this.drainRequested = drainRequested == null
+                              ? peer -> false
+                              : drainRequested;
         this.reachabilitySnapshotSupplier = reachabilitySnapshotSupplier == null
                                             ? Option::none
                                             : reachabilitySnapshotSupplier;
@@ -315,7 +357,8 @@ public final class ClusterSyncContext {
                                        currentEpoch.rabiaTerm(),
                                        currentEpoch.localCounter(),
                                        reachabilitySnapshotSupplier.get(),
-                                       currentEvictionHints());
+                                       currentEvictionHints(),
+                                       commandFor(peer));
         log.debug("ClusterSync: sending PING to {} (rabiaTerm={}, epoch={}:{})",
                   peer,
                   rabiaTerm,
@@ -323,6 +366,14 @@ public final class ClusterSyncContext {
                   currentEpoch.localCounter());
         network.send(peer, ping);
         return currentEpoch;
+    }
+
+    /// Membership v2 (B5a) — the leader→node command stamped onto the outbound ping for `peer`.
+    /// `DRAIN` when the wired `drainRequested` predicate selects the peer, else `NONE`.
+    private NodePingCommand commandFor(NodeId peer) {
+        return drainRequested.test(peer)
+              ? NodePingCommand.DRAIN
+              : NodePingCommand.NONE;
     }
 
     /// RC1 (S01 fix) — snapshot of peers this node has locally evicted via

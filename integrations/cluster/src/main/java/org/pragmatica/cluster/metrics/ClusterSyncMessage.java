@@ -40,13 +40,18 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
     ///                               peers. Followers cache for warm-takeover; `/api/status`
     ///                               reads to eliminate per-reader QUIC-view variance. See
     ///                               `aether/docs/specs/reachability-aggregator-spec.md`.
+    /// @param command                leader→node lifecycle command piggybacked on the ping
+    ///                               (membership-architecture-v2-spec B5a). `NONE` in steady
+    ///                               state; `DRAIN` directs the receiver to begin a local
+    ///                               drain. `null`/legacy pings default to `NONE`.
     record ClusterSyncPing(NodeId sender,
                            Map<NodeId, Map<String, Double>> allMetrics,
                            long rabiaTerm,
                            long epochTerm,
                            long epochCounter,
                            Option<AggregatedReachabilitySnapshot> aggregatedReachability,
-                           Set<NodeId> evictionHints) implements ClusterSyncMessage {
+                           Set<NodeId> evictionHints,
+                           NodePingCommand command) implements ClusterSyncMessage {
         public ClusterSyncPing {
             aggregatedReachability = aggregatedReachability == null
                                     ? Option.none()
@@ -54,23 +59,40 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
             evictionHints = evictionHints == null
                            ? Set.of()
                            : Set.copyOf(evictionHints);
+            command = command == null
+                     ? NodePingCommand.NONE
+                     : command;
+        }
+
+        /// Backward-compatible 7-arg constructor for call sites that pre-date the
+        /// `command` extension (membership-architecture-v2-spec B5a). Defaults the
+        /// command to `NONE` so existing call sites / deserialization don't break.
+        public ClusterSyncPing(NodeId sender,
+                               Map<NodeId, Map<String, Double>> allMetrics,
+                               long rabiaTerm,
+                               long epochTerm,
+                               long epochCounter,
+                               Option<AggregatedReachabilitySnapshot> aggregatedReachability,
+                               Set<NodeId> evictionHints) {
+            this(sender, allMetrics, rabiaTerm, epochTerm, epochCounter, aggregatedReachability, evictionHints, NodePingCommand.NONE);
         }
 
         /// Backward-compatible 6-arg constructor for call sites that pre-date the
-        /// `evictionHints` extension (RC1 S01 fix). Defaults the hint set to empty.
+        /// `evictionHints` extension (RC1 S01 fix). Defaults the hint set to empty and
+        /// the command to `NONE`.
         public ClusterSyncPing(NodeId sender,
                                Map<NodeId, Map<String, Double>> allMetrics,
                                long rabiaTerm,
                                long epochTerm,
                                long epochCounter,
                                Option<AggregatedReachabilitySnapshot> aggregatedReachability) {
-            this(sender, allMetrics, rabiaTerm, epochTerm, epochCounter, aggregatedReachability, Set.of());
+            this(sender, allMetrics, rabiaTerm, epochTerm, epochCounter, aggregatedReachability, Set.of(), NodePingCommand.NONE);
         }
 
         /// Backward-compatible factory for legacy call sites that have no epoch info.
         /// Produces a term/epoch of zero — receivers treat it as a pre-migration heartbeat.
         public static ClusterSyncPing clusterSyncPing(NodeId sender, Map<NodeId, Map<String, Double>> allMetrics) {
-            return new ClusterSyncPing(sender, allMetrics, 0L, 0L, 0L, Option.none(), Set.of());
+            return new ClusterSyncPing(sender, allMetrics, 0L, 0L, 0L, Option.none(), Set.of(), NodePingCommand.NONE);
         }
     }
 
