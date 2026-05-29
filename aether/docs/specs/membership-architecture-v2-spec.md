@@ -136,12 +136,12 @@ CTM today is a ~1700-line slot state machine with `HEALTHY/FILLING/DEAD/EMPTY` c
 - `configured` cluster size (from `ClusterConfigValue.coreCount`, KV-subscribed).
 - `clusterMembershipCount` (SWIM-converged member set, cluster-consistent — §4).
 - `TopologyUnhealthy` events from local NTT.
-- `DrainRequestKey(nodeId) = pending` writes (operator drain commands for specific nodes — §8).
+- Leader-issued `DRAIN` commands for specific nodes (heartbeat ping — §7.5.4, §8).
 
 ### 7.2 Behavior (leader only)
 - **Underprovisioned** (`clusterMembershipCount < configured`): on `TopologyUnhealthy` (or directly on observing the shortfall after a configured-size increase), if quorum-safety holds → provision the difference, KSUID-named, with PEERS seeded from current cluster members.
-- **Overprovisioned** (`clusterMembershipCount > configured` — e.g., a previously-departed node returns after a replacement is online, or the operator scaled down): initiate graceful drain of the excess by writing `DrainRequestKey(targetNodeId) = pending`. Selection heuristic: **newest-joined-first** by default; operator-configurable. Sequenced (not parallel) to maintain quorum throughout the shrink.
-- **Drain target acknowledgement:** none required at the CTM layer — once `DrainRequestKey` is written, the target node observes it and drives the rest (§8); CTM just waits for `clusterMembershipCount` to converge.
+- **Overprovisioned** (`clusterMembershipCount > configured` — e.g., a previously-departed node returns after a replacement is online, or the operator scaled down): initiate graceful drain of the excess by commanding the target via the heartbeat (§7.5.4). Selection heuristic: **newest-joined-first** by default; operator-configurable. Sequenced (not parallel) to maintain quorum throughout the shrink.
+- **Drain target acknowledgement:** the target's `DRAINING` pong is the acknowledgement (§7.5.4); CTM otherwise just waits for `clusterMembershipCount` to converge.
 
 ### 7.3 What CTM stops doing
 - No slot KV records with `occupantEpoch` / `supersededNodeId`.
@@ -160,7 +160,7 @@ CTM acts via a hybrid trigger model — multiple wake-up sources, all converging
 - **`TopologyUnhealthy` events (NTT_FIRE)** from local NTT (§6) — low-latency reaction to abrupt departure. NTT's per-peer one-shot timer expires → NTT invokes a `Runnable onReconcileNeeded` callback (no event payload) → the leader-pinned reconciler debounces and reconciles.
 - **`HealthyObserved` events (MEMBER_APPEARED)** from SWIM — symmetric to NTT for the surplus case. A previously-departed node becoming reachable again signals the leader may need to drain excess. This trigger is the structural replacement for the periodic tick, which used to catch surplus implicitly.
 - **`QuorumLossIntent` events (QUORUM_LOSS)** from local `LocalQuorumWatcher`.
-- **`DrainRequestKey(nodeId)` writes and `configured` size changes (CONFIG_CHANGE)** observed via KV subscription — operator-initiated drain (§8) / scale up/down (§12.8). Phase 1.5 wires the entry point; Phase 2 hooks the actual subscription.
+- **`configured` size changes (CONFIG_CHANGE)** observed via KV subscription — scale up/down (§12.8). Targeted-drain delivery is via the heartbeat command (§7.5.4), not a KV write. Phase 1.5 wires the entry point; Phase 2 hooks the actual subscription.
 - **Leader-activation delayed reconcile (LEADER_ACTIVATION)** — on leader gain the reconciler schedules a single one-shot reconcile at `nttDepartureTimeout × 1.5`. The delay lets SWIM gossip + QUIC connections quiesce after the invasive leader-handoff event before reconciling. No immediate reconcile is emitted.
 
 **No periodic tick.** The previous design relied on a `provisioning_timeout × 1.5` tick as a backstop. With surplus now event-signalled (MEMBER_APPEARED) and shortage signalled by NTT_FIRE, no symmetric gap remains — the tick was tracking absence of a signal, but every signal that mattered now has an event. Eliminating it removes a recurring source of redundant work and aligns with the spec principle of state-derivation over time-derivation.
@@ -171,13 +171,59 @@ CTM acts via a hybrid trigger model — multiple wake-up sources, all converging
 
 `inFlightProvisioning` is **not persisted to consensus**. On leader handoff this state is lost — new leader's first reconcile (after the activation delay) may briefly double-provision (old leader provisioned X, new leader sees X not yet in SWIM, provisions a second replacement). Wasted-provisioning is self-correcting via the overprovision-drain path (§7.2 second bullet). The simpler model is preferred over a consensus-persisted provisioning intent.
 
+## 7.5 Node readiness & the leader↔node control heartbeat
+
+CTM (§7) answers "how many nodes." A separate question — "which specific nodes can host deployments" — is the CDM's, and v2 answers it **without** a parallel lifecycle KV record. The old `NodeLifecycleValue.ON_DUTY` atom was a *cache* of a derived fact ("this node finished syncing and is serving"), maintained by the leader-pinned FSM, and it was the source of the phantom-retention / resurrection / stale-GC bug class. v2 deletes the cache and **derives readiness from a node-authoritative state carried on the existing metrics heartbeat.**
+
+### 7.5.1 Node-reported state (the only authority is the node)
+Each node reports exactly one state on every pong (§7.5.3). The node — and only the node — knows these locally, so it ANDs its own conditions and reports a single value:
+
+- **`SYNCING`** — QUIC-connected and gossiping, but local consensus is not yet `Active` (still applying the snapshot, or re-syncing after a `ConsensusPassive` edge). Not allocatable.
+- **`READY`** — local `ConsensusActive` **and** local subsystems up. Allocatable for deployments.
+- **`DRAINING`** — the node has entered the §8 drain procedure (by leader command or local quorum-loss). Not allocatable; CDM migrates work off it.
+
+Transitions are driven by **local** signals: `ConsensusActive`/`ConsensusPassive` (RabiaEngine), the subsystem-ready signal, the inbound drain command (§7.5.4), and the `LocalQuorumWatcher` self-drain trigger. A `ConsensusPassive` edge moves `READY → SYNCING` (the node is no longer operational and must re-sync) — this is how partition-recovery is reflected without any cluster-side state.
+
+### 7.5.2 The leader's readiness view (derived, never persisted)
+The leader maintains an **in-memory** map `NodeId → (state, incarnation, lastSeenPong, syncCountdown)`, populated purely from inbound pongs and keyed by `(NodeId, incarnation)`. This map is **the** answer to "which peers are deployment-ready." Properties:
+
+- **Not in consensus/KV.** It is derived/ephemeral; persisting it would re-introduce the stale-GC problem. Durable *intent* (deployments, `coreCount`) stays in KV; derived readiness does not (I13).
+- **Self-cleaning.** A node entry is evicted on **either** a QUIC-disconnect (§7.5.5) **or** missed pongs (≥ `pingTimeoutThreshold`, default 3 ≈ 3s) — whichever fires first. Crash ⇒ transport drops ⇒ entry vanishes; no tombstone to reap.
+- **Leader-agnostic / handoff-trivial.** A newly-elected leader rebuilds the entire map from the next round of pongs (≈ one ping interval). No state transfer, no KV read. The `leaderActivationDelay` (§14) is the warmup window — the leader does not act on the map (reap, drain, migrate) until warmed up, so it never reaps a node whose first pong it simply hasn't heard yet.
+
+### 7.5.3 Wire format (reuses existing messages)
+The leader↔node metrics heartbeat already carries everything but two fields:
+- **Pong (node→leader):** the existing `lifecycleState` field is repurposed to carry `SYNCING|READY|DRAINING`; the node's **incarnation** (SWIM incarnation — already advances on restart) is added so the leader rejects a stale prior-incarnation pong and never misattributes a fast-restart `DRAINING→SYNCING` flip to one continuous life. The existing `readyCandidate` field and its `NodeReadinessTracker → ForceOnDuty` path are deleted (§10).
+- **Ping (leader→node):** the existing per-peer ping (`sendOnePing(peer)`) gains an optional per-target **command** (`DRAIN`). The existing `rabiaTerm`/`epochTerm` fencing (a leader-change counter) is reused so a deposed leader's commands and stale pongs are rejected (I14).
+
+Ping interval is 1s (default), so readiness detection and drain-initiation latency are ≈ one interval; black-hole detection is ≈ `pingTimeoutThreshold × interval` (~3s) — replacing what φ-accrual used to provide.
+
+### 7.5.4 Drain as command/ack RPC (replaces `DrainRequestKey`)
+Operator-initiated and CTM-initiated (overprovision/scale-down) drains are delivered as the `DRAIN` command on the ping, **not** as a KV record:
+1. Leader adds target `X` to its (in-memory, leader-local) drain set; the next ping to `X` carries `DRAIN`.
+2. `X` enters the §8 procedure, reports `DRAINING` on its pong.
+3. Leader sees `DRAINING` → CDM stops placing on `X` and migrates its slices.
+4. `X` finishes draining → `halt(2)` → QUIC drop → evicted; SWIM converges to `Departed`; CTM reacts to the count change (§7.2).
+
+**Durability tradeoff (accepted, I14):** the command is best-effort. If the leader changes *after* an operator drain is requested but *before* the ping delivers it, the command is lost — mitigated by (a) operator API returning success only once a `DRAINING` pong is observed, so the CLI retries against the new leader; and (b) CTM scale-down being self-healing (the new leader re-derives overprovision and re-commands). An **in-progress** drain survives leader change trivially — `X` keeps reporting `DRAINING`, and the new leader migrates on observing it, no re-command needed. The **quorum-loss self-drain** path (§8.1, §12.5) needs no command at all — `X` initiates locally (it cannot reach a leader anyway) and the majority observes a plain departure.
+
+### 7.5.5 Failure detection & QUIC connectivity as a routed event
+Failure detection is two layers, no φ-accrual:
+- **SWIM** — leaderless, cluster-wide membership truth (the backstop; drives NTT/CTM per §6/§7).
+- **Missed-pong** — fast leader-side liveness for the control decisions the leader is already pinned to make (subsumes φ-accrual's black-hole role with an integer count instead of a suspicion level).
+
+QUIC connect/disconnect is promoted to a first-class **`Message.Local`** routed event (carrying the epoch) so its several consumers — NTT, `LocalQuorumWatcher`, the reachability aggregator, and the leader's readiness-view evictor — subscribe uniformly rather than via ad-hoc callback taps. Eviction is **epoch-matched**: a late `Disconnected(X, epoch=n)` must not evict a fresh `(X, epoch=n+1)` entry.
+
+### 7.5.6 Stuck-SYNCING reaper
+A node that is a SWIM member but never reaches `READY` counts toward `clusterMembershipCount` (so CTM thinks the cluster is full) yet cannot host work — a capacity hole. The leader reaps it: a countdown per `(NodeId, incarnation)` initialized on the first `SYNCING` pong, decremented on each subsequent `SYNCING`, **reset on `READY`**, and — distinct from the missed-pong counter (`SYNCING` = "still trying"; silence = "black-hole") — at zero it **terminates** the stuck node (nothing to gracefully drain; it never synced). Termination drops `clusterMembershipCount`, and the normal underprovisioned path (§7.2) provisions a fresh replacement. Leader handoff resets the countdown (lenient — a fresh leader grants a new window).
+
 ## 8. Drain — the unified self-shutdown procedure
 
 Drain is a node-local procedure with a small set of triggers. The membership layer does not have a drain state machine; the membership-layer effect of any drain is identical to abrupt departure (observed silence).
 
 ### 8.1 Triggers (all paths converge here)
-- **Operator scale-down** (Case A — configured size decreases): node observes it is no longer in the configured set (or is selected for shrink) → trigger drain.
-- **Operator specific drain** (Case B — `DrainRequestKey(self) = pending`): node observes the request on its own KV key → trigger drain.
+- **Operator scale-down** (Case A — configured size decreases): the leader selects shrink targets and commands each (§7.5.4) → trigger drain.
+- **Operator / CTM specific drain** (Case B — leader sends the `DRAIN` command on the heartbeat ping, §7.5.4): node receives the command → trigger drain.
 - **Quorum-loss self-drain (safety):** node observes its `localQuorumCount` is below threshold for ≥ `quorumLossDrainThreshold` (§14) → trigger drain.
 - **Partial isolation:** is the same as quorum-loss self-drain (it's *how* a partially-isolated node observes its local quorum failing); no separate trigger.
 - **Application overload / planned restart** (out of scope for this spec, but the unified path supports it).
@@ -199,22 +245,10 @@ A drain-progress field MAY be written to a dedicated KV key by the draining node
 
 **Caveat:** drain-progress publishing requires consensus, so it is available for operator-initiated drains (§8.1 first two triggers) but **not** for quorum-loss-triggered drain (§8.1 third trigger) — by definition, consensus is unavailable in that case. The universal observability signal for any drain is the `Runtime.halt(2)` exit code (§8.2 step 4); peers observe departure via SWIM regardless of KV publishing.
 
-### 8.5 Drain request KV record
-The membership-layer mechanism by which operators target a specific node for drain (Case B in §12.4, and explicit-target scale-down in §12.8) is a single KV record:
+### 8.5 Drain command delivery (no KV record)
+The mechanism by which operators (and CTM scale-down) target a specific node for drain is the `DRAIN` **command on the leader→node heartbeat ping** (§7.5.4) — **not** a KV record. There is no `DrainRequestKey`. Rationale: a drain target keyed by `NodeId` in KV has the same stale-GC problem as the deleted `NodeLifecycleValue` (who deletes it when the node departs? what if a same-NodeId restart re-reads a stale request?). The heartbeat command sidesteps all of it — the command is delivered only while the channel is live, the node's `DRAINING` self-report is the durable-enough acknowledgement, and there is nothing to GC.
 
-```
-DrainRequestKey(nodeId)  →  DrainRequestValue {
-    requestedAtHlc: HlcTimestamp,
-    requestedBy:    Option<OperatorId>
-}
-```
-
-- `requestedAtHlc`: HLC of the requesting node at the moment the operator command was processed. HLC (already used throughout for causal ordering) is preferred over wall-clock millis so the timestamp interleaves correctly with other KV writes — including the configured-size change in an R1-atomic operator command.
-- `requestedBy`: optional operator identity for audit; not load-bearing for the membership-layer behavior.
-
-The targeted node subscribes to `DrainRequestKey(self)` via the standard KV-notification path at startup. On observing a `pending` request, it enters the §8 drain procedure.
-
-CTM does not act on `DrainRequestKey` directly; it only reacts to the resulting `clusterMembershipCount` change (and the configured-size change, if any, that was atomically co-committed). The record may be cleaned up post-drain (the node is gone; the request was fulfilled) — cleanup mechanism is an implementation detail (e.g., a small GC observer on `Departed` events, or just left as audit). No `completed` field is required.
+The tradeoff (best-effort delivery; in-progress drains survive leader change; operator-retry / CTM-re-derive cover the initiation-window leader change) is detailed in §7.5.4. Operator visibility is unchanged (§8.4): convergence is observable via the standard endpoints, and the `halt(2)` exit code is the universal signal. A drain audit event SHOULD be emitted when the leader issues the command (the command itself is off the consensus log, so audit must be explicit).
 
 ## 9. Design rules
 
@@ -244,7 +278,11 @@ For implementation traceability, the following are removed (entire modules / cla
 | `DecommissionedAtomGc` | No lifecycle atoms to GC (subject to confirmation during implementation) | PENDING |
 | SWIM voluntary `LEAVE` message **as a membership-layer state transition** (the FSM's Draining→Stopped path with `awaitDrainAck`) | Membership layer is cause-agnostic (P2). LEAVE is **preserved as a SWIM-internal acceleration of `DepartedObserved`** (peer skips suspect-aging on authenticated LEAVE receipt); see §8.2 step 3 | PENDING |
 
-What remains: SWIM, QUIC, Rabia, `LeaderManager` (all unchanged), simplified CTM (§7), NTT (§6), per-node `LocalQuorumWatcher` (small observer that drives §8's quorum-loss trigger), `DrainRequestKey` KV record (operator drain commands).
+| `NodeLifecycleKey` / `NodeLifecycleValue` + `ON_DUTY`/`JOINING`/etc. states + serializer cases | No lifecycle cache — readiness is node-reported on the heartbeat (§7.5), membership is SWIM-derived (`MembershipView`) | PENDING (Phase 2c) |
+| `NodeReadinessTracker` + `ClusterSyncPong.readyCandidate` + `ClusterSyncPongSignalFan.ReadyCandidateSink` + `emitForceOnDuty` + `clearReadinessOnSelfOnDuty` | Replaced by the node-reported `SYNCING/READY/DRAINING` state on the pong (§7.5.3) | PENDING (Phase 2c) |
+| `DrainRequestKey` / `DrainRequestValue` (never implemented) | Drain delivered as a heartbeat command (§7.5.4); no KV record | N/A — not built |
+
+What remains: SWIM, QUIC, Rabia, `LeaderManager` (all unchanged), simplified CTM (§7), NTT (§6), per-node `LocalQuorumWatcher` (drives §8's quorum-loss trigger), and the leader↔node control heartbeat carrying node-reported readiness state + `DRAIN` commands (§7.5). **No membership/readiness/drain KV records.**
 
 ## 11. Invariants
 
@@ -260,6 +298,8 @@ What remains: SWIM, QUIC, Rabia, `LeaderManager` (all unchanged), simplified CTM
 - **I10:** False-positive drain is preferable to false-negative split-brain. The `quorumLossDrainThreshold` window tunes the trade.
 - **I11:** Drain progress is node-local + KV-observable; it is **not** a cluster-wide FSM state.
 - **I12:** NTT holds a per-peer `Map<NodeId, ScheduledFuture<?>>` of pending one-shot departure timers — no event records, no claim queue. On timer expiry NTT invokes a `Runnable onReconcileNeeded` callback (no payload); the leader-pinned reconciler is fully state-derived. Local state only — not persisted to consensus.
+- **I13:** Node readiness (`SYNCING/READY/DRAINING`) is **node-authoritative and transport-carried** (heartbeat pong), held by the leader only in memory and rebuilt from pongs on handoff. It is **never** persisted to KV — derived/ephemeral state has no consensus record (only durable *intent* — deployments, `coreCount` — lives in KV). The leader's readiness view is self-cleaning via QUIC-disconnect / missed-pong eviction; there is no stale-record GC.
+- **I14:** The leader↔node control channel is epoch-fenced both ways: the leader rejects stale prior-incarnation pongs (node SWIM incarnation), and nodes reject commands from a deposed leader (leader-term). `DRAIN` command delivery is best-effort (lost only if the leader changes mid-initiation → operator-retry / CTM-re-derive); an **in-progress** drain survives leader change via the node's continued `DRAINING` self-report.
 
 ## 12. Settled scenarios
 
@@ -287,10 +327,10 @@ Per §4. A node C that cannot reach peer X (while A, B can):
 ### 12.4 Graceful node decommission (operator-initiated)
 Two cases, **distinguished entirely by the configured-size change**, not by a flag or separate FSM state:
 
-- **Case A — scale-down:** operator atomically writes `{coreCount = N-1; DrainRequestKey(X) = pending}` (R1). Node X observes its own drain request → runs §8 procedure → exits. SWIM converges on departure; NTT fires; CTM sees `clusterMembershipCount = configured` → no-op.
-- **Case B — specific replacement (size unchanged):** operator writes `DrainRequestKey(X) = pending`. Node X drains → exits. CTM sees `clusterMembershipCount < configured` → provisions a fresh KSUID replacement (§7.2 underprovisioned path).
+- **Case A — scale-down:** operator writes `coreCount = N-1` (R2 quorum-safety pre-checked). The leader's CTM observes overprovision → commands the selected excess node to drain via the heartbeat (§7.5.4). Node X drains → exits. SWIM converges on departure; CTM sees `clusterMembershipCount = configured` → no-op.
+- **Case B — specific replacement (size unchanged):** operator issues a drain for X via the management API → leader sends the `DRAIN` command (§7.5.4). Node X drains → exits. CTM sees `clusterMembershipCount < configured` → provisions a fresh KSUID replacement (§7.2 underprovisioned path).
 
-The membership layer is unaware of the distinction; the configured-size change at the moment of CTM's reaction determines the behavior. The `Draining` lifecycle state and `awaitDrainAck` FSM transition are deleted (§10).
+The membership layer is unaware of the distinction; the configured-size at the moment of CTM's reaction determines whether a replacement is provisioned. The `Draining` lifecycle state and `awaitDrainAck` FSM transition are deleted (§10).
 
 ### 12.5 Quorum loss → self-drain
 A node's `LocalQuorumWatcher` observes `localQuorumCount < N/2+1` continuously for ≥ `quorumLossDrainThreshold` (§14). On commit, the node enters §8 procedure (uninterruptible, I9). Exit with `halt(2)` (I11 / operator visibility).
@@ -320,7 +360,7 @@ The "same NodeId" property is mildly convenient (existing SWIM gossip entries ar
 
 ### 12.8 Operator scale up/down
 - **Scale up:** operator writes `coreCount = N + k`. CTM observes `clusterMembershipCount < configured` → provisions `k` new KSUID-named containers (§7.2 underprovisioned path). Quorum-safe by definition.
-- **Scale down:** operator atomically writes `{coreCount = N - k; DrainRequestKey(...) = pending}` for `k` selected nodes (default newest-joined-first; operator-overridable), R1 atomic, R2 quorum-safety pre-checked, R3 sequenced. Each drained node follows §12.4 Case A. CTM observes convergence.
+- **Scale down:** operator writes `coreCount = N - k` (R2 quorum-safety pre-checked). CTM observes overprovision → commands `k` selected nodes (default newest-joined-first; operator-overridable) to drain via the heartbeat (§7.5.4), R3 sequenced. Each drained node follows §12.4 Case A. CTM observes convergence.
 
 ## 13. Migration plan
 
@@ -331,7 +371,7 @@ Migration is staged so the existing system continues to work throughout. The eve
 - **E3.** Run the chaos suite with NTT as primary; confirm equivalence-or-better against FSM+slot path. Iterate `nttDepartureTimeout` and `quorumLossDrainThreshold` defaults.
 - **E4.** Cut over to NTT-only. Delete the membership FSM, the slot KV records, the gates, φ-accrual, the resurrection cell, the supporting machinery (§10 deletion list).
 - **E5.** Remove static-PEERS pre-population of `topologyManager` for QUIC dialing; switch QUIC to SWIM-discovery as sole input (§5 + I6).
-- **E6.** Replace `DrainCoordinator`'s FSM-integrated drain with the §8 unified procedure + `DrainRequestKey`. Delete `Draining` lifecycle state, `awaitDrainAck` as an FSM transition, `SelfDrainCoordinator` as an FSM-integrated component.
+- **E6.** Replace `DrainCoordinator`'s FSM-integrated drain with the §8 unified procedure, triggered by the §7.5.4 heartbeat `DRAIN` command (operator/CTM) or the local quorum-loss path. Delete `Draining` lifecycle state, `awaitDrainAck` as an FSM transition, `SelfDrainCoordinator` as an FSM-integrated component. No `DrainRequestKey` (§7.5.4, §8.5).
 
 Each stage is independently verifiable (unit tests for the new components in E1; equivalence comparison in E2–E3; full chaos suite green at E4; full chaos suite green again at E5; full chaos suite green at E6). The implementation can pause at any boundary if regressions appear.
 
@@ -383,3 +423,4 @@ Explicitly delimited so the boundary is clear:
 | 2026-05-28 | session author | E2 Phase 1.6 — NTT becomes the authoritative cluster-membership source. NTT subscribes to both `DepartedObserved` and `HealthyObserved`; maintains `currentMembers: Set<NodeId>` (self always included). `LeaderReconciler` drops the QUIC-based `clusterMembershipCountSupplier` / `currentClusterMembersSupplier` constructor params and reads both `ntt.currentMemberCount()` and `ntt.currentMembers()` directly — SWIM is fresher than QUIC for the "who is in the cluster right now" view. `HealthyObserved` arriving while an NTT timer is pending cancels the timer (symmetric with QUIC reconnect). New §6.5 (member set tracking); §4 amended to note the production source; §6.1 inputs amended to include `HealthyObserved`. |
 | 2026-05-28 | session author | E2 Phase 2b — drain coordinators deleted. `SelfDrainCoordinator`, `ConsensusDrainCoordinator`, `OrphanSelfDrainChecker` (+ their `SelfDrainConfig` / `SelfDrainEventPublisher` helpers and unit tests) removed. Execution surface extracted to new `DrainProcedure` (membership.ntt package) — a §8.2 unified procedure: tracker-gate-close → `onAllDrained`-or-grace → SWIM `LEAVE` (Phase 6 wiring; no-op runnable for now) → `jvmExit`. Triggers separated from execution: `LocalQuorumWatcher` quorum-loss listener now drives `DrainProcedure.initiate(QUORUM_LOSS)` directly; the `QuorumStateNotification.DISAPPEARED` MessageRouter route was rewired to the same procedure. `DrainReason` enum gained `QUORUM_LOSS` variant. `AetherNode` drops the 1Hz `onConnectivityChange` tick and the 5s `OrphanSelfDrainChecker::check` tick. FSM-routed `DrainCoordinator` interface remains structurally (used by `MembershipFsm.InvokeDrain` and `CTM.drainNode`) but is now backed by `NoOpDrainCoordinator` — Phase 2c removes the interface entirely when the FSM goes. §10 deletion list updated. |
 | 2026-05-28 | session author | E2 Phase 2a — peripheral deletions executed. Removed: φ-accrual stack (`PhiAccrualDetector`/`PhiAccrualConfig`/`PhiObserver`/`PhiWarmth` + tests + chaos spike), divergence-logger (`DivergenceLogger`/`FsmDecisionEvent`/`FsmDecisionType` + test), `NttObservationFlag` migration-ramp gate + `nttObservation` field on `MembershipConfig`/`MembershipConfigBinding` + Main lift helper. NTT/LocalQuorumWatcher/LeaderReconciler now wire unconditionally on every node. `ClusterMembershipReducer.apply(state, event)` drops the `PhiWarmth` parameter; `(ON_DUTY, SwimFaulty)` cell now decommissions unconditionally (SWIM trusted directly). `MembershipFsm` drops the `phiWarmth` field + `addDecisionListener` + decisionListeners machinery. `AetherNode.buildMembershipFsm` signature drops the `PhiWarmth` arg; `attachQuicConnectivityReporter` takes raw `Consumer<NodeId>` taps instead of `Option<NttQuicTaps>`; `NttQuicTaps` record + `emitForceDecommission` helper deleted. Spec §10 entries marked DELETED. |
+| 2026-05-29 | session author | **NEW §7.5 — node readiness & the leader↔node control heartbeat.** Readiness derived from a node-authoritative `SYNCING/READY/DRAINING` state carried on the existing metrics pong (repurposing `lifecycleState`, adding SWIM-incarnation epoch); leader keeps an in-memory `(NodeId,incarnation)→state` view (never KV, self-cleaning via QUIC-disconnect / missed-pong eviction, rebuilt from pongs on handoff). Drain delivered as a `DRAIN` **command on the ping** (per-peer), best-effort with operator-retry / CTM-re-derive; in-progress drains survive handoff. φ-accrual stays deleted (missed-pong subsumes black-hole detection). Stuck-`SYNCING` reaper (countdown → terminate → auto-heal). QUIC connect/disconnect promoted to `Message.Local` routed events (epoch-matched eviction). CDM allocatable-gate rewired from KV `ON_DUTY` to the leader readiness view. **`DrainRequestKey` removed from the design entirely** (§8.5 rewritten, §7.1/§7.2/§7.4/§12.4/§12.8/§13-E6 aligned, §10 deletion list adds `NodeLifecycleKey`/`NodeReadinessTracker`/`readyCandidate`/`ForceOnDuty` chain). New I13 (readiness node-authoritative, never KV) + I14 (epoch-fenced control channel, best-effort drain command). |
