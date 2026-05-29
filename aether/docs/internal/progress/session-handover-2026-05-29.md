@@ -10,6 +10,37 @@ Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 ## 0. TL;DR
 Continued the membership-v2 cutover with a **major design advance** (settled interactively with the user) and the first implementation increments. The cutover order was **inverted to orchestration-first** after discovering the old layer is still the *live* membership driver (not "disconnected" as the prior handover assumed). A new **leader↔node control-heartbeat** model replaces both the KV `ON_DUTY` readiness cache and the planned `DrainRequestKey` — readiness is now a node-authoritative state carried on the existing metrics pong; drain is a command on the ping. Spec amended (new §7.5), Phase A done, B1+B2 done.
 
+## 1c. Phase C-1 design (membership-source rebuild — fully investigated, ready to implement)
+
+**Goal:** make the cluster's "who is a member" source SWIM/NTT-derived so disconnecting the FSM (B6) doesn't empty `activeNodes()`.
+
+**Leverage point (the one true fix):** the snapshot already feeds everything (`activeNodes`, CTM, `SnapshotMembershipView`, routes) via `GenerationSnapshotKey`. Flip the *producer's input*:
+- `GenerationSnapshotPublisher.collectLifecycles` (`…/generation/GenerationSnapshotPublisher.java:242-248`) — replace the KV scan of `NodeLifecycleKey` with an `ntt.currentMembers()`-derived set. Inject NTT into the publisher (wire from `AetherNode:1719`, in scope; publisher is leader-only — leader has NTT).
+- `ClusterGenerationProjector.projectCoreMembers` (`…/generation/ClusterGenerationProjector.java:195-219`) — synthesize a `CoreMember` per NTT member: `lifecycle = DRAINING` if the readiness view reports DRAINING else `ON_DUTY` (never STOPPED — departed nodes simply aren't in `currentMembers`).
+- Net: `activeNodes()`'s `!=STOPPED` filter then yields the SWIM member set — can't go empty while SWIM sees peers. Everything downstream is untouched.
+
+**Two structural gaps to resolve (DESIGN DECISIONS for next session):**
+1. **host/port:** `CoreMember.host/port` — NTT carries `Set<NodeId>` only; SWIM `HealthyObserved` has no address. Consumed by exactly ONE place: `ClusterGenerationRoutes.toMember` (a display route). Options: source from SWIM `JoinAnnounced`/`NodeInfo` table, the consensus `TopologyManager`/QUIC address table, or carry empty/placeholder (display-only, low stakes). **Pick an address source.**
+2. **DRAINING projection:** SWIM can't express DRAINING. Source it from the Phase-B readiness view (`ClusterSyncPongSignalFan.readinessSnapshot()` — node-reported DRAINING). The publisher (leader) needs the fan handle to stamp DRAINING. This preserves `drainingNodes()` (filter `lifecycle()==DRAINING`) without an FSM atom. (B4 already moved the *allocatable* gate to this view; this extends the same source.)
+
+**Already-fine (no rework for FSM-disconnect):**
+- `membership/view/MembershipView` (H-view) — ALREADY SWIM-derived (ON_DUTY from SWIM-HEALTHY; KV only supplies JOINING/DRAINING/STOPPED overrides). Degrades cleanly when FSM stops.
+- `ClusterPhaseView` — ALREADY H-migrated with graceful fallback (`stableWindowSatisfied` → `onDutyCount()>0` when no KV `updatedAt`). Loses only the time-stability gate.
+
+**`quorateSinceNanos` (optional, restores ClusterPhaseView time-stability):** add to `LocalQuorumWatcher` (it already tracks the inverse `belowThresholdSinceNanos` at `:89`) — stamp on the above-quorum-threshold edge, `Option<Long> quorateSinceNanos()`, feed `ClusterPhaseView.stableWindowSatisfied`. Small, additive.
+
+**8 NodeLifecycleValue readers to re-source before FSM stops writing (items 1-2 = the core; 3-8 independent):**
+1. `ClusterGenerationProjector.projectCoreMembers` — NTT + readiness view (THE fix).
+2. `GenerationSnapshotPublisher.collectLifecycles` — NTT-derived input.
+3. `BootstrapModule` (`:279,344-350,425-430`) — seed coreMembers from SWIM/seed-PEERS, not KV lifecycle scan.
+4. `DecommissionedAtomGc` (`:130-132`) — GC keyed on `state==STOPPED`; re-key on NTT departure / readiness, else dependent atoms never GC.
+5. `NodeReadinessTracker` self-ON_DUTY clear — re-source from the node-local state machine (B1 holder) instead of own KV ON_DUTY. (NodeReadinessTracker itself is deleted in C-2.)
+6. `NodeDeploymentManager.onNodeLifecycleRemove` (`:548-551`) — revisit once KV no longer FSM-written.
+7. Display/guards: `StatusRoutes`, `ClusterConfigRoutes`, `NodeLifecycleRoutes` (list + **drain/activate guards at `:293-298,429-434`** — behavior-sensitive, gate operator transitions on KV state → re-source draining from readiness), `ClusterEventAggregator`.
+8. `ReachabilityAggregator` quorum-N (KV ON_DUTY count) → `ntt.currentMemberCount()`.
+
+**Then:** B6 (disconnect FSM/reconciler/readyCandidate→ForceOnDuty/FSM-writer from AetherNode — truncation magnet, direct edits) → C-2 (delete dead types) → B5 (graceful drain, design subtlety in §1b) → D (triad+chaos).
+
 ## 1. Commit chain this session (on `release-1.0.0-rc1`, atop `9bb7182ad`)
 ```
 b22aceaad feat(membership): B4 — CDM allocatable-gate reads leader readiness view (READY peers + self) instead of KV ON_DUTY
