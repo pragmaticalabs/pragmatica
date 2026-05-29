@@ -3,11 +3,29 @@ SPDX-License-Identifier: BUSL-1.1
 Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 -->
 
-# Session Handover — 2026-05-29 — Membership v2: heartbeat-readiness design + Phase A & B1/B2 landed
+# Session Handover — 2026-05-29 — Membership v2: new layer COMPLETE + FSM fully decoupled; mechanical removal finale remains
 
-**Branch:** `release-1.0.0-rc1`. **HEAD:** `868fdd97f`. **Candidate tag:** `v1.0.0-rc1-candidate` → `868fdd97f`. **All work LOCAL/unpushed. Working tree clean, full 67-module chain compiles, all touched-module tests green.**
+**Branch:** `release-1.0.0-rc1`. **HEAD:** `f1fde3855`. **Candidate tag:** `v1.0.0-rc1-candidate` → `f1fde3855`. **All work LOCAL/unpushed. Working tree clean.** Verified green at HEAD: full chain compiles (`mvn -pl aether/node -am install -Dmaven.test.skip=true`), aether-deployment **511** tests pass, aether/node **464** tests pass, lint at pre-existing baseline (15 errors, all pre-dating this session, none introduced).
 
-## 0. TL;DRContinued the membership-v2 cutover with a **major design advance** (settled interactively with the user) and the first implementation increments. The cutover order was **inverted to orchestration-first** after discovering the old layer is still the *live* membership driver (not "disconnected" as the prior handover assumed). A new **leader↔node control-heartbeat** model replaces both the KV `ON_DUTY` readiness cache and the planned `DrainRequestKey` — readiness is now a node-authoritative state carried on the existing metrics pong; drain is a command on the ping. Spec amended (new §7.5), Phase A done, B1+B2 done.
+## ⭐ START HERE (authoritative summary; detail in §1a / §1c / §3.5)
+
+This session executed the bulk of the membership-v2 cutover. **All the *new* v2 machinery is built, wired, and unit-verified; the old FSM/lifecycle layer is fully DECOUPLED (runs but feeds nothing).** Only a mechanical removal finale + Docker chaos validation remain.
+
+**Done (18 commits this session — chain in §1):**
+1. **Design + spec §7.5** — leader↔node control-heartbeat: node-reported `SYNCING/READY/DRAINING` on the metrics pong; leader's in-memory self-cleaning readiness view; drain as a `DRAIN` ping command; `DrainRequestKey` eliminated; φ-accrual stays deleted; I13/I14 added. (See §2b / §3.5.)
+2. **Phase A** — CTM is a state-derived actuator (~1100 lines of slot machinery gone); `LeaderReconciler` is the sole provisioning driver with the **quorum-safety guard restored** (the rewrite had dropped it). Also fixed a pre-existing `integrations/cluster` test-compile break (completed last session's 2c.0 rename).
+3. **B1–B4** — readiness path **functional end-to-end**: node reports state (B1) → leader readiness view in `ClusterSyncPongSignalFan` (B2) → self-cleans on routed QUIC `PeerDisconnected` + stale-sweep (B3) → **CDM allocatable-gate reads READY∩membership+self** (B4).
+4. **C-1** — generation snapshot `coreMembers` derive from `ntt.currentMembers()` (C-1 core), and **all ~8 lifecycle-atom readers re-sourced off `NodeLifecycleKey`** to the NTT snapshot / SWIM (Bootstrap, ReachabilityAggregator quorum-N, DecommissionedAtomGc, MembershipView, ClusterPhaseView, ClusterEventAggregator, status/config/lifecycle-list routes).
+5. **B5** — operator + CTM drain on the v2 `DRAIN` heartbeat command (`DrainCommandRegistry` → `sendOnePing` → receiver → `DrainProcedure` graceful drain + grace-terminate backstop); moot FSM operator commands deleted (force-on-duty/decommission/record-joining/request-rejoin/reconciler-status/activate) + CLI + docs + `ManagementRoute` cleaned.
+
+**FSM status:** the membership FSM still *runs* in AetherNode but is **fully decoupled** — zero readers of the lifecycle atom it writes, zero operator-command callers (drain is on v2), CDM/snapshot on NTT. The 3 `ManageableNode` accessors `lifecycleWriter()`/`lifecycleReconciler()`/`drainCoordinator()` are **uncalled** in aether/node. It is pure dead-weight awaiting deletion.
+
+**REMAINING = mechanical removal finale (detail + per-file targets in §1a):** B6 disconnect FSM from AetherNode → projector drops `NodeLifecycleValue` synthesis → C-2 delete orphaned types + ~25 tests → delete the atom (`NodeLifecycleKey/Value` + serializer) → **D: chaos suite (Docker — first true end-to-end v2 validation)**. Each step is build-green via orphaning (disconnect leaves classes unreferenced-but-present → compiles → then delete). **NOTE:** the §A.1–A.5 line numbers in the B6/C-2 map (further below) are STALE (shifted by this session's edits) — re-grep before editing.
+
+**First moves next session:** (1) `git log --oneline 9bb7182ad..HEAD` to see the 18 commits; (2) read §1a (finale sequence) + §3.5 (NTT/heartbeat design) + spec `aether/docs/specs/membership-architecture-v2-spec.md` §7.5; (3) start B6 by re-grepping AetherNode for `membershipFsm`/`lifecycleReconciler`/`ctmLifecycleWriter`/`readinessTracker`/`bootstrapSelfOnDutyOnActive` wiring (do AetherNode via targeted Read+Edit, NOT delegated — truncation magnet); (4) finale is mechanical — delegate the type/test deletions + projector to jbct-coder, keep AetherNode disconnect to direct edits; (5) D needs Docker — run `cd aether/tests/integration && ./run-tests.sh --env remote` for the first end-to-end v2 validation.
+
+## 0. TL;DR (original, 1st checkpoint)
+Continued the membership-v2 cutover with a **major design advance** (settled interactively with the user) and the first implementation increments. The cutover order was **inverted to orchestration-first** after discovering the old layer is still the *live* membership driver (not "disconnected" as the prior handover assumed). A new **leader↔node control-heartbeat** model replaces both the KV `ON_DUTY` readiness cache and the planned `DrainRequestKey` — readiness is now a node-authoritative state carried on the existing metrics pong; drain is a command on the ping. Spec amended (new §7.5), Phase A done, B1+B2 done.
 
 ## 1c. Phase C-1 design (membership-source rebuild — fully investigated, ready to implement)
 
