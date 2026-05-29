@@ -12,12 +12,28 @@ Continued the membership-v2 cutover with a **major design advance** (settled int
 
 ## 1. Commit chain this session (on `release-1.0.0-rc1`, atop `9bb7182ad`)
 ```
+b22aceaad feat(membership): B4 — CDM allocatable-gate reads leader readiness view (READY peers + self) instead of KV ON_DUTY
+973eedfe6 feat(membership): B3 — leader readiness view self-cleans (evict on routed QUIC PeerDisconnected + periodic stale-sweep)
 868fdd97f feat(membership): B2 — leader-side readiness view (epoch-fenced pong map + stuck-SYNCING reaper + evict/sweep/snapshot)
 dc3c235c3 feat(membership): B1 — node-reported readiness state (SYNCING/READY/DRAINING) + incarnation on heartbeat pong
 ea95273df docs(spec): membership v2 — node readiness & drain via leader↔node control heartbeat; remove DrainRequestKey (new §7.5, I13/I14)
 584743ebf refactor(membership): CTM v2 state-derived actuators + LeaderReconciler quorum guard; drop slot machinery — E2 phase 2c-α (orchestration-first)
 a02fe7842 fix(consensus): update integrations/cluster tests for QuorumStateNotification→ClusterStateNotification rename — completes E2 phase 2c.0
 ```
+
+### Update — B3 + B4 landed (readiness path FUNCTIONAL end-to-end)
+- **B3 (973eedfe6):** leader readiness view self-cleans — `fan.evict` subscribed to the *existing* routed `TransportObservation.PeerDisconnected` (fires on QUIC REMOVE, not RECONNECT-flap; no new message type / no QCN change — the additive, low-risk path the investigation recommended) + a periodic `sweepStale` tick (3×pingInterval) for the QUIC-open-but-silent black-hole case. All additive AetherNode wiring.
+- **B4 (b22aceaad):** `ClusterDeploymentState.allocatableNodes()` now = `activeNodes() ∩ readyNodes` (intersection, NOT READY-alone — keeps membership invariant, degrades gracefully on handoff-warmup). Injected module-neutral `Supplier<Set<NodeId>> readyNodesSupplier` into `ClusterDeploymentContext` (threaded through `ClusterDeploymentManager.clusterDeploymentManager(...)`, now param #13, last). Wired in AetherNode via the existing late-binding ref pattern (`cdmReadyNodesRef`, mirrors `cdmSnapshotSupplierRef`) → `computeReadyNodes(fan, selfHolder, self)` = READY peers from `fan.readinessSnapshot()` **plus self** when `NodeReportedStateHolder.current()==READY` (the leader doesn't pong itself; local holder is the authoritative self source). Dead `isNodeOnDuty` KV read deleted. 509 aether-deployment tests green.
+
+**Both layers now coexist correctly:** new readiness gate (fan view) for CDM allocation; old FSM→ON_DUTY→snapshot still feeds *membership* (`activeNodes`). Old `readyCandidate→ForceOnDuty` still runs but the CDM no longer reads its ON_DUTY for the gate.
+
+## 1b. CRITICAL sequencing coupling discovered (reshapes B6/C order)
+`activeNodes()` (the membership base that `allocatableNodes` intersects) derives from `ctx.snapshotSupplier()` → `ClusterGenerationProjector` → **`NodeLifecycleValue` (FSM-written)**. So **disconnecting the FSM (B6) BEFORE rebuilding the membership source empties `activeNodes()` → CDM can't place anything.** The true remaining order is therefore:
+1. **C-membership-rebuild (do FIRST):** make `activeNodes()` / the generation snapshot / `MembershipView` / `ClusterPhaseView` derive from SWIM/NTT (`ntt.currentMembers()`) instead of `NodeLifecycleValue`. Substantial, careful — the heart of Phase C; needs its own design pass.
+2. **B6:** disconnect FSM/reconciler/`readyCandidate→ForceOnDuty`/FSM-writer from AetherNode (now safe — membership is SWIM-derived). Truncation magnet — direct Read+Edit.
+3. **C-deletion:** delete the now-dead types (FSM, reducer, LifecycleCommand, LifecycleReconciler+rules, LifecycleWriter, NodeLifecycleKey/Value + serializer, ProvisioningSlot* + CTM vestigial slot components, NodeReadinessTracker, JoinDeadlineExpired, DrainCoordinator). Bulk-delete dead tests.
+4. **B5 (graceful drain):** ping `DRAIN` command + `CTM.drainNode`→command-enqueue. **Design subtlety to resolve first:** the graceful path commands the node to drain+`halt(2)`, but the *container* must then be reaped (provider-terminate) or Docker restart-policy revives it → overprovision loop. So `CTM.drainNode` = command drain → await DRAINING/grace → `lifecycleManager.terminateNode` (≈ the deleted FSM `terminateNodeWithDrainTimeout`, minus the FSM). Needs `DrainCommandRegistry` (leader-local set; written by CTM, read by `ClusterSyncContext.sendOnePing`; cleared on departure) + a `NodePingCommand{NONE,DRAIN}` field on `ClusterSyncPing` + node-side receiver → `DrainProcedure.initiate` + `holder.onDrainStarted`. Phase-A direct-terminate is the accepted interim until then.
+5. **D:** REST/CLI/docs triad + chaos test rewrites + full suite run (first end-to-end v2 validation).
 
 ## 2. Two pivotal decisions made this session
 
