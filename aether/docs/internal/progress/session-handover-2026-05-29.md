@@ -59,10 +59,27 @@ Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 
 ## 1. Commit chain this session (on `release-1.0.0-rc1`, atop `9bb7182ad`)
 ```
+810991e3f feat(membership): B5 — operator/CTM drain via v2 DRAIN heartbeat command (registry→ping→DrainProcedure + grace-terminate); delete moot FSM operator commands (force-*/reconciler-status/activate)
+d31a84ba6 feat(membership): B5a — leader→node DRAIN command plumbing on heartbeat ping (NodePingCommand + DrainCommandRegistry + receiver→DrainProcedure hook, additive)
 4a8912a93 refactor(membership): C-1 — ReachabilityAggregator quorum-N reads NTT-derived snapshot, not NodeLifecycleKey scan
-657ab1c31 refactor(membership): C-1 — re-source NodeLifecycleKey readers (Bootstrap/GC/MembershipView/ClusterPhaseView/routes/aggregator) off the atom to NTT snapshot/SWIM
-a45557441 feat(membership): C-1 core — generation snapshot coreMembers derive from NTT/SWIM membership + readiness DRAINING (off FSM-written lifecycle KV)
-b22aceaad feat(membership): B4 — CDM allocatable-gate reads leader readiness view (READY peers + self) instead of KV ON_DUTY
+657ab1c31 refactor(membership): C-1 — re-source NodeLifecycleKey readers off the atom to NTT snapshot/SWIM
+a45557441 feat(membership): C-1 core — generation snapshot coreMembers derive from NTT/SWIM membership
+b22aceaad feat(membership): B4 — CDM allocatable-gate reads leader readiness view (READY peers + self)
+```
+
+## 1a. STATUS: FSM is now FULLY DECOUPLED — only the mechanical removal finale remains
+After A + B1–B5 + C-1, the membership FSM still *runs* in AetherNode but **feeds nothing**: the lifecycle atom has zero data-readers (C-1), no operator command uses the FSM writer (B5 deleted force-*/reconciler-status/activate; drain/shutdown route to the registry→ping→DrainProcedure), and CDM/snapshot derive from NTT/readiness. The 3 `ManageableNode` accessors `lifecycleWriter()`/`lifecycleReconciler()`/`drainCoordinator()` are **uncalled** in aether/node. So the finale is pure mechanical removal:
+
+**Finale (each build-green via orphaning: disconnect → orphaned classes still compile → then delete):**
+- **B6 — disconnect from AetherNode (AetherNode-heavy; NOTE line numbers in §A below are SHIFTED, re-grep):** remove `membershipFsm` construction+start+SWIM/transport/swimHealthGate listeners + `bootstrapSelfOnDutyOnActive`+route + the FSM KV-routes; `LifecycleReconciler` construction+toggle; `ctmLifecycleWriter` (FsmRoutedLifecycleWriter) construction; the readyCandidate→ForceOnDuty chain (`readinessTracker`/`onSyncResponseReceived`/`readyCandidateSink`/`emitForceOnDuty`/`clearReadinessOnSelfOnDuty`). Drop `lifecycleWriter`/`lifecycleReconciler`/`drainCoordinator` from `ManageableNode` + the `aetherNode` record + its construction. Strip CTM's vestigial `lifecycleWriter`/`drainCoordinator`/`slotReader`/`slotKeyByNodeId` ctor params (the B5 16-arg overload added drain sinks — keep those). Build green (FSM/LifecycleCommand/etc. now orphaned-but-present).
+- **Projector — drop NodeLifecycleValue synthesis:** `ClusterGenerationProjector`/`GenerationSnapshotPublisher` build `CoreMember` directly from `(NodeId, NodeLifecycleState enum, Option<NodeInfo>)`; keep the `NodeLifecycleState` enum, drop the `NodeLifecycleValue` value type from the projector. (Currently the publisher synthesizes `NodeLifecycleValue` transiently — C-1 core.)
+- **C-2 — delete orphaned types + ~25 tests:** `MembershipFsm`+`fsm/` internals, `ClusterMembershipReducer`, `LifecycleReconciler`+`reconciler/rules/`+config, `LifecycleWriter`+`DirectLifecycleWriter`+`FsmRoutedLifecycleWriter`, `LifecycleCommand`(+5 variants), `NodeReadinessTracker`(+strip `ClusterSyncCollector.setReadinessTracker`/`candidate()` surface), `JoinDeadlineExpired`, `DrainCoordinator`+`NoOpDrainCoordinator` (KEEP `DrainReason` — used by `DrainProcedure`/B5), `DecommissionedAtomGc` if disconnected. Build green.
+- **Atom — delete:** `NodeLifecycleKey`/`NodeLifecycleValue` + `KVStoreSerializer` cases + `AetherKey`/`AetherValue` entries. Build green. (DEFER `ProvisioningSlotKey/Value` — still referenced by `ClusterTopologyRoutes`.)
+- **D — chaos suite** (Docker; first end-to-end v2 validation) + tune `nttDepartureTimeout`/`quorumLossDrainThreshold`.
+
+(original C-1 design + B6/C-2 disconnect map with §A.1-A.5 line refs — NOTE STALE LINE NUMBERS — follow.)
+
+## 1z-superseded — original commit chain (pre-B5)
 973eedfe6 feat(membership): B3 — leader readiness view self-cleans (evict on routed QUIC PeerDisconnected + periodic stale-sweep)
 868fdd97f feat(membership): B2 — leader-side readiness view (epoch-fenced pong map + stuck-SYNCING reaper + evict/sweep/snapshot)
 dc3c235c3 feat(membership): B1 — node-reported readiness state (SYNCING/READY/DRAINING) + incarnation on heartbeat pong
