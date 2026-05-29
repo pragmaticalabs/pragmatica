@@ -219,6 +219,7 @@ import org.pragmatica.swim.TransportObservation;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.membership.MembershipTracker;
 import org.pragmatica.swim.membership.MembershipTrackerConfig;
+import org.pragmatica.swim.membership.MembershipPhase;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -1132,44 +1133,19 @@ public interface AetherNode extends ManageableNode {
         var drainProcedure = DrainProcedure.drainProcedure(inFlightTrackerForDrain,
                                                             () -> {},
                                                             jvmExit);
-        Supplier<Option<AetherValue.ClusterPhase>> clusterPhaseReader = () -> kvStore.get(AetherKey.ClusterPhaseKey.SINGLETON)
-                                                                                     .filter(v -> v instanceof AetherValue.ClusterPhaseValue)
-                                                                                     .map(v -> ((AetherValue.ClusterPhaseValue) v).phase());
         Supplier<Option<NodeId>> healthLeaderSupplier = () -> clusterNode.leaderManager()
                                                                          .leader();
-        // E.6 / E.8 (spec §7): ClusterPhase derived view is the single source of truth for
-        // cluster phase. The KV value is consulted as a cache hint to track the
-        // ever-reached-NORMAL bit across leader takeovers — see ClusterPhaseView javadoc.
-        // H.2b (spec §H): ClusterPhaseView reads through MembershipView so SWIM-derived
-        // ON_DUTY peers (no KV entry) count toward quorum. The SWIM detector is constructed
-        // downstream of this declaration — use a forward AtomicReference and lazy-resolve at
-        // each compute() call. Until the detector lands the view falls back to KV-only.
-        var swimDetectorRefForPhase = new AtomicReference<CoreSwimHealthDetector>();
-        // RC1 Step 5: ClusterPhase consumes the strict view so a minority-side partition
-        // computes COLD_BOOT/RECOVERING (zero on-duty peers under the quorum threshold)
-        // instead of falsely claiming NORMAL from local-SWIM observations. Same quorum
-        // source as `aetherNode.membershipView()`.
-        var phaseInQuorum = ((TopologyObserver) clusterNode.topologyManager()).inQuorum();
-        ClusterPhaseView.MembershipViewReader phaseMembershipReader = () -> MembershipView.strict(() -> {
-                                                                                                      // H.2 (spec §H): mirror `aetherNode.membershipView()` self-injection — SWIM
-                                                                                                      // doesn't observe self, but the phase calculation must count this node
-                                                                                                      // toward quorum.
-                                                                                                      var swimOpt = Option.option(swimDetectorRefForPhase.get()).flatMap(CoreSwimHealthDetector::currentHealth);
-                                                                                                      var swim = swimOpt.or(() -> HealthSnapshot.healthSnapshot(Map.of()));
-                                                                                                      var merged = new java.util.HashMap<>(swim.peerHealth());
-                                                                                                      merged.putIfAbsent(config.self(),
-                                                                                                                         SwimHealth.HEALTHY);
-                                                                                                      return Option.some(HealthSnapshot.healthSnapshot(merged));
-                                                                                                  },
-                                                                                                  phaseInQuorum);
-        var clusterPhaseView = ClusterPhaseView.clusterPhaseView(config.topology().coreNodes().size(),
-                                                                 TimeSpan.timeSpan(5).seconds(),
-                                                                 TimeSpan.timeSpan(5).seconds(),
-                                                                 phaseMembershipReader,
-                                                                 clusterPhaseReader,
-                                                                 () -> healthLeaderSupplier.get()
-                                                                                           .isPresent());
-        Supplier<AetherValue.ClusterPhase> effectivePhaseSupplier = () -> clusterPhaseView.compute(System.currentTimeMillis());
+        // P3 (membership unification): ClusterPhase derives directly from the unified
+        // tracker's phase (thin adapter). The tracker is constructed downstream in
+        // assembleNode, so resolve it lazily via membershipTrackerRef; until it lands the
+        // supplier reports COLD_BOOT. ClusterPhaseView adds the leader-awareness semantic
+        // (NORMAL requires a leader, else RECOVERING).
+        Supplier<MembershipPhase> trackerPhaseSupplier = () -> Option.option(membershipTrackerRef.get())
+                                                                     .map(MembershipTracker::phase)
+                                                                     .or(MembershipPhase.COLD_BOOT);
+        var clusterPhaseView = ClusterPhaseView.clusterPhaseView(trackerPhaseSupplier,
+                                                                 () -> healthLeaderSupplier.get().isPresent());
+        Supplier<AetherValue.ClusterPhase> effectivePhaseSupplier = clusterPhaseView::compute;
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
@@ -1488,7 +1464,6 @@ public interface AetherNode extends ManageableNode {
                                                                                swimConfig,
                                                                                swimIsBootingSupplier,
                                                                                faultyLeaderEvictor);
-        swimDetectorRefForPhase.set(swimHealthDetector);
         // RC1 (S01 fix) — wire the SWIM-backed liveness check for owner-broadcast eviction
         // hints. Followers REFUSE to act on the owner's `ClusterSyncPing.evictionHints` for
         // peers SWIM observes as HEALTHY; the owner's hint is a SUGGESTION, not authority.
