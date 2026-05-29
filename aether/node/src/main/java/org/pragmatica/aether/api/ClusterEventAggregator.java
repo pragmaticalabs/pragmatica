@@ -9,11 +9,9 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterEventLogKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
@@ -210,18 +208,6 @@ public final class ClusterEventAggregator {
 
     @Contract
     public void onSwimObservation(@SuppressWarnings("unused") org.pragmatica.swim.SwimObservation observation) {}
-
-    /// RC1 membership-v2 step 1: re-sourced off the FSM-written `NodeLifecycleKey` atom.
-    /// The atom is being eliminated, so this observability hook no longer derives NODE_FAILED
-    /// / NODE_LEFT events from lifecycle Puts. The subscription is kept wired (the key type
-    /// still exists during the migration window) but the body is a no-op — membership
-    /// observability degrades gracefully until the events are re-sourced from
-    /// `MembershipDecision` (see [#onMembershipDecision]).
-    ///
-    /// TODO (membership-v2 step N): emit NODE_FAILED / NODE_LEFT from `onMembershipDecision`
-    /// once the `MembershipDecision` → aggregator subscription is wired, then delete this stub.
-    @Contract
-    public void onNodeLifecyclePut(@SuppressWarnings("unused") ValuePut<NodeLifecycleKey, NodeLifecycleValue> put) {}
 
     public void onLeaderChange(LeaderNotification.LeaderChange event) {
         if (!isLeaderSupplier.getAsBoolean()) {return;}
@@ -461,8 +447,9 @@ public final class ClusterEventAggregator {
     }
 
     /// Subscriber hook for `MembershipDecision` — kept as a no-op so route entries continue
-    /// to compile if callers wire it; the canonical event source for membership-driven
-    /// NODE_FAILED / NODE_LEFT is `onNodeLifecyclePut` per the existing RC1 audit comment.
+    /// to compile if callers wire it. The node-lifecycle atom that previously sourced
+    /// membership-driven NODE_FAILED / NODE_LEFT events has been deleted (membership-v2
+    /// finale); re-sourcing these events from `MembershipDecision` is future work.
     @Contract
     public void onMembershipDecision(@SuppressWarnings("unused") MembershipDecision decision) {}
 

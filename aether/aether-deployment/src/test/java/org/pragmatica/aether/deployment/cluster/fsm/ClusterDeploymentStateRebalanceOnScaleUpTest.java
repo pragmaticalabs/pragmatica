@@ -21,11 +21,9 @@ import org.pragmatica.aether.slice.generation.GenerationReason;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -115,11 +113,9 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
     }
 
     private void seedNodeOnDuty(NodeId nodeId) {
-        // v2: allocatable gate is the injected ready set, not KV ON_DUTY. The KV write is
-        // preserved (harmless) so this fixture keeps its original "node is on duty" intent.
+        // v2: allocatable gate is the injected ready set, not KV ON_DUTY. The node-lifecycle
+        // KV atom has been deleted, so "on duty" is expressed purely via the ready set.
         readyNodes.add(nodeId);
-        kvStore.put(NodeLifecycleKey.nodeLifecycleKey(nodeId),
-                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY));
     }
 
     private void publishSnapshot(List<NodeId> coreMembers) {

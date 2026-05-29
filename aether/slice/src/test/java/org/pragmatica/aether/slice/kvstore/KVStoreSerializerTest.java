@@ -57,20 +57,6 @@ class KVStoreSerializerTest {
         }
 
         @Test
-        void toToml_ephemeralNodeLifecycle_excluded() {
-            var nodeId = NodeId.nodeId("node-abc123").unwrap();
-            var key = NodeLifecycleKey.nodeLifecycleKey(nodeId);
-            var value = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, 1710072000000L);
-
-            KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
-                             .onFailureRun(Assertions::fail)
-                             .onSuccess(toml -> {
-                                 assertThat(toml).doesNotContain("[node-lifecycle]");
-                                 assertThat(toml).doesNotContain("node-abc123");
-                             });
-        }
-
-        @Test
         void toToml_configValue_serializedCorrectly() {
             var key = ConfigKey.forKey("max-replicas");
             var value = new ConfigValue("max-replicas", "5", 1710072000000L);
@@ -156,12 +142,8 @@ class KVStoreSerializerTest {
             entries.put(SliceTargetKey.sliceTargetKey(ab),
                         new SliceTargetValue(ver, 2, 1, Option.none(), "CORE_ONLY", 1000L));
 
-            // Ephemeral: node lifecycle
-            var nodeId = NodeId.nodeId("node-1").unwrap();
-            entries.put(NodeLifecycleKey.nodeLifecycleKey(nodeId),
-                        NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, 2000L));
-
             // Ephemeral: activation directive
+            var nodeId = NodeId.nodeId("node-1").unwrap();
             entries.put(ActivationDirectiveKey.activationDirectiveKey(nodeId),
                         new ActivationDirectiveValue("CORE"));
 
@@ -173,7 +155,6 @@ class KVStoreSerializerTest {
                              .onSuccess(toml -> {
                                  assertThat(toml).contains("[slice-target]");
                                  assertThat(toml).contains("[config]");
-                                 assertThat(toml).doesNotContain("[node-lifecycle]");
                                  assertThat(toml).doesNotContain("[activation]");
                              });
         }
@@ -238,8 +219,8 @@ class KVStoreSerializerTest {
                        phase = 100
                        timestamp = "2026-03-10T12:00:00Z"
 
-                       [node-lifecycle]
-                       "node-1" = "ON_DUTY|1710072000000"
+                       [activation]
+                       "node-1" = "CORE"
 
                        [config]
                        "timeout" = "timeout|5000|3000"
@@ -250,9 +231,9 @@ class KVStoreSerializerTest {
                              .onSuccess(map -> {
                                  assertThat(map).hasSize(1);
                                  assertThat(map).containsKey(ConfigKey.forKey("timeout"));
-                                 // node-lifecycle is ephemeral — should not be restored
+                                 // activation is ephemeral — should not be restored
                                  var nodeId = NodeId.nodeId("node-1").unwrap();
-                                 assertThat(map).doesNotContainKey(NodeLifecycleKey.nodeLifecycleKey(nodeId));
+                                 assertThat(map).doesNotContainKey(ActivationDirectiveKey.activationDirectiveKey(nodeId));
                              });
         }
 
@@ -262,9 +243,6 @@ class KVStoreSerializerTest {
                        [meta]
                        phase = 100
                        timestamp = "2026-03-10T12:00:00Z"
-
-                       [node-lifecycle]
-                       "node-1" = "ON_DUTY|1710072000000"
 
                        [activation]
                        "node-1" = "CORE"
@@ -382,10 +360,6 @@ class KVStoreSerializerTest {
                         new SliceTargetValue(ver, 2, 1, Option.none(), "CORE_ONLY", 1000L));
 
             // Ephemeral — should be filtered out
-            var nodeId = NodeId.nodeId("node-x").unwrap();
-            entries.put(NodeLifecycleKey.nodeLifecycleKey(nodeId),
-                        NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING, 2000L));
-
             var key = GovernorAnnouncementKey.forCommunity("prod:us-east-1");
             var members = List.of(NodeId.nodeId("worker-a").unwrap());
             entries.put(key, GovernorAnnouncementValue.governorAnnouncementValue(
@@ -552,12 +526,6 @@ class KVStoreSerializerTest {
         }
 
         @Test
-        void isEphemeral_nodeLifecycleKey_true() {
-            var nodeId = NodeId.nodeId("node-1").unwrap();
-            assertThat(EphemeralKeys.isEphemeral(NodeLifecycleKey.nodeLifecycleKey(nodeId))).isTrue();
-        }
-
-        @Test
         void isEphemeral_activationDirectiveKey_true() {
             var nodeId = NodeId.nodeId("node-1").unwrap();
             assertThat(EphemeralKeys.isEphemeral(ActivationDirectiveKey.activationDirectiveKey(nodeId))).isTrue();
@@ -609,7 +577,6 @@ class KVStoreSerializerTest {
         void isEphemeralSection_ephemeralSections_true() {
             assertThat(EphemeralKeys.isEphemeralSection("node-artifact")).isTrue();
             assertThat(EphemeralKeys.isEphemeralSection("node-routes")).isTrue();
-            assertThat(EphemeralKeys.isEphemeralSection("node-lifecycle")).isTrue();
             assertThat(EphemeralKeys.isEphemeralSection("endpoints")).isTrue();
             assertThat(EphemeralKeys.isEphemeralSection("activation")).isTrue();
             assertThat(EphemeralKeys.isEphemeralSection("governor-announcement")).isTrue();

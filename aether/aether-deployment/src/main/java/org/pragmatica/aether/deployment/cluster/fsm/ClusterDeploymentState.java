@@ -21,7 +21,6 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.AppB
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Deactivate;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactRemoveReceived;
-import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeLifecyclePutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SchemaVersionPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetRemoveReceived;
@@ -45,7 +44,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaMigrationLockKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
@@ -61,7 +59,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
@@ -205,7 +202,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 case MembershipDecisionReceived(MembershipDecision decision) -> handleMembershipDecision(decision, tx);
                 case SelfShutdownReceived(TransportObservation.SelfShutdown selfShutdown) -> handleSelfShutdown(selfShutdown,
                                                                                                                 tx);
-                case NodeLifecyclePutReceived _ -> tx.ignore();
                 case ActivationDirectivePutReceived(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) -> handleActivationDirectivePut(valuePut,
                                                                                                                                                          tx);
                 case ActivationDirectiveRemoveReceived(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) -> handleActivationDirectiveRemove(valueRemove,
@@ -292,13 +288,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void handleNodeAdded(NodeId addedNode) {
-            if (ctx.seedNodes().contains(addedNode)) {
-                // Seed nodes skip the ActivationDirective → MembershipFsm path that
-                // joining nodes follow, so the FSM never writes their NodeLifecycleKey
-                // unless we plant a JOINING entry here. From JOINING the standard
-                // MembershipFsm machinery drives the transition to ON_DUTY.
-                ensureSeedNodeLifecycleEntry(addedNode);
-            } else {
+            // Seed nodes are SWIM-derived to ON_DUTY by the membership-v2 view; only
+            // non-seed nodes need an explicit role assignment via ActivationDirective.
+            if (!ctx.seedNodes().contains(addedNode)) {
                 assignNodeRole(addedNode);
             }
 
@@ -308,29 +300,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 log.info("No allocatable nodes after NodeJoined (snapshot not yet ready); scheduling retry in 2s");
                 SharedScheduler.schedule(this::reconcileIfActive, timeSpan(2).seconds());
             }
-        }
-
-        /// Plants `NodeLifecycleKey(node) = JOINING` for a seed node iff no entry already
-        /// exists in KV-Store. Idempotent — preserves any existing state (ON_DUTY /
-        /// DRAINING / DECOMMISSIONED) so a re-issued NodeJoined for an already-known
-        /// seed never overwrites richer state. Runs only on the leader (this method
-        /// lives inside `Active`, which is the leader-scoped state).
-        private void ensureSeedNodeLifecycleEntry(NodeId seedNode) {
-            var existing = ctx.kvStore().get(NodeLifecycleKey.nodeLifecycleKey(seedNode)).filter(NodeLifecycleValue.class::isInstance);
-
-            if (existing.isPresent()) {
-                log.debug("Seed node {} already has NodeLifecycleKey entry; skipping JOINING write", seedNode);
-
-                return;
-            }
-
-            log.info("Seed node {} missing NodeLifecycleKey; planting JOINING entry so MembershipFsm can drive it to ON_DUTY",
-                     seedNode);
-            var command = new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(seedNode),
-                                                                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.JOINING));
-            ctx.cluster().apply(List.of(command)).onFailure(cause -> log.error("Failed to plant JOINING NodeLifecycleKey for seed node {}: {}",
-                                                                               seedNode,
-                                                                               cause.message()));
         }
 
         private void processSelfShutdown(NodeId downNode) {

@@ -7,14 +7,12 @@ package org.pragmatica.aether.deployment.cluster.fsm;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
@@ -45,8 +43,6 @@ public interface ClusterDeploymentEvents extends ClusterFsmEvent {
     record MembershipDecisionReceived(MembershipDecision decision) implements ClusterDeploymentEvents {}
 
     record SelfShutdownReceived(TransportObservation.SelfShutdown selfShutdown) implements ClusterDeploymentEvents {}
-
-    record NodeLifecyclePutReceived(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) implements ClusterDeploymentEvents {}
 
     record ActivationDirectivePutReceived(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) implements ClusterDeploymentEvents {}
 

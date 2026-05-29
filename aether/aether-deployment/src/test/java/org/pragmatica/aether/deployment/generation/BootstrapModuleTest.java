@@ -14,13 +14,18 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.net.tcp.NodeAddress;
 
+import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -29,6 +34,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Unit tests for [`BootstrapModule`] covering leader-gain DHT bootstrap, the cluster-config
@@ -215,7 +221,7 @@ class BootstrapModuleTest {
         @Override public NodeId self() {return SELF;}
 
         @Override public TopologyManager topologyManager() {
-            throw new UnsupportedOperationException("not used");
+            return emptyTopologyManager();
         }
 
         @Override public Promise<Unit> start() {return Promise.success(Unit.unit());}
@@ -227,5 +233,32 @@ class BootstrapModuleTest {
             batches.add(List.copyOf(commands));
             return (Promise) Promise.success(List.of());
         }
+    }
+
+    /// Minimal SWIM/NTT-free topology stub. Membership-v2 finale: the bootstrap cold-start
+    /// fallback seeds initial core members from `topologyManager().coreNodes()`; these tests
+    /// exercise DHT/config/callback paths only and need an empty topology (no core members).
+    private static TopologyManager emptyTopologyManager() {
+        return new TopologyManager() {
+            @Override public NodeInfo self() {return NodeInfo.nodeInfo(SELF, new NodeAddress("localhost", 9000));}
+
+            @Override public Option<NodeInfo> get(NodeId id) {return Option.none();}
+
+            @Override public int clusterSize() {return 0;}
+
+            @Override public Option<NodeId> reverseLookup(SocketAddress socketAddress) {return Option.none();}
+
+            @Override public Promise<Unit> start() {return Promise.unitPromise();}
+
+            @Override public Promise<Unit> stop() {return Promise.unitPromise();}
+
+            @Override public TimeSpan pingInterval() {return timeSpan(5).seconds();}
+
+            @Override public TimeSpan helloTimeout() {return timeSpan(5).seconds();}
+
+            @Override public Option<NodeState> getState(NodeId id) {return Option.none();}
+
+            @Override public List<NodeId> topology() {return List.of();}
+        };
     }
 }

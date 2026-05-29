@@ -8,7 +8,6 @@ import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.deployment.membership.view.MembershipView.MemberStatus;
 import org.pragmatica.aether.deployment.membership.view.MembershipView.MemberView;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -21,17 +20,16 @@ import java.util.function.Supplier;
 /// Derived `ClusterPhase` view (E.6, spec §7).
 ///
 /// `ClusterPhase` is no longer an authoritative KV atom. The view computes it on demand
-/// from per-peer `NodeLifecycleKey` snapshot using spec §7's formula:
+/// from the SWIM-derived `MembershipView` snapshot using spec §7's formula:
 ///
 /// ```text
 /// quorum         = max(1, expectedClusterSize / 2 + 1)
-/// onDutyPeers    = count(NodeLifecycleValue.state == ON_DUTY)
-/// oldestOnDutyAt = min(updatedAt of those entries)
+/// onDutyPeers    = count(MemberStatus.ON_DUTY)
 /// haveLeader     = leaderReader returns Some
 ///
 /// (priorPhase.everReachedNormal == false, sub-quorum)        → COLD_BOOT
 /// (priorPhase.everReachedNormal == false, quorum reached,
-///   nowMs - oldestOnDutyAt >= stableWindow, haveLeader)      → NORMAL
+///   stable window satisfied, haveLeader)                     → NORMAL
 /// (priorPhase.everReachedNormal == false, quorum reached,
 ///   still inside stableWindow)                               → COLD_BOOT
 /// (priorPhase.everReachedNormal == true, sub-quorum)         → RECOVERING
@@ -61,21 +59,10 @@ public record ClusterPhaseView(int expectedClusterSize,
                                BooleanSupplier haveLeaderReader) {
     /// H.2b (spec §H): read membership through `MembershipView` instead of a raw KV
     /// snapshot. The reader is a `Supplier<MembershipView>` rather than a snapshot lambda
-    /// so each `compute()` call sees the live view (SWIM ∪ KV at that instant).
+    /// so each `compute()` call sees the live view (SWIM-derived membership at that instant).
     @FunctionalInterface
     public interface MembershipViewReader {
         MembershipView view();
-    }
-
-    /// Legacy adapter — preserved so callers that haven't yet been migrated continue to
-    /// compile. Each invocation builds a one-shot `MembershipView` whose KV reader walks
-    /// the supplied snapshot map (no live SWIM input — SWIM-derived ON_DUTY peers will
-    /// not appear, matching the pre-H.2b behaviour exactly). New callers should pass a
-    /// real `MembershipViewReader` instead.
-    @Deprecated
-    @FunctionalInterface
-    public interface LifecycleSnapshotReader {
-        Map<NodeId, NodeLifecycleValue> snapshot();
     }
 
     public static ClusterPhaseView clusterPhaseView(int expectedClusterSize,
@@ -90,41 +77,6 @@ public record ClusterPhaseView(int expectedClusterSize,
                                     membershipReader,
                                     priorPhaseReader,
                                     haveLeaderReader);
-    }
-
-    @Deprecated
-    public static ClusterPhaseView clusterPhaseView(int expectedClusterSize,
-                                                    TimeSpan stableWindow,
-                                                    TimeSpan recoveryStableWindow,
-                                                    LifecycleSnapshotReader lifecycleReader,
-                                                    Supplier<Option<ClusterPhase>> priorPhaseReader,
-                                                    BooleanSupplier haveLeaderReader) {
-        return new ClusterPhaseView(expectedClusterSize,
-                                    stableWindow,
-                                    recoveryStableWindow,
-                                    () -> legacyView(lifecycleReader),
-                                    priorPhaseReader,
-                                    haveLeaderReader);
-    }
-
-    /// Legacy-API adapter — synthesises a SWIM `HealthSnapshot` from KV `ON_DUTY` entries so
-    /// pre-H.2b callers preserve their existing semantics (`ON_DUTY` in KV ⇒ counted as
-    /// ON_DUTY regardless of live SWIM input). New callers that pass a real
-    /// `MembershipViewReader` get the H model: SWIM is authoritative for "alive" and a
-    /// stale KV `ON_DUTY` entry for a SWIM-faulty peer is filtered to `UNTRACKED`.
-    private static MembershipView legacyView(LifecycleSnapshotReader lifecycleReader) {
-        var snapshot = lifecycleReader.snapshot();
-        var swim = new java.util.HashMap<NodeId, org.pragmatica.swim.SwimHealth>();
-        snapshot.forEach((peer, value) -> {
-                             if (value.state() == org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState.ON_DUTY) {
-                             swim.put(peer, org.pragmatica.swim.SwimHealth.HEALTHY);
-                         }
-                         });
-        var swimSnapshot = org.pragmatica.swim.HealthSnapshot.healthSnapshot(swim);
-
-        return MembershipView.membershipView(() -> Option.some(swimSnapshot),
-                                             consumer -> snapshot.forEach((peer, value) -> consumer.accept(org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey.nodeLifecycleKey(peer),
-                                                                                                           value)));
     }
 
     public ClusterPhase compute(long nowMs) {
@@ -175,12 +127,10 @@ public record ClusterPhaseView(int expectedClusterSize,
     /// Spec §7.3: stability window is "the duration after which a satisfied promotion
     /// condition becomes effective".
     ///
-    /// **RC1 membership-v2 step 1.** The `MembershipView` no longer carries a KV
-    /// `NodeLifecycleValue` per peer (SWIM-derived membership has no consensus timestamp), so
-    /// the legacy oldest-KV-`updatedAt` formula is dropped. Stability is now satisfied purely
-    /// by the SWIM aliveness gate (`onDutyCount() >= quorum`, checked by the caller) — this is
-    /// the graceful fallback the view already used once the FSM stopped emitting `ON_DUTY`
-    /// writes, now made unconditional.
+    /// **RC1 membership-v2 finale.** The `MembershipView` is SWIM-derived and carries no
+    /// per-peer consensus timestamp, so the legacy oldest-KV-`updatedAt` formula is dropped.
+    /// Stability is satisfied purely by the SWIM aliveness gate (`onDutyCount() >= quorum`,
+    /// checked by the caller).
     private static boolean stableWindowSatisfied(OnDutyStats stats) {
         return stats.onDutyCount() > 0;
     }

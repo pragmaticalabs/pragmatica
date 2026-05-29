@@ -7,11 +7,10 @@ package org.pragmatica.aether.api;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterEventLogKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
@@ -173,12 +172,11 @@ class ClusterEventLogSweeperTest {
 
     @Test
     void tick_ignoresNonEventLogKeys() {
-        // KV-Store mixes ClusterEventLogKey with NodeLifecycleKey. Sweeper must touch only
-        // its own family.
+        // KV-Store mixes ClusterEventLogKey with an unrelated key family. Sweeper must touch
+        // only its own family.
         var snap = new HashMap<AetherKey, AetherValue>();
         snap.put(ClusterEventLogKey.clusterEventLogKey(1L, NODE_A, 0L), value(1L, 0L));
-        snap.put(NodeLifecycleKey.nodeLifecycleKey(new NodeId("node-x")),
-                 NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED));
+        snap.put(ConfigKey.forKey("timeout"), ConfigValue.configValue("timeout", "5000"));
 
         var applier = new CapturingApplier();
         var sweeper = ClusterEventLogSweeper.clusterEventLogSweeper(() -> snap,

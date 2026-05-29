@@ -12,7 +12,6 @@ import java.util.Set;
 @SuppressWarnings("JBCT-UTIL-02") public sealed interface EphemeralKeys {
     Set<Class<? extends AetherKey>> EPHEMERAL_KEY_TYPES = Set.of(NodeArtifactKey.class,
                                                                  NodeRoutesKey.class,
-                                                                 NodeLifecycleKey.class,
                                                                  JoinDeadlineKey.class,
                                                                  DrainDeadlineKey.class,
                                                                  EndpointKey.class,
@@ -32,7 +31,6 @@ import java.util.Set;
 
     Set<String> EPHEMERAL_SECTIONS = Set.of("node-artifact",
                                             "node-routes",
-                                            "node-lifecycle",
                                             "join-deadline",
                                             "drain-deadline",
                                             "endpoints",

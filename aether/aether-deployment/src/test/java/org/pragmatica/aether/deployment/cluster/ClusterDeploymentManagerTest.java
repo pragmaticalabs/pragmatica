@@ -16,10 +16,8 @@ import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -142,16 +140,6 @@ class ClusterDeploymentManagerTest {
 
             // Give async operations time to complete
             Thread.sleep(500);
-
-            // CDM MUST NOT write NodeLifecycleKey directly
-            var directLifecyclePuts = capturedCommands.stream()
-                .filter(KVCommand.Put.class::isInstance)
-                .map(cmd -> (KVCommand.Put<AetherKey, AetherValue>) cmd)
-                .filter(put -> put.key() instanceof NodeLifecycleKey)
-                .toList();
-            assertThat(directLifecyclePuts)
-                .as("CDM must not write NodeLifecycleKey directly (spec §8 single-writer)")
-                .isEmpty();
 
             // DrainCompleted MUST be emitted via the health sink
             var drainCompletedSignals = capturedSignals.stream()

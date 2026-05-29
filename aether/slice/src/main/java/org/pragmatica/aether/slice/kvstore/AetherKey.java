@@ -413,29 +413,6 @@ import static org.pragmatica.lang.Result.success;
         }
     }
 
-    record NodeLifecycleKey(NodeId nodeId) implements AetherKey {
-        private static final String PREFIX = "node-lifecycle/";
-
-        @Override public String asString() {
-            return PREFIX + nodeId.id();
-        }
-
-        @Override public String toString() {
-            return asString();
-        }
-
-        public static NodeLifecycleKey nodeLifecycleKey(NodeId nodeId) {
-            return new NodeLifecycleKey(nodeId);
-        }
-
-        public static Result<NodeLifecycleKey> nodeLifecycleKey(String key) {
-            if (!key.startsWith(PREFIX)) {return NODE_LIFECYCLE_KEY_FORMAT_ERROR.apply(key).result();}
-            var nodeIdPart = key.substring(PREFIX.length());
-            if (nodeIdPart.isEmpty()) {return NODE_LIFECYCLE_KEY_FORMAT_ERROR.apply(key).result();}
-            return NodeId.nodeId(nodeIdPart).map(NodeLifecycleKey::new);
-        }
-    }
-
     /// Phase 1 step J — observability atom mirroring the in-process `JOIN_DEADLINE`
     /// scheduler entry the leader's `MembershipFsm` arms when a peer enters JOINING.
     /// Replicated via Rabia so a new leader on takeover can reconstruct the deadline from
@@ -830,8 +807,6 @@ import static org.pragmatica.lang.Result.success;
     Fn1<Cause, String> OBSERVABILITY_DEPTH_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid obs-depth key format: %s");
 
     Fn1<Cause, String> CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid config key format: %s");
-
-    Fn1<Cause, String> NODE_LIFECYCLE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-lifecycle key format: %s");
 
     Fn1<Cause, String> JOIN_DEADLINE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid join-deadline key format: %s");
 

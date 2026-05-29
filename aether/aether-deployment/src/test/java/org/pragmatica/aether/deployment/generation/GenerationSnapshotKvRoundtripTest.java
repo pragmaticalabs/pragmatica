@@ -8,11 +8,9 @@ import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GenerationSnapshotKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GenerationSnapshotValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -77,9 +75,7 @@ class GenerationSnapshotKvRoundtripTest {
     // ---- Helpers ----
 
     private static void seedLifecycle(Fixture f, NodeId nodeId, NodeLifecycleState state) {
-        var value = NodeLifecycleValue.nodeLifecycleValue(state, "host-" + nodeId.id(), 9001);
-        f.kvRef.get().put(NodeLifecycleKey.nodeLifecycleKey(nodeId), value);
-        f.kvStore.process(new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId), value));
+        f.lifecycleSeed.put(nodeId, state);
     }
 
     private static void awaitGenerationSnapshotKvPresent(Fixture f) throws InterruptedException {
@@ -103,9 +99,11 @@ class GenerationSnapshotKvRoundtripTest {
         var swimHints = SwimHintsRegistry.swimHintsRegistry(Duration.ofSeconds(60), () -> {});
         var cluster = new KvReflectingClusterNode(kvStore, kvRef);
         var executor = Executors.newSingleThreadExecutor();
-        // Phase C-1: membership is SWIM/NTT-derived. Tests seed lifecycles in KV; the member
-        // and draining suppliers derive their sets from those seeds so the roundtrip intent
+        // Phase C-1 / membership-v2 finale: membership is SWIM/NTT-derived; the node-lifecycle
+        // KV atom is gone. Tests seed lifecycles into a plain in-memory map; the member and
+        // draining suppliers derive their sets from those seeds so the roundtrip intent
         // (SELF ON_DUTY → snapshot view) is preserved on the new derivation path.
+        var lifecycleSeed = new java.util.concurrent.ConcurrentHashMap<NodeId, NodeLifecycleState>();
         var publisher = GenerationSnapshotPublisher.generationSnapshotPublisher(isLeader::get,
                                                                                 () -> 1L,
                                                                                 hlcClock,
@@ -115,30 +113,26 @@ class GenerationSnapshotKvRoundtripTest {
                                                                                 kvStore,
                                                                                 cluster,
                                                                                 executor,
-                                                                                () -> membersFromKv(kvRef),
-                                                                                () -> drainingFromKv(kvRef),
+                                                                                () -> membersFromSeed(lifecycleSeed),
+                                                                                () -> drainingFromSeed(lifecycleSeed),
                                                                                 nodeId -> org.pragmatica.lang.Option.none());
-        return new Fixture(publisher, kvStore, kvRef, executor);
+        return new Fixture(publisher, kvStore, kvRef, executor, lifecycleSeed);
     }
 
-    private static java.util.Set<NodeId> membersFromKv(AtomicReference<Map<AetherKey, AetherValue>> kvRef) {
-        return kvRef.get()
-                    .entrySet()
-                    .stream()
-                    .filter(e -> e.getKey() instanceof NodeLifecycleKey && e.getValue() instanceof NodeLifecycleValue)
-                    .filter(e -> ((NodeLifecycleValue) e.getValue()).state() != NodeLifecycleState.STOPPED)
-                    .map(e -> ((NodeLifecycleKey) e.getKey()).nodeId())
-                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    private static java.util.Set<NodeId> membersFromSeed(Map<NodeId, NodeLifecycleState> seed) {
+        return seed.entrySet()
+                   .stream()
+                   .filter(e -> e.getValue() != NodeLifecycleState.STOPPED)
+                   .map(Map.Entry::getKey)
+                   .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
-    private static java.util.Set<NodeId> drainingFromKv(AtomicReference<Map<AetherKey, AetherValue>> kvRef) {
-        return kvRef.get()
-                    .entrySet()
-                    .stream()
-                    .filter(e -> e.getKey() instanceof NodeLifecycleKey && e.getValue() instanceof NodeLifecycleValue)
-                    .filter(e -> ((NodeLifecycleValue) e.getValue()).state() == NodeLifecycleState.DRAINING)
-                    .map(e -> ((NodeLifecycleKey) e.getKey()).nodeId())
-                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    private static java.util.Set<NodeId> drainingFromSeed(Map<NodeId, NodeLifecycleState> seed) {
+        return seed.entrySet()
+                   .stream()
+                   .filter(e -> e.getValue() == NodeLifecycleState.DRAINING)
+                   .map(Map.Entry::getKey)
+                   .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
     private static final class Fixture {
@@ -146,15 +140,18 @@ class GenerationSnapshotKvRoundtripTest {
         final KVStore<AetherKey, AetherValue> kvStore;
         final AtomicReference<Map<AetherKey, AetherValue>> kvRef;
         final ExecutorService executor;
+        final Map<NodeId, NodeLifecycleState> lifecycleSeed;
 
         Fixture(GenerationSnapshotPublisher publisher,
                 KVStore<AetherKey, AetherValue> kvStore,
                 AtomicReference<Map<AetherKey, AetherValue>> kvRef,
-                ExecutorService executor) {
+                ExecutorService executor,
+                Map<NodeId, NodeLifecycleState> lifecycleSeed) {
             this.publisher = publisher;
             this.kvStore = kvStore;
             this.kvRef = kvRef;
             this.executor = executor;
+            this.lifecycleSeed = lifecycleSeed;
         }
 
         void shutdown() {

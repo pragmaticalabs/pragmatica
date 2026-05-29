@@ -296,7 +296,7 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
             // periodic `PeerConnectivityObservation` stream covers them — without this, the
             // ReachabilityAggregator never receives DISCONNECTED evidence for crashed JOINING
             // peers and the aggregator-quorum gate refuses to confirm UNREACHABLE, leaving
-            // stale ON_DUTY NodeLifecycleKeys for CTM-provisioned replacements.
+            // stale ON_DUTY membership for CTM-provisioned replacements.
             case NodeJoining(NodeId joining, List<NodeId> newTopology, _, _) -> context.setTopology(augmentWith(newTopology, joining));
             // DRAINING / FAILED_DRAIN / SHUTTING_DOWN nodes are still in `coreMemberIds` so the
             // accompanying `topology` field already covers them — no augmentation needed.

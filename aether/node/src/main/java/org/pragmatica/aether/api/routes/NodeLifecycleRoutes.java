@@ -10,12 +10,11 @@ import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.generation.CoreMember;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.HttpError;
@@ -33,7 +32,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -110,14 +108,12 @@ public final class NodeLifecycleRoutes implements RouteSource {
         return new InFlightResponse(nodeSupplier.get().inFlightRequestTracker().count());
     }
 
-    /// RC1 membership-v2 step 1: LIST path re-sourced off the FSM-written `NodeLifecycleKey`
-    /// atom. Entries are now derived from the NTT-derived generation snapshot's `coreMembers`
-    /// (the per-node lifecycle enum is equivalent to the KV state). `updatedAt` is 0 — the
-    /// snapshot carries epoch-based generation provenance, not a per-transition consensus
-    /// timestamp; operators reading the timestamp should use the single-id form
-    /// (`getNodeLifecycle`), which is an operator-command path and unchanged. The optional
-    /// `state` filter is applied unchanged against the externalised state name. Empty list
-    /// when no snapshot has been published yet (cold-start transient window).
+    /// Membership v2 finale: LIST and GET paths both read from the NTT-derived generation
+    /// snapshot's `coreMembers` (the per-node lifecycle enum), since the node-lifecycle KV
+    /// atom has been deleted. `updatedAt` is 0 — the snapshot carries epoch-based generation
+    /// provenance, not a per-transition consensus timestamp. The optional `state` filter is
+    /// applied against the externalised state name. Empty list when no snapshot has been
+    /// published yet (cold-start transient window).
     private List<LifecycleEntry> getAllLifecycleStates(Option<String> stateFilter) {
         var normalizedFilter = stateFilter.map(RouteFilters::parseStateFilter);
         var entries = new ArrayList<LifecycleEntry>();
@@ -143,9 +139,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private Promise<LifecycleEntry> getNodeLifecycle(String nodeIdStr) {
-        return resolveNodeLifecycle(nodeIdStr).map(value -> new LifecycleEntry(nodeIdStr,
-                                                                               externalStateName(value.state()),
-                                                                               value.updatedAt()));
+        return resolveLifecycleState(nodeIdStr).map(state -> new LifecycleEntry(nodeIdStr,
+                                                                               externalStateName(state),
+                                                                               0L));
     }
 
     private static String externalStateName(NodeLifecycleState state) {
@@ -162,14 +158,14 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private Promise<TransitionResult> guardAndRequestDrain(String nodeIdStr) {
-        return resolveNodeLifecycle(nodeIdStr).flatMap(current -> guardDrainState(nodeIdStr, current));
+        return resolveLifecycleState(nodeIdStr).flatMap(state -> guardDrainState(nodeIdStr, state));
     }
 
-    private Promise<TransitionResult> guardDrainState(String nodeIdStr, NodeLifecycleValue current) {
-        if (current.state() != NodeLifecycleState.ON_DUTY) {
+    private Promise<TransitionResult> guardDrainState(String nodeIdStr, NodeLifecycleState current) {
+        if (current != NodeLifecycleState.ON_DUTY) {
             return HttpError.httpError(HttpStatus.CONFLICT,
                                        Causes.cause("Cannot drain node " + nodeIdStr
-                                                   + " from " + current.state()
+                                                   + " from " + current
                                                    + " (must be ON_DUTY)"))
                             .promise();
         }
@@ -208,16 +204,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private int countOnDuty() {
-        var count = new AtomicInteger(0);
-        nodeSupplier.get().kvStore().forEach(NodeLifecycleKey.class,
-                                             NodeLifecycleValue.class,
-                                             (_, value) -> incrementIfOnDuty(count, value));
-
-        return count.get();
-    }
-
-    private static void incrementIfOnDuty(AtomicInteger count, NodeLifecycleValue value) {
-        if (value.state() == NodeLifecycleState.ON_DUTY) {count.incrementAndGet();}
+        return nodeSupplier.get().membershipView().onDutyPeers().size();
     }
 
     private static Cause budgetExceededError(String nodeIdStr, int operationalAfterDrain, int minAvailable) {
@@ -345,16 +332,25 @@ public final class NodeLifecycleRoutes implements RouteSource {
         }
     }
 
-    private Promise<NodeLifecycleValue> resolveNodeLifecycle(String nodeIdStr) {
+    /// Membership v2 finale: the node-lifecycle KV atom is deleted; the per-node lifecycle
+    /// state is read from the NTT-derived generation snapshot's `coreMembers` (the same source
+    /// the LIST path uses). `LIFECYCLE_NOT_FOUND` when the node is absent from the snapshot or
+    /// no snapshot has been published yet.
+    private Promise<NodeLifecycleState> resolveLifecycleState(String nodeIdStr) {
         return NodeId.nodeId(nodeIdStr)
                      .async()
-                     .flatMap(this::lookupLifecycleValue);
+                     .flatMap(this::lookupLifecycleState);
     }
 
-    private Promise<NodeLifecycleValue> lookupLifecycleValue(NodeId nodeId) {
-        var key = NodeLifecycleKey.nodeLifecycleKey(nodeId);
+    private Promise<NodeLifecycleState> lookupLifecycleState(NodeId nodeId) {
+        return readLifecycleState(nodeId).async(LIFECYCLE_NOT_FOUND);
+    }
 
-        return readPriorLifecycle(key).async(LIFECYCLE_NOT_FOUND);
+    private Option<NodeLifecycleState> readLifecycleState(NodeId nodeId) {
+        return nodeSupplier.get()
+                           .currentGenerationSnapshot()
+                           .flatMap(snapshot -> Option.option(snapshot.coreMembers().get(nodeId)))
+                           .map(CoreMember::lifecycle);
     }
 
     private void auditAndEmitLifecycleTransition(TransitionResult result, NodeLifecycleState newState) {
@@ -365,13 +361,5 @@ public final class NodeLifecycleRoutes implements RouteSource {
         nodeSupplier.get().route(OperationalEvent.NodeLifecycleChanged.nodeLifecycleChanged(result.nodeId(),
                                                                                             newState.name(),
                                                                                             "api"));
-    }
-
-    private Option<NodeLifecycleValue> readPriorLifecycle(NodeLifecycleKey key) {
-        return nodeSupplier.get()
-                           .kvStore()
-                           .get(key)
-                           .filter(v -> v instanceof NodeLifecycleValue)
-                           .map(v -> (NodeLifecycleValue) v);
     }
 }

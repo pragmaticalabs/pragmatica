@@ -370,11 +370,10 @@ public interface AetherNode extends ManageableNode {
         var persistence = resolvePersistence(config);
         var leaderTerm = new AtomicLong(0L);
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
-        Predicate<NodeId> isDecommissioned = nodeId -> kvStore.get(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId))
-                                                              .filter(v -> v instanceof AetherValue.NodeLifecycleValue)
-                                                              .map(v -> (AetherValue.NodeLifecycleValue) v)
-                                                              .map(v -> v.state() == AetherValue.NodeLifecycleState.STOPPED)
-                                                              .or(false);
+        // Membership v2: decommission is NTT/membership-driven, not a KV atom. A decommissioned
+        // node's process is gone; a restart is a fresh NTT-gated join, so there is no stale KV
+        // STOPPED record to refuse rejoin against.
+        Predicate<NodeId> isDecommissioned = _ -> false;
         Supplier<Option<NodeId>> currentLeaderFromKvSupplier = () -> kvStore.getTyped(LeaderKey.INSTANCE,
                                                                                       LeaderValue.class)
                                                                             .map(LeaderValue::leader);
@@ -931,9 +930,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                                      org.pragmatica.swim.SwimHealth.HEALTHY);
                                                                                                   return org.pragmatica.lang.Option.some(org.pragmatica.swim.HealthSnapshot.healthSnapshot(merged));
                                                                                               },
-                                                                                              consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
-                                                                                                                          AetherValue.NodeLifecycleValue.class,
-                                                                                                                          consumer),
                                                                                               ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum(),
                                                                                               metricsCollector::bestSnapshot);
             }
@@ -1213,9 +1209,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                                          org.pragmatica.swim.SwimHealth.HEALTHY);
                                                                                                       return Option.some(org.pragmatica.swim.HealthSnapshot.healthSnapshot(merged));
                                                                                                   },
-                                                                                                  consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
-                                                                                                                              AetherValue.NodeLifecycleValue.class,
-                                                                                                                              consumer),
                                                                                                   phaseInQuorum);
         var clusterPhaseView = ClusterPhaseView.clusterPhaseView(config.topology().coreNodes().size(),
                                                                  org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds(),
@@ -1711,11 +1704,6 @@ public interface AetherNode extends ManageableNode {
                                                               config::self,
                                                               initialCoreSizeSupplier,
                                                               clusterNode);
-        var decommissionedAtomGc = org.pragmatica.aether.deployment.generation.DecommissionedAtomGc.decommissionedAtomGc(clusterNode,
-                                                                                                                         kvStore::snapshot,
-                                                                                                                         isLeaderSupplier,
-                                                                                                                         config.autoHeal());
-        decommissionedAtomGc.start();
         var publisherTickExecutor = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(runnable -> {
                                                                                                         var thread = new Thread(runnable,
                                                                                                                                 "generation-publisher-tick");
@@ -1761,7 +1749,7 @@ public interface AetherNode extends ManageableNode {
         // below (TopologyObserver's lifecycle-projection walker emits one
         // decision per lifecycle transition, with snapshot-then-tail
         // semantics for GSP + BootstrapModule).
-        .onRemove(AetherKey.NodeLifecycleKey.class, _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.ClusterConfigKey.class,
+        .onPut(AetherKey.ClusterConfigKey.class,
                                                                                                         _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.ClusterConfigKey.class,
                                                                                                                                                                _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.ClusterConfigKey.class,
                                                                                                                                                                                                                    (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue>_) -> clusterTopologyManager.onClusterConfigChanged()).onPut(AetherKey.VersionRoutingKey.class,
@@ -2121,14 +2109,6 @@ public interface AetherNode extends ManageableNode {
         if (notification.state() != ClusterStateNotification.State.PASSIVE) {return;}
 
         drainProcedure.initiate(DrainReason.QUORUM_LOSS);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static void notifyCtmOnDuty(ValuePut<AetherKey.NodeLifecycleKey, AetherValue> put,
-                                        ClusterTopologyManager ctm) {
-        if (put.cause().value() instanceof AetherValue.NodeLifecycleValue lifecycleValue && lifecycleValue.state() == AetherValue.NodeLifecycleState.ON_DUTY) {
-            ctm.onNodeReady(put.cause().key().nodeId());
-        }
     }
 
     private static NodeAddress findSelfAddress(AetherNodeConfig config) {
@@ -2778,15 +2758,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              scheduledTaskRegistry::onScheduledTaskRemove).onPut(AetherKey.ScheduledTaskStateKey.class,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  scheduledTaskStateRegistry::onStatePut).onRemove(AetherKey.ScheduledTaskStateKey.class,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   scheduledTaskStateRegistry::onStateRemove)
-        // RC1 Step 2: NodeDeploymentManager + ClusterDeploymentManager no longer
-        // subscribe to NodeLifecycleKey directly — they consume
-        // MembershipDecision via the routes added near the
-        // generationSnapshotPublisher wiring above. ClusterEventAggregator
-        // (Step 1 scope) and MembershipFsm remain as KV-put consumers.
-        .onRemove(AetherKey.NodeLifecycleKey.class, nodeDeploymentManager::onNodeLifecycleRemove).onPut(AetherKey.NodeLifecycleKey.class,
-                                                                                                        eventAggregator::onNodeLifecyclePut).onPut(AetherKey.NodeLifecycleKey.class,
-                                                                                                                                                   put -> notifyCtmOnDuty(put,
-                                                                                                                                                                          clusterTopologyManager)).onPut(AetherKey.ActivationDirectiveKey.class,
+        // Membership v2: the NodeLifecycleKey atom is deleted. NodeDeploymentManager and
+        // ClusterDeploymentManager derive membership from MembershipDecision (routed near the
+        // generationSnapshotPublisher wiring above); there are no remaining NodeLifecycleKey consumers.
+        .onPut(AetherKey.ActivationDirectiveKey.class,
                                                                                                                                                                                                                                                                                                                                                                                                clusterDeploymentManager::onActivationDirectivePut).onRemove(AetherKey.ActivationDirectiveKey.class,
                                                                                                                                                                                                                                                                                                                                                                                                                                                             clusterDeploymentManager::onActivationDirectiveRemove).onPut(AetherKey.SchemaVersionKey.class,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          clusterDeploymentManager::onSchemaVersionPut).onPut(AetherKey.NodeArtifactKey.class,

@@ -7,11 +7,8 @@ package org.pragmatica.aether.api;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterEventLogKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
@@ -34,8 +31,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///   - two writers interleaving events at different `(epoch, seq)` pairs come out on a
 ///     third reader in commit order (the core OB2 invariant)
 ///   - `eventsSince(epoch, seq)` cursor returns only events strictly after the cursor
-///   - the legacy `onNodeLifecyclePut` producer delegates to the publisher (legacy enum
-///     idempotency contract preserved at the producer layer)
 class ClusterEventAggregatorTest {
 
     private static final NodeId NODE_A = new NodeId("node-a");
@@ -79,55 +74,6 @@ class ClusterEventAggregatorTest {
             }
             return Promise.success(List.of());
         }
-    }
-
-    private static ValuePut<NodeLifecycleKey, NodeLifecycleValue> lifecyclePut(NodeId nodeId, NodeLifecycleState state) {
-        var key = NodeLifecycleKey.nodeLifecycleKey(nodeId);
-        var value = NodeLifecycleValue.nodeLifecycleValue(state);
-        return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
-    }
-
-    @Test
-    void onNodeLifecyclePut_stopped_isNoOp() {
-        // RC1 membership-v2 step 1: `onNodeLifecyclePut` is re-sourced off the FSM-written
-        // `NodeLifecycleKey` atom and is now a no-op. NODE_FAILED / NODE_LEFT events are no
-        // longer derived from lifecycle Puts (observability degrades gracefully until
-        // re-sourced from MembershipDecision).
-        var h = new LoopbackHarness(NODE_A);
-
-        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.STOPPED));
-
-        assertThat(h.aggregator.events()).isEmpty();
-    }
-
-    @Test
-    void onNodeLifecyclePut_drainingThenStopped_isNoOp() {
-        var h = new LoopbackHarness(NODE_A);
-
-        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.DRAINING));
-        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.STOPPED));
-
-        assertThat(h.aggregator.events()).isEmpty();
-    }
-
-    @Test
-    void onNodeLifecyclePut_repeatedPuts_remainNoOp() {
-        var h = new LoopbackHarness(NODE_A);
-
-        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.STOPPED));
-        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.STOPPED));
-        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.STOPPED));
-
-        assertThat(h.aggregator.events()).isEmpty();
-    }
-
-    @Test
-    void onNodeLifecyclePut_onDuty_doesNotEmitNodeLeft() {
-        var h = new LoopbackHarness(NODE_A);
-
-        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.ON_DUTY));
-
-        assertThat(h.aggregator.events()).isEmpty();
     }
 
     /// The core OB2 invariant test (spec §3.6, plan §1 validation).
@@ -242,32 +188,6 @@ class ClusterEventAggregatorTest {
         assertThat(events).hasSize(1);
         assertThat(events.getFirst().details()).containsEntry("originNodeId", NODE_A.id())
                                                 .containsEntry("principal", "alice");
-    }
-
-    /// Regression for bug H1 (Step 1 chaos diagnostic, 2026-05-13): every node receiving
-    /// the lifecycle KV-put notification used to call `publisher.publish(NODE_FAILED, ...)`,
-    /// which submits a leader-bound KVCommand. During kill-leader windows the applier fails
-    /// across all followers and the NODE_FAILED event is lost. Only the leader should
-    /// publish derived events.
-    @Test
-    void onNodeLifecyclePut_nonLeader_doesNotPublish() {
-        var h = new LoopbackHarness(NODE_A, false);
-
-        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_B, NodeLifecycleState.STOPPED));
-
-        assertThat(h.appliedCommands).isEmpty();
-        assertThat(h.aggregator.events()).isEmpty();
-    }
-
-    @Test
-    void onNodeLifecyclePut_leader_isNoOp() {
-        // RC1 membership-v2 step 1: no longer publishes — the lifecycle-put producer is retired.
-        var h = new LoopbackHarness(NODE_A, true);
-
-        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_B, NodeLifecycleState.STOPPED));
-
-        assertThat(h.aggregator.events()).isEmpty();
-        assertThat(h.appliedCommands).isEmpty();
     }
 
     @Test

@@ -14,7 +14,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GenerationSnapshotKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SpokesmanKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
@@ -22,11 +21,11 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValu
 import org.pragmatica.aether.slice.kvstore.AetherValue.GenerationSnapshotValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
@@ -382,14 +381,14 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                                                                                cause.message())).onSuccess(_ -> bootstrapComplete.set(true));
     }
 
-    /// RC1 membership-v2 step 1: prefer the already-published NTT-derived generation snapshot
+    /// RC1 membership-v2 finale: prefer the already-published NTT-derived generation snapshot
     /// (stored under `GenerationSnapshotKey.SINGLETON`) as the source of membership /
     /// `desiredCoreSize` / stale-owner inputs for DHT core-partition bootstrap. The snapshot's
-    /// `coreMembers` are NTT/SWIM-derived as of the generation pipeline, so reading them is
-    /// equivalent to — and supersedes — scanning the FSM-written `NodeLifecycleKey` atoms.
+    /// `coreMembers` are NTT/SWIM-derived as of the generation pipeline.
     /// Only when no snapshot has been published yet (cold formation, before the first
-    /// generation commit) do we fall back to projecting from committed atoms, which still
-    /// reads the lifecycle scan to seed the very first core partition.
+    /// generation commit) do we fall back to projecting from committed atoms, which seeds the
+    /// very first core partition from the committed consensus topology (the node-lifecycle atom
+    /// is gone — see {@link #collectLifecycles()}).
     private ClusterGenerationSnapshot currentMembershipSnapshot() {
         var kv = kvSnapshotSupplier.get();
 
@@ -403,7 +402,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     }
 
     private ClusterGenerationSnapshot projectFromCommittedAtoms(Map<AetherKey, AetherValue> kv) {
-        var lifecycles = collectLifecycles(kv);
+        var lifecycles = collectLifecycles();
         var governors = collectGovernors(kv);
         var partitions = collectPartitions(kv);
         var spokesmen = collectSpokesmen(kv);
@@ -434,16 +433,34 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                      .map(v -> ((ClusterConfigValue) v).coreCount());
     }
 
-    private static Map<NodeId, MemberLifecycle> collectLifecycles(Map<AetherKey, AetherValue> kv) {
-        return kv.entrySet()
-                 .stream()
-                 .filter(entry -> entry.getKey() instanceof NodeLifecycleKey && entry.getValue() instanceof NodeLifecycleValue)
-                 .collect(Collectors.toUnmodifiableMap(entry -> ((NodeLifecycleKey) entry.getKey()).nodeId(),
-                                                       entry -> toMemberLifecycle((NodeLifecycleValue) entry.getValue())));
+    /// RC1 membership-v2 finale: the node-lifecycle KV atom is deleted, so the cold-start
+    /// fallback seeds the initial core members from the COMMITTED CONSENSUS TOPOLOGY instead
+    /// of scanning the (now-absent) lifecycle atoms. Every committed core node is synthesized
+    /// as `ON_DUTY`; host/port come from the topology's `NodeInfo` if known, else `"" / 0`.
+    /// When no cluster handle is present (test fixtures) the map is empty — the published
+    /// generation snapshot is the steady-state source and this path is the boot-only fallback.
+    private Map<NodeId, MemberLifecycle> collectLifecycles() {
+        return cluster.map(BootstrapModuleRecord::seedFromTopology).or(Map.of());
     }
 
-    private static MemberLifecycle toMemberLifecycle(NodeLifecycleValue value) {
-        return MemberLifecycle.memberLifecycle(value.state(), value.host(), value.port());
+    private static Map<NodeId, MemberLifecycle> seedFromTopology(ClusterNode<KVCommand<AetherKey>> clusterNode) {
+        var topology = clusterNode.topologyManager();
+
+        return topology.coreNodes()
+                       .stream()
+                       .collect(Collectors.toUnmodifiableMap(nodeId -> nodeId,
+                                                             nodeId -> toMemberLifecycle(topology.get(nodeId))));
+    }
+
+    private static MemberLifecycle toMemberLifecycle(Option<NodeInfo> info) {
+        return info.map(BootstrapModuleRecord::memberLifecycleFromInfo)
+                   .or(MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "", 0));
+    }
+
+    private static MemberLifecycle memberLifecycleFromInfo(NodeInfo info) {
+        return MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY,
+                                               info.address().host(),
+                                               info.address().port());
     }
 
     private static Map<String, GovernorAnnouncementValue> collectGovernors(Map<AetherKey, AetherValue> kv) {

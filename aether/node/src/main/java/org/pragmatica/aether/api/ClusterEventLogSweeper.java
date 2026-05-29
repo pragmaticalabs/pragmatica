@@ -36,7 +36,8 @@ import org.slf4j.LoggerFactory;
 /// 3. Collect all `ClusterEventLogKey` atoms with `epoch < currentEpoch - retainedEpochs`.
 /// 4. Submit `KVCommand.Remove` batch via consensus.
 ///
-/// Pattern mirrors `DecommissionedAtomGc` deliberately — same lifecycle, same applier shape.
+/// Pattern is a periodic leader-driven KV-Store GC sweep — same lifecycle, same applier shape
+/// as the other epoch-based compaction sweeps.
 public final class ClusterEventLogSweeper {
     private static final Logger log = LoggerFactory.getLogger(ClusterEventLogSweeper.class);
 
@@ -46,8 +47,8 @@ public final class ClusterEventLogSweeper {
     /// grow unboundedly.
     public static final long DEFAULT_RETAINED_EPOCHS = 4L;
 
-    /// Default sweep period: 30 seconds. Faster than DecommissionedAtomGc because events arrive
-    /// orders of magnitude more frequently than lifecycle transitions.
+    /// Default sweep period: 30 seconds. Faster than lifecycle-style sweeps because events arrive
+    /// orders of magnitude more frequently than membership transitions.
     public static final TimeSpan DEFAULT_SWEEP_PERIOD = TimeSpan.timeSpan(30).seconds();
 
     private final Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier;

@@ -8,19 +8,15 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.view.MembershipView.MemberStatus;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
+import org.pragmatica.aether.deployment.membership.view.MembershipView.MemberView;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.SwimHealth;
 
-import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,7 +35,6 @@ class MembershipViewQuorumTest {
     private static final NodeId NODE_1 = NodeId.nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = NodeId.nodeId("node-2").unwrap();
     private static final NodeId NODE_3 = NodeId.nodeId("node-3").unwrap();
-    private static final long T0 = 100_000L;
 
     @Nested @DisplayName("strict() on a non-quorate node forces empty / UNTRACKED")
     class StrictNonQuorate {
@@ -240,13 +235,12 @@ class MembershipViewQuorumTest {
         var bootstrapSnapshot = bootstrap.snapshot();
 
         assertThat(strictSnapshot.keySet()).isEqualTo(bootstrapSnapshot.keySet());
-        strictSnapshot.forEach((peer, member) -> {
-            var other = bootstrapSnapshot.get(peer);
-            assertThat(member.status()).as("status for %s", peer).isEqualTo(other.status());
-            assertThat(member.swimHealth()).as("swim for %s", peer).isEqualTo(other.swimHealth());
-            assertThat(member.lifecycle().isPresent()).as("lifecycle presence for %s", peer)
-                                                       .isEqualTo(other.lifecycle().isPresent());
-        });
+        strictSnapshot.forEach((peer, member) -> assertMemberEqual(peer, member, bootstrapSnapshot.get(peer)));
+    }
+
+    private static void assertMemberEqual(NodeId peer, MemberView member, MemberView other) {
+        assertThat(member.status()).as("status for %s", peer).isEqualTo(other.status());
+        assertThat(member.swimHealth()).as("swim for %s", peer).isEqualTo(other.swimHealth());
     }
 
     private static MembershipView strictFrom(boolean quorate,
@@ -257,31 +251,16 @@ class MembershipViewQuorumTest {
 
     private static MembershipView strictFromSupplier(BooleanSupplier inQuorum,
                                                       Map<NodeId, SwimHealth> swim,
-                                                      Map<NodeId, NodeLifecycleState> kv) {
+                                                      @SuppressWarnings("unused") Map<NodeId, NodeLifecycleState> kv) {
         var snapshot = HealthSnapshot.healthSnapshot(swim);
-        var lifecycleEntries = buildLifecycleEntries(kv);
-        return MembershipView.strict(() -> Option.some(snapshot),
-                                      consumer -> applyEntries(lifecycleEntries, consumer),
-                                      inQuorum);
+
+        return MembershipView.strict(() -> Option.some(snapshot), inQuorum);
     }
 
     private static MembershipView bootstrapAwareFrom(Map<NodeId, SwimHealth> swim,
-                                                      Map<NodeId, NodeLifecycleState> kv) {
+                                                      @SuppressWarnings("unused") Map<NodeId, NodeLifecycleState> kv) {
         var snapshot = HealthSnapshot.healthSnapshot(swim);
-        var lifecycleEntries = buildLifecycleEntries(kv);
-        return MembershipView.bootstrapAware(() -> Option.some(snapshot),
-                                              consumer -> applyEntries(lifecycleEntries, consumer));
-    }
 
-    private static Map<NodeLifecycleKey, NodeLifecycleValue> buildLifecycleEntries(Map<NodeId, NodeLifecycleState> kv) {
-        var entries = new LinkedHashMap<NodeLifecycleKey, NodeLifecycleValue>();
-        kv.forEach((peer, state) -> entries.put(NodeLifecycleKey.nodeLifecycleKey(peer),
-                                                  NodeLifecycleValue.nodeLifecycleValue(state, T0)));
-        return entries;
-    }
-
-    private static void applyEntries(Map<NodeLifecycleKey, NodeLifecycleValue> entries,
-                                      BiConsumer<NodeLifecycleKey, NodeLifecycleValue> consumer) {
-        entries.forEach(consumer);
+        return MembershipView.bootstrapAware(() -> Option.some(snapshot));
     }
 }

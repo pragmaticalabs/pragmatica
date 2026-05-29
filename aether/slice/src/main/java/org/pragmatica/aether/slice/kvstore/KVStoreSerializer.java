@@ -20,7 +20,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.Phase;
-import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -138,7 +137,6 @@ import static org.pragmatica.lang.Result.success;
             case TopicSubscriptionKey _ -> "topic-sub";
             case ScheduledTaskKey _ -> "scheduled-task";
             case ScheduledTaskStateKey _ -> "scheduled-task-state";
-            case NodeLifecycleKey _ -> "node-lifecycle";
             case JoinDeadlineKey _ -> "join-deadline";
             case DrainDeadlineKey _ -> "drain-deadline";
             case ConfigKey _ -> "config";
@@ -210,7 +208,6 @@ import static org.pragmatica.lang.Result.success;
             case WorkerSliceDirectiveValue v -> serializeWorkerDirective(v);
             case ActivationDirectiveValue v -> v.role();
             case GossipKeyRotationValue v -> serializeGossipKeyRotation(v);
-            case NodeLifecycleValue v -> serializeNodeLifecycle(v);
             case JoinDeadlineValue v -> v.deadlineMs() + PIPE + v.setAt();
             case DrainDeadlineValue v -> v.deadlineMs() + PIPE + v.setAt();
             case GovernorAnnouncementValue v -> serializeGovernorAnnouncement(v);
@@ -324,10 +321,6 @@ import static org.pragmatica.lang.Result.success;
         return v.currentKeyId() + PIPE + v.currentKey() + PIPE + v.previousKeyId() + PIPE + v.previousKey() + PIPE + v.rotatedAt();
     }
 
-    private static String serializeNodeLifecycle(NodeLifecycleValue v) {
-        return v.state().name() + PIPE + v.updatedAt() + PIPE + v.host() + PIPE + v.port();
-    }
-
     private static String serializeNodeArtifact(NodeArtifactValue v) {
         var methodsJoined = String.join(",", v.methods());
         return v.state().name() + PIPE + v.failureReason().or("") + PIPE + v.fatal() + PIPE + v.instanceNumber() + PIPE + methodsJoined + PIPE + v.transitionedAt();
@@ -400,7 +393,6 @@ import static org.pragmatica.lang.Result.success;
             case "topic-sub" -> parseTopicSubEntry(identity, rawValue);
             case "scheduled-task" -> parseScheduledTaskEntry(identity, rawValue);
             case "scheduled-task-state" -> parseScheduledTaskStateEntry(identity, rawValue);
-            case "node-lifecycle" -> parseNodeLifecycleEntry(identity, rawValue);
             case "provisioning-slot" -> parseProvisioningSlotEntry(identity, rawValue);
             case "config" -> parseConfigEntry(identity, rawValue);
             case "worker-directive" -> parseWorkerDirectiveEntry(identity, rawValue);
@@ -610,30 +602,6 @@ import static org.pragmatica.lang.Result.success;
                                                                                                         Integer.parseInt(parts[3]),
                                                                                                         parts[4],
                                                                                                         Long.parseLong(parts[5]))));
-    }
-
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseNodeLifecycleEntry(String identity, String raw) {
-        var parts = raw.split("\\|", - 1);
-        if (parts.length != 2 && parts.length != 4) {return parseFailure("node-lifecycle value requires 2 or 4 fields, got " + parts.length);}
-        var host = parts.length >= 4
-                  ? parts[2]
-                  : "";
-        var port = parts.length >= 4
-                  ? Integer.parseInt(parts[3])
-                  : 0;
-        return NodeLifecycleKey.nodeLifecycleKey("node-lifecycle/" + identity)
-                                                .flatMap(key -> parseNodeLifecycleState(parts[0]).map(state -> NodeLifecycleValue.nodeLifecycleValue(state,
-                                                                                                                                                     Long.parseLong(parts[1]),
-                                                                                                                                                     host,
-                                                                                                                                                     port,
-                                                                                                                                                     Epoch.ZERO,
-                                                                                                                                                     HlcTimestamp.ZERO))
-                                                                                       .map(val -> entry(key, val)));
-    }
-
-    private static Result<NodeLifecycleState> parseNodeLifecycleState(String raw) {
-        return Result.lift(() -> NodeLifecycleState.valueOf(raw))
-                          .mapError(_ -> Causes.cause("Unknown lifecycle state: " + raw));
     }
 
     /// Deserializes a provisioning-slot value. Tolerates THREE wire forms, disambiguated by field

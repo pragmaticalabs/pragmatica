@@ -8,18 +8,14 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.view.MembershipView.MemberStatus;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.SwimHealth;
 
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.function.BiConsumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -36,7 +32,6 @@ class MembershipViewTest {
     private static final NodeId NODE_1 = NodeId.nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = NodeId.nodeId("node-2").unwrap();
     private static final NodeId NODE_3 = NodeId.nodeId("node-3").unwrap();
-    private static final long T0 = 100_000L;
 
     @Nested @DisplayName("SWIM-only inputs (no KV entries)")
     class SwimOnly {
@@ -176,32 +171,22 @@ class MembershipViewTest {
             assertThat(entry.isPresent()).isTrue();
             assertThat(entry.unwrap().status()).isEqualTo(MemberStatus.ON_DUTY);
             assertThat(entry.unwrap().swimHealth()).isEqualTo(SwimHealth.HEALTHY);
-            assertThat(entry.unwrap().lifecycle().isPresent()).isFalse();
         }
 
         @Test void stoppedKvHealthySwim_returnsSwimDerivedView() {
-            // v2: KV STOPPED is ignored; HEALTHY SWIM ⇒ ON_DUTY with no lifecycle attached.
+            // v2: KV STOPPED is ignored; HEALTHY SWIM ⇒ ON_DUTY.
             var view = viewFrom(Map.of(NODE_1, SwimHealth.HEALTHY),
                                  Map.of(NODE_1, NodeLifecycleState.STOPPED));
 
             var entry = view.get(NODE_1).unwrap();
             assertThat(entry.status()).isEqualTo(MemberStatus.ON_DUTY);
-            assertThat(entry.lifecycle().isPresent()).isFalse();
         }
     }
 
     private static MembershipView viewFrom(Map<NodeId, SwimHealth> swim,
-                                            Map<NodeId, NodeLifecycleState> kv) {
+                                            @SuppressWarnings("unused") Map<NodeId, NodeLifecycleState> kv) {
         var snapshot = HealthSnapshot.healthSnapshot(swim);
-        var lifecycleEntries = new HashMap<NodeLifecycleKey, NodeLifecycleValue>();
-        kv.forEach((peer, state) -> lifecycleEntries.put(NodeLifecycleKey.nodeLifecycleKey(peer),
-                                                          NodeLifecycleValue.nodeLifecycleValue(state, T0)));
-        return MembershipView.membershipView(() -> Option.some(snapshot),
-                                              consumer -> applyEntries(lifecycleEntries, consumer));
-    }
 
-    private static void applyEntries(Map<NodeLifecycleKey, NodeLifecycleValue> entries,
-                                      BiConsumer<NodeLifecycleKey, NodeLifecycleValue> consumer) {
-        entries.forEach(consumer);
+        return MembershipView.membershipView(() -> Option.some(snapshot));
     }
 }

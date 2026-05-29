@@ -119,14 +119,14 @@ class ClusterTopologyRoutesSlotHeadcountTest {
             @Override public Map<NodeId, MemberView> snapshot() {
                 var map = new HashMap<NodeId, MemberView>();
                 statuses.forEach((peer, status) -> map.put(peer,
-                                                           new MemberView(peer, status, SwimHealth.HEALTHY, Option.none())));
+                                                           new MemberView(peer, status, SwimHealth.HEALTHY)));
 
                 return Map.copyOf(map);
             }
 
             @Override public Option<MemberView> get(NodeId peer) {
                 return Option.option(statuses.get(peer))
-                             .map(status -> new MemberView(peer, status, SwimHealth.HEALTHY, Option.none()));
+                             .map(status -> new MemberView(peer, status, SwimHealth.HEALTHY));
             }
         };
     }

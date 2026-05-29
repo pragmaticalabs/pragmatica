@@ -157,8 +157,8 @@ public final class ClusterConfigRoutes implements RouteSource {
         var view = node.membershipView();
         var reachabilitySnapshot = node.metricsCollector().lastReachabilitySnapshot();
         var selfId = node.self();
-        // RC1 membership-v2 step 1: per-peer state re-sourced off the FSM-written
-        // `NodeLifecycleKey` atom. Built from the NTT-derived generation snapshot's
+        // RC1 membership-v2: per-peer state sourced from the NTT-derived generation
+        // snapshot's
         // `coreMembers` lifecycle enum (mirrors StatusRoutes.lifecycleStateMap). Empty when no
         // snapshot has been published yet.
         var kvStateMap = lifecycleStateMap(node);
@@ -215,9 +215,8 @@ public final class ClusterConfigRoutes implements RouteSource {
         return state.name();
     }
 
-    /// RC1 membership-v2 step 1: per-peer lifecycle display map sourced from the NTT-derived
-    /// generation snapshot's `coreMembers` instead of scanning the FSM-written
-    /// `NodeLifecycleKey` table. Empty map when no snapshot is published yet.
+    /// RC1 membership-v2: per-peer lifecycle display map sourced from the NTT-derived
+    /// generation snapshot's `coreMembers`. Empty map when no snapshot is published yet.
     private static Map<NodeId, String> lifecycleStateMap(ManageableNode node) {
         return node.currentGenerationSnapshot()
                    .map(snapshot -> snapshot.coreMembers()

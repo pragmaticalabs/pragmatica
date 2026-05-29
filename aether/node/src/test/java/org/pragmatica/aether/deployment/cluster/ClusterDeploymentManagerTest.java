@@ -22,14 +22,12 @@ import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -89,6 +87,7 @@ class ClusterDeploymentManagerTest {
     private TestKVStore kvStore;
     private MessageRouter router;
     private ClusterDeploymentManager manager;
+    private final Map<NodeId, NodeLifecycleState> lifecycleSeed = new LinkedHashMap<>();
 
     @BeforeEach
     void setUp() {
@@ -101,25 +100,30 @@ class ClusterDeploymentManagerTest {
         manager = buildManager(List.of(self, node2, node3), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT);
     }
 
-    // Derive snapshot directly from TestKVStore NodeLifecycleKey entries — tests seed these via
-    // addTopology(), and the snapshot-derived activeNodes()/drainingNodes() now read from here.
+    // Membership-v2 finale: the node-lifecycle KV atom is deleted. Tests seed lifecycle states
+    // into `lifecycleSeed` via addTopology(); the snapshot-derived activeNodes()/drainingNodes()
+    // read from that in-memory map.
     private Supplier<Option<ClusterGenerationSnapshot>> kvBackedSnapshotSupplier() {
-        return () -> {
-            var members = new LinkedHashMap<NodeId, CoreMember>();
-            kvStore.forEach(NodeLifecycleKey.class,
-                            NodeLifecycleValue.class,
-                            (key, value) -> members.put(key.nodeId(),
-                                                         CoreMember.coreMember(key.nodeId(),
-                                                                               "host",
-                                                                               9000,
-                                                                               value.state(),
-                                                                               HealthHint.HEALTHY,
-                                                                               Epoch.epoch(1L, 0L),
-                                                                               Epoch.epoch(1L, 0L))));
-            if (members.isEmpty()) {return Option.none();}
-            return Option.some(ClusterGenerationSnapshot.empty(1L).withDesiredCoreSize(members.size())
-                                                                    .withCoreMembers(members));
-        };
+        return this::snapshotFromSeed;
+    }
+
+    private Option<ClusterGenerationSnapshot> snapshotFromSeed() {
+        var members = new LinkedHashMap<NodeId, CoreMember>();
+        lifecycleSeed.forEach((nodeId, state) -> members.put(nodeId, seedMember(nodeId, state)));
+        if (members.isEmpty()) {return Option.none();}
+
+        return Option.some(ClusterGenerationSnapshot.empty(1L).withDesiredCoreSize(members.size())
+                                                              .withCoreMembers(members));
+    }
+
+    private static CoreMember seedMember(NodeId nodeId, NodeLifecycleState state) {
+        return CoreMember.coreMember(nodeId,
+                                     "host",
+                                     9000,
+                                     state,
+                                     HealthHint.HEALTHY,
+                                     Epoch.epoch(1L, 0L),
+                                     Epoch.epoch(1L, 0L));
     }
 
     private ClusterDeploymentManager buildManager(List<NodeId> initialTopology,
@@ -308,8 +312,7 @@ class ClusterDeploymentManagerTest {
         clusterNode.appliedCommands.clear();
 
         // Add third node with ON_DUTY lifecycle
-        kvStore.put(AetherKey.NodeLifecycleKey.nodeLifecycleKey(node3),
-                    AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY));
+        lifecycleSeed.put(node3, NodeLifecycleState.ON_DUTY);
         manager.onMembershipDecision(MembershipDecision.nodeJoined(node3, List.of(self, node2, node3)));
 
         // Should allocate 1 more instance to reach desired 3
@@ -337,20 +340,6 @@ class ClusterDeploymentManagerTest {
         assertThat(naRemoves).hasSize(1);
         assertThat(naRemoves.getFirst().key().nodeId()).isEqualTo(node3);
         assertThat(naRemoves.getFirst().key().artifact()).isEqualTo(artifact);
-
-        // R4: ClusterDeploymentState no longer removes NodeLifecycleKey directly.
-        // MembershipFsm is the sole writer per spec §4.3 P4. The FSM must NOT
-        // emit a Remove for the lifecycle key on node removal — DECOMMISSIONED is
-        // written by the FSM on departure observation, and a future
-        // compaction step will GC stale entries.
-        var lifecycleKeyRemoves = clusterNode.appliedCommands.stream()
-                                                              .filter(cmd -> cmd instanceof KVCommand.Remove<?>)
-                                                              .map(cmd -> ((KVCommand.Remove<?>) cmd).key())
-                                                              .filter(key -> key instanceof AetherKey.NodeLifecycleKey)
-                                                              .toList();
-        assertThat(lifecycleKeyRemoves)
-            .as("R4: ClusterDeploymentState no longer removes NodeLifecycleKey — the FSM is sole writer")
-            .isEmpty();
     }
 
     // === Slice State Tracking Tests ===
@@ -708,8 +697,7 @@ class ClusterDeploymentManagerTest {
 
         // Add topology so allocations can happen
         for (var nodeId : List.of(self, node2, node3)) {
-            kvStore.put(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId),
-                        AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY));
+            lifecycleSeed.put(nodeId, NodeLifecycleState.ON_DUTY);
         }
         restoredManager.onMembershipDecision(MembershipDecision.nodeJoined(node3, List.of(self, node2, node3)));
 
@@ -863,8 +851,7 @@ class ClusterDeploymentManagerTest {
         var topology = List.of(nodes);
         // Register ON_DUTY lifecycle for each node so CDM considers them allocatable
         for (var nodeId : nodes) {
-            kvStore.put(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId),
-                        AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY));
+            lifecycleSeed.put(nodeId, NodeLifecycleState.ON_DUTY);
         }
         mgr.onMembershipDecision(MembershipDecision.nodeJoined(nodes[nodes.length - 1], topology));
     }

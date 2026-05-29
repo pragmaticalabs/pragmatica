@@ -7,13 +7,15 @@ package org.pragmatica.aether.deployment.membership.phase;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.deployment.membership.phase.ClusterPhaseView.LifecycleSnapshotReader;
+import org.pragmatica.aether.deployment.membership.phase.ClusterPhaseView.MembershipViewReader;
+import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.swim.HealthSnapshot;
+import org.pragmatica.swim.SwimHealth;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -43,7 +45,7 @@ class ClusterPhaseViewTest {
     @Nested @DisplayName("COLD_BOOT branch (never reached NORMAL)") class ColdBootBranch {
         @Test void compute_zeroOnDuty_returnsColdBoot() {
             var view = view(5,
-                            () -> Map.<NodeId, NodeLifecycleValue>of(),
+                            lifecycleSnapshot(),
                             () -> Option.none(),
                             () -> true);
             assertThat(view.compute(T_BASE)).isEqualTo(ClusterPhase.COLD_BOOT);
@@ -236,13 +238,13 @@ class ClusterPhaseViewTest {
     }
 
     private static ClusterPhaseView view(int expectedClusterSize,
-                                         LifecycleSnapshotReader lifecycleReader,
+                                         MembershipViewReader membershipReader,
                                          Supplier<Option<ClusterPhase>> priorPhaseReader,
                                          BooleanSupplier haveLeader) {
         return ClusterPhaseView.clusterPhaseView(expectedClusterSize,
                                                  STABLE_WINDOW,
                                                  RECOVERY_WINDOW,
-                                                 lifecycleReader,
+                                                 membershipReader,
                                                  priorPhaseReader,
                                                  haveLeader);
     }
@@ -251,16 +253,33 @@ class ClusterPhaseViewTest {
         return new LifecycleSnapshotBuilder();
     }
 
-    private static final class LifecycleSnapshotBuilder implements LifecycleSnapshotReader {
-        private final Map<NodeId, NodeLifecycleValue> snapshot = new LinkedHashMap<>();
+    /// Test builder — collects per-peer lifecycle states and exposes them as a
+    /// `MembershipViewReader`. Every `ON_DUTY` peer is mapped to SWIM `HEALTHY` (the only
+    /// status `ClusterPhaseView` counts); `updatedAt` is retained for call-site compatibility
+    /// but ignored (the view no longer reads a per-peer consensus timestamp).
+    private static final class LifecycleSnapshotBuilder implements MembershipViewReader {
+        private final Map<NodeId, NodeLifecycleState> states = new LinkedHashMap<>();
 
-        LifecycleSnapshotBuilder with(NodeId peer, NodeLifecycleState state, long updatedAt) {
-            snapshot.put(peer, NodeLifecycleValue.nodeLifecycleValue(state, updatedAt));
+        LifecycleSnapshotBuilder with(NodeId peer, NodeLifecycleState state, @SuppressWarnings("unused") long updatedAt) {
+            states.put(peer, state);
             return this;
         }
 
-        @Override public Map<NodeId, NodeLifecycleValue> snapshot() {
-            return snapshot;
+        @Override public MembershipView view() {
+            return MembershipView.membershipView(() -> Option.some(buildSnapshot()));
+        }
+
+        private HealthSnapshot buildSnapshot() {
+            var swim = new LinkedHashMap<NodeId, SwimHealth>();
+            states.forEach((peer, state) -> putIfOnDuty(swim, peer, state));
+
+            return HealthSnapshot.healthSnapshot(swim);
+        }
+
+        private static void putIfOnDuty(Map<NodeId, SwimHealth> swim, NodeId peer, NodeLifecycleState state) {
+            if (state == NodeLifecycleState.ON_DUTY) {
+                swim.put(peer, SwimHealth.HEALTHY);
+            }
         }
     }
 }

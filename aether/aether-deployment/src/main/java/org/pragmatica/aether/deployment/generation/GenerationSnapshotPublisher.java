@@ -258,7 +258,7 @@ public final class GenerationSnapshotPublisher {
     }
 
     /// Phase C-1: derive the lifecycle map fed to the projector from SWIM/NTT membership
-    /// instead of the FSM-written KV `NodeLifecycleKey` scan. Every converged member is
+    /// instead of a KV lifecycle scan. Every converged member is
     /// synthesized as `ON_DUTY` (or `DRAINING` when the leader readiness view reports the
     /// node draining); departed nodes simply are not in `memberSupplier` so they never
     /// appear (the projector's `STOPPED` filter is preserved but unused on this path).

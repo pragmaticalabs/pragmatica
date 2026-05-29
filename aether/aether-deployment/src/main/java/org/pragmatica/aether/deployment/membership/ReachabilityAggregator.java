@@ -51,8 +51,7 @@ import org.slf4j.LoggerFactory;
 /// * **Quorum**: for each target, count observers reporting REACHABLE vs
 ///   UNREACHABLE within TTL. Promote to a canonical kind if count crosses
 ///   ⌈N/2⌉+1 where N is the current ON_DUTY core count (KV-canonical).
-/// * **Single-writer rule**: this class does NOT write KV. It emits a snapshot
-///   only; `HealthReconciler` remains the sole `NodeLifecycleKey` writer.
+/// * **Single-writer rule**: this class does NOT write KV. It emits a snapshot only.
 ///
 /// Threading: callers (leader's pong-receive path + tick-build path) must serialize
 /// access. The cluster-sync FSM already provides this serialization.

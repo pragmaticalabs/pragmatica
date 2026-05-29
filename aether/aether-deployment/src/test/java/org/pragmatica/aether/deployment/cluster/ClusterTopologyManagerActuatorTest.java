@@ -13,11 +13,9 @@ import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
@@ -193,7 +191,6 @@ class ClusterTopologyManagerActuatorTest {
     private static final class RecordingClusterStore {
         private final AtomicReference<Option<ClusterConfigValue>> current = new AtomicReference<>(Option.none());
         private final ConcurrentHashMap<ProvisioningSlotKey, ProvisioningSlotValue> slotKv = new ConcurrentHashMap<>();
-        private final ConcurrentHashMap<NodeId, NodeLifecycleValue> lifecycleKv = new ConcurrentHashMap<>();
 
         void seed(int coreCount) {
             current.set(Option.some(new ClusterConfigValue("", "", "1.0.0", coreCount, 3, 9, "test",
@@ -207,10 +204,6 @@ class ClusterTopologyManagerActuatorTest {
 
         long currentVersion() {
             return current.get().map(ClusterConfigValue::configVersion).or(0L);
-        }
-
-        Option<NodeLifecycleValue> lifecycle(NodeId nodeId) {
-            return Option.option(lifecycleKv.get(nodeId));
         }
 
         Map<ProvisioningSlotKey, ProvisioningSlotValue> slots() {
@@ -235,8 +228,6 @@ class ClusterTopologyManagerActuatorTest {
                 slotKv.put(psk, psv);
             } else if (put.key() instanceof ClusterConfigKey && put.value() instanceof ClusterConfigValue cv) {
                 current.set(Option.some(cv));
-            } else if (put.key() instanceof NodeLifecycleKey nlk && put.value() instanceof NodeLifecycleValue nlv) {
-                lifecycleKv.put(nlk.nodeId(), nlv);
             }
         }
 

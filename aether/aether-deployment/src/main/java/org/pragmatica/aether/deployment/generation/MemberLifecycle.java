@@ -7,7 +7,7 @@ package org.pragmatica.aether.deployment.generation;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 
 /// Lightweight membership descriptor consumed by `ClusterGenerationProjector` to build
-/// `CoreMember`s. Decouples the projector from the KV value type `NodeLifecycleValue`:
+/// `CoreMember`s. Decouples the projector from any KV value type:
 /// only the state plus display address (host/port) are required to project a member, since
 /// the synthesized path always defaults `joinedEpoch`/`observedCoreEpoch` to `Epoch.ZERO`
 /// and `provisioningSource` to `UNKNOWN`.

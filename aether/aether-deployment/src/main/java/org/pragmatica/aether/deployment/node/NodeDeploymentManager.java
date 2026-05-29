@@ -20,12 +20,10 @@ import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -86,10 +84,6 @@ public interface NodeDeploymentManager {
     @Contract
     @MessageReceiver
     void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
-
-    @Contract
-    @MessageReceiver
-    void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove);
 
     @Contract
     @MessageReceiver
@@ -540,17 +534,6 @@ public interface NodeDeploymentManager {
                 log.warn("Node {} received SHUTTING_DOWN lifecycle decision — initiating shutdown",
                          ctx.self().id());
                 ctx.shutdownCallback().onPresent(Runnable::run);
-            }
-        }
-
-        @Contract
-        @Override
-        public void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove) {
-            var key = valueRemove.cause().key();
-            if (key.nodeId().equals(ctx.self()) && isActive()) {
-                log.warn("Node {} lifecycle key removed unexpectedly — re-emitting self-ready (node-lifecycle hook re-runs; FSM owns ON_DUTY rewrites post-E.7)",
-                         ctx.self().id());
-                selfReadySignal.get().onPresent(Runnable::run);
             }
         }
 

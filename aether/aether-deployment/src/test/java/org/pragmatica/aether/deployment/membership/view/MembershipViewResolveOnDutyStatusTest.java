@@ -7,9 +7,6 @@ package org.pragmatica.aether.deployment.membership.view;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.view.MembershipView.MemberStatus;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot.ReachabilityKind;
 import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot.ReachabilityState;
@@ -18,10 +15,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.SwimHealth;
 
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -147,24 +142,9 @@ class MembershipViewResolveOnDutyStatusTest {
                                                   SwimHealth swimHealth,
                                                   Option<AggregatedReachabilitySnapshot> snapshot) {
         var healthSnapshot = HealthSnapshot.healthSnapshot(Map.of(PEER, swimHealth));
-        var lifecycleEntries = lifecycleEntriesFor(PEER, NodeLifecycleState.ON_DUTY);
         Supplier<Option<AggregatedReachabilitySnapshot>> snapshotSupplier = () -> snapshot;
         return MembershipView.strict(() -> Option.some(healthSnapshot),
-                                      consumer -> applyEntries(lifecycleEntries, consumer),
                                       () -> quorate,
                                       snapshotSupplier);
-    }
-
-    private static Map<NodeLifecycleKey, NodeLifecycleValue> lifecycleEntriesFor(NodeId peer,
-                                                                                  NodeLifecycleState state) {
-        var entries = new LinkedHashMap<NodeLifecycleKey, NodeLifecycleValue>();
-        entries.put(NodeLifecycleKey.nodeLifecycleKey(peer),
-                    NodeLifecycleValue.nodeLifecycleValue(state, T0));
-        return entries;
-    }
-
-    private static void applyEntries(Map<NodeLifecycleKey, NodeLifecycleValue> entries,
-                                      BiConsumer<NodeLifecycleKey, NodeLifecycleValue> consumer) {
-        entries.forEach(consumer);
     }
 }
