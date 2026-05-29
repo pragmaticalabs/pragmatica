@@ -6,7 +6,7 @@ package org.pragmatica.aether.deployment.node.fsm;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.config.ConfigNotificationManager;
-import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
+import org.pragmatica.aether.deployment.drain.DrainReason;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SliceDeployment;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SuspendedSlice;
 import org.pragmatica.aether.deployment.node.RoutingEpochAckTracker;

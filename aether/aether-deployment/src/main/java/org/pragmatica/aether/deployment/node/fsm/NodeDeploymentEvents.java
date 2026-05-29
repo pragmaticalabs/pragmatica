@@ -4,7 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.node.fsm;
 
-import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
+import org.pragmatica.aether.deployment.drain.DrainReason;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;

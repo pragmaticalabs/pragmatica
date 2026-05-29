@@ -138,11 +138,6 @@ public interface ClusterSyncCollector {
     /// resolve KV-ON_DUTY peer status when local SWIM hasn't acked HEALTHY.
     Option<AggregatedReachabilitySnapshot> bestSnapshot();
 
-    /// Wire the per-node readiness tracker so `buildPong()` can populate
-    /// `ClusterSyncPong.readyCandidate`. Default no-op leaves the field as `Option.none()`
-    /// which preserves pre-Phase-2 behaviour. See cluster-convergence-reconciler-spec §SYNCING.
-    @Contract default void setReadinessTracker(NodeReadinessTracker tracker) {}
-
     /// Membership v2 (§7.5.3) — wire the node-reported readiness state supplier so
     /// `buildPong()` stamps `current().name()` (SYNCING|READY|DRAINING) onto
     /// `ClusterSyncPong.lifecycleState` instead of the legacy `currentLifecycleState()`
@@ -218,12 +213,6 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// SwimHealth.HEALTHY`. When this predicate returns TRUE for a peer, the follower
     /// IGNORES the owner's eviction hint for that peer — independence preserved.
     private final AtomicReference<java.util.function.Predicate<NodeId>> peerLocallyAlive = new AtomicReference<>(_ -> true);
-
-    /// Phase 2 PR-B — per-node "ready to promote to ON_DUTY" candidate. `buildPong()` reads
-    /// `tracker.candidate()` and stamps the value on the outgoing pong. Default tracker reports
-    /// `Option.none()` until `setReadinessTracker(...)` is wired by `AetherNode`.
-    private final AtomicReference<NodeReadinessTracker> readinessTracker =
-        new AtomicReference<>(NodeReadinessTracker.nodeReadinessTracker());
 
     /// Membership v2 (§7.5.3) — node-reported readiness state supplier. `buildPong()`
     /// stamps `current().name()` onto the pong's `lifecycleState` field, repurposing it
@@ -423,12 +412,6 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         return peerLocallyAlive.get().test(peer);
     }
 
-    @Override@Contract public void setReadinessTracker(NodeReadinessTracker tracker) {
-        readinessTracker.set(tracker == null
-                             ? NodeReadinessTracker.nodeReadinessTracker()
-                             : tracker);
-    }
-
     @Override@Contract public void setNodeReportedStateSupplier(Supplier<NodeReportedState> supplier) {
         nodeReportedStateSupplier.set(Option.option(supplier));
     }
@@ -528,7 +511,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
                                    collectCommunityReports(),
                                    buffer.drainHealth(),
                                    buffer.drainConnectivity(),
-                                   readinessTracker.get().candidate(),
+                                   Option.none(),
                                    incarnationSupplier.get().getAsLong());
     }
 
