@@ -55,4 +55,18 @@ class IdGeneratorTest {
         // ULID uses lowercase Crockford base32 (excludes i, l, o, u)
         assertThat(ulidPart).matches("[0-9a-hjkmnp-tv-z]+");
     }
+
+    @Test
+    void generateWithoutPrefixCreatesBareUlid() {
+        var id = IdGenerator.generate();
+
+        assertThat(id).doesNotContain("-")
+                      .hasSize(ULID.STRING_LENGTH)
+                      .matches("[0-9a-hjkmnp-tv-z]+");
+    }
+
+    @Test
+    void generateWithoutPrefixCreatesUniqueIds() {
+        assertThat(IdGenerator.generate()).isNotEqualTo(IdGenerator.generate());
+    }
 }

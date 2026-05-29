@@ -22,8 +22,15 @@ public sealed interface IdGenerator {
     /// @param prefix the prefix for the ID
     /// @return a unique ID in the format "prefix-ulid"
     static String generate(String prefix) {
-        return prefix + "-" + ULID.ulid()
-                                  .encoded();
+        return prefix + "-" + generate();
+    }
+
+    /// Generate a unique ID without a prefix.
+    ///
+    /// @return a unique ID as the 26-character ULID string
+    static String generate() {
+        return ULID.ulid()
+                   .encoded();
     }
 
     @SuppressWarnings("unused")
