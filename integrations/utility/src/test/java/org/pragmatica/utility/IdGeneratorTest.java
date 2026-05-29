@@ -42,17 +42,17 @@ class IdGeneratorTest {
         var id = IdGenerator.generate("PREFIX");
 
         assertThat(id).startsWith("PREFIX-");
-        var ksuidPart = id.substring("PREFIX-".length());
-        // KSUID is always 27 characters
-        assertThat(ksuidPart).hasSize(KSUID.STRING_LENGTH);
+        var ulidPart = id.substring("PREFIX-".length());
+        // ULID is always 26 characters
+        assertThat(ulidPart).hasSize(ULID.STRING_LENGTH);
     }
 
     @Test
-    void generateCreatesBase62Ids() {
+    void generateCreatesBase32Ids() {
         var id = IdGenerator.generate("test");
-        var ksuidPart = id.substring("test-".length());
+        var ulidPart = id.substring("test-".length());
 
-        // KSUID uses base62: 0-9, A-Z, a-z
-        assertThat(ksuidPart).matches("[0-9A-Za-z]+");
+        // ULID uses lowercase Crockford base32 (excludes i, l, o, u)
+        assertThat(ulidPart).matches("[0-9a-hjkmnp-tv-z]+");
     }
 }

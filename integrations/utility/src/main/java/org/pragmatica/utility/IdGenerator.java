@@ -15,14 +15,14 @@
  */
 
 package org.pragmatica.utility;
-/// ID generator using KSUID for unique, time-sortable identifiers.
+/// ID generator using ULID for unique, time-sortable identifiers.
 public sealed interface IdGenerator {
     /// Generate a unique ID with the given prefix.
     ///
     /// @param prefix the prefix for the ID
-    /// @return a unique ID in the format "prefix-ksuid"
+    /// @return a unique ID in the format "prefix-ulid"
     static String generate(String prefix) {
-        return prefix + "-" + KSUID.ksuid()
+        return prefix + "-" + ULID.ulid()
                                   .encoded();
     }
 

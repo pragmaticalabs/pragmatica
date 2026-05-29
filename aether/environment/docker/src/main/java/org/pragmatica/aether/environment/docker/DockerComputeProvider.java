@@ -55,10 +55,10 @@ import static org.pragmatica.lang.Result.success;
             return preflight.unwrap();
         }
         // Identity: honor a caller-supplied ctx.nodeId() (bootstrap path), otherwise
-        // self-mint a fresh KSUID-suffixed id via the canonical IdGenerator path —
+        // self-mint a fresh ULID-suffixed id via the canonical IdGenerator path —
         // exactly as the cloud providers do. The single value is used for BOTH the
         // container name AND the NodeId, so `NodeId == container_name` holds and
-        // `docker kill <nodeId>` Just Works in the test harness. KSUID is k-sortable
+        // `docker kill <nodeId>` Just Works in the test harness. ULID is k-sortable
         // and unique, eliminating the slot-number reuse the old max(existing)+1 scheme
         // suffered when dead containers were swept and the observed max dropped.
         var identity = resolveIdentity(spec);
@@ -68,7 +68,7 @@ import static org.pragmatica.lang.Result.success;
 
     /// Resolve the node identity used as both container name and NodeId. Honors a
     /// caller-supplied `ctx.nodeId()` when present (bootstrap supplies it), otherwise
-    /// mints `aether-<cluster>-node-<ksuid>` via [IdGenerator]. The cluster segment is
+    /// mints `aether-<cluster>-node-<ulid>` via [IdGenerator]. The cluster segment is
     /// sourced from [#clusterOrDefault] (ProvisionContext.clusterName with an
     /// AETHER_CLUSTER_NAME env fallback) so CTM replacements carry the same
     /// `aether-<cluster>-` prefix as their compose-fixed siblings — the orphan sweeper
@@ -195,7 +195,7 @@ import static org.pragmatica.lang.Result.success;
         var role = roleOrDefault(ctx);
         var cluster = clusterOrDefault(ctx);
         // NodeId == container name (the resolved identity: caller-supplied ctx.nodeId()
-        // or a freshly-minted KSUID id). Keeping them equal means `docker kill <nodeId>`
+        // or a freshly-minted ULID id). Keeping them equal means `docker kill <nodeId>`
         // resolves to this exact container — no nodeId→container map needed.
         var nodeId = containerName;
         var peers = ctx.peers().or("");
@@ -246,7 +246,7 @@ import static org.pragmatica.lang.Result.success;
             command.add(config.dockerGid());
         }
         if (config.exposeHostPorts()) {
-            // KSUID-minted replacements have no numeric slot, so the old `base + slot`
+            // ULID-minted replacements have no numeric slot, so the old `base + slot`
             // host-port scheme no longer applies. Publish the in-container management
             // port (8080) to an ephemeral host port (`-p 8080`) — Docker picks a free
             // one. The integration harness never host-dials provider-minted replacements
@@ -350,7 +350,7 @@ import static org.pragmatica.lang.Result.success;
                                            ProvisionSpec spec) {
         // Provider-minted replacements are reached on the Docker overlay network at
         // the container's own ports (mgmt 8080, app 8070), addressed by container name
-        // == NodeId. Host-mapped per-slot ports were a seed-only convenience; KSUID
+        // == NodeId. Host-mapped per-slot ports were a seed-only convenience; ULID
         // replacements carry no slot, so report the overlay-reachable form.
         var addresses = List.of(containerName + ":8080", containerName + ":8070");
         var tags = buildInstanceTags(spec, containerName);
