@@ -42,7 +42,6 @@ import java.util.function.IntSupplier;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.deployment.membership.MembershipConfig.membershipConfig;
 import static org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler.leaderReconciler;
-import static org.pragmatica.aether.deployment.membership.ntt.LocalQuorumWatcher.localQuorumWatcher;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -65,7 +64,6 @@ class LeaderReconcilerTest {
     private MutableIntSupplier configuredCoreCount;
     private RecordingCtm ctm;
     private MutableMembershipView membershipView;
-    private LocalQuorumWatcher localQuorum;
     private LeaderReconciler reconciler;
 
     @BeforeEach
@@ -76,10 +74,8 @@ class LeaderReconcilerTest {
         configuredCoreCount = new MutableIntSupplier(0);
         ctm = new RecordingCtm();
         membershipView = new MutableMembershipView(SELF);
-        localQuorum = localQuorumWatcher(membershipConfig(), timeSource, scheduler);
         reconciler = leaderReconciler(membershipConfig(),
                                       membershipView,
-                                      localQuorum,
                                       configuredCoreCount,
                                       ctm,
                                       timeSource,

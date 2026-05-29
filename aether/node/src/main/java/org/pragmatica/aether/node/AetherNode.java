@@ -38,7 +38,7 @@ import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler;
-import org.pragmatica.aether.deployment.membership.ntt.LocalQuorumWatcher;
+import org.pragmatica.aether.deployment.membership.ntt.QuorumLossDetector;
 import org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossIntent;
 import org.pragmatica.aether.deployment.membership.phase.ClusterPhaseView;
@@ -221,7 +221,6 @@ import org.pragmatica.swim.TransportObservation;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.membership.MembershipTracker;
 import org.pragmatica.swim.membership.MembershipTrackerConfig;
-import org.pragmatica.swim.membership.MembershipListener;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -1179,7 +1178,7 @@ public interface AetherNode extends ManageableNode {
         var inFlightTrackerForDrain = InFlightRequestTracker.inFlightRequestTracker();
         // E2 Phase 2b (2026-05-28): DrainProcedure replaces SelfDrainCoordinator's execution
         // surface. It is a *pure procedure* — no triggers, no periodic ticks, no orphan
-        // checker. The single caller in Phase 2b is the LocalQuorumWatcher quorum-loss
+        // checker. The single caller in Phase 2b is the QuorumLossDetector quorum-loss
         // listener wired further down. Operator-initiated drain (DrainRequestKey) and
         // FSM-routed drain land in Phase 6.
         //
@@ -1585,7 +1584,7 @@ public interface AetherNode extends ManageableNode {
                                                     announceJoinTrigger);
         // ---------------------------------------------------------------------
         // Membership v2 — NTT wiring (spec §6, §7.4). E2 Phase 2a (2026-05-28) made the
-        // observation unconditional: NTT + LocalQuorumWatcher + LeaderReconciler are
+        // observation unconditional: NTT + QuorumLossDetector + LeaderReconciler are
         // constructed and listeners registered on every node. The migration-ramp
         // observation-flag and DivergenceLogger are gone.
         var membershipConfig = config.membership().or(MembershipConfig::membershipConfig);
@@ -1603,19 +1602,24 @@ public interface AetherNode extends ManageableNode {
         // while both trackers run side-by-side (NTT is removed in P3).
         var membershipTrackerConfig = MembershipTrackerConfig.fromDepartureTimeout(membershipConfig.nttDepartureTimeout(),
                                                                                    TimeSpan.timeSpan(500).millis());
+        // P3 (membership unification): quorum-loss self-drain is sourced from the unified
+        // tracker's stable membership (no separate QUIC peer count). Constructed before the
+        // tracker so the tracker's MembershipListener pushes the stable member count in; the
+        // grace window + the arm-after-first-quorum guard live in QuorumLossDetector (ported
+        // from the deleted LocalQuorumWatcher, whose drain firing was dormant). The drain
+        // chain is registered below once drainProcedure/leaderReconciler exist.
+        var quorumLossDetector = QuorumLossDetector.quorumLossDetector(membershipConfig, configuredCoreCountSupplier);
         var membershipTracker = MembershipTracker.membershipTracker(config.self(),
                                                                     membershipTrackerConfig,
                                                                     () -> swimHealthDetector.currentHealth()
                                                                                             .or(() -> HealthSnapshot.healthSnapshot(Map.of())),
                                                                     configuredCoreCountSupplier,
-                                                                    MembershipListener.NOOP);
+                                                                    change -> quorumLossDetector.onMemberCountChanged(change.members().size()));
         membershipTrackerRef.set(membershipTracker);
         membershipTracker.start();
         swimHealthDetector.addObservationListener(membershipTracker::onSwimObservation);
-        var localQuorumWatcher = LocalQuorumWatcher.localQuorumWatcher(membershipConfig, TimeSource.system(), SharedScheduler::schedule);
         var leaderReconciler = LeaderReconciler.leaderReconciler(membershipConfig,
                                                                  membershipTracker,
-                                                                 localQuorumWatcher,
                                                                  configuredCoreCountSupplier,
                                                                  clusterTopologyManager,
                                                                  TimeSource.system(),
@@ -1631,19 +1635,19 @@ public interface AetherNode extends ManageableNode {
                                                          leaderReconciler.onSwimMemberHealthy(h.peer());
                                                      }
                                                  });
-        // E2 Phase 2b (2026-05-28): LocalQuorumWatcher quorum-loss now drives the §8.2
-        // unified `DrainProcedure` directly. The intermediate hop through
-        // `selfDrainCoordinator.onQuorumDisappeared` is gone; trigger detection
-        // (LocalQuorumWatcher) and procedure execution (DrainProcedure) are separated.
+        // P3 (membership unification): quorum-loss is detected by QuorumLossDetector from the
+        // unified tracker's stable membership (armed after first quorum; grace =
+        // quorumLossDrainThreshold) and drives the §8.2 unified `DrainProcedure` directly.
+        // Trigger detection (QuorumLossDetector) and procedure execution (DrainProcedure)
+        // stay separated.
         Consumer<QuorumLossIntent> quorumLossChain =
             ((Consumer<QuorumLossIntent>) leaderReconciler::onQuorumLossIntent)
                 .andThen(intent -> drainProcedure.initiate(DrainReason.QUORUM_LOSS))
                 .andThen(intent -> nodeReportedStateHolder.onDrainStarted());
-        localQuorumWatcher.setQuorumLossListener(quorumLossChain);
+        quorumLossDetector.setQuorumLossListener(quorumLossChain);
         metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
-        Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(membershipTracker::onQuicReconnect)
-                                                                                  .andThen(localQuorumWatcher::onPeerConnected);
-        Consumer<NodeId> nttDisconnectTap = ((Consumer<NodeId>) membershipTracker::onQuicDisconnect).andThen(localQuorumWatcher::onPeerDisconnected);
+        Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(membershipTracker::onQuicReconnect);
+        Consumer<NodeId> nttDisconnectTap = membershipTracker::onQuicDisconnect;
         aetherEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                     change -> toggleNttReconcilerOnLeaderChange(change, leaderReconciler)));
         // B1 (membership v2 §7.5): node-reported readiness state tracks local consensus edges.

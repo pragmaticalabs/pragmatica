@@ -48,7 +48,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// 2. [`#onTopologyUnhealthy()`] — wired from NTT's timer-fire callback while leader.
 ///    Non-leader nodes ignore. Trigger: [`ReconcileTrigger#NTT_FIRE`].
 /// 3. [`#onQuorumLossIntent(QuorumLossIntent)`] — wired from
-///    [`LocalQuorumWatcher`]. Emitted on every node. Trigger:
+///    [`QuorumLossDetector`]. Emitted on every node. Trigger:
 ///    [`ReconcileTrigger#QUORUM_LOSS`].
 /// 4. [`#onSwimMemberHealthy(NodeId)`] — wired from SWIM `HealthyObserved`. Catches
 ///    the "surplus appeared" case (a peer became reachable; the leader may need to
@@ -81,7 +81,6 @@ public final class LeaderReconciler {
     private final TimeSpan leaderActivationDelay;
     private final TimeSpan inFlightExpiry;
     private final MembershipView membershipView;
-    private final LocalQuorumWatcher localQuorumWatcher;
     private final IntSupplier configuredCoreCountSupplier;
     private final ClusterTopologyManager ctm;
     private final TimeSource timeSource;
@@ -97,7 +96,6 @@ public final class LeaderReconciler {
 
     private LeaderReconciler(MembershipConfig membershipConfig,
                              MembershipView membershipView,
-                             LocalQuorumWatcher localQuorumWatcher,
                              IntSupplier configuredCoreCountSupplier,
                              ClusterTopologyManager ctm,
                              TimeSource timeSource,
@@ -106,7 +104,6 @@ public final class LeaderReconciler {
         this.leaderActivationDelay = computeQuiesceDelay(membershipConfig.nttDepartureTimeout());
         this.inFlightExpiry = leaderActivationDelay;
         this.membershipView = membershipView;
-        this.localQuorumWatcher = localQuorumWatcher;
         this.configuredCoreCountSupplier = configuredCoreCountSupplier;
         this.ctm = ctm;
         this.timeSource = timeSource;
@@ -116,12 +113,10 @@ public final class LeaderReconciler {
     /// Production factory bound to the process-wide [`SharedScheduler`] and the system clock.
     public static LeaderReconciler leaderReconciler(MembershipConfig membershipConfig,
                                                     MembershipView membershipView,
-                                                    LocalQuorumWatcher localQuorumWatcher,
                                                     IntSupplier configuredCoreCountSupplier,
                                                     ClusterTopologyManager ctm) {
         return new LeaderReconciler(membershipConfig,
                                     membershipView,
-                                    localQuorumWatcher,
                                     configuredCoreCountSupplier,
                                     ctm,
                                     TimeSource.system(),
@@ -132,14 +127,12 @@ public final class LeaderReconciler {
     /// required for deterministic activation/debounce assertions.
     public static LeaderReconciler leaderReconciler(MembershipConfig membershipConfig,
                                                     MembershipView membershipView,
-                                                    LocalQuorumWatcher localQuorumWatcher,
                                                     IntSupplier configuredCoreCountSupplier,
                                                     ClusterTopologyManager ctm,
                                                     TimeSource timeSource,
                                                     NttTimerScheduler scheduler) {
         return new LeaderReconciler(membershipConfig,
                                     membershipView,
-                                    localQuorumWatcher,
                                     configuredCoreCountSupplier,
                                     ctm,
                                     timeSource,
@@ -184,7 +177,7 @@ public final class LeaderReconciler {
         triggerReconcile(ReconcileTrigger.NTT_FIRE);
     }
 
-    /// Live-event ingress for [`LocalQuorumWatcher`] [`QuorumLossIntent`]. At E1
+    /// Live-event ingress for [`QuorumLossDetector`] [`QuorumLossIntent`]. At E1
     /// observation-only — every node emits the intent so the divergence-logger can
     /// compare across nodes; only the leader would trigger actual §8 drain action in
     /// later stages.
@@ -292,11 +285,11 @@ public final class LeaderReconciler {
         // leader cannot distinguish "the majority died" from "I am the isolated minority",
         // so it MUST NOT provision replacements — a partitioned minority that provisioned
         // would spawn a phantom split-brain cluster. Below confirmed quorum the leader does
-        // nothing (no provision AND no drain); LocalQuorumWatcher's §8 self-drain dissolves
+        // nothing (no provision AND no drain); QuorumLossDetector's §8 self-drain dissolves
         // the minority. The observability intent is still emitted so operators see the
         // suppressed pass.
         // TODO(2c-α.3): tighten the quorum signal to the QUIC-confirmed
-        //   LocalQuorumWatcher.isBelowThreshold() once ClusterConfigValue.coreCount is wired
+        //   QuorumLossDetector.isBelowThreshold() once ClusterConfigValue.coreCount is wired
         //   into the watcher (currently dormant — configuredCoreCount unset). The SWIM
         //   membership count used here has a brief stale window post-partition (spec §11
         //   residual edge, self-corrected by self-drain).
@@ -319,7 +312,7 @@ public final class LeaderReconciler {
     }
 
     /// Simple-majority quorum threshold over the configured core size — same formula as
-    /// [`LocalQuorumWatcher`] and `ClusterTopologyManagerRecord.quorumThreshold`
+    /// [`QuorumLossDetector`] and `ClusterTopologyManagerRecord.quorumThreshold`
     /// (`configured / 2 + 1`). A configured count `< 1` is treated as `1` (a single-node
     /// cluster is its own quorum) so the guard never blocks the trivial bootstrap case.
     private static int quorumThreshold(int configuredCoreCount) {
@@ -407,11 +400,5 @@ public final class LeaderReconciler {
     /// current core-member set from (unified SWIM-fed membership source).
     public MembershipView membershipView() {
         return membershipView;
-    }
-
-    /// Observability — the [`LocalQuorumWatcher`] collaborator. Wired upstream via
-    /// `setQuorumLossListener(this::onQuorumLossIntent)`.
-    public LocalQuorumWatcher localQuorumWatcher() {
-        return localQuorumWatcher;
     }
 }

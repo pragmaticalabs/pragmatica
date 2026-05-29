@@ -7,7 +7,6 @@ package org.pragmatica.aether.deployment.membership.ntt;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.TimeSource;
@@ -18,52 +17,70 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.deployment.membership.MembershipConfig.membershipConfig;
-import static org.pragmatica.aether.deployment.membership.ntt.LocalQuorumWatcher.localQuorumWatcher;
+import static org.pragmatica.aether.deployment.membership.ntt.QuorumLossDetector.quorumLossDetector;
 
 
-/// Unit tests for [`LocalQuorumWatcher`] — mechanism in isolation, no QUIC/config wiring.
-class LocalQuorumWatcherTest {
-    private static final NodeId PEER_A = NodeId.randomNodeId();
-    private static final NodeId PEER_B = NodeId.randomNodeId();
-    private static final NodeId PEER_C = NodeId.randomNodeId();
-    private static final NodeId PEER_D = NodeId.randomNodeId();
-
+/// Unit tests for [`QuorumLossDetector`] — mechanism in isolation, no SWIM/config wiring.
+/// Member count is supplied externally via [`QuorumLossDetector#onMemberCountChanged`] and
+/// already includes self; a cluster of "self + N connected peers" is fed as `N + 1`.
+class QuorumLossDetectorTest {
     private TestTimeSource timeSource;
     private ManualScheduler scheduler;
     private RecordingListener listener;
-    private LocalQuorumWatcher watcher;
+    private MutableIntSupplier coreCount;
+    private QuorumLossDetector detector;
+    private int lastMemberCount;
 
     @BeforeEach
     void setUp() {
         timeSource = new TestTimeSource();
         scheduler = new ManualScheduler();
         listener = new RecordingListener();
-        watcher = localQuorumWatcher(membershipConfig(), timeSource, scheduler);
-        watcher.setQuorumLossListener(listener);
+        coreCount = new MutableIntSupplier(0);
+        lastMemberCount = 1;
+        detector = quorumLossDetector(membershipConfig(), coreCount, timeSource, scheduler);
+        detector.setQuorumLossListener(listener);
+    }
+
+    /// Feed a fresh member count (includes self) and remember it so a subsequent core-count
+    /// change can re-trigger a recompute against the same membership.
+    @Contract
+    private void members(int memberCount) {
+        lastMemberCount = memberCount;
+        detector.onMemberCountChanged(memberCount);
+    }
+
+    /// Replicate the original `onConfiguredCoreCountChanged` semantics — change the configured
+    /// core size and recompute against the current member count.
+    @Contract
+    private void coreCount(int newCoreCount) {
+        coreCount.set(newCoreCount);
+        detector.onMemberCountChanged(lastMemberCount);
     }
 
     @Nested
     class DefaultState {
         @Test
-        void freshWatcher_isNotBelow_andSchedulesNoTimer() {
-            assertThat(watcher.isBelowThreshold()).isFalse();
-            assertThat(watcher.currentRequiredThreshold()).isZero();
-            assertThat(watcher.belowThresholdSinceNanos().isPresent()).isFalse();
+        void freshDetector_isNotBelow_andSchedulesNoTimer() {
+            assertThat(detector.isBelowThreshold()).isFalse();
+            assertThat(detector.currentRequiredThreshold()).isZero();
+            assertThat(detector.belowThresholdSinceNanos().isPresent()).isFalse();
             assertThat(scheduler.pendingTasks()).isEmpty();
             assertThat(listener.events()).isEmpty();
         }
 
         @Test
-        void connectsBeforeCoreCount_doNotFire_thresholdUnknown() {
-            watcher.onPeerConnected(PEER_A);
-            watcher.onPeerConnected(PEER_B);
+        void membersBeforeCoreCount_doNotFire_thresholdUnknown() {
+            // self + PEER_A + PEER_B = 3 members.
+            members(3);
             scheduler.fireAll();
 
             assertThat(listener.events()).isEmpty();
-            assertThat(watcher.isBelowThreshold()).isFalse();
+            assertThat(detector.isBelowThreshold()).isFalse();
         }
     }
 
@@ -71,11 +88,16 @@ class LocalQuorumWatcherTest {
     class BelowThresholdFiring {
         @Test
         void coreCountChangedToFive_onlySelf_belowThreshold_intentFiresAfterDeadline() {
-            watcher.onConfiguredCoreCountChanged(5);
+            // Reach quorum first so the detector arms (cold-start guard); self + 4 peers = 5.
+            members(5);
+            coreCount(5);
+            assertThat(detector.isArmed()).isTrue();
+            // Now drop to self only = 1 member.
+            members(1);
 
-            assertThat(watcher.currentRequiredThreshold()).isEqualTo(3);
-            assertThat(watcher.currentLocalQuorumCount()).isEqualTo(1);
-            assertThat(watcher.isBelowThreshold()).isTrue();
+            assertThat(detector.currentRequiredThreshold()).isEqualTo(3);
+            assertThat(detector.currentMemberCount()).isEqualTo(1);
+            assertThat(detector.isBelowThreshold()).isTrue();
             assertThat(scheduler.pendingTasks()).hasSize(1);
             assertThat(scheduler.pendingTasks().getFirst().delay())
                     .isEqualTo(membershipConfig().quorumLossDrainThreshold());
@@ -95,13 +117,14 @@ class LocalQuorumWatcherTest {
     @Nested
     class RecoveryBeforeDeadline {
         @Test
-        void peersAddedThatRestoreThreshold_intentDoesNotFire_evenIfScheduledTaskRuns() {
-            watcher.onConfiguredCoreCountChanged(5);
-            watcher.onPeerConnected(PEER_A);
-            watcher.onPeerConnected(PEER_B);
+        void membersAddedThatRestoreThreshold_intentDoesNotFire_evenIfScheduledTaskRuns() {
+            members(1);
+            coreCount(5);
+            // self + PEER_A + PEER_B = 3 members.
+            members(3);
 
-            assertThat(watcher.isBelowThreshold()).isFalse();
-            assertThat(watcher.currentLocalQuorumCount()).isEqualTo(3);
+            assertThat(detector.isBelowThreshold()).isFalse();
+            assertThat(detector.currentMemberCount()).isEqualTo(3);
 
             timeSource.advanceTimeMillis(20_000);
             scheduler.fireAll();
@@ -110,12 +133,13 @@ class LocalQuorumWatcherTest {
         }
 
         @Test
-        void peerAddedBeforeDeadline_cancelsScheduledTask() {
-            watcher.onConfiguredCoreCountChanged(5);
+        void membersAddedBeforeDeadline_cancelsScheduledTask() {
+            members(1);
+            coreCount(5);
             timeSource.advanceTimeMillis(3_000);
 
-            watcher.onPeerConnected(PEER_A);
-            watcher.onPeerConnected(PEER_B);
+            // self + PEER_A + PEER_B = 3 members.
+            members(3);
 
             assertThat(scheduler.pendingTasks().getFirst().cancelled()).isTrue();
 
@@ -123,7 +147,7 @@ class LocalQuorumWatcherTest {
             scheduler.fireAll();
 
             assertThat(listener.events()).isEmpty();
-            assertThat(watcher.belowThresholdSinceNanos().isPresent()).isFalse();
+            assertThat(detector.belowThresholdSinceNanos().isPresent()).isFalse();
         }
     }
 
@@ -136,27 +160,27 @@ class LocalQuorumWatcherTest {
         /// What we verify here is the per-window deadline reset: a second below-window after
         /// a brief above-window gets its own full-deadline task, not a residual of the first.
         @Test
-        void peersAddedThenRemoved_intentFires_onSecondWindowsOwnTask_notFirstWindows() {
-            watcher.onConfiguredCoreCountChanged(5);
+        void membersAddedThenRemoved_intentFires_onSecondWindowsOwnTask_notFirstWindows() {
+            members(1);
+            coreCount(5);
             // Window 1 starts at T=0; task #0 scheduled.
             timeSource.advanceTimeMillis(5_000);
-            // Add enough peers to go above threshold (need 3): self + A + B.
-            watcher.onPeerConnected(PEER_A);
-            watcher.onPeerConnected(PEER_B);
-            assertThat(watcher.isBelowThreshold()).isFalse();
+            // Add enough members to go above threshold (need 3): self + A + B = 3.
+            members(3);
+            assertThat(detector.isBelowThreshold()).isFalse();
 
             // Window 1's task was cancelled on recovery.
             assertThat(scheduler.pendingTasks().getFirst().cancelled()).isTrue();
             assertThat(listener.events()).isEmpty();
 
-            // Drop back below threshold by removing PEER_B — opens window 2 at T=6s.
+            // Drop back below threshold (self + A = 2) — opens window 2 at T=6s.
             timeSource.advanceTimeMillis(1_000);
-            watcher.onPeerDisconnected(PEER_B);
-            assertThat(watcher.isBelowThreshold()).isTrue();
-            assertThat(watcher.currentLocalQuorumCount()).isEqualTo(2);
-            assertThat(watcher.belowThresholdSinceNanos().isPresent()).isTrue();
-            watcher.belowThresholdSinceNanos()
-                   .onPresent(ts -> assertThat(ts).isEqualTo(TimeSpan.timeSpan(6_000).millis().nanos()));
+            members(2);
+            assertThat(detector.isBelowThreshold()).isTrue();
+            assertThat(detector.currentMemberCount()).isEqualTo(2);
+            assertThat(detector.belowThresholdSinceNanos().isPresent()).isTrue();
+            detector.belowThresholdSinceNanos()
+                    .onPresent(ts -> assertThat(ts).isEqualTo(TimeSpan.timeSpan(6_000).millis().nanos()));
 
             // A new, uncancelled task with the FULL window delay was scheduled.
             assertThat(scheduler.pendingTasks()).hasSize(2);
@@ -177,17 +201,17 @@ class LocalQuorumWatcherTest {
     @Nested
     class ConfigurationShrinks {
         @Test
-        void coreCountShrunkToMatchCurrentPeers_aboveThreshold_noFire() {
-            watcher.onConfiguredCoreCountChanged(7);
-            watcher.onPeerConnected(PEER_A);
-            watcher.onPeerConnected(PEER_B);
-            // threshold=4, quorum=3, below
-            assertThat(watcher.isBelowThreshold()).isTrue();
+        void coreCountShrunkToMatchCurrentMembers_aboveThreshold_noFire() {
+            // self + PEER_A + PEER_B = 3 members.
+            members(3);
+            coreCount(7);
+            // threshold=4, members=3, below
+            assertThat(detector.isBelowThreshold()).isTrue();
 
-            // Shrink so quorum (3) meets threshold (3): coreCount=3 → threshold=2 (3/2+1).
-            watcher.onConfiguredCoreCountChanged(3);
-            assertThat(watcher.currentRequiredThreshold()).isEqualTo(2);
-            assertThat(watcher.isBelowThreshold()).isFalse();
+            // Shrink so members (3) meets threshold (3): coreCount=3 → threshold=2 (3/2+1).
+            coreCount(3);
+            assertThat(detector.currentRequiredThreshold()).isEqualTo(2);
+            assertThat(detector.isBelowThreshold()).isFalse();
 
             timeSource.advanceTimeMillis(20_000);
             scheduler.fireAll();
@@ -199,36 +223,25 @@ class LocalQuorumWatcherTest {
     @Nested
     class Idempotence {
         @Test
-        void duplicateOnPeerConnected_doesNotChangeQuorumCount_orRescheduleWindow() {
-            watcher.onConfiguredCoreCountChanged(5);
-            watcher.onPeerConnected(PEER_A);
-            watcher.onPeerConnected(PEER_A);
-            watcher.onPeerConnected(PEER_A);
+        void repeatedSameMemberCount_doesNotChangeQuorumCount_orRescheduleWindow() {
+            // self + PEER_A = 2 members; need 3, so below.
+            coreCount(5);
+            members(2);
+            members(2);
+            members(2);
 
-            assertThat(watcher.currentLocalQuorumCount()).isEqualTo(2);
+            assertThat(detector.currentMemberCount()).isEqualTo(2);
             // Still below (need 3): exactly one window scheduled, the original one.
             assertThat(scheduler.pendingTasks()).hasSize(1);
             assertThat(scheduler.pendingTasks().getFirst().cancelled()).isFalse();
         }
 
         @Test
-        void disconnectOfUntrackedPeer_isNoOp() {
-            watcher.onConfiguredCoreCountChanged(5);
-            watcher.onPeerConnected(PEER_A);
-            watcher.onPeerConnected(PEER_B);
-            watcher.onPeerConnected(PEER_C);
-            // Above threshold: 4 ≥ 3.
-            assertThat(watcher.isBelowThreshold()).isFalse();
-
-            watcher.onPeerDisconnected(PEER_D);
-
-            assertThat(watcher.currentLocalQuorumCount()).isEqualTo(4);
-            assertThat(watcher.isBelowThreshold()).isFalse();
-        }
-
-        @Test
         void firingTaskAtMostOnce_perBelowWindow() {
-            watcher.onConfiguredCoreCountChanged(5);
+            // Arm via a quorate observation before configuring the core count, then drop below.
+            members(5);
+            coreCount(5);
+            members(1);
             timeSource.advanceTimeMillis(8_000);
 
             scheduler.fireAll();
@@ -236,6 +249,63 @@ class LocalQuorumWatcherTest {
             scheduler.fireAll();
 
             assertThat(listener.events()).hasSize(1);
+        }
+    }
+
+    @Nested
+    class ArmingLatch {
+        @Test
+        void notYetArmed_belowThresholdFromStart_doesNotFire() {
+            // Boot straight into a minority cluster (self + PEER_A = 2; need 3) — never quorate.
+            members(2);
+            coreCount(5);
+            assertThat(detector.isArmed()).isFalse();
+            assertThat(detector.isBelowThreshold()).isTrue();
+
+            timeSource.advanceTimeMillis(20_000);
+            scheduler.fireAll();
+
+            assertThat(listener.events()).isEmpty();
+        }
+
+        @Test
+        void armedThenLoss_firesExactlyOnce() {
+            // Reach quorum (self + 4 peers = 5) — arms the latch.
+            members(5);
+            coreCount(5);
+            assertThat(detector.isArmed()).isTrue();
+
+            // Then drop below quorum (self + PEER_A = 2; need 3).
+            members(2);
+            assertThat(detector.isBelowThreshold()).isTrue();
+
+            timeSource.advanceTimeMillis(20_000);
+            scheduler.fireAll();
+
+            assertThat(listener.events()).hasSize(1);
+            assertThat(listener.events().getFirst().observedLocalQuorumCount()).isEqualTo(2);
+            assertThat(listener.events().getFirst().requiredThreshold()).isEqualTo(3);
+        }
+
+        @Test
+        void armingIsLatch_firesOnEachPostArmLossWindow_acrossRecovery() {
+            // Window 1: arm via quorum, then drop below.
+            members(5);
+            coreCount(5);
+            members(2);
+            timeSource.advanceTimeMillis(8_000);
+            scheduler.fireAll();
+            assertThat(listener.events()).hasSize(1);
+
+            // Recover to quorum (latch stays armed), then drop again — window 2.
+            members(5);
+            assertThat(detector.isArmed()).isTrue();
+            timeSource.advanceTimeMillis(1_000);
+            members(2);
+            timeSource.advanceTimeMillis(8_000);
+            scheduler.fireAll();
+
+            assertThat(listener.events()).hasSize(2);
         }
     }
 
@@ -249,6 +319,24 @@ class LocalQuorumWatcherTest {
 
         List<QuorumLossIntent> events() {
             return List.copyOf(events);
+        }
+    }
+
+    private static final class MutableIntSupplier implements java.util.function.IntSupplier {
+        private final AtomicInteger value;
+
+        MutableIntSupplier(int initial) {
+            this.value = new AtomicInteger(initial);
+        }
+
+        @Override
+        public int getAsInt() {
+            return value.get();
+        }
+
+        @Contract
+        void set(int newValue) {
+            value.set(newValue);
         }
     }
 
