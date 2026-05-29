@@ -10,8 +10,9 @@ source "${SCRIPT_DIR}/../../lib/generation.sh"
 
 test_initial_state() {
     wait_for_cluster_ready 60
-    # Wait for phase=NORMAL to bypass SWIM cold-boot suppression of NODE_FAILED events.
-    wait_for_phase "NORMAL" 180 || log_warn "Cluster phase still COLD_BOOT; chaos kill may produce UnknownObserved (no NODE_FAILED event)"
+    # Gate on phase=NORMAL so the cluster is fully formed (leader + quorum)
+    # before the chaos kill — avoids killing during cold-boot churn.
+    wait_for_phase "NORMAL" 180 || log_warn "Cluster phase still COLD_BOOT before chaos kill"
     wait_for_leader 60
     local count
     count=$(cluster_member_count)
@@ -33,11 +34,6 @@ test_kill_leader_and_reelect() {
     old_leader=$(cluster_leader)
     assert_ne "$old_leader" "" "Leader identified: ${old_leader}"
 
-    # Capture topology baseline BEFORE the kill so wait_for_node_departure can
-    # scope its event search to the post-kill window.
-    local baseline
-    baseline=$(topology_now)
-
     log_info "Killing leader: ${old_leader}"
     kill_node "$old_leader"
 
@@ -45,15 +41,16 @@ test_kill_leader_and_reelect() {
     # surviving core node so CLI/event calls below can reach the cluster.
     rotate_mgmt_entry_point || log_warn "No surviving core node reachable"
 
-    # Event-driven barrier: wait for surviving nodes to actually observe the
-    # leader's departure (NODE_LEFT/NODE_FAILED) instead of sleeping. If SWIM
-    # detection regresses past the budget this fails fast — the previous
-    # `sleep 10` absorbed any such regression silently.
-    if ! wait_for_node_departure "$old_leader" "$baseline" 90; then
-        log_fail "No NODE_LEFT/NODE_FAILED event for old leader ${old_leader} within 90s"
+    # v2 removal barrier: a killed node simply leaves the SWIM-fed membership —
+    # there is NO NODE_LEFT/NODE_FAILED domain event in v2 (the aggregator's
+    # onMembershipDecision is a no-op). The authoritative signal is membership
+    # absence: /api/nodes/lifecycle/<id> 404 OR drop-out of /api/nodes/status
+    # cluster.nodes[]. Fails fast if removal regresses past the budget.
+    if ! wait_for_node_removed "$old_leader" 90; then
+        log_fail "Old leader ${old_leader} still present in membership after 90s"
         return 1
     fi
-    log_pass "Departure of ${old_leader} observed via /api/events"
+    log_pass "Old leader ${old_leader} removed from membership"
 
     # Fail-closed: the previous `|| log_warn` demoted a real flake (no leader
     # within 150s) into a passing test by allowing the next assert_ne to read

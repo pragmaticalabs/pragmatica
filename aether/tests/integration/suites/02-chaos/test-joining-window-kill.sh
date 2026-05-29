@@ -107,35 +107,6 @@ snapshot_node_id_labels() {
         2>/dev/null || true
 }
 
-# Query the KV-backed lifecycle endpoint for a specific node and extract the
-# state string. Returns one of JOINING / ON_DUTY / DRAINING / DECOMMISSIONED /
-# FAILED_DRAIN / SHUTTING_DOWN, or empty string if the KV atom is absent
-# (404 from the endpoint).
-#
-# WHY KV-DIRECT (not /api/nodes/status): /api/nodes/status cluster.nodes[] is derived from
-# MembershipView's SWIM ∪ KV overlay, where the SWIM half is filtered to
-# HEALTHY peers. A JOINING-window node R may NEVER appear in /api/nodes/status
-# because R is killed before SWIM transitions it to HEALTHY. The KV-direct
-# endpoint `/api/nodes/lifecycle/<id>` reads the NodeLifecycleKey atom
-# straight out of KV-Store, so any FSM write (JOINING via SlotClaimed,
-# DECOMMISSIONED via TransportUnreachable) is observable here regardless of
-# SWIM state.
-kv_lifecycle_state() {
-    local target="$1"
-    # /api/nodes/lifecycle/<id> returns JSON {"nodeId":"...","state":"...","updatedAt":N}
-    # or HTTP 404 with cause "Node lifecycle not found" when the atom is absent.
-    # api_get returns empty stdout + non-zero rc on HTTP error; ignore rc, parse stdout.
-    local body
-    body=$(api_get "/api/nodes/lifecycle/${target}" 2>/dev/null || true)
-    if [ -z "$body" ]; then
-        return 0  # empty (KV atom absent)
-    fi
-    printf '%s' "$body" \
-        | grep -o '"state"[[:space:]]*:[[:space:]]*"[^"]*"' \
-        | head -1 \
-        | sed 's/"state"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/'
-}
-
 # Wait until R's KV-backed lifecycle atom reflects state in $1 (JOINING or
 # ON_DUTY — either is an acceptable pre-kill state, with JOINING preferred
 # because it exercises the (JOINING, TransportUnreachable) cell that S01
@@ -168,57 +139,6 @@ wait_for_replacement_in_kv() {
     return 1
 }
 
-# Report whether $target is ABSENT from /api/nodes/status cluster.nodes[].
-# Returns 0 (absent) if the node-id does not appear in the status projection,
-# 1 (present) otherwise. On a transport failure (empty body) we conservatively
-# treat the node as still present (return 1) so the caller keeps polling rather
-# than declaring removal off a failed read.
-node_absent_from_status() {
-    local target="$1"
-    local status_payload
-    status_payload=$(api_get "/api/nodes/status" 2>/dev/null || true)
-    if [ -z "$status_payload" ]; then
-        return 1  # couldn't read — assume still present, keep polling
-    fi
-    # cluster.nodes[] entries carry a "nodeId":"<id>" field. Extract the set
-    # and look for an exact match (grep+sed, no jq — matches the project idiom
-    # used by pick_non_leader). Absence of the id == removed from membership.
-    if printf '%s' "$status_payload" \
-        | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
-        | sed 's/"nodeId"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' \
-        | grep -Fxq -- "$target"; then
-        return 1  # present
-    fi
-    return 0  # absent
-}
-
-# v2 "node was removed" poll, bounded by the spec budget. In v2 a killed node
-# simply leaves the SWIM-fed membership — there is NO DECOMMISSIONED lifecycle
-# state and NO decommission-reason domain event. The authoritative v2 removal
-# signal is twofold (either is sufficient):
-#   (a) /api/nodes/lifecycle/<R> returns HTTP 404 (LIFECYCLE_NOT_FOUND) — the
-#       lifecycle endpoint reports the node as unknown. api_get yields an empty
-#       body on 404, which `kv_lifecycle_state` surfaces as the empty string.
-#   (b) R is absent from /api/nodes/status cluster.nodes[].
-# Returns 0 as soon as either holds; 1 on timeout.
-wait_for_node_removed() {
-    local target="$1" timeout="${2:-8}"
-    local deadline=$((SECONDS + timeout))
-    while [ $SECONDS -lt $deadline ]; do
-        local state
-        state=$(kv_lifecycle_state "$target")
-        # (a) lifecycle endpoint reports the node unknown (404 → empty state).
-        if [ -z "$state" ]; then
-            return 0
-        fi
-        # (b) node has dropped out of the status projection's cluster.nodes[].
-        if node_absent_from_status "$target"; then
-            return 0
-        fi
-        sleep 1
-    done
-    return 1
-}
 
 # Wait until a new aether.node-id label appears on TARGET_HOST that was NOT
 # present in $baseline_file. Returns 0 + prints the new node-id on stdout;
