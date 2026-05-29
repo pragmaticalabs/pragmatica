@@ -1103,9 +1103,18 @@ public interface AetherNode extends ManageableNode {
         metricsCollector.setReadinessTracker(readinessTracker);
         metricsCollector.setNodeReportedStateSupplier(nodeReportedStateHolder::current);
         metricsCollector.setIncarnationSupplier(org.pragmatica.aether.metrics.BootEpoch::bootEpoch);
-        metricsCollector.setPongSignalFan(ClusterSyncPongSignalFan.clusterSyncPongSignalFan(stableHealthSink,
-                                                                                            clusterNode.leaderManager(),
-                                                                                            readyCandidateSink));
+        var pongSignalFan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(stableHealthSink,
+                                                                              clusterNode.leaderManager(),
+                                                                              readyCandidateSink);
+        metricsCollector.setPongSignalFan(pongSignalFan);
+        // B3 (membership v2 §7.5.5): the leader readiness view self-cleans via a periodic stale-sweep
+        // (catches the QUIC-open-but-silent black-hole case, where no disconnect event fires). Clean
+        // departures are evicted faster by the routed TransportObservation.PeerDisconnected route below.
+        // The map is leader-only (fanIfLeader-gated), so the sweep is a no-op on followers.
+        var readinessSweepMaxAgeNanos = config.timeouts().cluster().pingInterval().nanos() * 3;
+        SharedScheduler.scheduleAtFixedRate(() -> pongSignalFan.sweepStale(readinessSweepMaxAgeNanos),
+                                            config.timeouts().cluster().pingInterval(),
+                                            config.timeouts().cluster().pingInterval());
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
         Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.get(), 0L);
         var projectorEarly = ClusterGenerationProjector.clusterGenerationProjector();
@@ -1733,6 +1742,11 @@ public interface AetherNode extends ManageableNode {
         // B1 (membership v2 §7.5): node-reported readiness state tracks local consensus edges.
         aetherEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class,
                                                     n -> routeConsensusEdgeToReportedState(n, nodeReportedStateHolder)));
+        // B3 (membership v2 §7.5.5): evict a node from the leader readiness view on routed QUIC
+        // disconnect (TransportObservation.PeerDisconnected fires on QUIC REMOVE, not on RECONNECT
+        // flaps). Fast clean-departure eviction; the stale-sweep above is the silent-node backstop.
+        aetherEntries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected.class,
+                                                    obs -> pongSignalFan.evict(obs.nodeId())));
         membershipFsm.setSwimHealthGate(nodeId -> swimHealthDetector.healthOf(nodeId) == SwimHealth.HEALTHY);
         // SwimProtocol → router wire-up: SWIM-detected FAULTY peers are forwarded to the
         // cluster-wide `TransportObservation` stream so subscribers (LeaderManager,
