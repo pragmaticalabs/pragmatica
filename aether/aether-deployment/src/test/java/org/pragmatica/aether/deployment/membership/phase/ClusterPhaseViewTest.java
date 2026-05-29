@@ -61,17 +61,18 @@ class ClusterPhaseViewTest {
             assertThat(view.compute(T_BASE + 60_000L)).isEqualTo(ClusterPhase.COLD_BOOT);
         }
 
-        @Test void compute_quorumOnDuty_withinStableWindow_returnsColdBoot() {
+        @Test void compute_quorumOnDuty_noStableWindowGate_returnsNormal() {
             var snapshot = lifecycleSnapshot()
                 .with(PEER_A, NodeLifecycleState.ON_DUTY, T_BASE)
                 .with(PEER_B, NodeLifecycleState.ON_DUTY, T_BASE)
                 .with(PEER_C, NodeLifecycleState.ON_DUTY, T_BASE);
-            // 5-node cluster, quorum = 3 — just reached, hasn't dwelled long enough
+            // RC1 membership-v2 step 1: the KV `updatedAt` stable-window gate is dropped —
+            // quorum reached + leader present ⇒ NORMAL immediately (SWIM aliveness is the gate).
             var view = view(5,
                             snapshot,
                             () -> Option.none(),
                             () -> true);
-            assertThat(view.compute(T_BASE + 1_000L)).isEqualTo(ClusterPhase.COLD_BOOT);
+            assertThat(view.compute(T_BASE + 1_000L)).isEqualTo(ClusterPhase.NORMAL);
         }
 
         @Test void compute_quorumOnDuty_pastStableWindow_returnsNormal() {
@@ -139,16 +140,18 @@ class ClusterPhaseViewTest {
             assertThat(view.compute(T_BASE + RECOVERY_WINDOW.millis())).isEqualTo(ClusterPhase.NORMAL);
         }
 
-        @Test void compute_priorRecovering_quorumRestored_withinRecoveryWindow_stillRecovering() {
+        @Test void compute_priorRecovering_quorumRestored_noRecoveryWindowGate_returnsNormal() {
             var snapshot = lifecycleSnapshot()
                 .with(PEER_A, NodeLifecycleState.ON_DUTY, T_BASE)
                 .with(PEER_B, NodeLifecycleState.ON_DUTY, T_BASE)
                 .with(PEER_C, NodeLifecycleState.ON_DUTY, T_BASE);
+            // RC1 membership-v2 step 1: recovery stable-window gate dropped — quorum restored
+            // + leader present ⇒ NORMAL immediately.
             var view = view(5,
                             snapshot,
                             () -> Option.some(ClusterPhase.RECOVERING),
                             () -> true);
-            assertThat(view.compute(T_BASE + 2_000L)).isEqualTo(ClusterPhase.RECOVERING);
+            assertThat(view.compute(T_BASE + 2_000L)).isEqualTo(ClusterPhase.NORMAL);
         }
 
         @Test void compute_priorNormal_leaderLost_returnsRecovering() {
@@ -177,25 +180,26 @@ class ClusterPhaseViewTest {
     }
 
     @Nested @DisplayName("Prior-phase semantics") class PriorPhaseSemantics {
-        @Test void compute_noPriorPhase_treatedAsColdBoot() {
+        @Test void compute_noPriorPhase_quorumMet_returnsNormal() {
             var snapshot = lifecycleSnapshot()
                 .with(PEER_A, NodeLifecycleState.ON_DUTY, T_BASE);
             var view = view(1,
                             snapshot,
                             () -> Option.none(),
                             () -> true);
-            // Within stable window — still COLD_BOOT
-            assertThat(view.compute(T_BASE + 100L)).isEqualTo(ClusterPhase.COLD_BOOT);
+            // RC1 membership-v2 step 1: no stable-window gate — single-node quorum + leader ⇒
+            // NORMAL immediately even with no prior phase.
+            assertThat(view.compute(T_BASE + 100L)).isEqualTo(ClusterPhase.NORMAL);
         }
 
-        @Test void compute_priorColdBoot_treatedAsNeverNormal() {
+        @Test void compute_priorColdBoot_quorumMet_returnsNormal() {
             var snapshot = lifecycleSnapshot()
                 .with(PEER_A, NodeLifecycleState.ON_DUTY, T_BASE);
             var view = view(1,
                             snapshot,
                             () -> Option.some(ClusterPhase.COLD_BOOT),
                             () -> true);
-            assertThat(view.compute(T_BASE + 100L)).isEqualTo(ClusterPhase.COLD_BOOT);
+            assertThat(view.compute(T_BASE + 100L)).isEqualTo(ClusterPhase.NORMAL);
         }
     }
 

@@ -11,6 +11,7 @@ import org.pragmatica.aether.slice.generation.PartitionOwner;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.GenerationSnapshotKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
@@ -18,6 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SpokesmanKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.GenerationSnapshotValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
@@ -117,7 +119,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         log.info("BootstrapModule becoming leader — projecting from committed atoms, then planning bootstrap");
         bootstrapComplete.set(false);
         bootstrapAttempts.set(0);
-        var seeded = projectFromCommittedAtoms();
+        var seeded = currentMembershipSnapshot();
         performLeaderChangeBootstrap(seeded);
     }
 
@@ -272,15 +274,6 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         return Option.some(new ClusterConfigSeedPlan(command, initialSize, coreMax));
     }
 
-    private int countLifecycleAtoms() {
-        var count = 0;
-        Map<?, ?> raw = kvSnapshotSupplier.get();
-
-        for (Object k : raw.keySet()) {if (k instanceof NodeLifecycleKey) {count++;}}
-
-        return count;
-    }
-
     @Contract
     private void logClusterConfigSeed(ClusterConfigSeedPlan plan) {
         log.info("Seeding ClusterConfigValue with coreCount={}, coreMin={}, coreMax={}",
@@ -302,7 +295,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     private void retryBootstrapIfNeeded() {
         if (!isLeaderSupplier.getAsBoolean()) {return;}
         if (!bootstrapComplete.get() && bootstrapAttempts.get() <BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS) {
-            attemptBootstrap(projectFromCommittedAtoms());
+            attemptBootstrap(currentMembershipSnapshot());
         }
 
         retryConfigSeedIfNeeded();
@@ -389,8 +382,27 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                                                                                cause.message())).onSuccess(_ -> bootstrapComplete.set(true));
     }
 
-    private ClusterGenerationSnapshot projectFromCommittedAtoms() {
+    /// RC1 membership-v2 step 1: prefer the already-published NTT-derived generation snapshot
+    /// (stored under `GenerationSnapshotKey.SINGLETON`) as the source of membership /
+    /// `desiredCoreSize` / stale-owner inputs for DHT core-partition bootstrap. The snapshot's
+    /// `coreMembers` are NTT/SWIM-derived as of the generation pipeline, so reading them is
+    /// equivalent to — and supersedes — scanning the FSM-written `NodeLifecycleKey` atoms.
+    /// Only when no snapshot has been published yet (cold formation, before the first
+    /// generation commit) do we fall back to projecting from committed atoms, which still
+    /// reads the lifecycle scan to seed the very first core partition.
+    private ClusterGenerationSnapshot currentMembershipSnapshot() {
         var kv = kvSnapshotSupplier.get();
+
+        return readPublishedSnapshot(kv).or(() -> projectFromCommittedAtoms(kv));
+    }
+
+    private static Option<ClusterGenerationSnapshot> readPublishedSnapshot(Map<AetherKey, AetherValue> kv) {
+        return Option.option(kv.get(GenerationSnapshotKey.SINGLETON))
+                     .filter(value -> value instanceof GenerationSnapshotValue)
+                     .map(value -> ((GenerationSnapshotValue) value).snapshot());
+    }
+
+    private ClusterGenerationSnapshot projectFromCommittedAtoms(Map<AetherKey, AetherValue> kv) {
         var lifecycles = collectLifecycles(kv);
         var governors = collectGovernors(kv);
         var partitions = collectPartitions(kv);

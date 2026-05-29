@@ -29,10 +29,8 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.lifecycle.NodeState;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.QueryParameter;
@@ -47,6 +45,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 
@@ -132,14 +131,12 @@ public final class StatusRoutes implements RouteSource {
         // Layer 5.
         var reachabilitySnapshot = node.metricsCollector().lastReachabilitySnapshot();
         var selfId = node.self();
-        // Per-peer KV state pre-fetch — authoritative FSM intent, exposed alongside the derived view.
-        // O(N) read from kvStore for the size of the lifecycle table; cheap for cluster sizes typical of RC1.
-        // TODO (B5, RC2): if cluster size grows past hundreds, add an indexed accessor — current
-        // `forEach` is intentionally simple; see aether/docs/internal/cli-gap-audit.md §B5.
-        var kvStateMap = new java.util.HashMap<NodeId, String>();
-        node.kvStore().forEach(org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey.class,
-                               org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue.class,
-                               (key, value) -> kvStateMap.put(key.nodeId(), externalStateName(value.state())));
+        // RC1 membership-v2 step 1: per-peer state re-sourced off the FSM-written
+        // `NodeLifecycleKey` atom. The NTT-derived generation snapshot's `coreMembers`
+        // carries the equivalent per-node lifecycle enum, so the display map is built from
+        // the snapshot instead of scanning the lifecycle KV table. Empty when no snapshot has
+        // been published yet (cold-start transient window).
+        var kvStateMap = lifecycleStateMap(node);
         var nodeInfos = allNodeIds.stream().map(nodeId -> toNodeInfo(view,
                                                                      nodeId,
                                                                      leader,
@@ -217,6 +214,19 @@ public final class StatusRoutes implements RouteSource {
     /// sidecar) so this is now a passthrough. See `aether/docs/specs/state-authority.md`.
     private static String externalStateName(org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState state) {
         return state.name();
+    }
+
+    /// RC1 membership-v2 step 1: per-peer lifecycle display map sourced from the NTT-derived
+    /// generation snapshot's `coreMembers` instead of scanning the FSM-written
+    /// `NodeLifecycleKey` table. Empty map when no snapshot is published yet.
+    private static Map<NodeId, String> lifecycleStateMap(ManageableNode node) {
+        return node.currentGenerationSnapshot()
+                   .map(snapshot -> snapshot.coreMembers()
+                                            .entrySet()
+                                            .stream()
+                                            .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                                                                                  entry -> externalStateName(entry.getValue().lifecycle()))))
+                   .or(Map.of());
     }
 
     /// E.6 (spec §7.2): route through `ManageableNode.clusterPhaseSupplier()` so the

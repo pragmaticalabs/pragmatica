@@ -48,7 +48,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.slf4j.Logger;
@@ -155,13 +157,11 @@ public final class ClusterConfigRoutes implements RouteSource {
         var view = node.membershipView();
         var reachabilitySnapshot = node.metricsCollector().lastReachabilitySnapshot();
         var selfId = node.self();
-        // Per-peer KV state pre-fetch — authoritative FSM intent, mirrors the kvState/derivedStatus
-        // split applied to /api/nodes/status NodeInfo. See aether/docs/specs/state-authority.md.
-        // TODO (B5, RC2): replace forEach with an indexed accessor for large clusters.
-        var kvStateMap = new java.util.HashMap<NodeId, String>();
-        node.kvStore().forEach(AetherKey.NodeLifecycleKey.class,
-                               AetherValue.NodeLifecycleValue.class,
-                               (key, value) -> kvStateMap.put(key.nodeId(), externalStateName(value.state())));
+        // RC1 membership-v2 step 1: per-peer state re-sourced off the FSM-written
+        // `NodeLifecycleKey` atom. Built from the NTT-derived generation snapshot's
+        // `coreMembers` lifecycle enum (mirrors StatusRoutes.lifecycleStateMap). Empty when no
+        // snapshot has been published yet.
+        var kvStateMap = lifecycleStateMap(node);
 
         return node.metricsCollector()
                    .allMetrics()
@@ -213,6 +213,19 @@ public final class ClusterConfigRoutes implements RouteSource {
     /// See `aether/docs/specs/state-authority.md`.
     private static String externalStateName(AetherValue.NodeLifecycleState state) {
         return state.name();
+    }
+
+    /// RC1 membership-v2 step 1: per-peer lifecycle display map sourced from the NTT-derived
+    /// generation snapshot's `coreMembers` instead of scanning the FSM-written
+    /// `NodeLifecycleKey` table. Empty map when no snapshot is published yet.
+    private static Map<NodeId, String> lifecycleStateMap(ManageableNode node) {
+        return node.currentGenerationSnapshot()
+                   .map(snapshot -> snapshot.coreMembers()
+                                            .entrySet()
+                                            .stream()
+                                            .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                                                                                  entry -> externalStateName(entry.getValue().lifecycle()))))
+                   .or(Map.of());
     }
 
     private static String reconcilerStateName(ManageableNode node) {

@@ -135,7 +135,8 @@ class ClusterDeploymentManagerTest {
                                                                   ClusterDeploymentManager.DEFAULT_RECONCILE_INTERVAL,
                                                                   NO_OP_SCHEMA,
                                                                   HealthSignalSink.noop(),
-                                                                  kvBackedSnapshotSupplier());
+                                                                  kvBackedSnapshotSupplier(),
+                                                                  () -> Set.copyOf(initialTopology));
     }
 
     // === Leader State Tests ===

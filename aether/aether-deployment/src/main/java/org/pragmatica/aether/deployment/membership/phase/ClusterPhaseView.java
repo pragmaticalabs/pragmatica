@@ -17,9 +17,6 @@ import java.util.Map;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
-import static org.pragmatica.lang.Option.none;
-import static org.pragmatica.lang.Option.some;
-
 
 /// Derived `ClusterPhase` view (E.6, spec §7).
 ///
@@ -163,67 +160,44 @@ public record ClusterPhaseView(int expectedClusterSize,
 
     private ClusterPhase coldBootBranch(OnDutyStats stats, int quorum, boolean haveLeader, long nowMs) {
         if (stats.onDutyCount() <quorum || !haveLeader) {return ClusterPhase.COLD_BOOT;}
-        return stableWindowSatisfied(stats, nowMs, stableWindow)
+        return stableWindowSatisfied(stats)
                ? ClusterPhase.NORMAL
                : ClusterPhase.COLD_BOOT;
     }
 
     private ClusterPhase recoveringBranch(OnDutyStats stats, int quorum, boolean haveLeader, long nowMs) {
         if (stats.onDutyCount() <quorum || !haveLeader) {return ClusterPhase.RECOVERING;}
-        return stableWindowSatisfied(stats, nowMs, recoveryStableWindow)
+        return stableWindowSatisfied(stats)
                ? ClusterPhase.NORMAL
                : ClusterPhase.RECOVERING;
     }
 
     /// Spec §7.3: stability window is "the duration after which a satisfied promotion
-    /// condition becomes effective". We derive it from the oldest ON_DUTY entry timestamp
-    /// in KV — the cluster has been at quorum since at least that point, so if the oldest
-    /// entry is old enough (>= window), the cluster has been quorum-stable for the window.
-    /// Equivalent to spec §7.3's `nowMs - stableSinceMs >= windowMs` without needing a
-    /// per-leader `stableSinceMs` field.
+    /// condition becomes effective".
     ///
-    /// **H.2b extension.** SWIM-derived ON_DUTY peers (visible via `MembershipView` but
-    /// without a KV `NodeLifecycleValue` entry) carry no consensus timestamp. When at
-    /// least one ON_DUTY peer in the view has a KV entry, we use the legacy
-    /// oldest-KV-timestamp formula. When NO ON_DUTY peer has a KV entry (post-H.3 state
-    /// where FSM no longer writes `ON_DUTY`), stability is implicitly satisfied — the
-    /// SWIM aliveness check (count >= quorum) is the only gate. This avoids stranding
-    /// the cluster in `COLD_BOOT/RECOVERING` indefinitely once the FSM stops emitting
-    /// ON_DUTY writes.
-    private static boolean stableWindowSatisfied(OnDutyStats stats, long nowMs, TimeSpan window) {
-        return stats.oldestOnDutyAt()
-                    .map(oldest -> nowMs - oldest >= window.millis())
-                    .or(stats.onDutyCount() > 0);
+    /// **RC1 membership-v2 step 1.** The `MembershipView` no longer carries a KV
+    /// `NodeLifecycleValue` per peer (SWIM-derived membership has no consensus timestamp), so
+    /// the legacy oldest-KV-`updatedAt` formula is dropped. Stability is now satisfied purely
+    /// by the SWIM aliveness gate (`onDutyCount() >= quorum`, checked by the caller) — this is
+    /// the graceful fallback the view already used once the FSM stopped emitting `ON_DUTY`
+    /// writes, now made unconditional.
+    private static boolean stableWindowSatisfied(OnDutyStats stats) {
+        return stats.onDutyCount() > 0;
     }
 
     private int quorumThreshold() {
         return Math.max(1, expectedClusterSize / 2 + 1);
     }
 
-    private record OnDutyStats(int onDutyCount, Option<Long> oldestOnDutyAt) {
+    private record OnDutyStats(int onDutyCount) {
         static OnDutyStats from(Map<NodeId, MemberView> view) {
             var count = 0;
-            var oldest = Long.MAX_VALUE;
-            var anyKvBacked = false;
 
             for (var member : view.values()) {
-                if (member.status() != MemberStatus.ON_DUTY) {continue;}
-
-                count += 1;
-                var lifecycleOpt = member.lifecycle();
-
-                if (lifecycleOpt.isPresent()) {
-                    anyKvBacked = true;
-                    var updatedAt = lifecycleOpt.unwrap().updatedAt();
-
-                    if (updatedAt <oldest) {oldest = updatedAt;}
-                }
+                if (member.status() == MemberStatus.ON_DUTY) {count += 1;}
             }
 
-            return new OnDutyStats(count,
-                                   anyKvBacked
-                                   ? some(oldest)
-                                   : none());
+            return new OnDutyStats(count);
         }
     }
 }

@@ -5,7 +5,6 @@
 package org.pragmatica.aether.deployment.membership.view;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot.ReachabilityState;
@@ -203,16 +202,18 @@ public interface MembershipView {
 
     final class MembershipViewImpl implements MembershipView {
         private final SwimHealthProvider swimHealth;
-        private final LifecycleKvReader lifecycleKv;
         private final BooleanSupplier inQuorum;
         private final Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshot;
 
+        /// RC1 membership-v2 step 1: `lifecycleKv` is accepted by the factories (callers in
+        /// `AetherNode` + tests still pass the `NodeLifecycleKey` scanner) but no longer read —
+        /// the view is now derived purely from SWIM. The parameter is retained for source
+        /// compatibility until the `NodeLifecycleKey` atom itself is deleted in a later step.
         private MembershipViewImpl(SwimHealthProvider swimHealth,
-                                   LifecycleKvReader lifecycleKv,
+                                   @SuppressWarnings("unused") LifecycleKvReader lifecycleKv,
                                    BooleanSupplier inQuorum,
                                    Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshot) {
             this.swimHealth = swimHealth;
-            this.lifecycleKv = lifecycleKv;
             this.inQuorum = inQuorum;
             this.reachabilitySnapshot = reachabilitySnapshot;
         }
@@ -221,15 +222,10 @@ public interface MembershipView {
         public Map<NodeId, MemberView> snapshot() {
             var quorate = inQuorum.getAsBoolean();
             var snapshot = reachabilitySnapshot.get();
-            var lifecycleByPeer = collectLifecycleEntries();
             var swim = swimHealth.get().or(HealthSnapshot.healthSnapshot(Map.of()));
             var view = new HashMap<NodeId, MemberView>();
-            lifecycleByPeer.forEach((peer, lifecycle) -> view.put(peer,
-                                                                  deriveFromKv(peer, lifecycle, swim, quorate, snapshot)));
-            swim.peerHealth().forEach((peer, swimState) -> view.computeIfAbsent(peer,
-                                                                                _ -> deriveFromSwimOnly(peer,
-                                                                                                        swimState,
-                                                                                                        quorate)));
+            swim.peerHealth().forEach((peer, swimState) -> view.put(peer,
+                                                                    deriveFromSwim(peer, swimState, quorate, snapshot)));
 
             return Map.copyOf(view);
         }
@@ -238,76 +234,47 @@ public interface MembershipView {
         public Option<MemberView> get(NodeId peer) {
             var quorate = inQuorum.getAsBoolean();
             var snapshot = reachabilitySnapshot.get();
-            var lifecycle = readLifecycleFor(peer);
             var swim = swimHealth.get().or(HealthSnapshot.healthSnapshot(Map.of()));
             var swimState = swim.healthOf(peer).or(SwimHealth.UNKNOWN);
 
-            return lifecycle.map(value -> deriveFromKv(peer, value, swim, quorate, snapshot))
-                            .orElse(() -> swimOnlyEntry(peer, swimState, quorate));
+            return swimOnlyEntry(peer, swimState, quorate, snapshot);
         }
 
-        private static Option<MemberView> swimOnlyEntry(NodeId peer, SwimHealth swimState, boolean quorate) {
+        private static Option<MemberView> swimOnlyEntry(NodeId peer,
+                                                        SwimHealth swimState,
+                                                        boolean quorate,
+                                                        Option<AggregatedReachabilitySnapshot> reachabilitySnapshot) {
             if (swimState != SwimHealth.HEALTHY) {
                 return Option.none();
             }
 
-            var status = quorate
-                         ? MemberStatus.ON_DUTY
-                         : MemberStatus.UNTRACKED;
-            return Option.some(new MemberView(peer, status, swimState, Option.none()));
+            return Option.some(deriveFromSwim(peer, swimState, quorate, reachabilitySnapshot));
         }
 
-        private Option<NodeLifecycleValue> readLifecycleFor(NodeId peer) {
-            var holder = new NodeLifecycleValue[1];
-            lifecycleKv.forEachLifecycle((key, value) -> {
-                if (key.nodeId()
-                       .equals(peer)) {
-                    holder[0] = value;
-                }
-            });
+        /// RC1 membership-v2 step 1: derive purely from SWIM (+ aggregated reachability as a
+        /// promoter). The `NodeLifecycleKey` KV-override path is dropped — SWIM is the single
+        /// source of "alive", matching the intended v2 end state. A HEALTHY peer becomes
+        /// `ON_DUTY` when quorate (subject to a cluster-canonical UNREACHABLE downgrade);
+        /// every other SWIM observation is `UNTRACKED`. `lifecycle()` is always `none()`.
+        private static MemberView deriveFromSwim(NodeId peer,
+                                                 SwimHealth swimState,
+                                                 boolean quorate,
+                                                 Option<AggregatedReachabilitySnapshot> reachabilitySnapshot) {
+            var status = resolveStatus(peer, swimState, quorate, reachabilitySnapshot);
 
-            return Option.option(holder[0]);
-        }
-
-        private Map<NodeId, NodeLifecycleValue> collectLifecycleEntries() {
-            var map = new HashMap<NodeId, NodeLifecycleValue>();
-            lifecycleKv.forEachLifecycle((key, value) -> map.put(key.nodeId(), value));
-
-            return map;
-        }
-
-        private static MemberView deriveFromKv(NodeId peer,
-                                               NodeLifecycleValue lifecycle,
-                                               HealthSnapshot swim,
-                                               boolean quorate,
-                                               Option<AggregatedReachabilitySnapshot> reachabilitySnapshot) {
-            var swimState = swim.healthOf(peer).or(SwimHealth.UNKNOWN);
-            var status = mapKvState(peer, lifecycle.state(), swimState, quorate, reachabilitySnapshot);
-
-            return new MemberView(peer, status, swimState, Option.some(lifecycle));
-        }
-
-        private static MemberView deriveFromSwimOnly(NodeId peer, SwimHealth swimState, boolean quorate) {
-            var status = swimState == SwimHealth.HEALTHY && quorate
-                         ? MemberStatus.ON_DUTY
-                         : MemberStatus.UNTRACKED;
             return new MemberView(peer, status, swimState, Option.none());
         }
 
-        private static MemberStatus mapKvState(NodeId peer,
-                                               NodeLifecycleState kvState,
-                                               SwimHealth swimState,
-                                               boolean quorate,
-                                               Option<AggregatedReachabilitySnapshot> reachabilitySnapshot) {
-            return switch (kvState) {
-                case JOINING -> MemberStatus.JOINING;
-                case DRAINING -> MemberStatus.DRAINING;
-                case STOPPED -> MemberStatus.STOPPED;
-                case ON_DUTY -> resolveOnDutyStatus(peer, swimState, quorate, reachabilitySnapshot);
-            };
+        private static MemberStatus resolveStatus(NodeId peer,
+                                                  SwimHealth swimState,
+                                                  boolean quorate,
+                                                  Option<AggregatedReachabilitySnapshot> reachabilitySnapshot) {
+            return swimState == SwimHealth.HEALTHY
+                   ? resolveOnDutyStatus(peer, swimState, quorate, reachabilitySnapshot)
+                   : MemberStatus.UNTRACKED;
         }
 
-        /// `kvState == ON_DUTY` requires confirmation. Resolution order — the aggregated
+        /// `swimState == HEALTHY` requires confirmation. Resolution order — the aggregated
         /// reachability snapshot is a **SECOND confirmation source** that PROMOTES, never
         /// DEMOTES on absence-of-information. The only demotion the snapshot can drive is an
         /// explicit cluster-canonical UNREACHABLE quorum.

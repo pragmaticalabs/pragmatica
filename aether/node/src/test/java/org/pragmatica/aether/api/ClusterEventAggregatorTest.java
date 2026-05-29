@@ -88,44 +88,37 @@ class ClusterEventAggregatorTest {
     }
 
     @Test
-    void onNodeLifecyclePut_decommissionedFromUnknown_emitsNodeFailed() {
+    void onNodeLifecyclePut_stopped_isNoOp() {
+        // RC1 membership-v2 step 1: `onNodeLifecyclePut` is re-sourced off the FSM-written
+        // `NodeLifecycleKey` atom and is now a no-op. NODE_FAILED / NODE_LEFT events are no
+        // longer derived from lifecycle Puts (observability degrades gracefully until
+        // re-sourced from MembershipDecision).
         var h = new LoopbackHarness(NODE_A);
 
         h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.STOPPED));
 
-        var events = h.aggregator.events();
-        assertThat(events).hasSize(1);
-        var event = events.getFirst();
-        assertThat(event.type()).isEqualTo(ClusterEventValue.EventType.NODE_FAILED);
-        assertThat(event.details()).containsEntry("nodeId", NODE_A.id())
-                                   .containsEntry("clusterSize", String.valueOf(CLUSTER_SIZE));
+        assertThat(h.aggregator.events()).isEmpty();
     }
 
     @Test
-    void onNodeLifecyclePut_decommissionedAfterDraining_emitsNodeLeft() {
+    void onNodeLifecyclePut_drainingThenStopped_isNoOp() {
         var h = new LoopbackHarness(NODE_A);
 
         h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.DRAINING));
         h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.STOPPED));
 
-        var events = h.aggregator.events();
-        assertThat(events).hasSize(2);
-        assertThat(events.get(0).type()).isEqualTo(ClusterEventValue.EventType.NODE_LIFECYCLE_CHANGED);
-        assertThat(events.get(0).details()).containsEntry("transition", "NONE->DRAINING");
-        assertThat(events.get(1).type()).isEqualTo(ClusterEventValue.EventType.NODE_LEFT);
+        assertThat(h.aggregator.events()).isEmpty();
     }
 
     @Test
-    void onNodeLifecyclePut_idempotentOnSameState_noDoubleEmit() {
+    void onNodeLifecyclePut_repeatedPuts_remainNoOp() {
         var h = new LoopbackHarness(NODE_A);
 
         h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.STOPPED));
         h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.STOPPED));
         h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.STOPPED));
 
-        var events = h.aggregator.events();
-        assertThat(events).hasSize(1);
-        assertThat(events.getFirst().type()).isEqualTo(ClusterEventValue.EventType.NODE_FAILED);
+        assertThat(h.aggregator.events()).isEmpty();
     }
 
     @Test
@@ -267,14 +260,14 @@ class ClusterEventAggregatorTest {
     }
 
     @Test
-    void onNodeLifecyclePut_leader_publishesNodeFailed() {
+    void onNodeLifecyclePut_leader_isNoOp() {
+        // RC1 membership-v2 step 1: no longer publishes — the lifecycle-put producer is retired.
         var h = new LoopbackHarness(NODE_A, true);
 
         h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_B, NodeLifecycleState.STOPPED));
 
-        assertThat(h.aggregator.events()).hasSize(1);
-        assertThat(h.aggregator.events().getFirst().type()).isEqualTo(ClusterEventValue.EventType.NODE_FAILED);
-        assertThat(h.aggregator.events().getFirst().details()).containsEntry("nodeId", NODE_B.id());
+        assertThat(h.aggregator.events()).isEmpty();
+        assertThat(h.appliedCommands).isEmpty();
     }
 
     @Test

@@ -240,30 +240,36 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// collapse — `STOPPED` is the single terminal name; operators filter on what they see, not
     /// the StopReason discriminator which is carried on a separate JSON field). Empty filter
     /// set (e.g. `state=+` alone) matches no entry.
+    /// RC1 membership-v2 step 1: LIST path re-sourced off the FSM-written `NodeLifecycleKey`
+    /// atom. Entries are now derived from the NTT-derived generation snapshot's `coreMembers`
+    /// (the per-node lifecycle enum is equivalent to the KV state). `updatedAt` is 0 — the
+    /// snapshot carries epoch-based generation provenance, not a per-transition consensus
+    /// timestamp; operators reading the timestamp should use the single-id form
+    /// (`getNodeLifecycle`), which is an operator-command path and unchanged. The optional
+    /// `state` filter is applied unchanged against the externalised state name. Empty list
+    /// when no snapshot has been published yet (cold-start transient window).
     private List<LifecycleEntry> getAllLifecycleStates(Option<String> stateFilter) {
         var normalizedFilter = stateFilter.map(RouteFilters::parseStateFilter);
         var entries = new ArrayList<LifecycleEntry>();
-        nodeSupplier.get().kvStore().forEach(NodeLifecycleKey.class,
-                                             NodeLifecycleValue.class,
-                                             (key, value) -> appendIfMatches(entries, key, value, normalizedFilter));
+        nodeSupplier.get()
+                    .currentGenerationSnapshot()
+                    .onPresent(snapshot -> snapshot.coreMembers()
+                                                   .forEach((nodeId, member) -> appendIfMatches(entries,
+                                                                                                nodeId,
+                                                                                                member.lifecycle(),
+                                                                                                normalizedFilter)));
 
         return entries;
     }
 
     private static void appendIfMatches(List<LifecycleEntry> entries,
-                                        NodeLifecycleKey key,
-                                        NodeLifecycleValue value,
+                                        NodeId nodeId,
+                                        NodeLifecycleState state,
                                         Option<Set<String>> normalizedFilter) {
-        var entry = toLifecycleEntry(key, value);
+        var entry = new LifecycleEntry(nodeId.id(), externalStateName(state), 0L);
         if (normalizedFilter.map(set -> set.contains(entry.state())).or(true)) {
             entries.add(entry);
         }
-    }
-
-    private static LifecycleEntry toLifecycleEntry(NodeLifecycleKey key, NodeLifecycleValue value) {
-        return new LifecycleEntry(key.nodeId().id(),
-                                  externalStateName(value.state()),
-                                  value.updatedAt());
     }
 
     private Promise<LifecycleEntry> getNodeLifecycle(String nodeIdStr) {

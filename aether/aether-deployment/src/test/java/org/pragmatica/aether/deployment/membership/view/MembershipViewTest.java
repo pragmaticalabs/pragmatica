@@ -24,10 +24,14 @@ import java.util.function.BiConsumer;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// Pure-function tests for the H.1 derived membership view.
+/// Pure-function tests for the membership view.
 ///
-/// Each test seeds a SWIM snapshot and a KV map, then asserts the derived view matches the
-/// rule table in `MembershipView`'s class doc. No FSM, no consensus, no scheduler.
+/// **RC1 membership-v2 step 1.** The KV `NodeLifecycleKey`-override path is dropped — the
+/// view is derived purely from SWIM (+ aggregated reachability as a promoter). The KV map
+/// passed to `viewFrom` is now ignored by the view (the factory still accepts the reader for
+/// source compatibility), so these tests assert the SWIM-only contract: HEALTHY ⇒ ON_DUTY
+/// (when quorate / not snapshot-downgraded), every other SWIM observation ⇒ UNTRACKED, and
+/// `lifecycle()` is always absent. No FSM, no consensus, no scheduler.
 class MembershipViewTest {
     private static final NodeId NODE_1 = NodeId.nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = NodeId.nodeId("node-2").unwrap();
@@ -66,44 +70,42 @@ class MembershipViewTest {
         }
     }
 
-    @Nested @DisplayName("KV override wins for operator-declared states")
-    class KvOverrideWins {
-        @Test void healthySwimWithDraining_emitsDraining() {
+    @Nested @DisplayName("KV override is ignored — SWIM is authoritative (v2 end state)")
+    class KvOverrideIgnored {
+        @Test void healthySwimWithDraining_isOnDuty() {
             var view = viewFrom(Map.of(NODE_1, SwimHealth.HEALTHY),
                                  Map.of(NODE_1, NodeLifecycleState.DRAINING));
 
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.DRAINING);
-            assertThat(view.onDutyPeers()).isEmpty();
+            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.ON_DUTY);
+            assertThat(view.onDutyPeers()).containsExactly(NODE_1);
         }
 
-        @Test void healthySwimWithStopped_emitsStopped() {
+        @Test void healthySwimWithStopped_isOnDuty() {
             var view = viewFrom(Map.of(NODE_1, SwimHealth.HEALTHY),
                                  Map.of(NODE_1, NodeLifecycleState.STOPPED));
 
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.STOPPED);
-            assertThat(view.onDutyPeers()).isEmpty();
+            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.ON_DUTY);
+            assertThat(view.onDutyPeers()).containsExactly(NODE_1);
         }
 
-        @Test void healthySwimWithStoppedDrainFailed_emitsStopped() {
-            // Post-Step-I: FAILED_DRAIN lifecycle is now STOPPED with stopReason=DRAIN_FAILED.
-            // MemberStatus collapses to STOPPED — the StopReason sidecar lives on the lifecycle
-            // value and is not exposed via the MemberStatus enum.
-            var view = viewFrom(Map.of(NODE_1, SwimHealth.HEALTHY),
+        @Test void faultySwimWithStopped_isUntracked() {
+            // SWIM not HEALTHY ⇒ UNTRACKED regardless of any KV state.
+            var view = viewFrom(Map.of(NODE_1, SwimHealth.FAULTY),
                                  Map.of(NODE_1, NodeLifecycleState.STOPPED));
 
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.STOPPED);
+            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.UNTRACKED);
         }
 
-        @Test void healthySwimWithJoining_emitsJoining() {
+        @Test void healthySwimWithJoining_isOnDuty() {
             var view = viewFrom(Map.of(NODE_1, SwimHealth.HEALTHY),
                                  Map.of(NODE_1, NodeLifecycleState.JOINING));
 
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.JOINING);
+            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.ON_DUTY);
         }
     }
 
-    @Nested @DisplayName("Legacy ON_DUTY KV entries are honoured when snapshot has not voted negative")
-    class LegacyOnDutyHandling {
+    @Nested @DisplayName("ON_DUTY follows live SWIM, not a stale KV entry")
+    class OnDutyFollowsSwim {
         @Test void onDutyKvWithHealthySwim_emitsOnDuty() {
             var view = viewFrom(Map.of(NODE_1, SwimHealth.HEALTHY),
                                  Map.of(NODE_1, NodeLifecycleState.ON_DUTY));
@@ -112,43 +114,32 @@ class MembershipViewTest {
             assertThat(view.onDutyPeers()).containsExactly(NODE_1);
         }
 
-        @Test void onDutyKvWithFaultySwim_isOnDuty() {
-            // Cold-boot fix: KV says ON_DUTY, SWIM lags behind reporting FAULTY, and the
-            // aggregated reachability snapshot has not produced an explicit UNREACHABLE
-            // quorum (the `membershipView` factory hard-wires snapshot to `Option::none`,
-            // simulating cold-boot before the first aggregator emission). The KV entry is
-            // authoritative — absence of cluster-canonical negative evidence MUST NOT
-            // downgrade an ON_DUTY peer. The legacy "SWIM is truth for alive" assertion
-            // was the pre-fix behavior that stranded cold-boot clusters in UNTRACKED for
-            // the duration of convergence.
+        @Test void onDutyKvWithFaultySwim_isUntracked() {
+            // v2: KV is no longer consulted — a SWIM-faulty peer is UNTRACKED even if a stale
+            // KV ON_DUTY entry exists. SWIM is the single source of "alive".
             var view = viewFrom(Map.of(NODE_1, SwimHealth.FAULTY),
                                  Map.of(NODE_1, NodeLifecycleState.ON_DUTY));
 
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.ON_DUTY);
-            assertThat(view.onDutyPeers()).containsExactly(NODE_1);
+            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.UNTRACKED);
+            assertThat(view.onDutyPeers()).isEmpty();
         }
 
-        @Test void onDutyKvWithUnknownSwim_isOnDuty() {
-            // Same cold-boot semantic as the faulty-SWIM case: snapshot=Option.none() is
-            // non-information, so the KV-authoritative ON_DUTY survives.
+        @Test void onDutyKvWithUnknownSwim_isUntracked() {
             var view = viewFrom(Map.of(NODE_1, SwimHealth.UNKNOWN),
                                  Map.of(NODE_1, NodeLifecycleState.ON_DUTY));
 
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.ON_DUTY);
+            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.UNTRACKED);
         }
     }
 
     @Nested @DisplayName("Mixed cluster snapshot")
     class MixedCluster {
         @Test void fivePeersAcrossStates_emitsCorrectMix() {
-            // Realistic chaos-recovery snapshot under the cold-boot semantic
-            // (snapshot=Option::none() via the membershipView factory):
-            //   node-1: alive in SWIM, no KV → ON_DUTY (post-takeover discovery without write)
-            //   node-2: alive in SWIM, KV DRAINING → DRAINING
-            //   node-3: faulty in SWIM, KV ON_DUTY (legacy stale) → ON_DUTY (no cluster-canonical
-            //          UNREACHABLE quorum; KV is authoritative until snapshot votes negative)
-            //   node-4: faulty in SWIM, KV STOPPED → STOPPED
-            //   (replacement): alive in SWIM, no KV → ON_DUTY
+            // v2 SWIM-only derivation (KV input ignored):
+            //   node-1: HEALTHY → ON_DUTY
+            //   node-2: HEALTHY (KV DRAINING ignored) → ON_DUTY
+            //   node-3: FAULTY (KV ON_DUTY ignored) → UNTRACKED
+            //   replacement: HEALTHY → ON_DUTY
             var swim = new LinkedHashMap<NodeId, SwimHealth>();
             swim.put(NODE_1, SwimHealth.HEALTHY);
             swim.put(NODE_2, SwimHealth.HEALTHY);
@@ -163,10 +154,10 @@ class MembershipViewTest {
             var view = viewFrom(swim, kv);
 
             assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.ON_DUTY);
-            assertThat(view.statusOf(NODE_2)).isEqualTo(MemberStatus.DRAINING);
-            assertThat(view.statusOf(NODE_3)).isEqualTo(MemberStatus.ON_DUTY);
+            assertThat(view.statusOf(NODE_2)).isEqualTo(MemberStatus.ON_DUTY);
+            assertThat(view.statusOf(NODE_3)).isEqualTo(MemberStatus.UNTRACKED);
             assertThat(view.statusOf(replacement)).isEqualTo(MemberStatus.ON_DUTY);
-            assertThat(view.onDutyPeers()).containsExactlyInAnyOrder(NODE_1, NODE_3, replacement);
+            assertThat(view.onDutyPeers()).containsExactlyInAnyOrder(NODE_1, NODE_2, replacement);
         }
     }
 
@@ -188,13 +179,14 @@ class MembershipViewTest {
             assertThat(entry.unwrap().lifecycle().isPresent()).isFalse();
         }
 
-        @Test void stoppedPeer_returnsKvBackedView() {
+        @Test void stoppedKvHealthySwim_returnsSwimDerivedView() {
+            // v2: KV STOPPED is ignored; HEALTHY SWIM ⇒ ON_DUTY with no lifecycle attached.
             var view = viewFrom(Map.of(NODE_1, SwimHealth.HEALTHY),
                                  Map.of(NODE_1, NodeLifecycleState.STOPPED));
 
             var entry = view.get(NODE_1).unwrap();
-            assertThat(entry.status()).isEqualTo(MemberStatus.STOPPED);
-            assertThat(entry.lifecycle().isPresent()).isTrue();
+            assertThat(entry.status()).isEqualTo(MemberStatus.ON_DUTY);
+            assertThat(entry.lifecycle().isPresent()).isFalse();
         }
     }
 

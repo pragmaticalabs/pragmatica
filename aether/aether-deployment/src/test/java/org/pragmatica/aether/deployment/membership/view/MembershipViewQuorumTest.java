@@ -80,10 +80,10 @@ class MembershipViewQuorumTest {
             assertThat(view.onDutyPeers()).isEmpty();
         }
 
-        @Test void operatorOverrides_surviveNonQuorate() {
-            // DRAINING/DECOMMISSIONED/JOINING/FAILED_DRAIN reflect consensus-replicated
-            // operator intent. They remain true regardless of the local node's quorum
-            // status — the strict gate only suppresses derived ON_DUTY claims.
+        @Test void operatorOverrides_doNotSurviveNonQuorate() {
+            // RC1 membership-v2 step 1: KV operator overrides are no longer consulted. Under
+            // the strict non-quorate gate, every HEALTHY peer downgrades to UNTRACKED — the
+            // dropped KV-override path means DRAINING/STOPPED/JOINING no longer leak through.
             var view = strictFrom(false,
                                    Map.of(NODE_1, SwimHealth.HEALTHY,
                                           NODE_2, SwimHealth.HEALTHY,
@@ -92,17 +92,17 @@ class MembershipViewQuorumTest {
                                           NODE_2, NodeLifecycleState.STOPPED,
                                           NODE_3, NodeLifecycleState.STOPPED));
 
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.DRAINING);
-            assertThat(view.statusOf(NODE_2)).isEqualTo(MemberStatus.STOPPED);
-            assertThat(view.statusOf(NODE_3)).isEqualTo(MemberStatus.STOPPED);
+            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.UNTRACKED);
+            assertThat(view.statusOf(NODE_2)).isEqualTo(MemberStatus.UNTRACKED);
+            assertThat(view.statusOf(NODE_3)).isEqualTo(MemberStatus.UNTRACKED);
         }
 
-        @Test void joiningOverride_surviveNonQuorate() {
+        @Test void joiningOverride_doesNotSurviveNonQuorate() {
             var view = strictFrom(false,
                                    Map.of(NODE_1, SwimHealth.HEALTHY),
                                    Map.of(NODE_1, NodeLifecycleState.JOINING));
 
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.JOINING);
+            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.UNTRACKED);
         }
 
         @Test void faultySwim_remainsAbsent() {

@@ -13,7 +13,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
@@ -69,7 +68,6 @@ public final class ClusterEventAggregator {
     private final AtomicLong quorumSequence = new AtomicLong();
     private final ConcurrentHashMap<String, Long> deploymentStartTimes = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> nodeJoinTimes = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<NodeId, NodeLifecycleState> lastLifecycleState = new ConcurrentHashMap<>();
     private final IntSupplier clusterSizeSupplier;
     private final PublisherShape publisher;
 
@@ -213,54 +211,17 @@ public final class ClusterEventAggregator {
     @Contract
     public void onSwimObservation(@SuppressWarnings("unused") org.pragmatica.swim.SwimObservation observation) {}
 
+    /// RC1 membership-v2 step 1: re-sourced off the FSM-written `NodeLifecycleKey` atom.
+    /// The atom is being eliminated, so this observability hook no longer derives NODE_FAILED
+    /// / NODE_LEFT events from lifecycle Puts. The subscription is kept wired (the key type
+    /// still exists during the migration window) but the body is a no-op — membership
+    /// observability degrades gracefully until the events are re-sourced from
+    /// `MembershipDecision` (see [#onMembershipDecision]).
+    ///
+    /// TODO (membership-v2 step N): emit NODE_FAILED / NODE_LEFT from `onMembershipDecision`
+    /// once the `MembershipDecision` → aggregator subscription is wired, then delete this stub.
     @Contract
-    public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> put) {
-        // Membership KV-puts replicated to every node; only leader publishes the derived NODE_FAILED event to avoid cross-cluster fan-out + leader-bound applier failures during transitions.
-        if (!isLeaderSupplier.getAsBoolean()) {return;}
-
-        var nodeId = put.cause().key().nodeId();
-        var newState = put.cause().value().state();
-        var prior = lastLifecycleState.put(nodeId, newState);
-
-        if (prior == newState) {return;}
-        switch (newState) {
-            case STOPPED -> emitDecommissionEvent(nodeId.id(), prior);
-            case DRAINING -> emitNodeLifecycleChangedEvent(nodeId.id(), prior, newState);
-            default -> {}
-        }
-    }
-
-    private void emitDecommissionEvent(String nodeId, NodeLifecycleState prior) {
-        if (prior == NodeLifecycleState.DRAINING) {
-            emitNodeLeftEvent(nodeId, clusterSizeSupplier.getAsInt(), "lifecycle-kv");
-        } else {
-            emitNodeFailedEvent(nodeId, clusterSizeSupplier.getAsInt(), "lifecycle-kv");
-        }
-    }
-
-    private void emitNodeLeftEvent(String nodeId, int clusterSize, String source) {
-        publisher.publish(ClusterEventValue.EventType.NODE_LEFT,
-                          ClusterEventValue.Severity.INFO,
-                          "Node " + nodeId + " left cluster (now " + clusterSize + " nodes)",
-                          Map.of("nodeId", nodeId, "clusterSize", String.valueOf(clusterSize), "source", source));
-    }
-
-    private void emitNodeFailedEvent(String nodeId, int clusterSize, String source) {
-        publisher.publish(ClusterEventValue.EventType.NODE_FAILED,
-                          ClusterEventValue.Severity.CRITICAL,
-                          "Node " + nodeId + " failed (cluster size " + clusterSize + ")",
-                          Map.of("nodeId", nodeId, "clusterSize", String.valueOf(clusterSize), "source", source));
-    }
-
-    private void emitNodeLifecycleChangedEvent(String nodeId, NodeLifecycleState prior, NodeLifecycleState next) {
-        var transition = (prior == null
-                          ? "NONE"
-                          : prior.name()) + "->" + next.name();
-        publisher.publish(ClusterEventValue.EventType.NODE_LIFECYCLE_CHANGED,
-                          ClusterEventValue.Severity.INFO,
-                          "Node " + nodeId + " lifecycle: " + transition,
-                          Map.of("nodeId", nodeId, "transition", transition, "requestedBy", "MembershipFsm"));
-    }
+    public void onNodeLifecyclePut(@SuppressWarnings("unused") ValuePut<NodeLifecycleKey, NodeLifecycleValue> put) {}
 
     public void onLeaderChange(LeaderNotification.LeaderChange event) {
         if (!isLeaderSupplier.getAsBoolean()) {return;}
