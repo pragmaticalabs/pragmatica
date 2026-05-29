@@ -7,10 +7,20 @@ Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 
 **Branch:** `release-1.0.0-rc1`. **HEAD:** `868fdd97f`. **Candidate tag:** `v1.0.0-rc1-candidate` → `868fdd97f`. **All work LOCAL/unpushed. Working tree clean, full 67-module chain compiles, all touched-module tests green.**
 
-## 0. TL;DR
-Continued the membership-v2 cutover with a **major design advance** (settled interactively with the user) and the first implementation increments. The cutover order was **inverted to orchestration-first** after discovering the old layer is still the *live* membership driver (not "disconnected" as the prior handover assumed). A new **leader↔node control-heartbeat** model replaces both the KV `ON_DUTY` readiness cache and the planned `DrainRequestKey` — readiness is now a node-authoritative state carried on the existing metrics pong; drain is a command on the ping. Spec amended (new §7.5), Phase A done, B1+B2 done.
+## 0. TL;DRContinued the membership-v2 cutover with a **major design advance** (settled interactively with the user) and the first implementation increments. The cutover order was **inverted to orchestration-first** after discovering the old layer is still the *live* membership driver (not "disconnected" as the prior handover assumed). A new **leader↔node control-heartbeat** model replaces both the KV `ON_DUTY` readiness cache and the planned `DrainRequestKey` — readiness is now a node-authoritative state carried on the existing metrics pong; drain is a command on the ping. Spec amended (new §7.5), Phase A done, B1+B2 done.
 
 ## 1c. Phase C-1 design (membership-source rebuild — fully investigated, ready to implement)
+
+**STATUS (2026-05-29): C-1 CORE LANDED** — commit `a45557441`. `GenerationSnapshotPublisher` now synthesizes the lifecycle map from `ntt.currentMembers()` (ON_DUTY) + the readiness-view DRAINING set + `TopologyObserver::get` addresses, instead of the KV `NodeLifecycleKey` scan. Projector + all downstream untouched. `activeNodes()` is now SWIM/NTT-derived — disconnecting the FSM (B6) will not empty it. 510 aether-deployment tests green; full chain compiles. **`NodeLifecycleValue` survives as a synthesized DTO** (its KV *key* dies in C-2 once the remaining readers are re-sourced).
+
+**REMAINING = one coupled removal unit (B6 + the C-1 tail), then C-2/B5/D.** The 6 other `NodeLifecycleKey` readers can only be *verified* once the FSM stops writing (= B6), so re-source-them + disconnect-FSM + verify must happen together. Per-reader criticality (assessed this session):
+- **Load-bearing (must re-source before/at B6):** `BootstrapModule` (`:279,344-350,425-430` — formation seeding; re-seed coreMembers from SWIM/seed-PEERS); `ReachabilityAggregator` quorum-N (KV ON_DUTY count → `ntt.currentMemberCount()`) **IF still live** (verify — it may be a φ-accrual-era component slated for C-2 deletion).
+- **Benign-degrading (handle in C-2 or leave):** `StatusRoutes`/`ClusterConfigRoutes`/`NodeLifecycleRoutes` list (display → empty); `ClusterEventAggregator` (observability); `NodeDeploymentManager.onNodeLifecycleRemove` (hook fires less); `DecommissionedAtomGc` (atom leak, not crash — re-key on NTT departure in C-2).
+- **Moot after B6:** `NodeReadinessTracker` self-ON_DUTY clear (the whole readyCandidate→ForceOnDuty chain is removed in B6); `NodeLifecycleRoutes` drain/activate guards (drain reworked in B5; activate moot in v2).
+
+Then: B6 (disconnect FSM/reconciler/readyCandidate→ForceOnDuty/FSM-writer — direct Read+Edit, targeted) → C-2 (delete dead types) → B5 (graceful drain, §1b subtlety) → D (triad+chaos = first end-to-end v2 validation).
+
+### (original C-1 investigation detail follows)
 
 **Goal:** make the cluster's "who is a member" source SWIM/NTT-derived so disconnecting the FSM (B6) doesn't empty `activeNodes()`.
 
@@ -43,6 +53,7 @@ Continued the membership-v2 cutover with a **major design advance** (settled int
 
 ## 1. Commit chain this session (on `release-1.0.0-rc1`, atop `9bb7182ad`)
 ```
+a45557441 feat(membership): C-1 core — generation snapshot coreMembers derive from NTT/SWIM membership + readiness DRAINING (off FSM-written lifecycle KV)
 b22aceaad feat(membership): B4 — CDM allocatable-gate reads leader readiness view (READY peers + self) instead of KV ON_DUTY
 973eedfe6 feat(membership): B3 — leader readiness view self-cleans (evict on routed QUIC PeerDisconnected + periodic stale-sweep)
 868fdd97f feat(membership): B2 — leader-side readiness view (epoch-fenced pong map + stuck-SYNCING reaper + evict/sweep/snapshot)
