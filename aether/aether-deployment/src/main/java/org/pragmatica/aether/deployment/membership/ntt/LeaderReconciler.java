@@ -69,6 +69,22 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// "underprovisioned" signal. The map is internal — exposed only via observability
 /// accessors.
 ///
+/// **Arm-after-first-full-membership latch (safety-critical — Bug C).** The reconciler
+/// must NEVER provision a replacement for a configured core peer that has not yet joined
+/// (initial cluster formation / slow join). Provisioning is identity-aware, not
+/// count-aware: a deficit (`effective < configuredCoreCount`) is ambiguous on its own.
+/// Before the cluster has reached full configured membership at least once, a deficit
+/// means "configured peers are still joining" → the reconciler must WAIT (provision
+/// nothing). Only after the cluster has been observed at full configured membership
+/// (`clusterMembershipCount >= configuredCoreCount`, with `configuredCoreCount >= 1`) does
+/// `armedForProvisioning` latch to `true` (set-only, never reset); after arming, a deficit
+/// means "a node that WAS present departed" → provision a replacement (auto-heal). Without
+/// this latch the count-only reconciler spawns PHANTOM replacement containers for
+/// still-joining peers during formation, driving a host-OOM death-spiral (cite
+/// membership-unification-spec P5 — identity-aware reconciler). The latch gates
+/// provisioning ONLY; draining excess is always safe and is never gated (during formation
+/// `effective <= configured` so the drain set is naturally empty).
+///
 /// **Concurrency.** `isLeader`, `reconcileInFlight`, `rescheduleRequested` are
 /// [`AtomicBoolean`]s; `activationFutureRef` is an [`AtomicReference`];
 /// `inFlightProvisioning` is a [`ConcurrentHashMap`]. The listener reference is
@@ -89,6 +105,7 @@ public final class LeaderReconciler {
     private final AtomicBoolean isLeader = new AtomicBoolean(false);
     private final AtomicBoolean reconcileInFlight = new AtomicBoolean(false);
     private final AtomicBoolean rescheduleRequested = new AtomicBoolean(false);
+    private final AtomicBoolean armedForProvisioning = new AtomicBoolean(false);
     private final AtomicReference<ScheduledFuture<?>> activationFutureRef = new AtomicReference<>();
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
     private final ConcurrentHashMap<NodeId, Long> inFlightProvisioning = new ConcurrentHashMap<>();
@@ -221,6 +238,15 @@ public final class LeaderReconciler {
         return isLeader.get();
     }
 
+    /// Observability — whether the provisioning latch has armed. Starts `false`; latches
+    /// `true` the first reconcile pass that observes the cluster at full configured
+    /// membership (`clusterMembershipCount >= configuredCoreCount`, `configuredCoreCount >=
+    /// 1`); never resets. While unarmed, provisioning is suppressed (Bug C cold-start
+    /// guard — membership-unification-spec P5).
+    public boolean isArmedForProvisioning() {
+        return armedForProvisioning.get();
+    }
+
     /// Observability — number of in-flight provisioning records this leader is tracking.
     public int inFlightProvisioningCount() {
         return inFlightProvisioning.size();
@@ -270,6 +296,13 @@ public final class LeaderReconciler {
         runReconcileBody(ReconcileTrigger.LEADER_ACTIVATION);
     }
 
+    /// Single reconcile pass. Derives `clusterMembershipCount` and the current member set
+    /// from [`MembershipView#coreMemberIds`], arms the provisioning latch on first full
+    /// configured membership, then gates provisioning behind `quorumSafe &&
+    /// armedForProvisioning` (identity-aware rule — membership-unification-spec P5).
+    /// Provisioning is suppressed until the latch arms so a deficit during initial
+    /// formation / slow join never spawns phantom replacements for still-joining configured
+    /// peers (Bug C). Draining excess is always safe and is never gated by the latch.
     @Contract
     private void runReconcileBody(ReconcileTrigger trigger) {
         var now = timeSource.nanoTime();
@@ -280,6 +313,14 @@ public final class LeaderReconciler {
         var clusterMembershipCount = currentMembers.size();
         var configuredCoreCount = configuredCoreCountSupplier.getAsInt();
         var effective = clusterMembershipCount + inFlightProvisioning.size();
+
+        // Arm-after-first-full-membership latch (Bug C; membership-unification-spec P5 —
+        // identity-aware reconciler). Latch true the first time the cluster is observed at
+        // full configured membership; never resets. configuredCoreCount must be >= 1 to be
+        // armable (an unset/0 configured count is never a real "full" target).
+        if (configuredCoreCount >= 1 && clusterMembershipCount >= configuredCoreCount) {
+            armedForProvisioning.set(true);
+        }
 
         // Quorum-safety guard (spec §7.2, §I5; sub-quorum-must-dissolve). A sub-quorum
         // leader cannot distinguish "the majority died" from "I am the isolated minority",
@@ -294,7 +335,7 @@ public final class LeaderReconciler {
         //   membership count used here has a brief stale window post-partition (spec §11
         //   residual edge, self-corrected by self-drain).
         var quorumSafe = clusterMembershipCount >= quorumThreshold(configuredCoreCount);
-        var peersToProvision = quorumSafe ? computePeersToProvision(configuredCoreCount, effective) : Set.<NodeId>of();
+        var peersToProvision = (quorumSafe && armedForProvisioning.get()) ? computePeersToProvision(configuredCoreCount, effective) : Set.<NodeId>of();
         var peersToDrain = quorumSafe ? computePeersToDrain(currentMembers, configuredCoreCount, effective) : Set.<NodeId>of();
 
         dispatchProvisionActions(now, peersToProvision, currentMembers);

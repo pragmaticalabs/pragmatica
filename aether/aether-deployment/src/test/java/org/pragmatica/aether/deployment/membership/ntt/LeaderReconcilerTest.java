@@ -54,6 +54,8 @@ class LeaderReconcilerTest {
     private static final NodeId SELF = NodeId.randomNodeId();
     private static final NodeId PEER_A = NodeId.randomNodeId();
     private static final NodeId PEER_B = NodeId.randomNodeId();
+    private static final NodeId PEER_C = NodeId.randomNodeId();
+    private static final NodeId PEER_D = NodeId.randomNodeId();
     private static final TimeSpan EXPECTED_ACTIVATION_DELAY =
         timeSpan(membershipConfig().nttDepartureTimeout().nanos() * 3 / 2).nanos();
     private static final TimeSpan DEBOUNCE_DELAY = timeSpan(100L).millis();
@@ -93,6 +95,22 @@ class LeaderReconcilerTest {
         }
     }
 
+    /// Remove peers from the membership view (simulates a departure) so the next reconcile
+    /// observes a deficit.
+    @Contract
+    private void removePeers(NodeId... peers) {
+        for (var peer : peers) {
+            membershipView.removeMember(peer);
+        }
+    }
+
+    /// Drive the post-activation reconcile path: fire the queued debounced reconcile that
+    /// the given trigger scheduled.
+    @Contract
+    private void fireDebouncedReconcile() {
+        scheduler.tasksByDelay(DEBOUNCE_DELAY).getLast().runIfLive();
+    }
+
     @Nested
     class DefaultState {
         @Test
@@ -125,15 +143,25 @@ class LeaderReconcilerTest {
 
         @Test
         void activationDelayFires_emitsLeaderActivationIntent_andDispatchesProvisions() {
+            // Bug C: provisioning is gated behind the arm-after-first-full-membership latch.
+            // Reach full configured membership (5) so activation arms; then drop two peers
+            // so the post-arm deficit dispatches two provisions.
             configuredCoreCount.set(5);
-            seedClusterWithPeers(PEER_A, PEER_B);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
             reconciler.activate();
 
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(reconciler.isArmedForProvisioning()).isTrue();
+            assertThat(listener.events().getFirst().provisionCount()).isZero();
+
+            listener.clear();
+            removePeers(PEER_C, PEER_D);
+            reconciler.onTopologyUnhealthy();
+            fireDebouncedReconcile();
 
             assertThat(listener.events()).hasSize(1);
             var emitted = listener.events().getFirst();
-            assertThat(emitted.trigger()).isEqualTo(ReconcileTrigger.LEADER_ACTIVATION);
+            assertThat(emitted.trigger()).isEqualTo(ReconcileTrigger.NTT_FIRE);
             assertThat(emitted.clusterMembershipCount()).isEqualTo(3);
             assertThat(emitted.configuredCoreCount()).isEqualTo(5);
             assertThat(emitted.provisionCount()).isEqualTo(2);
@@ -315,11 +343,16 @@ class LeaderReconcilerTest {
     class ReconcileSnapshot {
         @Test
         void underprovisionedSnapshot_intentReflectsObservedAndConfiguredCounts() {
+            // Arm at full membership (5), then drop two peers to create the post-arm deficit.
             configuredCoreCount.set(5);
-            seedClusterWithPeers(PEER_A, PEER_B);
-
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            listener.clear();
+
+            removePeers(PEER_C, PEER_D);
+            reconciler.onTopologyUnhealthy();
+            fireDebouncedReconcile();
 
             var intent = listener.events().getFirst();
             assertThat(intent.clusterMembershipCount()).isEqualTo(3);
@@ -372,21 +405,105 @@ class LeaderReconcilerTest {
     class InFlightExpiry {
         @Test
         void staleInFlightEntryPastExpiryWindow_isEvictedOnNextReconcile() {
+            // Arm at full membership (5), drop two peers to provision two (in-flight=2),
+            // then advance past the expiry window and reconcile — the stale entries evict.
             configuredCoreCount.set(5);
-            seedClusterWithPeers(PEER_A, PEER_B);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            removePeers(PEER_C, PEER_D);
+            reconciler.onTopologyUnhealthy();
+            fireDebouncedReconcile();
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(2);
             listener.clear();
             seedClusterWithPeers(NodeId.randomNodeId(), NodeId.randomNodeId());
             timeSource.advanceTimeMillis(EXPECTED_ACTIVATION_DELAY.millis() * 3);
 
             reconciler.onTopologyUnhealthy();
-            scheduler.tasksByDelay(DEBOUNCE_DELAY).getFirst().runIfLive();
+            fireDebouncedReconcile();
 
             assertThat(listener.events()).hasSize(1);
             assertThat(listener.events().getFirst().inFlightProvisioningCount()).isZero();
             assertThat(reconciler.inFlightProvisioningCount()).isZero();
+        }
+    }
+
+    @Nested
+    class ProvisioningArmLatch {
+        /// Bug C: members < configured from the very start (initial formation / slow join).
+        /// A deficit before first full membership means "configured peers still joining" —
+        /// the reconciler must NOT provision phantom replacements. Latch stays unarmed.
+        @Test
+        void deficitFromStart_beforeFullMembership_provisionsNothing_andStaysUnarmed() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+            reconciler.activate();
+
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(reconciler.isArmedForProvisioning()).isFalse();
+            var intent = listener.events().getFirst();
+            assertThat(intent.clusterMembershipCount()).isEqualTo(4);
+            assertThat(intent.configuredCoreCount()).isEqualTo(5);
+            assertThat(intent.provisionCount()).isZero();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+        }
+
+        /// Reaching full configured membership arms the latch; a subsequent genuine
+        /// departure (member that WAS present) triggers auto-heal provisioning.
+        @Test
+        void reachFullMembershipThenDrop_arms_andProvisionsOnDeficit() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(reconciler.isArmedForProvisioning()).isTrue();
+            assertThat(listener.events().getFirst().provisionCount()).isZero();
+            listener.clear();
+
+            removePeers(PEER_D);
+            reconciler.onTopologyUnhealthy();
+            fireDebouncedReconcile();
+
+            assertThat(reconciler.isArmedForProvisioning()).isTrue();
+            var intent = listener.events().getFirst();
+            assertThat(intent.clusterMembershipCount()).isEqualTo(4);
+            assertThat(intent.provisionCount()).isEqualTo(1);
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
+        /// The latch is set-only: arm, drop (provision), recover to full, drop again — each
+        /// post-arm deficit provisions, the latch never resets.
+        @Test
+        void latchPersists_provisionsOnEachPostArmDeficit() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(reconciler.isArmedForProvisioning()).isTrue();
+
+            // First post-arm deficit: drop PEER_D, one provision, evict before next pass.
+            removePeers(PEER_D);
+            reconciler.onTopologyUnhealthy();
+            fireDebouncedReconcile();
+            assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+
+            // Recover to full membership and let the in-flight entry expire.
+            seedClusterWithPeers(PEER_D);
+            timeSource.advanceTimeMillis(EXPECTED_ACTIVATION_DELAY.millis() * 3);
+            reconciler.onSwimMemberHealthy(PEER_D);
+            fireDebouncedReconcile();
+            assertThat(reconciler.inFlightProvisioningCount()).isZero();
+
+            // Second post-arm deficit: still provisions, latch still armed.
+            removePeers(PEER_C);
+            reconciler.onTopologyUnhealthy();
+            fireDebouncedReconcile();
+
+            assertThat(reconciler.isArmedForProvisioning()).isTrue();
+            assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+            assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
         }
     }
 
@@ -404,6 +521,11 @@ class LeaderReconcilerTest {
         @Contract
         void addMember(NodeId nodeId) {
             members.add(nodeId);
+        }
+
+        @Contract
+        void removeMember(NodeId nodeId) {
+            members.remove(nodeId);
         }
 
         @Override

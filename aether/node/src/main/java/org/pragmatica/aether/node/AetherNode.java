@@ -1562,14 +1562,13 @@ public interface AetherNode extends ManageableNode {
         metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
         Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(membershipTracker::onQuicReconnect);
         Consumer<NodeId> nttDisconnectTap = membershipTracker::onQuicDisconnect;
-        // P5 NOTE: the NTT-reconciler leader-toggle (auto-heal activation) stays added to
-        // `aetherEntries` — which was already merged into `allEntries` above (~line 1432), so
-        // this add is intentionally INERT (the route is NOT in the live router). Activating
-        // the reconciler on a static cluster reintroduces the Bug C provisioning death-spiral
-        // (phantom replacements for a configured peer that hasn't joined yet); it is wired
-        // into the live router in P5 together with the identity-aware guard.
-        aetherEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                                    change -> toggleNttReconcilerOnLeaderChange(change, leaderReconciler)));
+        // P5: the NTT-reconciler leader-toggle (auto-heal activation) is now wired into the
+        // live router. Safe because LeaderReconciler is identity-aware — it arms provisioning
+        // only after the cluster first reaches configuredCoreCount, so it never provisions a
+        // phantom replacement for a configured core peer that simply hasn't joined yet (the
+        // former Bug C death-spiral). After arming, a genuine departure triggers auto-heal.
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 change -> toggleNttReconcilerOnLeaderChange(change, leaderReconciler)));
         // P4 (Bug B FIX): readiness + evict routes are now added to `allEntries` (the list the
         // router is actually built from below). Previously they were appended to the
         // already-merged `aetherEntries`, so they never installed — node readiness was never
