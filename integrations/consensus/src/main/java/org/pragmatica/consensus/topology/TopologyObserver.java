@@ -543,11 +543,19 @@ public interface TopologyObserver extends TopologyManager {
             }
 
             /// Updates the `quorumEstablished` atomic so that `inQuorum()` and the
-            /// `publishMembershipDeltas` gate read the latest local view. Does NOT emit any
-            /// notification: E2 Phase 2c.0 (2026-05-28) makes `RabiaEngine`/`ConsensusBridge`
-            /// the sole authoritative emitter of `ClusterStateNotification`. The observer's
-            /// `quorumEstablished` flag is retained because it remains the local-view input
-            /// to the RC1 Step 5 membership-decision gate.
+            /// `publishMembershipDeltas` gate read the latest local view, AND routes the
+            /// cold-start/resume `ClusterStateNotification` originator on each quorum edge.
+            ///
+            /// Bootstrap originator (restored after E2 Phase 2c.0): on the `false → true`
+            /// quorum edge this routes `ClusterStateNotification.active()`; on `true → false`,
+            /// `.passive()`. This is the ONLY producer of the *first* ACTIVE — `RabiaEngine`
+            /// leaves `Stopped` only on receiving ACTIVE, and `ConsensusBridge` merely echoes
+            /// an already-active engine, so it cannot self-originate the cold-start signal.
+            /// 2c.0 suppressed this emission (intending the bridge to own it) and thereby
+            /// deadlocked cold-start; restoring it here re-establishes both initial formation
+            /// and quorum-return resume. `RabiaEngine` ignores a redundant ACTIVE while already
+            /// active (the bridge echo), so the bridge can keep owning steady-state transitions
+            /// for downstream `ClusterStateNotification` consumers without conflict.
             ///
             /// Idempotent: only fires on `false → true` (active) or `true → false`
             /// (passive) edge transitions via CAS. SWIM filters transient flap upstream via
@@ -573,11 +581,13 @@ public interface TopologyObserver extends TopologyManager {
                 log.debug("Quorum evaluation: healthyActivePeers+1={} threshold={}", peers + 1, quorum);
                 if (haveQuorum) {
                     if (quorumEstablished.compareAndSet(false, true)) {
-                        log.info("Quorum established (local view; notification suppressed — owned by RabiaEngine/ConsensusBridge)");
+                        log.info("Quorum established (local view) — routing ClusterStateNotification.ACTIVE (cold-start/resume originator)");
+                        router.route(ClusterStateNotification.active());
                     }
                 } else {
                     if (quorumEstablished.compareAndSet(true, false)) {
-                        log.warn("Quorum lost (local view; notification suppressed — owned by RabiaEngine/ConsensusBridge)");
+                        log.warn("Quorum lost (local view) — routing ClusterStateNotification.PASSIVE");
+                        router.route(ClusterStateNotification.passive());
                     }
                 }
                 publishMembershipDeltas();

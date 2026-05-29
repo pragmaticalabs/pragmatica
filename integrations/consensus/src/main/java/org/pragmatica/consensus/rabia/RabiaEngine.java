@@ -303,9 +303,19 @@ public class RabiaEngine<C extends Command> {
         // engine's existing currentPhase / phases / pendingBatches / lockedValue intact;
         // any Decisions delivered during the pause have already been applied, so we just
         // re-arm phase processing.
-        if (engineState.get().isPaused()) {
+        var current = engineState.get();
+        if (current.isPaused()) {
             resumeFromPause();
+        } else if (current.isActive() || current instanceof EngineState.Syncing) {
+            // Redundant ACTIVE while already active/syncing — this is the ConsensusBridge echo
+            // of our own ConsensusActive (ClusterStateNotification is engine-derived in steady
+            // state). Ignore it: re-running clusterConnected() here would force a spurious
+            // re-sync and, via the Active→Syncing transition, emit ConsensusPassive and flap.
+            // TopologyObserver is the cold-start/resume originator; RabiaEngine owns every
+            // steady-state transition.
+            log.debug("Node {}: ignoring redundant cluster ACTIVE while {}", self, current);
         } else {
+            // Stopped (cold start) or Observing — begin a sync round to catch up, then Active.
             clusterConnected();
         }
     }
