@@ -218,6 +218,10 @@ import org.pragmatica.swim.SwimConfig;
 import org.pragmatica.swim.SwimHealth;
 import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.TransportObservation;
+import org.pragmatica.swim.HealthSnapshot;
+import org.pragmatica.swim.membership.MembershipTracker;
+import org.pragmatica.swim.membership.MembershipTrackerConfig;
+import org.pragmatica.swim.membership.MembershipListener;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -378,7 +382,13 @@ public interface AetherNode extends ManageableNode {
                                                                                       LeaderValue.class)
                                                                             .map(LeaderValue::leader);
         var hlcClock = HlcClock.hlcClock(config.self());
-        var snapshotSource = KvBackedGenerationSnapshotSource.kvBackedGenerationSnapshotSource(kvStore);
+        var rawSnapshotSource = KvBackedGenerationSnapshotSource.kvBackedGenerationSnapshotSource(kvStore);
+        // Membership-unification P2-b: the SWIM-fed MembershipTracker (constructed inside
+        // assembleNode, after swimHealthDetector) becomes the live MembershipView the
+        // consensus TopologyObserver reads for quorum. It is published lazily through this
+        // forward-ref; see TrackerBackedGenerationSnapshotSource for the warm-up hand-off.
+        var membershipTrackerRef = new AtomicReference<MembershipTracker>();
+        var snapshotSource = TrackerBackedGenerationSnapshotSource.trackerBacked(rawSnapshotSource, membershipTrackerRef);
         // Membership v2 — `syncHoldRegistry` is consulted by the leader reconciler to skip nodes
         // that are legitimately syncing KV state. The KVSyncResponse signal no longer drives a
         // readiness candidate; the v2 control-heartbeat carries node-reported readiness instead.
@@ -418,6 +428,7 @@ public interface AetherNode extends ManageableNode {
                                                              leaderTerm,
                                                              hlcClock,
                                                              snapshotSource,
+                                                             membershipTrackerRef,
                                                              syncHoldRegistry,
                                                              jvmExit));
     }
@@ -475,6 +486,7 @@ public interface AetherNode extends ManageableNode {
                                                    AtomicLong leaderTerm,
                                                    HlcClock hlcClock,
                                                    GenerationSnapshotSource snapshotSource,
+                                                   AtomicReference<MembershipTracker> membershipTrackerRef,
                                                    org.pragmatica.cluster.node.rabia.SyncHoldRegistry syncHoldRegistry,
                                                    Runnable jvmExit) {
         // Concrete adapter (not a lambda) so we can override `sendOutcome` and forward
@@ -489,14 +501,14 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
-            public org.pragmatica.lang.Promise<org.pragmatica.consensus.net.WriteOutcome> sendOutcome(NodeId target,
+            public Promise<org.pragmatica.consensus.net.WriteOutcome> sendOutcome(NodeId target,
                                                                                                       org.pragmatica.consensus.ProtocolMessage msg) {
                 return clusterNode.network()
                                   .sendOutcome(target, msg);
             }
 
             @Override
-            public java.util.Set<NodeId> livePeers() {
+            public Set<NodeId> livePeers() {
                 // Includes self and currently-connected peers. EVICTED peers are not
                 // included — they're locally-believed-unreachable, so the DHT routes
                 // around them until they reconcile back to CONNECTED via the SWIM /
@@ -583,6 +595,7 @@ public interface AetherNode extends ManageableNode {
                           ClusterTopologyManager clusterTopologyManagerInstance,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
+                          MembershipTracker membershipTracker,
                           Runnable startSwimTrigger,
                           Supplier<Option<ClusterGenerationSnapshot>> generationSnapshotSupplier,
                           Runnable refreshGenerationSnapshot,
@@ -590,7 +603,7 @@ public interface AetherNode extends ManageableNode {
                           Option<DiscoveryProvider> discoveryProvider,
                           Option<CertificateRenewalScheduler> certRenewalScheduler,
                           HealthSignalSink healthSignalSink,
-                          org.pragmatica.aether.deployment.drain.InFlightRequestTracker inFlightRequestTracker,
+                          InFlightRequestTracker inFlightRequestTracker,
                           NodeLifecycle nodeLifecycle,
                           HlcClock hlcClock,
                           Option<DHTClient> dhtClient,
@@ -660,6 +673,7 @@ public interface AetherNode extends ManageableNode {
                 streamPartitionManager.close();
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::stop);
                 swimHealthDetector.stop();
+                membershipTracker.stop();
                 discoveryProvider.onPresent(this::deregisterFromDiscovery);
 
                 return managementServer.map(ManagementServer::stop)
@@ -904,7 +918,7 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
-            public org.pragmatica.aether.deployment.membership.view.MembershipView membershipView() {
+            public MembershipView membershipView() {
                 // H.2 (spec §H): SWIM does not observe self — the local detector returns
                 // only remote peers' health. Inject `self → HEALTHY` so the derived view
                 // correctly reports the local node as ON_DUTY (assuming the node has
@@ -922,15 +936,15 @@ public interface AetherNode extends ManageableNode {
                 // ON_DUTY status when local SWIM hasn't yet acked HEALTHY (closes the
                 // per-reader-variance window without breaking the SWIM-faulty downgrade).
                 // See aether/docs/specs/reachability-aggregator-spec.md Layer 5.
-                return org.pragmatica.aether.deployment.membership.view.MembershipView.strict(() -> {
+                return MembershipView.strict(() -> {
                                                                                                   var swim = swimHealthDetector.currentHealth()
-                                                                                                                               .or(() -> org.pragmatica.swim.HealthSnapshot.healthSnapshot(java.util.Map.of()));
+                                                                                                                               .or(() -> HealthSnapshot.healthSnapshot(Map.of()));
                                                                                                   var merged = new java.util.HashMap<>(swim.peerHealth());
                                                                                                   merged.putIfAbsent(config.self(),
-                                                                                                                     org.pragmatica.swim.SwimHealth.HEALTHY);
-                                                                                                  return org.pragmatica.lang.Option.some(org.pragmatica.swim.HealthSnapshot.healthSnapshot(merged));
+                                                                                                                     SwimHealth.HEALTHY);
+                                                                                                  return Option.some(HealthSnapshot.healthSnapshot(merged));
                                                                                               },
-                                                                                              ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum(),
+                                                                                              ((TopologyObserver) clusterNode.topologyManager()).inQuorum(),
                                                                                               metricsCollector::bestSnapshot);
             }
         }
@@ -1134,7 +1148,7 @@ public interface AetherNode extends ManageableNode {
         // SpokesmanPingLoop is constructed later in the wiring; forward-reference
         // via a settable holder, set after construction.
         var wasLeaderRef = new java.util.concurrent.atomic.AtomicBoolean(false);
-        var spokesmanActiveRef = new java.util.concurrent.atomic.AtomicReference<BooleanSupplier>(() -> false);
+        var spokesmanActiveRef = new AtomicReference<BooleanSupplier>(() -> false);
         metricsCollector.addPongListener(pong -> {
                                              var nowLeader = isLeaderSupplier.getAsBoolean();
                                              var nowSpokesman = spokesmanActiveRef.get()
@@ -1197,28 +1211,28 @@ public interface AetherNode extends ManageableNode {
         // computes COLD_BOOT/RECOVERING (zero on-duty peers under the quorum threshold)
         // instead of falsely claiming NORMAL from local-SWIM observations. Same quorum
         // source as `aetherNode.membershipView()`.
-        var phaseInQuorum = ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum();
+        var phaseInQuorum = ((TopologyObserver) clusterNode.topologyManager()).inQuorum();
         ClusterPhaseView.MembershipViewReader phaseMembershipReader = () -> MembershipView.strict(() -> {
                                                                                                       // H.2 (spec §H): mirror `aetherNode.membershipView()` self-injection — SWIM
                                                                                                       // doesn't observe self, but the phase calculation must count this node
                                                                                                       // toward quorum.
                                                                                                       var swimOpt = Option.option(swimDetectorRefForPhase.get()).flatMap(CoreSwimHealthDetector::currentHealth);
-                                                                                                      var swim = swimOpt.or(() -> org.pragmatica.swim.HealthSnapshot.healthSnapshot(java.util.Map.of()));
+                                                                                                      var swim = swimOpt.or(() -> HealthSnapshot.healthSnapshot(Map.of()));
                                                                                                       var merged = new java.util.HashMap<>(swim.peerHealth());
                                                                                                       merged.putIfAbsent(config.self(),
-                                                                                                                         org.pragmatica.swim.SwimHealth.HEALTHY);
-                                                                                                      return Option.some(org.pragmatica.swim.HealthSnapshot.healthSnapshot(merged));
+                                                                                                                         SwimHealth.HEALTHY);
+                                                                                                      return Option.some(HealthSnapshot.healthSnapshot(merged));
                                                                                                   },
                                                                                                   phaseInQuorum);
         var clusterPhaseView = ClusterPhaseView.clusterPhaseView(config.topology().coreNodes().size(),
-                                                                 org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds(),
-                                                                 org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds(),
+                                                                 TimeSpan.timeSpan(5).seconds(),
+                                                                 TimeSpan.timeSpan(5).seconds(),
                                                                  phaseMembershipReader,
                                                                  clusterPhaseReader,
                                                                  () -> healthLeaderSupplier.get()
                                                                                            .isPresent());
         Supplier<AetherValue.ClusterPhase> effectivePhaseSupplier = () -> clusterPhaseView.compute(System.currentTimeMillis());
-        var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
+        var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
                                                                                    deploymentMap,
@@ -1230,7 +1244,7 @@ public interface AetherNode extends ManageableNode {
                                                                                    // quorum bit. Below quorum the CTM stops provisioning replacements
                                                                                    // (anti-flood) and defers to the §8.2 drain to dissolve the
                                                                                    // minority partition.
-                                                                                   ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum(), drainCommandRegistry::requestDrain, drainCommandRegistry::clearDrain);
+                                                                                   ((TopologyObserver) clusterNode.topologyManager()).inQuorum(), drainCommandRegistry::requestDrain, drainCommandRegistry::clearDrain);
         // E2 Phase 2b (2026-05-28): OrphanSelfDrainChecker deleted; NTT (§6) drives departure
         // detection and the §8 unified drain handles surplus dissolution. Membership v2 finale:
         // the leader-pinned `LifecycleReconciler` (and the FSM it wrote through) are gone — the
@@ -1285,7 +1299,7 @@ public interface AetherNode extends ManageableNode {
         traceStore.bindClusterEventsSource(() -> projectClusterTraceInjections(eventAggregator.events()));
         var eventLogSweeper = ClusterEventLogSweeper.clusterEventLogSweeper(kvStore::snapshot,
                                                                             isLeaderSupplier,
-                                                                            ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum(),
+                                                                            ((TopologyObserver) clusterNode.topologyManager()).inQuorum(),
                                                                             rabiaTermSupplier::get,
                                                                             clusterCommandApplier);
         eventLogSweeper.start();
@@ -1378,7 +1392,7 @@ public interface AetherNode extends ManageableNode {
         var delegatedStorageAdapter = DelegatedStorageAdapter.noOp();
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
         var consumerGroupCoordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode);
-        var managementServerRef = new java.util.concurrent.atomic.AtomicReference<Option<ManagementServer>>(Option.empty());
+        var managementServerRef = new AtomicReference<Option<ManagementServer>>(Option.empty());
         var aetherEntries = collectRouteEntries(kvStore,
                                                 nodeDeploymentManager,
                                                 clusterDeploymentManager,
@@ -1523,8 +1537,8 @@ public interface AetherNode extends ManageableNode {
         // otherwise depends on consensus to evict, but consensus is what's stuck).
         // Narrow trigger preserves Step 3's removal of the N+1 fan-out cascade for
         // general FAULTY peers. See SwimHealthContext.faultyLeaderEvictor field doc.
-        java.util.function.Consumer<NodeId> faultyLeaderEvictor = peer -> clusterNode.network()
-                                                                                     .disconnect(new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(peer));
+        Consumer<NodeId> faultyLeaderEvictor = peer -> clusterNode.network()
+                                                                                     .disconnect(new NetworkServiceMessage.DisconnectNode(peer));
         var swimHealthDetector = CoreSwimHealthDetector.coreSwimHealthDetector(delegateRouter,
                                                                                config.topology(),
                                                                                serializer,
@@ -1576,12 +1590,28 @@ public interface AetherNode extends ManageableNode {
         // observation-flag and DivergenceLogger are gone.
         var membershipConfig = config.membership().or(MembershipConfig::membershipConfig);
         IntSupplier configuredCoreCountSupplier = () -> config.topology().coreNodes().size();
-        var leaderReconcilerRef = new java.util.concurrent.atomic.AtomicReference<LeaderReconciler>();
+        var leaderReconcilerRef = new AtomicReference<LeaderReconciler>();
         Runnable nttReconcileTrigger = () -> {
             var current = leaderReconcilerRef.get();
             if (current != null) {current.onTopologyUnhealthy();}
         };
         var ntt = NodeTopologyTracker.nodeTopologyTracker(membershipConfig, config.self(), SharedScheduler::schedule, nttReconcileTrigger);
+        // Membership-unification P2-b: the single SWIM-fed MembershipTracker, fed by the same
+        // SWIM observation stream + QUIC connect/disconnect taps as NTT and exposed to
+        // consensus via the forward-ref wired into the GenerationSnapshotSource above. The
+        // hysteresis window is derived from the NTT departure timeout for behavioural parity
+        // while both trackers run side-by-side (NTT is removed in P3).
+        var membershipTrackerConfig = MembershipTrackerConfig.fromDepartureTimeout(membershipConfig.nttDepartureTimeout(),
+                                                                                   TimeSpan.timeSpan(500).millis());
+        var membershipTracker = MembershipTracker.membershipTracker(config.self(),
+                                                                    membershipTrackerConfig,
+                                                                    () -> swimHealthDetector.currentHealth()
+                                                                                            .or(() -> HealthSnapshot.healthSnapshot(Map.of())),
+                                                                    configuredCoreCountSupplier,
+                                                                    MembershipListener.NOOP);
+        membershipTrackerRef.set(membershipTracker);
+        membershipTracker.start();
+        swimHealthDetector.addObservationListener(membershipTracker::onSwimObservation);
         var localQuorumWatcher = LocalQuorumWatcher.localQuorumWatcher(membershipConfig, TimeSource.system(), SharedScheduler::schedule);
         var leaderReconciler = LeaderReconciler.leaderReconciler(membershipConfig,
                                                                  ntt,
@@ -1611,8 +1641,9 @@ public interface AetherNode extends ManageableNode {
                 .andThen(intent -> nodeReportedStateHolder.onDrainStarted());
         localQuorumWatcher.setQuorumLossListener(quorumLossChain);
         metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
-        Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(localQuorumWatcher::onPeerConnected);
-        Consumer<NodeId> nttDisconnectTap = localQuorumWatcher::onPeerDisconnected;
+        Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(membershipTracker::onQuicReconnect)
+                                                                                  .andThen(localQuorumWatcher::onPeerConnected);
+        Consumer<NodeId> nttDisconnectTap = ((Consumer<NodeId>) membershipTracker::onQuicDisconnect).andThen(localQuorumWatcher::onPeerDisconnected);
         aetherEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                     change -> toggleNttReconcilerOnLeaderChange(change, leaderReconciler)));
         // B1 (membership v2 §7.5): node-reported readiness state tracks local consensus edges.
@@ -1641,13 +1672,13 @@ public interface AetherNode extends ManageableNode {
         // local-SWIM latency for a Rabia round-trip + projection (~200-500ms cloud RTT).
         var clusterNetworkRef = clusterNode.network();
         allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
-                                                 (MembershipDecision.NodeRemoved removed) -> clusterNetworkRef.disconnect(new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(removed.nodeId()))));
+                                                 (MembershipDecision.NodeRemoved removed) -> clusterNetworkRef.disconnect(new NetworkServiceMessage.DisconnectNode(removed.nodeId()))));
         allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                                  (MembershipDecision.NodeDecommissioned decommissioned) -> clusterNetworkRef.departurePermanent(decommissioned.nodeId())));
         swimHealthDetector.addObservationListener(obs -> {
                                                       switch (obs) {
             case SwimObservation.JoinAnnounced j -> clusterNetworkRef.connect(j.nodeInfo());
-            case SwimObservation.FaultyObserved f -> clusterNetworkRef.disconnect(new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(f.peer()));
+            case SwimObservation.FaultyObserved f -> clusterNetworkRef.disconnect(new NetworkServiceMessage.DisconnectNode(f.peer()));
             case SwimObservation.DepartedObserved d -> clusterNetworkRef.departurePermanent(d.peer());
             default -> {}
         }
@@ -1903,6 +1934,7 @@ public interface AetherNode extends ManageableNode {
                                   clusterTopologyManager,
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
+                                  membershipTracker,
                                   startSwimTrigger,
                                   spokesmanSnapshotSupplier,
                                   generationSnapshotPublisher::markDirty,
@@ -2002,6 +2034,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                       clusterTopologyManager,
                                                                                                       eventLoopMetricsCollector,
                                                                                                       swimHealthDetector,
+                                                                                                      membershipTracker,
                                                                                                       startSwimTrigger,
                                                                                                       spokesmanSnapshotSupplier,
                                                                                                       generationSnapshotPublisher::markDirty,
@@ -2021,7 +2054,7 @@ public interface AetherNode extends ManageableNode {
                                                                             });
     }
 
-    org.pragmatica.lang.io.TimeSpan PHASE_WATCH_INTERVAL = org.pragmatica.lang.io.TimeSpan.timeSpan(1).seconds();
+    TimeSpan PHASE_WATCH_INTERVAL = TimeSpan.timeSpan(1).seconds();
 
     /// Post-E.8 phase-change publisher. Polls `phaseSupplier` at `PHASE_WATCH_INTERVAL` and
     /// dispatches `ctm.onClusterPhaseChanged(newPhase)` on every observed transition.
@@ -2029,8 +2062,8 @@ public interface AetherNode extends ManageableNode {
     @Contract
     private static void schedulePhaseChangeWatcher(Supplier<AetherValue.ClusterPhase> phaseSupplier,
                                                    ClusterTopologyManager ctm) {
-        var lastPhase = new java.util.concurrent.atomic.AtomicReference<>(phaseSupplier.get());
-        org.pragmatica.lang.utils.SharedScheduler.scheduleAtFixedRate(() -> publishPhaseChange(phaseSupplier,
+        var lastPhase = new AtomicReference<>(phaseSupplier.get());
+        SharedScheduler.scheduleAtFixedRate(() -> publishPhaseChange(phaseSupplier,
                                                                                                ctm,
                                                                                                lastPhase),
                                                                       PHASE_WATCH_INTERVAL,
@@ -2040,7 +2073,7 @@ public interface AetherNode extends ManageableNode {
     @Contract
     private static void publishPhaseChange(Supplier<AetherValue.ClusterPhase> phaseSupplier,
                                            ClusterTopologyManager ctm,
-                                           java.util.concurrent.atomic.AtomicReference<AetherValue.ClusterPhase> lastPhase) {
+                                           AtomicReference<AetherValue.ClusterPhase> lastPhase) {
         var current = phaseSupplier.get();
         var previous = lastPhase.getAndSet(current);
 
@@ -2563,7 +2596,7 @@ public interface AetherNode extends ManageableNode {
     private static Option<CertificateRenewalScheduler> createCertRenewalScheduler(AetherNodeConfig config,
                                                                                   RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                                                   AppHttpServer appHttpServer,
-                                                                                  java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
+                                                                                  Supplier<Option<ManagementServer>> managementServerSupplier) {
         return config.certificateProvider()
                      .flatMap(provider -> buildCertRenewalScheduler(config,
                                                                     provider,
@@ -2577,7 +2610,7 @@ public interface AetherNode extends ManageableNode {
                                                                                  org.pragmatica.net.tcp.security.CertificateProvider provider,
                                                                                  RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                                                  AppHttpServer appHttpServer,
-                                                                                 java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
+                                                                                 Supplier<Option<ManagementServer>> managementServerSupplier) {
         var nodeId = config.self().id();
         var hostname = resolveHostname(config);
 
@@ -2598,7 +2631,7 @@ public interface AetherNode extends ManageableNode {
                                                                          CertificateBundle bundle,
                                                                          RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                                          AppHttpServer appHttpServer,
-                                                                         java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
+                                                                         Supplier<Option<ManagementServer>> managementServerSupplier) {
         return CertificateRenewalScheduler.certificateRenewalScheduler(provider,
                                                                        nodeId,
                                                                        hostname,
@@ -2613,7 +2646,7 @@ public interface AetherNode extends ManageableNode {
     private static void onCertificateRenewed(CertificateBundle newBundle,
                                              RabiaNode<KVCommand<AetherKey>> clusterNode,
                                              AppHttpServer appHttpServer,
-                                             java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
+                                             Supplier<Option<ManagementServer>> managementServerSupplier) {
         var log = LoggerFactory.getLogger(AetherNode.class);
         log.info("Certificate renewed, valid until {}", newBundle.notAfter());
         Result.all(QuicSslContextFactory.createServerFromBundle(newBundle, QuicTlsProvider.CLUSTER_PROTOCOL),
@@ -2632,7 +2665,7 @@ public interface AetherNode extends ManageableNode {
                                             io.netty.handler.codec.quic.QuicSslContext clientSsl,
                                             CertificateBundle newBundle,
                                             AppHttpServer appHttpServer,
-                                            java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
+                                            Supplier<Option<ManagementServer>> managementServerSupplier) {
         var log = LoggerFactory.getLogger(AetherNode.class);
         rotateQuicNetwork(clusterNode, serverSsl, clientSsl, log);
         managementServerSupplier.get().onPresent(mgmt -> rotateManagementServer(mgmt, newBundle, log));
@@ -2732,7 +2765,7 @@ public interface AetherNode extends ManageableNode {
                                                                     ConsumerGroupCoordinator consumerGroupCoordinator,
                                                                     ConsumerGroupRegistry consumerGroupRegistry,
                                                                     DrainProcedure drainProcedure,
-                                                                    java.util.concurrent.atomic.AtomicReference<Option<ManagementServer>> managementServerRef,
+                                                                    AtomicReference<Option<ManagementServer>> managementServerRef,
                                                                     NodeId self) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
         var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.AppBlueprintKey.class,
@@ -2964,11 +2997,11 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onGenerationChanged));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));
-        entries.add(MessageRouter.Entry.route(org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest.class,
+        entries.add(MessageRouter.Entry.route(HttpForwardMessage.HttpForwardRequest.class,
                                               request -> demuxHttpForwardRequest(request,
                                                                                  appHttpServer,
                                                                                  managementServerRef.get())));
-        entries.add(MessageRouter.Entry.route(org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse.class,
+        entries.add(MessageRouter.Entry.route(HttpForwardMessage.HttpForwardResponse.class,
                                               response -> demuxHttpForwardResponse(response,
                                                                                    appHttpServer,
                                                                                    managementServerRef.get())));
@@ -3090,7 +3123,7 @@ public interface AetherNode extends ManageableNode {
                                                                 // node-composite = KV-overlay ⊕ node.toml
                                                                 var kvLayer = NamedConfigProvider.namedConfigProvider("KV", dynamicProvider);
                                                                 var nodeTomlLayer = NamedConfigProvider.namedConfigProvider("node.toml", provider);
-                                                                ConfigurationProvider nodeComposite = LayeredConfigProvider.layered(java.util.List.of(kvLayer,
+                                                                ConfigurationProvider nodeComposite = LayeredConfigProvider.layered(List.of(kvLayer,
                                                                                                                                                        nodeTomlLayer));
                                                                 var configService = ProviderBasedConfigService.providerBasedConfigService(nodeComposite);
                                                                 ConfigService.setInstance(configService);
@@ -3186,10 +3219,10 @@ public interface AetherNode extends ManageableNode {
     /// extracts the metadata stamped by `InvocationTraceStore.publishInjectionToClusterLog`.
     /// Lives here (not in aether-invoke) because `ClusterEvent` is owned by aether/node.
     private static List<InvocationTraceStore.ClusterTraceEvent> projectClusterTraceInjections(List<ClusterEvent> events) {
-        var list = new java.util.ArrayList<InvocationTraceStore.ClusterTraceEvent>();
+        var list = new ArrayList<InvocationTraceStore.ClusterTraceEvent>();
 
         for (var event : events) {
-            if (event.type() != org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue.EventType.TRACE_INJECTED) {continue;}
+            if (event.type() != AetherValue.ClusterEventValue.EventType.TRACE_INJECTED) {continue;}
 
             var details = event.details();
             var requestId = details.get("requestId");
