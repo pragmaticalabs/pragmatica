@@ -8,23 +8,25 @@
 #
 # Scenario:
 #   A node is killed BEFORE it ever transitions to SWIM HEALTHY (i.e. it is in
-#   the JOINING window). The legacy SWIM-only path would have to wait for the
-#   SWIM ping-ack failure detector to mark the peer FAULTY (~10-15s on the
-#   cluster's default cadence). The topology-observation refactor (Steps 1-6
-#   of the membership-architecture rework) introduces a TransportUnreachable
-#   event derived from QUIC connection eviction + aggregator quorum, which is
-#   UNGATED on the (JOINING, TransportUnreachable) FSM cell — the FSM writes
-#   Put(DECOMMISSIONED) directly without waiting on the SWIM gate.
+#   the JOINING window). The intent: a killed replacement R must be removed from
+#   the cluster FAST — well inside the S01 budget — rather than lingering as a
+#   phantom member until some slow detector notices.
+#
+# v2 signal (membership redesign):
+#   v2 has NO NodeLifecycleKey DECOMMISSIONED state and NO decommission-reason
+#   domain event. A killed node simply LEAVES the SWIM-fed membership. The
+#   v2-correct "node was removed" signal (already verified elsewhere) is twofold,
+#   either being sufficient:
+#     - /api/nodes/lifecycle/<R> returns HTTP 404 (LIFECYCLE_NOT_FOUND), AND/OR
+#     - R is absent from /api/nodes/status cluster.nodes[].
 #
 # Acceptance contract (spec §16 row S01):
-#   "Put(DECOMMISSIONED) within the S01 budget" of kill, observable via the
-#   KV-backed lifecycle endpoint. Budget is 60s (see DECOMMISSION_BUDGET_S below):
-#   a JOINING-window kill is reclaimed either by the fast TransportUnreachable
-#   aggregator-quorum path (~17s, when the peer had connections to observe) OR by
-#   the reconciler JoiningTimeout rule, which routes through the (JOINING,
-#   SwimDeparted) FSM cell at JOIN_DEADLINE × 0.75 = 45s. Both beat the legacy
-#   SWIM-only ON_DUTY detection and both land inside the 60s budget; the
-#   smoking-gun reason assertion pins which path fired.
+#   "R is removed from membership within the S01 budget" of kill, observable via
+#   the dual v2 signal above. Budget is 90s (see DECOMMISSION_BUDGET_S below): a
+#   JOINING-window kill is reclaimed by SWIM departure/failure detection inside
+#   that budget. The SLA semantics are preserved — the budget value is unchanged
+#   — only the observed signal is re-expressed for v2 (membership-absence in
+#   place of the retired DECOMMISSIONED lifecycle write + reason event).
 #
 # Test outline:
 #   1. Cluster B at 5 ON_DUTY/HEALTHY cores, NORMAL phase.
@@ -34,27 +36,17 @@
 #      a SWIM HEALTHY state. We poll the label set to discover R's NodeId.
 #   4. Kill R immediately (target: within ~2-3s of its container start, well
 #      before SWIM would have marked it HEALTHY).
-#   5. Record kill timestamp; assert R reaches DECOMMISSIONED (or is absent from
-#      /api/nodes/status cluster.nodes[]) within the 60s S01 budget.
-#   6. Verify the surviving node logs carry one of `reason=transport-failure`,
-#      `reason=swim-faulty`, or `reason=swim-departed` domain-event line for R's
-#      NodeId — the smoking gun that an FSM reducer cell (not an opaque write) drove
-#      the decommission. For a JOINING-window kill the reconciler JoiningTimeout
-#      fallback emits `reason=swim-departed` via the (JOINING, SwimDeparted) cell.
-#      See `ClusterMembershipReducer.REASON_TRANSPORT_FAILURE` /
-#      `REASON_SWIM_DEPARTED` + `MembershipFsm#applyEffect(EmitDomainEvent)`.
-#   7. Hygiene: pick_non_leader() must NOT return R after its decommission.
+#   5. Record kill timestamp; assert R is REMOVED from membership (404 from
+#      /api/nodes/lifecycle/<R> OR absent from /api/nodes/status cluster.nodes[])
+#      within the 90s S01 budget.
+#   6. Hygiene: pick_non_leader() must NOT return R after its removal.
 #
-# Why this catches a regression in Steps 1-6:
-#   * If neither the TransportUnreachable path nor the reconciler JoiningTimeout
-#     fallback fires: R will not reach DECOMMISSIONED within 60s — only legacy SWIM
-#     ON_DUTY detection (much later) — and the 60s assertion fails.
-#   * If the FSM (JOINING, TransportUnreachable) cell becomes gated (Step 4
-#     regression): the fast path is lost; the reconciler 45s fallback must cover it.
-#   * If aggregator → FSM wiring breaks (Step 3 regression): no fast FSM event
-#     fires; R relies on the reconciler 45s fallback to land inside 60s.
-#   * If MembershipView simplification (Step 6) regresses the /api/nodes/status
-#     projection: R stays visible in cluster.nodes[] past the budget.
+# Why this catches a regression:
+#   * If SWIM departure detection regresses: R will not be removed within the
+#     budget — it lingers in cluster.nodes[] and /api/nodes/lifecycle keeps
+#     returning a live state — and the budget assertion fails.
+#   * If the /api/nodes/status projection regresses (e.g. stale membership
+#     overlay): R stays visible in cluster.nodes[] past the budget.
 
 set -euo pipefail
 
@@ -176,16 +168,51 @@ wait_for_replacement_in_kv() {
     return 1
 }
 
-# Wait until R's KV-backed lifecycle atom is DECOMMISSIONED, within the spec
-# budget. Returns 0 on success; 1 on timeout. The KV atom is the
-# authoritative consensus-replicated record of the FSM transition.
-wait_for_kv_decommissioned() {
+# Report whether $target is ABSENT from /api/nodes/status cluster.nodes[].
+# Returns 0 (absent) if the node-id does not appear in the status projection,
+# 1 (present) otherwise. On a transport failure (empty body) we conservatively
+# treat the node as still present (return 1) so the caller keeps polling rather
+# than declaring removal off a failed read.
+node_absent_from_status() {
+    local target="$1"
+    local status_payload
+    status_payload=$(api_get "/api/nodes/status" 2>/dev/null || true)
+    if [ -z "$status_payload" ]; then
+        return 1  # couldn't read — assume still present, keep polling
+    fi
+    # cluster.nodes[] entries carry a "nodeId":"<id>" field. Extract the set
+    # and look for an exact match (grep+sed, no jq — matches the project idiom
+    # used by pick_non_leader). Absence of the id == removed from membership.
+    if printf '%s' "$status_payload" \
+        | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | sed 's/"nodeId"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' \
+        | grep -Fxq -- "$target"; then
+        return 1  # present
+    fi
+    return 0  # absent
+}
+
+# v2 "node was removed" poll, bounded by the spec budget. In v2 a killed node
+# simply leaves the SWIM-fed membership — there is NO DECOMMISSIONED lifecycle
+# state and NO decommission-reason domain event. The authoritative v2 removal
+# signal is twofold (either is sufficient):
+#   (a) /api/nodes/lifecycle/<R> returns HTTP 404 (LIFECYCLE_NOT_FOUND) — the
+#       lifecycle endpoint reports the node as unknown. api_get yields an empty
+#       body on 404, which `kv_lifecycle_state` surfaces as the empty string.
+#   (b) R is absent from /api/nodes/status cluster.nodes[].
+# Returns 0 as soon as either holds; 1 on timeout.
+wait_for_node_removed() {
     local target="$1" timeout="${2:-8}"
     local deadline=$((SECONDS + timeout))
     while [ $SECONDS -lt $deadline ]; do
         local state
         state=$(kv_lifecycle_state "$target")
-        if [ "$state" = "DECOMMISSIONED" ]; then
+        # (a) lifecycle endpoint reports the node unknown (404 → empty state).
+        if [ -z "$state" ]; then
+            return 0
+        fi
+        # (b) node has dropped out of the status projection's cluster.nodes[].
+        if node_absent_from_status "$target"; then
             return 0
         fi
         sleep 1
@@ -245,80 +272,8 @@ kill_by_node_id_label() {
     return 0
 }
 
-# Scan surviving-leader container logs for the smoking-gun signature that the
-# FSM took a transport- OR SWIM-driven decommission code path when it
-# Smoking-gun: scan surviving baseline nodes for the FSM domain-event log that
-# decommissioned R. Any one of three reducer reasons is acceptable — each is a
-# documented `(JOINING|ON_DUTY, *) → DECOMMISSIONED` cell in
-# `aether-deployment/.../ClusterMembershipReducer.java`:
-#   - `reason=transport-failure` (JOINING line 167 / ON_DUTY line 203 gated)
-#   - `reason=swim-faulty`       (ON_DUTY line 184 gated)
-#   - `reason=swim-departed`     (JOINING line 155 ungated / ON_DUTY line 187)
-# Their presence pins the failure to a known reducer cell rather than an
-# opaque write (e.g. accelerated detector, back-channel CTM tombstone,
-# eviction race). The specific path is a race between aggregator quorum and
-# SWIM convergence — for a JOINING-window kill the (JOINING, SwimDeparted)
-# cell usually fires first because the peer has no established connections
-# for the aggregator to fail.
-#
-# See `aether-deployment/.../ClusterMembershipReducer.java` REASON_TRANSPORT_FAILURE
-# / REASON_SWIM_FAULTY and `MembershipFsm#applyEffect(EmitDomainEvent)` (log line:
-# "MembershipFsm: domain event NODE_FAILED for <peer> (reason=<reason>)").
-#
-# We scan every surviving fixed compose node because the FSM-write happens on
-# the leader, and after the priming kill the leader is some core-node that we
-# don't know ahead of time. The witness set is the compose-baseline nodes
-# minus the priming victim — at most 4 candidates.
-#
-# The whole witness scan is wrapped in a polling loop bounded by $2 (defaults to
-# the S01 budget). This matters because the reconciler-driven path
-# (JoiningTimeout → SwimDeparted) reclaims the killed JOINING peer at ~45s, so the
-# `reason=swim-departed` domain-event line may not exist yet at the instant the KV
-# DECOMMISSIONED assertion passes. A prior single-pass version checked ~1s after the
-# budget test and found nothing; this loop waits through the full budget so the log
-# line has time to land.
-#
-# Returns the matching log line on stdout (first hit) or empty + rc=1.
-verify_transport_unreachable_event() {
-    local target_node_id="$1" timeout="${2:-60}"
-    local priming_victim
-    priming_victim=$(cat "$PRIMING_VICTIM_FILE" 2>/dev/null || true)
-    local deadline=$((SECONDS + timeout))
-    while [ $SECONDS -lt $deadline ]; do
-        local witness
-        for witness in 1 2 3 4 5; do
-            local container="aether-${CLUSTER_ID:-b}-node-${witness}"
-            # Skip the priming victim (its container is down; docker logs still
-            # works on stopped containers but prints nothing useful since the FSM
-            # write happened post-mortem on a different node).
-            if [ "$priming_victim" = "node-${witness}" ]; then
-                continue
-            fi
-            # Smoking-gun pattern: one of four documented reducer cells in
-            # `ClusterMembershipReducer.java` that decommissions a peer killed in
-            # the JOINING window or shortly after reaching ON_DUTY:
-            #   - (JOINING, SwimDeparted)        → reason=swim-departed     (line 155)
-            #   - (JOINING, TransportUnreachable)→ reason=transport-failure (line 167)
-            #   - (ON_DUTY, SwimFaulty)          → reason=swim-faulty       (line 184/gated)
-            #   - (ON_DUTY, TransportUnreachable)→ reason=transport-failure (line 203/gated)
-            # All four are valid S01 outcomes — the specific path is a race between
-            # SWIM gossip and TransportAggregator quorum. Observed in the field:
-            # for a kill landing in the JOINING window the (JOINING, SwimDeparted)
-            # cell typically fires first because SWIM departure detection beats
-            # aggregator quorum on a peer with no established connections. When neither
-            # fast path reaches quorum, the reconciler JoiningTimeout rule routes the
-            # cleanup through the same (JOINING, SwimDeparted) FSM cell at ~45s.
-            local match
-            match=$(remote_exec "docker logs ${container} 2>&1 | grep -F '${target_node_id}' | grep -E 'reason=transport-failure|reason=swim-faulty|reason=swim-departed' | head -1 || true" 2>/dev/null)
-            if [ -n "$match" ]; then
-                printf '%s' "$match"
-                return 0
-            fi
-        done
-        sleep 2
-    done
-    return 1
-}
+# (removed) transport-unreachable smoking-gun helper — v2 has no decommission-reason
+# event; node departure is observed via membership-absence (see wait_for_node_removed).
 
 # ---------------------------------------------------------------------------
 # Test cases
@@ -435,60 +390,30 @@ test_decommission_within_budget() {
     replacement=$(cat "$REPLACEMENT_NODE_ID_FILE")
     kill_ts=$(cat "$KILL_TIMESTAMP_FILE")
 
-    # Authoritative assertion: poll the KV-backed lifecycle endpoint until
-    # R's atom reads DECOMMISSIONED, capped at the spec budget. The KV atom
-    # is the consensus-replicated truth — any SWIM/MembershipView projection
-    # lag is irrelevant because we read the underlying KV directly.
-    if ! wait_for_kv_decommissioned "$replacement" "$DECOMMISSION_BUDGET_S"; then
-        # Diagnostic: show R's current KV state so the failure log explains
-        # WHY the budget was missed (still JOINING? still ON_DUTY? atom GC'd?).
+    # Authoritative v2 assertion: poll until R is REMOVED from membership,
+    # capped at the spec budget. v2 has no DECOMMISSIONED lifecycle state — a
+    # killed node simply leaves the SWIM-fed membership. Removal is observed
+    # via /api/nodes/lifecycle/<R> returning HTTP 404 (LIFECYCLE_NOT_FOUND) OR
+    # R being absent from /api/nodes/status cluster.nodes[]. See
+    # wait_for_node_removed for the dual signal.
+    if ! wait_for_node_removed "$replacement" "$DECOMMISSION_BUDGET_S"; then
+        # Diagnostic: show R's current lifecycle state so the failure log
+        # explains WHY the budget was missed (still JOINING? still ON_DUTY?).
         local stuck_state
         stuck_state=$(kv_lifecycle_state "$replacement")
         now=$(date +%s)
         elapsed=$((now - kill_ts))
-        log_fail "S01 budget violated: ${replacement} not DECOMMISSIONED in KV within ${DECOMMISSION_BUDGET_S}s (elapsed=${elapsed}s, kv_state='${stuck_state:-<absent>}'). The TransportUnreachable path did not fire — likely a regression in Step 2 (event emission), Step 3 (aggregator→FSM wiring), Step 4 (gate exempting JOINING cell), or Step 6 (MembershipView projection)."
+        log_fail "S01 budget violated: ${replacement} not removed from membership within ${DECOMMISSION_BUDGET_S}s (elapsed=${elapsed}s, lifecycle_state='${stuck_state:-<404/absent>}'; still present in /api/nodes/status). The SWIM failure detector did not drop the killed JOINING peer in time — likely a regression in SWIM departure detection or the MembershipView projection (R lingers in cluster.nodes[] past the budget)."
         return 1
     fi
 
     now=$(date +%s)
     elapsed=$((now - kill_ts))
-    assert_ge "$DECOMMISSION_BUDGET_S" "$elapsed" "Replacement ${replacement} reached DECOMMISSIONED in KV within ${DECOMMISSION_BUDGET_S}s budget (actual=${elapsed}s)"
-    log_pass "S01 timing budget met: ${replacement} → DECOMMISSIONED in ${elapsed}s (within ${DECOMMISSION_BUDGET_S}s budget; smoking-gun log assertion below pins the TransportUnreachable code path)"
+    assert_ge "$DECOMMISSION_BUDGET_S" "$elapsed" "Replacement ${replacement} removed from membership within ${DECOMMISSION_BUDGET_S}s budget (actual=${elapsed}s)"
+    log_pass "S01 timing budget met: ${replacement} left the cluster (404 from /api/nodes/lifecycle OR absent from /api/nodes/status) in ${elapsed}s (within ${DECOMMISSION_BUDGET_S}s budget)"
 }
 
-test_transport_unreachable_event_logged() {
-    # Smoking-gun assertion: a surviving compose-baseline node MUST log one of
-    # `reason=transport-failure` / `reason=swim-faulty` / `reason=swim-departed`
-    # for R's NodeId. All three are documented `(JOINING|ON_DUTY, ...) →
-    # DECOMMISSIONED` reducer cells per spec §16 row S01. Their presence pins the
-    # decommission to a known FSM path rather than an opaque write (e.g. accelerated
-    # detector, back-channel CTM tombstone, eviction race). The specific path is a
-    # race between aggregator quorum, SWIM convergence, and the reconciler
-    # JoiningTimeout fallback — all are correct outcomes.
-    #
-    # For a JOINING-window kill the reconciler JoiningTimeout rule routes its cleanup
-    # through the (JOINING, SwimDeparted) FSM cell at ~45s, emitting
-    # `reason=swim-departed` — which IS in the accepted set. The verify call below
-    # polls up to the full 60s budget so that reconciler-driven log line has time to
-    # appear (it lands ~45s after the kill, well after the KV DECOMMISSIONED
-    # assertion may have already passed via the same write).
-    local replacement match
-    # Pre-req: test_catch_replacement_in_joining_window must have landed the kill.
-    # If KILL_TIMESTAMP_FILE is absent the prior test failed before its kill —
-    # no smoking-gun event can exist because no decommission was triggered. Fail
-    # fast with the same shape used in test_decommission_within_budget instead
-    # of running a verify pass that can only ever return "no match".
-    if [ ! -s "$KILL_TIMESTAMP_FILE" ] || [ ! -s "$REPLACEMENT_NODE_ID_FILE" ]; then
-        log_fail "S01 kill never landed — smoking-gun assertion cannot run (test_catch_replacement_in_joining_window failed before its kill)"
-        return 1
-    fi
-    replacement=$(cat "$REPLACEMENT_NODE_ID_FILE")
-    if ! match=$(verify_transport_unreachable_event "$replacement" "$DECOMMISSION_BUDGET_S"); then
-        log_fail "No 'reason=transport-failure' OR 'reason=swim-faulty' OR 'reason=swim-departed' domain-event line for ${replacement} on any surviving compose-baseline node within ${DECOMMISSION_BUDGET_S}s. The decommission (if any) happened via an unknown path — the S01 contract is not actually being exercised. (Step 2/3/4/6 regression candidate: aggregator not producing TransportUnreachable, SWIM not converging on FAULTY/DEPARTED, FSM not consuming any of them, all reducer cells gated, or the reconciler JoiningTimeout rule no longer routing through the SwimDeparted FSM cell.)"
-        return 1
-    fi
-    log_pass "Smoking-gun decommission reason observed for ${replacement}: $(printf '%s' "$match" | head -c 200)"
-}
+# (removed) transport-unreachable smoking-gun test — v2 has no decommission-reason event; node departure is observed via membership-absence (see test_decommission_within_budget).
 
 test_pick_non_leader_excludes_decommissioned() {
     # Hygiene: after R is decommissioned, pick_non_leader() must not return
@@ -553,9 +478,8 @@ trap 'cleanup' EXIT
 run_test "Initial 5 nodes + label snapshot" test_initial_state
 run_test "Prime replacement via priming kill" test_prime_replacement_via_kill
 run_test "Catch replacement in JOINING window and kill it" test_catch_replacement_in_joining_window
-run_test "Replacement DECOMMISSIONED within 90s (S01 budget)" test_decommission_within_budget
-run_test "Transport-failure reason logged on survivor (smoking gun)" test_transport_unreachable_event_logged
-run_test "pick_non_leader excludes decommissioned replacement" test_pick_non_leader_excludes_decommissioned
+run_test "Replacement removed from membership within 90s (S01 budget)" test_decommission_within_budget
+run_test "pick_non_leader excludes removed replacement" test_pick_non_leader_excludes_decommissioned
 # cleanup runs via EXIT trap — guarantees baseline restore even if a run_test
 # above triggers `set -e` abort via `return 1` from inside a test function.
 print_summary

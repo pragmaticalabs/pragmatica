@@ -249,7 +249,7 @@ verify_no_kv_writes_after_drain() {
     local drain_kv_writes
     # Capture full log, split at the drain-trigger line. `awk` is portable
     # and avoids spawning grep -A with an unknown line count.
-    drain_kv_writes=$(remote_exec "docker logs ${name} 2>&1 | awk '/Self-drain: DRAINING on/{seen=1; next} seen' | grep -E 'ConsensusEngine|RabiaEngine|KvStoreCommand|NodeLifecycleKey write|applyAtomic' | head -5 || true" 2>/dev/null)
+    drain_kv_writes=$(remote_exec "docker logs ${name} 2>&1 | awk '/Self-drain: DRAINING on/{seen=1; next} seen' | grep -E 'ConsensusEngine|RabiaEngine|KvStoreCommand|applyAtomic' | head -5 || true" 2>/dev/null)
     if [ -n "$drain_kv_writes" ]; then
         printf '%s' "$drain_kv_writes"
         return 1
