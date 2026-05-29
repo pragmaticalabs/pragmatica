@@ -17,7 +17,7 @@
 package org.pragmatica.dht;
 
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.utility.KSUID;
+import org.pragmatica.utility.IdGenerator;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -103,7 +103,7 @@ public final class DHTRebalancer {
     }
 
     private void sendMigrationData(NodeId target, int partitionIndex, List<DHTMessage.KeyValue> entries) {
-        var correlationId = KSUID.ksuid().toString();
+        var correlationId = IdGenerator.generate();
 
         log.debug("Pushing {} entries for partition {} to {}", entries.size(), partitionIndex, target.id());
 

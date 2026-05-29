@@ -22,7 +22,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
-import org.pragmatica.utility.KSUID;
+import org.pragmatica.utility.IdGenerator;
 
 import java.util.HashMap;
 import java.util.List;
@@ -193,7 +193,7 @@ public interface AbTestManager {
                                                                   Version baseline,
                                                                   Map<String, Version> variantVersions,
                                                                   SplitRule splitRule) {
-                var testId = KSUID.ksuid().encoded();
+                var testId = IdGenerator.generate();
                 var test = AbTestDeployment.abTestDeployment(testId, artifactBase, baseline, variantVersions, splitRule);
                 log.info("Starting A/B test {} for {} with {} variants (baseline: {})",
                          testId,

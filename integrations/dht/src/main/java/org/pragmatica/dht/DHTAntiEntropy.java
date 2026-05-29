@@ -20,7 +20,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
-import org.pragmatica.utility.KSUID;
+import org.pragmatica.utility.IdGenerator;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -145,8 +145,7 @@ public final class DHTAntiEntropy {
             if (peer.equals(node.nodeId())) {
                 continue;
             }
-            var correlationId = KSUID.ksuid()
-                                     .toString();
+            var correlationId = IdGenerator.generate();
             pendingDigests.put(correlationId, new PendingDigest(peer, partitionIndex, localDigest));
             network.send(peer,
                          new DHTMessage.DigestRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex));
@@ -180,8 +179,7 @@ public final class DHTAntiEntropy {
     }
 
     private void requestMigrationData(NodeId peer, int partitionIndex) {
-        var correlationId = KSUID.ksuid()
-                                 .toString();
+        var correlationId = IdGenerator.generate();
         network.send(peer,
                      new DHTMessage.MigrationDataRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex));
     }

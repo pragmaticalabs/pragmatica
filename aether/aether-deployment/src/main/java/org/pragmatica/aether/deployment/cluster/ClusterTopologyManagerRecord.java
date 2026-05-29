@@ -425,7 +425,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// whose PEERS are seeded from the current cluster members (self + SWIM-HEALTHY topology
     /// peers via `buildProvisionContext`, which already emits valid 3-part `nodeId:host:port`
     /// entries) and provisions directly through `NodeLifecycleManager.provisionNode`. The
-    /// provider mints the KSUID. `failedPeer` is observability-only.
+    /// provider mints the ULID. `failedPeer` is observability-only.
     @Override
     public Promise<Unit> provisionReplacement(Option<NodeId> failedPeer, Set<NodeId> clusterMembers) {
         log.info("CTM v2: provisionReplacement requested (failedPeer={}, clusterMembers.size={})",

@@ -31,7 +31,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
-import org.pragmatica.utility.KSUID;
+import org.pragmatica.utility.IdGenerator;
 
 import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
@@ -643,7 +643,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                     onFailure.run();
                     return;
                 }
-                var correlationId = KSUID.ksuid().toString();
+                var correlationId = IdGenerator.generate();
                 byte[] requestData;
                 try {
                     requestData = serializer.encode(requestContext);

@@ -54,7 +54,7 @@ public interface ClusterTopologyManager extends TopologyManager {
     ///
     /// Idempotent: if `failedPeer` (when present) is already in the in-flight provisioning
     /// set, OR a replacement is observable via the current slot/membership state, the call
-    /// is a no-op success. The new peer is provisioned KSUID-named with `clusterMembers`
+    /// is a no-op success. The new peer is provisioned ULID-named with `clusterMembers`
     /// seeded as PEERS by the provider boundary. Returns a `Promise<Unit>` that resolves on
     /// the provision-request acceptance (consensus commit of the FILLING reservation), NOT
     /// on the new node reaching ON_DUTY.

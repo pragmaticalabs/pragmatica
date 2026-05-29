@@ -25,7 +25,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.utility.KSUID;
+import org.pragmatica.utility.IdGenerator;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -205,7 +205,7 @@ final class DeploymentManagerImpl implements DeploymentManager {
                                                                                  HealthThresholds thresholds,
                                                                                  CleanupPolicy cleanupPolicy,
                                                                                  int instances) {
-        var deploymentId = KSUID.ksuid().encoded();
+        var deploymentId = IdGenerator.generate();
         var deployment = Deployment.deployment(deploymentId,
                                                blueprintId,
                                                context.currentVersion(),

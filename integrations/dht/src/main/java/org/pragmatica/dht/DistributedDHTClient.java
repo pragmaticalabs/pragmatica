@@ -22,7 +22,7 @@ import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.utility.KSUID;
+import org.pragmatica.utility.IdGenerator;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
@@ -257,29 +257,25 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     private void sendRemoteGet(NodeId target, byte[] key, QuorumCollector<Option<byte[]>> collector) {
-        var correlationId = KSUID.ksuid()
-                                 .toString();
+        var correlationId = IdGenerator.generate();
         pendingOps.put(correlationId, new PendingOperation<>(collector));
         dispatchTracked(target, new DHTMessage.GetRequest(correlationId, node.nodeId(), key), correlationId, collector);
     }
 
     private void sendRemotePut(NodeId target, byte[] key, byte[] value, long version, QuorumCollector<Unit> collector) {
-        var correlationId = KSUID.ksuid()
-                                 .toString();
+        var correlationId = IdGenerator.generate();
         pendingOps.put(correlationId, new PendingOperation<>(collector));
         dispatchTracked(target, new DHTMessage.PutRequest(correlationId, node.nodeId(), key, value, version), correlationId, collector);
     }
 
     private void sendRemoteRemove(NodeId target, byte[] key, QuorumCollector<Boolean> collector) {
-        var correlationId = KSUID.ksuid()
-                                 .toString();
+        var correlationId = IdGenerator.generate();
         pendingOps.put(correlationId, new PendingOperation<>(collector));
         dispatchTracked(target, new DHTMessage.RemoveRequest(correlationId, node.nodeId(), key), correlationId, collector);
     }
 
     private void sendRemoteExists(NodeId target, byte[] key, QuorumCollector<Boolean> collector) {
-        var correlationId = KSUID.ksuid()
-                                 .toString();
+        var correlationId = IdGenerator.generate();
         pendingOps.put(correlationId, new PendingOperation<>(collector));
         dispatchTracked(target, new DHTMessage.ExistsRequest(correlationId, node.nodeId(), key), correlationId, collector);
     }

@@ -5,7 +5,7 @@
 package org.pragmatica.aether.invoke;
 
 import org.pragmatica.lang.Option;
-import org.pragmatica.utility.KSUID;
+import org.pragmatica.utility.IdGenerator;
 
 import java.util.function.Supplier;
 
@@ -153,7 +153,7 @@ public final class InvocationContext {
     }
 
     public static String generateRequestId() {
-        return KSUID.ksuid().toString();
+        return IdGenerator.generate();
     }
 
     public record ContextSnapshot(String requestId,

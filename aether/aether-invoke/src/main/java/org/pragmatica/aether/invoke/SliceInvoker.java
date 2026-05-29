@@ -31,7 +31,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
-import org.pragmatica.utility.KSUID;
+import org.pragmatica.utility.IdGenerator;
 
 import java.util.List;
 import java.util.Map;
@@ -324,7 +324,7 @@ class SliceInvokerImpl implements SliceInvoker {
                                                    Artifact slice,
                                                    MethodName method,
                                                    byte[] payload) {
-        var correlationId = KSUID.ksuid().toString();
+        var correlationId = IdGenerator.generate();
         var requestId = InvocationContext.getOrGenerateRequestId();
         var invokeRequest = InvokeRequest.invokeRequest(self,
                                                         correlationId,
@@ -376,7 +376,7 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                                MethodName method,
                                                                                byte[] payload,
                                                                                SliceBridge senderBridge) {
-        var correlationId = KSUID.ksuid().toString();
+        var correlationId = IdGenerator.generate();
         return Promise.promise(pendingPromise -> setupPendingInvocation((Promise<Object>)(Promise<?>) pendingPromise,
                                                                         correlationId,
                                                                         endpoint,
@@ -535,7 +535,7 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                         NodeId targetNode,
                                                                         byte[] payload,
                                                                         SliceBridge senderBridge) {
-        var correlationId = KSUID.ksuid().toString();
+        var correlationId = IdGenerator.generate();
         var pendingPromise = Promise.<Object>promise();
         var pending = new PendingInvocation(pendingPromise,
                                             System.currentTimeMillis(),
