@@ -30,17 +30,11 @@ import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
-import org.pragmatica.aether.deployment.cluster.LifecycleWriter;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
-import org.pragmatica.aether.node.lifecycle.NodeState;
-import org.pragmatica.aether.node.lifecycle.NodeStateChanged;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
-import org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmConfig;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler;
@@ -386,15 +380,12 @@ public interface AetherNode extends ManageableNode {
                                                                             .map(LeaderValue::leader);
         var hlcClock = HlcClock.hlcClock(config.self());
         var snapshotSource = KvBackedGenerationSnapshotSource.kvBackedGenerationSnapshotSource(kvStore);
-        // Phase 2 PR-B (cluster-convergence-reconciler) — per-node readiness tracker + leader-side
-        // sync-hold registry. `readinessTracker.markReady(self)` fires on KVSyncResponse arrival;
-        // `metricsCollector` and `clusterSyncPongSignalFan` consume the candidate signal further
-        // down in `assembleNode`. `syncHoldRegistry` is consulted by Phase 4's reconciler.
-        var readinessTracker = org.pragmatica.aether.metrics.NodeReadinessTracker.nodeReadinessTracker();
+        // Membership v2 — `syncHoldRegistry` is consulted by the leader reconciler to skip nodes
+        // that are legitimately syncing KV state. The KVSyncResponse signal no longer drives a
+        // readiness candidate; the v2 control-heartbeat carries node-reported readiness instead.
         var syncHoldRegistry = org.pragmatica.cluster.node.rabia.SyncHoldRegistry.syncHoldRegistry();
         var syncHoldConfig = org.pragmatica.cluster.node.rabia.SyncHoldConfig.defaults();
-        var self = config.self();
-        Runnable onSyncResponseReceived = () -> readinessTracker.markReady(self);
+        Runnable onSyncResponseReceived = () -> {};
 
         return RabiaNode.rabiaNode(nodeConfig,
                                    delegateRouter,
@@ -428,7 +419,6 @@ public interface AetherNode extends ManageableNode {
                                                              leaderTerm,
                                                              hlcClock,
                                                              snapshotSource,
-                                                             readinessTracker,
                                                              syncHoldRegistry,
                                                              jvmExit));
     }
@@ -486,7 +476,6 @@ public interface AetherNode extends ManageableNode {
                                                    AtomicLong leaderTerm,
                                                    HlcClock hlcClock,
                                                    GenerationSnapshotSource snapshotSource,
-                                                   org.pragmatica.aether.metrics.NodeReadinessTracker readinessTracker,
                                                    org.pragmatica.cluster.node.rabia.SyncHoldRegistry syncHoldRegistry,
                                                    Runnable jvmExit) {
         // Concrete adapter (not a lambda) so we can override `sendOutcome` and forward
@@ -602,16 +591,12 @@ public interface AetherNode extends ManageableNode {
                           Option<DiscoveryProvider> discoveryProvider,
                           Option<CertificateRenewalScheduler> certRenewalScheduler,
                           HealthSignalSink healthSignalSink,
-                          LifecycleWriter lifecycleWriter,
                           org.pragmatica.aether.deployment.drain.InFlightRequestTracker inFlightRequestTracker,
-                          org.pragmatica.aether.deployment.drain.DrainCoordinator drainCoordinator,
                           NodeLifecycle nodeLifecycle,
-                          MembershipFsm membershipFsm,
                           HlcClock hlcClock,
                           Option<DHTClient> dhtClient,
                           Option<DHTNode> dhtNode,
                           Supplier<AetherValue.ClusterPhase> clusterPhaseSupplier,
-                          Option<org.pragmatica.aether.deployment.reconciler.LifecycleReconciler> lifecycleReconciler,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
@@ -1088,26 +1073,12 @@ public interface AetherNode extends ManageableNode {
         metricsCollector.setLocalSnapshotSupplier(() -> isLeaderSupplier.getAsBoolean()
                                                         ? reachabilityAggregator.currentSnapshot()
                                                         : Option.none());
-        // Phase 2 PR-B (cluster-convergence-reconciler) — readyCandidate signal routing.
-        // `metricsCollector` reads the candidate from `readinessTracker` when building outgoing
-        // pongs. The leader-side `ClusterSyncPongSignalFan` reacts to non-empty candidates by
-        // invoking `ReadyCandidateSink`, which is wired here to emit
-        // `LifecycleCommand.ForceOnDuty` through `ctmLifecycleWriter`. The writer is built
-        // further down (~line 1240), so an `AtomicReference` indirection lets the fan capture
-        // a stable sink view before the writer exists. Pre-wiring sink calls resolve to a
-        // no-op (`unitPromise()`) — safe because Rabia sync completion can only fire after
-        // the node has been fully assembled.
-        var ctmLifecycleWriterRef = new AtomicReference<org.pragmatica.aether.deployment.cluster.LifecycleWriter>(null);
-        // The FSM-routed writer (built below) dispatches commands through MembershipFsm, which is
-        // constructed AFTER the writer (it depends on drainCoordinator, which depends on the
-        // writer). This ref breaks that cycle: the writer captures it now and dereferences it at
-        // command time — safe because commands can only flow after the node is fully assembled.
-        var membershipFsmRef = new AtomicReference<MembershipFsm>(null);
-        ClusterSyncPongSignalFan.ReadyCandidateSink readyCandidateSink = (sender, candidate) ->
-            emitForceOnDuty(ctmLifecycleWriterRef.get(), sender, candidate);
+        // Membership v2 — the leader-side `ClusterSyncPongSignalFan` no longer drives a
+        // readyCandidate→ForceOnDuty path (the FSM is gone); readiness is node-reported on the
+        // control-heartbeat pong and consumed by the CDM allocatable gate (B4).
+        ClusterSyncPongSignalFan.ReadyCandidateSink readyCandidateSink = (sender, candidate) -> {};
         var nodeReportedStateHolder = NodeReportedStateHolder.nodeReportedStateHolder();
         var drainCommandRegistry = org.pragmatica.aether.metrics.DrainCommandRegistry.drainCommandRegistry();
-        metricsCollector.setReadinessTracker(readinessTracker);
         metricsCollector.setNodeReportedStateSupplier(nodeReportedStateHolder::current);
         metricsCollector.setIncarnationSupplier(org.pragmatica.aether.metrics.BootEpoch::bootEpoch);
         var pongSignalFan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(stableHealthSink,
@@ -1189,9 +1160,6 @@ public interface AetherNode extends ManageableNode {
         Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT)
                                                                                             .filter(v -> v instanceof AetherValue.ClusterConfigValue)
                                                                                             .map(v -> (AetherValue.ClusterConfigValue) v);
-        java.util.function.Function<NodeId, Option<AetherValue.NodeLifecycleValue>> lifecycleReader = nodeId -> kvStore.get(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId))
-                                                                                                                       .filter(v -> v instanceof AetherValue.NodeLifecycleValue)
-                                                                                                                       .map(v -> (AetherValue.NodeLifecycleValue) v);
         java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> clusterCommandApplier = commands -> clusterNode.apply(commands);
         var leaderAwareSnapshotSource = snapshotSource;
         // Drain infrastructure: tracker is shared with NodeLifecycleRoutes (/api/node/inflight).
@@ -1216,25 +1184,9 @@ public interface AetherNode extends ManageableNode {
         var drainProcedure = DrainProcedure.drainProcedure(inFlightTrackerForDrain,
                                                             () -> {},
                                                             jvmExit);
-        java.util.function.Supplier<java.util.Map<AetherKey.ProvisioningSlotKey, AetherValue.ProvisioningSlotValue>> slotReader = () -> {
-            var collected = new java.util.LinkedHashMap<AetherKey.ProvisioningSlotKey, AetherValue.ProvisioningSlotValue>();
-            kvStore.forEach(AetherKey.ProvisioningSlotKey.class, AetherValue.ProvisioningSlotValue.class, collected::put);
-            return collected;
-        };
         Supplier<Option<AetherValue.ClusterPhase>> clusterPhaseReader = () -> kvStore.get(AetherKey.ClusterPhaseKey.SINGLETON)
                                                                                      .filter(v -> v instanceof AetherValue.ClusterPhaseValue)
                                                                                      .map(v -> ((AetherValue.ClusterPhaseValue) v).phase());
-        Supplier<Integer> onDutyCountSupplier = () -> {
-            var counter = new java.util.concurrent.atomic.AtomicInteger();
-            kvStore.forEach(AetherKey.NodeLifecycleKey.class,
-                            AetherValue.NodeLifecycleValue.class,
-                            (_, value) -> {
-                                if (value.state() == AetherValue.NodeLifecycleState.ON_DUTY) {
-                                counter.incrementAndGet();
-                            }
-                            });
-            return counter.get();
-        };
         Supplier<Option<NodeId>> healthLeaderSupplier = () -> clusterNode.leaderManager()
                                                                          .leader();
         // E.6 / E.8 (spec §7): ClusterPhase derived view is the single source of truth for
@@ -1273,100 +1225,23 @@ public interface AetherNode extends ManageableNode {
                                                                  () -> healthLeaderSupplier.get()
                                                                                            .isPresent());
         Supplier<AetherValue.ClusterPhase> effectivePhaseSupplier = () -> clusterPhaseView.compute(System.currentTimeMillis());
-        // Direct lifecycle writes for transitions not owned by the FSM operator-event path
-        // (requestActivate, requestFailedDrain) and for CTM-initiated drain/decommission
-        // (which the FSM does not yet own — those still bypass FSM-driven InvokeDrain).
-        // E2 Phase 2c-α.1a (2026-05-28): audit-stream publisher and the in-memory
-        // RecentCommandsBuffer were deleted; the lifecycle writer no longer tees to an
-        // observability stream.
-        var ctmLifecycleWriter = LifecycleWriter.fsmRoutedLifecycleWriter(command -> membershipFsmRef.get().applyLifecycleCommand(command),
-                                                                          hlcClock::now);
-        // Bind the forward-ref so the Phase 2 PR-B `readyCandidateSink` (wired above) can emit
-        // `LifecycleCommand.ForceOnDuty` once the lifecycle writer exists.
-        ctmLifecycleWriterRef.set(ctmLifecycleWriter);
-        // E2 Phase 2b (2026-05-28): ConsensusDrainCoordinator deleted. The FSM-integrated
-        // DrainCoordinator path remains structurally (used by MembershipFsm `InvokeDrain` and
-        // CTM `drainNode`) but the implementation is now a no-op stub. The §8.2 unified drain
-        // procedure runs through `drainProcedure` above, NOT through this interface. Phase 2c
-        // removes the FSM-routed drain entirely.
-        var drainCoordinator = new NoOpDrainCoordinator();
-        // MembershipFsm wiring (spec §9 — post-E.8 always active). Constructed AFTER
-        // drainCoordinator so the FSM can route InvokeDrain effects through the real coordinator.
-        // E2 Phase 2a (2026-05-28): the leader-side φ-accrual handoff (#231) is removed; the
-        // FSM trusts SWIM's `(ON_DUTY, SwimFaulty)` directly.
-        var membershipFsm = buildMembershipFsm(config.self(),
-                                               kvStore,
-                                               clusterCommandApplier,
-                                               drainCoordinator,
-                                               isLeaderSupplier,
-                                               hlcClock);
-        // Bind the forward-ref so the FSM-routed ctmLifecycleWriter (built above) can dispatch
-        // commands into the now-constructed sovereign FSM.
-        membershipFsmRef.set(membershipFsm);
-        membershipFsm.start();
-        // Topology-observation refactor Step 3: wire the leader-side aggregator's snapshot
-        // stream into the FSM. The aggregator invokes this listener synchronously after each
-        // non-empty `produceAndDispatch()` build (driven by the Tier-1 ping-build path, the
-        // single canonical dispatcher). MembershipFsm
-        // re-leader-gates internally and translates the snapshot into per-peer
-        // TransportReachable / TransportUnreachable events. Registered AFTER both the
-        // aggregator and FSM are constructed (and the FSM started) so the wiring is complete
-        // before the first snapshot can fire.
-        reachabilityAggregator.addSnapshotListener(membershipFsm::onTransportSnapshot);
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
                                                                                    deploymentMap,
                                                                                    leaderAwareSnapshotSource,
                                                                                    clusterConfigReader,
-                                                                                   lifecycleReader,
-                                                                                   slotReader,
                                                                                    clusterCommandApplier,
-                                                                                   drainCoordinator,
-                                                                                   ctmLifecycleWriter,
                                                                                    effectivePhaseSupplier,
                                                                                    // Quorum gate: TopologyObserver.inQuorum() is the committed-healthy
                                                                                    // quorum bit. Below quorum the CTM stops provisioning replacements
-                                                                                   // (anti-flood) and defers to SelfDrainCoordinator to dissolve the
+                                                                                   // (anti-flood) and defers to the §8.2 drain to dissolve the
                                                                                    // minority partition.
                                                                                    ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum(), drainCommandRegistry::requestDrain, drainCommandRegistry::clearDrain);
-        // E2 Phase 2b (2026-05-28): OrphanSelfDrainChecker deleted. The §5 orphan-slot
-        // predicate was an artifact of the slot-based-core-membership-redesign that v2 makes
-        // moot: NTT now drives the only departure-detection path (§6) and the §8 unified
-        // drain handles dissolution of surplus nodes without a periodic KV-driven check.
-        // The `slotOccupants` and `connectedMembers` suppliers below are dead-on-arrival
-        // and removed; Phase 2c drops the durable slot KV records entirely.
-        // `LifecycleReconciler`. Dormant on construction; activated on leader gain via
-        // `toggleReconcilerOnLeaderChange` (registered alongside the CTM toggle further down
-        // in `assembleNode`). Pulls live SWIM from `swimHealthDetector` (set on quorum) and
-        // generation members from the leader-aware snapshot source. `activeSyncHolds()` is
-        // consulted to skip nodes that are legitimately syncing KV state.
-        var lifecycleReconciler = org.pragmatica.aether.deployment.reconciler.LifecycleReconciler.lifecycleReconciler(
-            effectivePhaseSupplier,
-            kvStore,
-            leaderAwareSnapshotSource::currentMembershipView,
-            () -> Option.option(swimDetectorRefForPhase.get())
-                        .flatMap(org.pragmatica.aether.node.health.CoreSwimHealthDetector::currentHealth)
-                        .map(org.pragmatica.swim.HealthSnapshot::peerHealth)
-                        .or(java.util.Map.of()),
-            syncHoldRegistry::activeHolds,
-            ctmLifecycleWriter,
-            org.pragmatica.aether.deployment.membership.fsm.MembershipFsmConfig.defaultMembershipFsmConfig(),
-            org.pragmatica.aether.config.ReconcilerConfig.defaults(),
-            hlcClock,
-            System::currentTimeMillis,
-            // Route JoiningTimeout-triggered cleanup of a killed JOINING peer through the
-            // MembershipFsm reducer's (JOINING, SwimDeparted) cell — the leader-only reducer
-            // writes STOPPED and emits the NODE_FAILED domain event with reason=swim-departed
-            // (the honest SWIM-driven failure reason for a JOINING peer that is SWIM
-            // faulty/absent), instead of a direct operator-forced KV write that emits no
-            // domain event. enqueueOperatorEvent leader-gates SwimDeparted, matching the
-            // reconciler's leader-only activation.
-            membershipFsm::enqueueOperatorEvent);
-        // Post-E.8 phase-change publisher. ClusterPhaseView computes the phase on each call;
-        // CTM needs the edge-triggered `onClusterPhaseChanged` callback to reset the
-        // provisioning circuit + stability marker on COLD_BOOT → NORMAL. Poll the derived
-        // view periodically and dispatch on change.
+        // E2 Phase 2b (2026-05-28): OrphanSelfDrainChecker deleted; NTT (§6) drives departure
+        // detection and the §8 unified drain handles surplus dissolution. Membership v2 finale:
+        // the leader-pinned `LifecycleReconciler` (and the FSM it wrote through) are gone — the
+        // NTT-side `LeaderReconciler` (wired below) is the sole provisioning driver.
         schedulePhaseChangeWatcher(effectivePhaseSupplier, clusterTopologyManager);
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, repository, artifactStore);
@@ -1546,12 +1421,9 @@ public interface AetherNode extends ManageableNode {
                                                 clusterTopologyManager,
                                                 consumerGroupCoordinator,
                                                 consumerGroupRegistry,
-                                                membershipFsm,
                                                 drainProcedure,
                                                 managementServerRef,
-                                                config.self(),
-                                                readinessTracker,
-                                                lifecycleReconciler);
+                                                config.self());
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetRequest.class,
                                                     request -> dhtNode.handleGetRequest(request,
                                                                                         response -> dhtNetwork.send(request.sender(),
@@ -1704,7 +1576,6 @@ public interface AetherNode extends ManageableNode {
                                                     clusterNode.network(),
                                                     rotatingEncryptor,
                                                     announceJoinTrigger);
-        swimHealthDetector.addObservationListener(membershipFsm::onSwimObservation);
         // ---------------------------------------------------------------------
         // Membership v2 — NTT wiring (spec §6, §7.4). E2 Phase 2a (2026-05-28) made the
         // observation unconditional: NTT + LocalQuorumWatcher + LeaderReconciler are
@@ -1759,7 +1630,6 @@ public interface AetherNode extends ManageableNode {
         // flaps). Fast clean-departure eviction; the stale-sweep above is the silent-node backstop.
         aetherEntries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected.class,
                                                     obs -> pongSignalFan.evict(obs.nodeId())));
-        membershipFsm.setSwimHealthGate(nodeId -> swimHealthDetector.healthOf(nodeId) == SwimHealth.HEALTHY);
         // SwimProtocol → router wire-up: SWIM-detected FAULTY peers are forwarded to the
         // cluster-wide `TransportObservation` stream so subscribers (LeaderManager,
         // ClusterFsmRouter, etc.) reach all `TransportObservation.PeerObservedFaulty` edges.
@@ -2052,25 +1922,15 @@ public interface AetherNode extends ManageableNode {
                                   discoveryProvider,
                                   certRenewalScheduler,
                                   stableHealthSink,
-                                  ctmLifecycleWriter,
                                   inFlightTrackerForDrain,
-                                  drainCoordinator,
                                   nodeLifecycle,
-                                  membershipFsm,
                                   hlcClock,
                                   dhtClientOption,
                                   Option.some(dhtNode),
                                   effectivePhaseSupplier,
-                                  Option.some(lifecycleReconciler),
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
         nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReady(nodeLifecycle::signalReady, nodeReportedStateHolder));
-        // Self-bootstrap (Bootstrap-correction 2026-05-12): SWIM does not observe self, so the
-        // leader's FSM never receives `SwimHealthy(self)` via the normal gossip path. When this
-        // node's local lifecycle reaches ACTIVE, synthesize that observation into our own FSM.
-        // The leader-write gate ensures only the leader's enqueue produces a Put(L=ON_DUTY) for
-        // self; followers drop the synthetic observation harmlessly. Spec §6 step 7.
-        nodeLifecycle.addStateListener(change -> bootstrapSelfOnDutyOnActive(change, membershipFsm, config.self()));
         nodeLifecycle.subsystemsReady();
 
         return RabiaNode.buildAndWireRouter(delegateRouter, allEntries).map(_ -> {
@@ -2161,75 +2021,16 @@ public interface AetherNode extends ManageableNode {
                                                                                                       discoveryProvider,
                                                                                                       certRenewalScheduler,
                                                                                                       stableHealthSink,
-                                                                                                      ctmLifecycleWriter,
                                                                                                       inFlightTrackerForDrain,
-                                                                                                      drainCoordinator,
                                                                                                       nodeLifecycle,
-                                                                                                      membershipFsm,
                                                                                                       hlcClock,
                                                                                                       dhtClientOption,
                                                                                                       Option.some(dhtNode),
                                                                                                       effectivePhaseSupplier,
-                                                                                                      Option.some(lifecycleReconciler),
                                                                                                       startTimeMs);
                                                                             }
                                                                                 return node;
                                                                             });
-    }
-
-    /// Build the membership FSM (spec §9 — post-E.8 always active). The FSM:
-    /// - reads `NodeLifecycleKey` + `ProvisioningSlotKey` on `start()` to reconstruct
-    ///   per-peer state from KV;
-    /// - routes operator-initiated drain/decommission events to consensus via
-    ///   `commandApplier` and invokes `drainCoordinator` for the drain protocol;
-    /// - routes SWIM observations through the leader-gated reducer (`isLeaderSupplier`).
-    ///
-    /// **Topology-observation refactor Step 4.** The aggregator snapshot supplier is passed
-    /// to the FSM so the reducer can apply the aggregator-quorum gate at the two ON_DUTY
-    /// decommission cells (`SwimFaulty`, `TransportUnreachable`). Cold-start fallback: when
-    /// `reachabilityAggregator.currentSnapshot()` returns `Option.none()`, the gate is permissive
-    /// (pre-Step-4 behavior). The gate uses the PURE read path so re-entrant gate evaluation
-    /// during FSM event processing never dispatches snapshot listeners (would recurse).
-    private static MembershipFsm buildMembershipFsm(NodeId self,
-                                                    KVStore<AetherKey, AetherValue> kvStore,
-                                                    java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                    org.pragmatica.aether.deployment.drain.DrainCoordinator drainCoordinator,
-                                                    BooleanSupplier isLeaderSupplier,
-                                                    HlcClock hlcClock) {
-        var fsmConfig = MembershipFsmConfig.defaultMembershipFsmConfig();
-        MembershipFsm.LifecycleSnapshotReader lifecycleSnapshot = consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
-                                                                                              AetherValue.NodeLifecycleValue.class,
-                                                                                              consumer);
-        MembershipFsm.SlotSnapshotReader slotSnapshot = consumer -> kvStore.forEach(AetherKey.ProvisioningSlotKey.class,
-                                                                                    AetherValue.ProvisioningSlotValue.class,
-                                                                                    consumer);
-        MembershipFsm.TimerScheduler scheduler = org.pragmatica.lang.utils.SharedScheduler::schedule;
-
-        return MembershipFsm.membershipFsm(self,
-                                           fsmConfig,
-                                           lifecycleSnapshot,
-                                           slotSnapshot,
-                                           commandApplier,
-                                           drainCoordinator,
-                                           scheduler,
-                                           isLeaderSupplier,
-                                           hlcClock);
-    }
-
-    /// Self-bootstrap (Bootstrap-correction 2026-05-12; spec §6 step 7). SWIM does not observe
-    /// self, so the leader's FSM never receives `SwimHealthy(self)` via the normal gossip path.
-    /// When this node's `NodeLifecycle` transitions to ACTIVE, we synthesize a `HealthyObserved`
-    /// for self into the local `MembershipFsm`. The reducer cell `(UNTRACKED, SwimHealthy) →
-    /// ON_DUTY` (Change 1 of this correction) then drives the leader to write the self
-    /// `Put(L=ON_DUTY)`. On followers the leader-write gate inside `MembershipFsm` drops the
-    /// synthetic observation (single-writer invariant) — which is correct, because the leader
-    /// writes the lifecycle atom for every peer including itself.
-    @Contract
-    private static void bootstrapSelfOnDutyOnActive(NodeStateChanged change, MembershipFsm membershipFsm, NodeId self) {
-        if (change.current() != NodeState.ACTIVE) {
-            return;
-        }
-        membershipFsm.onSwimObservation(new SwimObservation.HealthyObserved(self, 0L));
     }
 
     org.pragmatica.lang.io.TimeSpan PHASE_WATCH_INTERVAL = org.pragmatica.lang.io.TimeSpan.timeSpan(1).seconds();
@@ -2327,39 +2128,6 @@ public interface AetherNode extends ManageableNode {
                                         ClusterTopologyManager ctm) {
         if (put.cause().value() instanceof AetherValue.NodeLifecycleValue lifecycleValue && lifecycleValue.state() == AetherValue.NodeLifecycleState.ON_DUTY) {
             ctm.onNodeReady(put.cause().key().nodeId());
-        }
-    }
-
-    /// Phase 2 PR-B (cluster-convergence-reconciler) — `ReadyCandidateSink` impl. Emits
-    /// `LifecycleCommand.ForceOnDuty` for the candidate. The HLC stamp uses `HlcTimestamp.ZERO`
-    /// per Phase 1 PR-A convention — proper HLC threading is tracked as follow-up #6 in the
-    /// cluster-convergence-reconciler initiative. Audit logging lives downstream in
-    /// `DirectLifecycleWriter.applyCommand`. When the writer ref is unbound (pre-wiring window),
-    /// this collapses to a no-op so early pong arrivals don't NPE.
-    private static void emitForceOnDuty(org.pragmatica.aether.deployment.cluster.LifecycleWriter writer,
-                                         NodeId sender,
-                                         NodeId candidate) {
-        if (writer == null) {return;}
-        var command = new org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceOnDuty(
-                candidate,
-                org.pragmatica.lang.utils.Causes.cause("readyCandidate from " + sender),
-                org.pragmatica.hlc.HlcTimestamp.ZERO);
-        writer.applyCommand(command)
-              .onFailure(cause -> LOG.warn("ForceOnDuty for {} (signalled by {}) failed: {}",
-                                            candidate, sender, cause.message()));
-    }
-
-    /// Phase 2 PR-B (cluster-convergence-reconciler) — clears the local readiness tracker once
-    /// this node observes its OWN `NodeLifecycleValue` flip to `ON_DUTY` via KV notification.
-    /// Closes the candidate-field loop: future pongs from this node carry `Option.none()` until
-    /// another sync-complete signal fires. Idempotent — safe to invoke multiple times.
-    private static void clearReadinessOnSelfOnDuty(ValuePut<AetherKey.NodeLifecycleKey, AetherValue> put,
-                                                    NodeId self,
-                                                    org.pragmatica.aether.metrics.NodeReadinessTracker tracker) {
-        if (!put.cause().key().nodeId().equals(self)) {return;}
-        if (put.cause().value() instanceof AetherValue.NodeLifecycleValue lifecycleValue
-            && lifecycleValue.state() == AetherValue.NodeLifecycleState.ON_DUTY) {
-            tracker.clear();
         }
     }
 
@@ -2578,20 +2346,9 @@ public interface AetherNode extends ManageableNode {
         if (change.localNodeIsLeader()) {s.activate();} else {s.deactivate();}
     }
 
-    /// Phase 4 PR-D (cluster-convergence-reconciler) — activate the leader-only
-    /// `LifecycleReconciler` on leader gain; deactivate on leader loss. Mirrors the CTM
-    /// activation toggle (`toggleCtmOnLeaderChange`) so the two leader-only components
-    /// share a lifecycle.
-    @SuppressWarnings("JBCT-RET-01")
-    private static void toggleReconcilerOnLeaderChange(LeaderNotification.LeaderChange change,
-                                                       org.pragmatica.aether.deployment.reconciler.LifecycleReconciler reconciler) {
-        if (change.localNodeIsLeader()) {reconciler.activate();} else {reconciler.deactivate();}
-    }
-
     /// Membership v2 — leader-pin the NTT-side `LeaderReconciler`. Activate on leader gain
     /// (drain NTT map, fire initial reconcile tick, start periodic ticks); deactivate on
-    /// leader loss (cancel ticks, clear in-flight provisioning). Mirrors
-    /// `toggleReconcilerOnLeaderChange`.
+    /// leader loss (cancel ticks, clear in-flight provisioning).
     @SuppressWarnings("JBCT-RET-01")
     private static void toggleNttReconcilerOnLeaderChange(LeaderNotification.LeaderChange change,
                                                           LeaderReconciler reconciler) {
@@ -2994,12 +2751,9 @@ public interface AetherNode extends ManageableNode {
                                                                     ClusterTopologyManager clusterTopologyManager,
                                                                     ConsumerGroupCoordinator consumerGroupCoordinator,
                                                                     ConsumerGroupRegistry consumerGroupRegistry,
-                                                                    MembershipFsm membershipFsm,
                                                                     DrainProcedure drainProcedure,
                                                                     java.util.concurrent.atomic.AtomicReference<Option<ManagementServer>> managementServerRef,
-                                                                    NodeId self,
-                                                                    org.pragmatica.aether.metrics.NodeReadinessTracker readinessTracker,
-                                                                    org.pragmatica.aether.deployment.reconciler.LifecycleReconciler lifecycleReconciler) {
+                                                                    NodeId self) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
         var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.AppBlueprintKey.class,
                                                                                                            clusterDeploymentManager::onAppBlueprintPut).onPut(AetherKey.SliceTargetKey.class,
@@ -3032,14 +2786,7 @@ public interface AetherNode extends ManageableNode {
         .onRemove(AetherKey.NodeLifecycleKey.class, nodeDeploymentManager::onNodeLifecycleRemove).onPut(AetherKey.NodeLifecycleKey.class,
                                                                                                         eventAggregator::onNodeLifecyclePut).onPut(AetherKey.NodeLifecycleKey.class,
                                                                                                                                                    put -> notifyCtmOnDuty(put,
-                                                                                                                                                                          clusterTopologyManager)).onPut(AetherKey.NodeLifecycleKey.class,
-                                                                                                                                                                                                         put -> clearReadinessOnSelfOnDuty(put,
-                                                                                                                                                                                                                                            self,
-                                                                                                                                                                                                                                            readinessTracker)).onPut(AetherKey.NodeLifecycleKey.class,
-                                                                                                                                                                                                         membershipFsm::onNodeLifecyclePut).onRemove(AetherKey.NodeLifecycleKey.class,
-                                                                                                                                                                                                                                                     membershipFsm::onNodeLifecycleRemove).onPut(AetherKey.ProvisioningSlotKey.class,
-                                                                                                                                                                                                                                                                                                 membershipFsm::onProvisioningSlotPut).onRemove(AetherKey.ProvisioningSlotKey.class,
-                                                                                                                                                                                                                                                                                                                                                membershipFsm::onProvisioningSlotRemove).onPut(AetherKey.ActivationDirectiveKey.class,
+                                                                                                                                                                          clusterTopologyManager)).onPut(AetherKey.ActivationDirectiveKey.class,
                                                                                                                                                                                                                                                                                                                                                                                                clusterDeploymentManager::onActivationDirectivePut).onRemove(AetherKey.ActivationDirectiveKey.class,
                                                                                                                                                                                                                                                                                                                                                                                                                                                             clusterDeploymentManager::onActivationDirectiveRemove).onPut(AetherKey.SchemaVersionKey.class,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          clusterDeploymentManager::onSchemaVersionPut).onPut(AetherKey.NodeArtifactKey.class,
@@ -3093,8 +2840,6 @@ public interface AetherNode extends ManageableNode {
                                               consumerGroupCoordinator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> toggleCtmOnLeaderChange(change, clusterTopologyManager)));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              change -> toggleReconcilerOnLeaderChange(change, lifecycleReconciler)));
         // #231 Step 2 — CDM (DEPLOYMENT) leader-pinned. LoadBalancer (DEPLOYMENT) MUST be registered
         // AFTER CDM since it reconciles routes CDM produces.
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
@@ -3122,13 +2867,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                .map(NodeId::id))));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               scheduledTaskManager::onLeaderChange));
-        // Self-bootstrap second trigger (Bootstrap-correction 2026-05-12; spec §6.2 step 7).
-        // The NodeLifecycle.ACTIVE listener (see bootstrapSelfOnDutyOnActive) covers the race
-        // where subsystem readiness completes AFTER leader election. This LeaderChange route
-        // covers the inverse race — leader election completes AFTER subsystem readiness — by
-        // re-injecting the synthetic SwimHealthy(self) once this node becomes leader. The
-        // reducer's (ON_DUTY, SwimHealthy) → nop rule keeps both triggers idempotent.
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, membershipFsm::onLeaderChange));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               rollbackManager::onAllInstancesFailed));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,

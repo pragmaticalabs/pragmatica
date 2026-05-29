@@ -10,11 +10,7 @@ import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
-import org.pragmatica.aether.deployment.cluster.LifecycleWriter;
-import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
-import org.pragmatica.aether.deployment.reconciler.LifecycleReconciler;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.lang.Functions.Fn1;
@@ -117,25 +113,12 @@ public interface ManageableNode {
     List<NodeId> initialTopology();
     TopologyConfig topologyConfig();
     HealthSignalSink healthSignalSink();
-    LifecycleWriter lifecycleWriter();
     InFlightRequestTracker inFlightRequestTracker();
-    DrainCoordinator drainCoordinator();
     NodeLifecycle nodeLifecycle();
-
-    MembershipFsm membershipFsm();
-
-    /// Phase 4 PR-D (cluster-convergence-reconciler) — leader-only periodic
-    /// `LifecycleReconciler` (cluster-convergence-reconciler-spec §7). `Option.none()` on
-    /// nodes that have not been wired with a reconciler (legacy `ManageableNode`
-    /// adapters / test fixtures); on production nodes the option is always present and
-    /// the reconciler's `active()` toggle reflects whether this node currently holds
-    /// the leader lease. Backs `GET /api/nodes/lifecycle/reconciler`.
-    Option<LifecycleReconciler> lifecycleReconciler();
 
     /// RC1 Step 4 — exposes the node's canonical Hybrid Logical Clock so request-handling
     /// routes (e.g., `NodeLifecycleRoutes` constructing operator events) can stamp events
-    /// with the same clock the `MembershipFsm` uses, preserving causal ordering across the
-    /// admission and FSM-write paths.
+    /// with the same clock, preserving causal ordering across the admission path.
     HlcClock hlcClock();
 
     /// P-NEW-B / P-NEW-F (RC1, 2026-05-21) — exposes the node's local DHT client so management

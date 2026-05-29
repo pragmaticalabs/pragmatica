@@ -5,14 +5,10 @@
 package org.pragmatica.aether.deployment.cluster;
 
 import org.pragmatica.aether.deployment.DeploymentMap;
-import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
@@ -25,7 +21,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -98,11 +93,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          DeploymentMap deploymentMap,
                                                          GenerationSnapshotSource snapshotSource,
                                                          Supplier<Option<ClusterConfigValue>> clusterConfigReader,
-                                                         Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
-                                                         Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
                                                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                         DrainCoordinator drainCoordinator,
-                                                         LifecycleWriter lifecycleWriter,
                                                          Supplier<ClusterPhase> phaseSupplier) {
         return clusterTopologyManager(observer,
                                       lifecycleManager,
@@ -110,11 +101,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                       deploymentMap,
                                       snapshotSource,
                                       clusterConfigReader,
-                                      lifecycleReader,
-                                      slotReader,
                                       commandApplier,
-                                      drainCoordinator,
-                                      lifecycleWriter,
                                       phaseSupplier,
                                       () -> true);
     }
@@ -128,11 +115,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          DeploymentMap deploymentMap,
                                                          GenerationSnapshotSource snapshotSource,
                                                          Supplier<Option<ClusterConfigValue>> clusterConfigReader,
-                                                         Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
-                                                         Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
                                                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                         DrainCoordinator drainCoordinator,
-                                                         LifecycleWriter lifecycleWriter,
                                                          Supplier<ClusterPhase> phaseSupplier,
                                                          BooleanSupplier inQuorum) {
         return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
@@ -141,11 +124,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          deploymentMap,
                                                                          snapshotSource,
                                                                          clusterConfigReader,
-                                                                         lifecycleReader,
-                                                                         slotReader,
                                                                          commandApplier,
-                                                                         drainCoordinator,
-                                                                         lifecycleWriter,
                                                                          phaseSupplier,
                                                                          inQuorum,
                                                                          System::currentTimeMillis);
@@ -163,11 +142,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          DeploymentMap deploymentMap,
                                                          GenerationSnapshotSource snapshotSource,
                                                          Supplier<Option<ClusterConfigValue>> clusterConfigReader,
-                                                         Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
-                                                         Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
                                                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                         DrainCoordinator drainCoordinator,
-                                                         LifecycleWriter lifecycleWriter,
                                                          Supplier<ClusterPhase> phaseSupplier,
                                                          BooleanSupplier inQuorum,
                                                          Consumer<NodeId> drainCommandSink,
@@ -178,11 +153,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          deploymentMap,
                                                                          snapshotSource,
                                                                          clusterConfigReader,
-                                                                         lifecycleReader,
-                                                                         slotReader,
                                                                          commandApplier,
-                                                                         drainCoordinator,
-                                                                         lifecycleWriter,
                                                                          phaseSupplier,
                                                                          inQuorum,
                                                                          System::currentTimeMillis,

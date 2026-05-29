@@ -5,7 +5,6 @@
 package org.pragmatica.aether.deployment.cluster;
 
 import org.pragmatica.aether.deployment.DeploymentMap;
-import org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
@@ -101,13 +100,7 @@ class ClusterTopologyManagerActuatorTest {
                                                             DeploymentMap.deploymentMap(),
                                                             snapshotSource,
                                                             clusterStore::current,
-                                                            clusterStore::lifecycle,
-                                                            clusterStore::slots,
                                                             clusterStore::apply,
-                                                            new NoOpDrainCoordinator(),
-                                                            LegacyLifecycleWriterFixture.create(clusterStore::apply,
-                                                                                                clusterStore::lifecycle,
-                                                                                                System::currentTimeMillis),
                                                             () -> ClusterPhase.NORMAL,
                                                             () -> true,
                                                             drainCommandSinkCalls::add,

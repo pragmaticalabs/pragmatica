@@ -5,7 +5,6 @@
 package org.pragmatica.aether.deployment.cluster;
 
 import org.pragmatica.aether.deployment.DeploymentMap;
-import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
@@ -13,12 +12,9 @@ import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -73,17 +69,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     DeploymentMap deploymentMap,
                                     GenerationSnapshotSource snapshotSource,
                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
-                                    Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
-                                    Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                    DrainCoordinator drainCoordinator,
-                                    LifecycleWriter lifecycleWriter,
                                     Supplier<ClusterPhase> phaseSupplier,
                                     BooleanSupplier inQuorum,
                                     AtomicReference<NodeReconcilerState> stateRef,
                                     AtomicBoolean active,
                                     ConcurrentHashMap<NodeId, Promise<?>> inFlightProvisions,
-                                    ConcurrentHashMap<NodeId, ProvisioningSlotKey> slotKeyByNodeId,
                                     ConcurrentHashMap<Integer, Long> inFlightSlotIndices,
                                     CancellableTask safetyNetTimer,
                                     AtomicLong realActualStableSinceMs,
@@ -109,11 +100,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                      DeploymentMap deploymentMap,
                                                                      GenerationSnapshotSource snapshotSource,
                                                                      Supplier<Option<ClusterConfigValue>> clusterConfigReader,
-                                                                     Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
-                                                                     Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                                     DrainCoordinator drainCoordinator,
-                                                                     LifecycleWriter lifecycleWriter,
                                                                      Supplier<ClusterPhase> phaseSupplier,
                                                                      BooleanSupplier inQuorum,
                                                                      LongSupplier clock) {
@@ -123,11 +110,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                             deploymentMap,
                                             snapshotSource,
                                             clusterConfigReader,
-                                            lifecycleReader,
-                                            slotReader,
                                             commandApplier,
-                                            drainCoordinator,
-                                            lifecycleWriter,
                                             phaseSupplier,
                                             inQuorum,
                                             clock,
@@ -147,11 +130,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                      DeploymentMap deploymentMap,
                                                                      GenerationSnapshotSource snapshotSource,
                                                                      Supplier<Option<ClusterConfigValue>> clusterConfigReader,
-                                                                     Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
-                                                                     Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                                     DrainCoordinator drainCoordinator,
-                                                                     LifecycleWriter lifecycleWriter,
                                                                      Supplier<ClusterPhase> phaseSupplier,
                                                                      BooleanSupplier inQuorum,
                                                                      LongSupplier clock,
@@ -163,16 +142,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 deploymentMap,
                                                 snapshotSource,
                                                 clusterConfigReader,
-                                                lifecycleReader,
-                                                slotReader,
                                                 commandApplier,
-                                                drainCoordinator,
-                                                lifecycleWriter,
                                                 phaseSupplier,
                                                 inQuorum,
                                                 new AtomicReference<>(new NodeReconcilerState.Inactive("not yet activated")),
                                                 new AtomicBoolean(false),
-                                                new ConcurrentHashMap<>(),
                                                 new ConcurrentHashMap<>(),
                                                 new ConcurrentHashMap<>(),
                                                 CancellableTask.cancellableTask(),
