@@ -874,13 +874,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     ///   event that integration tests depend on.
     private void emitFaultyOrUnknown(NodeId peer, long incarnation) {
         var booting = isBooting.getAsBoolean();
-        // SPIKE #231 (THROWAWAY): COLD_BOOT FAULTY-suppression disabled so a never-HEALTHY peer
-        // killed during COLD_BOOT still produces a FAULTY edge (needed for the ungated
-        // (Joining, SwimFaulty) reducer cell to fire fast). REVERT to restore the
-        // `if (booting && !everSeenHealthy.contains(peer)) { emit UNKNOWN; return; }` block.
         if (booting && !everSeenHealthy.contains(peer)) {
-            LOG.warn("SPIKE #231: COLD_BOOT suppression bypassed — emitting FaultyObserved for never-HEALTHY peer {} during COLD_BOOT",
+            LOG.info("SWIM cold-boot suppression (COLD_BOOT phase): peer {} never observed HEALTHY — emitting UNKNOWN instead of FAULTY",
                      peer.id());
+            emitObservationOnEdge(peer, SwimHealth.UNKNOWN, () -> new SwimObservation.UnknownObserved(peer, incarnation));
+            return;
         }
         if (!booting && !everSeenHealthy.contains(peer)) {
             LOG.warn("SWIM phase=NORMAL_OR_RECOVERING: emitting FaultyObserved for never-HEALTHY peer {} (cold-boot suppression bypassed)",
