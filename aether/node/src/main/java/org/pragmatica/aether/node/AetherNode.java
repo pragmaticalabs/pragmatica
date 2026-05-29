@@ -1562,16 +1562,26 @@ public interface AetherNode extends ManageableNode {
         metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
         Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(membershipTracker::onQuicReconnect);
         Consumer<NodeId> nttDisconnectTap = membershipTracker::onQuicDisconnect;
+        // P5 NOTE: the NTT-reconciler leader-toggle (auto-heal activation) stays added to
+        // `aetherEntries` — which was already merged into `allEntries` above (~line 1432), so
+        // this add is intentionally INERT (the route is NOT in the live router). Activating
+        // the reconciler on a static cluster reintroduces the Bug C provisioning death-spiral
+        // (phantom replacements for a configured peer that hasn't joined yet); it is wired
+        // into the live router in P5 together with the identity-aware guard.
         aetherEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                     change -> toggleNttReconcilerOnLeaderChange(change, leaderReconciler)));
+        // P4 (Bug B FIX): readiness + evict routes are now added to `allEntries` (the list the
+        // router is actually built from below). Previously they were appended to the
+        // already-merged `aetherEntries`, so they never installed — node readiness was never
+        // reported, CDM `allocatableNodes` stayed empty, and zero slices were placed.
         // B1 (membership v2 §7.5): node-reported readiness state tracks local consensus edges.
-        aetherEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class,
-                                                    n -> routeConsensusEdgeToReportedState(n, nodeReportedStateHolder)));
+        allEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class,
+                                                 n -> routeConsensusEdgeToReportedState(n, nodeReportedStateHolder)));
         // B3 (membership v2 §7.5.5): evict a node from the leader readiness view on routed QUIC
         // disconnect (TransportObservation.PeerDisconnected fires on QUIC REMOVE, not on RECONNECT
         // flaps). Fast clean-departure eviction; the stale-sweep above is the silent-node backstop.
-        aetherEntries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected.class,
-                                                    obs -> pongSignalFan.evict(obs.nodeId())));
+        allEntries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected.class,
+                                                 obs -> pongSignalFan.evict(obs.nodeId())));
         // SwimProtocol → router wire-up: SWIM-detected FAULTY peers are forwarded to the
         // cluster-wide `TransportObservation` stream so subscribers (LeaderManager,
         // ClusterFsmRouter, etc.) reach all `TransportObservation.PeerObservedFaulty` edges.
