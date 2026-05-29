@@ -8,6 +8,7 @@ import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.MembershipView;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -36,9 +37,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// has been removed (the previous tick existed only because surplus had no event
 /// signal — now SWIM `HealthyObserved` provides it symmetrically with NTT for
 /// shortage). `clusterMembershipCount` and the current member set are both sourced
-/// from [`NodeTopologyTracker#currentMemberCount`] / [`NodeTopologyTracker#currentMembers`],
-/// which itself derives them from SWIM observations (freshest "who is in the
-/// cluster" signal).
+/// from the unified [`MembershipView#coreMemberIds`], which derives them from the
+/// single SWIM-fed membership source (freshest "who is in the cluster" signal).
 ///
 /// **Five trigger paths.**
 /// 1. [`#activate()`] on leader gain — schedules a single one-shot delayed
@@ -80,7 +80,7 @@ public final class LeaderReconciler {
     private final MembershipConfig membershipConfig;
     private final TimeSpan leaderActivationDelay;
     private final TimeSpan inFlightExpiry;
-    private final NodeTopologyTracker ntt;
+    private final MembershipView membershipView;
     private final LocalQuorumWatcher localQuorumWatcher;
     private final IntSupplier configuredCoreCountSupplier;
     private final ClusterTopologyManager ctm;
@@ -96,7 +96,7 @@ public final class LeaderReconciler {
     private volatile Consumer<ReconcileIntent> reconcileListener = NOOP_LISTENER;
 
     private LeaderReconciler(MembershipConfig membershipConfig,
-                             NodeTopologyTracker ntt,
+                             MembershipView membershipView,
                              LocalQuorumWatcher localQuorumWatcher,
                              IntSupplier configuredCoreCountSupplier,
                              ClusterTopologyManager ctm,
@@ -105,7 +105,7 @@ public final class LeaderReconciler {
         this.membershipConfig = membershipConfig;
         this.leaderActivationDelay = computeQuiesceDelay(membershipConfig.nttDepartureTimeout());
         this.inFlightExpiry = leaderActivationDelay;
-        this.ntt = ntt;
+        this.membershipView = membershipView;
         this.localQuorumWatcher = localQuorumWatcher;
         this.configuredCoreCountSupplier = configuredCoreCountSupplier;
         this.ctm = ctm;
@@ -115,12 +115,12 @@ public final class LeaderReconciler {
 
     /// Production factory bound to the process-wide [`SharedScheduler`] and the system clock.
     public static LeaderReconciler leaderReconciler(MembershipConfig membershipConfig,
-                                                    NodeTopologyTracker ntt,
+                                                    MembershipView membershipView,
                                                     LocalQuorumWatcher localQuorumWatcher,
                                                     IntSupplier configuredCoreCountSupplier,
                                                     ClusterTopologyManager ctm) {
         return new LeaderReconciler(membershipConfig,
-                                    ntt,
+                                    membershipView,
                                     localQuorumWatcher,
                                     configuredCoreCountSupplier,
                                     ctm,
@@ -131,14 +131,14 @@ public final class LeaderReconciler {
     /// Test factory accepting explicit [`TimeSource`] and [`NttTimerScheduler`] —
     /// required for deterministic activation/debounce assertions.
     public static LeaderReconciler leaderReconciler(MembershipConfig membershipConfig,
-                                                    NodeTopologyTracker ntt,
+                                                    MembershipView membershipView,
                                                     LocalQuorumWatcher localQuorumWatcher,
                                                     IntSupplier configuredCoreCountSupplier,
                                                     ClusterTopologyManager ctm,
                                                     TimeSource timeSource,
                                                     NttTimerScheduler scheduler) {
         return new LeaderReconciler(membershipConfig,
-                                    ntt,
+                                    membershipView,
                                     localQuorumWatcher,
                                     configuredCoreCountSupplier,
                                     ctm,
@@ -283,9 +283,9 @@ public final class LeaderReconciler {
 
         evictExpiredInFlightEntries(now);
 
-        var clusterMembershipCount = ntt.currentMemberCount();
+        var currentMembers = membershipView.coreMemberIds();
+        var clusterMembershipCount = currentMembers.size();
         var configuredCoreCount = configuredCoreCountSupplier.getAsInt();
-        var currentMembers = ntt.currentMembers();
         var effective = clusterMembershipCount + inFlightProvisioning.size();
 
         // Quorum-safety guard (spec §7.2, §I5; sub-quorum-must-dissolve). A sub-quorum
@@ -403,11 +403,10 @@ public final class LeaderReconciler {
         return membershipConfig;
     }
 
-    /// Observability — the [`NodeTopologyTracker`] collaborator. NTT runs universally;
-    /// the reconciler reads its `pendingTimerCount` for metrics and consumes its
-    /// timer-fire reconcile-trigger callback (wired upstream).
-    public NodeTopologyTracker ntt() {
-        return ntt;
+    /// Observability — the [`MembershipView`] collaborator the reconciler reads the
+    /// current core-member set from (unified SWIM-fed membership source).
+    public MembershipView membershipView() {
+        return membershipView;
     }
 
     /// Observability — the [`LocalQuorumWatcher`] collaborator. Wired upstream via

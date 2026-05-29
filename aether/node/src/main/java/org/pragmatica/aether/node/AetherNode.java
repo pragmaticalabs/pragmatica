@@ -1614,7 +1614,7 @@ public interface AetherNode extends ManageableNode {
         swimHealthDetector.addObservationListener(membershipTracker::onSwimObservation);
         var localQuorumWatcher = LocalQuorumWatcher.localQuorumWatcher(membershipConfig, TimeSource.system(), SharedScheduler::schedule);
         var leaderReconciler = LeaderReconciler.leaderReconciler(membershipConfig,
-                                                                 ntt,
+                                                                 membershipTracker,
                                                                  localQuorumWatcher,
                                                                  configuredCoreCountSupplier,
                                                                  clusterTopologyManager,
@@ -1720,7 +1720,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                   kvStore,
                                                                                                   clusterNode,
                                                                                                   publisherExecutor,
-                                                                                                  ntt::currentMembers,
+                                                                                                  membershipTracker::members,
                                                                                                   () -> nodesReporting(pongSignalFan, nodeReportedStateHolder, config.self(), NodeReportedState.DRAINING),
                                                                                                   ((TopologyObserver) clusterNode.topologyManager())::get);
         publisherRef.set(generationSnapshotPublisher);

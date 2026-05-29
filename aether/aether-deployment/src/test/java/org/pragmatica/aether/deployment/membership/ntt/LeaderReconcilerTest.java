@@ -14,6 +14,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.consensus.topology.MembershipView;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TransportObservation;
@@ -24,10 +25,10 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.net.tcp.TlsConfig;
-import org.pragmatica.swim.SwimObservation.HealthyObserved;
 
 import java.net.SocketAddress;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -42,7 +43,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.deployment.membership.MembershipConfig.membershipConfig;
 import static org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler.leaderReconciler;
 import static org.pragmatica.aether.deployment.membership.ntt.LocalQuorumWatcher.localQuorumWatcher;
-import static org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker.nodeTopologyTracker;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -64,7 +64,7 @@ class LeaderReconcilerTest {
     private RecordingListener listener;
     private MutableIntSupplier configuredCoreCount;
     private RecordingCtm ctm;
-    private NodeTopologyTracker ntt;
+    private MutableMembershipView membershipView;
     private LocalQuorumWatcher localQuorum;
     private LeaderReconciler reconciler;
 
@@ -75,10 +75,10 @@ class LeaderReconcilerTest {
         listener = new RecordingListener();
         configuredCoreCount = new MutableIntSupplier(0);
         ctm = new RecordingCtm();
-        ntt = nodeTopologyTracker(membershipConfig(), SELF, scheduler);
+        membershipView = new MutableMembershipView(SELF);
         localQuorum = localQuorumWatcher(membershipConfig(), timeSource, scheduler);
         reconciler = leaderReconciler(membershipConfig(),
-                                      ntt,
+                                      membershipView,
                                       localQuorum,
                                       configuredCoreCount,
                                       ctm,
@@ -87,12 +87,13 @@ class LeaderReconcilerTest {
         reconciler.setReconcileListener(listener);
     }
 
-    /// Feed N healthy peers into NTT — the reconciler's `clusterMembershipCount`
-    /// reads via `ntt.currentMemberCount()` (which includes `SELF` automatically).
+    /// Feed N healthy peers into the membership view — the reconciler's
+    /// `clusterMembershipCount` reads via `membershipView.coreMemberIds().size()`
+    /// (which includes `SELF` automatically).
     @Contract
     private void seedClusterWithPeers(NodeId... peers) {
         for (var peer : peers) {
-            ntt.onSwimObservation(new HealthyObserved(peer, 1L));
+            membershipView.addMember(peer);
         }
     }
 
@@ -390,6 +391,43 @@ class LeaderReconcilerTest {
             assertThat(listener.events()).hasSize(1);
             assertThat(listener.events().getFirst().inFlightProvisioningCount()).isZero();
             assertThat(reconciler.inFlightProvisioningCount()).isZero();
+        }
+    }
+
+    /// Mutable [`MembershipView`] stub. `coreMemberIds()` always includes `SELF`
+    /// (mirroring the universal-self-membership the reconciler previously read from NTT);
+    /// `addMember` seeds additional peers. The lifecycle/health projections are not read
+    /// by the reconciler, so they return empty/zero sensible defaults.
+    private static final class MutableMembershipView implements MembershipView {
+        private final Set<NodeId> members = new LinkedHashSet<>();
+
+        MutableMembershipView(NodeId self) {
+            members.add(self);
+        }
+
+        @Contract
+        void addMember(NodeId nodeId) {
+            members.add(nodeId);
+        }
+
+        @Override
+        public Set<NodeId> coreMemberIds() {
+            return Set.copyOf(members);
+        }
+
+        @Override
+        public Set<NodeId> onDutyMemberIds() {
+            return Set.copyOf(members);
+        }
+
+        @Override
+        public int healthyOnDutyCount() {
+            return members.size();
+        }
+
+        @Override
+        public int desiredCoreSize() {
+            return members.size();
         }
     }
 
