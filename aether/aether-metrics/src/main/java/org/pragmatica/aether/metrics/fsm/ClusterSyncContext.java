@@ -10,7 +10,6 @@ import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
-import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.NodePingCommand;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
@@ -81,7 +80,6 @@ public final class ClusterSyncContext {
     private final Map<NodeId, Epoch> observedEpoch = new ConcurrentHashMap<>();
 
     private final PeerObservationStore observationStore;
-    private final Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier;
 
     /// RC1 (S01 fix) — peers this node has locally evicted via ping-timeout, with the
     /// nanos timestamp at which the eviction was recorded. Snapshotted into each outbound
@@ -114,7 +112,6 @@ public final class ClusterSyncContext {
              pingTimeoutThreshold,
              epochSupplier,
              observationStore,
-             Option::none,
              PeriodicObservationConfig.defaultConfig(),
              () -> true);
     }
@@ -129,33 +126,6 @@ public final class ClusterSyncContext {
                               int pingTimeoutThreshold,
                               Supplier<Epoch> epochSupplier,
                               PeerObservationStore observationStore,
-                              Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier) {
-        this(fsm,
-             self,
-             network,
-             collector,
-             interval,
-             rabiaTermSupplier,
-             signalSink,
-             pingTimeoutThreshold,
-             epochSupplier,
-             observationStore,
-             reachabilitySnapshotSupplier,
-             PeriodicObservationConfig.defaultConfig(),
-             () -> true);
-    }
-
-    public ClusterSyncContext(Fsm<ClusterSyncState, ClusterFsmEvent> fsm,
-                              NodeId self,
-                              ClusterNetwork network,
-                              ClusterSyncCollector collector,
-                              TimeSpan interval,
-                              Supplier<Long> rabiaTermSupplier,
-                              HealthSignalSink signalSink,
-                              int pingTimeoutThreshold,
-                              Supplier<Epoch> epochSupplier,
-                              PeerObservationStore observationStore,
-                              Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier,
                               PeriodicObservationConfig periodicConfig) {
         this(fsm,
              self,
@@ -167,7 +137,6 @@ public final class ClusterSyncContext {
              pingTimeoutThreshold,
              epochSupplier,
              observationStore,
-             reachabilitySnapshotSupplier,
              periodicConfig,
              () -> true);
     }
@@ -182,7 +151,6 @@ public final class ClusterSyncContext {
                               int pingTimeoutThreshold,
                               Supplier<Epoch> epochSupplier,
                               PeerObservationStore observationStore,
-                              Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier,
                               PeriodicObservationConfig periodicConfig,
                               BooleanSupplier isLeader) {
         this(fsm,
@@ -195,7 +163,6 @@ public final class ClusterSyncContext {
              pingTimeoutThreshold,
              epochSupplier,
              observationStore,
-             reachabilitySnapshotSupplier,
              periodicConfig,
              isLeader,
              peer -> false);
@@ -211,7 +178,6 @@ public final class ClusterSyncContext {
                               int pingTimeoutThreshold,
                               Supplier<Epoch> epochSupplier,
                               PeerObservationStore observationStore,
-                              Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier,
                               PeriodicObservationConfig periodicConfig,
                               BooleanSupplier isLeader,
                               Predicate<NodeId> drainRequested) {
@@ -231,9 +197,6 @@ public final class ClusterSyncContext {
         this.drainRequested.set(drainRequested == null
                                 ? peer -> false
                                 : drainRequested);
-        this.reachabilitySnapshotSupplier = reachabilitySnapshotSupplier == null
-                                            ? Option::none
-                                            : reachabilitySnapshotSupplier;
         this.periodicConfig = periodicConfig == null
                               ? PeriodicObservationConfig.defaultConfig()
                               : periodicConfig;
@@ -358,7 +321,7 @@ public final class ClusterSyncContext {
                                        rabiaTerm,
                                        currentEpoch.rabiaTerm(),
                                        currentEpoch.localCounter(),
-                                       reachabilitySnapshotSupplier.get(),
+                                       Option.none(),
                                        currentEvictionHints(),
                                        commandFor(peer));
         log.debug("ClusterSync: sending PING to {} (rabiaTerm={}, epoch={}:{})",

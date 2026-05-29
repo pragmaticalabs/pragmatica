@@ -10,7 +10,6 @@ import org.pragmatica.aether.metrics.fsm.ClusterSyncState;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
-import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
@@ -24,7 +23,6 @@ import org.pragmatica.consensus.topology.MembershipDecision.NodeJoining;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -137,29 +135,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                     pingTimeoutThreshold,
                                     epochSupplier,
                                     observationStore,
-                                    Option::none);
-    }
-
-    static ClusterSyncScheduler clusterSyncScheduler(NodeId self,
-                                                     ClusterNetwork network,
-                                                     ClusterSyncCollector clusterSyncCollector,
-                                                     TimeSpan interval,
-                                                     Supplier<Long> rabiaTermSupplier,
-                                                     HealthSignalSink signalSink,
-                                                     int pingTimeoutThreshold,
-                                                     Supplier<Epoch> epochSupplier,
-                                                     PeerObservationStore observationStore,
-                                                     Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier) {
-        return clusterSyncScheduler(self,
-                                    network,
-                                    clusterSyncCollector,
-                                    interval,
-                                    rabiaTermSupplier,
-                                    signalSink,
-                                    pingTimeoutThreshold,
-                                    epochSupplier,
-                                    observationStore,
-                                    reachabilitySnapshotSupplier,
                                     PeriodicObservationConfig.defaultConfig());
     }
 
@@ -172,7 +147,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                                      int pingTimeoutThreshold,
                                                      Supplier<Epoch> epochSupplier,
                                                      PeerObservationStore observationStore,
-                                                     Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier,
                                                      PeriodicObservationConfig periodicConfig) {
         return clusterSyncScheduler(self,
                                     network,
@@ -183,7 +157,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                     pingTimeoutThreshold,
                                     epochSupplier,
                                     observationStore,
-                                    reachabilitySnapshotSupplier,
                                     periodicConfig,
                                     () -> true);
     }
@@ -202,7 +175,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                                      int pingTimeoutThreshold,
                                                      Supplier<Epoch> epochSupplier,
                                                      PeerObservationStore observationStore,
-                                                     Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier,
                                                      PeriodicObservationConfig periodicConfig,
                                                      BooleanSupplier isLeader) {
         var ctxHolder = new AtomicReference<ClusterSyncContext>();
@@ -217,7 +189,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                                                                                                                pingTimeoutThreshold,
                                                                                                                                epochSupplier,
                                                                                                                                observationStore,
-                                                                                                                               reachabilitySnapshotSupplier,
                                                                                                                                periodicConfig,
                                                                                                                                isLeader);
         var _fsm = Fsm.fsm("cluster-sync", self.id(), initialStateFactory);
@@ -244,7 +215,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                                            int pingTimeoutThreshold,
                                                            Supplier<Epoch> epochSupplier,
                                                            PeerObservationStore observationStore,
-                                                           Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier,
                                                            PeriodicObservationConfig periodicConfig,
                                                            BooleanSupplier isLeader) {
         var ctx = new ClusterSyncContext(fsm,
@@ -257,7 +227,6 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                          pingTimeoutThreshold,
                                          epochSupplier,
                                          observationStore,
-                                         reachabilitySnapshotSupplier,
                                          periodicConfig,
                                          isLeader);
         ctxHolder.set(ctx);
@@ -293,10 +262,8 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
             case NodeDecommissioned(NodeId removed, List<NodeId> newTopology, _, _) -> handleNodeRemoved(removed, newTopology);
             // RC1 resilience: JOINING peers are pre-commit replacement candidates not yet in
             // `coreMemberIds`. Add the joining nodeId to the metrics-emission topology so the
-            // periodic `PeerConnectivityObservation` stream covers them — without this, the
-            // ReachabilityAggregator never receives DISCONNECTED evidence for crashed JOINING
-            // peers and the aggregator-quorum gate refuses to confirm UNREACHABLE, leaving
-            // stale ON_DUTY membership for CTM-provisioned replacements.
+            // periodic `PeerConnectivityObservation` stream covers them — keeping the
+            // connectivity-observation stream complete for crashed JOINING peers.
             case NodeJoining(NodeId joining, List<NodeId> newTopology, _, _) -> context.setTopology(augmentWith(newTopology, joining));
             // DRAINING / FAILED_DRAIN / SHUTTING_DOWN nodes are still in `coreMemberIds` so the
             // accompanying `topology` field already covers them — no augmentation needed.

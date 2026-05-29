@@ -4,8 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.view;
 
-import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
-import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot.ReachabilityState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.HealthSnapshot;
@@ -131,19 +129,7 @@ public interface MembershipView {
     /// re-creates the bug class this gating exists to eliminate.
     static MembershipView strict(SwimHealthProvider swimHealth,
                                  BooleanSupplier inQuorum) {
-        return new MembershipViewImpl(swimHealth, inQuorum, Option::none);
-    }
-
-    /// Strict factory extended with a cluster-canonical reachability snapshot supplier.
-    /// The snapshot acts as a SECOND confirmation source for HEALTHY peers whose local SWIM
-    /// hasn't yet reported HEALTHY: if a quorum of cluster observers (⌈N/2⌉+1) sees the peer
-    /// as REACHABLE, the effective status is `ON_DUTY` despite local SWIM lag. Snapshot
-    /// `UNREACHABLE` downgrades to `UNTRACKED` (transport-honesty). See
-    /// `aether/docs/specs/reachability-aggregator-spec.md` Layer 5.
-    static MembershipView strict(SwimHealthProvider swimHealth,
-                                 BooleanSupplier inQuorum,
-                                 Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshot) {
-        return new MembershipViewImpl(swimHealth, inQuorum, reachabilitySnapshot);
+        return new MembershipViewImpl(swimHealth, inQuorum);
     }
 
     /// **Bootstrap-aware factory — internal use only.**
@@ -156,7 +142,7 @@ public interface MembershipView {
     /// caller. Grep for `bootstrapAware(` to audit every site that opts out of quorum
     /// gating.
     static MembershipView bootstrapAware(SwimHealthProvider swimHealth) {
-        return new MembershipViewImpl(swimHealth, ALWAYS_IN_QUORUM, Option::none);
+        return new MembershipViewImpl(swimHealth, ALWAYS_IN_QUORUM);
     }
 
     /// Legacy factory preserved for pure-function tests and the
@@ -173,26 +159,22 @@ public interface MembershipView {
     final class MembershipViewImpl implements MembershipView {
         private final SwimHealthProvider swimHealth;
         private final BooleanSupplier inQuorum;
-        private final Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshot;
 
         /// RC1 membership-v2 finale: the node-lifecycle KV atom is deleted; the view is
-        /// derived purely from SWIM (plus the aggregated reachability snapshot as a promoter).
+        /// derived purely from SWIM.
         private MembershipViewImpl(SwimHealthProvider swimHealth,
-                                   BooleanSupplier inQuorum,
-                                   Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshot) {
+                                   BooleanSupplier inQuorum) {
             this.swimHealth = swimHealth;
             this.inQuorum = inQuorum;
-            this.reachabilitySnapshot = reachabilitySnapshot;
         }
 
         @Override
         public Map<NodeId, MemberView> snapshot() {
             var quorate = inQuorum.getAsBoolean();
-            var snapshot = reachabilitySnapshot.get();
             var swim = swimHealth.get().or(HealthSnapshot.healthSnapshot(Map.of()));
             var view = new HashMap<NodeId, MemberView>();
             swim.peerHealth().forEach((peer, swimState) -> view.put(peer,
-                                                                    deriveFromSwim(peer, swimState, quorate, snapshot)));
+                                                                    deriveFromSwim(peer, swimState, quorate)));
 
             return Map.copyOf(view);
         }
@@ -200,112 +182,37 @@ public interface MembershipView {
         @Override
         public Option<MemberView> get(NodeId peer) {
             var quorate = inQuorum.getAsBoolean();
-            var snapshot = reachabilitySnapshot.get();
             var swim = swimHealth.get().or(HealthSnapshot.healthSnapshot(Map.of()));
             var swimState = swim.healthOf(peer).or(SwimHealth.UNKNOWN);
 
-            return swimOnlyEntry(peer, swimState, quorate, snapshot);
+            return swimOnlyEntry(peer, swimState, quorate);
         }
 
         private static Option<MemberView> swimOnlyEntry(NodeId peer,
                                                         SwimHealth swimState,
-                                                        boolean quorate,
-                                                        Option<AggregatedReachabilitySnapshot> reachabilitySnapshot) {
+                                                        boolean quorate) {
             if (swimState != SwimHealth.HEALTHY) {
                 return Option.none();
             }
 
-            return Option.some(deriveFromSwim(peer, swimState, quorate, reachabilitySnapshot));
+            return Option.some(deriveFromSwim(peer, swimState, quorate));
         }
 
-        /// RC1 membership-v2 finale: derive purely from SWIM (+ aggregated reachability as a
-        /// promoter). The node-lifecycle KV-override path is gone — SWIM is the single source
-        /// of "alive". A HEALTHY peer becomes `ON_DUTY` when quorate (subject to a
-        /// cluster-canonical UNREACHABLE downgrade); every other SWIM observation is `UNTRACKED`.
+        /// RC1 membership-v2 finale: derive purely from SWIM. The node-lifecycle KV-override
+        /// path is gone — SWIM is the single source of "alive". A HEALTHY peer becomes
+        /// `ON_DUTY` when quorate; every other SWIM observation is `UNTRACKED`.
         private static MemberView deriveFromSwim(NodeId peer,
                                                  SwimHealth swimState,
-                                                 boolean quorate,
-                                                 Option<AggregatedReachabilitySnapshot> reachabilitySnapshot) {
-            var status = resolveStatus(peer, swimState, quorate, reachabilitySnapshot);
+                                                 boolean quorate) {
+            var status = resolveStatus(swimState, quorate);
 
             return new MemberView(peer, status, swimState);
         }
 
-        private static MemberStatus resolveStatus(NodeId peer,
-                                                  SwimHealth swimState,
-                                                  boolean quorate,
-                                                  Option<AggregatedReachabilitySnapshot> reachabilitySnapshot) {
-            return swimState == SwimHealth.HEALTHY
-                   ? resolveOnDutyStatus(peer, swimState, quorate, reachabilitySnapshot)
+        private static MemberStatus resolveStatus(SwimHealth swimState, boolean quorate) {
+            return swimState == SwimHealth.HEALTHY && quorate
+                   ? MemberStatus.ON_DUTY
                    : MemberStatus.UNTRACKED;
-        }
-
-        /// `swimState == HEALTHY` requires confirmation. Resolution order — the aggregated
-        /// reachability snapshot is a **SECOND confirmation source** that PROMOTES, never
-        /// DEMOTES on absence-of-information. The only demotion the snapshot can drive is an
-        /// explicit cluster-canonical UNREACHABLE quorum.
-        ///
-        /// 1. **Non-quorate** → `UNTRACKED`. A minority-side reader MUST NOT advertise
-        ///    ON_DUTY peers; the majority may have re-routed work past them.
-        /// 2. **Local SWIM HEALTHY + quorate** → `ON_DUTY` (fast path; snapshot not consulted).
-        /// 3. **Snapshot present + per-peer kind = UNREACHABLE** → `UNTRACKED`. The cluster has
-        ///    voted with a quorum of UNREACHABLE observers; honour the transport-honest
-        ///    downgrade.
-        /// 4. **All other cases** (`Option.none()`, snapshot kind `REACHABLE`, snapshot kind
-        ///    `UNKNOWN`, peer absent from `states()` map) → `ON_DUTY`. KV says ON_DUTY and
-        ///    the snapshot has not produced a quorate negative vote, so fall back to the
-        ///    KV-authoritative state. This is the cold-boot path that allows a 5-node cluster
-        ///    to converge: followers' snapshot starts as `Option.none()`, the leader's
-        ///    self-fold contributes only 1 observer (below the symmetric quorum threshold of
-        ///    ⌈N/2⌉+1), so the snapshot returns `UNKNOWN` per target. Treating either as a
-        ///    demotion strands the cluster in `UNTRACKED` for the duration of convergence —
-        ///    see `reachability-aggregator-spec.md` Layer 5 and the "Supersession note
-        ///    (2026-05-18)" describing why `UNKNOWN` is the steady-state on a stable cluster.
-        ///
-        /// **Why snapshot is a PROMOTER, not a GATE.** The spec contract (Layer 5) is: when
-        /// SWIM has not yet reported HEALTHY for a `kvState == ON_DUTY` peer, the snapshot
-        /// provides cluster-canonical evidence to either confirm reachability (REACHABLE → keep
-        /// ON_DUTY) or override it (UNREACHABLE → demote). Absence of evidence
-        /// (`Option.none()` / `UNKNOWN` / peer-missing) is **non-information** — it cannot
-        /// override the KV-authoritative state, otherwise cold-boot convergence deadlocks.
-        ///
-        /// See `aether/docs/specs/membership-architecture-spec.md` §16 (S05/S06) and
-        /// `aether/docs/specs/reachability-aggregator-spec.md` Layer 5.
-        private static MemberStatus resolveOnDutyStatus(NodeId peer,
-                                                        SwimHealth swimState,
-                                                        boolean quorate,
-                                                        Option<AggregatedReachabilitySnapshot> reachabilitySnapshot) {
-            if (!quorate) {
-                return MemberStatus.UNTRACKED;
-            }
-            if (swimState == SwimHealth.HEALTHY) {
-                return MemberStatus.ON_DUTY;
-            }
-
-            return reachabilitySnapshot.fold(() -> MemberStatus.ON_DUTY, snap -> kindFromSnapshot(snap, peer));
-        }
-
-        /// Explicit projection of a per-peer `ReachabilityKind` into `MemberStatus` for the
-        /// `kvState == ON_DUTY + !SWIM.HEALTHY` case. Only `UNREACHABLE` demotes — every
-        /// other outcome (REACHABLE, UNKNOWN, peer absent from states map) keeps the
-        /// KV-authoritative `ON_DUTY`. See the doc-comment on
-        /// [#resolveOnDutyStatus] for the spec-contract rationale.
-        private static MemberStatus kindFromSnapshot(AggregatedReachabilitySnapshot snap, NodeId peer) {
-            var entry = snap.states().get(peer);
-
-            if (entry == null) {
-                return MemberStatus.ON_DUTY;
-            }
-
-            return projectKind(entry);
-        }
-
-        private static MemberStatus projectKind(ReachabilityState entry) {
-            return switch (entry.kind()) {
-                case REACHABLE -> MemberStatus.ON_DUTY;
-                case UNREACHABLE -> MemberStatus.UNTRACKED;
-                case UNKNOWN -> MemberStatus.ON_DUTY;
-            };
         }
     }
 }

@@ -47,7 +47,6 @@ import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.deployment.schema.SchemaPolicy;
 import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
-import org.pragmatica.aether.deployment.membership.ReachabilityAggregator;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.delegation.TaskAssignmentError;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
@@ -146,7 +145,6 @@ import org.pragmatica.aether.worker.mutation.MutationForwarder;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.WorkerConfig;
-import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot.ReachabilityKind;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage;
 import org.pragmatica.cluster.metrics.ConnectivityState;
@@ -943,8 +941,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                      SwimHealth.HEALTHY);
                                                                                                   return Option.some(HealthSnapshot.healthSnapshot(merged));
                                                                                               },
-                                                                                              ((TopologyObserver) clusterNode.topologyManager()).inQuorum(),
-                                                                                              metricsCollector::bestSnapshot);
+                                                                                              ((TopologyObserver) clusterNode.topologyManager()).inQuorum());
             }
         }
         var httpRoutePublisher = HttpRoutePublisher.httpRoutePublisher(config.self(), clusterNode);
@@ -1045,43 +1042,10 @@ public interface AetherNode extends ManageableNode {
         // Decision plane (KV) = "what to track"; observation plane (QUIC) =
         // "what state". Keeping them on separate sources is the architectural
         // invariant.
-        Supplier<Set<NodeId>> kvTrackedPeersSupplier = () -> {
-            var peers = new java.util.HashSet<NodeId>();
-            peers.add(config.self());
-            // C-1 (membership v2): RA quorum-N is sourced from the NTT-derived generation snapshot
-            // (coreMembers are SWIM-converged members; never STOPPED) rather than scanning the
-            // FSM-written NodeLifecycleKey atom (being eliminated). Self is always included.
-            kvStore.getTyped(AetherKey.GenerationSnapshotKey.SINGLETON, AetherValue.GenerationSnapshotValue.class)
-                   .map(AetherValue.GenerationSnapshotValue::snapshot)
-                   .onPresent(snapshot -> peers.addAll(snapshot.coreMembers().keySet()));
-
-            return Set.copyOf(peers);
-        };
-        // ReachabilityAggregator: leader-side TTL+quorum aggregator producing the
-        // cluster-canonical reachability snapshot broadcast in ClusterSyncPing.
-        // Quorum threshold N = KV-canonical non-terminal peer count (stable across
-        // chaos kills — DECOMMISSIONED is the only state that decrements N). TTL=15s
-        // — 3× the 5s periodic emission cadence, ensures observations remain live
-        // across 2-3 emission cycles before expiry. See
-        // aether/docs/specs/reachability-aggregator-spec.md "Periodic Observation
-        // Mode" subsection.
-        var reachabilityAggregator = ReachabilityAggregator.reachabilityAggregator(config.self(),
-                                                                                   () -> kvTrackedPeersSupplier.get()
-                                                                                                               .size(),
-                                                                                   () -> clusterNode.network()
-                                                                                                    .connectedPeers(),
-                                                                                   kvTrackedPeersSupplier,
-                                                                                   System::currentTimeMillis,
-                                                                                   15_000L);
-        // Wire the leader-side aggregator into metricsCollector so MembershipView's
-        // bestSnapshot() reads the leader's OWN aggregator output (since the leader
-        // doesn't receive pings, its lastReachabilitySnapshot() is forever none).
-        // Gated on leader role: on followers the aggregator is fed by no pongs (only
-        // leaders/spokesmen ingest), so returning its self-fold-only snapshot would
-        // mislead the consumer — fall back to the cached received snapshot instead.
-        metricsCollector.setLocalSnapshotSupplier(() -> isLeaderSupplier.getAsBoolean()
-                                                        ? reachabilityAggregator.currentSnapshot()
-                                                        : Option.none());
+        // P3 (membership unification): the leader-side ReachabilityAggregator is deleted —
+        // SWIM (fed by QUIC hints) is the single liveness signal, so the pong-derived
+        // reachability fold (and the KV-tracked-peers quorum-N it used) is redundant. The
+        // metricsCollector local-snapshot supplier is left unset (defaults to none()).
         // Membership v2 — the leader-side `ClusterSyncPongSignalFan` no longer drives a
         // readyCandidate→ForceOnDuty path (the FSM is gone); readiness is node-reported on the
         // control-heartbeat pong and consumed by the CDM allocatable gate (B4).
@@ -1122,7 +1086,6 @@ public interface AetherNode extends ManageableNode {
                                                                          ClusterSyncScheduler.DEFAULT_PING_TIMEOUT_THRESHOLD,
                                                                          leaderEpochSupplier,
                                                                          peerObservationStore,
-                                                                         reachabilityAggregator::produceAndDispatch,
                                                                          periodicConfig,
                                                                          isLeaderSupplier);
         // Step 1 (Periodic Observation Mode): cap supplier honored externally so
@@ -1138,33 +1101,9 @@ public interface AetherNode extends ManageableNode {
         metricsScheduler.setDrainRequested(drainCommandRegistry::isDrainRequested);
         // E2 Phase 2a (2026-05-28): leader-side φ-accrual (#231) is removed. SWIM owns the
         // liveness decision directly; the v2 NTT path is the replacement debounce.
-        // Leader/spokesman-gated aggregator ingest. Tier-1 pongs (from core members)
-        // arrive when this node is the cluster leader; Tier-2 pongs (from governors)
-        // arrive when this node is an active spokesman. Both feed the same
-        // ReachabilityAggregator. On the not-leader→leader edge, reset and seed
-        // from the cached snapshot received from the prior leader. See
-        // reachability-aggregator-spec.md Layers 3-4 + 6.
-        // SpokesmanPingLoop is constructed later in the wiring; forward-reference
-        // via a settable holder, set after construction.
-        var wasLeaderRef = new java.util.concurrent.atomic.AtomicBoolean(false);
-        var spokesmanActiveRef = new AtomicReference<BooleanSupplier>(() -> false);
-        metricsCollector.addPongListener(pong -> {
-                                             var nowLeader = isLeaderSupplier.getAsBoolean();
-                                             var nowSpokesman = spokesmanActiveRef.get()
-                                                                                  .getAsBoolean();
-                                             var prev = wasLeaderRef.getAndSet(nowLeader);
-                                             if (nowLeader && !prev) {
-                                             reachabilityAggregator.reset();
-                                             metricsCollector.lastReachabilitySnapshot()
-                                                             .onPresent(reachabilityAggregator::seedFromCache);
-                                         }
-                                             if (!nowLeader && !nowSpokesman) {
-                                             return;
-                                         }
-                                             reachabilityAggregator.ingest(pong.sender(),
-                                                                           pong.peerConnectivity(),
-                                                                           pong.peerHealth());
-                                         });
+        // P3 (membership unification): the leader/spokesman-gated ReachabilityAggregator
+        // pong ingest is removed with the aggregator. SWIM owns liveness; pongs no longer
+        // feed a reachability fold.
         metricsCollector.setPeerObservationBuffer(peerObservationStore);
         Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT)
                                                                                             .filter(v -> v instanceof AetherValue.ClusterConfigValue)
@@ -1754,7 +1693,6 @@ public interface AetherNode extends ManageableNode {
                                        isLeaderSupplier,
                                        peerObservationStore,
                                        leaderEpochSupplier,
-                                       reachabilityAggregator,
                                        nttConnectTap,
                                        nttDisconnectTap);
         attachQuicPeerStateListener(clusterNode.network(), swimHealthDetector);
@@ -1809,13 +1747,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                          metricsCollector::allMetrics,
                                                                                                          communityId -> lookupGovernor(kvStore,
                                                                                                                                        communityId),
-                                                                                                         org.pragmatica.aether.worker.metrics.SpokesmanPingLoop.SpokesmanStatusWriter.fromCluster(clusterNode),
-                                                                                                         reachabilityAggregator::currentSnapshot);
+                                                                                                         org.pragmatica.aether.worker.metrics.SpokesmanPingLoop.SpokesmanStatusWriter.fromCluster(clusterNode));
         spokesmanPingLoop.start();
-        // Wire the spokesman-active flag into the reachability-aggregator's
-        // ingest gate so Tier-2 governor pongs feed the same aggregator. See
-        // reachability-aggregator-spec.md Layer 6.
-        spokesmanActiveRef.set(spokesmanPingLoop::isActive);
         metricsCollector.setCommunityReportSupplier(spokesmanPingLoop::currentReports);
         var spokesmanKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.SpokesmanKey.class,
                                                                                                              spokesmanPingLoop::onSpokesmanPut).onRemove(AetherKey.SpokesmanKey.class,
@@ -2255,24 +2188,18 @@ public interface AetherNode extends ManageableNode {
     }
 
     /// Installs a single `PeerConnectivityReporter` on EVERY node (leader + followers).
-    /// On EVERY transition observation:
-    ///   * Push into local `PeerObservationBuffer` so the next outbound `ClusterSyncPong`
-    ///     carries the observation (follower→leader relay path; benign on the leader, the
-    ///     leader does not pong itself).
-    ///   * If this node IS leader AT REPORT TIME (runtime check, not install-time), ALSO
-    ///     ingest directly into the local `ReachabilityAggregator`, bypassing the 5s
-    ///     self-fold tick and skipping the follower→leader pong roundtrip. Leadership
-    ///     flips during a node's lifetime; the runtime check makes a freshly-elected
-    ///     leader's QUIC drops feed the aggregator without re-installing the reporter.
-    /// Step 4 of the topology-observation refactor — fixes the ~16s UNREACHABLE
-    /// confirmation latency when an ON_DUTY peer is killed (was: leader learns only via
-    /// the next self-fold tick or via follower pong relay; now: synchronous one-hop).
-    /// See `aether/docs/specs/reachability-aggregator-spec.md`.
+    /// On EVERY transition observation, push into the local `PeerObservationBuffer` so the
+    /// next outbound `ClusterSyncPong` carries the observation (follower→leader relay path;
+    /// benign on the leader, which does not pong itself), and feed the NTT/membership-tracker
+    /// QUIC connect/disconnect hints via `onNttConnect`/`onNttDisconnect`.
+    ///
+    /// P3 (membership unification): the former leader-side `ReachabilityAggregator`
+    /// `ingestSelfTransition` fast-path is removed — SWIM (fed by these QUIC hints) is now the
+    /// single liveness signal, so the separate reachability fold is gone.
     private static void attachQuicConnectivityReporter(ClusterNetwork network,
                                                        BooleanSupplier isLeaderSupplier,
                                                        PeerObservationBuffer buffer,
                                                        Supplier<Epoch> epochSupplier,
-                                                       ReachabilityAggregator reachabilityAggregator,
                                                        Consumer<NodeId> onNttConnect,
                                                        Consumer<NodeId> onNttDisconnect) {
         if (! (network instanceof QuicClusterNetwork quicNetwork)) {return;}
@@ -2287,9 +2214,6 @@ public interface AetherNode extends ManageableNode {
                                                                         counter,
                                                                         now));
 
-                if (isLeaderSupplier.getAsBoolean()) {
-                    reachabilityAggregator.ingestSelfTransition(peerId, ReachabilityKind.UNREACHABLE, now);
-                }
                 onNttDisconnect.accept(peerId);
             }
 
@@ -2302,9 +2226,6 @@ public interface AetherNode extends ManageableNode {
                                                                         counter,
                                                                         now));
 
-                if (isLeaderSupplier.getAsBoolean()) {
-                    reachabilityAggregator.ingestSelfTransition(peerId, ReachabilityKind.REACHABLE, now);
-                }
                 onNttConnect.accept(peerId);
             }
         };

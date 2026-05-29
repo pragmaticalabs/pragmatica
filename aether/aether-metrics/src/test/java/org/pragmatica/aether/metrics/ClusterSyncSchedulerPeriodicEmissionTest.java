@@ -189,7 +189,6 @@ class ClusterSyncSchedulerPeriodicEmissionTest {
                                                           ClusterSyncScheduler.DEFAULT_PING_TIMEOUT_THRESHOLD,
                                                           () -> Epoch.epoch(7L, 0L),
                                                           PeerObservationStore.peerObservationStore(),
-                                                          Option::none,
                                                           periodicConfig);
     }
 

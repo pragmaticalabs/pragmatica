@@ -179,7 +179,6 @@ class DrainCommandPlumbingTest {
                                                  3,
                                                  () -> Epoch.epoch(1L, 0L),
                                                  PeerObservationStore.peerObservationStore(),
-                                                 Option::none,
                                                  PeriodicObservationConfig.defaultConfig(),
                                                  () -> true,
                                                  drainRequested);
