@@ -305,7 +305,11 @@ public final class LeaderReconciler {
     /// armedForProvisioning` (identity-aware rule — membership-unification-spec P5).
     /// Provisioning is suppressed until the latch arms so a deficit during initial
     /// formation / slow join never spawns phantom replacements for still-joining configured
-    /// peers (Bug C). Draining excess is always safe and is never gated by the latch.
+    /// peers (Bug C). Draining is independently protected by a HARD FLOOR in
+    /// [`#computePeersToDrain`]: it never drains confirmed members below `configuredCoreCount`
+    /// in a single pass, so an `effective` count inflated by in-flight placeholders (a
+    /// requested-but-not-joined replacement) can never trigger a quorum-dissolving drain of a
+    /// healthy core node.
     @Contract
     private void runReconcileBody(ReconcileTrigger trigger) {
         var now = timeSource.nanoTime();
@@ -315,7 +319,16 @@ public final class LeaderReconciler {
         var currentMembers = membershipView.coreMemberIds();
         var clusterMembershipCount = currentMembers.size();
         var configuredCoreCount = configuredCoreCountSupplier.getAsInt();
-        var effective = clusterMembershipCount + inFlightProvisioning.size();
+        // Effective capacity is the SIZE OF THE UNION of confirmed members and in-flight
+        // provisioning placeholders — NOT their sum (safety-critical). A just-provisioned
+        // node can appear in BOTH buckets simultaneously: present in the SWIM-gossiped
+        // membership view AND still tracked in `inFlightProvisioning` until it expires or is
+        // explicitly removed. Summing the two sizes double-counts that node, inflating
+        // `effective` above the configured core count and tricking the drain path into
+        // believing there is a surplus — which then drains a healthy core node, drops the
+        // cluster below quorum, and dissolves it. Deduplicating by NodeId counts each node
+        // exactly once.
+        var effective = effectiveCapacity(currentMembers);
 
         // Arm-after-first-full-membership latch (Bug C; membership-unification-spec P5 —
         // identity-aware reconciler). Latch true the first time the cluster is observed at
@@ -355,6 +368,19 @@ public final class LeaderReconciler {
         reconcileListener.accept(intent);
     }
 
+    /// Effective cluster capacity = the size of the UNION of confirmed members and in-flight
+    /// provisioning placeholders, deduplicated by [`NodeId`]. A node that has joined SWIM but
+    /// whose in-flight placeholder has not yet expired is present in both sets; counting it
+    /// once (via the union) prevents the inflated-surplus → spurious-drain → quorum-loss
+    /// dissolution. Never a sum.
+    private int effectiveCapacity(Set<NodeId> currentMembers) {
+        var union = new LinkedHashSet<>(currentMembers);
+
+        union.addAll(inFlightProvisioning.keySet());
+
+        return union.size();
+    }
+
     /// Simple-majority quorum threshold over the configured core size — same formula as
     /// [`QuorumLossDetector`] and `ClusterTopologyManagerRecord.quorumThreshold`
     /// (`configured / 2 + 1`). A configured count `< 1` is treated as `1` (a single-node
@@ -379,17 +405,32 @@ public final class LeaderReconciler {
         return Set.copyOf(placeholders);
     }
 
-    /// Pick `(effective - configured)` drain victims from the observed member set using a
-    /// stable iteration-order heuristic. Internal — observers see only the count via
+    /// Pick drain victims from the observed member set using a stable iteration-order
+    /// heuristic, gated by a HARD FLOOR (safety-critical, symmetric with the provisioning
+    /// arm-gate). The reconciler must NEVER drain a confirmed core member below
+    /// `configuredCoreCount` in a single pass — doing so drops the cluster below quorum and
+    /// dissolves it. The nominal surplus is `effective - configured`, but drain victims can
+    /// only ever come from CONFIRMED members (`currentMembers`); the maximum number safely
+    /// drainable is `currentMembers.size() - configuredCoreCount` (clamped at zero). When
+    /// `effective` is inflated above the confirmed-member count by in-flight provisioning
+    /// placeholders (a replacement that was requested but has not joined), the floor binds
+    /// and the drain set shrinks — down to nothing if confirmed members are already at or
+    /// below the configured floor. Internal — observers see only the count via
     /// [`ReconcileIntent#drainCount`].
     private Set<NodeId> computePeersToDrain(Set<NodeId> currentMembers, int configuredCoreCount, int effective) {
         if (effective <= configuredCoreCount) {
             return Set.of();
         }
-        var excess = effective - configuredCoreCount;
+        var nominalExcess = effective - configuredCoreCount;
+        var floorHeadroom = Math.max(0, currentMembers.size() - configuredCoreCount);
+        var drainCount = Math.min(nominalExcess, floorHeadroom);
+
+        if (drainCount == 0) {
+            return Set.of();
+        }
         var ordered = new LinkedHashSet<NodeId>();
 
-        currentMembers.stream().sorted(Comparator.comparing(NodeId::id).reversed()).limit(excess).forEach(ordered::add);
+        currentMembers.stream().sorted(Comparator.comparing(NodeId::id).reversed()).limit(drainCount).forEach(ordered::add);
 
         return Set.copyOf(ordered);
     }

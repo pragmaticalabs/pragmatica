@@ -530,6 +530,122 @@ class LeaderReconcilerTest {
         }
     }
 
+    @Nested
+    class DrainSafetyFloor {
+        /// Defect 1 (double-count): a freshly provisioned replacement appears in BOTH the
+        /// membership view AND the in-flight provisioning map within the expiry window.
+        /// `effective` must count each node ONCE (union, not sum) so a phantom surplus is
+        /// not conjured. Here confirmed=5 (== configured), one in-flight placeholder lingers
+        /// from a prior provision. Sum would give effective=6 → drain 1 healthy core. Union
+        /// gives effective=6 too (distinct ids), but the HARD FLOOR (Defect 2) forbids
+        /// draining below configured=5, so drainCount==0. No core node is drained.
+        @Test
+        void phantomInflightAfterRejoin_neverDrainsHealthyCore() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(reconciler.isArmedForProvisioning()).isTrue();
+
+            // Drop one peer → provisions one in-flight placeholder.
+            removePeers(PEER_D);
+            reconciler.onTopologyUnhealthy();
+            fireDebouncedReconcile();
+            assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
+            ctm.clear();
+            listener.clear();
+
+            // The replacement joins (back to confirmed=5) while the in-flight placeholder is
+            // STILL tracked (within the ×3 expiry window). effective = 5 confirmed + 1 stale
+            // placeholder. A naive sum would think there is a surplus of 1 and drain a core.
+            seedClusterWithPeers(PEER_D);
+            reconciler.onSwimMemberHealthy(PEER_D);
+            fireDebouncedReconcile();
+
+            var intent = listener.events().getFirst();
+            assertThat(intent.clusterMembershipCount()).isEqualTo(5);
+            assertThat(intent.configuredCoreCount()).isEqualTo(5);
+            assertThat(intent.drainCount()).isZero();
+            assertThat(ctm.drainNodeCalls()).isEmpty();
+        }
+
+        /// The hard floor binds independently of WHY effective is inflated. Here a
+        /// replacement that was provisioned NEVER joins (DNS failure / slow boot / crash):
+        /// confirmed stays at 5 (== configured) while the in-flight placeholder lingers,
+        /// inflating effective to 6. The reconciler must drain NOTHING — draining any of the
+        /// 5 confirmed core members would drop the cluster below the configured floor and
+        /// dissolve it.
+        @Test
+        void inflatedEffectiveByStuckProvision_neverDrainsBelowConfiguredFloor() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            // Drop one → provision one placeholder that will never join.
+            removePeers(PEER_D);
+            reconciler.onTopologyUnhealthy();
+            fireDebouncedReconcile();
+            assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
+            ctm.clear();
+            listener.clear();
+
+            // Membership recovers to full (a DIFFERENT node joins) but the original stuck
+            // placeholder is still tracked. confirmed=5, in-flight=1, effective=6.
+            seedClusterWithPeers(PEER_D);
+            reconciler.onSwimMemberHealthy(PEER_D);
+            fireDebouncedReconcile();
+
+            var intent = listener.events().getFirst();
+            assertThat(intent.clusterMembershipCount()).isEqualTo(5);
+            assertThat(intent.inFlightProvisioningCount()).isEqualTo(1);
+            // effective inflated to 6, but floor forbids dropping confirmed below 5.
+            assertThat(intent.drainCount()).isZero();
+            assertThat(ctm.drainNodeCalls()).isEmpty();
+        }
+
+        /// Regression guard: a GENUINE surplus of CONFIRMED members above the configured core
+        /// count still drains correctly down to (and never below) the floor. confirmed=6,
+        /// configured=3, no in-flight → drain exactly 3 (6 - 3), leaving 3 confirmed at the
+        /// floor.
+        @Test
+        void genuineConfirmedSurplus_drainsDownToFloorExactly() {
+            configuredCoreCount.set(3);
+            // SELF + 5 peers = 6 confirmed, no in-flight.
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D, NodeId.randomNodeId());
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            var intent = listener.events().getFirst();
+            assertThat(intent.clusterMembershipCount()).isEqualTo(6);
+            assertThat(intent.configuredCoreCount()).isEqualTo(3);
+            assertThat(intent.inFlightProvisioningCount()).isZero();
+            // 6 - 3 = 3 surplus, floor headroom = 6 - 3 = 3 → drain exactly 3, leaving 3.
+            assertThat(intent.drainCount()).isEqualTo(3);
+            assertThat(ctm.drainNodeCalls()).hasSize(3);
+        }
+
+        /// Regression guard: a confirmed surplus that EXCEEDS what the floor allows is capped
+        /// at the floor. (Constructed via in-flight inflation: confirmed=5, configured=3,
+        /// in-flight=0 → drain 2; this asserts the min(nominalExcess, floorHeadroom) path
+        /// when nominalExcess and floorHeadroom coincide for pure-confirmed surplus.)
+        @Test
+        void confirmedSurplusEqualsFloorHeadroom_drainsAllExcess() {
+            configuredCoreCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            var intent = listener.events().getFirst();
+            assertThat(intent.clusterMembershipCount()).isEqualTo(5);
+            assertThat(intent.configuredCoreCount()).isEqualTo(3);
+            assertThat(intent.drainCount()).isEqualTo(2);
+            assertThat(ctm.drainNodeCalls()).hasSize(2);
+        }
+    }
+
     /// Mutable [`MembershipView`] stub. `coreMemberIds()` always includes `SELF`
     /// (mirroring the universal-self-membership the reconciler previously read from NTT);
     /// `addMember` seeds additional peers. The lifecycle/health projections are not read
@@ -618,6 +734,13 @@ class LeaderReconcilerTest {
 
         List<NodeId> drainNodeCalls() {
             return List.copyOf(drainNodeCalls);
+        }
+
+        @Contract
+        void clear() {
+            drainNodeCalls.clear();
+            provisionReplacementCalls.clear();
+            drainReasons.clear();
         }
 
         List<Option<NodeId>> provisionReplacementCalls() {
