@@ -74,6 +74,7 @@ class ClusterTopologyManagerActuatorTest {
     private RecordingLifecycleManager lifecycleManager;
     private RecordingClusterStore clusterStore;
     private ClusterTopologyManager ctm;
+    private final CopyOnWriteArrayList<NodeId> drainCommandSinkCalls = new CopyOnWriteArrayList<>();
 
     @BeforeEach
     void setUp() {
@@ -108,7 +109,9 @@ class ClusterTopologyManagerActuatorTest {
                                                                                                 clusterStore::lifecycle,
                                                                                                 System::currentTimeMillis),
                                                             () -> ClusterPhase.NORMAL,
-                                                            () -> true);
+                                                            () -> true,
+                                                            drainCommandSinkCalls::add,
+                                                            _ -> {});
     }
 
     @Test
@@ -131,12 +134,16 @@ class ClusterTopologyManagerActuatorTest {
     }
 
     @Test
-    void drainNode_invokesTerminateNodeOnce_forTarget() {
+    void drainNode_enqueuesDrainCommand_forTarget_withoutSynchronousTerminate() {
         ctm.activate();
         var result = ctm.drainNode(PEER_D, DrainReason.OVERPROVISION_SCALE_DOWN).await();
         assertThat(result.isSuccess()).isTrue();
-        assertThat(lifecycleManager.terminateCount.get()).isEqualTo(1);
-        assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
+        assertThat(drainCommandSinkCalls)
+                .as("drainNode enqueues the target into the DRAIN command sink (leader ping carries DRAIN)")
+                .containsExactly(PEER_D);
+        assertThat(lifecycleManager.terminateCount.get())
+                .as("terminate is deferred to the grace backstop, not invoked synchronously")
+                .isZero();
     }
 
     @Test

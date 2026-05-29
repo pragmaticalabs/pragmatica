@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -148,5 +149,44 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          phaseSupplier,
                                                                          inQuorum,
                                                                          System::currentTimeMillis);
+    }
+
+    /// Membership v2 / B5b production factory. Wires the leader's DRAIN command channel:
+    /// `drainCommandSink` enqueues a drain target into the `DrainCommandRegistry` (so the leader's
+    /// cluster-sync ping carries `NodePingCommand.DRAIN` to the target, which self-drains via its
+    /// `DrainProcedure`); `drainCommandClear` removes the target after the CTM grace-terminate
+    /// backstop reaps the container. `AetherNode` wires these to
+    /// `DrainCommandRegistry::requestDrain` / `::clearDrain`.
+    static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
+                                                         NodeLifecycleManager lifecycleManager,
+                                                         AutoHealConfig config,
+                                                         DeploymentMap deploymentMap,
+                                                         GenerationSnapshotSource snapshotSource,
+                                                         Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                         Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
+                                                         Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
+                                                         Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                         DrainCoordinator drainCoordinator,
+                                                         LifecycleWriter lifecycleWriter,
+                                                         Supplier<ClusterPhase> phaseSupplier,
+                                                         BooleanSupplier inQuorum,
+                                                         Consumer<NodeId> drainCommandSink,
+                                                         Consumer<NodeId> drainCommandClear) {
+        return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
+                                                                         lifecycleManager,
+                                                                         config,
+                                                                         deploymentMap,
+                                                                         snapshotSource,
+                                                                         clusterConfigReader,
+                                                                         lifecycleReader,
+                                                                         slotReader,
+                                                                         commandApplier,
+                                                                         drainCoordinator,
+                                                                         lifecycleWriter,
+                                                                         phaseSupplier,
+                                                                         inQuorum,
+                                                                         System::currentTimeMillis,
+                                                                         drainCommandSink,
+                                                                         drainCommandClear);
     }
 }

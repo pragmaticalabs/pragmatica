@@ -1106,6 +1106,7 @@ public interface AetherNode extends ManageableNode {
         ClusterSyncPongSignalFan.ReadyCandidateSink readyCandidateSink = (sender, candidate) ->
             emitForceOnDuty(ctmLifecycleWriterRef.get(), sender, candidate);
         var nodeReportedStateHolder = NodeReportedStateHolder.nodeReportedStateHolder();
+        var drainCommandRegistry = org.pragmatica.aether.metrics.DrainCommandRegistry.drainCommandRegistry();
         metricsCollector.setReadinessTracker(readinessTracker);
         metricsCollector.setNodeReportedStateSupplier(nodeReportedStateHolder::current);
         metricsCollector.setIncarnationSupplier(org.pragmatica.aether.metrics.BootEpoch::bootEpoch);
@@ -1154,6 +1155,7 @@ public interface AetherNode extends ManageableNode {
         peerObservationStore.setCapSupplier(() -> Math.max(periodicConfig.capFloor().getAsInt(),
                                                            clusterNode.topologyManager().topology().size() * 4));
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
+        metricsScheduler.setDrainRequested(drainCommandRegistry::isDrainRequested);
         // E2 Phase 2a (2026-05-28): leader-side φ-accrual (#231) is removed. SWIM owns the
         // liveness decision directly; the v2 NTT path is the replacement debounce.
         // Leader/spokesman-gated aggregator ingest. Tier-1 pongs (from core members)
@@ -1327,7 +1329,7 @@ public interface AetherNode extends ManageableNode {
                                                                                    // quorum bit. Below quorum the CTM stops provisioning replacements
                                                                                    // (anti-flood) and defers to SelfDrainCoordinator to dissolve the
                                                                                    // minority partition.
-                                                                                   ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum());
+                                                                                   ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum(), drainCommandRegistry::requestDrain, drainCommandRegistry::clearDrain);
         // E2 Phase 2b (2026-05-28): OrphanSelfDrainChecker deleted. The §5 orphan-slot
         // predicate was an artifact of the slot-based-core-membership-redesign that v2 makes
         // moot: NTT now drives the only departure-detection path (§6) and the §8 unified
@@ -1744,6 +1746,7 @@ public interface AetherNode extends ManageableNode {
                 .andThen(intent -> drainProcedure.initiate(DrainReason.QUORUM_LOSS))
                 .andThen(intent -> nodeReportedStateHolder.onDrainStarted());
         localQuorumWatcher.setQuorumLossListener(quorumLossChain);
+        metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
         Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(localQuorumWatcher::onPeerConnected);
         Consumer<NodeId> nttDisconnectTap = localQuorumWatcher::onPeerDisconnected;
         aetherEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
@@ -2101,7 +2104,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                .forwarding(),
                                                                                                                                          Option.some(clusterNode.network()),
                                                                                                                                          Option.some(serializer),
-                                                                                                                                         Option.some(deserializer));
+                                                                                                                                         Option.some(deserializer),
+                                                                                                                                         drainCommandRegistry::requestDrain);
                                                                                 managementServerRef.set(Option.some(managementServer));
                                                                                 return new aetherNode(config,
                                                                                                       delegateRouter,
@@ -2302,6 +2306,12 @@ public interface AetherNode extends ManageableNode {
         if (state == target) {
             matching.add(nodeId);
         }
+    }
+
+    @Contract
+    private static void commandedDrain(DrainProcedure drainProcedure, NodeReportedStateHolder holder) {
+        drainProcedure.initiate(DrainReason.COMMANDED);
+        holder.onDrainStarted();
     }
 
     @Contract

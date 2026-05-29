@@ -37,6 +37,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 
@@ -53,6 +54,12 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
     Map<NodeId, Epoch> observedEpochs();
     @Contract void onPongReceived(NodeId nodeId);
     @Contract void sendPingsNow();
+
+    /// Membership v2 (B5b) — inject the leader-local DRAIN predicate. `AetherNode` wires this to
+    /// `DrainCommandRegistry::isDrainRequested` after constructing the scheduler so leader pings
+    /// stamp `NodePingCommand.DRAIN` for registered targets. Forwarded into the `ClusterSyncContext`.
+    /// Default no-op for test doubles that don't drive drains.
+    @Contract default void setDrainRequested(Predicate<NodeId> predicate) {}
     /// Drive one periodic `PeerConnectivityObservation` emission synchronously.
     /// Wired by the scheduled task at `PeriodicObservationConfig.period()` cadence
     /// and exposed for deterministic testing. NOT leader-gated.
@@ -339,6 +346,10 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
 
     @Override@Contract public void sendPingsNow() {
         context.dispatch(new ClusterSyncEvents.PingTick(context.epochSupplier().get()));
+    }
+
+    @Override@Contract public void setDrainRequested(Predicate<NodeId> predicate) {
+        context.setDrainRequested(predicate);
     }
 
     @Override@Contract public void emitPeriodicConnectivityNow() {

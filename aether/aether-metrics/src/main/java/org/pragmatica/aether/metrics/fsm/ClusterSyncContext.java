@@ -65,12 +65,14 @@ public final class ClusterSyncContext {
     /// supply it (single-pinger tests / standalone use), preserving prior behavior.
     private final BooleanSupplier isLeader;
 
-    /// Membership v2 (B5a) — leader-local predicate "should this peer be commanded to DRAIN?".
+    /// Membership v2 (B5a/B5b) — leader-local predicate "should this peer be commanded to DRAIN?".
     /// When it returns true for the ping target, `sendOnePing` stamps `NodePingCommand.DRAIN`
     /// onto the outbound ping; otherwise `NONE`. Sourced from `DrainCommandRegistry::isDrainRequested`
     /// in production. Defaults to `peer -> false` (no drain ever) so existing construction / tests
-    /// keep working with no behavior change.
-    private final Predicate<NodeId> drainRequested;
+    /// keep working with no behavior change. Mutable holder so `AetherNode` can inject the real
+    /// predicate AFTER scheduler construction (`ClusterSyncScheduler.setDrainRequested`) once the
+    /// `DrainCommandRegistry` exists, without a constructor-signature change to the wiring path.
+    private final AtomicReference<Predicate<NodeId>> drainRequested = new AtomicReference<>(peer -> false);
 
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
 
@@ -226,9 +228,9 @@ public final class ClusterSyncContext {
         this.isLeader = isLeader == null
                         ? () -> true
                         : isLeader;
-        this.drainRequested = drainRequested == null
-                              ? peer -> false
-                              : drainRequested;
+        this.drainRequested.set(drainRequested == null
+                                ? peer -> false
+                                : drainRequested);
         this.reachabilitySnapshotSupplier = reachabilitySnapshotSupplier == null
                                             ? Option::none
                                             : reachabilitySnapshotSupplier;
@@ -371,9 +373,19 @@ public final class ClusterSyncContext {
     /// Membership v2 (B5a) — the leader→node command stamped onto the outbound ping for `peer`.
     /// `DRAIN` when the wired `drainRequested` predicate selects the peer, else `NONE`.
     private NodePingCommand commandFor(NodeId peer) {
-        return drainRequested.test(peer)
+        return drainRequested.get().test(peer)
               ? NodePingCommand.DRAIN
               : NodePingCommand.NONE;
+    }
+
+    /// Membership v2 (B5b) — inject the leader-local DRAIN predicate after construction.
+    /// `AetherNode` calls this (via `ClusterSyncScheduler.setDrainRequested`) once the
+    /// `DrainCommandRegistry` exists, wiring `DrainCommandRegistry::isDrainRequested`. `null`
+    /// resets to the no-drain default.
+    @Contract public void setDrainRequested(Predicate<NodeId> predicate) {
+        drainRequested.set(predicate == null
+                           ? peer -> false
+                           : predicate);
     }
 
     /// RC1 (S01 fix) — snapshot of peers this node has locally evicted via

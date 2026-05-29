@@ -53,7 +53,7 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 | Observability depth | ADMIN | `PUT /api/observability/depth` |
 | Blueprint deploy (from artifact) | OPERATOR | `POST /api/blueprints/deploy` |
 | Blueprint validate | VIEWER | `POST /api/blueprints/validate` |
-| Node drain/activate | OPERATOR | `POST /api/nodes/drain/{id}`, `POST /api/nodes/activate/{id}` |
+| Node drain | OPERATOR | `POST /api/nodes/drain/{id}` |
 | Scaling | OPERATOR | `POST /api/scale` |
 | Schema operations | OPERATOR | `POST /api/schema/*` |
 | Deployment strategies | OPERATOR | `POST /api/deploy`, `POST /api/deploy/*/promote`, `POST /api/deploy/*/rollback`, `POST /api/deploy/*/complete`, `POST /api/ab-tests/*` |
@@ -2919,10 +2919,7 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 
 | GET | `/api/nodes/lifecycle` | Node Lifecycle |
 | GET | `/api/nodes/lifecycle/{id}` | Node Lifecycle |
-| POST | `/api/nodes/lifecycle/commands` | Node Lifecycle |
-| GET | `/api/nodes/lifecycle/reconciler` | Node Lifecycle |
 | POST | `/api/nodes/drain/{id}` | Node Lifecycle |
-| POST | `/api/nodes/activate/{id}` | Node Lifecycle |
 | POST | `/api/nodes/shutdown/{id}` | Node Lifecycle |
 | GET | `/api/audit/commands` | Observability |
 | GET | `/api/scheduled-tasks` | Scheduled Tasks |
@@ -3010,31 +3007,17 @@ Transition a node from `ON_DUTY` to `DRAINING`. The CDM will evacuate slices res
 }
 ```
 
-### POST /api/nodes/activate/{id}
-
-Transition a node from `DRAINING` or `DECOMMISSIONED` back to `ON_DUTY`.
-
-**Response:**
-```json
-{
-  "success": true,
-  "nodeId": "node-1",
-  "state": "ON_DUTY",
-  "message": "Node activated"
-}
-```
-
 ### POST /api/nodes/shutdown/{id}
 
-Transition a node from any state to `SHUTTING_DOWN`.
+Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command channel. The leader's cluster-sync heartbeat carries `NodePingCommand.DRAIN` to the target, which self-drains (finishes in-flight requests) via its `DrainProcedure` and then halts; the CTM grace-terminate backstop reaps the container if it never self-exits. No direct lifecycle KV write happens on this path.
 
 **Response:**
 ```json
 {
   "success": true,
   "nodeId": "node-1",
-  "state": "SHUTTING_DOWN",
-  "message": "Node shutdown initiated"
+  "state": "STOPPED",
+  "message": "Shutdown command enqueued; target will self-drain then halt via heartbeat DRAIN command"
 }
 ```
 
@@ -3065,108 +3048,6 @@ Accepted values for `targetRole` (case-insensitive): `"CORE"`, `"WORKER"`. Promo
   "message": "Promoted node from CORE to WORKER"
 }
 ```
-
-### POST /api/nodes/lifecycle/commands
-
-**Phase 3 PR-C (cluster-convergence-reconciler):** explicit operator-facing channel for emitting any of the five `LifecycleCommand` variants directly. Routes through `LifecycleWriter.applyCommand(...)` with `source=OPERATOR` so the resulting events on the `audit.lifecycle.commands` stream and the in-memory `RecentCommandsBuffer` are distinguishable from reconciler / CTM / drain-coordinator emissions.
-
-Route target is `LEADER` — the management plane forwards the request to the consensus writer automatically when the caller hits a follower. The request stamps an HLC timestamp from the local node's clock so the resulting `NodeLifecycleValue.transitionedAt` is causally ordered against every other HLC-stamped action on this node (RC1 Step 4 convention).
-
-Use this endpoint as an operator escape hatch for stuck silent-divergence cases (e.g., cluster B 02-chaos cascade where a peer is stuck in `JOINING`); it is also the foundation for the symmetric `aether nodes decommission|force-on-duty|record-joining|request-rejoin` CLI subcommands.
-
-**Authorization:** ADMIN (direct lifecycle writes are a topology operation).
-
-**Request body:**
-```json
-{
-  "type": "FORCE_DECOMMISSION",
-  "nodeId": "node-2",
-  "reason": "stuck JOINING after slot-claim race",
-  "stopReason": "FORCED"
-}
-```
-
-Required fields:
-- `type` — one of `FORCE_DECOMMISSION`, `FORCE_DRAIN`, `FORCE_ON_DUTY`, `RECORD_JOINING`, `REQUEST_REJOIN` (case-insensitive).
-- `nodeId` — target node ID (must be parseable).
-- `reason` — operator-supplied justification string; flows onto the audit event's `justificationMessage` payload.
-
-Optional variant-specific fields:
-- `stopReason` — `FORCE_DECOMMISSION` only. One of `FORCED` (default), `GRACEFUL`, `DRAIN_FAILED`.
-- `drainReason` — `FORCE_DRAIN` only. Defaults to `OPERATOR_DRAIN`.
-- `slotId` — `RECORD_JOINING` only. Defaults to none.
-
-**Response (202 Accepted):**
-```json
-{
-  "accepted": true,
-  "commandType": "ForceDecommission",
-  "nodeId": "node-2",
-  "audit": "see /api/audit/commands?source=operator"
-}
-```
-
-**Error responses:**
-- `400` — missing body, missing required field, unknown command type, unknown reason value.
-
-**Example:**
-```bash
-curl -X POST http://localhost:8080/api/nodes/lifecycle/commands \
-  -H "Content-Type: application/json" \
-  -d '{"type":"FORCE_DECOMMISSION","nodeId":"node-2","reason":"stuck JOINING"}'
-```
-
-### GET /api/nodes/lifecycle/reconciler
-
-**Phase 4 PR-D (cluster-convergence-reconciler):** observability surface for the leader-only `LifecycleReconciler` component (cluster-convergence-reconciler-spec §7). Returns the reconciler's current activation state, last-tick and last-action timestamps, per-rule enable/enforce flags, and the most-recent ring-buffered decisions (default 50 entries). **Phase 5 PR-E flipped five of the seven rules to `enforce=true` by default**; the per-rule `enforce` field reflects the live setting after any `[reconciler.rules.<rule>]` overrides from `aether.toml`.
-
-**Scope note:** only the current leader's reconciler is `active=true`; followers report `active=false` and empty rule/decision sets. Phase 5 PR-E shipped the enforcing flip — five rules (`JoiningTimeout`, `OnDutyFaulty`, `DrainTimeout`, `GenerationLifecycleGap`, `SwimLifecycleGap`) default to `enforce=true`; two rules (`JoiningStuckAlert`, `StoppedZombie`) remain audit-only forever per spec §7.1. Operators flip rules back to dry-run via `[reconciler.rules.<rule>] enforce=false` in `aether.toml`.
-
-**Authorization:** READ (observability surface).
-
-**Response (`active=true` example):**
-```json
-{
-  "active": true,
-  "phase": "NORMAL",
-  "lastTickAt": 1748005400000,
-  "lastActionAt": 1748005380000,
-  "rules": [
-    {"name": "JoiningTimeout",         "enabled": true, "enforce": true,  "lastFiredAt": 1748005380000, "fireCount": 3},
-    {"name": "JoiningStuckAlert",      "enabled": true, "enforce": false, "lastFiredAt": null, "fireCount": 0},
-    {"name": "OnDutyFaulty",           "enabled": true, "enforce": true,  "lastFiredAt": null, "fireCount": 0},
-    {"name": "DrainTimeout",           "enabled": true, "enforce": true,  "lastFiredAt": null, "fireCount": 0},
-    {"name": "GenerationLifecycleGap", "enabled": true, "enforce": true,  "lastFiredAt": null, "fireCount": 0},
-    {"name": "SwimLifecycleGap",       "enabled": true, "enforce": true,  "lastFiredAt": null, "fireCount": 0},
-    {"name": "StoppedZombie",          "enabled": true, "enforce": false, "lastFiredAt": null, "fireCount": 0}
-  ],
-  "recentDecisions": [
-    {
-      "ruleName": "JoiningTimeout",
-      "peer": "node-2",
-      "commandType": "ForceDecommission",
-      "reasonTag": "FORCED",
-      "justification": "JoiningTimeout: peer node-2 has been JOINING past JOIN_DEADLINE × 1.5 with SWIM Faulty/absent",
-      "enforced": true,
-      "at": 1748005380000
-    }
-  ]
-}
-```
-
-**Response (`active=false` example — follower or leader in non-NORMAL phase):**
-```json
-{
-  "active": false,
-  "phase": "COLD_BOOT",
-  "lastTickAt": null,
-  "lastActionAt": null,
-  "rules": [],
-  "recentDecisions": []
-}
-```
-
-**Companion observation channel.** For commands the reconciler emits in audit-only mode (`enforce=false`) the operator should consult `GET /api/audit/commands?source=reconciler` — those emissions land as a single `CommandReceived` event on the stream with no follow-on `CommandApplied`. Enforcing rules (Phase 5 PR-E default for five of seven rules) emit `CommandReceived` immediately and then `CommandApplied(..., accepted=true)` after the underlying KV write resolves (or `accepted=false` if the apply future fails).
 
 ---
 

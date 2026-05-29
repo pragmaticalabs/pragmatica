@@ -1118,38 +1118,17 @@ aether nodes lifecycle --state ON_DUTY+JOINING
 # Get lifecycle state for a specific node (--state ignored when [id] is supplied)
 aether nodes lifecycle <nodeId>
 
-# Drain a node (ON_DUTY → DRAINING, CDM evacuates slices respecting budget)
+# Drain a node (ON_DUTY → DRAINING via the membership-v2 DRAIN-command heartbeat;
+# the target self-drains, finishing in-flight requests, respecting disruption budget)
 aether nodes drain <nodeId>
 
-# Activate a node (DRAINING/DECOMMISSIONED → ON_DUTY)
-aether nodes activate <nodeId>
-
-# Shut down a node (any → SHUTTING_DOWN)
+# Shut down a node (self-drain then halt via the DRAIN-command heartbeat; CTM
+# grace-terminate backstop reaps the container)
 aether nodes shutdown <nodeId>
 
 # Promote a node to a new role (CORE or WORKER) via consensus
 aether nodes promote <nodeId> --role WORKER
 aether nodes promote <nodeId> --role CORE
-
-# --- Phase 3 PR-C (cluster-convergence-reconciler) operator escape hatches ---
-# Force-decommission a stuck peer (writes STOPPED via LifecycleWriter; emits audit
-# event with source=OPERATOR). Use for silent-divergence cases reconciler will own
-# in Phase 4-5.
-aether nodes decommission <nodeId> --reason "stuck JOINING"
-aether nodes decommission <nodeId> --reason "drain stalled" --stop-reason DRAIN_FAILED
-
-# Force a peer to ON_DUTY (use when a node is stuck in JOINING/DRAINING but is
-# operationally healthy).
-aether nodes force-on-duty <nodeId> --reason "manual unstick"
-
-# Write a JOINING lifecycle entry for a peer (use for reconciler
-# GenerationLifecycleGap cases where a Rabia member lacks a lifecycle entry).
-aether nodes record-joining <nodeId> --reason "operator gap fill"
-aether nodes record-joining <nodeId> --slot slot-a --reason "with slot assignment"
-
-# Remove a peer's lifecycle entry so it can re-enter JOINING (use for stuck
-# DRAINING that needs operator intervention).
-aether nodes request-rejoin <nodeId> --reason "cancel drain"
 ```
 
 Example workflow:
@@ -1162,9 +1141,6 @@ aether nodes drain node-2
 
 # Verify it's draining
 aether nodes lifecycle node-2
-
-# Cancel drain and return to active duty
-aether nodes activate node-2
 
 # Initiate shutdown
 aether nodes shutdown node-3
@@ -1686,25 +1662,17 @@ Options:
 
 ### LifecycleReconciler observability (Phase 4 PR-D)
 
-**No dedicated CLI subcommand in Phase 4.** Observability for the leader-only
-`LifecycleReconciler` (cluster-convergence-reconciler-spec §7) is exposed through two
-existing channels:
+**No dedicated CLI subcommand.** Observability for the leader-only
+`LifecycleReconciler` (cluster-convergence-reconciler-spec §7) is exposed through the
+audit channel:
 
-1. **`aether cluster audit --source reconciler`** — surfaces the reconciler's rule
-   emissions. After the Phase 5 PR-E enforcing flip, five rules emit a
-   `CommandReceived` + `CommandApplied` pair (KV write applied); the two audit-only
-   rules (`JoiningStuckAlert`, `StoppedZombie`) and any rule with operator-overridden
-   `enforce=false` emit a `CommandReceived` only.
-2. **`GET /api/nodes/lifecycle/reconciler`** — direct REST surface for the reconciler's
-   `active` state, last-tick / last-action timestamps, per-rule
-   `{enabled, enforce, lastFiredAt, fireCount}` toggles, and the ring-buffered
-   `recentDecisions` (default 50 entries). Use `curl` or any HTTP client; a dedicated
-   `aether cluster reconciler status` subcommand is deferred to Phase 5 PR-E.
+- **`aether cluster audit --source reconciler`** — surfaces the reconciler's rule
+  emissions. After the Phase 5 PR-E enforcing flip, five rules emit a
+  `CommandReceived` + `CommandApplied` pair (KV write applied); the two audit-only
+  rules (`JoiningStuckAlert`, `StoppedZombie`) and any rule with operator-overridden
+  `enforce=false` emit a `CommandReceived` only.
 
 ```bash
-# Inspect reconciler state on the leader
-curl -s "http://${LEADER_HOST}:8080/api/nodes/lifecycle/reconciler" | jq
-
 # Tail reconciler activity (per spec §7.3)
 aether cluster audit --source reconciler --since 5m
 ```

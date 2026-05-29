@@ -53,6 +53,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -93,7 +94,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicLong lastProvisioningFailureMs,
                                     AtomicLong formationAnchorMs,
                                     AtomicBoolean autoHealEnabled,
-                                    LongSupplier clock) implements ClusterTopologyManager {
+                                    LongSupplier clock,
+                                    Consumer<NodeId> drainCommandSink,
+                                    Consumer<NodeId> drainCommandClear) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int UNINITIALIZED_REAL_ACTUAL = -1;
@@ -114,6 +117,46 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                      Supplier<ClusterPhase> phaseSupplier,
                                                                      BooleanSupplier inQuorum,
                                                                      LongSupplier clock) {
+        return clusterTopologyManagerRecord(observer,
+                                            lifecycleManager,
+                                            config,
+                                            deploymentMap,
+                                            snapshotSource,
+                                            clusterConfigReader,
+                                            lifecycleReader,
+                                            slotReader,
+                                            commandApplier,
+                                            drainCoordinator,
+                                            lifecycleWriter,
+                                            phaseSupplier,
+                                            inQuorum,
+                                            clock,
+                                            _ -> {},
+                                            _ -> {});
+    }
+
+    /// Membership v2 / B5b — production factory wiring the leader's DRAIN command channel.
+    /// `drainCommandSink` enqueues the target into the `DrainCommandRegistry` (so the leader's
+    /// outbound ping carries `NodePingCommand.DRAIN` and the target self-drains via its
+    /// `DrainProcedure`); `drainCommandClear` removes the target after the grace-terminate
+    /// backstop reaps the container. Both default to no-op via the overload above for tests and
+    /// legacy callers.
+    static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
+                                                                     NodeLifecycleManager lifecycleManager,
+                                                                     AutoHealConfig config,
+                                                                     DeploymentMap deploymentMap,
+                                                                     GenerationSnapshotSource snapshotSource,
+                                                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                                     Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
+                                                                     Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
+                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                                     DrainCoordinator drainCoordinator,
+                                                                     LifecycleWriter lifecycleWriter,
+                                                                     Supplier<ClusterPhase> phaseSupplier,
+                                                                     BooleanSupplier inQuorum,
+                                                                     LongSupplier clock,
+                                                                     Consumer<NodeId> drainCommandSink,
+                                                                     Consumer<NodeId> drainCommandClear) {
         return new ClusterTopologyManagerRecord(observer,
                                                 lifecycleManager,
                                                 config,
@@ -141,7 +184,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicLong(0L),
                                                 new AtomicLong(clock.getAsLong()),
                                                 new AtomicBoolean(true),
-                                                clock);
+                                                clock,
+                                                drainCommandSink == null
+                                                ? _ -> {}
+                                                : drainCommandSink,
+                                                drainCommandClear == null
+                                                ? _ -> {}
+                                                : drainCommandClear);
     }
 
     private long nowMs() {
@@ -423,16 +472,44 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return lifecycleManager.provisionNode(spec).mapToUnit();
     }
 
-    /// Membership v2 / E2 — drain a specific node, PURE ACTUATOR (interim).
+    /// Membership v2 / B5b — drain a specific node via the graceful v2 DRAIN-command path.
     ///
-    /// Directly terminates the target via `NodeLifecycleManager.terminateNode`. `reason` is
-    /// observability-only.
+    /// Enqueues `targetNodeId` into the leader's `DrainCommandRegistry` (`drainCommandSink`) so
+    /// the leader's outbound cluster-sync ping carries `NodePingCommand.DRAIN` to the target,
+    /// which self-drains (finishes in-flight requests) via its `DrainProcedure`. A grace-terminate
+    /// backstop is scheduled after `autoHealConfig.provisioningTimeout()`: it calls
+    /// `lifecycleManager.terminateNode(target)` to reap the container (prevents Docker
+    /// restart-loop / cloud lingering when the target never self-exits) AND clears the target from
+    /// the registry (`drainCommandClear`). `reason` is observability-only. Returns on the enqueue
+    /// (the drain itself proceeds asynchronously via the heartbeat + backstop).
     @Override
     public Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
-        log.info("CTM v2: drainNode requested (target={}, reason={})", targetNodeId, reason);
+        log.info("CTM v2: drainNode requested (target={}, reason={}) — enqueuing DRAIN command",
+                 targetNodeId,
+                 reason);
+        drainCommandSink.accept(targetNodeId);
+        scheduleGraceTerminate(targetNodeId);
 
-        // TODO(E6/#11): graceful in-flight-request drain via DrainRequestKey + target self-drain observe-loop; interim is direct provider terminate of the surplus node.
-        return lifecycleManager.terminateNode(targetNodeId).mapToUnit();
+        return Promise.success(unit());
+    }
+
+    /// Backstop reaper: after the grace period, terminate the container and clear the DRAIN
+    /// command. Idempotent — `terminateNode` is safe to call on an already-exited node, and
+    /// `drainCommandClear` no-ops on an absent target.
+    @Contract
+    private void scheduleGraceTerminate(NodeId targetNodeId) {
+        SharedScheduler.schedule(() -> graceTerminate(targetNodeId), autoHealConfig.provisioningTimeout());
+    }
+
+    @Contract
+    private void graceTerminate(NodeId targetNodeId) {
+        log.info("CTM v2: drain grace expired for {} — reaping container + clearing DRAIN command",
+                 targetNodeId);
+        drainCommandClear.accept(targetNodeId);
+        lifecycleManager.terminateNode(targetNodeId)
+                        .onFailure(cause -> log.warn("CTM v2: grace-terminate of {} failed: {}",
+                                                     targetNodeId,
+                                                     cause.message()));
     }
 
     /// Membership v2 / E2 — public reconcile. CTM no longer drives a slot loop; the
