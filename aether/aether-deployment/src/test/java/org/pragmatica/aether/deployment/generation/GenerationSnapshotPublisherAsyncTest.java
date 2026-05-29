@@ -12,16 +12,20 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GenerationSnapshotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GenerationSnapshotValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
@@ -30,12 +34,15 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -152,6 +159,56 @@ class GenerationSnapshotPublisherAsyncTest {
 
     // ---- Awaiting helpers (no Awaitility on classpath; latch-based polling) ----
 
+    /// Phase C-1: the published snapshot's coreMembers are derived from `memberSupplier`
+    /// (synthesized ON_DUTY) rather than the KV `NodeLifecycleKey` scan, and a node reported
+    /// by `drainingSupplier` projects as DRAINING. Address comes from the resolver.
+    @Test
+    void publishedSnapshot_reflectsMemberSupplier_drainingNodeProjectsDraining() throws Exception {
+        var peerA = new NodeId("peer-a");
+        var peerB = new NodeId("peer-b");
+        var resolver = addressResolverOf(Map.of(SELF, address("10.0.0.1", 7001),
+                                                peerA, address("10.0.0.2", 7002)));
+        var fixture = newFixture(() -> Set.of(SELF, peerA, peerB),
+                                 () -> Set.of(peerB),
+                                 resolver);
+        try {
+            fixture.publisher.onLeaderGained();
+            awaitApplyCount(fixture, 1);
+
+            var snapshot = takeSnapshot(fixture);
+            var coreMembers = snapshot.coreMembers();
+
+            assertThat(coreMembers.keySet()).containsExactlyInAnyOrder(SELF, peerA, peerB);
+            assertThat(coreMembers.get(SELF).lifecycle()).isEqualTo(NodeLifecycleState.ON_DUTY);
+            assertThat(coreMembers.get(peerA).lifecycle()).isEqualTo(NodeLifecycleState.ON_DUTY);
+            assertThat(coreMembers.get(peerB).lifecycle()).isEqualTo(NodeLifecycleState.DRAINING);
+            assertThat(coreMembers.get(SELF).host()).isEqualTo("10.0.0.1");
+            assertThat(coreMembers.get(SELF).port()).isEqualTo(7001);
+            // Address resolver returned none() for peer-b — defaults to empty host / zero port.
+            assertThat(coreMembers.get(peerB).host()).isEmpty();
+            assertThat(coreMembers.get(peerB).port()).isZero();
+
+            fixture.cluster.completeNext();
+            awaitState(fixture, PublisherState.Idle.class);
+        } finally {
+            fixture.shutdown();
+        }
+    }
+
+    private static ClusterGenerationSnapshot takeSnapshot(Fixture fixture) {
+        var batch = fixture.cluster.takeBatch();
+        var put = (KVCommand.Put<AetherKey, AetherValue>) batch.get(0);
+        return ((GenerationSnapshotValue) put.value()).snapshot();
+    }
+
+    private static NodeInfo address(String host, int port) {
+        return NodeInfo.nodeInfo(new NodeId(host), new NodeAddress(host, port));
+    }
+
+    private static Function<NodeId, Option<NodeInfo>> addressResolverOf(Map<NodeId, NodeInfo> table) {
+        return nodeId -> Option.option(table.get(nodeId));
+    }
+
     /// RC1 Step 2: `onMembershipDecision` is the snapshot-then-tail subscription entry
     /// point. After leader-gained moves the FSM to Idle, a tail decision must trigger an
     /// apply identical to the one a direct `markDirty()` call would issue.
@@ -201,6 +258,12 @@ class GenerationSnapshotPublisherAsyncTest {
     // ---- Fixture wiring ----
 
     private static Fixture newFixture() {
+        return newFixture(() -> Set.of(SELF), Set::of, nodeId -> Option.none());
+    }
+
+    private static Fixture newFixture(Supplier<Set<NodeId>> memberSupplier,
+                                      Supplier<Set<NodeId>> drainingSupplier,
+                                      Function<NodeId, Option<NodeInfo>> addressResolver) {
         var router = MessageRouter.mutable();
         KVStore<AetherKey, AetherValue> kvStore = new KVStore<>(router, NoOpSerializer.INSTANCE, NoOpDeserializer.INSTANCE);
         var hlcClock = HlcClock.hlcClock(new NodeId("test-self"));
@@ -220,7 +283,10 @@ class GenerationSnapshotPublisherAsyncTest {
                                                                                 kvSupplier,
                                                                                 kvStore,
                                                                                 cluster,
-                                                                                executor);
+                                                                                executor,
+                                                                                memberSupplier,
+                                                                                drainingSupplier,
+                                                                                addressResolver);
         return new Fixture(publisher, isLeader, cluster, executor);
     }
 

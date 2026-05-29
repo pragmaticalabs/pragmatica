@@ -103,6 +103,9 @@ class GenerationSnapshotKvRoundtripTest {
         var swimHints = SwimHintsRegistry.swimHintsRegistry(Duration.ofSeconds(60), () -> {});
         var cluster = new KvReflectingClusterNode(kvStore, kvRef);
         var executor = Executors.newSingleThreadExecutor();
+        // Phase C-1: membership is SWIM/NTT-derived. Tests seed lifecycles in KV; the member
+        // and draining suppliers derive their sets from those seeds so the roundtrip intent
+        // (SELF ON_DUTY → snapshot view) is preserved on the new derivation path.
         var publisher = GenerationSnapshotPublisher.generationSnapshotPublisher(isLeader::get,
                                                                                 () -> 1L,
                                                                                 hlcClock,
@@ -111,8 +114,31 @@ class GenerationSnapshotKvRoundtripTest {
                                                                                 kvSupplier,
                                                                                 kvStore,
                                                                                 cluster,
-                                                                                executor);
+                                                                                executor,
+                                                                                () -> membersFromKv(kvRef),
+                                                                                () -> drainingFromKv(kvRef),
+                                                                                nodeId -> org.pragmatica.lang.Option.none());
         return new Fixture(publisher, kvStore, kvRef, executor);
+    }
+
+    private static java.util.Set<NodeId> membersFromKv(AtomicReference<Map<AetherKey, AetherValue>> kvRef) {
+        return kvRef.get()
+                    .entrySet()
+                    .stream()
+                    .filter(e -> e.getKey() instanceof NodeLifecycleKey && e.getValue() instanceof NodeLifecycleValue)
+                    .filter(e -> ((NodeLifecycleValue) e.getValue()).state() != NodeLifecycleState.STOPPED)
+                    .map(e -> ((NodeLifecycleKey) e.getKey()).nodeId())
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    private static java.util.Set<NodeId> drainingFromKv(AtomicReference<Map<AetherKey, AetherValue>> kvRef) {
+        return kvRef.get()
+                    .entrySet()
+                    .stream()
+                    .filter(e -> e.getKey() instanceof NodeLifecycleKey && e.getValue() instanceof NodeLifecycleValue)
+                    .filter(e -> ((NodeLifecycleValue) e.getValue()).state() == NodeLifecycleState.DRAINING)
+                    .map(e -> ((NodeLifecycleKey) e.getKey()).nodeId())
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
     private static final class Fixture {

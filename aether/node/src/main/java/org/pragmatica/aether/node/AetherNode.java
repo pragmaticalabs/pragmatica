@@ -1132,7 +1132,7 @@ public interface AetherNode extends ManageableNode {
         cdmSnapshotSupplierRef.set(snapshotSupplier);
         // B4 (membership v2 §7.5): bind the CDM readiness supplier now that the pong fan + self-state
         // holder exist (READY peers from the leader view + self when locally READY).
-        cdmReadyNodesRef.set(() -> computeReadyNodes(pongSignalFan, nodeReportedStateHolder, config.self()));
+        cdmReadyNodesRef.set(() -> nodesReporting(pongSignalFan, nodeReportedStateHolder, config.self(), NodeReportedState.READY));
         var metricsScheduler = ClusterSyncScheduler.clusterSyncScheduler(config.self(),
                                                                          clusterNode.network(),
                                                                          metricsCollector,
@@ -1823,7 +1823,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                   kvStore::snapshot,
                                                                                                   kvStore,
                                                                                                   clusterNode,
-                                                                                                  publisherExecutor);
+                                                                                                  publisherExecutor,
+                                                                                                  ntt::currentMembers,
+                                                                                                  () -> nodesReporting(pongSignalFan, nodeReportedStateHolder, config.self(), NodeReportedState.DRAINING),
+                                                                                                  ((TopologyObserver) clusterNode.topologyManager())::get);
         publisherRef.set(generationSnapshotPublisher);
         var bootstrapModule = BootstrapModule.bootstrapModule(isLeaderSupplier,
                                                               rabiaTermSupplier,
@@ -2279,25 +2282,26 @@ public interface AetherNode extends ManageableNode {
         holder.onSubsystemsReady();
     }
 
-    /// B4 (membership v2 §7.5): the CDM's allocatable set = READY peers from the leader readiness
-    /// view PLUS self when locally READY. The leader does not pong itself, so it is absent from the
-    /// aggregated pong view; its own readiness is authoritative via the local state holder.
-    private static Set<NodeId> computeReadyNodes(ClusterSyncPongSignalFan fan,
-                                                 NodeReportedStateHolder selfHolder,
-                                                 NodeId self) {
-        var ready = new java.util.HashSet<NodeId>();
+    /// B4/C-1 (membership v2 §7.5): nodes the leader observes in a given reported state — peers from
+    /// the readiness view PLUS self when the local holder reports that state (the leader does not pong
+    /// itself, so it is absent from the aggregated pong view; its own state is authoritative locally).
+    private static Set<NodeId> nodesReporting(ClusterSyncPongSignalFan fan,
+                                              NodeReportedStateHolder selfHolder,
+                                              NodeId self,
+                                              NodeReportedState target) {
+        var matching = new java.util.HashSet<NodeId>();
 
-        fan.readinessSnapshot().forEach((nodeId, state) -> addIfReady(ready, nodeId, state));
-        if (selfHolder.current() == NodeReportedState.READY) {
-            ready.add(self);
+        fan.readinessSnapshot().forEach((nodeId, state) -> addIfMatching(matching, nodeId, state, target));
+        if (selfHolder.current() == target) {
+            matching.add(self);
         }
-        return ready;
+        return matching;
     }
 
     @Contract
-    private static void addIfReady(Set<NodeId> ready, NodeId nodeId, NodeReportedState state) {
-        if (state == NodeReportedState.READY) {
-            ready.add(nodeId);
+    private static void addIfMatching(Set<NodeId> matching, NodeId nodeId, NodeReportedState state, NodeReportedState target) {
+        if (state == target) {
+            matching.add(nodeId);
         }
     }
 
