@@ -3,27 +3,34 @@ SPDX-License-Identifier: BUSL-1.1
 Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 -->
 
-# Session Handover — 2026-05-29c — P2-b wired & Docker-validated; P3 IN PROGRESS (membership repoints + LocalQuorumWatcher deletion done; ReachabilityAggregator + ClusterPhaseView remain)
+# Session Handover — 2026-05-29c — P2-b wired & Docker-validated; P3 DELETIONS DONE (LocalQuorumWatcher + ReachabilityAggregator); only ClusterPhaseView repoint remains
 
-**Branch:** `release-1.0.0-rc1`. **HEAD:** `107491b1c`. **Working tree:** handover doc untracked. **3 commits LOCAL/unpushed** atop pushed `bf9507cbf`.
+**Branch:** `release-1.0.0-rc1`. **HEAD:** `56253736f` (+ handover commit). **6 commits LOCAL/unpushed** atop pushed `bf9507cbf` (push at checkpoint).
 
 ## ⭐ START HERE
-Continuation of the membership-unification big-bang (design of record: `aether/docs/specs/membership-unification-spec.md`; prior handover: `session-handover-2026-05-29b.md`). This session:
-1. **P2-b DONE + Docker-validated** — the SWIM-fed `MembershipTracker` is now the live consensus `MembershipView`.
-2. **FQCN sweep** of `AetherNode.java` (44 redundant qualifications removed).
-3. **P3 IN PROGRESS** — snapshot + reconciler membership read the tracker; **`LocalQuorumWatcher` DELETED** → quorum-loss self-drain now sourced from the tracker via new `QuorumLossDetector` (arm-after-first-quorum guard). **`ReachabilityAggregator` deletion + `ClusterPhaseView` repoint REMAIN.**
+Continuation of the membership-unification big-bang (design of record: `aether/docs/specs/membership-unification-spec.md`; prior: `session-handover-2026-05-29b.md`). This session:
+1. **P2-b DONE + Docker-validated** — SWIM-fed `MembershipTracker` is the live consensus `MembershipView`.
+2. **FQCN sweep** of `AetherNode.java` (44 removed).
+3. **P3 DELETIONS DONE** — `LocalQuorumWatcher` → tracker-fed `QuorumLossDetector` (arm-after-first-quorum guard); `ReachabilityAggregator` deleted (SWIM is single liveness signal). Snapshot + reconciler membership read the tracker.
+4. **REMAINING P3:** only `ClusterPhaseView` repoint (a repoint, not a deletion). Then P4 (Bug B) → P5 → P6.
 
 ## Commits this session (atop pushed `bf9507cbf`)
 ```
-107491b1c refactor(membership): P3 — delete LocalQuorumWatcher; quorum-loss self-drain via QuorumLossDetector (arm-after-first-quorum; ACTIVATES previously-dormant drain — needs chaos validation post-Bug-B)
+56253736f refactor(membership): P3 — delete ReachabilityAggregator; MembershipView strict 2-arg; ClusterSyncPing/CommunityReport reachability emptied (no wire change); AetherNode unwired
+107491b1c refactor(membership): P3 — delete LocalQuorumWatcher; quorum-loss via QuorumLossDetector (arm-after-first-quorum; ACTIVATES previously-dormant drain — needs chaos validation post-Bug-B)
 232e52fe4 refactor(membership): P3 (part) — LeaderReconciler + generation-snapshot membership read the unified MembershipView/tracker
-2aecf81b6 feat(membership): P2-b — wire SWIM-fed MembershipTracker as live MembershipView via TrackerBackedGenerationSnapshotSource (warm-up hand-off; NTT-parity config); FQCN sweep
+2aecf81b6 feat(membership): P2-b — wire MembershipTracker as live MembershipView via TrackerBackedGenerationSnapshotSource; FQCN sweep
+bd60edbb5 docs: handover 2026-05-29c (this file, earlier revision)
 ```
-All UNPUSHED (or push at this checkpoint). (`bf9507cbf` and earlier are pushed.)
+All unit-green (aether/node -am clean install + aether-deployment/aether-metrics module tests).
 
 ## ⚠️ SAFETY NOTE — quorum-loss self-drain was DORMANT, now ACTIVATED
-The old `LocalQuorumWatcher` never fired in production: its `configuredCoreCount` was never wired (`onConfiguredCoreCountChanged` has ZERO prod callers) → threshold 0 → `isBelowThreshold()` always false. The quorum-loss→`DrainProcedure` chain was dead.
-`QuorumLossDetector` (new, `aether-deployment/.../ntt/`) is fed the REAL core count (via `configuredCoreCountSupplier`) and the tracker's stable member count, so it is now LIVE. **Guarded** by an arm-after-first-quorum latch (`armed` set true once `memberCount ≥ quorum`; `onFiringCheck` no-ops unless `armed && sameWindow && stillBelow`) so a forming/minority node never self-drains during cold-start. Grace = `quorumLossDrainThreshold` (8s default). 30 unit tests green. **The real-quorum-loss→self-drain path is NEW behavior and is UNVALIDATED in chaos** — suite 02 must exercise it once Bug B (P4) unblocks the gate.
+The old `LocalQuorumWatcher` never fired in production (`onConfiguredCoreCountChanged` had ZERO prod callers → threshold 0 → never below). `QuorumLossDetector` (new, `aether-deployment/.../ntt/`) is fed the REAL core count + the tracker's stable member count, so it is LIVE. **Guarded** by an arm-after-first-quorum latch (`armed` set once `memberCount ≥ quorum`; fires only `armed && sameWindow && stillBelow`). Grace = `quorumLossDrainThreshold` (8s). 30 unit tests green. **The real-quorum-loss→self-drain path is NEW behavior, UNVALIDATED in chaos** — suite 02 must exercise it once Bug B (P4) unblocks the gate.
+
+## NEXT — ClusterPhaseView repoint (last P3 item)
+Investigation verdict: ClusterPhaseView carries leader-awareness the tracker lacks (NORMAL requires a leader), so it CANNOT be deleted — make it a thin adapter:
+- **ClusterPhaseView** (aether-deployment): change factory to `clusterPhaseView(Supplier<MembershipPhase> trackerPhaseSupplier, BooleanSupplier haveLeaderReader)`. `compute()` = map `trackerPhase` (swim `MembershipPhase{COLD_BOOT,NORMAL,RECOVERING}`) 1:1 to `AetherValue.ClusterPhase`, then **downgrade NORMAL→RECOVERING if `!haveLeader`**. Drop the old `MembershipViewReader`/`priorPhaseReader`/`stableWindow`/coreSize/timeout params + `stableWindowSatisfied()` dead helper. Update its test. (Delegate to jbct-coder.)
+- **AetherNode wiring** (`~:1135–1172`): replace `phaseMembershipReader` + the `clusterPhaseView(...)` construction with `ClusterPhaseView.clusterPhaseView(trackerPhaseSupplier, () -> healthLeaderSupplier.get().isPresent())`. **Forward-ref trap:** `membershipTracker` is declared ~`:1606`, AFTER ClusterPhaseView (~`:1165`) — so use the existing `membershipTrackerRef` param: `Supplier<MembershipPhase> trackerPhaseSupplier = () -> Option.option(membershipTrackerRef.get()).map(MembershipTracker::phase).or(MembershipPhase.COLD_BOOT);`. **Re-add** `import org.pragmatica.swim.membership.MembershipPhase;`. **Delete now-dead vars:** `swimDetectorRefForPhase` (decl ~:1147 + `.set()` ~:1491), `clusterPhaseReader` (~:1135), `phaseInQuorum` (~:1152), `phaseMembershipReader` (~:1153). Confirm `effectivePhaseSupplier` (~:1172) still consumes `clusterPhaseView` (keep it).
 
 ## What's wired now
 - **`TrackerBackedGenerationSnapshotSource`** (new file, `aether/node`) — adapter exposing the tracker as `MembershipView` once `phase() != COLD_BOOT`, else delegates to the KV-projected view (cold-start runs on the proven QUIC-count path, then hands off). Term/epoch delegate to KV source.
