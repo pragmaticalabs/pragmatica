@@ -22,6 +22,8 @@ import org.pragmatica.lang.Option;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -194,6 +196,179 @@ class ClusterSyncPongSignalFanTest {
                                             List.of(), List.of(), List.of(), Option.some(PEER_A));
 
             fan.fan(pong); // must not throw
+        }
+    }
+
+    @Nested
+    class ReadinessView {
+        private ClusterSyncPong pong(NodeId sender, String state, long incarnation) {
+            return new ClusterSyncPong(sender, java.util.Map.of(), 0L, 0L, 0L, state,
+                                       List.of(), List.of(), List.of(), Option.none(), incarnation);
+        }
+
+        private ClusterSyncPongSignalFan fan(LeaderManager leaderManager, AtomicLong clock) {
+            return ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink,
+                                                                     leaderManager,
+                                                                     ClusterSyncPongSignalFan.ReadyCandidateSink.NOOP,
+                                                                     clock::get);
+        }
+
+        @Test
+        void fan_pongFromReadyNode_populatesSnapshotWithReady() {
+            var clock = new AtomicLong(100L);
+            var f = fan(new TestLeaderManager(true), clock);
+
+            f.fan(pong(PEER_A, "READY", 1L));
+
+            assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.READY);
+        }
+
+        @Test
+        void fan_pongFromSyncingNode_populatesSnapshotWithSyncing() {
+            var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
+
+            f.fan(pong(PEER_A, "SYNCING", 1L));
+
+            assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.SYNCING);
+        }
+
+        @Test
+        void fan_pongFromDrainingNode_populatesSnapshotWithDraining() {
+            var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
+
+            f.fan(pong(PEER_A, "DRAINING", 1L));
+
+            assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.DRAINING);
+        }
+
+        @Test
+        void fan_unknownLifecycleString_parsesAsSyncing() {
+            var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
+
+            f.fan(pong(PEER_A, "ON_DUTY", 1L));
+
+            assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.SYNCING);
+        }
+
+        @Test
+        void fan_higherIncarnation_replacesEntry() {
+            var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
+
+            f.fan(pong(PEER_A, "READY", 1L));
+            f.fan(pong(PEER_A, "DRAINING", 2L));
+
+            assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.DRAINING);
+        }
+
+        @Test
+        void fan_equalIncarnation_updatesState() {
+            var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
+
+            f.fan(pong(PEER_A, "SYNCING", 1L));
+            f.fan(pong(PEER_A, "READY", 1L));
+
+            assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.READY);
+        }
+
+        @Test
+        void fan_lowerIncarnation_ignoredAsStale() {
+            var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
+
+            f.fan(pong(PEER_A, "READY", 5L));
+            f.fan(pong(PEER_A, "DRAINING", 2L));
+
+            assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.READY);
+        }
+
+        @Test
+        void fan_syncingPongs_decrementCountdownThenReapWhenWarmedUp() {
+            var reaped = new ArrayList<NodeId>();
+            var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
+            f.onStuckSyncing(reaped::add);
+            f.warmedUp(() -> true);
+
+            for (int i = 0; i <= ClusterSyncPongSignalFan.SYNC_REAP_THRESHOLD; i++) {
+                f.fan(pong(PEER_A, "SYNCING", 1L));
+            }
+
+            assertThat(reaped).containsExactly(PEER_A);
+            assertThat(f.readinessSnapshot()).doesNotContainKey(PEER_A);
+        }
+
+        @Test
+        void fan_readyPongResetsCountdown_noReapAfterPriorSyncing() {
+            var reaped = new ArrayList<NodeId>();
+            var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
+            f.onStuckSyncing(reaped::add);
+            f.warmedUp(() -> true);
+
+            for (int i = 0; i < ClusterSyncPongSignalFan.SYNC_REAP_THRESHOLD - 1; i++) {
+                f.fan(pong(PEER_A, "SYNCING", 1L));
+            }
+            f.fan(pong(PEER_A, "READY", 1L));
+
+            assertThat(reaped).isEmpty();
+            assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.READY);
+        }
+
+        @Test
+        void fan_stuckSyncingButNotWarmedUp_doesNotReap() {
+            var reaped = new ArrayList<NodeId>();
+            var warmed = new AtomicBoolean(false);
+            var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
+            f.onStuckSyncing(reaped::add);
+            f.warmedUp(warmed::get);
+
+            for (int i = 0; i < ClusterSyncPongSignalFan.SYNC_REAP_THRESHOLD + 5; i++) {
+                f.fan(pong(PEER_A, "SYNCING", 1L));
+            }
+
+            assertThat(reaped).isEmpty();
+            assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.SYNCING);
+        }
+
+        @Test
+        void evict_removesEntryRegardlessOfIncarnation() {
+            var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
+            f.fan(pong(PEER_A, "READY", 9L));
+
+            f.evict(PEER_A);
+
+            assertThat(f.readinessSnapshot()).doesNotContainKey(PEER_A);
+        }
+
+        @Test
+        void sweepStale_removesEntriesOlderThanMaxAge() {
+            var clock = new AtomicLong(1_000L);
+            var f = fan(new TestLeaderManager(true), clock);
+            f.fan(pong(PEER_A, "READY", 1L));   // stamped at 1_000
+            clock.set(5_000L);
+            f.fan(pong(PEER_B, "READY", 1L));   // stamped at 5_000
+
+            clock.set(5_500L);
+            f.sweepStale(1_000L);               // cutoff = 4_500 — PEER_A removed, PEER_B kept
+
+            assertThat(f.readinessSnapshot()).doesNotContainKey(PEER_A)
+                                             .containsKey(PEER_B);
+        }
+
+        @Test
+        void readinessSnapshot_reflectsMultipleNodeStates() {
+            var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
+            f.fan(pong(PEER_A, "READY", 1L));
+            f.fan(pong(PEER_B, "DRAINING", 1L));
+
+            assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.READY)
+                                             .containsEntry(PEER_B, NodeReportedState.DRAINING);
+        }
+
+        @Test
+        void fan_whenNotLeader_doesNotPopulateReadiness() {
+            var f = fan(new TestLeaderManager(false), new AtomicLong(0L));
+
+            f.fan(pong(PEER_A, "READY", 1L));
+
+            assertThat(f.readinessSnapshot()).isEmpty();
         }
     }
 

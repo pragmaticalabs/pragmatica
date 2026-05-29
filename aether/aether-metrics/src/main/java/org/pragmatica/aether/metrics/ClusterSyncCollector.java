@@ -198,7 +198,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     private final CopyOnWriteArrayList<Consumer<ClusterSyncPong>> pongListeners = new CopyOnWriteArrayList<>();
 
-    private final AtomicReference<ClusterSyncPongSignalFan> pongSignalFan = new AtomicReference<>(_ -> {});
+    private final AtomicReference<ClusterSyncPongSignalFan> pongSignalFan = new AtomicReference<>(ClusterSyncPongSignalFan.NOOP);
 
     private final AtomicReference<PeerObservationBuffer> peerObservationBuffer = new AtomicReference<>(PeerObservationBuffer.NOOP);
 
