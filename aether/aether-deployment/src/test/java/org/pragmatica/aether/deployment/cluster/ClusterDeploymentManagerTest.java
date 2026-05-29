@@ -43,6 +43,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -116,7 +117,8 @@ class ClusterDeploymentManagerTest {
                                                                      timeSpan(300).seconds(),
                                                                      NO_OP_SCHEMA_ORCHESTRATOR,
                                                                      capturingSink,
-                                                                     snapshotSupplier);
+                                                                     snapshotSupplier,
+                                                                     Set::of);
         }
 
         @Test
@@ -191,7 +193,8 @@ class ClusterDeploymentManagerTest {
                                                                      timeSpan(300).seconds(),
                                                                      NO_OP_SCHEMA_ORCHESTRATOR,
                                                                      capturingSink,
-                                                                     snapshotSupplier);
+                                                                     snapshotSupplier,
+                                                                     Set::of);
         }
 
         @Test

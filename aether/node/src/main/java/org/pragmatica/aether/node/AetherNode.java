@@ -179,6 +179,7 @@ import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.aether.metrics.NodeReportedStateHolder;
+import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTAntiEntropy;
@@ -997,6 +998,11 @@ public interface AetherNode extends ManageableNode {
         var cdmSnapshotSupplierRef = new AtomicReference<Supplier<Option<ClusterGenerationSnapshot>>>(Option::none);
         Supplier<Option<ClusterGenerationSnapshot>> stableCdmSnapshotSupplier = () -> cdmSnapshotSupplierRef.get()
                                                                                                             .get();
+        // B4 (membership v2 §7.5): the CDM allocatable-gate reads the leader readiness view (READY
+        // peers + self) instead of KV ON_DUTY. Late-bound — the pong fan + self-state holder are
+        // constructed further below; this ref mirrors the cdmSnapshotSupplierRef pattern.
+        var cdmReadyNodesRef = new AtomicReference<Supplier<Set<NodeId>>>(Set::of);
+        Supplier<Set<NodeId>> stableCdmReadyNodesSupplier = () -> cdmReadyNodesRef.get().get();
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,
@@ -1008,7 +1014,8 @@ public interface AetherNode extends ManageableNode {
                                                                                          config.timeouts().deployment().reconciliationInterval(),
                                                                                          schemaOrchestrator,
                                                                                          stableHealthSink,
-                                                                                         stableCdmSnapshotSupplier);
+                                                                                         stableCdmSnapshotSupplier,
+                                                                                         stableCdmReadyNodesSupplier);
         var loadBalancerManager = config.environment().flatMap(EnvironmentIntegration::loadBalancer).map(provider -> LoadBalancerManager.loadBalancerManager(config.self(),
                                                                                                                                                              kvStore,
                                                                                                                                                              clusterNode.topologyManager(),
@@ -1123,6 +1130,9 @@ public interface AetherNode extends ManageableNode {
                                                                                               AetherValue.GenerationSnapshotValue.class)
                                                                                     .map(AetherValue.GenerationSnapshotValue::snapshot);
         cdmSnapshotSupplierRef.set(snapshotSupplier);
+        // B4 (membership v2 §7.5): bind the CDM readiness supplier now that the pong fan + self-state
+        // holder exist (READY peers from the leader view + self when locally READY).
+        cdmReadyNodesRef.set(() -> computeReadyNodes(pongSignalFan, nodeReportedStateHolder, config.self()));
         var metricsScheduler = ClusterSyncScheduler.clusterSyncScheduler(config.self(),
                                                                          clusterNode.network(),
                                                                          metricsCollector,
@@ -2267,6 +2277,28 @@ public interface AetherNode extends ManageableNode {
     private static void markSubsystemsReady(Runnable signalReady, NodeReportedStateHolder holder) {
         signalReady.run();
         holder.onSubsystemsReady();
+    }
+
+    /// B4 (membership v2 §7.5): the CDM's allocatable set = READY peers from the leader readiness
+    /// view PLUS self when locally READY. The leader does not pong itself, so it is absent from the
+    /// aggregated pong view; its own readiness is authoritative via the local state holder.
+    private static Set<NodeId> computeReadyNodes(ClusterSyncPongSignalFan fan,
+                                                 NodeReportedStateHolder selfHolder,
+                                                 NodeId self) {
+        var ready = new java.util.HashSet<NodeId>();
+
+        fan.readinessSnapshot().forEach((nodeId, state) -> addIfReady(ready, nodeId, state));
+        if (selfHolder.current() == NodeReportedState.READY) {
+            ready.add(self);
+        }
+        return ready;
+    }
+
+    @Contract
+    private static void addIfReady(Set<NodeId> ready, NodeId nodeId, NodeReportedState state) {
+        if (state == NodeReportedState.READY) {
+            ready.add(nodeId);
+        }
     }
 
     @Contract

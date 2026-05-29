@@ -41,6 +41,7 @@ public final class ClusterDeploymentContext {
     private final SchemaOrchestratorService schemaOrchestrator;
     private final HealthSignalSink healthSignalSink;
     private final Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier;
+    private final Supplier<Set<NodeId>> readyNodesSupplier;
     private final Set<NodeId> seedNodes;
     private final DeploymentAtomicity atomicity;
     private final int coreMax;
@@ -58,6 +59,7 @@ public final class ClusterDeploymentContext {
                                     SchemaOrchestratorService schemaOrchestrator,
                                     HealthSignalSink healthSignalSink,
                                     Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
+                                    Supplier<Set<NodeId>> readyNodesSupplier,
                                     Set<NodeId> seedNodes,
                                     DeploymentAtomicity atomicity,
                                     int coreMax,
@@ -71,6 +73,7 @@ public final class ClusterDeploymentContext {
              schemaOrchestrator,
              healthSignalSink,
              snapshotSupplier,
+             readyNodesSupplier,
              seedNodes,
              atomicity,
              coreMax,
@@ -87,6 +90,7 @@ public final class ClusterDeploymentContext {
                                     SchemaOrchestratorService schemaOrchestrator,
                                     HealthSignalSink healthSignalSink,
                                     Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
+                                    Supplier<Set<NodeId>> readyNodesSupplier,
                                     Set<NodeId> seedNodes,
                                     DeploymentAtomicity atomicity,
                                     int coreMax,
@@ -101,6 +105,7 @@ public final class ClusterDeploymentContext {
         this.schemaOrchestrator = schemaOrchestrator;
         this.healthSignalSink = healthSignalSink;
         this.snapshotSupplier = snapshotSupplier;
+        this.readyNodesSupplier = readyNodesSupplier;
         this.seedNodes = seedNodes;
         this.atomicity = atomicity;
         this.coreMax = coreMax;
@@ -179,6 +184,10 @@ public final class ClusterDeploymentContext {
 
     public Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier() {
         return snapshotSupplier;
+    }
+
+    public Supplier<Set<NodeId>> readyNodesSupplier() {
+        return readyNodesSupplier;
     }
 
     public Set<NodeId> seedNodes() {

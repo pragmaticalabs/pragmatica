@@ -201,7 +201,8 @@ public interface ClusterDeploymentManager {
                                         DEFAULT_RECONCILE_INTERVAL,
                                         schemaOrchestrator,
                                         HealthSignalSink.noop(),
-                                        Option::none);
+                                        Option::none,
+                                        Set::of);
     }
 
     static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
@@ -225,7 +226,8 @@ public interface ClusterDeploymentManager {
                                         reconcileInterval,
                                         schemaOrchestrator,
                                         HealthSignalSink.noop(),
-                                        Option::none);
+                                        Option::none,
+                                        Set::of);
     }
 
     static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
@@ -250,7 +252,8 @@ public interface ClusterDeploymentManager {
                                         reconcileInterval,
                                         schemaOrchestrator,
                                         healthSignalSink,
-                                        Option::none);
+                                        Option::none,
+                                        Set::of);
     }
 
     static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
@@ -264,7 +267,8 @@ public interface ClusterDeploymentManager {
                                                              TimeSpan reconcileInterval,
                                                              SchemaOrchestratorService schemaOrchestrator,
                                                              HealthSignalSink healthSignalSink,
-                                                             Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier) {
+                                                             Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
+                                                             Supplier<Set<NodeId>> readyNodesSupplier) {
         var ctx = buildContext(self,
                                cluster,
                                kvStore,
@@ -276,7 +280,8 @@ public interface ClusterDeploymentManager {
                                reconcileInterval,
                                schemaOrchestrator,
                                healthSignalSink,
-                               snapshotSupplier);
+                               snapshotSupplier,
+                               readyNodesSupplier);
         return new ClusterDeploymentManagerAdapter(ctx);
     }
 
@@ -291,7 +296,8 @@ public interface ClusterDeploymentManager {
                                                          TimeSpan reconcileInterval,
                                                          SchemaOrchestratorService schemaOrchestrator,
                                                          HealthSignalSink healthSignalSink,
-                                                         Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier) {
+                                                         Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
+                                                         Supplier<Set<NodeId>> readyNodesSupplier) {
         var ctxHolder = new AtomicReference<ClusterDeploymentContext>();
         Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> initialStateFactory = fsm -> buildContextAndDormant(fsm,
                                                                                                                                            ctxHolder,
@@ -306,7 +312,8 @@ public interface ClusterDeploymentManager {
                                                                                                                                            reconcileInterval,
                                                                                                                                            schemaOrchestrator,
                                                                                                                                            healthSignalSink,
-                                                                                                                                           snapshotSupplier);
+                                                                                                                                           snapshotSupplier,
+                                                                                                                                           readyNodesSupplier);
         var _fsm = Fsm.fsm("cluster-deployment", self.id(), initialStateFactory);
 
         return ctxHolder.get();
@@ -325,7 +332,8 @@ public interface ClusterDeploymentManager {
                                                                  TimeSpan reconcileInterval,
                                                                  SchemaOrchestratorService schemaOrchestrator,
                                                                  HealthSignalSink healthSignalSink,
-                                                                 Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier) {
+                                                                 Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
+                                                                 Supplier<Set<NodeId>> readyNodesSupplier) {
         var ctx = new ClusterDeploymentContext(fsm,
                                                self,
                                                cluster,
@@ -335,6 +343,7 @@ public interface ClusterDeploymentManager {
                                                schemaOrchestrator,
                                                healthSignalSink,
                                                snapshotSupplier,
+                                               readyNodesSupplier,
                                                seedNodes,
                                                atomicity,
                                                coreMax,

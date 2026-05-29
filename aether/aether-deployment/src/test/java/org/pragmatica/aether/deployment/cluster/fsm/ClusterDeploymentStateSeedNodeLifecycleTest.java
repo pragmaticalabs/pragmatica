@@ -99,6 +99,7 @@ class ClusterDeploymentStateSeedNodeLifecycleTest {
                                                     stubSchemaOrchestrator(),
                                                     HealthSignalSink.noop(),
                                                     snapshotRef::get,
+                                                    () -> Set.of(SELF, SEED_PEER),
                                                     Set.of(SELF, SEED_PEER),
                                                     DeploymentAtomicity.ALL_OR_NOTHING,
                                                     3,

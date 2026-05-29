@@ -101,6 +101,7 @@ class ClusterDeploymentStateActiveTest {
                                                     stubSchemaOrchestrator(),
                                                     HealthSignalSink.noop(),
                                                     snapshotRef::get,
+                                                    () -> Set.of(SELF, NODE_A),
                                                     Set.of(SELF, NODE_A),
                                                     DeploymentAtomicity.ALL_OR_NOTHING,
                                                     3,

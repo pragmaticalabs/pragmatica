@@ -702,9 +702,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private List<NodeId> allocatableNodes() {
+            var readyNodes = ctx.readyNodesSupplier().get();
+
             return activeNodes().stream()
-                              .filter(this::isNodeOnDuty)
-                              .toList();
+                                .filter(readyNodes::contains)
+                                .toList();
         }
 
         AllocationPool buildAllocationPool() {
@@ -738,15 +740,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                                                                     announcement)));
 
             return Map.copyOf(result);
-        }
-
-        private boolean isNodeOnDuty(NodeId nodeId) {
-            return ctx.kvStore()
-                      .get(NodeLifecycleKey.nodeLifecycleKey(nodeId))
-                      .filter(v -> v instanceof NodeLifecycleValue)
-                      .map(v -> (NodeLifecycleValue) v)
-                      .filter(v -> v.state() == NodeLifecycleState.ON_DUTY)
-                      .isPresent();
         }
 
         private void cleanupAfterLifecycleDepartedAtomic(NodeId departedNode) {

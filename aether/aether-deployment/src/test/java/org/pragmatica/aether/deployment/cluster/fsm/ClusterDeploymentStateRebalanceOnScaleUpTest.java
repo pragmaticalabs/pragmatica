@@ -53,6 +53,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
@@ -77,6 +78,7 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
     private RecordingClusterNode cluster;
     private InMemoryKvStore kvStore;
     private AtomicReference<Option<ClusterGenerationSnapshot>> snapshotRef;
+    private Set<NodeId> readyNodes;
     private FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness;
     private ClusterDeploymentContext ctx;
 
@@ -86,6 +88,7 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
         kvStore = new InMemoryKvStore(router);
         cluster = new RecordingClusterNode(SELF);
         snapshotRef = new AtomicReference<>(Option.none());
+        readyNodes = ConcurrentHashMap.newKeySet();
 
         var ctxHolder = new AtomicReference<ClusterDeploymentContext>();
         Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
@@ -99,6 +102,7 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
                                                                 stubSchemaOrchestrator(),
                                                                 HealthSignalSink.noop(),
                                                                 snapshotRef::get,
+                                                                () -> readyNodes,
                                                                 Set.of(SELF),
                                                                 DeploymentAtomicity.ALL_OR_NOTHING,
                                                                 3,
@@ -111,6 +115,9 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
     }
 
     private void seedNodeOnDuty(NodeId nodeId) {
+        // v2: allocatable gate is the injected ready set, not KV ON_DUTY. The KV write is
+        // preserved (harmless) so this fixture keeps its original "node is on duty" intent.
+        readyNodes.add(nodeId);
         kvStore.put(NodeLifecycleKey.nodeLifecycleKey(nodeId),
                     NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY));
     }
