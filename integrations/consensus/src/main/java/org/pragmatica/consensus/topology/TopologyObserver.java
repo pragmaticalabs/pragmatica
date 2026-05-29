@@ -562,9 +562,13 @@ public interface TopologyObserver extends TopologyManager {
             /// its suspect-window so the observer sees only post-filtered membership
             /// decisions.
             ///
-            /// The peer count excludes self; the `+ 1` adds self as the implicitly-healthy
-            /// observer. This matches the formula previously used by `QuicClusterNetwork`
-            /// and `NettyClusterNetwork`.
+            /// Quorum source (membership-unification P2): when an injected `MembershipView`
+            /// is present, quorum is read directly off that authoritative view
+            /// (`healthyOnDutyCount >= quorumSize`) rather than counting the local QUIC/SWIM
+            /// `nodeStatesById` connectivity. Consensus thereby derives quorum from the single
+            /// SWIM-fed membership tracker (injected through `GenerationSnapshotSource`) and
+            /// stays decoupled from the SWIM impl. The legacy `nodeStatesById` peer count is
+            /// retained ONLY as the pre-view BOOTING fallback (see `haveQuorum`).
             ///
             /// Startup gate: this method short-circuits while `started` is false. The
             /// constructor seeds `coreNodes` (including self) via `addNode`, which would
@@ -575,10 +579,7 @@ public interface TopologyObserver extends TopologyManager {
                 if (!started.get()) {
                     return;
                 }
-                var peers = healthyActivePeerCount();
-                var quorum = quorumSize();
-                var haveQuorum = (peers + 1) >= quorum;
-                log.debug("Quorum evaluation: healthyActivePeers+1={} threshold={}", peers + 1, quorum);
+                var haveQuorum = haveQuorum();
                 if (haveQuorum) {
                     if (quorumEstablished.compareAndSet(false, true)) {
                         log.info("Quorum established (local view) — routing ClusterStateNotification.ACTIVE (cold-start/resume originator)");
@@ -591,6 +592,30 @@ public interface TopologyObserver extends TopologyManager {
                     }
                 }
                 publishMembershipDeltas();
+            }
+
+            /// Quorum decision sourced from the injected `MembershipView` (membership-unification
+            /// P2). When the view is present it is the SOLE authority: `healthyOnDutyCount`
+            /// (the count of `ON_DUTY` core members the SWIM-fed tracker reports HEALTHY) is
+            /// compared against `quorumSize()` directly — no `+ 1`/self adjustment, because the
+            /// tracker's `healthyOnDutyCount` already includes self when self is `ON_DUTY`.
+            ///
+            /// When the view is absent (no tracker injected yet / very early boot) this falls
+            /// back to the legacy `nodeStatesById` peer count (`legacyHealthyActivePeerCount()
+            /// + 1 >= quorumSize()`) so construction and view-less tests still cold-start.
+            private boolean haveQuorum() {
+                var view = snapshotSource.currentMembershipView();
+                if (view.isPresent()) {
+                    maybeTransitionToNormal(view.unwrap());
+                    var healthyOnDuty = view.unwrap().healthyOnDutyCount();
+                    var quorum = quorumSize();
+                    log.debug("Quorum evaluation (membership view): healthyOnDuty={} threshold={}", healthyOnDuty, quorum);
+                    return healthyOnDuty >= quorum;
+                }
+                var peers = legacyHealthyActivePeerCount();
+                var quorum = quorumSize();
+                log.debug("Quorum evaluation (legacy fallback): healthyActivePeers+1={} threshold={}", peers + 1, quorum);
+                return (peers + 1) >= quorum;
             }
 
             /// Diff the latest `MembershipView` against the previously observed core member
