@@ -1188,6 +1188,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
             log.debug("Missing-peer reconciler suppressed by SWIM health gate for {} — peer is FAULTY or UNKNOWN", peerId);
             return;
         }
+        if (!swimMembershipAllows(peerId)) {
+            log.debug("Missing-peer reconciler suppressed for {} — peer is absent from the SWIM-fed authoritative membership (departed); left for auto-heal", peerId);
+            return;
+        }
         topologyManager.get(peerId)
                        .onPresent(this::reconcileDialPeer)
                        .onEmpty(() -> log.debug("Missing-peer reconciler: no NodeInfo for {} — topology lookup empty", peerId));
@@ -1204,6 +1208,23 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// Returns `false` only when the gate is present and explicitly rejects the peer.
     private boolean swimHealthAllows(NodeId peerId) {
         return swimHealthGate.map(gate -> gate.apply(peerId)).or(true);
+    }
+
+    /// Membership v2 §5.4 dial gate: re-dial a peer ONLY when it is still part of the
+    /// SWIM-fed authoritative membership (`TopologyManager.coreNodes()`, which is backed by
+    /// the membership snapshot when present and falls back to the locally-seeded core set
+    /// otherwise). A configured core peer that SWIM has observed-then-departed leaves the
+    /// snapshot's `coreMemberIds`, so it is absent from `coreNodes()` and this gate returns
+    /// `false` — the reconciler stops re-dialing the dead peer (the forever-redial wedge)
+    /// and leaves it for the leader's auto-heal to provision a replacement.
+    ///
+    /// Cold-start safety: before SWIM discovers peers, the snapshot is absent and
+    /// `coreNodes()` returns the locally-seeded configured core set, which INCLUDES every
+    /// configured seed — so a not-yet-discovered configured peer is allowed and formation
+    /// proceeds. The gate only ever blocks a peer that the authoritative membership has
+    /// positively dropped; it never gates on "must already be QUIC-connected."
+    private boolean swimMembershipAllows(NodeId peerId) {
+        return topologyManager.coreNodes().contains(peerId);
     }
 
     @Contract private void reconcileDialPeer(NodeInfo peer) {

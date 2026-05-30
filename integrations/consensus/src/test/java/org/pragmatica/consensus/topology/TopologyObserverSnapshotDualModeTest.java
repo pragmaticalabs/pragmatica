@@ -19,6 +19,7 @@ package org.pragmatica.consensus.topology;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter;
@@ -58,6 +59,15 @@ class TopologyObserverSnapshotDualModeTest {
                                .unwrap();
     }
 
+    /// v2-architecture §5.4: the dial set (`nodeStatesById`) is no longer static-seeded from
+    /// config — it is SWIM-discovery-derived. Consensus tests have no SWIM, so the BOOTING-mode
+    /// legacy-fallback counts (which read `nodeStatesById`) populate only after discovery. This
+    /// drives the production discovery entry point (`handleDiscoveredNodes`) with the two peers
+    /// exactly as the SWIM→topology bridge does, so the legacy fallback sees the full core set.
+    private static void discoverAllPeers(TopologyObserver observer) {
+        observer.handleDiscoveredNodes(new NetworkMessage.DiscoveredNodes(SELF, List.of(INFO_A, INFO_B)));
+    }
+
     /// Minimal test-only source whose view is toggled via the outer `AtomicReference`.
     private static final class StubSource implements GenerationSnapshotSource {
         private final AtomicReference<Option<MembershipView>> view = new AtomicReference<>(Option.none());
@@ -91,9 +101,11 @@ class TopologyObserverSnapshotDualModeTest {
             // Audit Step 5/6 (2026-05-07 explicit BOOTING/NORMAL): the observer starts
             // in BOOTING and falls back to the in-memory `nodeStatesById` count when
             // no snapshot is available, so `/health/ready` does not stall waiting on a
-            // snapshot that itself requires quorum to be published. Constructor seeds
-            // self + PEER_A + PEER_B (all HEALTHY by `addNode` default).
+            // snapshot that itself requires quorum to be published. v2-architecture §5.4:
+            // the dial set is SWIM-discovery-derived, so discovery injects self + PEER_A +
+            // PEER_B (all HEALTHY by `addNode` default) before the fallback counts them.
             var observer = observerWith(GenerationSnapshotSource.noop());
+            discoverAllPeers(observer);
 
             assertThat(observer.topologyMode()).isEqualTo(TopologyObserver.TopologyMode.BOOTING);
             assertThat(observer.healthyActiveNodeCount()).isEqualTo(3);
@@ -163,10 +175,12 @@ class TopologyObserverSnapshotDualModeTest {
         void readyNodes_bootingMode_noSnapshot_usesLegacyFallback() {
             // Audit Step 5/6 (2026-05-07 explicit BOOTING/NORMAL): in BOOTING mode the
             // observer falls back to the in-memory `nodeStatesById` non-passive count
-            // (constructor seeds self + PEER_A + PEER_B = 3) so the bootstrap path can
-            // advance before the first quorum-projected snapshot is published.
+            // (self + PEER_A + PEER_B = 3) so the bootstrap path can advance before the
+            // first quorum-projected snapshot is published. v2-architecture §5.4: the dial
+            // set is SWIM-discovery-derived, so discovery injects the peers before the count.
             var source = new StubSource(); // empty view
             var observer = observerWith(source);
+            discoverAllPeers(observer);
 
             assertThat(observer.topologyMode()).isEqualTo(TopologyObserver.TopologyMode.BOOTING);
             assertThat(observer.readyNodeCount()).isEqualTo(3);

@@ -48,6 +48,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -209,6 +210,69 @@ class QuicClusterNetworkReconcilerTest {
             .isEqualTo(0L);
     }
 
+    @Test
+    void reconcileMissingPeersTick_swimDepartedConfiguredPeer_isNotRedialed() {
+        // Membership v2 §5.4: a configured core peer that the SWIM-fed authoritative
+        // membership has dropped (absent from coreNodes()) must NOT be re-dialed by the
+        // missing-peer reconciler — it is left for the leader's auto-heal. This is the
+        // forever-redial wedge fix. Self is lower-id so it would otherwise initiate.
+        var self = new NodeId("aaa-self");
+        var departedPeer = new NodeId("zzz-departed");
+        var peerInfo = NodeInfo.nodeInfo(departedPeer, addressOf("127.0.0.1", 1));
+        // coreNodes() omits the departed peer (SWIM-departed) while topology() still lists it.
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self));
+        var clock = new AtomicLong(1_000_000L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+        network.overrideWallClockForTests(clock::get);
+
+        network.reconcileMissingPeersTick();
+
+        assertThat(stub.lookups.getOrDefault(departedPeer, 0L))
+            .as("SWIM-departed configured peer (absent from coreNodes) must not be re-dialed")
+            .isEqualTo(0L);
+    }
+
+    @Test
+    void reconcileMissingPeersTick_swimPresentButDisconnectedPeer_isRedialed() {
+        // A SWIM-present peer (still in coreNodes()) that is merely QUIC-disconnected MUST
+        // still be re-dialed — that is legitimate reconnection, distinct from a departure.
+        var self = new NodeId("aaa-self");
+        var presentPeer = new NodeId("zzz-present");
+        var peerInfo = NodeInfo.nodeInfo(presentPeer, addressOf("127.0.0.1", 1));
+        // coreNodes() includes the peer (SWIM still considers it present).
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, presentPeer));
+        var clock = new AtomicLong(1_000_000L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+        network.overrideWallClockForTests(clock::get);
+
+        network.reconcileMissingPeersTick();
+
+        assertThat(stub.lookups.getOrDefault(presentPeer, 0L))
+            .as("SWIM-present but QUIC-disconnected peer must still be re-dialed (reconnection)")
+            .isEqualTo(1L);
+    }
+
+    @Test
+    void reconcileMissingPeersTick_coldStartNoSnapshot_freshlyDiscoveredPeerIsDialable() {
+        // Cold start: no snapshot yet, so coreNodes() falls back to the locally-seeded
+        // configured core set, which INCLUDES the configured peer. The reconciler must dial
+        // it so formation can proceed (the gate must NOT block a not-yet-connected seed).
+        var self = new NodeId("aaa-self");
+        var seedPeer = new NodeId("zzz-seed");
+        var peerInfo = NodeInfo.nodeInfo(seedPeer, addressOf("127.0.0.1", 1));
+        // Cold-start coreNodes() fallback = all configured core members (self + seed).
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, seedPeer));
+        var clock = new AtomicLong(1_000_000L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+        network.overrideWallClockForTests(clock::get);
+
+        network.reconcileMissingPeersTick();
+
+        assertThat(stub.lookups.getOrDefault(seedPeer, 0L))
+            .as("cold-start configured seed (present in coreNodes fallback) must be dialable")
+            .isEqualTo(1L);
+    }
+
     private static NodeAddress addressOf(String host, int port) {
         return NodeAddress.nodeAddress(host, port).fold(_ -> fail("bad address"), a -> a);
     }
@@ -226,7 +290,16 @@ class QuicClusterNetworkReconcilerTest {
 
     private CountingTopology countingTopology(NodeId selfId, List<NodeInfo> peers) {
         var selfInfo = NodeInfo.nodeInfo(selfId, addressOf("127.0.0.1", 19998));
-        return new CountingTopology(selfInfo, peers, false);
+        return new CountingTopology(selfInfo, peers, false, Option.empty());
+    }
+
+    /// Variant that pins an explicit `coreNodes()` set — the SWIM-fed authoritative
+    /// membership. A configured peer present in `topology()` but absent from this set is
+    /// SWIM-departed and must not be re-dialed; a peer present in both is SWIM-present and
+    /// must be re-dialed (reconnection). Used by the §5.4 dial-gate tests.
+    private CountingTopology countingTopology(NodeId selfId, List<NodeInfo> peers, Set<NodeId> coreNodes) {
+        var selfInfo = NodeInfo.nodeInfo(selfId, addressOf("127.0.0.1", 19998));
+        return new CountingTopology(selfInfo, peers, false, Option.some(coreNodes));
     }
 
     /// Variant that lists peer NodeIds in `topology()` but returns `Option.empty()` from
@@ -237,7 +310,7 @@ class QuicClusterNetworkReconcilerTest {
     private CountingTopology countingTopologyWithoutInfo(NodeId selfId, List<NodeId> peerIds) {
         var selfInfo = NodeInfo.nodeInfo(selfId, addressOf("127.0.0.1", 19998));
         var peers = peerIds.stream().map(id -> NodeInfo.nodeInfo(id, addressOf("127.0.0.1", 1))).toList();
-        return new CountingTopology(selfInfo, peers, true);
+        return new CountingTopology(selfInfo, peers, true, Option.empty());
     }
 
     /// Stub topology that counts `get(NodeId)` invocations per peer. Used as the proxy for
@@ -247,12 +320,14 @@ class QuicClusterNetworkReconcilerTest {
         private final NodeInfo selfInfo;
         private final List<NodeInfo> peers;
         private final boolean returnEmptyOnGet;
+        private final Option<Set<NodeId>> coreNodesOverride;
         private final Map<NodeId, Long> lookups = new ConcurrentHashMap<>();
 
-        CountingTopology(NodeInfo selfInfo, List<NodeInfo> peers, boolean returnEmptyOnGet) {
+        CountingTopology(NodeInfo selfInfo, List<NodeInfo> peers, boolean returnEmptyOnGet, Option<Set<NodeId>> coreNodesOverride) {
             this.selfInfo = selfInfo;
             this.peers = peers;
             this.returnEmptyOnGet = returnEmptyOnGet;
+            this.coreNodesOverride = coreNodesOverride;
         }
 
         @Override public NodeInfo self() {return selfInfo;}
@@ -277,6 +352,9 @@ class QuicClusterNetworkReconcilerTest {
             result.add(selfInfo.id());
             peers.forEach(p -> result.add(p.id()));
             return result;
+        }
+        @Override public Set<NodeId> coreNodes() {
+            return coreNodesOverride.or(() -> Set.copyOf(topology()));
         }
         @Override public boolean isPassive(NodeId nodeId) {
             return peers.stream().anyMatch(p -> p.id().equals(nodeId) && p.role() == NodeRole.PASSIVE);

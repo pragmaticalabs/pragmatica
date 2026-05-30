@@ -13,6 +13,7 @@ package org.pragmatica.consensus.topology;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.utils.TimeSource;
@@ -24,7 +25,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Predicate;
 import java.util.function.Supplier;
 import org.pragmatica.lang.Option;
 
@@ -71,54 +71,97 @@ class TopologyObserverTest {
         };
     }
 
-    /// `initReconcile` consults the KV-Store's `NodeLifecycleValue.DECOMMISSIONED`
-    /// atoms via the injected `isDecommissioned` predicate so a process restart
-    /// does not silently re-seed a DECOMMISSIONED ghost peer from
-    /// `config.coreNodes()`.
+    /// v2-architecture §5.4: the QUIC dial set (`nodeStatesById`, exposed via `topology()`)
+    /// is populated by SWIM discovery (`handleDiscoveredNodes`) + self ONLY. Static
+    /// `config.coreNodes()` is NOT seeded into the dial set — it only feeds SWIM's seed/
+    /// ANNOUNCE path (outside this observer) and the configured-core IDENTITY (`coreNodeIds`,
+    /// quorum denominator), which remain config-derived.
     @Nested
-    class KvDecommissionedFilter {
-        private static TopologyObserver observerWith(MessageRouter router, Predicate<NodeId> isDecommissioned) {
-            return TopologyObserver.topologyObserver(baseConfig(), router, isDecommissioned).unwrap();
-        }
-
+    class SwimOnlyDialSet {
         @Test
-        void initReconcile_decommissionedNodeInKV_skipsConfigReseed() {
-            // PEER_A is in `config.coreNodes()` but the KV says it's DECOMMISSIONED.
-            // The fresh observer must NOT add it, neither at construction time nor when
-            // `start()` triggers `initReconcile`.
-            Predicate<NodeId> isDecommissioned = id -> id.equals(PEER_A);
+        void construction_dialSetIsSelfOnly_notPrePopulatedFromConfig() {
+            // No discovery yet: the dial set must contain ONLY self, never the static
+            // configured peers PEER_A / PEER_B.
+            var observer = TopologyObserver.topologyObserver(baseConfig(), MessageRouter.mutable()).unwrap();
 
-            var observer = observerWith(MessageRouter.mutable(), isDecommissioned);
-            observer.start().await();
-
-            assertThat(observer.topology()).doesNotContain(PEER_A);
+            assertThat(observer.topology())
+                .as("dial set at construction must be self-only (no static config pre-population)")
+                .containsExactly(SELF);
             assertThat(observer.get(PEER_A).isEmpty()).isTrue();
+            assertThat(observer.get(PEER_B).isEmpty()).isTrue();
         }
 
         @Test
-        void initReconcile_activeNodeInKV_addsConfigReseed() {
-            // PEER_A is in `config.coreNodes()` and KV does NOT mark it DECOMMISSIONED
-            // (e.g. state is ACTIVE). It must be added.
-            Predicate<NodeId> isDecommissioned = _ -> false;
-
-            var observer = observerWith(MessageRouter.mutable(), isDecommissioned);
+        void start_dialSetStillSelfOnly_noStaticReseed() {
+            // `start()` triggers `initReconcile`, which no longer re-seeds from config.
+            // The dial set stays self-only until SWIM discovery lands.
+            var observer = TopologyObserver.topologyObserver(baseConfig(), MessageRouter.mutable()).unwrap();
             observer.start().await();
 
-            assertThat(observer.topology()).contains(PEER_A);
-            assertThat(observer.get(PEER_A).isPresent()).isTrue();
+            assertThat(observer.topology())
+                .as("start() must not static-reseed the dial set")
+                .containsExactly(SELF);
         }
 
         @Test
-        void initReconcile_noKVAtom_addsConfigReseed_legacyBehavior() {
-            // Predicate returns false for every node — the legacy "no KV reader wired"
-            // case (test fixtures, non-Aether RabiaNode usage). Every
-            // `config.coreNodes()` entry is added.
-            Predicate<NodeId> isDecommissioned = _ -> false;
-
-            var observer = observerWith(MessageRouter.mutable(), isDecommissioned);
+        void handleDiscoveredNodes_swimDiscoveredPeer_entersDialSetAndIsDialable() {
+            // SWIM discovery is the sole writer of the dial set (besides self). A discovered
+            // peer must enter `nodeStatesById` (→ topology()) and become dialable.
+            var router = MessageRouter.mutable();
+            var observer = TopologyObserver.topologyObserver(baseConfig(), router).unwrap();
             observer.start().await();
 
-            assertThat(observer.topology()).contains(SELF, PEER_A, PEER_B);
+            observer.handleDiscoveredNodes(new NetworkMessage.DiscoveredNodes(SELF, List.of(INFO_A)));
+
+            assertThat(observer.topology())
+                .as("SWIM-discovered peer must enter the dial set")
+                .contains(SELF, PEER_A);
+            assertThat(observer.get(PEER_A).isPresent())
+                .as("discovered peer must be dialable (NodeInfo resolvable)")
+                .isTrue();
+            assertThat(observer.topology())
+                .as("a NOT-yet-discovered configured peer must remain absent from the dial set")
+                .doesNotContain(PEER_B);
+        }
+
+        @Test
+        void configuredCoreIdentity_quorumDenominator_remainsConfigDerived() {
+            // The configured-core identity / quorum denominator must NOT depend on the
+            // discovery-derived dial set. With only self discovered, clusterSize/quorumSize
+            // still reflect `config` (3 configured → quorum 2), and `coreNodes()` (the
+            // identity fallback) still reflects the configured core set.
+            var observer = TopologyObserver.topologyObserver(baseConfig(), MessageRouter.mutable()).unwrap();
+
+            assertThat(observer.clusterSize())
+                .as("quorum denominator (clusterSize) must stay config-derived")
+                .isEqualTo(3);
+            assertThat(observer.quorumSize())
+                .as("quorum size must stay config-derived")
+                .isEqualTo(2);
+            assertThat(observer.coreNodes())
+                .as("configured-core identity (coreNodeIds fallback) must reflect config.coreNodes()")
+                .contains(SELF, PEER_A, PEER_B);
+        }
+
+        @Test
+        void departedDiscoveredPeer_droppedFromSnapshot_isNotReintroducedByReconcile() {
+            // A peer SWIM discovered then the snapshot dropped (departed) must not be
+            // re-introduced into the dial set by the periodic reconcile (no static reseed).
+            // Snapshot omits PEER_A → it is not a core member; the dial set was never static-
+            // seeded, so PEER_A is absent and `start()`/reconcile keep it absent.
+            record StubView(Set<NodeId> coreMemberIds, Set<NodeId> onDutyMemberIds,
+                            int healthyOnDutyCount, int desiredCoreSize) implements MembershipView {}
+            var view = new StubView(Set.of(SELF, PEER_B), Set.of(SELF, PEER_B), 2, 3);
+            var snapshot = new GenerationSnapshotSource() {
+                @Override public Option<MembershipView> currentMembershipView() { return Option.some(view); }
+                @Override public long observedRabiaTerm() { return 0L; }
+            };
+            var observer = TopologyObserver.topologyObserver(baseConfig(), MessageRouter.mutable(), snapshot).unwrap();
+            observer.start().await();
+
+            assertThat(observer.topology())
+                .as("departed/un-discovered peer must not be static-reseeded into the dial set")
+                .doesNotContain(PEER_A);
         }
     }
 

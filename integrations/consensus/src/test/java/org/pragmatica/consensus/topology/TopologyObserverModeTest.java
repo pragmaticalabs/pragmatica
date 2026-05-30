@@ -19,6 +19,7 @@ package org.pragmatica.consensus.topology;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyObserver.TopologyMode;
 import org.pragmatica.lang.Option;
@@ -63,6 +64,15 @@ class TopologyObserverModeTest {
                                .unwrap();
     }
 
+    /// v2-architecture §5.4: the dial set (`nodeStatesById`) is no longer static-seeded from
+    /// config — it is SWIM-discovery-derived. Consensus tests have no SWIM, so the BOOTING-mode
+    /// legacy-fallback counts (which read `nodeStatesById`) only populate after discovery. This
+    /// drives the production discovery entry point (`handleDiscoveredNodes`) with the four peers
+    /// exactly as the SWIM→topology bridge does, so the legacy fallback sees the full core set.
+    private static void discoverAllPeers(TopologyObserver observer) {
+        observer.handleDiscoveredNodes(new NetworkMessage.DiscoveredNodes(SELF, List.of(INFO_A, INFO_B, INFO_C, INFO_D)));
+    }
+
     private static final class StubSource implements GenerationSnapshotSource {
         private final AtomicReference<Option<MembershipView>> view = new AtomicReference<>(Option.none());
 
@@ -102,8 +112,10 @@ class TopologyObserverModeTest {
     class BootingFallback {
         @Test
         void bootingMode_noSnapshot_healthyActiveNodeCount_usesLegacy() {
-            // Constructor seeds 5 non-passive members from coreNodes (all HEALTHY by default).
+            // v2-architecture §5.4: dial set is SWIM-discovery-derived, so the legacy fallback
+            // counts the full core set only after discovery injects the 4 peers (+ self = 5).
             var observer = observerWith(clusterOf5(), GenerationSnapshotSource.noop());
+            discoverAllPeers(observer);
 
             assertThat(observer.topologyMode()).isEqualTo(TopologyMode.BOOTING);
             assertThat(observer.healthyActiveNodeCount()).isEqualTo(5);
@@ -112,6 +124,7 @@ class TopologyObserverModeTest {
         @Test
         void bootingMode_noSnapshot_readyNodeCount_usesLegacy() {
             var observer = observerWith(clusterOf5(), GenerationSnapshotSource.noop());
+            discoverAllPeers(observer);
 
             assertThat(observer.topologyMode()).isEqualTo(TopologyMode.BOOTING);
             assertThat(observer.readyNodeCount()).isEqualTo(5);

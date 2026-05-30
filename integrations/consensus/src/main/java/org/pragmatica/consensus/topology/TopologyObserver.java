@@ -268,18 +268,31 @@ public interface TopologyObserver extends TopologyManager {
                 this.mode = mode;
                 this.hlcSupplier = hlcSupplier;
                 this.effectiveClusterSize.set(config.clusterSize());
-                // Mirror the `initReconcile` filter: a peer the cluster has durably retired
-                // (KV NodeLifecycleValue.DECOMMISSIONED) must not be reconstructed from
-                // static config on a fresh process restart. Self is always added — it must
-                // be present in nodeStatesById for `self()` to work.
+                // Configured-core IDENTITY (v2-architecture §5.4): `coreNodeIds` is the static
+                // quorum/role denominator and is populated directly from `config.coreNodes()`
+                // (non-passive entries), independent of the QUIC dial set. This is the set
+                // `coreNodes()` / `effectiveMembership()` fall back to before a `MembershipView`
+                // snapshot exists. It is NOT the dial set — discovery (`addNode`) still adds
+                // freshly-discovered non-passive peers (e.g. CTM replacements) to it as well.
                 config().coreNodes()
                       .stream()
-                      .filter(node -> node.id().equals(config.self()) || !isDecommissioned.test(node.id()))
+                      .filter(node -> node.role() != NodeRole.PASSIVE)
+                      .map(NodeInfo::id)
+                      .forEach(coreNodeIds::add);
+                // QUIC DIAL SET (v2-architecture §5.4): `nodeStatesById` is populated by SWIM
+                // discovery (`handleDiscoveredNodes` → `addNode`) + self ONLY. Static
+                // `config.coreNodes()` is NOT seeded here — a configured peer becomes dialable
+                // only after SWIM discovers it (seeds → ANNOUNCE → DiscoveredNodes → addNode).
+                // Self must be present so `self()` works and so the local node counts itself.
+                // PEERS/`coreNodes` continue to feed SWIM's seed/ANNOUNCE path (NettySwimTransport),
+                // which is outside this observer; SWIM then feeds QUIC via discovery.
+                config().coreNodes()
+                      .stream()
+                      .filter(node -> node.id().equals(config.self()))
                       .forEach(this::addNode);
                 // Self node validation is done in the factory method before construction
-                log.trace("Topology observer {} initialized with {} nodes, cluster size {}",
+                log.trace("Topology observer {} initialized (dial set = self only; coreNodeIds from config), cluster size {}",
                           config.self(),
-                          config.coreNodes(),
                           config.clusterSize());
                 // The periodic reconciliation timer is scheduled by `start()`, NOT the
                 // constructor. Constructor-time scheduling would (a) run before `started`
@@ -294,38 +307,17 @@ public interface TopologyObserver extends TopologyManager {
 
             private void initReconcile() {
                 if (active.get()) {
-                    // Re-add any configured core nodes that were removed due to disconnection.
-                    // Without this, nodes removed from nodeStatesById are never reconnected
-                    // because reconcile() only requests connections for nodes IN the map.
-                    // Skip tombstoned nodes — these were explicitly removed (node killed/replaced)
-                    // and must not be resurrected from config, otherwise they linger as phantoms
-                    // alongside any CTM-provisioned replacement and inflate cluster count.
-                    //
-                    // Also skip nodes whose KV-Store `NodeLifecycleValue` atom is DECOMMISSIONED:
-                    // the in-memory `tombstonedNodes` set is cleared on every JVM restart, so
-                    // without consulting the KV atom a process restart re-seeds a DECOMMISSIONED
-                    // ghost peer from static config. The two filters compose: in-memory covers
-                    // the just-removed-this-session window; KV covers the across-restart window.
-                    //
-                    // Peer eviction on sustained SUSPECTED state is intentionally NOT handled here:
-                    // HealthReconciler on the leader consumes accumulated PingTimeout + SwimHint
-                    // signals and writes NodeLifecycleKey = LEFT via fenced atom updates, which
-                    // replaces the former idle-timer-based evictLongSuspectedPeers path.
-                    config().coreNodes().stream()
-                          .filter(node -> !nodeStatesById.containsKey(node.id()))
-                          .filter(node -> !tombstonedNodes.contains(node.id()))
-                          .filter(node -> !isDecommissioned.test(node.id()))
-                          .forEach(this::addNode);
+                    // v2-architecture §5.4: the QUIC dial set (`nodeStatesById`) is SWIM-discovery-
+                    // derived, so there is NO static re-seed from `config.coreNodes()` here. The
+                    // periodic tick only drives reconnection of peers ALREADY in the discovery-
+                    // derived set: `reconcile()` (the `ConnectedNodesList` handler) requests a
+                    // reconnect for every known-but-not-connected peer. A configured peer that
+                    // SWIM has not (yet) discovered is simply absent from the dial set and is
+                    // (re)admitted only via `handleDiscoveredNodes` when SWIM gossip carries it.
+                    // A departed peer leaves the set when it is removed and is NOT resurrected
+                    // from config — it is left for the leader's auto-heal to provision a
+                    // replacement, which SWIM then discovers.
                     router().route(new NetworkServiceMessage.ListConnectedNodes());
-                } else if (nodeStatesById().size() <= 1) {
-                    log.info("Topology drained to self-only — re-seeding from config ({} core nodes)", config().coreNodes().size());
-                    tombstonedNodes.clear();
-                    // The drained-to-self re-seed still respects KV DECOMMISSIONED — clearing the
-                    // local tombstone set does not authorise resurrection of a node that the
-                    // cluster has durably retired.
-                    config().coreNodes().stream()
-                          .filter(node -> !isDecommissioned.test(node.id()))
-                          .forEach(this::addNode);
                 }
             }
 
@@ -900,14 +892,13 @@ public interface TopologyObserver extends TopologyManager {
             public Promise<Unit> stop() {
                 synchronized (lifecycleLock) {
                     // Reset `started` so a subsequent `start()` re-publishes the initial
-                    // edge cleanly (otherwise `evaluateQuorumState` short-circuits while
-                    // `initReconcile` could re-seed tombstoned nodes — see review item #10).
+                    // edge cleanly (otherwise `evaluateQuorumState` short-circuits).
                     started.set(false);
                     active().set(false);
                     // Cancel the periodic reconcile timer scheduled by `start()`.
-                    // Without this, `initReconcile` would continue firing forever
-                    // after the observer is stopped (keeps re-seeding nodes from
-                    // config and routing `ListConnectedNodes`).
+                    // Without this, `initReconcile` would continue firing forever after the
+                    // observer is stopped (keeps routing `ListConnectedNodes` reconnect
+                    // requests for the discovery-derived dial set).
                     reconcileFuture.getAndSet(Option.none())
                                    .onPresent(f -> f.cancel(false));
                 }

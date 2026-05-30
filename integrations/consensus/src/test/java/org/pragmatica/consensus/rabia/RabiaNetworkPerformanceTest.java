@@ -343,7 +343,22 @@ class RabiaNetworkPerformanceTest {
 
             // Start network first, then topology manager (order matters!)
             return network.start()
-                          .onSuccessRun(topologyManager::start);
+                          .onSuccessRun(topologyManager::start)
+                          .onSuccessRun(this::injectDiscoveredPeers);
+        }
+
+        /// v2-architecture §5.4: the QUIC/Netty dial set (`nodeStatesById`) is no longer
+        /// static-seeded from `config.coreNodes()` — it is populated by SWIM discovery + self
+        /// only. Consensus tests have no SWIM layer (consensus is below SWIM in the module
+        /// DAG), so nothing would discover peers and formation would stall waiting on quorum.
+        /// This drives the discovery entry point (`handleDiscoveredNodes`) with the configured
+        /// peer `NodeInfo`s exactly as production's SWIM→topology bridge does post-discovery,
+        /// so the dial set populates and connections form.
+        private void injectDiscoveredPeers() {
+            var peers = allNodes.stream()
+                                .filter(info -> !info.id().equals(nodeId))
+                                .toList();
+            topologyManager.handleDiscoveredNodes(new NetworkMessage.DiscoveredNodes(nodeId, peers));
         }
 
         void activateEngine() throws InterruptedException {
