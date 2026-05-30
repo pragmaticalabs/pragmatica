@@ -384,6 +384,13 @@ public class RabiaEngine<C extends Command> {
 
     private void doClusterConnected() {
         syncResponses.clear();
+        // Catch-up race fix: broadcast the first SyncRequest IMMEDIATELY instead of waiting a full
+        // syncRetryInterval for the timer below. A replacement that joins a cluster hundreds of
+        // phases ahead must start its snapshot-install round at once — otherwise it sits silently in
+        // Syncing (triggerResync is a no-op while Syncing) and can be drained/killed as a not-ready
+        // node before the first request ever goes out. The scheduled `synchronize` remains the retry;
+        // doSynchronize processes accumulated responses (>= quorum) or re-broadcasts.
+        network.broadcast(new SyncRequest(self));
         var task = SharedScheduler.schedule(this::synchronize,
                                             config.syncRetryInterval()
                                                   .randomize(SCALE));
