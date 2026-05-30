@@ -110,6 +110,24 @@ class QuicClusterClientReconnectTest {
         assertThat(client.datagramChannelCount()).isEqualTo(0);
     }
 
+    @Test
+    void connect_unresolvedAddress_failsCleanlyWithoutNpe() {
+        client = createClient();
+        // An unresolved DNS name (e.g. a stale/unknown peer host) must NOT crash the node with
+        // an NPE inside Netty's QUIC SockaddrIn — it must fail the dial down the normal
+        // connection-failure path so the caller can retry on a later tick.
+        var unresolved = InetSocketAddress.createUnresolved("no-such-host.invalid", 9999);
+        assertThat(unresolved.isUnresolved()).isTrue();
+
+        client.connect(SERVER_NODE, unresolved)
+              .await(AWAIT_TIMEOUT)
+              .onSuccess(_ -> fail("connect to unresolved address must fail"))
+              .onFailure(cause -> assertThat(cause).isInstanceOf(QuicTransportError.UnresolvedAddress.class));
+
+        // No datagram channel/UDP socket was allocated for the failed dial.
+        assertThat(client.datagramChannelCount()).isEqualTo(0);
+    }
+
     private void startServer() {
         var serverSsl = QuicTlsProvider.serverContext(TlsConfig.selfSignedServer())
                                        .fold(_ -> fail("server SSL failed"), ssl -> ssl);

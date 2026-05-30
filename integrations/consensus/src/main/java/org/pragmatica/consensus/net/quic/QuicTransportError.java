@@ -73,6 +73,15 @@ public sealed interface QuicTransportError extends Cause {
         }
     }
 
+    /// Peer address could not be resolved to an IP (e.g. stale/unknown DNS name).
+    /// Clean, retryable dial failure — distinct from a Netty-level connect failure.
+    record UnresolvedAddress(String address) implements QuicTransportError {
+        @Override
+        public String message() {
+            return "Cannot connect to QUIC peer: address is unresolved or missing: " + address;
+        }
+    }
+
     /// Failed to create a QUIC stream.
     record StreamCreationFailed(Throwable cause) implements QuicTransportError {
         @Override

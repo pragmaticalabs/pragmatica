@@ -194,6 +194,16 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     private void initiateConnection(NodeId peerId,
                                     InetSocketAddress address,
                                     Promise<QuicPeerConnection> promise) {
+        // Guard against an unresolved/null peer address (e.g. a stale or unknown DNS name).
+        // Handing such an address to Netty's QUIC SockaddrIn would dereference a null
+        // InetAddress and crash the node with an NPE. Instead fail the dial cleanly down the
+        // same connection-failure path a normal dial failure takes, so the caller retries on
+        // a later tick.
+        if (address == null || address.isUnresolved() || address.getAddress() == null) {
+            log.debug("Skipping QUIC dial to peer {}: unresolved address {}", peerId, address);
+            promise.fail(new QuicTransportError.UnresolvedAddress(String.valueOf(address)));
+            return;
+        }
         // Close any previously-tracked datagram channel for this peer BEFORE allocating a new
         // ephemeral UDP socket. Without this, repeated reconnects (e.g. eviction storm at 1Hz
         // during chaos tests) leaked one socket per reconnect to JVM exit.
