@@ -5,7 +5,7 @@ Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 
 # Membership Unification — Design of Record (big-bang)
 
-**Status:** approved direction, execution in progress. **Branch:** `release-1.0.0-rc1` (commit directly, big-bang). **Date:** 2026-05-29.
+**Status:** ⛔ SUPERSEDED (2026-05-30) by `aether/docs/specs/membership-architecture-v2-spec.md` — **NTT is the authoritative tracker.** This proposal built the smoothing tweak as a *parallel* `swim.MembershipTracker` type + a consensus injection + a second spec (a design explosion). The intended periodic-sample+delta smoothing is being folded **into NTT in place**; the parallel type is removed. See `aether/docs/internal/progress/membership-ntt-convergence-2026-05-30.md`. **Date:** 2026-05-29.
 
 ## 1. Motivation
 

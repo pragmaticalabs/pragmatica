@@ -1508,7 +1508,11 @@ public interface AetherNode extends ManageableNode {
             var current = leaderReconcilerRef.get();
             if (current != null) {current.onTopologyUnhealthy();}
         };
-        var ntt = NodeTopologyTracker.nodeTopologyTracker(membershipConfig, config.self(), SharedScheduler::schedule, nttReconcileTrigger);
+        Supplier<HealthSnapshot> nttHealthSupplier =
+            () -> swimHealthDetector.currentHealth()
+                                    .or(() -> HealthSnapshot.healthSnapshot(Map.of()));
+        var ntt = NodeTopologyTracker.nodeTopologyTracker(membershipConfig, config.self(), nttHealthSupplier, nttReconcileTrigger);
+        ntt.start();
         // Membership-unification P2-b: the single SWIM-fed MembershipTracker, fed by the same
         // SWIM observation stream + QUIC connect/disconnect taps as NTT and exposed to
         // consensus via the forward-ref wired into the GenerationSnapshotSource above. The
@@ -1567,7 +1571,7 @@ public interface AetherNode extends ManageableNode {
         quorumLossDetector.setQuorumLossListener(quorumLossChain);
         metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
         Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(membershipTracker::onQuicReconnect);
-        Consumer<NodeId> nttDisconnectTap = membershipTracker::onQuicDisconnect;
+        Consumer<NodeId> nttDisconnectTap = ((Consumer<NodeId>) ntt::onQuicDisconnect).andThen(membershipTracker::onQuicDisconnect);
         // P5: the NTT-reconciler leader-toggle (auto-heal activation) is now wired into the
         // live router. Safe because LeaderReconciler is identity-aware — it arms provisioning
         // only after the cluster first reaches configuredCoreCount, so it never provisions a

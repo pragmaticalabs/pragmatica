@@ -8,110 +8,175 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.swim.HealthSnapshot;
+import org.pragmatica.swim.SwimHealth;
 import org.pragmatica.swim.SwimObservation.DepartedObserved;
+import org.pragmatica.swim.SwimObservation.FaultyObserved;
 import org.pragmatica.swim.SwimObservation.HealthyObserved;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.Delayed;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.aether.deployment.membership.MembershipConfig.membershipConfig;
 import static org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker.nodeTopologyTracker;
 
 
-/// Unit tests for [`NodeTopologyTracker`] (E2 Phase 1.6) — timer-only mechanism plus
-/// SWIM-sourced member-set tracking; fire invokes a `Runnable onReconcileNeeded`
-/// callback.
+/// Unit proof for [`NodeTopologyTracker`] (membership v2 §6) — periodic-sample + delta +
+/// asymmetric-hysteresis FSM. Drives the FSM deterministically via direct
+/// [`NodeTopologyTracker#sample`] calls (no real scheduler) against an injected mutable
+/// health snapshot and an injected clock.
 class NodeTopologyTrackerTest {
     private static final NodeId SELF = NodeId.randomNodeId();
-    private static final NodeId PEER = NodeId.randomNodeId();
+    private static final NodeId A = NodeId.randomNodeId();
+    private static final NodeId B = NodeId.randomNodeId();
+    private static final NodeId C = NodeId.randomNodeId();
 
-    private ManualScheduler scheduler;
+    private static final TimeSpan INTERVAL = TimeSpan.timeSpan(100).millis();
+    private static final int K_UP = 2;
+    private static final int K_DOWN = 3;
+
+    private Map<NodeId, SwimHealth> liveness;
     private AtomicInteger reconcileInvocations;
-    private NodeTopologyTracker ntt;
+    private AtomicLong clock;
 
     @BeforeEach
     void setUp() {
-        scheduler = new ManualScheduler();
+        liveness = new HashMap<>();
         reconcileInvocations = new AtomicInteger(0);
-        ntt = nodeTopologyTracker(membershipConfig(), SELF, scheduler, reconcileInvocations::incrementAndGet);
+        clock = new AtomicLong(0);
+    }
+
+    private NodeTopologyTracker tracker() {
+        Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.copyOf(liveness));
+        return nodeTopologyTracker(SELF, health, INTERVAL, K_UP, K_DOWN, clock::get,
+                                   reconcileInvocations::incrementAndGet);
+    }
+
+    private void healthy(NodeId node) {
+        liveness.put(node, SwimHealth.HEALTHY);
+    }
+
+    private void absent(NodeId node) {
+        liveness.remove(node);
+    }
+
+    private void faulty(NodeId node) {
+        liveness.put(node, SwimHealth.FAULTY);
+    }
+
+    private void sampleTimes(NodeTopologyTracker tracker, int times) {
+        for (var i = 0; i < times; i++) {
+            clock.addAndGet(1_000_000L);
+            tracker.sample();
+        }
     }
 
     @Nested
-    class HappyPath {
+    class Hysteresis {
         @Test
-        void onSwimObservation_schedulesTimer_whenDeparted() {
-            ntt.onSwimObservation(new DepartedObserved(PEER, 1L));
+        void sample_absorbsTransientFlap_noReconcile() {
+            var ntt = tracker();
 
-            assertThat(ntt.pendingTimerCount()).isEqualTo(1);
-            assertThat(scheduler.pendingTasks()).hasSize(1);
-            assertThat(scheduler.pendingTasks().getFirst().delay()).isEqualTo(membershipConfig().nttDepartureTimeout());
+            healthy(A);
+            sampleTimes(ntt, 1); // up-streak 1 (K_UP = 2, not yet stable)
+            absent(A);
+            sampleTimes(ntt, 1); // flips to down-streak before reaching K-up
+            healthy(A);
+            sampleTimes(ntt, 1); // back up, streak 1 again
+
             assertThat(reconcileInvocations.get()).isZero();
+            assertThat(ntt.currentMembers()).containsExactly(SELF);
         }
 
         @Test
-        void timerFire_invokesReconcileTrigger_afterDeadline_andRemovesEntry() {
-            ntt.onSwimObservation(new DepartedObserved(PEER, 1L));
+        void sample_stableJoin_invokesReconcileExactlyOnce() {
+            var ntt = tracker();
 
-            scheduler.fireAll();
+            healthy(A);
+            sampleTimes(ntt, K_UP - 1); // not yet stable
+            assertThat(reconcileInvocations.get()).isZero();
+
+            sampleTimes(ntt, 1); // K_UP-th consecutive healthy → ENTER
+            sampleTimes(ntt, 3); // further healthy samples must NOT re-fire
 
             assertThat(reconcileInvocations.get()).isEqualTo(1);
-            assertThat(ntt.pendingTimerCount()).isZero();
+            assertThat(ntt.currentMembers()).containsExactlyInAnyOrder(SELF, A);
         }
 
         @Test
-        void multipleTimersFire_invokeTriggerOncePerExpiry() {
-            var second = NodeId.randomNodeId();
+        void sample_stableDeparture_invokesReconcileExactlyOnce() {
+            var ntt = tracker();
 
-            ntt.onSwimObservation(new DepartedObserved(PEER, 1L));
-            ntt.onSwimObservation(new DepartedObserved(second, 1L));
-            scheduler.fireAll();
+            healthy(A);
+            sampleTimes(ntt, K_UP); // A enters
+            assertThat(reconcileInvocations.get()).isEqualTo(1);
+
+            absent(A);
+            sampleTimes(ntt, K_DOWN - 1); // not yet stable-departed
+            assertThat(reconcileInvocations.get()).isEqualTo(1);
+
+            sampleTimes(ntt, 1); // K_DOWN-th consecutive absent → LEAVE
+            sampleTimes(ntt, 3); // further absent samples must NOT re-fire
 
             assertThat(reconcileInvocations.get()).isEqualTo(2);
-            assertThat(ntt.pendingTimerCount()).isZero();
+            assertThat(ntt.currentMembers()).containsExactly(SELF);
+        }
+
+        @Test
+        void sample_asymmetricEdges_upFastDownSlow() {
+            var ntt = tracker();
+
+            healthy(A);
+            sampleTimes(ntt, K_UP); // fast admit at K_UP=2
+            assertThat(ntt.currentMembers()).contains(A);
+
+            absent(A);
+            sampleTimes(ntt, K_UP); // K_UP absent samples are NOT enough to drop (K_DOWN=3)
+            assertThat(ntt.currentMembers()).contains(A);
+
+            sampleTimes(ntt, K_DOWN - K_UP); // reach K_DOWN total → drop
+            assertThat(ntt.currentMembers()).containsExactly(SELF);
+        }
+
+        @Test
+        void sample_faultyHealthCountsAsAbsent_drivesDeparture() {
+            var ntt = tracker();
+
+            healthy(A);
+            sampleTimes(ntt, K_UP);
+            assertThat(ntt.currentMembers()).contains(A);
+
+            faulty(A); // FAULTY is not HEALTHY → absent for the candidate set
+            sampleTimes(ntt, K_DOWN);
+
+            assertThat(ntt.currentMembers()).containsExactly(SELF);
         }
     }
 
     @Nested
-    class Cancellation {
+    class Self {
         @Test
-        void onQuicReconnect_cancelsPendingTimer_andNeverFires() {
-            ntt.onSwimObservation(new DepartedObserved(PEER, 1L));
+        void members_alwaysIncludesSelf_evenWithNoLiveness() {
+            var ntt = tracker();
 
-            ntt.onQuicReconnect(PEER);
+            sampleTimes(ntt, K_DOWN * 2);
 
-            assertThat(ntt.pendingTimerCount()).isZero();
-            assertThat(scheduler.pendingTasks().getFirst().cancelled()).isTrue();
-
-            scheduler.fireAll();
-
-            assertThat(reconcileInvocations.get()).isZero();
+            assertThat(ntt.currentMembers()).containsExactly(SELF);
+            assertThat(ntt.currentMemberCount()).isEqualTo(1);
         }
 
         @Test
-        void onQuicReconnect_onUntracked_isNoOp() {
-            ntt.onQuicReconnect(PEER);
+        void sample_selfNeverLeaves_evenIfReportedFaulty() {
+            var ntt = tracker();
 
-            assertThat(ntt.pendingTimerCount()).isZero();
-            assertThat(reconcileInvocations.get()).isZero();
-        }
-    }
+            faulty(SELF); // self is force-added to candidate set regardless
+            sampleTimes(ntt, K_DOWN * 2);
 
-    @Nested
-    class Idempotence {
-        @Test
-        void duplicateDeparturedObservation_doesNotRescheduleDeadline() {
-            ntt.onSwimObservation(new DepartedObserved(PEER, 1L));
-            ntt.onSwimObservation(new DepartedObserved(PEER, 2L));
-
-            assertThat(ntt.pendingTimerCount()).isEqualTo(1);
-            assertThat(scheduler.pendingTasks()).hasSize(1);
+            assertThat(ntt.currentMembers()).contains(SELF);
         }
     }
 
@@ -119,167 +184,154 @@ class NodeTopologyTrackerTest {
     class MemberSet {
         @Test
         void freshTracker_membersContainSelfOnly() {
-            assertThat(ntt.currentMembers()).containsExactly(SELF);
-            assertThat(ntt.currentMemberCount()).isEqualTo(1);
-        }
-
-        @Test
-        void onSwimObservation_addsHealthyPeer_toCurrentMembers() {
-            ntt.onSwimObservation(new HealthyObserved(PEER, 1L));
-
-            assertThat(ntt.currentMembers()).containsExactlyInAnyOrder(SELF, PEER);
-            assertThat(ntt.currentMemberCount()).isEqualTo(2);
-            assertThat(scheduler.pendingTasks()).isEmpty();
-        }
-
-        @Test
-        void onSwimObservation_departed_removesPeerFromMembers_andStartsTimer() {
-            ntt.onSwimObservation(new HealthyObserved(PEER, 1L));
-
-            ntt.onSwimObservation(new DepartedObserved(PEER, 2L));
+            var ntt = tracker();
 
             assertThat(ntt.currentMembers()).containsExactly(SELF);
             assertThat(ntt.currentMemberCount()).isEqualTo(1);
-            assertThat(ntt.pendingTimerCount()).isEqualTo(1);
-        }
-
-        @Test
-        void onSwimObservation_healthy_whilePendingTimer_cancelsTimer_andClearsPendingMap() {
-            ntt.onSwimObservation(new DepartedObserved(PEER, 1L));
-            assertThat(ntt.pendingTimerCount()).isEqualTo(1);
-            var armed = scheduler.pendingTasks().getFirst();
-
-            ntt.onSwimObservation(new HealthyObserved(PEER, 2L));
-
-            assertThat(ntt.pendingTimerCount()).isZero();
-            assertThat(armed.cancelled()).isTrue();
-            assertThat(ntt.currentMembers()).containsExactlyInAnyOrder(SELF, PEER);
         }
 
         @Test
         void memberCount_reflectsAddRemoveSequence() {
-            var peerB = NodeId.randomNodeId();
-            var peerC = NodeId.randomNodeId();
+            var ntt = tracker();
 
-            ntt.onSwimObservation(new HealthyObserved(PEER, 1L));
-            ntt.onSwimObservation(new HealthyObserved(peerB, 1L));
-            ntt.onSwimObservation(new HealthyObserved(peerC, 1L));
+            healthy(A);
+            healthy(B);
+            healthy(C);
+            sampleTimes(ntt, K_UP);
             assertThat(ntt.currentMemberCount()).isEqualTo(4);
 
-            ntt.onSwimObservation(new DepartedObserved(PEER, 2L));
+            absent(B);
+            sampleTimes(ntt, K_DOWN);
             assertThat(ntt.currentMemberCount()).isEqualTo(3);
+            assertThat(ntt.currentMembers()).containsExactlyInAnyOrder(SELF, A, C);
+        }
+    }
 
-            ntt.onSwimObservation(new HealthyObserved(PEER, 3L));
-            assertThat(ntt.currentMemberCount()).isEqualTo(4);
+    @Nested
+    class SwimObservationBias {
+        @Test
+        void onSwimObservation_healthy_biasesPresent_butStillRequiresKSamples() {
+            var ntt = tracker();
 
-            ntt.onSwimObservation(new DepartedObserved(peerB, 2L));
-            ntt.onSwimObservation(new DepartedObserved(peerC, 2L));
-            assertThat(ntt.currentMemberCount()).isEqualTo(2);
-            assertThat(ntt.currentMembers()).containsExactlyInAnyOrder(SELF, PEER);
+            // A is NOT in the snapshot, but a HealthyObserved biases one sample present.
+            ntt.onSwimObservation(new HealthyObserved(A, 1L));
+            sampleTimes(ntt, 1); // up-streak 1 only
+            assertThat(ntt.currentMembers()).containsExactly(SELF); // not bypassed
+
+            sampleTimes(ntt, K_UP); // no continued presence → cannot reach K_UP again
+            assertThat(ntt.currentMembers()).containsExactly(SELF);
+            assertThat(reconcileInvocations.get()).isZero();
         }
 
         @Test
-        void duplicateHealthy_isIdempotent() {
-            ntt.onSwimObservation(new HealthyObserved(PEER, 1L));
-            ntt.onSwimObservation(new HealthyObserved(PEER, 2L));
+        void onSwimObservation_faulty_biasesAbsent_butDoesNotBypassHysteresis() {
+            var ntt = tracker();
 
-            assertThat(ntt.currentMembers()).containsExactlyInAnyOrder(SELF, PEER);
-            assertThat(ntt.currentMemberCount()).isEqualTo(2);
+            healthy(A);
+            sampleTimes(ntt, K_UP); // A is a stable member
+            assertThat(ntt.currentMembers()).contains(A);
+
+            // A is still SWIM-healthy in the snapshot, but FaultyObserved biases the NEXT
+            // sample absent — a single biased sample must NOT evict A.
+            ntt.onSwimObservation(new FaultyObserved(A, 2L));
+            sampleTimes(ntt, 1);
+            assertThat(ntt.currentMembers()).contains(A);
+            assertThat(reconcileInvocations.get()).isEqualTo(1); // still only the join
+
+            // Snapshot shows A healthy again → recovers, transient bias absorbed.
+            sampleTimes(ntt, K_DOWN);
+            assertThat(ntt.currentMembers()).contains(A);
+            assertThat(reconcileInvocations.get()).isEqualTo(1);
+        }
+
+        @Test
+        void onSwimObservation_departed_biasesAbsent() {
+            var ntt = tracker();
+
+            healthy(A);
+            sampleTimes(ntt, K_UP);
+            assertThat(ntt.currentMembers()).contains(A);
+
+            absent(A);
+            ntt.onSwimObservation(new DepartedObserved(A, 2L));
+            sampleTimes(ntt, K_DOWN);
+
+            assertThat(ntt.currentMembers()).containsExactly(SELF);
         }
     }
 
-    /// Manual scheduler — captures `(Runnable, delay)` pairs without ever invoking them on a
-    /// background thread. Tests drive fire/cancel explicitly via `fireAll()` / the returned
-    /// future's `cancel(false)`.
-    private static final class ManualScheduler implements NttTimerScheduler {
-        private final List<ManualTask> tasks = new ArrayList<>();
+    @Nested
+    class QuicHints {
+        @Test
+        void onQuicDisconnect_biasesAbsent_butDoesNotBypassHysteresis() {
+            var ntt = tracker();
 
-        @Override
-        public synchronized ScheduledFuture<?> schedule(Runnable runnable, TimeSpan delay) {
-            var task = new ManualTask(runnable, delay);
+            healthy(A);
+            sampleTimes(ntt, K_UP); // A is a stable member
+            assertThat(ntt.currentMembers()).contains(A);
 
-            tasks.add(task);
+            // A is still SWIM-healthy, but QUIC says "likely gone". One biased sample must
+            // NOT evict A (hysteresis).
+            ntt.onQuicDisconnect(A);
+            sampleTimes(ntt, 1);
+            assertThat(ntt.currentMembers()).contains(A); // not bypassed
+            assertThat(reconcileInvocations.get()).isEqualTo(1); // still only the join
 
-            return task;
+            // Without a renewed hint, the next sample sees A SWIM-healthy → recovers.
+            sampleTimes(ntt, K_DOWN);
+            assertThat(ntt.currentMembers()).contains(A);
+            assertThat(reconcileInvocations.get()).isEqualTo(1);
         }
 
-        @Contract
-        synchronized void fireAll() {
-            for (var task : List.copyOf(tasks)) {
-                task.runIfLive();
-            }
+        @Test
+        void onQuicDisconnect_sustainedWithAbsence_eventuallyEvictsViaHysteresis() {
+            var ntt = tracker();
+
+            healthy(A);
+            sampleTimes(ntt, K_UP);
+            assertThat(ntt.currentMembers()).contains(A);
+
+            // SWIM also drops A; disconnect hints reinforce each absent sample.
+            absent(A);
+            ntt.onQuicDisconnect(A);
+            sampleTimes(ntt, 1);
+            ntt.onQuicDisconnect(A);
+            sampleTimes(ntt, 1);
+            assertThat(ntt.currentMembers()).contains(A); // still within window (K_DOWN=3)
+            ntt.onQuicDisconnect(A);
+            sampleTimes(ntt, 1); // K_DOWN-th absent → evicted
+
+            assertThat(ntt.currentMembers()).containsExactly(SELF);
         }
 
-        synchronized List<ManualTask> pendingTasks() {
-            return List.copyOf(tasks);
+        @Test
+        void onQuicReconnect_biasesPresent_butStillRequiresKSamples() {
+            var ntt = tracker();
+
+            // A is NOT SWIM-healthy, but a reconnect hint biases one sample present.
+            ntt.onQuicReconnect(A);
+            sampleTimes(ntt, 1); // up-streak 1 only
+            assertThat(ntt.currentMembers()).containsExactly(SELF); // not bypassed
+
+            sampleTimes(ntt, K_UP);
+            assertThat(ntt.currentMembers()).containsExactly(SELF);
+            assertThat(reconcileInvocations.get()).isZero();
         }
     }
 
-    private static final class ManualTask implements ScheduledFuture<Object> {
-        private final Runnable runnable;
-        private final TimeSpan delay;
-        private volatile boolean cancelled;
-        private volatile boolean done;
-
-        ManualTask(Runnable runnable, TimeSpan delay) {
-            this.runnable = runnable;
-            this.delay = delay;
-        }
-
-        TimeSpan delay() {
-            return delay;
-        }
-
-        boolean cancelled() {
-            return cancelled;
-        }
-
-        @Contract
-        void runIfLive() {
-            if (cancelled || done) {
-                return;
-            }
-            done = true;
-            runnable.run();
-        }
-
-        @Override
-        public long getDelay(TimeUnit unit) {
-            return unit.convert(delay.nanos(), TimeUnit.NANOSECONDS);
-        }
-
-        @Override
-        public int compareTo(Delayed other) {
-            return Long.compare(getDelay(TimeUnit.NANOSECONDS), other.getDelay(TimeUnit.NANOSECONDS));
-        }
-
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            if (done) {
-                return false;
-            }
-            cancelled = true;
-            return true;
-        }
-
-        @Override
-        public boolean isCancelled() {
-            return cancelled;
-        }
-
-        @Override
-        public boolean isDone() {
-            return cancelled || done;
-        }
-
-        @Override
-        public Object get() {
-            return null;
-        }
-
-        @Override
-        public Object get(long timeout, TimeUnit unit) {
-            return null;
+    @Nested
+    class DownHysteresisDerivation {
+        @Test
+        void downHysteresisFor_ceilDivOfDepartureTimeoutOverSampleInterval() {
+            assertThat(NodeTopologyTracker.downHysteresisFor(TimeSpan.timeSpan(15).seconds(),
+                                                             TimeSpan.timeSpan(1).seconds()))
+                .isEqualTo(15);
+            assertThat(NodeTopologyTracker.downHysteresisFor(TimeSpan.timeSpan(1500).millis(),
+                                                             TimeSpan.timeSpan(1).seconds()))
+                .isEqualTo(2); // ceil(1.5) = 2
+            assertThat(NodeTopologyTracker.downHysteresisFor(TimeSpan.timeSpan(0).millis(),
+                                                             TimeSpan.timeSpan(1).seconds()))
+                .isEqualTo(1); // floored at 1
         }
     }
 }

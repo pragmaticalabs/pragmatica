@@ -7,176 +7,358 @@ package org.pragmatica.aether.deployment.membership.ntt;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.swim.HealthSnapshot;
+import org.pragmatica.swim.SwimHealth;
 import org.pragmatica.swim.SwimObservation;
-import org.pragmatica.swim.SwimObservation.DepartedObserved;
-import org.pragmatica.swim.SwimObservation.HealthyObserved;
 
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
 
-
-/// Node Topology Tracker (membership v2 spec §6, I12 — E2 Phase 1.6 member-set
-/// tracking). Per-peer one-shot departure timer that subscribes to SWIM-converged
-/// observations and, on expiry, invokes a reconcile-trigger callback. NTT also
-/// maintains the authoritative cluster-membership set sourced from SWIM
-/// (`HealthyObserved` adds, `DepartedObserved` removes); `self` is included
-/// unconditionally. The set is the cluster-wide "who is in the cluster right
-/// now" view: SWIM discovers a peer first, QUIC dials lag, Rabia voter set lags
-/// more — sourcing membership from SWIM via NTT gives the freshest count and
-/// the freshest provisioning seed-PEERS set.
+/// Node Topology Tracker (membership v2 spec §6, I12) — **THE** cluster-membership
+/// source. Maintains the authoritative "who is in the cluster right now" set sourced
+/// from SWIM liveness, with `self` included unconditionally.
 ///
-/// **Mechanism only.** NTT is universal — it runs on every node and observes regardless of
-/// leader status. The reconcile trigger is intentionally a `Runnable` (no peer payload)
-/// because the post-fire reconcile reads cluster state from scratch — the *fact* that a
-/// timer fired is the only datum the trigger carries.
+/// **Mechanism = periodic sample + delta + asymmetric hysteresis.** Replaces the prior
+/// per-peer one-shot `ScheduledFuture` departure-timer map (and its timer-race class)
+/// with a single deterministic **sample tick**:
+///
+/// - On each tick the tracker recomputes the *candidate live set* from the injected
+///   SWIM health snapshot supplier (a peer is a candidate iff currently `HEALTHY`),
+///   biased by transient QUIC connect/disconnect hints. A disconnect makes a node
+///   "likely gone" for that one sample, a reconnect "likely back" — hints DO NOT
+///   bypass hysteresis, they only colour the per-sample observation.
+/// - A node ENTERS the stable member set after `upHysteresis` consecutive present
+///   samples (fast — see asymmetry below) and LEAVES after `downHysteresis` consecutive
+///   absent samples. Counters are kept per `NodeId` (identity-preserving). A direction
+///   flip resets the streak, so a transient blip is absorbed.
+/// - When the stable set changes, the constructor-injected `Runnable onReconcileNeeded`
+///   is invoked exactly once per stable transition (diffed against the last-emitted set).
+///
+/// **Asymmetric hysteresis (UP fast, DOWN slow).** UP defaults to `K_UP_DEFAULT` (≈2)
+/// consecutive healthy samples — a node already SWIM-healthy is low-risk to admit, and a
+/// slow UP edge delays formation/quorum recovery and lets auto-heal replacements appear
+/// after the reconciler's in-flight window (provisioning storm). DOWN is derived from
+/// `MembershipConfig.nttDepartureTimeout` as `ceil(nttDepartureTimeout / sampleInterval)`,
+/// preserving the legacy per-peer departure-timeout debounce: dropping a node is
+/// destructive (drains, leadership churn, provisioning), so it must only react to a
+/// genuinely sustained absence.
+///
+/// `self` is always a member (self-seed) and can never leave.
 ///
 /// **Inputs.**
-/// - [`#onSwimObservation`] —
-///   - [`DepartedObserved`]: schedules a per-peer timer (idempotent via `computeIfAbsent`:
-///     a duplicate departure for an already-tracked peer is a no-op; the deadline is NOT
-///     re-stamped, matching spec §6.2 "first-departure-wins"); removes the peer from
-///     `currentMembers`.
-///   - [`HealthyObserved`]: adds the peer to `currentMembers` (idempotent via set
-///     semantics); cancels any pending NTT timer for that peer. Cancellation parity
-///     with QUIC reconnect treats a SWIM rejoin and a QUIC reconnect as equivalent
-///     "peer is back" signals.
-/// - [`#onQuicReconnect`] — cancels any pending timer for that peer (the resurrection
-///   signal per I7).
+/// - [`#onSwimObservation`] — biases the NEXT sample only: `HealthyObserved` PRESENT,
+///   `FaultyObserved` / `DepartedObserved` ABSENT. Authoritative liveness still comes from
+///   the snapshot supplier on the tick; this only sharpens the very next sample.
+/// - [`#onQuicReconnect`] — up-bias for the next sample (the resurrection signal per I7).
+/// - [`#onQuicDisconnect`] — down-bias for the next sample (fast "likely gone" signal).
 ///
-/// **Output.** Timer expiry removes the per-peer map entry and invokes the constructor-
-/// injected `Runnable onReconcileNeeded` callback. The callback is expected to use a
-/// CAS-debounce pattern (see [`LeaderReconciler#triggerReconcile`]) so a burst of
-/// per-peer expiries collapses to at most a handful of reconcile passes.
-///
-/// **Observability.** [`#pendingTimerCount`] exposes the live timer-map size;
-/// [`#currentMemberCount`] / [`#currentMembers`] expose the cluster member set.
-///
-/// **Concurrency.** Timer state is held in a `ConcurrentHashMap<NodeId, ScheduledFuture<?>>`;
-/// member-set state is a `ConcurrentHashMap.newKeySet()`. Every transition is expressed
-/// via atomic `computeIfAbsent` / `remove` / `add` primitives so no synchronized block
-/// or lock is required.
-///
-/// **QUIC-reconnect event source.** Stage 6 will adapt this method's `onQuicReconnect(NodeId)`
-/// from `org.pragmatica.consensus.net.quic.PeerConnectivityReporter#onPeerConnected`
-/// (`integrations/consensus/.../PeerConnectivityReporter.java:40`).
+/// **Concurrency.** Each [`#sample`] tick runs under `sampleLock`; member-set and streak
+/// state use concurrent collections so QUIC/SWIM bias writes are lock-free. The periodic
+/// tick is bound to the process-wide [`SharedScheduler`] via [`#start`]; tests call
+/// [`#sample`] directly to step the FSM deterministically without a real scheduler.
 public final class NodeTopologyTracker {
+    private static final Logger log = LoggerFactory.getLogger(NodeTopologyTracker.class);
+
+    /// Default sample tick period: recompute the candidate live set once per second.
+    public static final TimeSpan SAMPLE_INTERVAL_DEFAULT = TimeSpan.timeSpan(1).seconds();
+
+    /// Default fast UP hysteresis: 2 consecutive healthy samples to admit a node.
+    public static final int K_UP_DEFAULT = 2;
+
     private static final Runnable NOOP_RECONCILE_TRIGGER = () -> {};
 
-    private final MembershipConfig config;
+    /// Transient per-sample QUIC/SWIM bias for a node.
+    private enum SampleBias { PRESENT, ABSENT }
+
     private final NodeId self;
-    private final NttTimerScheduler scheduler;
+    private final Supplier<HealthSnapshot> healthSupplier;
+    private final TimeSpan sampleInterval;
+    private final int upHysteresis;
+    private final int downHysteresis;
+    private final LongSupplier nowNanos;
     private final Runnable onReconcileNeeded;
-    private final Map<NodeId, ScheduledFuture<?>> timers = new ConcurrentHashMap<>();
-    private final Set<NodeId> currentMembers = ConcurrentHashMap.newKeySet();
 
-    private NodeTopologyTracker(MembershipConfig config,
-                                NodeId self,
-                                NttTimerScheduler scheduler,
+    /// Per-node consecutive-sample counters. Positive = up-streak, negative = down-streak.
+    /// A node not present here has never been sampled.
+    private final Map<NodeId, Integer> streaks = new ConcurrentHashMap<>();
+
+    /// Per-node bias applied to the NEXT sample only. Consumed (removed) on read.
+    private final Map<NodeId, SampleBias> biases = new ConcurrentHashMap<>();
+
+    /// Stable member set (debounced). Always contains self.
+    private final Set<NodeId> stableMembers = ConcurrentHashMap.newKeySet();
+
+    /// Last-emitted set — the delta baseline. Distinct from `stableMembers` so the
+    /// reconcile trigger fires exactly once per transition.
+    private final AtomicReference<Set<NodeId>> lastEmitted;
+
+    private final AtomicReference<Option<ScheduledFuture<?>>> tickFuture = new AtomicReference<>(Option.none());
+    private final Object sampleLock = new Object();
+
+    private NodeTopologyTracker(NodeId self,
+                                Supplier<HealthSnapshot> healthSupplier,
+                                TimeSpan sampleInterval,
+                                int upHysteresis,
+                                int downHysteresis,
+                                LongSupplier nowNanos,
                                 Runnable onReconcileNeeded) {
-        this.config = config;
         this.self = self;
-        this.scheduler = scheduler;
+        this.healthSupplier = healthSupplier;
+        this.sampleInterval = sampleInterval;
+        this.upHysteresis = Math.max(1, upHysteresis);
+        this.downHysteresis = Math.max(1, downHysteresis);
+        this.nowNanos = nowNanos;
         this.onReconcileNeeded = onReconcileNeeded;
-        this.currentMembers.add(self);
+        this.stableMembers.add(self);
+        this.lastEmitted = new AtomicReference<>(Set.of(self));
     }
 
-    /// Production factory bound to the process-wide [`SharedScheduler`].
+    /// Production factory: 1s sample tick on the [`SharedScheduler`], `K_UP_DEFAULT` up
+    /// hysteresis, down hysteresis derived from `config.nttDepartureTimeout`,
+    /// `System::nanoTime` clock.
     public static NodeTopologyTracker nodeTopologyTracker(MembershipConfig config,
                                                           NodeId self,
+                                                          Supplier<HealthSnapshot> healthSupplier,
                                                           Runnable onReconcileNeeded) {
-        return new NodeTopologyTracker(config, self, SharedScheduler::schedule, onReconcileNeeded);
+        return new NodeTopologyTracker(self,
+                                       healthSupplier,
+                                       SAMPLE_INTERVAL_DEFAULT,
+                                       K_UP_DEFAULT,
+                                       downHysteresisFor(config.nttDepartureTimeout(), SAMPLE_INTERVAL_DEFAULT),
+                                       System::nanoTime,
+                                       onReconcileNeeded);
     }
 
-    /// Test factory accepting an explicit scheduler and a no-op reconcile trigger —
-    /// used by tests that want to inspect the timer map without exercising a downstream
-    /// reconciler.
-    public static NodeTopologyTracker nodeTopologyTracker(MembershipConfig config,
-                                                          NodeId self,
-                                                          NttTimerScheduler scheduler) {
-        return new NodeTopologyTracker(config, self, scheduler, NOOP_RECONCILE_TRIGGER);
+    /// Test factory: explicit sample interval, hysteresis, clock and a no-op reconcile
+    /// trigger. The periodic tick is NOT scheduled — tests drive the FSM via [`#sample`].
+    public static NodeTopologyTracker nodeTopologyTracker(NodeId self,
+                                                          Supplier<HealthSnapshot> healthSupplier,
+                                                          TimeSpan sampleInterval,
+                                                          int upHysteresis,
+                                                          int downHysteresis,
+                                                          LongSupplier nowNanos) {
+        return new NodeTopologyTracker(self,
+                                       healthSupplier,
+                                       sampleInterval,
+                                       upHysteresis,
+                                       downHysteresis,
+                                       nowNanos,
+                                       NOOP_RECONCILE_TRIGGER);
     }
 
-    /// Test factory accepting both an explicit scheduler and a reconcile-trigger
-    /// callback. Required for deterministic timer-fire assertions in unit tests.
-    public static NodeTopologyTracker nodeTopologyTracker(MembershipConfig config,
-                                                          NodeId self,
-                                                          NttTimerScheduler scheduler,
+    /// Test factory: explicit sample interval, hysteresis, clock and a reconcile trigger.
+    /// Required for deterministic emit-once assertions. The periodic tick is NOT scheduled.
+    public static NodeTopologyTracker nodeTopologyTracker(NodeId self,
+                                                          Supplier<HealthSnapshot> healthSupplier,
+                                                          TimeSpan sampleInterval,
+                                                          int upHysteresis,
+                                                          int downHysteresis,
+                                                          LongSupplier nowNanos,
                                                           Runnable onReconcileNeeded) {
-        return new NodeTopologyTracker(config, self, scheduler, onReconcileNeeded);
+        return new NodeTopologyTracker(self,
+                                       healthSupplier,
+                                       sampleInterval,
+                                       upHysteresis,
+                                       downHysteresis,
+                                       nowNanos,
+                                       onReconcileNeeded);
     }
 
-    /// SWIM observation entry point. Routes [`DepartedObserved`] to the departure path
-    /// (schedule timer + remove from members) and [`HealthyObserved`] to the join path
-    /// (add to members + cancel any pending NTT timer). All other observation kinds
-    /// are ignored — NTT only cares about the two converged edges.
+    /// Down hysteresis derived from the legacy departure timeout:
+    /// `ceil(departureTimeout / sampleInterval)`, at least 1. Preserves NTT's per-peer
+    /// departure-timeout semantics as a debounce window on the sample stream.
+    public static int downHysteresisFor(TimeSpan departureTimeout, TimeSpan sampleInterval) {
+        var interval = Math.max(1L, sampleInterval.nanos());
+        return Math.max(1, (int) ((departureTimeout.nanos() + interval - 1) / interval));
+    }
+
+    /// Start the periodic sample tick on the shared scheduler. Idempotent — a second
+    /// `start()` while already running is a no-op.
+    @Contract
+    public void start() {
+        var future = SharedScheduler.scheduleAtFixedRate(this::sample, sampleInterval);
+        if (!tickFuture.compareAndSet(Option.none(), some(future))) {
+            future.cancel(false);
+        }
+    }
+
+    /// Cancel the periodic sample tick. Idempotent.
+    @Contract
+    public void stop() {
+        tickFuture.getAndSet(Option.none())
+                  .onPresent(future -> future.cancel(false));
+    }
+
+    /// SWIM observation entry point — biases the NEXT sample only. `HealthyObserved`
+    /// PRESENT, `FaultyObserved` / `DepartedObserved` ABSENT. All other observation kinds
+    /// are ignored. Authoritative liveness still comes from the snapshot supplier on the
+    /// tick; this only sharpens the very next sample.
     @Contract
     public void onSwimObservation(SwimObservation observation) {
         switch (observation) {
-            case DepartedObserved departed -> onDeparted(departed.peer());
-            case HealthyObserved healthy -> onHealthy(healthy.peer());
+            case SwimObservation.HealthyObserved healthy -> biasPresent(healthy.peer());
+            case SwimObservation.FaultyObserved faulty -> biasAbsent(faulty.peer());
+            case SwimObservation.DepartedObserved departed -> biasAbsent(departed.peer());
             default -> {}
         }
     }
 
-    /// QUIC reconnect entry point. Cancels any pending timer for `peer`. Atomic
-    /// remove — a single map removal cancels the still-armed future. The member-set
-    /// remains untouched here (SWIM `HealthyObserved` is the canonical join signal).
+    /// QUIC reconnect hint — biases the next sample PRESENT for `peer` (the resurrection
+    /// signal per I7). Membership still flips only on hysteresis.
     @Contract
-    public void onQuicReconnect(NodeId peerId) {
-        option(timers.remove(peerId)).onPresent(NodeTopologyTracker::cancelFuture);
+    public void onQuicReconnect(NodeId peer) {
+        biasPresent(peer);
     }
 
-    /// Count of currently-tracked entries with a not-yet-fired timer.
-    public int pendingTimerCount() {
-        return timers.size();
+    /// QUIC disconnect hint — biases the next sample ABSENT for `peer` (fast "likely gone"
+    /// signal). Still gated by `downHysteresis` before membership flips.
+    @Contract
+    public void onQuicDisconnect(NodeId peer) {
+        biasAbsent(peer);
+    }
+
+    @Contract
+    private void biasPresent(NodeId peer) {
+        if (!peer.equals(self)) {
+            biases.put(peer, SampleBias.PRESENT);
+        }
+    }
+
+    @Contract
+    private void biasAbsent(NodeId peer) {
+        if (!peer.equals(self)) {
+            biases.put(peer, SampleBias.ABSENT);
+        }
+    }
+
+    /// One deterministic sample tick: recompute the candidate live set, advance per-node
+    /// hysteresis counters, flip the stable set on threshold crossings, and invoke the
+    /// reconcile trigger at most once. Public so tests can step the FSM without a scheduler.
+    @Contract
+    public void sample() {
+        synchronized (sampleLock) {
+            sampleLocked();
+        }
+    }
+
+    private void sampleLocked() {
+        var candidates = candidateLiveSet();
+        advanceStreaks(candidates);
+        emitIfChanged();
+    }
+
+    /// Candidate live set for this sample = self ∪ SWIM-healthy peers, then overridden by
+    /// any pending bias (PRESENT forces in, ABSENT forces out). Bias is consumed.
+    private Set<NodeId> candidateLiveSet() {
+        var live = new HashSet<NodeId>();
+        live.add(self);
+        healthSupplier.get()
+                      .peerHealth()
+                      .forEach((peer, health) -> addIfHealthy(live, peer, health));
+        applyBias(live);
+        return live;
+    }
+
+    private void addIfHealthy(Set<NodeId> live, NodeId peer, SwimHealth health) {
+        if (health == SwimHealth.HEALTHY) {
+            live.add(peer);
+        }
+    }
+
+    private void applyBias(Set<NodeId> live) {
+        var pending = Map.copyOf(biases);
+        pending.forEach((peer, bias) -> applyOneBias(live, peer, bias));
+        pending.keySet().forEach(biases::remove);
+    }
+
+    private void applyOneBias(Set<NodeId> live, NodeId peer, SampleBias bias) {
+        switch (bias) {
+            case PRESENT -> live.add(peer);
+            case ABSENT -> removeUnlessSelf(live, peer);
+        }
+    }
+
+    private void removeUnlessSelf(Set<NodeId> live, NodeId peer) {
+        if (!peer.equals(self)) {
+            live.remove(peer);
+        }
+    }
+
+    /// Advance each candidate's up-streak and each known-but-absent node's down-streak,
+    /// then apply threshold crossings to `stableMembers`. Self never leaves.
+    private void advanceStreaks(Set<NodeId> candidates) {
+        var known = new HashSet<NodeId>();
+        known.addAll(streaks.keySet());
+        known.addAll(stableMembers);
+        known.addAll(candidates);
+        known.remove(self);
+        known.forEach(node -> advanceOne(node, candidates.contains(node)));
+    }
+
+    private void advanceOne(NodeId node, boolean present) {
+        var next = nextStreak(streaks.getOrDefault(node, 0), present);
+        streaks.put(node, next);
+        if (present && next >= upHysteresis) {
+            stableMembers.add(node);
+        } else if (!present && (-next) >= downHysteresis) {
+            stableMembers.remove(node);
+        }
+    }
+
+    /// A present sample drives the streak non-negative then increments; an absent sample
+    /// drives it non-positive then decrements. Direction switches reset to the first step
+    /// of the new direction (so a flap does not accumulate across directions).
+    private static int nextStreak(int current, boolean present) {
+        if (present) {
+            return current < 0 ? 1 : current + 1;
+        }
+        return current > 0 ? -1 : current - 1;
+    }
+
+    private void emitIfChanged() {
+        var current = Set.copyOf(stableMembers);
+        var previous = lastEmitted.getAndSet(current);
+        if (current.equals(previous)) {
+            return;
+        }
+        log.debug("Membership transition @{}ns: joined={} left={} members={}",
+                  nowNanos.getAsLong(),
+                  difference(current, previous),
+                  difference(previous, current),
+                  current);
+        onReconcileNeeded.run();
+    }
+
+    private static Set<NodeId> difference(Set<NodeId> from, Set<NodeId> remove) {
+        var result = new HashSet<>(from);
+        result.removeAll(remove);
+        return result;
     }
 
     /// Count of currently-tracked cluster members (includes self).
     public int currentMemberCount() {
-        return currentMembers.size();
+        return stableMembers.size();
     }
 
-    /// Read-only snapshot of the currently-tracked cluster member set (includes
-    /// self). Used by the leader reconciler for the seed-PEERS list when
-    /// provisioning replacements and for drain-victim selection.
+    /// Read-only snapshot of the currently-tracked cluster member set (includes self).
+    /// Used by the leader reconciler for the seed-PEERS list when provisioning
+    /// replacements and for drain-victim selection.
     public Set<NodeId> currentMembers() {
-        return Set.copyOf(currentMembers);
-    }
-
-    @Contract
-    private void onDeparted(NodeId peerId) {
-        currentMembers.remove(peerId);
-        scheduleIfAbsent(peerId);
-    }
-
-    @Contract
-    private void onHealthy(NodeId peerId) {
-        currentMembers.add(peerId);
-        option(timers.remove(peerId)).onPresent(NodeTopologyTracker::cancelFuture);
-    }
-
-    @Contract
-    private void scheduleIfAbsent(NodeId peerId) {
-        timers.computeIfAbsent(peerId, this::armTimer);
-    }
-
-    private ScheduledFuture<?> armTimer(NodeId peerId) {
-        return scheduler.schedule(() -> onTimerFire(peerId), config.nttDepartureTimeout());
-    }
-
-    @Contract
-    private void onTimerFire(NodeId peerId) {
-        timers.remove(peerId);
-        onReconcileNeeded.run();
-    }
-
-    @Contract
-    private static void cancelFuture(ScheduledFuture<?> future) {
-        future.cancel(false);
+        return Set.copyOf(stableMembers);
     }
 }
