@@ -8,7 +8,6 @@ import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.MembershipView;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -37,8 +36,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// has been removed (the previous tick existed only because surplus had no event
 /// signal — now SWIM `HealthyObserved` provides it symmetrically with NTT for
 /// shortage). `clusterMembershipCount` and the current member set are both sourced
-/// from the unified [`MembershipView#coreMemberIds`], which derives them from the
-/// single SWIM-fed membership source (freshest "who is in the cluster" signal).
+/// from [`NodeTopologyTracker#currentMembers`] / [`NodeTopologyTracker#currentMemberCount`],
+/// the single SWIM-fed membership source (freshest "who is in the cluster" signal). The
+/// member set always includes `self`.
 ///
 /// **Five trigger paths.**
 /// 1. [`#activate()`] on leader gain — schedules a single one-shot delayed
@@ -99,7 +99,7 @@ public final class LeaderReconciler {
     private final MembershipConfig membershipConfig;
     private final TimeSpan leaderActivationDelay;
     private final TimeSpan inFlightExpiry;
-    private final MembershipView membershipView;
+    private final NodeTopologyTracker ntt;
     private final IntSupplier configuredCoreCountSupplier;
     private final ClusterTopologyManager ctm;
     private final TimeSource timeSource;
@@ -115,7 +115,7 @@ public final class LeaderReconciler {
     private volatile Consumer<ReconcileIntent> reconcileListener = NOOP_LISTENER;
 
     private LeaderReconciler(MembershipConfig membershipConfig,
-                             MembershipView membershipView,
+                             NodeTopologyTracker ntt,
                              IntSupplier configuredCoreCountSupplier,
                              ClusterTopologyManager ctm,
                              TimeSource timeSource,
@@ -123,7 +123,7 @@ public final class LeaderReconciler {
         this.membershipConfig = membershipConfig;
         this.leaderActivationDelay = computeQuiesceDelay(membershipConfig.nttDepartureTimeout());
         this.inFlightExpiry = computeInFlightExpiry(membershipConfig.nttDepartureTimeout());
-        this.membershipView = membershipView;
+        this.ntt = ntt;
         this.configuredCoreCountSupplier = configuredCoreCountSupplier;
         this.ctm = ctm;
         this.timeSource = timeSource;
@@ -132,11 +132,11 @@ public final class LeaderReconciler {
 
     /// Production factory bound to the process-wide [`SharedScheduler`] and the system clock.
     public static LeaderReconciler leaderReconciler(MembershipConfig membershipConfig,
-                                                    MembershipView membershipView,
+                                                    NodeTopologyTracker ntt,
                                                     IntSupplier configuredCoreCountSupplier,
                                                     ClusterTopologyManager ctm) {
         return new LeaderReconciler(membershipConfig,
-                                    membershipView,
+                                    ntt,
                                     configuredCoreCountSupplier,
                                     ctm,
                                     TimeSource.system(),
@@ -146,13 +146,13 @@ public final class LeaderReconciler {
     /// Test factory accepting explicit [`TimeSource`] and [`NttTimerScheduler`] —
     /// required for deterministic activation/debounce assertions.
     public static LeaderReconciler leaderReconciler(MembershipConfig membershipConfig,
-                                                    MembershipView membershipView,
+                                                    NodeTopologyTracker ntt,
                                                     IntSupplier configuredCoreCountSupplier,
                                                     ClusterTopologyManager ctm,
                                                     TimeSource timeSource,
                                                     NttTimerScheduler scheduler) {
         return new LeaderReconciler(membershipConfig,
-                                    membershipView,
+                                    ntt,
                                     configuredCoreCountSupplier,
                                     ctm,
                                     timeSource,
@@ -300,7 +300,7 @@ public final class LeaderReconciler {
     }
 
     /// Single reconcile pass. Derives `clusterMembershipCount` and the current member set
-    /// from [`MembershipView#coreMemberIds`], arms the provisioning latch on first full
+    /// from [`NodeTopologyTracker#currentMembers`], arms the provisioning latch on first full
     /// configured membership, then gates provisioning behind `quorumSafe &&
     /// armedForProvisioning` (identity-aware rule — membership-unification-spec P5).
     /// Provisioning is suppressed until the latch arms so a deficit during initial
@@ -316,7 +316,7 @@ public final class LeaderReconciler {
 
         evictExpiredInFlightEntries(now);
 
-        var currentMembers = membershipView.coreMemberIds();
+        var currentMembers = ntt.currentMembers();
         var clusterMembershipCount = currentMembers.size();
         var configuredCoreCount = configuredCoreCountSupplier.getAsInt();
         // Effective capacity is the SIZE OF THE UNION of confirmed members and in-flight
@@ -492,9 +492,9 @@ public final class LeaderReconciler {
         return membershipConfig;
     }
 
-    /// Observability — the [`MembershipView`] collaborator the reconciler reads the
-    /// current core-member set from (unified SWIM-fed membership source).
-    public MembershipView membershipView() {
-        return membershipView;
+    /// Observability — the [`NodeTopologyTracker`] collaborator the reconciler reads the
+    /// current member set from (unified SWIM-fed membership source; includes self).
+    public NodeTopologyTracker ntt() {
+        return ntt;
     }
 }

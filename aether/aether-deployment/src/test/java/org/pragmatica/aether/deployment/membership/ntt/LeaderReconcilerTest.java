@@ -14,7 +14,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.MembershipDecision;
-import org.pragmatica.consensus.topology.MembershipView;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TransportObservation;
@@ -25,11 +24,14 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.swim.HealthSnapshot;
+import org.pragmatica.swim.SwimHealth;
 
 import java.net.SocketAddress;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Delayed;
@@ -38,10 +40,12 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.deployment.membership.MembershipConfig.membershipConfig;
 import static org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler.leaderReconciler;
+import static org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker.nodeTopologyTracker;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -67,7 +71,8 @@ class LeaderReconcilerTest {
     private RecordingListener listener;
     private MutableIntSupplier configuredCoreCount;
     private RecordingCtm ctm;
-    private MutableMembershipView membershipView;
+    private MutableHealthSource health;
+    private NodeTopologyTracker ntt;
     private LeaderReconciler reconciler;
 
     @BeforeEach
@@ -77,9 +82,17 @@ class LeaderReconcilerTest {
         listener = new RecordingListener();
         configuredCoreCount = new MutableIntSupplier(0);
         ctm = new RecordingCtm();
-        membershipView = new MutableMembershipView(SELF);
+        health = new MutableHealthSource();
+        // upHysteresis = downHysteresis = 1 so a single sample() converges the member set
+        // deterministically — the reconciler reads ntt.currentMembers() synchronously.
+        ntt = nodeTopologyTracker(SELF,
+                                  health,
+                                  timeSpan(1).seconds(),
+                                  1,
+                                  1,
+                                  timeSource::nanoTime);
         reconciler = leaderReconciler(membershipConfig(),
-                                      membershipView,
+                                      ntt,
                                       configuredCoreCount,
                                       ctm,
                                       timeSource,
@@ -87,23 +100,25 @@ class LeaderReconcilerTest {
         reconciler.setReconcileListener(listener);
     }
 
-    /// Feed N healthy peers into the membership view — the reconciler's
-    /// `clusterMembershipCount` reads via `membershipView.coreMemberIds().size()`
-    /// (which includes `SELF` automatically).
+    /// Feed N healthy peers into the NTT health snapshot, then sample so the stable member
+    /// set (which always includes `SELF`) absorbs them. The reconciler's
+    /// `clusterMembershipCount` reads via `ntt.currentMembers().size()`.
     @Contract
     private void seedClusterWithPeers(NodeId... peers) {
         for (var peer : peers) {
-            membershipView.addMember(peer);
+            health.markHealthy(peer);
         }
+        ntt.sample();
     }
 
-    /// Remove peers from the membership view (simulates a departure) so the next reconcile
-    /// observes a deficit.
+    /// Mark peers absent in the NTT health snapshot (simulates a departure) and sample so the
+    /// next reconcile observes a deficit.
     @Contract
     private void removePeers(NodeId... peers) {
         for (var peer : peers) {
-            membershipView.removeMember(peer);
+            health.markAbsent(peer);
         }
+        ntt.sample();
     }
 
     /// Drive the post-activation reconcile path: fire the queued debounced reconcile that
@@ -646,45 +661,27 @@ class LeaderReconcilerTest {
         }
     }
 
-    /// Mutable [`MembershipView`] stub. `coreMemberIds()` always includes `SELF`
-    /// (mirroring the universal-self-membership the reconciler previously read from NTT);
-    /// `addMember` seeds additional peers. The lifecycle/health projections are not read
-    /// by the reconciler, so they return empty/zero sensible defaults.
-    private static final class MutableMembershipView implements MembershipView {
-        private final Set<NodeId> members = new LinkedHashSet<>();
+    /// Mutable SWIM health snapshot source backing the [`NodeTopologyTracker`]. `markHealthy`
+    /// adds a peer as `HEALTHY`; `markAbsent` drops it (so the next NTT sample sees it gone).
+    /// `SELF` is supplied by the tracker's self-seed and is never listed here. The tracker is
+    /// constructed with hysteresis 1, so a single `sample()` after a mutation converges the
+    /// stable member set the reconciler reads via `currentMembers()`.
+    private static final class MutableHealthSource implements Supplier<HealthSnapshot> {
+        private final Map<NodeId, SwimHealth> peerHealth = new LinkedHashMap<>();
 
-        MutableMembershipView(NodeId self) {
-            members.add(self);
+        @Contract
+        synchronized void markHealthy(NodeId nodeId) {
+            peerHealth.put(nodeId, SwimHealth.HEALTHY);
         }
 
         @Contract
-        void addMember(NodeId nodeId) {
-            members.add(nodeId);
-        }
-
-        @Contract
-        void removeMember(NodeId nodeId) {
-            members.remove(nodeId);
+        synchronized void markAbsent(NodeId nodeId) {
+            peerHealth.remove(nodeId);
         }
 
         @Override
-        public Set<NodeId> coreMemberIds() {
-            return Set.copyOf(members);
-        }
-
-        @Override
-        public Set<NodeId> onDutyMemberIds() {
-            return Set.copyOf(members);
-        }
-
-        @Override
-        public int healthyOnDutyCount() {
-            return members.size();
-        }
-
-        @Override
-        public int desiredCoreSize() {
-            return members.size();
+        public synchronized HealthSnapshot get() {
+            return HealthSnapshot.healthSnapshot(Map.copyOf(peerHealth));
         }
     }
 

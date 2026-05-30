@@ -23,7 +23,8 @@ import static org.pragmatica.lang.Option.some;
 /// Per-node observer of cluster quorum visibility (membership v2 spec §4, §8.1 third bullet,
 /// §12.5, I10). Unlike its predecessor `LocalQuorumWatcher` — which independently counted
 /// QUIC-connected peers — this detector consumes the member count from the single SWIM-fed
-/// membership source (`MembershipTracker.members()`, which already includes self). It tracks
+/// membership source (`NodeTopologyTracker.currentMemberCount()`, which already includes self).
+/// It tracks
 /// that count against the simple-majority threshold `coreCount / 2 + 1` (same formula as
 /// `TopologyManager.quorumSize() = clusterSize() / 2 + 1`) and emits a [`QuorumLossIntent`]
 /// when the count stays below threshold continuously for at least `quorumLossDrainThreshold`.

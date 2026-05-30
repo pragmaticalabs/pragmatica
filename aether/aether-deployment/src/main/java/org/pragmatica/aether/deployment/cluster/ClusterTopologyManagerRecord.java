@@ -422,10 +422,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     ///
     /// The `LeaderReconciler` (spec §7) owns shortage derivation and calls this per missing
     /// slot. CTM no longer runs its own slot machinery here: it builds a `ProvisionSpec`
-    /// whose PEERS are seeded from the current cluster members (self + SWIM-HEALTHY topology
-    /// peers via `buildProvisionContext`, which already emits valid 3-part `nodeId:host:port`
-    /// entries) and provisions directly through `NodeLifecycleManager.provisionNode`. The
-    /// provider mints the ULID. `failedPeer` is observability-only.
+    /// whose PEERS are seeded from the LIVE member set `clusterMembers` passed in by the
+    /// reconciler (the freshest "who is in the cluster right now" signal from
+    /// `NodeTopologyTracker.currentMembers`). Each member id is resolved to its
+    /// `nodeId:host:port` entry via the same `observer.get(id)` → `formatPeerEntry` mechanism
+    /// `buildProvisionContext` uses; ids that do not resolve are dropped, and `self` is always
+    /// included (the CTM runs on the leader, which is alive by definition). Seeding from the
+    /// live set — instead of `observer.topology()` ∩ `isHealthyPeer` — keeps just-killed
+    /// hostnames out of the PEERS list, preventing DOA replacements (dead-host PEERS →
+    /// QUIC NPE). If `clusterMembers` is empty (cold paths), the seed falls back to
+    /// `buildProvisionContext`'s topology-derived peers. `failedPeer` is observability-only.
     @Override
     public Promise<Unit> provisionReplacement(Option<NodeId> failedPeer, Set<NodeId> clusterMembers) {
         log.info("CTM v2: provisionReplacement requested (failedPeer={}, clusterMembers.size={})",
@@ -433,17 +439,39 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                  clusterMembers.size());
 
         var contextBase = buildProvisionContext();
+        var memberPeers = liveMemberPeers(clusterMembers);
+        var contextSeeded = memberPeers.isEmpty()
+                            ? contextBase
+                            : contextBase.withPeers(memberPeers);
 
-        if (contextBase.peers().or("").isEmpty()) {
-            log.warn("CTM v2: provisionReplacement deferred — no healthy peers visible in topology (peers list empty); "
+        if (contextSeeded.peers().or("").isEmpty()) {
+            log.warn("CTM v2: provisionReplacement deferred — no healthy peers visible (peers list empty); "
                     + "returning success so the LeaderReconciler retries on its next tick.");
             return Promise.success(unit());
         }
 
-        var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", contextBase).unwrap();
+        var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", contextSeeded).unwrap();
         var spec = computePlacementHint().map(baseSpec::withPlacement).or(baseSpec);
 
         return lifecycleManager.provisionNode(spec).mapToUnit();
+    }
+
+    /// Build the PEERS string from the LIVE member set: `self` first (always present — the
+    /// leader is alive by definition), then each resolvable member's `nodeId:host:port` entry.
+    /// Members that fail to resolve via `observer.get` (e.g., a just-killed hostname whose
+    /// `NodeInfo` is gone) are dropped, and `self` is de-duplicated. An empty result signals
+    /// the caller to fall back to the topology-derived seed.
+    private String liveMemberPeers(Set<NodeId> clusterMembers) {
+        if (clusterMembers.isEmpty()) {
+            return "";
+        }
+        var selfEntry = formatPeerEntry(observer.self());
+        var remoteEntries = clusterMembers.stream()
+                                          .flatMap(nodeId -> observer.get(nodeId).stream())
+                                          .map(ClusterTopologyManagerRecord::formatPeerEntry)
+                                          .filter(entry -> !entry.equals(selfEntry));
+
+        return Stream.concat(Stream.of(selfEntry), remoteEntries).distinct().collect(Collectors.joining(","));
     }
 
     /// Membership v2 / B5b — drain a specific node via the graceful v2 DRAIN-command path.

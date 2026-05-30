@@ -217,9 +217,6 @@ import org.pragmatica.swim.SwimHealth;
 import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.TransportObservation;
 import org.pragmatica.swim.HealthSnapshot;
-import org.pragmatica.swim.membership.MembershipTracker;
-import org.pragmatica.swim.membership.MembershipTrackerConfig;
-import org.pragmatica.swim.membership.MembershipPhase;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -381,12 +378,9 @@ public interface AetherNode extends ManageableNode {
                                                                             .map(LeaderValue::leader);
         var hlcClock = HlcClock.hlcClock(config.self());
         var rawSnapshotSource = KvBackedGenerationSnapshotSource.kvBackedGenerationSnapshotSource(kvStore);
-        // Membership-unification P2-b: the SWIM-fed MembershipTracker (constructed inside
-        // assembleNode, after swimHealthDetector) becomes the live MembershipView the
-        // consensus TopologyObserver reads for quorum. It is published lazily through this
-        // forward-ref; see TrackerBackedGenerationSnapshotSource for the warm-up hand-off.
-        var membershipTrackerRef = new AtomicReference<MembershipTracker>();
-        var snapshotSource = TrackerBackedGenerationSnapshotSource.trackerBacked(rawSnapshotSource, membershipTrackerRef);
+        // Consensus quorum is QUIC-local per v2 §4; the swim-tracker injection is removed —
+        // consensus uses the KV-projected snapshot view as before unification.
+        var snapshotSource = rawSnapshotSource;
         // Membership v2 — `syncHoldRegistry` is consulted by the leader reconciler to skip nodes
         // that are legitimately syncing KV state. The KVSyncResponse signal no longer drives a
         // readiness candidate; the v2 control-heartbeat carries node-reported readiness instead.
@@ -426,7 +420,6 @@ public interface AetherNode extends ManageableNode {
                                                              leaderTerm,
                                                              hlcClock,
                                                              snapshotSource,
-                                                             membershipTrackerRef,
                                                              syncHoldRegistry,
                                                              jvmExit));
     }
@@ -484,7 +477,6 @@ public interface AetherNode extends ManageableNode {
                                                    AtomicLong leaderTerm,
                                                    HlcClock hlcClock,
                                                    GenerationSnapshotSource snapshotSource,
-                                                   AtomicReference<MembershipTracker> membershipTrackerRef,
                                                    org.pragmatica.cluster.node.rabia.SyncHoldRegistry syncHoldRegistry,
                                                    Runnable jvmExit) {
         // Concrete adapter (not a lambda) so we can override `sendOutcome` and forward
@@ -593,7 +585,7 @@ public interface AetherNode extends ManageableNode {
                           ClusterTopologyManager clusterTopologyManagerInstance,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
-                          MembershipTracker membershipTracker,
+                          NodeTopologyTracker ntt,
                           Runnable startSwimTrigger,
                           Supplier<Option<ClusterGenerationSnapshot>> generationSnapshotSupplier,
                           Runnable refreshGenerationSnapshot,
@@ -671,7 +663,7 @@ public interface AetherNode extends ManageableNode {
                 streamPartitionManager.close();
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::stop);
                 swimHealthDetector.stop();
-                membershipTracker.stop();
+                ntt.stop();
                 discoveryProvider.onPresent(this::deregisterFromDiscovery);
 
                 return managementServer.map(ManagementServer::stop)
@@ -1135,15 +1127,10 @@ public interface AetherNode extends ManageableNode {
                                                             jvmExit);
         Supplier<Option<NodeId>> healthLeaderSupplier = () -> clusterNode.leaderManager()
                                                                          .leader();
-        // P3 (membership unification): ClusterPhase derives directly from the unified
-        // tracker's phase (thin adapter). The tracker is constructed downstream in
-        // assembleNode, so resolve it lazily via membershipTrackerRef; until it lands the
-        // supplier reports COLD_BOOT. ClusterPhaseView adds the leader-awareness semantic
-        // (NORMAL requires a leader, else RECOVERING).
-        Supplier<MembershipPhase> trackerPhaseSupplier = () -> Option.option(membershipTrackerRef.get())
-                                                                     .map(MembershipTracker::phase)
-                                                                     .or(MembershipPhase.COLD_BOOT);
-        var clusterPhaseView = ClusterPhaseView.clusterPhaseView(trackerPhaseSupplier,
+        // P3 (membership unification): ClusterPhase derives from QUIC quorum + leader presence.
+        // ClusterPhaseView adds the leader-awareness semantic (NORMAL requires a leader, else
+        // RECOVERING).
+        var clusterPhaseView = ClusterPhaseView.clusterPhaseView(((TopologyObserver) clusterNode.topologyManager()).inQuorum(),
                                                                  () -> healthLeaderSupplier.get().isPresent());
         Supplier<AetherValue.ClusterPhase> effectivePhaseSupplier = clusterPhaseView::compute;
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((TopologyObserver) clusterNode.topologyManager(),
@@ -1504,7 +1491,12 @@ public interface AetherNode extends ManageableNode {
         var membershipConfig = config.membership().or(MembershipConfig::membershipConfig);
         IntSupplier configuredCoreCountSupplier = () -> config.topology().coreNodes().size();
         var leaderReconcilerRef = new AtomicReference<LeaderReconciler>();
+        var quorumLossDetectorRef = new AtomicReference<QuorumLossDetector>();
+        var nttRef = new AtomicReference<NodeTopologyTracker>();
         Runnable nttReconcileTrigger = () -> {
+            var detector = quorumLossDetectorRef.get();
+            var tracker = nttRef.get();
+            if (detector != null && tracker != null) {detector.onMemberCountChanged(tracker.currentMemberCount());}
             var current = leaderReconcilerRef.get();
             if (current != null) {current.onTopologyUnhealthy();}
         };
@@ -1512,38 +1504,17 @@ public interface AetherNode extends ManageableNode {
             () -> swimHealthDetector.currentHealth()
                                     .or(() -> HealthSnapshot.healthSnapshot(Map.of()));
         var ntt = NodeTopologyTracker.nodeTopologyTracker(membershipConfig, config.self(), nttHealthSupplier, nttReconcileTrigger);
+        nttRef.set(ntt);
         ntt.start();
-        // Membership-unification P2-b: the single SWIM-fed MembershipTracker, fed by the same
-        // SWIM observation stream + QUIC connect/disconnect taps as NTT and exposed to
-        // consensus via the forward-ref wired into the GenerationSnapshotSource above. The
-        // hysteresis window is derived from the NTT departure timeout for behavioural parity
-        // while both trackers run side-by-side (NTT is removed in P3).
-        // Asymmetric hysteresis (auto-heal storm fix): fast UP-admit (2 samples ≈ 1s) so a
-        // provisioned replacement node enters stable membership well inside the reconciler's
-        // in-flight window — preventing the re-provision death-spiral — and quorum recovers
-        // quickly; slow DOWN-drop (departure-timeout derived ≈ 15s) so transient blips don't
-        // evict a member.
-        var membershipTrackerConfig = MembershipTrackerConfig.fromDepartureTimeout(membershipConfig.nttDepartureTimeout(),
-                                                                                   TimeSpan.timeSpan(500).millis(),
-                                                                                   2);
-        // P3 (membership unification): quorum-loss self-drain is sourced from the unified
-        // tracker's stable membership (no separate QUIC peer count). Constructed before the
-        // tracker so the tracker's MembershipListener pushes the stable member count in; the
-        // grace window + the arm-after-first-quorum guard live in QuorumLossDetector (ported
-        // from the deleted LocalQuorumWatcher, whose drain firing was dormant). The drain
-        // chain is registered below once drainProcedure/leaderReconciler exist.
+        // P3 (membership unification): quorum-loss self-drain is sourced from NTT's stable
+        // member count via the nttReconcileTrigger above; the grace window + the
+        // arm-after-first-quorum guard live in QuorumLossDetector (ported from the deleted
+        // LocalQuorumWatcher, whose drain firing was dormant). The drain chain is registered
+        // below once drainProcedure/leaderReconciler exist.
         var quorumLossDetector = QuorumLossDetector.quorumLossDetector(membershipConfig, configuredCoreCountSupplier);
-        var membershipTracker = MembershipTracker.membershipTracker(config.self(),
-                                                                    membershipTrackerConfig,
-                                                                    () -> swimHealthDetector.currentHealth()
-                                                                                            .or(() -> HealthSnapshot.healthSnapshot(Map.of())),
-                                                                    configuredCoreCountSupplier,
-                                                                    change -> quorumLossDetector.onMemberCountChanged(change.members().size()));
-        membershipTrackerRef.set(membershipTracker);
-        membershipTracker.start();
-        swimHealthDetector.addObservationListener(membershipTracker::onSwimObservation);
+        quorumLossDetectorRef.set(quorumLossDetector);
         var leaderReconciler = LeaderReconciler.leaderReconciler(membershipConfig,
-                                                                 membershipTracker,
+                                                                 ntt,
                                                                  configuredCoreCountSupplier,
                                                                  clusterTopologyManager,
                                                                  TimeSource.system(),
@@ -1570,8 +1541,8 @@ public interface AetherNode extends ManageableNode {
                 .andThen(intent -> nodeReportedStateHolder.onDrainStarted());
         quorumLossDetector.setQuorumLossListener(quorumLossChain);
         metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
-        Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(membershipTracker::onQuicReconnect);
-        Consumer<NodeId> nttDisconnectTap = ((Consumer<NodeId>) ntt::onQuicDisconnect).andThen(membershipTracker::onQuicDisconnect);
+        Consumer<NodeId> nttConnectTap = ntt::onQuicReconnect;
+        Consumer<NodeId> nttDisconnectTap = ntt::onQuicDisconnect;
         // P5: the NTT-reconciler leader-toggle (auto-heal activation) is now wired into the
         // live router. Safe because LeaderReconciler is identity-aware — it arms provisioning
         // only after the cluster first reaches configuredCoreCount, so it never provisions a
@@ -1657,7 +1628,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                   kvStore,
                                                                                                   clusterNode,
                                                                                                   publisherExecutor,
-                                                                                                  membershipTracker::members,
+                                                                                                  ntt::currentMembers,
                                                                                                   () -> nodesReporting(pongSignalFan, nodeReportedStateHolder, config.self(), NodeReportedState.DRAINING),
                                                                                                   ((TopologyObserver) clusterNode.topologyManager())::get);
         publisherRef.set(generationSnapshotPublisher);
@@ -1865,7 +1836,7 @@ public interface AetherNode extends ManageableNode {
                                   clusterTopologyManager,
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
-                                  membershipTracker,
+                                  ntt,
                                   startSwimTrigger,
                                   spokesmanSnapshotSupplier,
                                   generationSnapshotPublisher::markDirty,
@@ -1965,7 +1936,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                       clusterTopologyManager,
                                                                                                       eventLoopMetricsCollector,
                                                                                                       swimHealthDetector,
-                                                                                                      membershipTracker,
+                                                                                                      ntt,
                                                                                                       startSwimTrigger,
                                                                                                       spokesmanSnapshotSupplier,
                                                                                                       generationSnapshotPublisher::markDirty,
