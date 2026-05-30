@@ -7,7 +7,6 @@ package org.pragmatica.aether.metrics;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
@@ -116,28 +115,6 @@ public interface ClusterSyncCollector {
     /// `reachability-aggregator-spec.md` "Periodic Observation Mode".
     @Contract void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs);
 
-    /// Most-recently received `AggregatedReachabilitySnapshot` from an incoming
-    /// `ClusterSyncPing`. `Option.none()` until the first ping with a non-empty
-    /// snapshot lands (cold-start window or pre-extension peers). Followers cache
-    /// this for warm-takeover when they become leader; `/api/status` reads it to
-    /// produce reader-invariant `coreCount`. See
-    /// `aether/docs/specs/reachability-aggregator-spec.md`.
-    Option<AggregatedReachabilitySnapshot> lastReachabilitySnapshot();
-
-    /// Wires the local `ReachabilityAggregator`'s snapshot supplier. On the leader,
-    /// `lastReachabilitySnapshot()` is forever `none` (the leader sends pings, never
-    /// receives them) so `MembershipView` must read the leader's OWN aggregator
-    /// output directly. The injected supplier is consulted by `bestSnapshot()` and
-    /// takes precedence when present. Followers leave this unset; `bestSnapshot()`
-    /// falls back to the cached received snapshot.
-    @Contract void setLocalSnapshotSupplier(Supplier<Option<AggregatedReachabilitySnapshot>> supplier);
-
-    /// Unified accessor: leader's local aggregator output if non-empty, else the
-    /// cached snapshot received from the prior leader. This is the value that
-    /// `MembershipView.strict` consumes via `AetherNode.membershipView()` to
-    /// resolve KV-ON_DUTY peer status when local SWIM hasn't acked HEALTHY.
-    Option<AggregatedReachabilitySnapshot> bestSnapshot();
-
     /// Membership v2 (§7.5.3) — wire the node-reported readiness state supplier so
     /// `buildPong()` stamps `current().name()` (SYNCING|READY|DRAINING) onto
     /// `ClusterSyncPong.lifecycleState` instead of the legacy `currentLifecycleState()`
@@ -193,10 +170,6 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     private final AtomicReference<Epoch> observedEpoch = new AtomicReference<>(Epoch.ZERO);
 
     private final AtomicReference<Supplier<String>> lifecycleStateSupplier = new AtomicReference<>(() -> "ON_DUTY");
-
-    private final AtomicReference<Option<AggregatedReachabilitySnapshot>> lastReachabilitySnapshot = new AtomicReference<>(Option.none());
-
-    private final AtomicReference<Supplier<Option<AggregatedReachabilitySnapshot>>> localSnapshotSupplier = new AtomicReference<>(Option::none);
 
     private final AtomicReference<Supplier<List<CommunityReport>>> communityReportSupplier = new AtomicReference<>(List::of);
 
@@ -321,12 +294,6 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         ping.allMetrics().forEach(this::storeRemoteMetrics);
         var incomingEpoch = Epoch.epoch(ping.epochTerm(), ping.epochCounter());
         advanceObservedEpoch(incomingEpoch);
-        // Cache the leader-broadcast reachability snapshot. `/api/status` reads
-        // it to eliminate per-reader QUIC-view variance; on leader-gained, the
-        // new leader seeds its aggregator from this cache to shorten warmup.
-        // Pre-extension peers send Option.none() — leave cache unchanged so
-        // older data isn't lost during a rolling upgrade window.
-        ping.aggregatedReachability().onPresent(snapshot -> lastReachabilitySnapshot.set(Option.some(snapshot)));
         // RC1 (S01 fix): owner's eviction hints are SUGGESTIONS — verify against local
         // liveness evidence before acting. If we've received traffic from the peer
         // recently (within `EVICTION_HINT_VERIFY_NANOS`), the owner's view is likely
@@ -471,19 +438,6 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     @Override@Contract public void addPongListener(Consumer<ClusterSyncPong> listener) {
         pongListeners.add(listener);
-    }
-
-    @Override public Option<AggregatedReachabilitySnapshot> lastReachabilitySnapshot() {
-        return lastReachabilitySnapshot.get();
-    }
-
-    @Override@Contract public void setLocalSnapshotSupplier(Supplier<Option<AggregatedReachabilitySnapshot>> supplier) {
-        localSnapshotSupplier.set(supplier == null ? Option::none : supplier);
-    }
-
-    @Override public Option<AggregatedReachabilitySnapshot> bestSnapshot() {
-        var local = localSnapshotSupplier.get().get();
-        return local.isPresent() ? local : lastReachabilitySnapshot.get();
     }
 
     private boolean acceptPingFencing(ClusterSyncPing ping) {

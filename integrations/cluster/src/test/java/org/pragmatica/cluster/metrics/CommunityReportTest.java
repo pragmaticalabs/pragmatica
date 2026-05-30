@@ -6,7 +6,6 @@ package org.pragmatica.cluster.metrics;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Option;
 
 import java.util.Set;
 
@@ -18,17 +17,17 @@ class CommunityReportTest {
     void communityReport_withAllFields_populatesRecord() {
         var governor = NodeId.nodeId("gov-1").unwrap();
 
-        var report = CommunityReport.communityReport("pool-a",
-                                                      3L,
-                                                      7L,
-                                                      42L,
-                                                      governor,
-                                                      5,
-                                                      4,
-                                                      1,
-                                                      0,
-                                                      Set.of("p-1", "p-2"),
-                                                      123456L);
+        var report = new CommunityReport("pool-a",
+                                         3L,
+                                         7L,
+                                         42L,
+                                         governor,
+                                         5,
+                                         4,
+                                         1,
+                                         0,
+                                         Set.of("p-1", "p-2"),
+                                         123456L);
 
         assertThat(report.communityId()).isEqualTo("pool-a");
         assertThat(report.communityTerm()).isEqualTo(3L);
@@ -47,7 +46,7 @@ class CommunityReportTest {
     void construct_nullPartitions_normalizesToEmpty() {
         var governor = NodeId.nodeId("gov-1").unwrap();
 
-        var report = new CommunityReport("pool-a", 0L, 0L, 0L, governor, 0, 0, 0, 0, null, 0L, Option.none());
+        var report = new CommunityReport("pool-a", 0L, 0L, 0L, governor, 0, 0, 0, 0, null, 0L);
 
         assertThat(report.partitionsHeld()).isEmpty();
     }
@@ -56,7 +55,7 @@ class CommunityReportTest {
     void construct_nullCommunityId_normalizesToEmpty() {
         var governor = NodeId.nodeId("gov-1").unwrap();
 
-        var report = new CommunityReport(null, 0L, 0L, 0L, governor, 0, 0, 0, 0, Set.of(), 0L, Option.none());
+        var report = new CommunityReport(null, 0L, 0L, 0L, governor, 0, 0, 0, 0, Set.of(), 0L);
 
         assertThat(report.communityId()).isEmpty();
     }

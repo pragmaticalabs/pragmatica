@@ -19,7 +19,6 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.Fsm;
@@ -321,7 +320,6 @@ public final class ClusterSyncContext {
                                        rabiaTerm,
                                        currentEpoch.rabiaTerm(),
                                        currentEpoch.localCounter(),
-                                       Option.none(),
                                        currentEvictionHints(),
                                        commandFor(peer));
         log.debug("ClusterSync: sending PING to {} (rabiaTerm={}, epoch={}:{})",

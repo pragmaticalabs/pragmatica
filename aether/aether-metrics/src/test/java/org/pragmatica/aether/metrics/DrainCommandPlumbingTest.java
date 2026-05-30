@@ -158,11 +158,11 @@ class DrainCommandPlumbingTest {
     }
 
     private static ClusterSyncPing drainPing() {
-        return new ClusterSyncPing(LEADER, Map.of(), 0L, 0L, 0L, Option.none(), Set.of(), NodePingCommand.DRAIN);
+        return new ClusterSyncPing(LEADER, Map.of(), 0L, 0L, 0L, Set.of(), NodePingCommand.DRAIN);
     }
 
     private static ClusterSyncPing nonePing() {
-        return new ClusterSyncPing(LEADER, Map.of(), 0L, 0L, 0L, Option.none(), Set.of(), NodePingCommand.NONE);
+        return new ClusterSyncPing(LEADER, Map.of(), 0L, 0L, 0L, Set.of(), NodePingCommand.NONE);
     }
 
     private static ClusterSyncContext buildContext(ClusterNetwork network, Predicate<NodeId> drainRequested) {

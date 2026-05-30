@@ -7,14 +7,12 @@ package org.pragmatica.aether.metrics;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
-import org.pragmatica.lang.Option;
 
 import java.util.List;
 import java.util.Map;
@@ -46,7 +44,4 @@ public class NoopClusterSyncCollector implements ClusterSyncCollector {
     @Override public void setPongSignalFan(ClusterSyncPongSignalFan fan) {}
     @Override public void setPeerObservationBuffer(PeerObservationBuffer buffer) {}
     @Override public void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs) {}
-    @Override public Option<AggregatedReachabilitySnapshot> lastReachabilitySnapshot() {return Option.none();}
-    @Override public void setLocalSnapshotSupplier(Supplier<Option<AggregatedReachabilitySnapshot>> supplier) {}
-    @Override public Option<AggregatedReachabilitySnapshot> bestSnapshot() {return Option.none();}
 }

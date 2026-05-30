@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
 import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
+import org.pragmatica.cluster.metrics.NodePingCommand;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -267,15 +268,13 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
 
     private void sendPing(NodeId governor, long rabiaTerm) {
         var epoch = Epoch.ZERO;
-        // Tier-2 outbound: reachability snapshot piggyback removed (ReachabilityAggregator
-        // deleted; SWIM is the authoritative liveness signal). Wire field carries
-        // Option.none() — wire structure preserved, no ENVELOPE_FORMAT_VERSION bump.
         var ping = new ClusterSyncPing(self,
                                        allMetricsSupplier.get(),
                                        rabiaTerm,
                                        epoch.rabiaTerm(),
                                        epoch.localCounter(),
-                                       Option.none());
+                                       Set.of(),
+                                       NodePingCommand.NONE);
         network.send(governor, ping);
     }
 
@@ -299,8 +298,7 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
                                          members.suspected(),
                                          members.faulty(),
                                          partitionsHeld,
-                                         System.currentTimeMillis(),
-                                         Option.none());
+                                         System.currentTimeMillis());
         var fresh = new HashMap<>(current);
         fresh.put(communityId, report);
         return Map.copyOf(fresh);

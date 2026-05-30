@@ -35,11 +35,6 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
     /// @param rabiaTerm              current Rabia consensus term — receivers reject stale
     /// @param epochTerm              epoch's `rabiaTerm` part (duplicated for fencing)
     /// @param epochCounter           epoch's `localCounter` part
-    /// @param aggregatedReachability leader-derived cluster-canonical reachability snapshot;
-    ///                               `Option.none()` during cold-start window and pre-extension
-    ///                               peers. Followers cache for warm-takeover; `/api/status`
-    ///                               reads to eliminate per-reader QUIC-view variance. See
-    ///                               `aether/docs/specs/reachability-aggregator-spec.md`.
     /// @param command                leader→node lifecycle command piggybacked on the ping
     ///                               (membership-architecture-v2-spec B5a). `NONE` in steady
     ///                               state; `DRAIN` directs the receiver to begin a local
@@ -49,13 +44,9 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
                            long rabiaTerm,
                            long epochTerm,
                            long epochCounter,
-                           Option<AggregatedReachabilitySnapshot> aggregatedReachability,
                            Set<NodeId> evictionHints,
                            NodePingCommand command) implements ClusterSyncMessage {
         public ClusterSyncPing {
-            aggregatedReachability = aggregatedReachability == null
-                                    ? Option.none()
-                                    : aggregatedReachability;
             evictionHints = evictionHints == null
                            ? Set.of()
                            : Set.copyOf(evictionHints);
@@ -64,35 +55,10 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
                      : command;
         }
 
-        /// Backward-compatible 7-arg constructor for call sites that pre-date the
-        /// `command` extension (membership-architecture-v2-spec B5a). Defaults the
-        /// command to `NONE` so existing call sites / deserialization don't break.
-        public ClusterSyncPing(NodeId sender,
-                               Map<NodeId, Map<String, Double>> allMetrics,
-                               long rabiaTerm,
-                               long epochTerm,
-                               long epochCounter,
-                               Option<AggregatedReachabilitySnapshot> aggregatedReachability,
-                               Set<NodeId> evictionHints) {
-            this(sender, allMetrics, rabiaTerm, epochTerm, epochCounter, aggregatedReachability, evictionHints, NodePingCommand.NONE);
-        }
-
-        /// Backward-compatible 6-arg constructor for call sites that pre-date the
-        /// `evictionHints` extension (RC1 S01 fix). Defaults the hint set to empty and
-        /// the command to `NONE`.
-        public ClusterSyncPing(NodeId sender,
-                               Map<NodeId, Map<String, Double>> allMetrics,
-                               long rabiaTerm,
-                               long epochTerm,
-                               long epochCounter,
-                               Option<AggregatedReachabilitySnapshot> aggregatedReachability) {
-            this(sender, allMetrics, rabiaTerm, epochTerm, epochCounter, aggregatedReachability, Set.of(), NodePingCommand.NONE);
-        }
-
         /// Backward-compatible factory for legacy call sites that have no epoch info.
         /// Produces a term/epoch of zero — receivers treat it as a pre-migration heartbeat.
         public static ClusterSyncPing clusterSyncPing(NodeId sender, Map<NodeId, Map<String, Double>> allMetrics) {
-            return new ClusterSyncPing(sender, allMetrics, 0L, 0L, 0L, Option.none(), Set.of(), NodePingCommand.NONE);
+            return new ClusterSyncPing(sender, allMetrics, 0L, 0L, 0L, Set.of(), NodePingCommand.NONE);
         }
     }
 

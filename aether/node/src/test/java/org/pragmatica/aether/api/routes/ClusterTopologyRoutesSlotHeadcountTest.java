@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// §8.3 headcount-cap oracle (slot-based-membership-convergence-spec §6/§2 invariant). The
 /// operator-visible `coreCount` is slot-derived: it counts provisioning slots whose occupant is
-/// ON_DUTY+healthy-and-reachable. Because the cluster owns exactly `clusterSize` slots and each
+/// ON_DUTY. Because the cluster owns exactly `clusterSize` slots and each
 /// slot has at most one occupant, the count is capped at `clusterSize` by construction. A dead
 /// predecessor that lingers ON_DUTY in the SWIM/lifecycle view but is no longer any slot's
 /// occupant is NOT counted — its replacement occupies the slot. This pins the §1 defect #1
@@ -77,7 +77,7 @@ class ClusterTopologyRoutesSlotHeadcountTest {
         // number of HEALTHY slot occupants), never 3.
         var view = onDutyView(DEAD, FRESH, SELF);
 
-        var count = ClusterTopologyRoutes.slotDerivedCoreCount(nodeProxy(), view, Option.none(), SELF);
+        var count = ClusterTopologyRoutes.slotDerivedCoreCount(nodeProxy(), view);
 
         var clusterSize = 2;
         assertThat(count).as("slot-derived headcount must not exceed clusterSize despite a lingering DEAD ON_DUTY entry")
@@ -93,7 +93,7 @@ class ClusterTopologyRoutesSlotHeadcountTest {
         seedSlot("1", SELF, 1L, Option.none());
         var view = onDutyView(SELF);
 
-        var count = ClusterTopologyRoutes.slotDerivedCoreCount(nodeProxy(), view, Option.none(), SELF);
+        var count = ClusterTopologyRoutes.slotDerivedCoreCount(nodeProxy(), view);
 
         assertThat(count).isEqualTo(1);
     }
@@ -104,7 +104,7 @@ class ClusterTopologyRoutesSlotHeadcountTest {
         // bootstrapped self still reports as a core.
         var view = onDutyView(SELF);
 
-        var count = ClusterTopologyRoutes.slotDerivedCoreCount(nodeProxy(), view, Option.none(), SELF);
+        var count = ClusterTopologyRoutes.slotDerivedCoreCount(nodeProxy(), view);
 
         assertThat(count).isEqualTo(1);
     }

@@ -10,7 +10,6 @@ import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
-import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
@@ -19,7 +18,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.List;
@@ -247,9 +245,6 @@ class ClusterSyncSchedulerPeriodicEmissionTest {
         @Override public void addPongListener(Consumer<ClusterSyncPong> listener) {}
         @Override public void setPongSignalFan(ClusterSyncPongSignalFan fan) {}
         @Override public void setPeerObservationBuffer(PeerObservationBuffer buffer) {}
-        @Override public Option<AggregatedReachabilitySnapshot> lastReachabilitySnapshot() {return Option.none();}
-        @Override public void setLocalSnapshotSupplier(Supplier<Option<AggregatedReachabilitySnapshot>> supplier) {}
-        @Override public Option<AggregatedReachabilitySnapshot> bestSnapshot() {return Option.none();}
     }
 
     /// Network test double that returns a fixed connectedPeers snapshot — extends

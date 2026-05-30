@@ -2133,7 +2133,7 @@ Get aggregated cluster status including node health, slice deployment info, and 
   "uptimeSeconds": 86400
 }
 ```
-Per-node fields: `kvState` is the authoritative FSM state read directly from KV-Store (`NodeLifecycleState`: `JOINING` / `ON_DUTY` / `DRAINING` / `DECOMMISSIONED` / `FAILED_DRAIN`; `SHUTTING_DOWN` normalized to `DRAINING`; empty string when no KV entry exists yet). `derivedStatus` is the operator-visible projection of KV ∪ SWIM ∪ aggregated reachability ∪ quorum, with route-layer downgrade to `UNKNOWN` when a quorum of observers reports UNREACHABLE even though KV still says ON_DUTY. See `aether/docs/specs/state-authority.md`.
+Per-node fields: `kvState` is the authoritative FSM state read directly from KV-Store (`NodeLifecycleState`: `JOINING` / `ON_DUTY` / `DRAINING` / `DECOMMISSIONED` / `FAILED_DRAIN`; `SHUTTING_DOWN` normalized to `DRAINING`; empty string when no KV entry exists yet). `derivedStatus` is the operator-visible projection of KV ∪ SWIM ∪ quorum. See `aether/docs/specs/state-authority.md`.
 
 ### POST /api/cluster/config
 

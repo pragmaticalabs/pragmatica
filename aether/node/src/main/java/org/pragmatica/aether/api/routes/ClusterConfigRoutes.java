@@ -35,7 +35,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
-import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -155,8 +154,6 @@ public final class ClusterConfigRoutes implements RouteSource {
     private static List<ClusterStatusNodeInfo> buildNodeInfos(ManageableNode node, String leaderId) {
         var leaderOpt = node.leader();
         var view = node.membershipView();
-        var reachabilitySnapshot = node.metricsCollector().lastReachabilitySnapshot();
-        var selfId = node.self();
         // RC1 membership-v2: per-peer state sourced from the NTT-derived generation
         // snapshot's
         // `coreMembers` lifecycle enum (mirrors StatusRoutes.lifecycleStateMap). Empty when no
@@ -170,8 +167,6 @@ public final class ClusterConfigRoutes implements RouteSource {
                    .map(nid -> toStatusNodeInfo(nid,
                                                 leaderOpt,
                                                 view,
-                                                reachabilitySnapshot,
-                                                selfId,
                                                 kvStateMap.getOrDefault(nid, ""),
                                                 leaderId))
                    .toList();
@@ -180,22 +175,14 @@ public final class ClusterConfigRoutes implements RouteSource {
     private static ClusterStatusNodeInfo toStatusNodeInfo(NodeId nid,
                                                           Option<NodeId> leaderOpt,
                                                           MembershipView view,
-                                                          Option<AggregatedReachabilitySnapshot> reachabilitySnapshot,
-                                                          NodeId selfId,
                                                           String kvState,
                                                           String leaderId) {
-        // derivedStatus — operator-visible projection of KV ∪ SWIM ∪ aggregated reachability ∪ quorum,
-        // mirrors StatusRoutes.toNodeInfo. ROUTE-LAYER DOWNGRADE: if KV says ON_DUTY but a quorum of
-        // observers reports UNREACHABLE in the latest aggregated snapshot, we show UNKNOWN here so
-        // operator dashboards stop trusting a peer the cluster has consensus-lost.
+        // derivedStatus — operator-visible projection of KV ∪ SWIM ∪ quorum,
+        // mirrors StatusRoutes.toNodeInfo.
         var status = view.statusOf(nid);
-        var transportLag = status == MembershipView.MemberStatus.ON_DUTY && !nid.equals(selfId) && reachabilitySnapshot.fold(() -> false,
-                                                                                                                             s -> !s.isReachable(nid));
-        var derivedStatus = transportLag
+        var derivedStatus = status == MembershipView.MemberStatus.UNTRACKED
                             ? "UNKNOWN"
-                            : (status == MembershipView.MemberStatus.UNTRACKED
-                               ? "UNKNOWN"
-                               : status.name());
+                            : status.name();
         // TODO (follow-up): role is still hardcoded "core" — should read from ActivationDirectiveValue
         // in kvStore (see StatusRoutes.collectNodeRoles). Out of scope for the state-authority split.
         return new ClusterStatusNodeInfo(nid.id(),

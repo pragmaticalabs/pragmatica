@@ -19,7 +19,6 @@ import org.pragmatica.aether.api.ManagementApiResponses.ReadinessResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.StatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.WhoamiResponse;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
-import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.handler.security.Role;
@@ -124,12 +123,6 @@ public final class StatusRoutes implements RouteSource {
         var allNodeIds = new LinkedHashSet<NodeId>();
         topologyNodes.forEach(allNodeIds::add);
         view.snapshot().keySet().forEach(allNodeIds::add);
-        // RC1 reachability-aggregator landing: replace per-reader local QUIC view
-        // with cluster-canonical snapshot from the leader. Cold-start fallback
-        // (snapshot Option.none()): no transport downgrade — peers report KV
-        // status directly. See aether/docs/specs/reachability-aggregator-spec.md
-        // Layer 5.
-        var reachabilitySnapshot = node.metricsCollector().lastReachabilitySnapshot();
         var selfId = node.self();
         // RC1 membership-v2: per-peer state sourced from the NTT-derived generation
         // snapshot's `coreMembers`
@@ -140,8 +133,6 @@ public final class StatusRoutes implements RouteSource {
         var nodeInfos = allNodeIds.stream().map(nodeId -> toNodeInfo(view,
                                                                      nodeId,
                                                                      leader,
-                                                                     reachabilitySnapshot,
-                                                                     selfId,
                                                                      kvStateMap.getOrDefault(nodeId, ""))).toList();
         var quorate = leader.isPresent() && nodeInfos.size() >= quorumOf(nodeInfos.size());
         var cluster = new ClusterInfo(nodeInfos.size(), leaderId, quorate, nodeInfos);
@@ -180,27 +171,13 @@ public final class StatusRoutes implements RouteSource {
     private static NodeInfo toNodeInfo(MembershipView view,
                                        NodeId nodeId,
                                        Option<NodeId> leader,
-                                       Option<AggregatedReachabilitySnapshot> reachabilitySnapshot,
-                                       NodeId selfId,
                                        String kvState) {
         var isLeader = leader.map(l -> l.equals(nodeId)).or(false);
         var status = view.statusOf(nodeId);
-        // kvState — authoritative FSM state (KV-direct), independent of SWIM / reachability overlay.
+        // kvState — authoritative FSM state (KV-direct), independent of SWIM overlay.
         // Empty string when no KV entry exists (peer known only via SWIM in the JOINING/transient window).
         // See aether/docs/specs/state-authority.md for the kvState vs derivedStatus contract.
-        // derivedStatus — operator-visible projection of KV ∪ SWIM ∪ aggregated reachability ∪ quorum.
-        // ROUTE-LAYER DOWNGRADE (intentional, belt-and-suspenders on top of MembershipView): if KV says
-        // ON_DUTY but a quorum of observers reports UNREACHABLE in the latest aggregated snapshot, we show
-        // UNKNOWN here so operator dashboards stop trusting a peer the cluster has consensus-lost. The FSM
-        // hasn't yet written a transition (DRAINING/STOPPED), so kvState above still reflects
-        // ON_DUTY — the divergence is intentional and the two fields disambiguate.
-        var transportLag = status == MembershipView.MemberStatus.ON_DUTY && !nodeId.equals(selfId) && reachabilitySnapshot.fold(() -> false,
-                                                                                                                                s -> !s.isReachable(nodeId));
-
-        if (transportLag) {
-            return new NodeInfo(nodeId.id(), isLeader, kvState, "UNKNOWN");
-        }
-
+        // derivedStatus — operator-visible projection of KV ∪ SWIM ∪ quorum.
         var derivedStatus = status == MembershipView.MemberStatus.UNTRACKED
                             ? "UNKNOWN"
                             : status.name();
