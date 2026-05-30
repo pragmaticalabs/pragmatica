@@ -330,11 +330,18 @@ public final class LeaderReconciler {
         // exactly once.
         var effective = effectiveCapacity(currentMembers);
 
-        // Arm-after-first-full-membership latch (Bug C; membership-unification-spec P5 —
-        // identity-aware reconciler). Latch true the first time the cluster is observed at
-        // full configured membership; never resets. configuredCoreCount must be >= 1 to be
-        // armable (an unset/0 configured count is never a real "full" target).
-        if (configuredCoreCount >= 1 && clusterMembershipCount >= configuredCoreCount) {
+        // Arm-after-first-quorum latch (Bug C; membership-unification-spec P5 — identity-aware
+        // reconciler, approximated by a quorum latch). Latch true the first time the cluster is
+        // observed at configured QUORUM (not full membership); never resets. Arming at quorum
+        // rather than full `configuredCoreCount` lets a quorum-holding leader auto-heal after a
+        // multi-node kill where only the survivors remain and the dead peers (restart:"no") never
+        // return — the process never re-observes full membership, so a full-count latch wedges
+        // forever. A quorum-holding elected leader has by definition passed cold-start formation,
+        // so a sustained sub-full deficit means departure, not slow-join. The cold-start phantom-
+        // provisioning window is bounded by the leader-activation reconcile delay
+        // (nttDepartureTimeout × 1.5), by which time formation has completed. configuredCoreCount
+        // must be >= 1 to be armable.
+        if (configuredCoreCount >= 1 && clusterMembershipCount >= quorumThreshold(configuredCoreCount)) {
             armedForProvisioning.set(true);
         }
 
