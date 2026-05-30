@@ -112,6 +112,7 @@ class SwimNewVariantsTest {
                 case SwimObservation.FaultyObserved _ -> handled.add("faulty");
                 case SwimObservation.DepartedObserved _ -> handled.add("departed");
                 case SwimObservation.UnknownObserved _ -> handled.add("unknown");
+                case SwimObservation.MemberDiscovered _ -> handled.add("member-discovered");
                 case JoinAnnounced ja -> handled.add("join-announced:" + ja.clusterName());
             }
 

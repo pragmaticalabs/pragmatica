@@ -66,6 +66,12 @@ public interface ClusterNetwork {
     /// (FAULTY or UNKNOWN in SWIM) are skipped during reconnect attempts.
     default void setSwimHealthGate(Function<NodeId, Boolean> gate) {}
 
+    /// Register a callback fired once the transport is bound and ready to dial/accept
+    /// connections — i.e. transport-ready, NOT consensus-quorum-ready. If the transport is
+    /// already ready when this is called, the hook runs immediately. Default best-effort for
+    /// impls without an explicit ready signal: run immediately.
+    default void whenReady(Runnable hook) { hook.run(); }
+
     @MessageReceiver
     void listNodes(ListConnectedNodes listConnectedNodes);
 

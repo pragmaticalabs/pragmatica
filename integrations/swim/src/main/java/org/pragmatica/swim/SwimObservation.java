@@ -105,4 +105,19 @@ public sealed interface SwimObservation {
             return nodeInfo.id();
         }
     }
+
+    /// Emitted whenever a node is admitted to SWIM membership (via direct ANNOUNCE OR via
+    /// gossip/probe), carrying the peer's `NodeInfo` derived for the QUIC dial set. Unlike
+    /// `JoinAnnounced` (which fires only on a directly-received ANNOUNCE), this fires for
+    /// gossip-learned members too, so the QUIC dial set sees every SWIM-known peer.
+    record MemberDiscovered(NodeInfo nodeInfo, long incarnation, byte version) implements SwimObservation {
+        public MemberDiscovered(NodeInfo nodeInfo, long incarnation) {
+            this(nodeInfo, incarnation, CURRENT_VERSION);
+        }
+
+        @Override
+        public NodeId peer() {
+            return nodeInfo.id();
+        }
+    }
 }

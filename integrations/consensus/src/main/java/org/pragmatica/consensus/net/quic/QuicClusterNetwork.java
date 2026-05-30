@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
@@ -108,6 +109,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private final Map<NodeId, PeerState> peers = new ConcurrentHashMap<>();
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private final QuicTransportMetrics quicMetrics = QuicTransportMetrics.quicTransportMetrics();
+
+    /// Transport-ready callbacks (registered via [#whenReady(Runnable)]) and the latch that
+    /// gates them. `transportReady` is distinct from `isRunning`: `isRunning` flips true at the
+    /// TOP of `startOnPort` before the server binds, whereas `transportReady` flips true only
+    /// after `server.start(port)` resolves — i.e. the node can actually dial and accept.
+    private final List<Runnable> readyHooks = new CopyOnWriteArrayList<>();
+    private final AtomicBoolean transportReady = new AtomicBoolean(false);
 
     /// Test-only fault injection: when set, this node silently drops ALL application traffic
     /// (outbound send/broadcast become no-ops; inbound frames are dropped before routing) while
@@ -380,8 +388,24 @@ public class QuicClusterNetwork implements ClusterNetwork {
         );
         return server.start(port)
                      .onSuccess(_ -> startMissingPeerReconciler())
+                     .onSuccess(_ -> fireReadyHooks())
                      .onFailure(this::onStartFailed)
                      .mapToUnit();
+    }
+
+    @Override
+    public void whenReady(Runnable hook) {
+        if (transportReady.get()) {
+            hook.run();
+        } else {
+            readyHooks.add(hook);
+        }
+    }
+
+    @Contract private void fireReadyHooks() {
+        transportReady.set(true);
+        readyHooks.forEach(Runnable::run);
+        readyHooks.clear();
     }
 
     @Override
@@ -695,7 +719,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
             // Already CONNECTING, CONNECTED, or REMOVED — nothing to do.
             return;
         }
-        var address = new InetSocketAddress(peer.address().host(), peer.address().port());
+        // Dial the resolved (SWIM-observed IP : advertised QUIC port) address when available;
+        // it defaults to peer.address() for non-SWIM-discovered peers, so behavior is unchanged
+        // there. peer.address() remains the identity/reporting address everywhere below.
+        var address = new InetSocketAddress(peer.resolvedAddress().host(), peer.resolvedAddress().port());
         client.connect(peerId, address)
               .onSuccess(conn -> onPeerConnected(conn, peer.role(), peer.address(), peer.labels()))
               .onFailure(cause -> onConnectFailed(peer, cause));

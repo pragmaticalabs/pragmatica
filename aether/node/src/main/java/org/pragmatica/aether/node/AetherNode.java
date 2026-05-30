@@ -163,6 +163,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -642,8 +643,14 @@ public interface AetherNode extends ManageableNode {
                 return managementServer.map(ManagementServer::start)
                                        .or(Promise.unitPromise())
                                        .flatMap(_ -> appHttpServer.start())
+                                       // v2 §5 cold-start fix: register SWIM start on the network's
+                                       // transport-ready signal BEFORE starting the cluster. SWIM must
+                                       // start when the QUIC transport binds — NOT after startClusterAsync()
+                                       // resolves, because clusterNode.start() resolves only on consensus
+                                       // quorum, which itself needs the peers SWIM discovers (the deadlock
+                                       // §5.4 exposed once the static dial-set seed was removed).
+                                       .onSuccess(_ -> clusterNode.network().whenReady(startSwimTrigger))
                                        .flatMap(_ -> startClusterAsync())
-                                       .onSuccess(_ -> startSwimTrigger.run())
                                        .onSuccess(_ -> log.info("Aether node {} started, cluster forming...",
                                                                 self()));
             }
@@ -1585,7 +1592,20 @@ public interface AetherNode extends ManageableNode {
                                                  (MembershipDecision.NodeDecommissioned decommissioned) -> clusterNetworkRef.departurePermanent(decommissioned.nodeId())));
         swimHealthDetector.addObservationListener(obs -> {
                                                       switch (obs) {
-            case SwimObservation.JoinAnnounced j -> clusterNetworkRef.connect(j.nodeInfo());
+            // v2 §5 formation: feed every SWIM-known peer into the TopologyObserver dial set via the
+            // canonical discovery message, routed through `delegateRouter` exactly like an inbound
+            // network `DiscoveredNodes` (`DiscoveredNodes` → `handleDiscoveredNodes` → `addNode`).
+            // Routing — rather than a direct call — dispatches on the router thread (no cross-thread
+            // `nodeStatesById` mutation) and avoids widening the narrow `TopologyManager` interface.
+            // addNode populates the dial set, requests the connection, re-evaluates quorum, and makes
+            // the peer reconcile-eligible so a failed first dial is retried. Two SWIM edges feed it:
+            // `JoinAnnounced` (a directly-received ANNOUNCE) and `MemberDiscovered` (a peer learned via
+            // SWIM membership gossip/probe — covers late joiners that missed the ANNOUNCE window). Both
+            // converge on the idempotent addNode, so the overlap is harmless.
+            case SwimObservation.JoinAnnounced j ->
+                delegateRouter.route(new NetworkMessage.DiscoveredNodes(config.self(), List.of(j.nodeInfo())));
+            case SwimObservation.MemberDiscovered m ->
+                delegateRouter.route(new NetworkMessage.DiscoveredNodes(config.self(), List.of(m.nodeInfo())));
             case SwimObservation.FaultyObserved f -> clusterNetworkRef.disconnect(new NetworkServiceMessage.DisconnectNode(f.peer()));
             case SwimObservation.DepartedObserved d -> clusterNetworkRef.departurePermanent(d.peer());
             default -> {}

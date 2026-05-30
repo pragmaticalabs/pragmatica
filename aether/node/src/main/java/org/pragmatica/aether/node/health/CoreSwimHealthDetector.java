@@ -407,9 +407,16 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private SwimHealthEvents.ProtocolReady seedAndWrap(SwimProtocol protocol,
                                                        SwimTransport transport,
                                                        GossipEncryptor encryptor) {
-        seedMembers(protocol);
+        // Register observation listeners + transport-observation emitters BEFORE seeding members.
+        // seedMembers adds the configured peers, each of which fires a `MemberDiscovered` observation
+        // (notifyMemberJoined → deliverObservation) that the AetherNode listener routes into the QUIC
+        // dial set. If seeding ran first (the prior order), those seed observations fired into an empty
+        // observationListeners list and were lost — a last-joining node (which learns its peers only
+        // from the static seed set, having missed peers' live ANNOUNCE window) then never populated its
+        // dial set and, being the higher NodeId that must initiate, never dialed — wedging cold-start.
         pendingObservationListeners.forEach(protocol::addObservationListener);
         pendingTransportObservationEmitters.forEach(protocol::addTransportObservationEmitter);
+        seedMembers(protocol);
         pendingAnnounceJoin.onPresent(call -> protocol.announceJoin(call.self(),
                                                                     call.clusterName(),
                                                                     call.incarnation(),

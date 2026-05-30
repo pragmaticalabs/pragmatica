@@ -16,6 +16,7 @@
 
 package org.pragmatica.swim;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -45,6 +46,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.Ack;
 import org.pragmatica.swim.SwimMessage.Announce;
@@ -226,7 +228,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
         var member = SwimMember.swimMember(nodeId, address);
         members.put(nodeId, member);
-        listener.onMemberJoined(member);
+        notifyMemberJoined(member);
         addMemberUpdate(member);
     }
 
@@ -348,7 +350,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             case Ping ping -> handlePing(sender, ping);
             case Ack ack -> handleAck(ack);
             case PingReq pingReq -> handlePingReq(sender, pingReq);
-            case Announce announce -> handleAnnounce(announce);
+            case Announce announce -> handleAnnounce(sender, announce);
         }
     }
 
@@ -576,7 +578,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             .onPresent(target -> relayPingReq(requesterAddress, pingReq, target));
     }
 
-    private void handleAnnounce(Announce announce) {
+    private void handleAnnounce(InetSocketAddress sender, Announce announce) {
         var expectedName = config.clusterName();
         if (!expectedName.isEmpty() && !expectedName.equals(announce.clusterName())) {
             LOG.warn("ANNOUNCE from {} rejected: cluster name mismatch (got '{}', expected '{}')",
@@ -601,8 +603,22 @@ public final class SwimProtocol implements SwimMessageHandler {
             applyNewMember(update);
         }
 
+        // Attach the dial-preferred QUIC address: the IP the ANNOUNCE datagram physically
+        // arrived from (already-resolved by the OS) combined with the peer's advertised QUIC
+        // port — NOT the SWIM source port. This lets the QUIC transport dial a concrete IP
+        // instead of synchronously re-resolving the gossiped hostname (membership v2 §5).
         deliverObservation(new SwimObservation.JoinAnnounced(
-            announce.nodeInfo(), announce.clusterName(), announce.incarnation()));
+            announce.nodeInfo().withResolvedAddress(resolvedQuicAddress(sender, announce.nodeInfo())),
+            announce.clusterName(), announce.incarnation()));
+    }
+
+    /// Derive the dial-preferred QUIC address for an announcing peer: the ANNOUNCE source IP
+    /// (resolved by the kernel) combined with the peer's advertised QUIC port. Falls back to
+    /// the advertised address when the source IP is unavailable (defensive — never NPEs).
+    private NodeAddress resolvedQuicAddress(InetSocketAddress sender, NodeInfo nodeInfo) {
+        return Option.option(sender.getAddress())
+                     .map(resolvedIp -> new NodeAddress(resolvedIp.getHostAddress(), nodeInfo.address().port()))
+                     .or(nodeInfo.address());
     }
 
     /// Derive the authoritative SWIM listen address for a peer from its `NodeInfo`.
@@ -613,6 +629,27 @@ public final class SwimProtocol implements SwimMessageHandler {
     private InetSocketAddress swimAddressFor(NodeInfo nodeInfo) {
         return new InetSocketAddress(nodeInfo.address().host(),
                                      nodeInfo.address().port() + config.swimPortOffset());
+    }
+
+    /// Notify membership-join to BOTH the membership listener and the observation channel.
+    /// The `MemberDiscovered` observation feeds the QUIC dial set so every SWIM-known peer
+    /// (gossip-learned included), not only directly-announced ones, gets dialed into the mesh.
+    @Contract
+    private void notifyMemberJoined(SwimMember member) {
+        listener.onMemberJoined(member);
+        deliverObservation(new SwimObservation.MemberDiscovered(dialInfoFor(member), member.incarnation()));
+    }
+
+    /// Derive the peer's QUIC `NodeInfo` from its SWIM probe address: the QUIC port is the
+    /// SWIM port minus `swimPortOffset` (inverse of [swimAddressFor]); prefer the kernel-resolved
+    /// IP when present (DNS-free dial), else fall back to the address host string.
+    private NodeInfo dialInfoFor(SwimMember member) {
+        var swimAddr = member.address();
+        var quicPort = swimAddr.getPort() - config.swimPortOffset();
+        var host = Option.option(swimAddr.getAddress())
+                         .map(InetAddress::getHostAddress)
+                         .or(swimAddr.getHostString());
+        return NodeInfo.nodeInfo(member.nodeId(), new NodeAddress(host, quicPort));
     }
 
     /// Send ANNOUNCE to all seeds every 500ms until quorum is reached or 60 attempts are exhausted.
@@ -698,7 +735,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         members.put(nodeId, alive);
         suspectTimestamps.remove(nodeId);
         revivalTimestamps.put(nodeId, System.currentTimeMillis());
-        listener.onMemberJoined(alive);
+        notifyMemberJoined(alive);
         addMemberUpdate(alive);
         recordHealthyAndEmit(nodeId, alive.incarnation());
         LOG.info("Member {} externally marked ALIVE (was {})", nodeId.id(), member.state());
@@ -746,7 +783,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void applyNewAliveMember(SwimMember member) {
-        listener.onMemberJoined(member);
+        notifyMemberJoined(member);
         recordHealthyAndEmit(member.nodeId(), member.incarnation());
     }
 
@@ -807,7 +844,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void notifyAlive(SwimMember updated) {
-        listener.onMemberJoined(updated);
+        notifyMemberJoined(updated);
         recordHealthyAndEmit(updated.nodeId(), updated.incarnation());
     }
 
