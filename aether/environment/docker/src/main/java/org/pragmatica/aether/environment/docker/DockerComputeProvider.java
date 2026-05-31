@@ -241,6 +241,13 @@ import static org.pragmatica.lang.Result.success;
         }
         propagateEnvVar(command, "AETHER_CLUSTER_SECRET");
         propagateEnvVar(command, "AETHER_DOCKER_NETWORK");
+        // Propagate AETHER_CLUSTER_NAME so a provider-minted replacement (which has no
+        // compose env and, in compose-only deploys, no seeded ClusterConfigValue) can
+        // resolve its own cluster identity and, if it becomes leader, mint the next
+        // replacement under the correct cluster name + `aether.cluster` label. Without
+        // this the env goes dark one generation deep → `clusterOrDefault` falls back to
+        // "default" → `aether-default-node-*` containers with no cluster label.
+        propagateEnvVar(command, "AETHER_CLUSTER_NAME");
         // Propagate DOCKER_GID so a provider-minted replacement (which has no compose
         // env) can itself resolve `docker_gid = "${env:DOCKER_GID}"` and provision the
         // next replacement if it becomes leader. Without this, an unset DOCKER_GID leaves
