@@ -57,9 +57,17 @@ cluster_member_count() {
     fi
     # Fallback: topology endpoint (legacy behaviour, used when generation
     # snapshot is unavailable — cold cluster pre-projection).
-    local response
+    #
+    # `json_value` can emit MULTIPLE lines when the degraded response repeats
+    # the `coreCount` key (its sed `p` prints once per match), and emits empty
+    # on a malformed/partial body. Either leaks into the caller's
+    # `[ $(cluster_member_count) -eq N ]` predicate as multiple tokens / empty,
+    # tripping `[: too many arguments` (rc=2). Coerce to a single integer here:
+    # first line only, digits only, default 0 — so the value is always one int.
+    local response fallback
     response=$(direct_api_get "/api/cluster/topology" 2>/dev/null)
-    json_value "$response" "coreCount" 2>/dev/null || echo "0"
+    fallback=$(json_value "$response" "coreCount" 2>/dev/null | head -1 | tr -cd '0-9')
+    printf '%s\n' "${fallback:-0}"
 }
 
 cluster_leader() {
@@ -614,14 +622,31 @@ wait_for_cluster() {
 
 # Wait for cluster using direct node access (before LB is available)
 wait_for_cluster_direct() {
+    # connected_peers_direct() coerces the /api/health connectedPeers capture to a
+    # single integer (default 0), so the predicate is always `[ <int> -ge 2 ]` and
+    # can never word-split into "too many arguments" on a degraded/empty body.
     wait_for "cluster healthy (direct)" \
-        "[ \$(json_value \"\$(curl -sfk -H 'X-API-Key: ${API_KEY}' http://${TARGET_HOST}:${MGMT_PORT}/api/health 2>/dev/null)\" connectedPeers 2>/dev/null || echo 0) -ge 2 ]" \
+        '[ "$(connected_peers_direct)" -ge 2 ]' \
         "${1:-120}"
+}
+
+# Single-integer connectedPeers reading via direct node /api/health. Always emits
+# exactly one integer (first match, digits only, 0 when empty/malformed) so it is
+# safe to embed unquoted-or-quoted in a numeric `[ ]` test.
+connected_peers_direct() {
+    local body n
+    body=$(curl -sfk -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${MGMT_PORT}/api/health" 2>/dev/null || true)
+    n=$(json_value "$body" connectedPeers 2>/dev/null | head -1 | tr -cd '0-9')
+    printf '%s\n' "${n:-0}"
 }
 
 wait_for_node_count() {
     local expected="$1" timeout="${2:-120}"
-    wait_for "${expected} nodes" "[ \$(cluster_member_count) -eq ${expected} ]" "$timeout"
+    # cluster_member_count() now always emits exactly one integer, so the quoted
+    # substitution yields `[ "<int>" -eq N ]` — never multi-token. The quotes are
+    # belt-and-suspenders against any future count path that regresses to empty
+    # or multi-line output (which previously tripped `[: too many arguments`).
+    wait_for "${expected} nodes" "[ \"\$(cluster_member_count)\" -eq ${expected} ]" "$timeout"
 }
 
 # Faster variant of wait_for_node_count for tight scaling polls (test-02/03 scale up/down).
