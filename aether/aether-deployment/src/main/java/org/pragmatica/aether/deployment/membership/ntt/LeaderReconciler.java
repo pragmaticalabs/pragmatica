@@ -110,6 +110,7 @@ public final class LeaderReconciler {
     private final AtomicBoolean rescheduleRequested = new AtomicBoolean(false);
     private final AtomicBoolean armedForProvisioning = new AtomicBoolean(false);
     private final AtomicReference<ScheduledFuture<?>> activationFutureRef = new AtomicReference<>();
+    private final AtomicReference<ScheduledFuture<?>> inFlightSweepFutureRef = new AtomicReference<>();
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
     private final ConcurrentHashMap<NodeId, Long> inFlightProvisioning = new ConcurrentHashMap<>();
     /// Leader-side confirmed-death co-confirmation tracker (NTT hard-evict fast path).
@@ -195,6 +196,7 @@ public final class LeaderReconciler {
             return;
         }
         cancelPendingActivation();
+        cancelInFlightSweep();
         inFlightProvisioning.clear();
         swimFaulty.clear();
         livenessGone.clear();
@@ -527,6 +529,7 @@ public final class LeaderReconciler {
     @Contract
     private void dispatchSingleProvision(long nowNanos, NodeId placeholder, Set<NodeId> currentMembers) {
         inFlightProvisioning.put(placeholder, nowNanos);
+        armInFlightSweep();
         ctm.provisionReplacement(Option.none(), currentMembers).onFailure(cause -> inFlightProvisioning.remove(placeholder));
     }
 
@@ -547,12 +550,63 @@ public final class LeaderReconciler {
         inFlightProvisioning.entrySet().removeIf(entry -> nowNanos - entry.getValue() > expiryThresholdNanos);
     }
 
+    /// Arm a single self-rescheduling one-shot sweep that purges expired in-flight provisioning
+    /// entries. The periodic full-reconcile tick was deliberately removed (it caused over-
+    /// provisioning storms); this sweep is NOT that tick — it fires ONLY while in-flight entries
+    /// exist and self-cancels once the map drains. It exists for the case where a provisioned
+    /// replacement boots then dies before reaching READY: the SWIM/QUIC churn that would re-enter
+    /// the event-triggered reconcile stops, so without this sweep the placeholder never expires and
+    /// the deficit is never re-seen. Idempotent: at most one outstanding sweep future via the
+    /// null-check + CAS guard, so a concurrent `dispatchSingleProvision` cannot orphan a timer.
+    @Contract
+    private void armInFlightSweep() {
+        if (inFlightSweepFutureRef.get() != null) {
+            return;
+        }
+        var future = scheduler.schedule(this::runInFlightSweep, inFlightExpiry);
+
+        if (!inFlightSweepFutureRef.compareAndSet(null, future)) {
+            future.cancel(false);
+        }
+    }
+
+    /// Sweep tick: purge expired in-flight entries, re-trigger reconcile if a slot was reclaimed
+    /// (so the deficit is re-evaluated), and re-arm only while in-flight entries remain. Re-arms
+    /// via [`#armInFlightSweep`] (NOT a bare ref set) so a concurrently-armed future is never
+    /// orphaned — the ref is nulled at the top, then `armInFlightSweep` arms cleanly or no-ops if a
+    /// concurrent dispatch already armed.
+    @Contract
+    private void runInFlightSweep() {
+        inFlightSweepFutureRef.set(null);
+        if (!isLeader.get()) {
+            return;
+        }
+        var before = inFlightProvisioning.size();
+
+        evictExpiredInFlightEntries(timeSource.nanoTime());
+        if (inFlightProvisioning.size() < before) {
+            triggerReconcile(ReconcileTrigger.NTT_FIRE);
+        }
+        if (!inFlightProvisioning.isEmpty()) {
+            armInFlightSweep();
+        }
+    }
+
     @Contract
     private void cancelPendingActivation() {
         var prev = activationFutureRef.getAndSet(null);
 
         if (prev != null) {
             prev.cancel(false);
+        }
+    }
+
+    @Contract
+    private void cancelInFlightSweep() {
+        var sweep = inFlightSweepFutureRef.getAndSet(null);
+
+        if (sweep != null) {
+            sweep.cancel(false);
         }
     }
 

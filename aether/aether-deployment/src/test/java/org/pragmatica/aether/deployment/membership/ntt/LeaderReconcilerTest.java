@@ -546,6 +546,118 @@ class LeaderReconcilerTest {
     }
 
     @Nested
+    class InFlightDeathSweep {
+        /// Boot-then-die replacement: a provisioned node never reaches READY and its SWIM/QUIC
+        /// churn stops, so the event-triggered reconcile is never re-entered. The self-rescheduling
+        /// sweep (armed at provision-dispatch) must purge the expired placeholder and re-evaluate
+        /// the still-present deficit — re-provisioning a fresh replacement — without any external
+        /// event. This is the bug fix: previously the deficit was never re-seen and the cluster
+        /// stuck at 4/5 forever.
+        @Test
+        void deadReplacement_sweepPurgesPlaceholder_andReProvisions() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(reconciler.isArmedForProvisioning()).isTrue();
+
+            // Drop one peer → one provision dispatched; a sweep future is armed.
+            removePeers(PEER_D);
+            reconciler.onTopologyUnhealthy();
+            fireDebouncedReconcile();
+            assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+            assertThat(scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY)).hasSize(1);
+            listener.clear();
+
+            // The replacement boots then dies (never re-joins NTT). No further events arrive.
+            // Advance past the expiry window and fire the armed sweep runnable directly.
+            timeSource.advanceTimeMillis(EXPECTED_INFLIGHT_EXPIRY.millis() + 1);
+            scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY).getFirst().runIfLive();
+
+            // Sweep re-triggered reconcile (NTT_FIRE) on the debounce delay — fire it.
+            fireDebouncedReconcile();
+
+            // Placeholder purged and a SECOND provision dispatched (deficit re-evaluated).
+            assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
+            assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+        }
+
+        /// No-double-provision: if the real node joins before the sweep fires, the sweep purges the
+        /// stale placeholder but the over-count guard suppresses a second provision (effective ==
+        /// configured). Confirms the re-trigger cannot double-provision a node that joined meanwhile.
+        @Test
+        void replacementJoinedBeforeSweep_purgesPlaceholder_noSecondProvision() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            removePeers(PEER_D);
+            reconciler.onTopologyUnhealthy();
+            fireDebouncedReconcile();
+            assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+            listener.clear();
+
+            // The real node joins (back to confirmed=5) before the sweep fires.
+            seedClusterWithPeers(NodeId.randomNodeId());
+            timeSource.advanceTimeMillis(EXPECTED_INFLIGHT_EXPIRY.millis() + 1);
+            scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY).getFirst().runIfLive();
+            fireDebouncedReconcile();
+
+            // Placeholder purged; no second provision — effective == configured.
+            assertThat(reconciler.inFlightProvisioningCount()).isZero();
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
+        /// Self-cancel: once the in-flight map drains, the sweep does not re-arm. A subsequent
+        /// sweep fire while empty arms no replacement and schedules no further sweep.
+        @Test
+        void sweepSelfCancels_whenInFlightMapEmpties() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            removePeers(PEER_D);
+            reconciler.onTopologyUnhealthy();
+            fireDebouncedReconcile();
+            assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
+            var armedSweeps = scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY).size();
+
+            // The real node joins so the deficit is gone; purge the placeholder via the sweep.
+            seedClusterWithPeers(NodeId.randomNodeId());
+            timeSource.advanceTimeMillis(EXPECTED_INFLIGHT_EXPIRY.millis() + 1);
+            scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY).getFirst().runIfLive();
+            fireDebouncedReconcile();
+            assertThat(reconciler.inFlightProvisioningCount()).isZero();
+
+            // Map empty → no new sweep future scheduled beyond the ones already created.
+            assertThat(scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY)).hasSize(armedSweeps);
+        }
+
+        /// Deactivation cancels the armed sweep so a deposed leader's timer does not fire.
+        @Test
+        void deactivate_cancelsArmedSweep() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            removePeers(PEER_D);
+            reconciler.onTopologyUnhealthy();
+            fireDebouncedReconcile();
+            var sweep = scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY).getFirst();
+
+            reconciler.deactivate();
+
+            assertThat(sweep.cancelled()).isTrue();
+            assertThat(reconciler.inFlightProvisioningCount()).isZero();
+        }
+    }
+
+    @Nested
     class DrainSafetyFloor {
         /// Defect 1 (double-count): a freshly provisioned replacement appears in BOTH the
         /// membership view AND the in-flight provisioning map within the expiry window.
