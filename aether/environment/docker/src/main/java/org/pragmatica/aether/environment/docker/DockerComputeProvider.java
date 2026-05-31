@@ -241,7 +241,14 @@ import static org.pragmatica.lang.Result.success;
         }
         propagateEnvVar(command, "AETHER_CLUSTER_SECRET");
         propagateEnvVar(command, "AETHER_DOCKER_NETWORK");
-        if (!config.dockerGid().isEmpty()) {
+        // Propagate DOCKER_GID so a provider-minted replacement (which has no compose
+        // env) can itself resolve `docker_gid = "${env:DOCKER_GID}"` and provision the
+        // next replacement if it becomes leader. Without this, an unset DOCKER_GID leaves
+        // the literal `${env:DOCKER_GID}` unresolved → `--group-add` fails (exit 125).
+        propagateEnvVar(command, "DOCKER_GID");
+        // Defense-in-depth: never pass an unresolved `${env:...}` literal to `--group-add`
+        // (docker rejects it pre-start with exit 125). Treat it as absent.
+        if (!config.dockerGid().isEmpty() && !config.dockerGid().startsWith("${env:")) {
             command.add("--group-add");
             command.add(config.dockerGid());
         }
