@@ -153,6 +153,24 @@ class ClusterSyncFsmTest {
             assertThat(harness.fsm().current()).isInstanceOf(ClusterSyncState.Pinging.class);
             assertThat(network.sent()).isEmpty();
         }
+
+        @Test
+        void pingTick_connectedPeerAbsentFromTopology_isStillPinged() {
+            // #34: a node present on the transport (connectedPeers) but missing from the
+            // lossy delta-fed topology cache (its NodeJoined edge lost during a quorum flap)
+            // must still be pinged — effectiveTargets() unions topology with connectedPeers.
+            var network = new ConfigurableConnectedNetwork(Set.of(PEER_A, PEER_B));
+            var harness = buildFsmHarness(network, HealthSignalSink.noop());
+            // Topology knows SELF and PEER_A only — PEER_B is transport-connected but absent.
+            harness.context().setTopology(List.of(SELF, PEER_A));
+            harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
+
+            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
+
+            assertThat(network.sent())
+                .as("union of topology and connectedPeers — PEER_B pinged despite missing topology edge")
+                .containsExactlyInAnyOrder(PEER_A, PEER_B);
+        }
     }
 
     @Nested

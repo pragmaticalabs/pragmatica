@@ -73,8 +73,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private record AnnounceJoinCall(NodeInfo self,
                                     String clusterName,
                                     long incarnation,
-                                    List<InetSocketAddress> seeds,
-                                    BooleanSupplier quorumReached) {}
+                                    List<InetSocketAddress> seeds) {}
 
     private CoreSwimHealthDetector(SwimHealthContext context, SwimConfig swimConfig) {
         this.context = context;
@@ -334,10 +333,9 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     public void announceJoin(NodeInfo self,
                              String clusterName,
                              long incarnation,
-                             List<InetSocketAddress> seeds,
-                             BooleanSupplier quorumReached) {
-        pendingAnnounceJoin = option(new AnnounceJoinCall(self, clusterName, incarnation, seeds, quorumReached));
-        protocol().onPresent(p -> p.announceJoin(self, clusterName, incarnation, seeds, quorumReached));
+                             List<InetSocketAddress> seeds) {
+        pendingAnnounceJoin = option(new AnnounceJoinCall(self, clusterName, incarnation, seeds));
+        protocol().onPresent(p -> p.announceJoin(self, clusterName, incarnation, seeds));
     }
 
     public SwimHealth healthOf(NodeId nodeId) {
@@ -414,8 +412,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         pendingAnnounceJoin.onPresent(call -> protocol.announceJoin(call.self(),
                                                                     call.clusterName(),
                                                                     call.incarnation(),
-                                                                    call.seeds(),
-                                                                    call.quorumReached()));
+                                                                    call.seeds()));
 
         return new SwimHealthEvents.ProtocolReady(protocol, transport, encryptor);
     }

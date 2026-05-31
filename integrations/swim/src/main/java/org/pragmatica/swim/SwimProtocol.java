@@ -104,6 +104,13 @@ public final class SwimProtocol implements SwimMessageHandler {
     private final AtomicLong sequenceCounter = new AtomicLong(0);
     private final AtomicReference<Option<ScheduledFuture<?>>> tickFuture = new AtomicReference<>(none());
     private final AtomicInteger probeIndex = new AtomicInteger(0);
+    /// Single false->true latch set on the first inbound SWIM Ping (proof a peer
+    /// has acknowledged this node). Read by [#runAnnounceAttempt] on the scheduler
+    /// thread to cancel the join-announce loop once self is acknowledged — fixes a
+    /// replacement joining an already-quorate cluster never sending an ANNOUNCE
+    /// because the quorum predicate is satisfied at join time. Volatile: written on
+    /// the message thread, read on the scheduler thread.
+    private volatile boolean inboundProbeReceived = false;
     private final Map<NodeId, Long> revivalTimestamps = new ConcurrentHashMap<>();
     /// Per-peer "ever observed HEALTHY at least once" flag. Cold-boot suppression:
     /// a never-healthy peer is emitted as `UnknownObserved` instead of `FaultyObserved`
@@ -541,6 +548,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     // -- Message handlers --
 
     private void handlePing(InetSocketAddress sender, Ping ping) {
+        inboundProbeReceived = true;
         processPiggyback(ping.piggyback());
         var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback());
         var ack = Ack.ack(selfId, ping.sequence(), piggyback);
@@ -652,15 +660,15 @@ public final class SwimProtocol implements SwimMessageHandler {
         return NodeInfo.nodeInfo(member.nodeId(), new NodeAddress(host, quicPort));
     }
 
-    /// Send ANNOUNCE to all seeds every 500ms until quorum is reached or 60 attempts are exhausted.
+    /// Send ANNOUNCE to all seeds every 500ms until this node is acknowledged by a peer or 60 attempts are exhausted.
     ///
-    /// Runs on the shared scheduler. Stops when `quorumReached` returns true or after 60 attempts (30s).
+    /// Runs on the shared scheduler. Stops once this node is acknowledged by a peer (inbound probe) or after 60 attempts (30s).
     @Contract public void announceJoin(NodeInfo self, String clusterName, long incarnation,
-                                       List<InetSocketAddress> seeds, BooleanSupplier quorumReached) {
+                                       List<InetSocketAddress> seeds) {
         var attempts = new AtomicInteger(0);
         var future = new AtomicReference<ScheduledFuture<?>>();
         var task = SharedScheduler.scheduleAtFixedRate(
-            () -> runAnnounceAttempt(self, clusterName, incarnation, seeds, quorumReached, attempts, future),
+            () -> runAnnounceAttempt(self, clusterName, incarnation, seeds, attempts, future),
             TimeSpan.timeSpan(500).millis());
         future.set(task);
     }
@@ -682,10 +690,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void runAnnounceAttempt(NodeInfo self, String clusterName, long incarnation,
-                                    List<InetSocketAddress> seeds, BooleanSupplier quorumReached,
+                                    List<InetSocketAddress> seeds,
                                     AtomicInteger attempts, AtomicReference<ScheduledFuture<?>> future) {
-        if (quorumReached.getAsBoolean()) {
-            cancelAnnounce(future, self, "quorum reached");
+        if (inboundProbeReceived) {
+            cancelAnnounce(future, self, "self acknowledged by peer");
             return;
         }
 

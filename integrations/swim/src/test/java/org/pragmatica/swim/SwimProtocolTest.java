@@ -444,6 +444,75 @@ class SwimProtocolTest {
         }
     }
 
+    /// Join-announce loop must not self-suppress on an already-quorate cluster (#34).
+    /// A replacement joining a quorate cluster previously had its ANNOUNCE cancelled by a
+    /// quorum-reached check before it ever sent one, so the leader never saw the replacement.
+    /// The corrected design has NO quorum stop condition: a node keeps announcing until IT is
+    /// acknowledged by a peer (proven by an inbound SWIM Ping) or the 60-attempt cap is hit.
+    @Nested
+    class AnnounceSelfSuppression {
+        private RecordingTransport transport;
+        private RecordingListener listener;
+        private SwimProtocol protocol;
+
+        @BeforeEach
+        void setUp() {
+            transport = new RecordingTransport();
+            listener = new RecordingListener();
+            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+                                   .fold(cause -> null, v -> v);
+        }
+
+        @Test
+        void announceJoin_notYetAcknowledged_sendsAnnounce() throws InterruptedException {
+            // No quorum signal exists any more — the only stop conditions are inbound-probe and the cap.
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            // First scheduled attempt fires at 500ms; wait until at least one ANNOUNCE is sent.
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+
+            assertThat(announceCount(transport))
+                .as("ANNOUNCE must be sent until self is acknowledged by a peer — no quorum can suppress it")
+                .isGreaterThanOrEqualTo(1);
+        }
+
+        @Test
+        void announceJoin_inboundPingReceived_cancelsAnnounceLoop() throws InterruptedException {
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+            assertThat(announceCount(transport)).isGreaterThanOrEqualTo(1);
+
+            // Deliver an inbound Ping through the real receive path — sets inboundProbeReceived.
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of()));
+
+            // The loop must stop announcing on the next tick: count freezes after the latch is set.
+            var afterPing = announceCount(transport);
+            Thread.sleep(1_200L); // span at least two 500ms announce ticks
+            assertThat(announceCount(transport))
+                .as("announce loop must cancel on the tick following an inbound Ping (self acknowledged)")
+                .isEqualTo(afterPing);
+        }
+
+        private static int announceCount(RecordingTransport transport) {
+            return (int) transport.sentMessages.stream()
+                                               .filter(m -> m.message() instanceof Announce)
+                                               .count();
+        }
+
+        private static void waitUntil(java.util.function.BooleanSupplier condition, long timeoutMs)
+            throws InterruptedException {
+            var deadline = System.currentTimeMillis() + timeoutMs;
+            while (!condition.getAsBoolean() && System.currentTimeMillis() < deadline) {
+                Thread.sleep(25L);
+            }
+        }
+
+        private static NodeInfo nodeInfoFor(NodeId id, InetSocketAddress addr) {
+            return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress(addr.getHostString(), addr.getPort()).unwrap());
+        }
+    }
+
     @Nested
     class LifecycleTests {
         private RecordingTransport transport;

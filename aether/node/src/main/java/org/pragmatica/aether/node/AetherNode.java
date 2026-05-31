@@ -1479,15 +1479,12 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                            .host(),
                                                                                                                                                           n.address()
                                                                                                                                                            .port() + CoreSwimHealthDetector.SWIM_PORT_OFFSET)).toList();
-        var quorumThreshold = announceTopology.coreNodes().size() / 2 + 1;
         Runnable announceJoinTrigger = selfNodeInfo == null
                                        ? () -> {}
                                        : () -> swimHealthDetector.announceJoin(selfNodeInfo,
                                                                                swimConfig.clusterName(),
                                                                                System.currentTimeMillis(),
-                                                                               swimSeeds,
-                                                                               () -> clusterNode.network()
-                                                                                                .connectedNodeCount() + 1 >= quorumThreshold);
+                                                                               swimSeeds);
         // SWIM start is deferred to transport-ready (invoked from the boot chain after
         // `startClusterAsync()`), NOT gated on quorum — see `startSwim` doc. This trigger
         // closes over the encryptor + announce trigger that are only in scope here.

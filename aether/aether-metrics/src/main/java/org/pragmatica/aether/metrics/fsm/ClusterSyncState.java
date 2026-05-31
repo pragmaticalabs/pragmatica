@@ -18,6 +18,7 @@ import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
 
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ScheduledFuture;
@@ -160,10 +161,13 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
         }
 
         private List<NodeId> effectiveTargets() {
-            var topology = ctx.topology();
-            return topology.isEmpty()
-                  ? List.copyOf(ctx.connectedPeers())
-                  : topology;
+            // Union (dedup, order-stable) of the delta-fed topology cache and the live
+            // transport peers: a node present on the transport but missing from the lossy
+            // topology cache (e.g. its NodeJoined edge was lost during a quorum flap) must
+            // still be pinged. ctx.self() exclusion happens downstream in dispatchPings.
+            var union = new LinkedHashSet<>(ctx.topology());
+            union.addAll(ctx.connectedPeers());
+            return List.copyOf(union);
         }
 
         private void dispatchPings(List<NodeId> topology,
