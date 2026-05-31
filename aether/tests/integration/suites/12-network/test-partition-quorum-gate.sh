@@ -85,20 +85,19 @@ NETWORK_NAME="aether-${CLUSTER_ID:-b}-network"
 MINORITY_FILE="/tmp/s05-minority-ids.$$"
 LEADER_FILE="/tmp/s05-leader.$$"
 
-# Query the KV-backed lifecycle endpoint for a specific node and extract
-# the state string. Returns one of JOINING / ON_DUTY / DRAINING /
-# DECOMMISSIONED / FAILED_DRAIN / SHUTTING_DOWN, or empty when the KV
-# atom is absent (404).
+# Query the lifecycle endpoint for a specific node and extract the reported
+# state string. Returns one of SYNCING / READY / DRAINING (NodeReportedState),
+# or empty when the node is unknown to membership (404). v2 has no terminal
+# lifecycle state — a removed node is simply ABSENT (empty here, and gone from
+# /api/nodes/status cluster.nodes[]).
 #
-# WHY KV-DIRECT (not /api/nodes/status): /api/nodes/status cluster.nodes[] derives
-# from MembershipView's SWIM ∪ KV overlay, where the SWIM half is
-# filtered to HEALTHY peers. During a partition the minority's SWIM
-# state on the majority side decays to FAULTY/UNKNOWN, so /api/nodes/status
-# may drop them from the view before any KV write happens. The
-# KV-direct endpoint reads NodeLifecycleKey straight out of consensus —
-# the authoritative replicated record of FSM state. If the gate is
-# doing its job, this endpoint returns ON_DUTY for the entire partition
-# window.
+# WHY the lifecycle endpoint (not raw /api/nodes/status parsing): the lifecycle
+# endpoint is leader-forwarded and reports the authoritative per-node reported
+# state. During a partition the minority's SWIM state on the majority side decays,
+# but the gate must keep the minority PRESENT (not removed) for the whole
+# self-drain window. If the gate is doing its job, the minority nodes remain
+# present (and READY) for the entire partition window — premature removal shows up
+# as absence from /api/nodes/status (see node_absent_from_status).
 kv_lifecycle_state() {
     local target="$1"
     local body
@@ -180,7 +179,7 @@ test_initial_state() {
     wait_for_leader 60
     local count
     count=$(cluster_active_core_count)
-    assert_eq "$count" "5" "Initial: 5 ON_DUTY healthy cores"
+    assert_eq "$count" "5" "Initial: 5 healthy cores"
 }
 
 test_pick_minority() {
@@ -222,42 +221,42 @@ test_partition_does_not_decommission_within_window() {
         return 1
     fi
 
-    # Pre-partition baseline: both minority nodes MUST currently read as
-    # ON_DUTY in KV. If they don't, the test premise is invalid (we'd be
-    # asserting "no transition to DECOMMISSIONED" on a node that wasn't
-    # ON_DUTY to begin with).
+    # Pre-partition baseline: both minority nodes MUST currently report as
+    # READY. If they don't, the test premise is invalid (we'd be asserting
+    # "node is not prematurely removed" on a node that wasn't a healthy
+    # member to begin with).
     local pre1 pre2
     pre1=$(kv_lifecycle_state "$m1")
     pre2=$(kv_lifecycle_state "$m2")
-    assert_eq "$pre1" "ON_DUTY" "Pre-partition: ${m1} reads ON_DUTY in KV"
-    assert_eq "$pre2" "ON_DUTY" "Pre-partition: ${m2} reads ON_DUTY in KV"
+    assert_eq "$pre1" "READY" "Pre-partition: ${m1} reports READY"
+    assert_eq "$pre2" "READY" "Pre-partition: ${m2} reports READY"
 
     log_info "Injecting 2-vs-3 partition for ${PARTITION_DURATION_S}s (< 8s self-drain threshold; gate is sole arbiter)"
     disconnect_node_from_network "$c1" || return 1
     disconnect_node_from_network "$c2" || return 1
 
-    # Continuous monitoring during the partition: poll the majority
-    # leader's KV view at ~1Hz and FAIL the test the instant either
-    # minority NodeId reads DECOMMISSIONED. The 1Hz cadence is fine
-    # because the gate's failure mode would manifest within 1-2 FSM
-    # cycles (≈1s each), well above our sample rate.
+    # Continuous monitoring during the partition: poll the majority leader's
+    # membership view at ~1Hz and FAIL the test the instant either minority
+    # NodeId is REMOVED from membership. v2 has no DECOMMISSIONED lifecycle
+    # state — premature removal manifests as the node disappearing from
+    # /api/nodes/status cluster.nodes[] (node_absent_from_status). The gate
+    # must keep the partitioned-but-not-confirmed-dead minority PRESENT for
+    # the whole self-drain window. The 1Hz cadence is fine because the gate's
+    # failure mode would manifest within 1-2 detection cycles (≈1s each).
     local deadline=$((SECONDS + PARTITION_DURATION_S))
     while [ $SECONDS -lt $deadline ]; do
-        local s1 s2
-        s1=$(kv_lifecycle_state "$m1")
-        s2=$(kv_lifecycle_state "$m2")
-        if [ "$s1" = "DECOMMISSIONED" ]; then
-            log_fail "S05 violation: ${m1} reached DECOMMISSIONED within the ${PARTITION_DURATION_S}s partition window. The aggregator-quorum gate (Step 4) failed to block the write — likely regression in ReachabilityGate.isConfirmedUnreachable or the snapshot-supplier wiring at AetherNode."
+        if node_absent_from_status "$m1"; then
+            log_fail "S05 violation: ${m1} was REMOVED from membership within the ${PARTITION_DURATION_S}s partition window. The aggregator-quorum gate (Step 4) failed to block the removal — likely regression in ReachabilityGate.isConfirmedUnreachable or the snapshot-supplier wiring at AetherNode."
             return 1
         fi
-        if [ "$s2" = "DECOMMISSIONED" ]; then
-            log_fail "S05 violation: ${m2} reached DECOMMISSIONED within the ${PARTITION_DURATION_S}s partition window. The aggregator-quorum gate (Step 4) failed to block the write — likely regression in ReachabilityGate.isConfirmedUnreachable or the snapshot-supplier wiring at AetherNode."
+        if node_absent_from_status "$m2"; then
+            log_fail "S05 violation: ${m2} was REMOVED from membership within the ${PARTITION_DURATION_S}s partition window. The aggregator-quorum gate (Step 4) failed to block the removal — likely regression in ReachabilityGate.isConfirmedUnreachable or the snapshot-supplier wiring at AetherNode."
             return 1
         fi
         sleep 1
     done
 
-    log_pass "S05: ${m1} and ${m2} held non-DECOMMISSIONED throughout ${PARTITION_DURATION_S}s partition (gate blocked premature writes)"
+    log_pass "S05: ${m1} and ${m2} remained PRESENT in membership throughout ${PARTITION_DURATION_S}s partition (gate blocked premature removal)"
 
     # Heal — the next test function asserts the recovery contract.
     log_info "Healing partition: reconnecting ${c1}, ${c2} to ${NETWORK_NAME}"
@@ -267,17 +266,17 @@ test_partition_does_not_decommission_within_window() {
 
 test_cluster_heals_to_5_onduty() {
     # S06 contract: within HEAL_BUDGET_S of reconnect, the cluster MUST
-    # report 5 ON_DUTY healthy cores. The reconnect happened at the tail
+    # report 5 healthy cores. The reconnect happened at the tail
     # of the previous test function, so SECONDS-relative budgeting here
     # is approximate but tight enough (run_test scheduling adds <1s).
-    if ! wait_for "5 ON_DUTY healthy cores after partition heal" \
+    if ! wait_for "5 healthy cores after partition heal" \
         "[ \$(cluster_active_core_count) -eq 5 ]" "$HEAL_BUDGET_S"; then
         local now_count
         now_count=$(cluster_active_core_count)
-        log_fail "S06 violation: cluster did not return to 5 ON_DUTY healthy cores within ${HEAL_BUDGET_S}s of partition heal (current count=${now_count}). Possible regression: post-heal SWIM/QUIC reconvergence stuck, or one of the minority nodes was incorrectly written to DECOMMISSIONED late (after the partition assertion window closed but before reconnect took effect)."
+        log_fail "S06 violation: cluster did not return to 5 healthy cores within ${HEAL_BUDGET_S}s of partition heal (current count=${now_count}). Possible regression: post-heal SWIM/QUIC reconvergence stuck, or one of the minority nodes was incorrectly removed from membership late (after the partition assertion window closed but before reconnect took effect)."
         return 1
     fi
-    assert_cluster_healthy "S06: cluster returned to 5 ON_DUTY within ${HEAL_BUDGET_S}s of partition heal"
+    assert_cluster_healthy "S06: cluster returned to 5 healthy cores within ${HEAL_BUDGET_S}s of partition heal"
 }
 
 cleanup() {
@@ -316,8 +315,8 @@ cleanup() {
 # test-joining-window-kill.sh.
 trap 'cleanup' EXIT
 
-run_test "Initial 5 ON_DUTY healthy cores" test_initial_state
+run_test "Initial 5 healthy cores" test_initial_state
 run_test "Pick minority (2 non-leaders)" test_pick_minority
 run_test "Partition holds gate within ${PARTITION_DURATION_S}s (S05: no false decommission)" test_partition_does_not_decommission_within_window
-run_test "Cluster heals to 5 ON_DUTY within ${HEAL_BUDGET_S}s (S06: partition heal)" test_cluster_heals_to_5_onduty
+run_test "Cluster heals to 5 healthy cores within ${HEAL_BUDGET_S}s (S06: partition heal)" test_cluster_heals_to_5_onduty
 print_summary

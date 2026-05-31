@@ -137,6 +137,25 @@ cluster_phase() {
 #   coreCount alone leaves the cleanup stuck for the full 1200s budget on every
 #   suite that kills the leader (observed 2026-05-22 in 02-chaos after
 #   test-kill-leader: coreCount=1 stable, coreNodes=4 stable, timeout-then-cascade).
+# Count of cores currently REPORTING READY (NodeReportedState=READY), via the same
+# server-side state filter pick_non_leader consumes: `aether nodes lifecycle --state
+# READY --format json`. Counting from the identical source guarantees the readiness
+# barrier in restore_cluster_baseline and the candidate enumeration in pick_non_leader
+# agree on "how many READY nodes exist" — no presence-vs-READY skew between them.
+# Prints a non-negative integer (0 on transport failure / empty body).
+ready_core_count() {
+    local payload
+    payload=$(aether_failover nodes lifecycle --state READY --format json 2>/dev/null || true)
+    [ -z "$payload" ] && { echo 0; return 0; }
+    local n
+    n=$(printf '%s' "$payload" \
+        | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | grep -c '"nodeId"' \
+        || echo 0)
+    [ -z "$n" ] && n=0
+    echo "$n"
+}
+
 cluster_active_core_count() {
     local topology core_count core_nodes_count
     topology=$(api_get "/api/cluster/topology" 2>/dev/null || true)
@@ -174,9 +193,10 @@ cluster_quorate() {
     aether_field status cluster.quorate
 }
 
-# Per-node lifecycle state as derived by H-series MembershipView (SWIM health ∪ KV
-# override). One of: JOINING, ON_DUTY, DRAINING, DECOMMISSIONED, SHUTTING_DOWN — or
-# UNKNOWN if the node is untracked (not yet seen by SWIM or KV-Store).
+# Per-node work-state as reported by the node itself (NodeReportedState, v2). One
+# of: SYNCING, READY, DRAINING — or UNKNOWN if the node is untracked (not yet seen
+# by SWIM-fed membership). There is no terminal lifecycle state: a removed node is
+# simply ABSENT from membership.
 node_lifecycle_state() {
     local target_node="$1"
     aether_json status 2>/dev/null \
@@ -232,11 +252,10 @@ mgmt_entry_point_node() {
 # docker/remote runs since the mgmt-gateway sidecar removed the need for
 # client-side node pinning). Fails loudly if no candidate remains.
 #
-# Source of truth: `aether nodes lifecycle --state ON_DUTY --format json` — the
-# server-side state filter (commit chain post-2026-05-20) returns the lifecycle
-# entries already restricted to ON_DUTY. The KV-direct list contains a
-# `Put(L=ON_DUTY)` atom for every aggregator-quorum-acked peer; nodes that were
-# drained / killed / decommissioned carry a different state and are dropped.
+# Source of truth: `aether nodes lifecycle --state READY --format json` — the
+# server-side state filter returns the lifecycle entries already restricted to
+# nodes reporting READY (NodeReportedState). Nodes that are SYNCING, DRAINING, or
+# have left membership are dropped.
 # Leader re-derivation still rides on `/api/nodes/status` because lifecycle
 # carries no leader identity — the caller must `wait_for_leader` before invoking
 # us, and we additionally cross-check against `cluster.leaderId` from
@@ -317,15 +336,13 @@ pick_non_leader() {
         if [ "$candidate" = "$leader" ]; then continue; fi
         if [ -n "$pinned" ] && [ "$candidate" = "$pinned" ]; then continue; fi
         # Docker-mode liveness guard.
-        # Lifecycle reports `state=ON_DUTY` from the KV-store. A node killed in
-        # a previous test file may still appear ON_DUTY across the boundary
-        # into the next file if (a) CTM has not tombstoned its slot yet,
-        # (b) the membership FSM has not propagated the SWIM FAULTY →
-        # DECOMMISSIONED transition, or (c) `restore_cluster_baseline`
-        # returned on ON_DUTY count without verifying connected-peer parity.
-        # The cluster-side fix lives upstream; in the meantime we skip dead
-        # candidates so the test can pick a live one — and log the skip so the
-        # underlying staleness stays visible instead of being silently papered over.
+        # Lifecycle reports `state=READY` from the node's own NodeReportedState.
+        # A node killed in a previous test file may still appear READY across the
+        # boundary into the next file if (a) CTM has not tombstoned its slot yet,
+        # or (b) the SWIM-fed membership has not yet propagated the node's
+        # absence. The cluster-side fix lives upstream; in the meantime we skip
+        # dead candidates so the test can pick a live one — and log the skip so
+        # the underlying staleness stays visible instead of being silently papered over.
         #
         # NodeId == container_name (post-migration): probe directly by name via
         # `docker ps` rather than the legacy label lookup. A label lookup would
@@ -335,7 +352,7 @@ pick_non_leader() {
             local _alive_name
             _alive_name=$(remote_exec "docker ps --filter 'name=^${candidate}\$' --format '{{.Names}}' | head -1" 2>/dev/null || true)
             if [ -z "$_alive_name" ]; then
-                log_warn "pick_non_leader: lifecycle reports '${candidate}' as ON_DUTY but no live container named '${candidate}' on ${TARGET_HOST:-<host>} — skipping stale candidate (upstream: MembershipView/CTM tombstone propagation)" >&2
+                log_warn "pick_non_leader: lifecycle reports '${candidate}' as READY but no live container named '${candidate}' on ${TARGET_HOST:-<host>} — skipping stale candidate (upstream: membership/CTM tombstone propagation)" >&2
                 continue
             fi
         fi
@@ -1815,7 +1832,7 @@ auto_heal_enabled() {
 # baseline regardless of which pre-condition was actually needed.
 restore_cluster_baseline() {
     local target="${NODE_COUNT:-5}"
-    log_info "Restoring cluster to baseline (semantic): ${target} ON_DUTY healthy cores"
+    log_info "Restoring cluster to baseline (semantic): ${target} healthy cores, READY"
 
     # 0. API-reachability gate. Cluster B uses `restart: "no"` so a prior failed test
     # may have left the entry-point's reach-set without a healthy leader. If the
@@ -1879,20 +1896,35 @@ restore_cluster_baseline() {
         log_warn "restore_cluster_baseline: scale_cluster ${target} failed (cluster may already be at target — proceeding to wait)"
     fi
 
-    # 5. Hard barrier — at least N-1 ON_DUTY healthy cores. Operational invariant
+    # 5. Hard barrier — at least N-1 healthy cores PRESENT. Operational invariant
     # (quorum is 3, so 4 has 1 of spare). Post-chaos, the CTM replacement IS alive in
     # generation within seconds (Auto-heal_restores_to_5 confirms) but the entry-point's
-    # MembershipView stays at 4 for the full 1200s budget — the leader's FSM doesn't
-    # fire `(Untracked|Joining, SwimHealthy) → ON_DUTY` for the replacement OR the
-    # entry-point's local SWIM never sees the replacement at ALIVE. Static analysis
-    # couldn't discriminate; runtime logs needed. `>= N-1` accepts the operational
-    # invariant and unblocks the downstream cluster B suite cascade. TODO RC2: fix
-    # MembershipView convergence properly (PeerObservationStore cross-node aggregator).
+    # membership view may stay at 4 for a while — the SWIM-fed projection lags. `>= N-1`
+    # accepts the operational invariant and unblocks the downstream cluster B suite
+    # cascade. NOTE: presence is necessary but NOT sufficient — a present node can still
+    # be SYNCING (re-syncing consensus) rather than READY. Step 5b waits for READY.
     local floor=$((target - 1))
-    if ! wait_for "${floor}+ ON_DUTY healthy cores (target=${target})" \
+    if ! wait_for "${floor}+ healthy cores present (target=${target})" \
         "[ \$(cluster_active_core_count) -ge ${floor} ]" 600; then
-        log_fail "restore_cluster_baseline: failed to converge to ${floor}+ ON_DUTY healthy cores within 600s (current=$(cluster_active_core_count))"
+        log_fail "restore_cluster_baseline: failed to converge to ${floor}+ healthy cores within 600s (current=$(cluster_active_core_count))"
         return 1
+    fi
+
+    # 5b. READY barrier — wait until N nodes REPORT READY (NodeReportedState=READY)
+    # before declaring the baseline restored. Presence (step 5) only proves the cores
+    # are in membership; a just-(re)provisioned or re-syncing core reports SYNCING
+    # first and only flips to READY once it has caught up on consensus. Without this
+    # barrier the next suite's `pick_non_leader --state READY` can find too few
+    # candidates (the `pick_non_leader: only 1/2 candidates` wedge) because the cluster
+    # is present-but-not-yet-READY. We count `aether nodes lifecycle --state READY` and
+    # require >= floor READY (same N-1 tolerance as presence — one core may still be
+    # catching up and that is acceptable for baseline). Soft-fail (log_warn): READY is a
+    # convergence property that can lag under cumulative load; the downstream suite's own
+    # readiness gate is the hard backstop, and pick_non_leader fails loudly if it still
+    # can't find a candidate.
+    if ! wait_for "${floor}+ cores reporting READY (target=${target})" \
+        "[ \$(ready_core_count) -ge ${floor} ]" 300; then
+        log_warn "restore_cluster_baseline: only $(ready_core_count) core(s) reporting READY within 300s (target=${target}); subsequent pick_non_leader --state READY may find fewer candidates than expected"
     fi
 
     # 6. Generation quiescence — ensures any in-flight slice/task reassignment
@@ -1911,7 +1943,7 @@ restore_cluster_baseline() {
         log_warn "restore_cluster_baseline: phase did not reach NORMAL within 180s; subsequent destructive tests may see SWIM cold-boot suppression (UnknownObserved instead of FaultyObserved)"
     fi
 
-    log_info "restore_cluster_baseline: cluster at baseline (${target} ON_DUTY healthy cores, generation quiesced)"
+    log_info "restore_cluster_baseline: cluster at baseline (${target} healthy cores READY, generation quiesced)"
     return 0
 }
 

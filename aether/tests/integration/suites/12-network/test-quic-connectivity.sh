@@ -87,14 +87,14 @@ test_kill_node_and_detect_drop() {
 test_connections_recovered() {
     # Recovery is CTM's job — the previous test already asserted that NODE_JOINED
     # fired for a replacement. Here we assert the post-recovery invariant: the
-    # cluster has 5 ON_DUTY healthy cores. We deliberately do NOT call
-    # `start_node "$KILLED_VICTIM"`: the killed container is DECOMMISSIONED
-    # (single-writer rule on NodeLifecycleKey), CTM has already provisioned a
-    # replacement, and restarting the original would push the cluster to a
-    # 6-node "stale + replacement" state that fights the elastic-cluster model.
-    if ! wait_for "5 ON_DUTY healthy cores after QUIC recovery" \
+    # cluster has 5 healthy cores. We deliberately do NOT call
+    # `start_node "$KILLED_VICTIM"`: the killed container has left membership,
+    # CTM has already provisioned a replacement, and restarting the original
+    # would push the cluster to a 6-node "stale + replacement" state that fights
+    # the elastic-cluster model.
+    if ! wait_for "5 healthy cores after QUIC recovery" \
         "[ \$(cluster_active_core_count) -eq 5 ]" 180; then
-        log_fail "Cluster did not converge to 5 ON_DUTY healthy cores within 180s after kill+auto-heal"
+        log_fail "Cluster did not converge to 5 healthy cores within 180s after kill+auto-heal"
         return 1
     fi
     assert_cluster_healthy "Cluster healthy after QUIC recovery"

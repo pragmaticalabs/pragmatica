@@ -273,7 +273,7 @@ test_initial_state() {
     wait_for_leader 60
     local count
     count=$(cluster_active_core_count)
-    assert_eq "$count" "5" "Initial: 5 ON_DUTY healthy cores"
+    assert_eq "$count" "5" "Initial: 5 healthy cores"
 }
 
 test_pick_victims_and_kill_three_simultaneously() {
@@ -485,15 +485,15 @@ test_cluster_recovers_to_five_on_duty() {
         return 1
     fi
     # restart_all_nodes already drove the cluster back to leader + quorum,
-    # but the ON_DUTY healthy count is the actual S20 acceptance signal.
-    if ! wait_for "5 ON_DUTY healthy cores after self-drain recovery" \
+    # but the healthy core count is the actual S20 acceptance signal.
+    if ! wait_for "5 healthy cores after self-drain recovery" \
         "[ \$(cluster_active_core_count) -eq 5 ]" "$RECOVERY_BUDGET_S"; then
         local now_count
         now_count=$(cluster_active_core_count)
-        log_fail "S20 violation: cluster did not return to 5 ON_DUTY healthy cores within ${RECOVERY_BUDGET_S}s of restart (current count=${now_count})"
+        log_fail "S20 violation: cluster did not return to 5 healthy cores within ${RECOVERY_BUDGET_S}s of restart (current count=${now_count})"
         return 1
     fi
-    assert_cluster_healthy "S20: cluster recovered to 5 ON_DUTY within ${RECOVERY_BUDGET_S}s of restart"
+    assert_cluster_healthy "S20: cluster recovered to 5 healthy cores within ${RECOVERY_BUDGET_S}s of restart"
 }
 
 cleanup() {
@@ -516,11 +516,11 @@ cleanup() {
 # Step 8's test-partition-quorum-gate.sh.
 trap 'cleanup' EXIT
 
-run_test "Initial 5 ON_DUTY healthy cores" test_initial_state
+run_test "Initial 5 healthy cores" test_initial_state
 run_test "Pick 3 victims and kill simultaneously" test_pick_victims_and_kill_three_simultaneously
 run_test "Survivors self-drain and exit within ${SURVIVOR_EXIT_BUDGET_S}s (S19)" test_survivors_self_drain_and_exit
 run_test "Survivor exit codes are 2 (Runtime.halt(2))" test_survivor_exit_codes_are_two
 run_test "Drain-trigger log signature present on survivors" test_drain_trigger_log_signature_present
 run_test "No KV-writes after drain trigger (negative assertion)" test_no_kv_writes_after_drain_trigger
-run_test "Cluster recovers to 5 ON_DUTY within ${RECOVERY_BUDGET_S}s (S20)" test_cluster_recovers_to_five_on_duty
+run_test "Cluster recovers to 5 healthy cores within ${RECOVERY_BUDGET_S}s (S20)" test_cluster_recovers_to_five_on_duty
 print_summary

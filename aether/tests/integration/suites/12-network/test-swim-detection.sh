@@ -26,7 +26,7 @@ test_cluster_ready() {
         log_warn "Cluster phase did not reach NORMAL within 180s — kill below may be silently absorbed by SWIM cold-boot suppression"
     local count
     count=$(cluster_active_core_count)
-    assert_eq "$count" "5" "Initial: 5 ON_DUTY healthy cores"
+    assert_eq "$count" "5" "Initial: 5 healthy cores"
 }
 
 test_swim_detection_time() {
@@ -70,13 +70,12 @@ test_swim_detection_time() {
 test_recovery_after_detection() {
     # Recovery is CTM's job — we already asserted SWIM detected the departure.
     # Assert the post-recovery invariant via the operator-visible signal: 5
-    # ON_DUTY healthy cores. Do NOT call `start_node "$KILLED_VICTIM"` — the
-    # killed node is DECOMMISSIONED, CTM has provisioned a replacement, and
-    # restarting the original would leave the cluster in a stale-identity
-    # 6-node state.
-    if ! wait_for "5 ON_DUTY healthy cores after SWIM detection" \
+    # healthy cores. Do NOT call `start_node "$KILLED_VICTIM"` — the killed node
+    # has left membership, CTM has provisioned a replacement, and restarting the
+    # original would leave the cluster in a stale-identity 6-node state.
+    if ! wait_for "5 healthy cores after SWIM detection" \
         "[ \$(cluster_active_core_count) -eq 5 ]" 180; then
-        log_fail "Cluster did not converge to 5 ON_DUTY healthy cores within 180s after kill+auto-heal"
+        log_fail "Cluster did not converge to 5 healthy cores within 180s after kill+auto-heal"
         return 1
     fi
     assert_cluster_healthy "Cluster recovered after SWIM detection"

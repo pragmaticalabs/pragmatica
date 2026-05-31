@@ -206,12 +206,19 @@ _discover_endpoint_by_label() {
 
     # Single SSH round-trip: list running containers for this cluster and, for each,
     # emit the host port that maps to in-container 8080/tcp. `docker port <name> 8080/tcp`
-    # prints lines like `0.0.0.0:33191` / `[::]:33191`; we take the IPv4 line's port.
-    # Compose seeds map 8080 to their fixed slot (e.g. node-1 -> 5161); CTM
-    # replacements map to a Docker-chosen ephemeral host port. Either way the host
-    # port is reachable from the test runner via ${TARGET_HOST}:<port>.
+    # prints lines like `0.0.0.0:33191` / `[::]:33191` / `127.0.0.1:33191`; the trailing
+    # port is identical across the address families, so we take the port from the FIRST
+    # line regardless of bind address (`sed 's/.*://'`). The previous parser grepped
+    # specifically for `0.0.0.0:` and silently dropped containers whose 8080 was published
+    # only on `[::]:` (IPv6-only mapping) or `127.0.0.1:` — which left every fixed-seed-dead
+    # cluster running on CTM replacements unreachable (rc=7 wedge, #33). If `docker port`
+    # emits nothing (rare daemon states), fall back to the inspect-based HostPort lookup so
+    # any RUNNING labeled container with a published 8080 is still discoverable.
+    # Compose seeds map 8080 to their fixed slot (e.g. node-1 -> 5161); CTM replacements map
+    # to a Docker-chosen ephemeral host port. Either way the host port is reachable from the
+    # test runner via ${TARGET_HOST}:<port>.
     local listing
-    listing=$(remote_exec "docker ps --filter 'label=aether.cluster=${cluster}' --format '{{.Names}}' | while read -r n; do hp=\$(docker port \"\$n\" 8080/tcp 2>/dev/null | grep -m1 '0\\.0\\.0\\.0:' | sed 's/.*://'); [ -n \"\$hp\" ] && echo \"\$hp\"; done" 2>/dev/null) || return 1
+    listing=$(remote_exec "docker ps --filter 'label=aether.cluster=${cluster}' --format '{{.Names}}' | while read -r n; do hp=\$(docker port \"\$n\" 8080/tcp 2>/dev/null | sed -n '1s/.*:\\([0-9][0-9]*\\)\$/\\1/p'); [ -z \"\$hp\" ] && hp=\$(docker inspect -f '{{range \$p := index .NetworkSettings.Ports \"8080/tcp\"}}{{\$p.HostPort}} {{end}}' \"\$n\" 2>/dev/null | tr ' ' '\\n' | grep -m1 '[0-9]'); [ -n \"\$hp\" ] && echo \"\$hp\"; done" 2>/dev/null) || return 1
     [ -z "$listing" ] && return 1
 
     local hp endpoint
@@ -243,6 +250,21 @@ _resolve_live_endpoint() {
         echo "${CLUSTER_ENDPOINT}"
         return 0
     fi
+    # Fast-path: a previously label-discovered replacement endpoint that is still
+    # fresh and still answers. Skips the fixed-seed port scan (which costs ~2s/dead
+    # port = up to ~10s/call once every seed is replaced) on the common steady-state
+    # where the cluster has fully migrated to CTM replacements. _discover_endpoint_by_label
+    # re-probes the cached URL with a cheap local curl before reuse, so a stale entry
+    # falls through to a fresh discovery rather than returning a dead endpoint.
+    local now ttl="${DISCOVER_TTL:-5}"
+    now=$(date +%s)
+    if [ -n "$_LABEL_DISCOVERED_ENDPOINT" ] && [ $((now - _LABEL_DISCOVERED_AT)) -lt "$ttl" ]; then
+        local cached
+        if cached=$(_discover_endpoint_by_label); then
+            echo "$cached"
+            return 0
+        fi
+    fi
     local base_port="${MGMT_PORT}"
     for i in $(seq 0 $((NODE_COUNT - 1))); do
         local port=$((base_port + i))
@@ -254,7 +276,9 @@ _resolve_live_endpoint() {
     done
     # Seed range exhausted — fall back to Docker label discovery so a cluster whose
     # seeds were all replaced by CTM (KSUID containers on ephemeral host ports) is
-    # still reachable for management.
+    # still reachable for management. This is the robust last resort: it returns a
+    # usable host:port whenever ANY live aether-${CLUSTER_ID} container exists (seed
+    # OR replacement), even when every fixed seed port is dead (#33).
     local discovered
     if discovered=$(_discover_endpoint_by_label); then
         echo "$discovered"

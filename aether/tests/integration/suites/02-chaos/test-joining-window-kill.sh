@@ -85,14 +85,10 @@ PRELABEL_SNAPSHOT_FILE="/tmp/s01-prelabel-snapshot.$$"
 REPLACEMENT_NODE_ID_FILE="/tmp/s01-replacement-nodeid.$$"
 KILL_TIMESTAMP_FILE="/tmp/s01-kill-timestamp.$$"
 PRIMING_VICTIM_FILE="/tmp/s01-priming-victim.$$"
-# Marker written if R raced past JOINING into ON_DUTY before the kill landed.
-# When present, the smoking-gun log assertion is skipped: the ON_DUTY cells
-# for both `transport-failure` and `swim-faulty` are gated by aggregator quorum
-# (ClusterMembershipReducer.java:184,203), so the kill is decommissioned via the
-# ungated `(ON_DUTY, SwimDeparted)` cell which emits `reason=swim-departed` —
-# not in S01's accepted reason set. The 60s budget assertion above remains the
-# meaningful contract in that branch.
-RACE_TO_ON_DUTY_FILE="/tmp/s01-race-to-on-duty.$$"
+# Marker reserved for the case where R raced past SYNCING into READY before the
+# kill landed. (Currently unused — removal is asserted via membership-absence, which
+# accepts both the pre-READY and raced-to-READY paths; see test_decommission_within_budget.)
+RACE_TO_READY_FILE="/tmp/s01-race-to-ready.$$"
 
 # Snapshot of `aether.node-id` labels on TARGET_HOST scoped to this cluster.
 # Returns one node-id per line, sorted. Empty string on transport failure.
@@ -107,18 +103,18 @@ snapshot_node_id_labels() {
         2>/dev/null || true
 }
 
-# Wait until R's KV-backed lifecycle atom reflects state in $1 (JOINING or
-# ON_DUTY — either is an acceptable pre-kill state, with JOINING preferred
-# because it exercises the (JOINING, TransportUnreachable) cell that S01
-# specifically targets).
+# Wait until R's reported lifecycle reflects a live work-state (SYNCING or READY).
+# A just-provisioned replacement reports SYNCING first (catching up on consensus),
+# then flips to READY once caught up — either is an acceptable pre-kill state. We
+# prefer to catch it while SYNCING because that exercises the "kill a node that has
+# not yet become READY" window S01 targets, but READY is accepted (the replacement
+# may race to READY before we observe it).
 #
 # Returns 0 + prints the observed state on stdout; 1 on timeout.
 #
-# Poll cadence: 200ms — JOINING is a transient state that may exist for
-# <1s before transitioning to ON_DUTY. A 1s poll cadence will frequently
-# miss JOINING entirely, leaving us only able to kill at ON_DUTY (which
-# exercises the gated S02 path rather than the ungated S01 path). 200ms
-# gives us a strong chance of catching the JOINING window.
+# Poll cadence: 200ms — SYNCING is a transient state that may exist for <1s before
+# transitioning to READY. A 1s poll cadence will frequently miss SYNCING entirely.
+# 200ms gives us a strong chance of catching the SYNCING window.
 wait_for_replacement_in_kv() {
     local target="$1" timeout="${2:-90}"
     local deadline_ns
@@ -127,13 +123,13 @@ wait_for_replacement_in_kv() {
         local state
         state=$(kv_lifecycle_state "$target")
         case "$state" in
-            JOINING|ON_DUTY)
+            SYNCING|READY)
                 printf '%s' "$state"
                 return 0
                 ;;
         esac
-        # 200ms cadence to maximize chance of catching the JOINING window
-        # before the FSM commits the ON_DUTY transition.
+        # 200ms cadence to maximize chance of catching the SYNCING window
+        # before the node reports READY.
         sleep 0.2
     done
     return 1
@@ -252,33 +248,29 @@ test_catch_replacement_in_joining_window() {
     priming_victim=$(cat "$PRIMING_VICTIM_FILE")
     assert_ne "$replacement" "$priming_victim" "Replacement NodeId ${replacement} is fresh (not the priming victim ${priming_victim})"
 
-    # CRITICAL — wait for R's NodeLifecycleKey atom to land in KV (state =
-    # JOINING or ON_DUTY). Without this gate, the post-kill DECOMMISSIONED
-    # check is ambiguous: R might never have had a KV atom at all, in which
-    # case "not DECOMMISSIONED" reads as either "FSM is broken" OR "FSM never
-    # got a chance to write JOINING because R died too fast".
+    # CRITICAL — wait for R to appear in /api/nodes/lifecycle reporting a live
+    # work-state (NodeReportedState = SYNCING or READY). Without this gate, the
+    # post-kill removal check is ambiguous: R might never have surfaced in
+    # membership at all, in which case "removed" reads as either "removal worked"
+    # OR "R died too fast to ever be tracked".
     #
-    # The KV-backed endpoint `/api/nodes/lifecycle/<R>` reads NodeLifecycleKey
-    # directly — bypassing MembershipView's SWIM filter. This is critical for
-    # S01 because R is killed before SWIM HEALTHY, so R may never surface in
-    # /api/nodes/status cluster.nodes[] regardless of whether the FSM wrote JOINING.
-    # The KV atom is the authoritative consensus-replicated state we want to
-    # assert against.
+    # The endpoint `/api/nodes/lifecycle/<R>` reports the node's own reported state
+    # (leader-forwarded). A just-provisioned replacement reports SYNCING first, then
+    # READY once it has caught up on consensus.
     local pre_kill_state
     if ! pre_kill_state=$(wait_for_replacement_in_kv "$replacement" 90); then
-        log_fail "Replacement ${replacement} never reached JOINING/ON_DUTY in KV-backed /api/nodes/lifecycle/${replacement} within 90s — CTM provisioned the container but the FSM never wrote a NodeLifecycleKey atom (consensus stuck? leader churn? FSM not consuming SlotClaimed?). Cannot exercise S01."
+        log_fail "Replacement ${replacement} never reported SYNCING/READY in /api/nodes/lifecycle/${replacement} within 90s — CTM provisioned the container but the node never surfaced in membership (consensus stuck? leader churn? node failed to start?). Cannot exercise S01."
         return 1
     fi
     case "$pre_kill_state" in
-        JOINING)
-            log_info "Replacement ${replacement} pre-kill KV state: JOINING — S01 (JOINING, TransportUnreachable) cell will be exercised"
+        SYNCING)
+            log_info "Replacement ${replacement} pre-kill reported state: SYNCING — S01 (kill before READY) window will be exercised"
             ;;
-        ON_DUTY)
-            # If R raced to ON_DUTY before the kill, the (ON_DUTY, SwimDeparted)
-            # cell at line 187 of ClusterMembershipReducer.java fires and writes
-            # `reason=swim-departed` — accepted by the smoking-gun regex below.
-            # No skip needed; record the race for log context only.
-            log_warn "Replacement ${replacement} raced past JOINING into ON_DUTY before kill — decommission proceeds via (ON_DUTY, SwimDeparted) instead of (JOINING, *); smoking-gun assertion below accepts both paths."
+        READY)
+            # If R raced to READY before the kill, removal still proceeds via SWIM
+            # departure / NTT eviction — the post-kill membership-absence assertion
+            # below accepts both paths. Record the race for log context only.
+            log_warn "Replacement ${replacement} raced past SYNCING into READY before kill — removal proceeds via SWIM-departed membership absence instead of the pre-READY window; the absence assertion below accepts both paths."
             ;;
     esac
 
@@ -300,7 +292,7 @@ test_decommission_within_budget() {
     # timestamp ≈1.7e9) which produces the nonsense assertion "expected >= 1.7e9,
     # got '25'" — masking the real failure mode (prior test failed).
     if [ ! -s "$KILL_TIMESTAMP_FILE" ]; then
-        log_fail "S01 kill timestamp missing — test_catch_replacement_in_joining_window did not land the kill (no replacement reached JOINING/ON_DUTY in the catch window)"
+        log_fail "S01 kill timestamp missing — test_catch_replacement_in_joining_window did not land the kill (no replacement reported SYNCING/READY in the catch window)"
         return 1
     fi
     if [ ! -s "$REPLACEMENT_NODE_ID_FILE" ]; then
@@ -318,12 +310,12 @@ test_decommission_within_budget() {
     # wait_for_node_removed for the dual signal.
     if ! wait_for_node_removed "$replacement" "$DECOMMISSION_BUDGET_S"; then
         # Diagnostic: show R's current lifecycle state so the failure log
-        # explains WHY the budget was missed (still JOINING? still ON_DUTY?).
+        # explains WHY the budget was missed (still SYNCING? still READY?).
         local stuck_state
         stuck_state=$(kv_lifecycle_state "$replacement")
         now=$(date +%s)
         elapsed=$((now - kill_ts))
-        log_fail "S01 budget violated: ${replacement} not removed from membership within ${DECOMMISSION_BUDGET_S}s (elapsed=${elapsed}s, lifecycle_state='${stuck_state:-<404/absent>}'; still present in /api/nodes/status). The SWIM failure detector did not drop the killed JOINING peer in time — likely a regression in SWIM departure detection or the MembershipView projection (R lingers in cluster.nodes[] past the budget)."
+        log_fail "S01 budget violated: ${replacement} not removed from membership within ${DECOMMISSION_BUDGET_S}s (elapsed=${elapsed}s, lifecycle_state='${stuck_state:-<404/absent>}'; still present in /api/nodes/status). The SWIM failure detector did not drop the killed peer in time — likely a regression in SWIM departure detection or NTT eviction (R lingers in cluster.nodes[] past the budget)."
         return 1
     fi
 
@@ -375,7 +367,7 @@ cleanup() {
     # Tidy ferry files (best-effort; /tmp survives shell exit anyway, but
     # parallel test runs on the same host benefit from per-PID cleanup).
     rm -f "$PRELABEL_SNAPSHOT_FILE" "$REPLACEMENT_NODE_ID_FILE" \
-          "$KILL_TIMESTAMP_FILE" "$PRIMING_VICTIM_FILE" "$RACE_TO_ON_DUTY_FILE"
+          "$KILL_TIMESTAMP_FILE" "$PRIMING_VICTIM_FILE" "$RACE_TO_READY_FILE"
 
     # Semantic baseline restore — re-enables auto-heal (we never disabled it,
     # but restore_cluster_baseline is idempotent), resets the CTM circuit

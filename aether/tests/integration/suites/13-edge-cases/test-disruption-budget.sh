@@ -114,13 +114,13 @@ test_drain_beyond_budget_rejected() {
     log_info "Third drain response: ${status}"
 
     # Auto-heal is disabled (see test_cluster_ready). With two nodes already DRAINING
-    # and no replacement provisioning, ON_DUTY is at 3-of-5 — draining a third would
-    # drop operational capacity to 2 < quorum. The disruption-budget guard MUST
+    # and no replacement provisioning, the READY count is at 3-of-5 — draining a third
+    # would drop operational capacity to 2 < quorum. The disruption-budget guard MUST
     # reject this with HTTP 409. Any other status indicates either (a) the budget
-    # enforcement is broken (200 returned despite live ON_DUTY below threshold) or
+    # enforcement is broken (200 returned despite live READY count below threshold) or
     # (b) the drain endpoint mis-routed (5xx). Either is a real product regression.
     if [ "$status" -eq 409 ] 2>/dev/null; then
-        log_pass "Third drain rejected with 409 — disruption budget enforced against live ON_DUTY"
+        log_pass "Third drain rejected with 409 — disruption budget enforced against live READY cores"
         return 0
     fi
     log_fail "Third drain returned ${status} — expected 409 (budget exhausted). With CTM auto-heal disabled and 2 prior drains in DRAINING, a third drain MUST be refused."
