@@ -48,9 +48,11 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// hard `docker kill` with QUIC MAX_IDLE_TIMEOUT disabled (persistent cluster connections).
 ///
 /// EXPECTED CORRECT OUTCOME (asserted here): a silently-dead node MUST still be detected dead →
-/// `NODE_FAILED` → terminal removal (victim's lifecycle on a survivor reaches `STOPPED`) within
-/// the [`#DETECT_BUDGET`]. Against CURRENT code this assertion is expected to FAIL — that failure
-/// is a faithful fast reproduction of the Docker forward-decommission bug.
+/// `NODE_FAILED` → terminal removal. Per the agreed absence-is-terminal contract, "terminally
+/// removed" = the victim is ABSENT from the leader's active membership (`/api/nodes/status`) AND a
+/// `NODE_FAILED`/`NODE_LEFT` cluster event (`/api/events`) has been emitted for it — both within
+/// the [`#DETECT_BUDGET`]. Against pre-fix code this assertion FAILS — the eviction never marked the
+/// generation-snapshot publisher dirty, so `NODE_FAILED` lagged ~45s behind the SWIM-FAULTY evict.
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class MembershipBlackHoleSpikeTest {
@@ -67,8 +69,8 @@ class MembershipBlackHoleSpikeTest {
     private static final Duration OBSERVE_POLL = Duration.ofMillis(500);
     private static final Duration LOG_EVERY = Duration.ofMillis(2000);
     private static final Pattern CONNECTED_PEERS = Pattern.compile("\"connectedPeers\"\\s*:\\s*(\\d+)");
-    private static final String STOPPED = "\"kvState\":\"STOPPED\"";
-    private static final String DECOMMISSIONED = "\"kvState\":\"DECOMMISSIONED\"";
+    private static final String NODE_FAILED = "NODE_FAILED";
+    private static final String NODE_LEFT = "NODE_LEFT";
 
     private EmberCluster cluster;
     private final HttpOperations http = jdkHttpOperations();
@@ -94,7 +96,7 @@ class MembershipBlackHoleSpikeTest {
 
     @Test
     @TerminalOperation
-    void blackHoleNonLeader_shouldStillBeDetectedDeadAndDecommissioned() {
+    void blackHoleNonLeader_shouldStillBeDetectedDeadAndTerminallyRemoved() {
         var nodes = cluster.status().nodes();
 
         Option.all(firstMatching(nodes, n -> !n.isLeader()),
@@ -114,56 +116,62 @@ class MembershipBlackHoleSpikeTest {
 
         log.info("BLACKHOLE-SPIKE: settling {}s (auto-heal cooldown)", SETTLE.toSeconds());
         await().pollDelay(SETTLE).timeout(SETTLE.plusSeconds(5)).until(() -> true);
-        log.info("BLACKHOLE-SPIKE: pre-kill survivor connectedPeers={} stopped={}",
-                 connectedPeers(survivorPort).map(Object::toString).or("?"), terminalCount(survivorPort));
+        log.info("BLACKHOLE-SPIKE: pre-kill survivor connectedPeers={} terminallyRemoved={}",
+                 connectedPeers(survivorPort).map(Object::toString).or("?"),
+                 terminallyRemoved(survivorPort, victim.id()));
 
         var t0 = System.nanoTime();
         cluster.blackhole(victim.id()).await();
         log.info("BLACKHOLE-SPIKE: black-holed {} at t0 — node is now silent but NOT disconnected", victim.id());
 
-        var detectedMs = observeUntilDecommissioned(survivorPort, t0);
-        log.info("BLACKHOLE-SPIKE RESULT: victim={} terminal-decommission={}ms (-1=NOT within {}s)  "
+        var detectedMs = observeUntilRemoved(survivorPort, victim.id(), t0);
+        log.info("BLACKHOLE-SPIKE RESULT: victim={} terminal-removal={}ms (-1=NOT within {}s)  "
                  + "survivor connectedPeers={}",
                  victim.id(), detectedMs, DETECT_BUDGET.toSeconds(),
                  connectedPeers(survivorPort).map(Object::toString).or("?"));
         log.info("BLACKHOLE-SPIKE FINAL /api/nodes/status: {}", status(survivorPort));
+        log.info("BLACKHOLE-SPIKE FINAL /api/events: {}", events(survivorPort));
 
         assertThat(detectedMs)
-            .as("EXPECTED: silently-dead %s reaches terminal STOPPED/DECOMMISSIONED within %ds "
-                + "(-1 = lingering ON_DUTY — reproduces the Docker silent-death bug)",
+            .as("EXPECTED: silently-dead %s is terminally removed within %ds — ABSENT from the "
+                + "leader's active membership AND a NODE_FAILED/NODE_LEFT event emitted for it "
+                + "(-1 = lingering in membership — reproduces the Docker silent-death bug)",
                 victim.id(), DETECT_BUDGET.toSeconds())
             .isGreaterThanOrEqualTo(0L);
     }
 
-    /// Polls the survivor's lifecycle view until the victim is decommissioned or the budget
-    /// expires. Returns the first-observed terminal latency in ms, or -1 if never observed.
-    private long observeUntilDecommissioned(int survivorPort, long t0) {
+    /// Polls the survivor's membership + cluster-event view until the victim is terminally
+    /// removed (absent from active membership AND a NODE_FAILED/NODE_LEFT event present) or the
+    /// budget expires. Returns the first-observed terminal latency in ms, or -1 if never observed.
+    private long observeUntilRemoved(int survivorPort, String victimId, long t0) {
         var latch = new long[]{-1L};
         var lastLog = new long[]{0L};
         await().pollInterval(OBSERVE_POLL)
                .pollDelay(Duration.ZERO)
                .timeout(DETECT_BUDGET.plusSeconds(5))
-               .until(() -> recordTick(survivorPort, t0, latch, lastLog));
+               .until(() -> recordTick(survivorPort, victimId, t0, latch, lastLog));
         return latch[0];
     }
 
-    private boolean recordTick(int survivorPort, long t0, long[] latch, long[] lastLog) {
+    private boolean recordTick(int survivorPort, String victimId, long t0, long[] latch, long[] lastLog) {
         var elapsed = (System.nanoTime() - t0) / 1_000_000L;
-        var terminal = terminalCount(survivorPort) >= 1;
-        if (terminal && latch[0] < 0) {
+        if (terminallyRemoved(survivorPort, victimId) && latch[0] < 0) {
             latch[0] = elapsed;
         }
-        maybeLog(survivorPort, elapsed, lastLog);
+        maybeLog(survivorPort, victimId, elapsed, lastLog);
         return latch[0] >= 0 || elapsed >= DETECT_BUDGET.toMillis();
     }
 
-    private void maybeLog(int survivorPort, long elapsedMs, long[] lastLog) {
+    private void maybeLog(int survivorPort, String victimId, long elapsedMs, long[] lastLog) {
         if (elapsedMs - lastLog[0] < LOG_EVERY.toMillis()) {
             return;
         }
         lastLog[0] = elapsedMs;
-        log.info("BLACKHOLE-SPIKE: t+{}ms survivor connectedPeers={} terminalCount={}",
-                 elapsedMs, connectedPeers(survivorPort).map(Object::toString).or("?"), terminalCount(survivorPort));
+        log.info("BLACKHOLE-SPIKE: t+{}ms survivor connectedPeers={} victimAbsent={} failedEvent={}",
+                 elapsedMs,
+                 connectedPeers(survivorPort).map(Object::toString).or("?"),
+                 victimAbsentFromMembership(survivorPort, victimId),
+                 victimHasDepartureEvent(survivorPort, victimId));
     }
 
     private boolean allNodesHealthy() {
@@ -178,17 +186,33 @@ class MembershipBlackHoleSpikeTest {
                : Option.none();
     }
 
-    private int terminalCount(int port) {
-        var body = status(port);
-        return countOccurrences(body, STOPPED) + countOccurrences(body, DECOMMISSIONED);
+    /// Agreed terminal-removal contract (absence-is-terminal): the victim is terminally removed
+    /// when it is BOTH absent from the leader's active membership AND a NODE_FAILED/NODE_LEFT
+    /// cluster event has been emitted for it.
+    private boolean terminallyRemoved(int port, String victimId) {
+        return victimAbsentFromMembership(port, victimId) && victimHasDepartureEvent(port, victimId);
+    }
+
+    /// Victim is gone from the leader's active node list (`/api/nodes/status` no longer carries
+    /// its id). Matched on the JSON `"id":"<victimId>"` field present per NodeInfo entry.
+    private boolean victimAbsentFromMembership(int port, String victimId) {
+        return !status(port).contains("\"id\":\"" + victimId + "\"");
+    }
+
+    /// A terminal departure event (NODE_FAILED or NODE_LEFT) for the victim appears in the
+    /// cluster event log. Each event carries the victim id (summary + `details.nodeId`) and the
+    /// `type` enum name; require both the type marker and the victim id in the event payload.
+    private boolean victimHasDepartureEvent(int port, String victimId) {
+        var body = events(port);
+        return body.contains(victimId) && (body.contains(NODE_FAILED) || body.contains(NODE_LEFT));
     }
 
     private String status(int port) {
         return httpGet(port, "/api/nodes/status");
     }
 
-    private static int countOccurrences(String haystack, String needle) {
-        return haystack.split(Pattern.quote(needle), -1).length - 1;
+    private String events(int port) {
+        return httpGet(port, "/api/events");
     }
 
     @TerminalOperation

@@ -577,6 +577,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
                                           org.pragmatica.aether.config.HttpProtocol.H1,
                                           java.util.Map.of(),
                                           Option.empty(),
+                                          Option.empty(), // membership-config override: none — in-process forge nodes use MembershipConfig defaults
                                           org.pragmatica.aether.config.StreamingConfig.streamingConfig(),
                                           org.pragmatica.consensus.net.ClusterFormationConfig.defaults());
         // Single-JVM hosting: when this node's SelfDrainCoordinator completes its drain
