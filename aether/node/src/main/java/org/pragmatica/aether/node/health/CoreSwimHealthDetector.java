@@ -343,6 +343,22 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                        .or(SwimHealth.UNKNOWN);
     }
 
+    /// Test-only: toggle silent-death fault injection on the SWIM UDP transport plane.
+    /// Forwards to the running [`SwimTransport`] so a black-holed node goes silent on the
+    /// SWIM plane in addition to QUIC, reproducing genuine silent death across both planes.
+    @Contract
+    public void setSwimBlackholed(boolean enabled) {
+        transport().onPresent(t -> t.blackhole(enabled));
+    }
+
+    private Option<SwimTransport> transport() {
+        return switch (context.fsm()
+                              .current()) {
+            case SwimHealthState.Running r -> option(r.transport());
+            default -> none();
+        };
+    }
+
     /// Register a cluster-wide [`org.pragmatica.consensus.topology.TransportObservation`] emitter.
     /// Invoked from `SwimProtocol.emitFaultyOrUnknown` whenever a peer transitions to FAULTY,
     /// producing `TransportObservation.PeerObservedFaulty` for the cluster `MessageRouter`.

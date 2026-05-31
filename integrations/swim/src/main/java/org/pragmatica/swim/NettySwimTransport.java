@@ -75,6 +75,12 @@ public final class NettySwimTransport implements SwimTransport {
     private final AtomicReference<Option<Channel>> channel = new AtomicReference<>(none());
     private final AtomicReference<Option<EventLoopGroup>> group = new AtomicReference<>(none());
     private final AtomicReference<Option<DnsNameResolver>> nettyResolver = new AtomicReference<>(none());
+    /// Test-only silent-death fault injection for the SWIM UDP plane. Mirrors
+    /// `QuicClusterNetwork.blackholed`: when true, outbound sends are dropped and inbound
+    /// datagrams are discarded before dispatch, so this node neither acks nor observes SWIM
+    /// probes — simulating genuine silent death across BOTH transport planes. Default false
+    /// (zero effect in normal operation).
+    private volatile boolean blackholed = false;
     /// Per-source IP rate limiter map for ANNOUNCE flood protection.
     /// Entries idle > {@value #ANNOUNCE_LIMITER_IDLE_EVICT_MS} ms are evicted lazily.
     private final Map<InetAddress, AnnounceRateLimiterEntry> announceRateLimiters = new ConcurrentHashMap<>();
@@ -107,9 +113,20 @@ public final class NettySwimTransport implements SwimTransport {
 
     @Override
     public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
+        if (blackholed) {
+            return Promise.unitPromise();
+        }
         return channel.get()
                       .map(ch -> resolveAndSend(ch, target, message))
                       .or(SwimError.General.TRANSPORT_NOT_STARTED.promise());
+    }
+
+    @Override
+    @Contract
+    public void blackhole(boolean enabled) {
+        blackholed = enabled;
+        LOG.warn("SWIM transport blackhole={} (socket stays open; UDP gossip {})",
+                 enabled, enabled ? "DROPPED" : "FLOWING");
     }
 
     @Override
@@ -267,6 +284,11 @@ public final class NettySwimTransport implements SwimTransport {
     }
 
     private void handleIncoming(SwimMessageHandler handler, DatagramPacket packet) {
+        if (blackholed) {
+            // Silent death: drop the inbound datagram before decrypt/dispatch so this node
+            // never observes peers' probes nor acks them — mirroring QuicClusterNetwork.
+            return;
+        }
         var buf = packet.content();
         var bytes = new byte[buf.readableBytes()];
         buf.readBytes(bytes);

@@ -30,6 +30,11 @@ public interface SwimTransport {
     /// Start listening for incoming messages on the given port.
     Promise<Unit> start(int port, SwimMessageHandler handler);
 
+    /// Test-only: toggle silent-death fault injection on the SWIM UDP plane.
+    /// When enabled, outbound sends are dropped and inbound datagrams are discarded
+    /// before dispatch. Default no-op; overridden by transports that support it.
+    default void blackhole(boolean enabled) {}
+
     /// Stop the transport and release resources.
     Promise<Unit> stop();
 

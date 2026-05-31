@@ -143,23 +143,29 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         }
 
         private void handlePeerConnected(PeerConnected event) {
+            // Channel-open is NOT proof of liveness: a hard-killed ("black-holed") node keeps its
+            // QUIC channel open, so PeerConnected/reconnect can fire repeatedly for a silently-dead
+            // peer. For a KNOWN SWIM member we therefore do NOTHING here — no `markAlive` (which
+            // would reset SUSPECT/FAULTY and wipe the suspicion timer) and no HEALTHY hint (which
+            // `SwimHintsRegistry.onPeerHealth(HEALTHY)` turns into `clear(peer)`, erasing the
+            // leader-side FAULTY/SUSPECTED hint). ALIVE-promotion is the sole authority of a real
+            // probe-ack. Only a GENUINELY-UNKNOWN peer is re-added so it can be probed.
             var peer = event.peer();
-            event.info().onPresent(info -> readdOrMarkAlive(peer, addressOf(info))).onEmpty(() -> readdOrMarkAliveFromTopology(peer));
-            ctx.reportHint(peer, HealthHint.HEALTHY);
+            event.info().onPresent(info -> readdUnknown(peer, addressOf(info))).onEmpty(() -> readdUnknownFromTopology(peer));
         }
 
-        private void readdOrMarkAliveFromTopology(NodeId peer) {
+        private void readdUnknownFromTopology(NodeId peer) {
             if (swim.members().containsKey(peer)) {
-                swim.markAlive(peer);
+                LOG.debug("PeerConnected for known SWIM member {} — no markAlive/HEALTHY; awaiting probe-ack", peer.id());
 
                 return;
             }
             ctx.resolveSwimAddress(peer, SWIM_PORT_OFFSET).onPresent(addr -> addSeedAndLog(peer, addr));
         }
 
-        private void readdOrMarkAlive(NodeId peer, InetSocketAddress address) {
+        private void readdUnknown(NodeId peer, InetSocketAddress address) {
             if (swim.members().containsKey(peer)) {
-                swim.markAlive(peer);
+                LOG.debug("PeerConnected for known SWIM member {} — no markAlive/HEALTHY; awaiting probe-ack", peer.id());
 
                 return;
             }

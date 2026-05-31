@@ -451,6 +451,30 @@ public interface AetherNode extends ManageableNode {
                            () -> Base64.getDecoder().decode(encoded.trim()));
     }
 
+    /// NTT reconcile fan-out (membership v2). Fired exactly once per stable membership
+    /// transition (hysteresis flip OR hard-evict — both gated by `emitIfChanged`/`evictLocked`
+    /// so an already-absent re-evict is a no-op and never re-triggers). Propagates the new
+    /// member count to the quorum-loss detector, nudges the leader reconciler, AND marks the
+    /// generation-snapshot publisher dirty so the membership delta re-projects within one
+    /// reproject cycle (→ TopologyObserver NodeRemoved → ClusterEventAggregator NODE_FAILED),
+    /// instead of waiting for an unrelated dirty trigger.
+    @Contract
+    private static void onNttReconcile(AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
+                                       AtomicReference<NodeTopologyTracker> nttRef,
+                                       AtomicReference<LeaderReconciler> leaderReconcilerRef,
+                                       AtomicReference<GenerationSnapshotPublisher> publisherRef) {
+        Option.option(nttRef.get()).onPresent(tracker -> propagateMemberCount(quorumLossDetectorRef, tracker));
+        Option.option(leaderReconcilerRef.get()).onPresent(LeaderReconciler::onTopologyUnhealthy);
+        Option.option(publisherRef.get()).onPresent(GenerationSnapshotPublisher::markDirty);
+    }
+
+    @Contract
+    private static void propagateMemberCount(AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
+                                             NodeTopologyTracker tracker) {
+        Option.option(quorumLossDetectorRef.get())
+              .onPresent(detector -> detector.onMemberCountChanged(tracker.currentMemberCount()));
+    }
+
     long DEFAULT_STREAM_RETENTION_MS = 24 * 60 * 60 * 1000L;
     long DEFAULT_STREAM_MEMORY_BYTES = 16 * 1024 * 1024L;
 
@@ -913,6 +937,7 @@ public interface AetherNode extends ManageableNode {
             @Override
             public void blackhole(boolean enabled) {
                 clusterNode.network().blackhole(enabled);
+                swimHealthDetector.setSwimBlackholed(enabled);
             }
 
             @Override
@@ -1513,13 +1538,8 @@ public interface AetherNode extends ManageableNode {
         IntSupplier configuredCoreCountSupplier = () -> config.topology().coreNodes().size();
         var leaderReconcilerRef = new AtomicReference<LeaderReconciler>();
         var quorumLossDetectorRef = new AtomicReference<QuorumLossDetector>();
-        Runnable nttReconcileTrigger = () -> {
-            var detector = quorumLossDetectorRef.get();
-            var tracker = nttRef.get();
-            if (detector != null && tracker != null) {detector.onMemberCountChanged(tracker.currentMemberCount());}
-            var current = leaderReconcilerRef.get();
-            if (current != null) {current.onTopologyUnhealthy();}
-        };
+        var publisherRef = new AtomicReference<GenerationSnapshotPublisher>();
+        Runnable nttReconcileTrigger = () -> onNttReconcile(quorumLossDetectorRef, nttRef, leaderReconcilerRef, publisherRef);
         Supplier<HealthSnapshot> nttHealthSupplier =
             () -> swimHealthDetector.currentHealth()
                                     .or(() -> HealthSnapshot.healthSnapshot(Map.of()));
@@ -1659,7 +1679,6 @@ public interface AetherNode extends ManageableNode {
                                                                                            thread.setDaemon(true);
                                                                                            return thread;
                                                                                        });
-        var publisherRef = new AtomicReference<GenerationSnapshotPublisher>();
         var swimHints = SwimHintsRegistry.swimHintsRegistry(java.time.Duration.ofMillis(config.autoHeal().swimHintsTtl().millis()),
                                                             () -> Option.option(publisherRef.get()).onPresent(GenerationSnapshotPublisher::markDirty));
         peerObservationStore.subscribeHealth(swimHints::onPeerHealth);
