@@ -10,7 +10,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GenerationSnapshotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GenerationSnapshotValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -51,8 +50,8 @@ class GenerationSnapshotKvRoundtripTest {
     void publisherApplyLandsInKv_andSourceReadsBackMembershipView() throws Exception {
         var fixture = newFixture();
         try {
-            // Seed a single ON_DUTY lifecycle so the projection produces a non-empty membership view.
-            seedLifecycle(fixture, SELF, NodeLifecycleState.ON_DUTY);
+            // Seed a single present member so the projection produces a non-empty membership view.
+            seedMember(fixture, SELF);
 
             fixture.publisher.markDirty();          // dropped — Disabled
             fixture.publisher.onLeaderGained();      // → Idle → synthetic Mark → Publishing → apply
@@ -74,8 +73,8 @@ class GenerationSnapshotKvRoundtripTest {
 
     // ---- Helpers ----
 
-    private static void seedLifecycle(Fixture f, NodeId nodeId, NodeLifecycleState state) {
-        f.lifecycleSeed.put(nodeId, state);
+    private static void seedMember(Fixture f, NodeId nodeId) {
+        f.memberSeed.add(nodeId);
     }
 
     private static void awaitGenerationSnapshotKvPresent(Fixture f) throws InterruptedException {
@@ -99,11 +98,10 @@ class GenerationSnapshotKvRoundtripTest {
         var swimHints = SwimHintsRegistry.swimHintsRegistry(Duration.ofSeconds(60), () -> {});
         var cluster = new KvReflectingClusterNode(kvStore, kvRef);
         var executor = Executors.newSingleThreadExecutor();
-        // Phase C-1 / membership-v2 finale: membership is SWIM/NTT-derived; the node-lifecycle
-        // KV atom is gone. Tests seed lifecycles into a plain in-memory map; the member and
-        // draining suppliers derive their sets from those seeds so the roundtrip intent
-        // (SELF ON_DUTY → snapshot view) is preserved on the new derivation path.
-        var lifecycleSeed = new java.util.concurrent.ConcurrentHashMap<NodeId, NodeLifecycleState>();
+        // Membership-v2 finale: membership is SWIM/NTT-derived presence; the node-lifecycle KV
+        // atom is gone. Tests seed a plain in-memory member set; the member supplier derives its
+        // set directly so the roundtrip intent (SELF present → snapshot view) is preserved.
+        var memberSeed = java.util.concurrent.ConcurrentHashMap.<NodeId>newKeySet();
         var publisher = GenerationSnapshotPublisher.generationSnapshotPublisher(isLeader::get,
                                                                                 () -> 1L,
                                                                                 hlcClock,
@@ -113,26 +111,9 @@ class GenerationSnapshotKvRoundtripTest {
                                                                                 kvStore,
                                                                                 cluster,
                                                                                 executor,
-                                                                                () -> membersFromSeed(lifecycleSeed),
-                                                                                () -> drainingFromSeed(lifecycleSeed),
+                                                                                () -> java.util.Set.copyOf(memberSeed),
                                                                                 nodeId -> org.pragmatica.lang.Option.none());
-        return new Fixture(publisher, kvStore, kvRef, executor, lifecycleSeed);
-    }
-
-    private static java.util.Set<NodeId> membersFromSeed(Map<NodeId, NodeLifecycleState> seed) {
-        return seed.entrySet()
-                   .stream()
-                   .filter(e -> e.getValue() != NodeLifecycleState.STOPPED)
-                   .map(Map.Entry::getKey)
-                   .collect(java.util.stream.Collectors.toUnmodifiableSet());
-    }
-
-    private static java.util.Set<NodeId> drainingFromSeed(Map<NodeId, NodeLifecycleState> seed) {
-        return seed.entrySet()
-                   .stream()
-                   .filter(e -> e.getValue() == NodeLifecycleState.DRAINING)
-                   .map(Map.Entry::getKey)
-                   .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        return new Fixture(publisher, kvStore, kvRef, executor, memberSeed);
     }
 
     private static final class Fixture {
@@ -140,18 +121,18 @@ class GenerationSnapshotKvRoundtripTest {
         final KVStore<AetherKey, AetherValue> kvStore;
         final AtomicReference<Map<AetherKey, AetherValue>> kvRef;
         final ExecutorService executor;
-        final Map<NodeId, NodeLifecycleState> lifecycleSeed;
+        final java.util.Set<NodeId> memberSeed;
 
         Fixture(GenerationSnapshotPublisher publisher,
                 KVStore<AetherKey, AetherValue> kvStore,
                 AtomicReference<Map<AetherKey, AetherValue>> kvRef,
                 ExecutorService executor,
-                Map<NodeId, NodeLifecycleState> lifecycleSeed) {
+                java.util.Set<NodeId> memberSeed) {
             this.publisher = publisher;
             this.kvStore = kvStore;
             this.kvRef = kvRef;
             this.executor = executor;
-            this.lifecycleSeed = lifecycleSeed;
+            this.memberSeed = memberSeed;
         }
 
         void shutdown() {

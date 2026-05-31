@@ -110,6 +110,16 @@ This is distinct from the authentication 403 (invalid API key). The authorizatio
 
 ---
 
+## Request Routing
+
+A management request may land on any core node, but where it is ultimately served depends on the route:
+
+- **Control-plane read/write routes forward to the leader** (the control plane is leader-only). This covers cluster/node/slice status, topology, lifecycle, scheduled-task control-plane reads, config, controller, thresholds, observability depth, routes, workers, and audit endpoints. A request received by a follower is transparently forwarded to the current leader.
+- **Per-node diagnostic routes are served node-locally** (metrics, traces, alerts, logs, storage, TTM, DHT replication map, certificates). These report the receiving node's own view and are not forwarded.
+- **Per-node addressed routes** (those with an `{id}` node parameter) are forwarded to the named node.
+
+---
+
 ## Cluster Status
 
 ### GET /api/nodes/status
@@ -265,6 +275,8 @@ Route is `LOCAL` (no forwarding) — the answer is per-request, not per-cluster.
 ### GET /api/events
 
 Get cluster events from the event aggregator. Returns structured events including topology changes, leader elections, deployments, slice failures, and network events.
+
+**Routing:** LEADER — the event aggregator is part of the leader-only control plane, so a request received by a follower is forwarded to the current leader.
 
 **Query Parameters:**
 - `sinceEpoch` (optional) -- Rabia term epoch for cursor-based pagination (default: 0).
@@ -2953,6 +2965,8 @@ JOINING → ON_DUTY ←→ DRAINING → DECOMMISSIONED → SHUTTING_DOWN
 ### GET /api/nodes/lifecycle
 
 Get lifecycle state for all nodes.
+
+**Routing:** LEADER — node lifecycle state is part of the leader-only control plane, so a request received by a follower is forwarded to the current leader.
 
 **Query parameters:**
 

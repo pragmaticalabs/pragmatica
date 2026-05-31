@@ -289,9 +289,9 @@ pick_non_leader() {
     # `nodes lifecycle` is a parent+sub pair that picocli won't auto-split if quoted as one arg.
     # Call `aether_failover` directly here so the subcommand is passed as two distinct args.
     local lifecycle_payload
-    lifecycle_payload=$(aether_failover nodes lifecycle --state ON_DUTY --format json 2>/dev/null || true)
+    lifecycle_payload=$(aether_failover nodes lifecycle --state READY --format json 2>/dev/null || true)
     if [ -z "$lifecycle_payload" ]; then
-        log_fail "pick_non_leader: 'aether nodes lifecycle --state ON_DUTY' returned empty body — cannot select victim" >&2
+        log_fail "pick_non_leader: 'aether nodes lifecycle --state READY' returned empty body — cannot select victim" >&2
         return 1
     fi
     local current_members
@@ -299,14 +299,14 @@ pick_non_leader() {
         | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
         | sed 's/"nodeId"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' || true)
     if [ -z "$current_members" ]; then
-        # Fail-closed: if lifecycle has no ON_DUTY members, the test premise
+        # Fail-closed: if lifecycle has no READY members, the test premise
         # (a healthy cluster from which we can pick a non-leader) is broken.
         #
         # log_fail goes to stderr — pick_non_leader is consumed via `$(...)`, so any
         # stdout output is interpreted by the caller as a node-id. Sending the error
         # to stderr lets callers see the FAIL banner while `$(...)` captures the empty
         # string and the caller's `if [ -z ... ]` check fires correctly.
-        log_fail "pick_non_leader: 'aether nodes lifecycle --state ON_DUTY' returned no entries — cannot select victim" >&2
+        log_fail "pick_non_leader: 'aether nodes lifecycle --state READY' returned no entries — cannot select victim" >&2
         return 1
     fi
 

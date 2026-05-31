@@ -603,7 +603,7 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Node ID (omit to list all)", arity = "0..1")
             private String nodeId;
 
-            @CommandLine.Option(names = {"--state"}, description = "Filter list to nodes in this state (case-insensitive). Multi-state union via `+`, e.g. ON_DUTY+JOINING. Ignored when [id] is supplied.")
+            @CommandLine.Option(names = {"--state"}, description = "Filter list to nodes in this reported state (case-insensitive). Multi-state union via `+`, e.g. READY+SYNCING. Ignored when [id] is supplied.")
             private String state;
 
             @Override
@@ -630,7 +630,7 @@ public class AetherCli implements Runnable {
             }
         }
 
-        @Command(name = "drain", description = "Drain a node (ON_DUTY -> DRAINING)")
+        @Command(name = "drain", description = "Drain a node (READY -> DRAINING)")
         static class DrainCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private NodesCommand nodesParent;

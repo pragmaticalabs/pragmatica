@@ -350,6 +350,39 @@ public final class NodeTopologyTracker {
         return result;
     }
 
+    /// Hard-evict a confirmed-dead node from the stable member set immediately, bypassing
+    /// the slow `downHysteresis` debounce. Removes `node` from `stableMembers`, clears its
+    /// per-node `streaks` and `biases` entries (so a re-joined node starts from a clean
+    /// streak and is not instantly re-evicted by a stale bias), and fires the reconcile
+    /// trigger exactly once — the SAME callback hysteresis removal fires via [`#emitIfChanged`].
+    ///
+    /// Caller contract: only invoke once a node is CO-CONFIRMED dead (SWIM-FAULTY ∧
+    /// liveness-gone) — this is the additional fast path layered over the soft
+    /// QUIC-disconnect/hysteresis path, not a replacement for it. `self` is ignored
+    /// (self can never leave). Idempotent: a no-op (no trigger fired) if `node` is already
+    /// absent from the stable set. Runs under `sampleLock` for consistency with the periodic
+    /// member-set mutations.
+    @Contract
+    public void evict(NodeId node) {
+        if (node.equals(self)) {
+            return;
+        }
+        synchronized (sampleLock) {
+            evictLocked(node);
+        }
+    }
+
+    private void evictLocked(NodeId node) {
+        streaks.remove(node);
+        biases.remove(node);
+        if (!stableMembers.remove(node)) {
+            return;
+        }
+        lastEmitted.set(Set.copyOf(stableMembers));
+        log.debug("Hard evict @{}ns: node={} members={}", nowNanos.getAsLong(), node, stableMembers);
+        onReconcileNeeded.run();
+    }
+
     /// Count of currently-tracked cluster members (includes self).
     public int currentMemberCount() {
         return stableMembers.size();

@@ -20,7 +20,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GenerationSnapshotValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -333,13 +332,10 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
         if (recordedOwner.equals(self)) {return false;}
 
-        return Option.option(seeded.coreMembers().get(recordedOwner))
-                     .map(member -> isStaleOwnerState(member.lifecycle()))
-                     .or(true);
-    }
-
-    private static boolean isStaleOwnerState(NodeLifecycleState state) {
-        return state == NodeLifecycleState.STOPPED || state == NodeLifecycleState.DRAINING;
+        // Presence-derived (membership-v2 finale): rewrite ownership when the recorded owner is
+        // no longer a current core member. Absence from the presence set IS the stale signal —
+        // there is no synthetic STOPPED/DRAINING lifecycle state to consult anymore.
+        return !seeded.coreMembers().containsKey(recordedOwner);
     }
 
     private KVCommand<AetherKey> buildInitialCorePartition(ClusterGenerationSnapshot seeded, NodeId self) {
@@ -435,8 +431,8 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
     /// RC1 membership-v2 finale: the node-lifecycle KV atom is deleted, so the cold-start
     /// fallback seeds the initial core members from the COMMITTED CONSENSUS TOPOLOGY instead
-    /// of scanning the (now-absent) lifecycle atoms. Every committed core node is synthesized
-    /// as `ON_DUTY`; host/port come from the topology's `NodeInfo` if known, else `"" / 0`.
+    /// of scanning the (now-absent) lifecycle atoms. Every committed core node is a member by
+    /// presence; host/port come from the topology's `NodeInfo` if known, else `"" / 0`.
     /// When no cluster handle is present (test fixtures) the map is empty — the published
     /// generation snapshot is the steady-state source and this path is the boot-only fallback.
     private Map<NodeId, MemberLifecycle> collectLifecycles() {
@@ -454,12 +450,11 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
     private static MemberLifecycle toMemberLifecycle(Option<NodeInfo> info) {
         return info.map(BootstrapModuleRecord::memberLifecycleFromInfo)
-                   .or(MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "", 0));
+                   .or(MemberLifecycle.memberLifecycle("", 0));
     }
 
     private static MemberLifecycle memberLifecycleFromInfo(NodeInfo info) {
-        return MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY,
-                                               info.address().host(),
+        return MemberLifecycle.memberLifecycle(info.address().host(),
                                                info.address().port());
     }
 

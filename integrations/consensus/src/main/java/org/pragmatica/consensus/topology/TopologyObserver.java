@@ -157,7 +157,7 @@ public interface TopologyObserver extends TopologyManager {
     }
 
     /// Production overload: accepts a `isDecommissioned` predicate driven by the local
-    /// KV-Store's `NodeLifecycleValue` atoms. `initReconcile` consults it alongside the
+    /// KV-Store tombstone atoms. `initReconcile` consults it alongside the
     /// in-memory `tombstonedNodes` set so a DECOMMISSIONED ghost peer that survived a
     /// process restart (consensus log replay) is not silently re-added from
     /// `config.coreNodes()`. The in-memory set still covers the just-removed-this-session
@@ -224,7 +224,6 @@ public interface TopologyObserver extends TopologyManager {
                        Object lifecycleLock,
                        AtomicReference<Option<ScheduledFuture<?>>> reconcileFuture,
                        AtomicReference<Set<NodeId>> previousCoreMembers,
-                       AtomicReference<Map<NodeId, LifecycleState>> previousLifecycleStates,
                        AtomicReference<TopologyMode> mode,
                        Supplier<HlcTimestamp> hlcSupplier) implements TopologyObserver {
             private static final Logger log = LoggerFactory.getLogger(TopologyObserver.class);
@@ -245,7 +244,6 @@ public interface TopologyObserver extends TopologyManager {
                     Object lifecycleLock,
                     AtomicReference<Option<ScheduledFuture<?>>> reconcileFuture,
                     AtomicReference<Set<NodeId>> previousCoreMembers,
-                    AtomicReference<Map<NodeId, LifecycleState>> previousLifecycleStates,
                     AtomicReference<TopologyMode> mode,
                     Supplier<HlcTimestamp> hlcSupplier) {
                 this.config = config;
@@ -264,7 +262,6 @@ public interface TopologyObserver extends TopologyManager {
                 this.lifecycleLock = lifecycleLock;
                 this.reconcileFuture = reconcileFuture;
                 this.previousCoreMembers = previousCoreMembers;
-                this.previousLifecycleStates = previousLifecycleStates;
                 this.mode = mode;
                 this.hlcSupplier = hlcSupplier;
                 this.effectiveClusterSize.set(config.clusterSize());
@@ -618,10 +615,10 @@ public interface TopologyObserver extends TopologyManager {
             /// SWIM / QUIC / KV-lifecycle paths that previously amplified a single peer
             /// departure into N+ redundant routings.
             ///
-            /// RC1 Step 2 adds a parallel lifecycle-projection walker that diffs the per-
-            /// node `LifecycleState` map of the previous snapshot against the current and
-            /// emits one `NodeJoining` / `NodeDraining` / `NodeFailedDrain` / `NodeDecommissioned`
-            /// per transition into the corresponding terminal state. Every emission is
+            /// Membership-v2 finale: the synthetic per-node lifecycle-projection walker was
+            /// removed. Membership is presence-derived (`coreMemberIds()` = `ntt.currentMembers()`),
+            /// so only the core-membership delta (`NodeJoined` / `NodeRemoved`) is emitted here.
+            /// Every emission is
             /// stamped with `(logIndex = snapshotSource.observedRabiaTerm(), stampedAt =
             /// hlcSupplier.get())`. The `observedRabiaTerm()` is the closest committed-index
             /// proxy available at this layer; subscribers that need a strict per-event
@@ -657,7 +654,6 @@ public interface TopologyObserver extends TopologyManager {
                 var logIndex = snapshotSource.observedRabiaTerm();
                 var stampedAt = hlcSupplier.get();
                 publishCoreMembershipDelta(snapshot, logIndex, stampedAt);
-                publishLifecycleDelta(snapshot, logIndex, stampedAt);
             }
 
             private void publishCoreMembershipDelta(MembershipView snapshot, long logIndex, HlcTimestamp stampedAt) {
@@ -675,72 +671,6 @@ public interface TopologyObserver extends TopologyManager {
                 for (var removed : delta.removed()) {
                     log.debug("Membership delta: NodeRemoved {} (logIndex={}, stampedAt={})", removed, logIndex, stampedAt);
                     router.route(MembershipDecision.nodeRemoved(removed, topology, logIndex, stampedAt));
-                }
-            }
-
-            /// Lifecycle-projection walker (RC1 Step 2). Diffs the previous snapshot's
-            /// lifecycle map against the current and routes one `MembershipDecision`
-            /// variant per terminal-state transition. Only the three terminal states the
-            /// downstream subscribers care about are emitted:
-            ///
-            ///   JOINING  -> `NodeJoining`
-            ///   DRAINING -> `NodeDraining`
-            ///   STOPPED  -> `NodeDecommissioned` (collapsed from former `FAILED_DRAIN` /
-            ///               `DECOMMISSIONED` / `SHUTTING_DOWN` arms per Step H/I).
-            ///
-            /// `ON_DUTY` is intentionally not emitted here — the `NodeJoined` core-member-
-            /// delta path already covers the steady-state "node admitted" signal. Repeating
-            /// it as a lifecycle event would re-introduce the dual-channel conflation that
-            /// Step 2 exists to eliminate.
-            private void publishLifecycleDelta(MembershipView snapshot, long logIndex, HlcTimestamp stampedAt) {
-                var current = snapshot.lifecycleStates();
-                var previous = previousLifecycleStates.getAndSet(Map.copyOf(current));
-                if (current.isEmpty() && previous.isEmpty()) {
-                    return;
-                }
-                var topology = List.copyOf(snapshot.coreMemberIds());
-                for (var entry : current.entrySet()) {
-                    var nodeId = entry.getKey();
-                    var newState = entry.getValue();
-                    var prevState = previous.get(nodeId);
-                    if (newState == prevState) {
-                        continue;
-                    }
-                    routeLifecycleTransition(nodeId, newState, topology, logIndex, stampedAt);
-                }
-            }
-
-            private void routeLifecycleTransition(NodeId nodeId,
-                                                  LifecycleState newState,
-                                                  List<NodeId> topology,
-                                                  long logIndex,
-                                                  HlcTimestamp stampedAt) {
-                switch (newState) {
-                    case JOINING -> {
-                        log.debug("Lifecycle delta: NodeJoining {} (logIndex={}, stampedAt={})", nodeId, logIndex, stampedAt);
-                        router.route(MembershipDecision.nodeJoining(nodeId, topology, logIndex, stampedAt));
-                    }
-                    case DRAINING -> {
-                        log.debug("Lifecycle delta: NodeDraining {} (logIndex={}, stampedAt={})", nodeId, logIndex, stampedAt);
-                        router.route(MembershipDecision.nodeDraining(nodeId, topology, logIndex, stampedAt));
-                    }
-                    case STOPPED -> {
-                        // Step H/I collapse (2026-05-22): the prior 3-arm distinction
-                        // (FAILED_DRAIN / DECOMMISSIONED / SHUTTING_DOWN) is unified into
-                        // STOPPED at the slice + consensus enum layer. All three routed via
-                        // `MembershipDecision.nodeDecommissioned` (the established cleanup
-                        // variant). Consumers that need the StopReason discriminator
-                        // (FORCED / GRACEFUL / DRAIN_FAILED) read it from the slice-side
-                        // `NodeLifecycleValue.stopReason()` sidecar — the consensus-layer
-                        // `MembershipDecision` variants `NodeFailedDrain` / `NodeShuttingDown`
-                        // remain in the sealed hierarchy for backward compatibility but are
-                        // no longer emitted by this slice-driven path.
-                        log.debug("Lifecycle delta: NodeDecommissioned {} (logIndex={}, stampedAt={})", nodeId, logIndex, stampedAt);
-                        router.route(MembershipDecision.nodeDecommissioned(nodeId, topology, logIndex, stampedAt));
-                    }
-                    case ON_DUTY -> {
-                        // Covered by the core-membership delta NodeJoined path.
-                    }
                 }
             }
 
@@ -944,7 +874,6 @@ public interface TopologyObserver extends TopologyManager {
                                           new Object(),
                                           new AtomicReference<>(Option.none()),
                                           new AtomicReference<>(Set.<NodeId>of()),
-                                          new AtomicReference<>(Map.<NodeId, LifecycleState>of()),
                                           new AtomicReference<>(TopologyMode.BOOTING),
                                           hlcSupplier));
     }

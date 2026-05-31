@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.metrics;
 
+import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SpokesmanKey;
@@ -306,16 +307,16 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
 
     private static LifecycleCounts lifecycleCount(ClusterSyncPong pong) {
         var state = pong.lifecycleState();
-        var healthy = "ON_DUTY".equals(state) || "JOINING".equals(state)
+        // Membership-v2 finale: lifecycleState carries the real NodeReportedState
+        // (SYNCING|READY|DRAINING). READY/SYNCING are operational (healthy); DRAINING is winding
+        // down (suspected). The legacy synthetic lifecycle states are gone.
+        var healthy = NodeReportedState.READY.name().equals(state) || NodeReportedState.SYNCING.name().equals(state)
                      ? 1
                      : 0;
-        var suspected = "DRAINING".equals(state)
+        var suspected = NodeReportedState.DRAINING.name().equals(state)
                        ? 1
                        : 0;
-        var faulty = "DECOMMISSIONED".equals(state) || "SHUTTING_DOWN".equals(state)
-                    ? 1
-                    : 0;
-        return new LifecycleCounts(healthy + suspected + faulty, healthy, suspected, faulty);
+        return new LifecycleCounts(healthy + suspected, healthy, suspected, 0);
     }
 
     private record LifecycleCounts(int total, int healthy, int suspected, int faulty){}

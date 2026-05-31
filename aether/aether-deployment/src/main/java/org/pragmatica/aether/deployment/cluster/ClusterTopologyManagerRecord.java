@@ -258,7 +258,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     @Override
     public void onNodeReady(NodeId nodeId) {
-        resetProvisioningCircuit("node " + nodeId + " reached ON_DUTY");
+        resetProvisioningCircuit("node " + nodeId + " became present");
     }
 
     @Contract

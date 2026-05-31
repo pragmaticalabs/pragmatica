@@ -918,19 +918,17 @@ public interface AetherNode extends ManageableNode {
             public MembershipView membershipView() {
                 // H.2 (spec §H): SWIM does not observe self — the local detector returns
                 // only remote peers' health. Inject `self → HEALTHY` so the derived view
-                // correctly reports the local node as ON_DUTY (assuming the node has
-                // reached `NodeLifecycle.ACTIVE` and is serving requests; if the view is
-                // queried during a self-shutdown window, KV operator overrides like
-                // `DRAINING`/`DECOMMISSIONED` still take precedence per the view rules).
+                // correctly reports the local node as present (assuming the node has
+                // reached `NodeLifecycle.ACTIVE` and is serving requests).
                 //
                 // RC1 Step 5: external accessor uses the strict factory so a minority-side
-                // node reports empty `onDutyPeers()` instead of leaking local-SWIM-derived
+                // node reports empty `presentMembers()` instead of leaking local-SWIM-derived
                 // claims that the majority has likely re-routed past. Quorum source is the
                 // TopologyObserver's `quorumEstablished` AtomicBoolean — single truth.
                 //
                 // RC1 reachability-aggregator landing: the strict view also consults the
                 // leader-broadcast cluster-canonical reachability snapshot to confirm
-                // ON_DUTY status when local SWIM hasn't yet acked HEALTHY (closes the
+                // presence when local SWIM hasn't yet acked HEALTHY (closes the
                 // per-reader-variance window without breaking the SWIM-faulty downgrade).
                 // See aether/docs/specs/reachability-aggregator-spec.md Layer 5.
                 return MembershipView.strict(() -> {
@@ -990,10 +988,15 @@ public interface AetherNode extends ManageableNode {
         Supplier<Option<ClusterGenerationSnapshot>> stableCdmSnapshotSupplier = () -> cdmSnapshotSupplierRef.get()
                                                                                                             .get();
         // B4 (membership v2 §7.5): the CDM allocatable-gate reads the leader readiness view (READY
-        // peers + self) instead of KV ON_DUTY. Late-bound — the pong fan + self-state holder are
+        // peers + self) instead of a KV lifecycle atom. Late-bound — the pong fan + self-state holder are
         // constructed further below; this ref mirrors the cdmSnapshotSupplierRef pattern.
         var cdmReadyNodesRef = new AtomicReference<Supplier<Set<NodeId>>>(Set::of);
         Supplier<Set<NodeId>> stableCdmReadyNodesSupplier = () -> cdmReadyNodesRef.get().get();
+        // Membership-v2: CDM DRAINING set sourced from the real node-authoritative
+        // NodeReportedState.DRAINING (metrics pong) — late-bound like the READY ref, since the
+        // pong fan + self-state holder are constructed further below.
+        var cdmDrainingNodesRef = new AtomicReference<Supplier<Set<NodeId>>>(Set::of);
+        Supplier<Set<NodeId>> stableCdmDrainingNodesSupplier = () -> cdmDrainingNodesRef.get().get();
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,
@@ -1006,7 +1009,8 @@ public interface AetherNode extends ManageableNode {
                                                                                          schemaOrchestrator,
                                                                                          stableHealthSink,
                                                                                          stableCdmSnapshotSupplier,
-                                                                                         stableCdmReadyNodesSupplier);
+                                                                                         stableCdmReadyNodesSupplier,
+                                                                                         stableCdmDrainingNodesSupplier);
         var loadBalancerManager = config.environment().flatMap(EnvironmentIntegration::loadBalancer).map(provider -> LoadBalancerManager.loadBalancerManager(config.self(),
                                                                                                                                                              kvStore,
                                                                                                                                                              clusterNode.topologyManager(),
@@ -1077,6 +1081,7 @@ public interface AetherNode extends ManageableNode {
         // B4 (membership v2 §7.5): bind the CDM readiness supplier now that the pong fan + self-state
         // holder exist (READY peers from the leader view + self when locally READY).
         cdmReadyNodesRef.set(() -> nodesReporting(pongSignalFan, nodeReportedStateHolder, config.self(), NodeReportedState.READY));
+        cdmDrainingNodesRef.set(() -> nodesReporting(pongSignalFan, nodeReportedStateHolder, config.self(), NodeReportedState.DRAINING));
         var metricsScheduler = ClusterSyncScheduler.clusterSyncScheduler(config.self(),
                                                                          clusterNode.network(),
                                                                          metricsCollector,
@@ -1537,6 +1542,11 @@ public interface AetherNode extends ManageableNode {
                                                          leaderReconciler.onSwimMemberHealthy(h.peer());
                                                      }
                                                  });
+        // Confirmed-death co-confirmation gate (NTT hard-evict fast path): feed the
+        // leader-side LeaderReconciler tracker both SWIM-plane edges. FAULTY arms the SWIM
+        // half (evict iff also liveness-gone); HEALTHY clears both halves so a re-joined node
+        // is not instantly re-evicted. All ingress is leader-gated inside LeaderReconciler.
+        swimHealthDetector.addObservationListener(obs -> routeSwimEdgeToConfirmedDeath(obs, leaderReconciler));
         // P3 (membership unification): quorum-loss is detected by QuorumLossDetector from the
         // unified tracker's stable membership (armed after first quorum; grace =
         // quorumLossDrainThreshold) and drives the §8.2 unified `DrainProcedure` directly.
@@ -1548,8 +1558,14 @@ public interface AetherNode extends ManageableNode {
                 .andThen(intent -> nodeReportedStateHolder.onDrainStarted());
         quorumLossDetector.setQuorumLossListener(quorumLossChain);
         metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
-        Consumer<NodeId> nttConnectTap = ntt::onQuicReconnect;
-        Consumer<NodeId> nttDisconnectTap = ntt::onQuicDisconnect;
+        Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(leaderReconciler::onPeerRecovered);
+        // QUIC disconnect feeds BOTH NTT's soft down-bias (unchanged) AND the liveness half
+        // of the confirmed-death gate. A routed QUIC disconnect fires on a bare transport drop
+        // AND on the 3-missed-pong ClusterSync ping-timeout (emitPingTimeoutIfExceeded calls
+        // network.disconnect → PeerDisconnected), so this single tap captures the spec's
+        // liveness-gone signal. Bare disconnect alone does NOT evict — LeaderReconciler gates
+        // it behind SWIM-FAULTY co-confirmation. Leader-gated inside LeaderReconciler.
+        Consumer<NodeId> nttDisconnectTap = ((Consumer<NodeId>) ntt::onQuicDisconnect).andThen(leaderReconciler::onLivenessGone);
         // P5: the NTT-reconciler leader-toggle (auto-heal activation) is now wired into the
         // live router. Safe because LeaderReconciler is identity-aware — it arms provisioning
         // only after the cluster first reaches configuredCoreCount, so it never provisions a
@@ -1649,7 +1665,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                   clusterNode,
                                                                                                   publisherExecutor,
                                                                                                   ntt::currentMembers,
-                                                                                                  () -> nodesReporting(pongSignalFan, nodeReportedStateHolder, config.self(), NodeReportedState.DRAINING),
                                                                                                   ((TopologyObserver) clusterNode.topologyManager())::get);
         publisherRef.set(generationSnapshotPublisher);
         var bootstrapModule = BootstrapModule.bootstrapModule(isLeaderSupplier,
@@ -2228,6 +2243,17 @@ public interface AetherNode extends ManageableNode {
             }
         };
         quicNetwork.setFollowerObservationWiring(isLeaderSupplier, reporter, epochAdapter);
+    }
+
+    /// Route a SWIM observation edge into the LeaderReconciler confirmed-death co-confirmation
+    /// gate: FAULTY arms the SWIM half, HEALTHY clears both halves (recovery). Leader-gating
+    /// happens inside the reconciler; other observation kinds are ignored here.
+    private static void routeSwimEdgeToConfirmedDeath(SwimObservation observation, LeaderReconciler leaderReconciler) {
+        switch (observation) {
+            case SwimObservation.FaultyObserved faulty -> leaderReconciler.onSwimFaulty(faulty.peer());
+            case SwimObservation.HealthyObserved healthy -> leaderReconciler.onSwimHealthy(healthy.peer());
+            default -> {}
+        }
     }
 
     private static Option<NodeId> lookupGovernor(KVStore<AetherKey, AetherValue> kvStore, String communityId) {
@@ -2879,6 +2905,12 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
                                               eventAggregator::onPeerJoined));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
+        // Membership-driven observable departure events (NODE_FAILED / NODE_LEFT). Re-sourced
+        // from MembershipDecision after the node-lifecycle atom was deleted (membership-v2).
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
+                                              eventAggregator::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
+                                              eventAggregator::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, eventAggregator::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,

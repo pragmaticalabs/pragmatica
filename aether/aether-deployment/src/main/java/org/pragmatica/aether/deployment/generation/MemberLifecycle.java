@@ -4,15 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.generation;
 
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
-
 /// Lightweight membership descriptor consumed by `ClusterGenerationProjector` to build
-/// `CoreMember`s. Decouples the projector from any KV value type:
-/// only the state plus display address (host/port) are required to project a member, since
-/// the synthesized path always defaults `joinedEpoch`/`observedCoreEpoch` to `Epoch.ZERO`
-/// and `provisioningSource` to `UNKNOWN`.
-public record MemberLifecycle(NodeLifecycleState state, String host, int port) {
-    public static MemberLifecycle memberLifecycle(NodeLifecycleState state, String host, int port) {
-        return new MemberLifecycle(state, host, port);
+/// `CoreMember`s. Decouples the projector from any KV value type. Membership-v2 finale: the
+/// synthetic per-node lifecycle enum was removed — presence in the member set IS membership, so
+/// this carries only the display address (host/port). The projector always defaults
+/// `joinedEpoch`/`observedCoreEpoch` to `Epoch.ZERO` and `provisioningSource` to `UNKNOWN`.
+public record MemberLifecycle(String host, int port) {
+    public static MemberLifecycle memberLifecycle(String host, int port) {
+        return new MemberLifecycle(host, port);
     }
 }

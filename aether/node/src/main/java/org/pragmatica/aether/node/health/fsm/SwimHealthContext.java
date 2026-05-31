@@ -23,8 +23,6 @@ import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.swim.SwimConfig;
 
 import java.net.InetSocketAddress;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -54,8 +52,6 @@ public final class SwimHealthContext {
     /// for unit tests that don't wire a phase.
     private final BooleanSupplier isBootingSupplier;
     private final java.util.function.Consumer<NodeId> faultyLeaderEvictor;
-    private final AtomicInteger faultyCountInWindow = new AtomicInteger();
-    private final AtomicLong faultyWindowStart = new AtomicLong();
     private final SwimHealthState stopped;
     private final SwimHealthState starting;
 
@@ -262,21 +258,6 @@ public final class SwimHealthContext {
         if (!isBootingSupplier.getAsBoolean() && currentLeader.map(peer::equals).or(false)) {
             faultyLeaderEvictor.accept(peer);
         }
-    }
-
-    public int incrementAndGetFaulty(long nowMillis) {
-        var suspectTimeoutMs = swimConfig.suspectTimeout().millis();
-        var start = faultyWindowStart.get();
-
-        if (nowMillis - start > suspectTimeoutMs && faultyWindowStart.compareAndSet(start, nowMillis)) {faultyCountInWindow.set(0);}
-
-        return faultyCountInWindow.incrementAndGet();
-    }
-
-    @Contract
-    public void resetFaultyWindow(long nowMillis) {
-        faultyCountInWindow.set(0);
-        faultyWindowStart.set(nowMillis);
     }
 
     public Option<InetSocketAddress> resolveSwimAddress(NodeId nodeId, int swimPortOffset) {

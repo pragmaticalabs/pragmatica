@@ -28,7 +28,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -102,6 +101,7 @@ class ClusterDeploymentStateActiveTest {
                                                     HealthSignalSink.noop(),
                                                     snapshotRef::get,
                                                     () -> Set.of(SELF, NODE_A),
+                                                    Set::of,
                                                     Set.of(SELF, NODE_A),
                                                     DeploymentAtomicity.ALL_OR_NOTHING,
                                                     3,
@@ -116,7 +116,6 @@ class ClusterDeploymentStateActiveTest {
             members.put(id, CoreMember.coreMember(id,
                                                    "localhost",
                                                    9000,
-                                                   NodeLifecycleState.ON_DUTY,
                                                    HealthHint.HEALTHY,
                                                    Epoch.epoch(1L, 0L),
                                                    Epoch.epoch(1L, 0L)));

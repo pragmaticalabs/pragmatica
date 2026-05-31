@@ -112,6 +112,17 @@ public final class LeaderReconciler {
     private final AtomicReference<ScheduledFuture<?>> activationFutureRef = new AtomicReference<>();
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
     private final ConcurrentHashMap<NodeId, Long> inFlightProvisioning = new ConcurrentHashMap<>();
+    /// Leader-side confirmed-death co-confirmation tracker (NTT hard-evict fast path).
+    /// A peer is hard-evicted from membership ONLY when it is in BOTH sets simultaneously:
+    /// SWIM has declared it FAULTY (`swimFaulty`) AND it is liveness-confirmed-gone
+    /// (`livenessGone` — fed by 3-missed-pong ping-timeout OR QUIC disconnect). SWIM-FAULTY
+    /// alone, a bare ping-miss, or a bare QUIC disconnect is NOT sufficient — the co-confirmation
+    /// gate guards against a single-plane false positive draining a healthy core node. Both sets
+    /// are cleared for a node on recovery (SWIM-HEALTHY / QUIC reconnect) so a re-joined node is
+    /// not instantly re-evicted. Updated only on the leader (all ingress methods leader-gate on
+    /// [`#isLeader`]); only the leader evicts.
+    private final Set<NodeId> swimFaulty = ConcurrentHashMap.newKeySet();
+    private final Set<NodeId> livenessGone = ConcurrentHashMap.newKeySet();
     private volatile Consumer<ReconcileIntent> reconcileListener = NOOP_LISTENER;
 
     private LeaderReconciler(MembershipConfig membershipConfig,
@@ -185,6 +196,8 @@ public final class LeaderReconciler {
         }
         cancelPendingActivation();
         inFlightProvisioning.clear();
+        swimFaulty.clear();
+        livenessGone.clear();
     }
 
     /// Live-event ingress for NTT timer-expiry. Stage 6 wires this from the NTT
@@ -226,6 +239,70 @@ public final class LeaderReconciler {
             return;
         }
         triggerReconcile(ReconcileTrigger.CONFIG_CHANGE);
+    }
+
+    /// Live-event ingress: SWIM declared `peerId` FAULTY. Leader-side half of the
+    /// confirmed-death co-confirmation gate. Records SWIM-FAULTY and hard-evicts iff the
+    /// peer is ALSO liveness-confirmed-gone. Non-leader nodes ignore.
+    @Contract
+    public void onSwimFaulty(NodeId peerId) {
+        if (!isLeader.get()) {
+            return;
+        }
+        swimFaulty.add(peerId);
+        evictIfConfirmedDead(peerId);
+    }
+
+    /// Live-event ingress: SWIM declared `peerId` HEALTHY (recovery). Clears the peer from
+    /// BOTH co-confirmation sets so a re-joined node is not instantly re-evicted by a stale
+    /// FAULTY/liveness-gone record. Non-leader nodes ignore.
+    @Contract
+    public void onSwimHealthy(NodeId peerId) {
+        if (!isLeader.get()) {
+            return;
+        }
+        clearConfirmedDeath(peerId);
+    }
+
+    /// Live-event ingress: `peerId` is liveness-confirmed-gone (3 missed pongs via the
+    /// ClusterSync ping-timeout, OR a routed QUIC disconnect). Leader-side liveness half of
+    /// the confirmed-death co-confirmation gate. Records liveness-gone and hard-evicts iff
+    /// SWIM has ALSO declared the peer FAULTY. Non-leader nodes ignore.
+    @Contract
+    public void onLivenessGone(NodeId peerId) {
+        if (!isLeader.get()) {
+            return;
+        }
+        livenessGone.add(peerId);
+        evictIfConfirmedDead(peerId);
+    }
+
+    /// Live-event ingress: `peerId` reconnected at the transport layer (QUIC PeerConnected,
+    /// recovery). Clears the peer from BOTH co-confirmation sets so a re-joined node is not
+    /// instantly re-evicted. Non-leader nodes ignore.
+    @Contract
+    public void onPeerRecovered(NodeId peerId) {
+        if (!isLeader.get()) {
+            return;
+        }
+        clearConfirmedDeath(peerId);
+    }
+
+    /// Hard-evict `peerId` from NTT membership iff it is co-confirmed dead — present in BOTH
+    /// the SWIM-FAULTY and liveness-gone sets. Clears both records on eviction so the node
+    /// starts clean if it later re-joins. NTT's `evict` is idempotent (no-op if already gone).
+    @Contract
+    private void evictIfConfirmedDead(NodeId peerId) {
+        if (swimFaulty.contains(peerId) && livenessGone.contains(peerId)) {
+            clearConfirmedDeath(peerId);
+            ntt.evict(peerId);
+        }
+    }
+
+    @Contract
+    private void clearConfirmedDeath(NodeId peerId) {
+        swimFaulty.remove(peerId);
+        livenessGone.remove(peerId);
     }
 
     /// Register the consumer that receives every emitted [`ReconcileIntent`]. At E1 the

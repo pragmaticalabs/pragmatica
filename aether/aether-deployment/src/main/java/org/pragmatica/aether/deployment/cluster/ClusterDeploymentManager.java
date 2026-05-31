@@ -269,6 +269,36 @@ public interface ClusterDeploymentManager {
                                                              HealthSignalSink healthSignalSink,
                                                              Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
                                                              Supplier<Set<NodeId>> readyNodesSupplier) {
+        return clusterDeploymentManager(self,
+                                        cluster,
+                                        kvStore,
+                                        router,
+                                        initialTopology,
+                                        topologyManager,
+                                        atomicity,
+                                        coreMax,
+                                        reconcileInterval,
+                                        schemaOrchestrator,
+                                        healthSignalSink,
+                                        snapshotSupplier,
+                                        readyNodesSupplier,
+                                        Set::of);
+    }
+
+    static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
+                                                             ClusterNode<KVCommand<AetherKey>> cluster,
+                                                             KVStore<AetherKey, AetherValue> kvStore,
+                                                             MessageRouter router,
+                                                             List<NodeId> initialTopology,
+                                                             TopologyManager topologyManager,
+                                                             DeploymentAtomicity atomicity,
+                                                             int coreMax,
+                                                             TimeSpan reconcileInterval,
+                                                             SchemaOrchestratorService schemaOrchestrator,
+                                                             HealthSignalSink healthSignalSink,
+                                                             Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
+                                                             Supplier<Set<NodeId>> readyNodesSupplier,
+                                                             Supplier<Set<NodeId>> drainingNodesSupplier) {
         var ctx = buildContext(self,
                                cluster,
                                kvStore,
@@ -281,7 +311,8 @@ public interface ClusterDeploymentManager {
                                schemaOrchestrator,
                                healthSignalSink,
                                snapshotSupplier,
-                               readyNodesSupplier);
+                               readyNodesSupplier,
+                               drainingNodesSupplier);
         return new ClusterDeploymentManagerAdapter(ctx);
     }
 
@@ -297,7 +328,8 @@ public interface ClusterDeploymentManager {
                                                          SchemaOrchestratorService schemaOrchestrator,
                                                          HealthSignalSink healthSignalSink,
                                                          Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
-                                                         Supplier<Set<NodeId>> readyNodesSupplier) {
+                                                         Supplier<Set<NodeId>> readyNodesSupplier,
+                                                         Supplier<Set<NodeId>> drainingNodesSupplier) {
         var ctxHolder = new AtomicReference<ClusterDeploymentContext>();
         Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> initialStateFactory = fsm -> buildContextAndDormant(fsm,
                                                                                                                                            ctxHolder,
@@ -313,7 +345,8 @@ public interface ClusterDeploymentManager {
                                                                                                                                            schemaOrchestrator,
                                                                                                                                            healthSignalSink,
                                                                                                                                            snapshotSupplier,
-                                                                                                                                           readyNodesSupplier);
+                                                                                                                                           readyNodesSupplier,
+                                                                                                                                           drainingNodesSupplier);
         var _fsm = Fsm.fsm("cluster-deployment", self.id(), initialStateFactory);
 
         return ctxHolder.get();
@@ -333,7 +366,8 @@ public interface ClusterDeploymentManager {
                                                                  SchemaOrchestratorService schemaOrchestrator,
                                                                  HealthSignalSink healthSignalSink,
                                                                  Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
-                                                                 Supplier<Set<NodeId>> readyNodesSupplier) {
+                                                                 Supplier<Set<NodeId>> readyNodesSupplier,
+                                                                 Supplier<Set<NodeId>> drainingNodesSupplier) {
         var ctx = new ClusterDeploymentContext(fsm,
                                                self,
                                                cluster,
@@ -344,6 +378,7 @@ public interface ClusterDeploymentManager {
                                                healthSignalSink,
                                                snapshotSupplier,
                                                readyNodesSupplier,
+                                               drainingNodesSupplier,
                                                seedNodes,
                                                atomicity,
                                                coreMax,

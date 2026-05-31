@@ -15,7 +15,6 @@ import org.pragmatica.aether.slice.generation.GenerationReason;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
@@ -51,9 +50,9 @@ class ClusterGenerationProjectorTest {
     @Nested
     class CoreMembers {
         @Test
-        void project_lifecycleEntries_becomeCoreMembers() {
+        void project_memberEntries_becomeCoreMembers() {
             var lifecycles = Map.of(NODE_A,
-                                    MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-a", 9001));
+                                    MemberLifecycle.memberLifecycle("host-a", 9001));
             var input = ProjectionInput.projectionInput(1L,
                                                          0L,
                                                          3,
@@ -75,29 +74,16 @@ class ClusterGenerationProjectorTest {
         }
 
         @Test
-        void project_drainingLifecycle_mapsToSuspectedHint() {
+        void project_presentMember_defaultsToHealthyHint() {
+            // Membership-v2 finale: presence IS membership; every present member is HEALTHY by
+            // construction unless a SWIM hint downgrades it (covered in the SWIM-hint override test).
             var lifecycles = Map.of(NODE_A,
-                                    MemberLifecycle.memberLifecycle(NodeLifecycleState.DRAINING, "host-a", 9001));
+                                    MemberLifecycle.memberLifecycle("host-a", 9001));
             var input = inputWithLifecycles(lifecycles);
 
             var snapshot = PROJECTOR.project(input);
 
-            assertThat(snapshot.coreMembers().get(NODE_A).healthHint()).isEqualTo(HealthHint.SUSPECTED);
-        }
-
-        @Test
-        void project_decommissionedLifecycle_filteredFromProjection() {
-            // DECOMMISSIONED is a tombstone — the node has left the cluster. The projection
-            // must NOT include it; otherwise its FAULTY hint would propagate to
-            // ClusterResult.DEGRADED via deriveClusterQuiescence and `await-quiesced` could
-            // never reach QUIESCED until DecommissionedAtomGc removes the atom (24h default).
-            var lifecycles = Map.of(NODE_A,
-                                    MemberLifecycle.memberLifecycle(NodeLifecycleState.STOPPED, "host-a", 9001));
-            var input = inputWithLifecycles(lifecycles);
-
-            var snapshot = PROJECTOR.project(input);
-
-            assertThat(snapshot.coreMembers()).doesNotContainKey(NODE_A);
+            assertThat(snapshot.coreMembers().get(NODE_A).healthHint()).isEqualTo(HealthHint.HEALTHY);
         }
 
         @Test
@@ -109,9 +95,8 @@ class ClusterGenerationProjectorTest {
                                                          GenerationReason.PERIODIC_REFRESH,
                                                          HlcTimestamp.ZERO,
                                                          Map.of(NODE_A,
-                                                                MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY,
-                                                                                                       "host-a",
-                                                                                                       9001)),
+                                                                MemberLifecycle.memberLifecycle("host-a",
+                                                                                                9001)),
                                                          Map.of(),
                                                          Map.of(),
                                                          Map.of(),
@@ -364,14 +349,11 @@ class ClusterGenerationProjectorTest {
 
         @Test
         void project_faultyMember_clusterIsDegraded() {
-            // Post-Step-I: STOPPED is filtered out of the projection (it's a tombstone, not a
-            // member), and SHUTTING_DOWN no longer exists. The remaining path to FAULTY is via
-            // a SWIM hint override on an ON_DUTY lifecycle entry — the projector takes the
-            // worse-of(lifecycle-derived, swim-hint) hint.
+            // Membership-v2 finale: presence members are HEALTHY by construction; the path to
+            // FAULTY is a SWIM hint override — the projector takes the SWIM hint when present.
             var lifecycles = Map.of(NODE_A,
-                                    MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY,
-                                                                           "host-a",
-                                                                           9001));
+                                    MemberLifecycle.memberLifecycle("host-a",
+                                                                    9001));
             var input = ProjectionInput.projectionInput(1L,
                                                          0L,
                                                          3,
@@ -395,8 +377,10 @@ class ClusterGenerationProjectorTest {
 
         @Test
         void project_suspectedMember_clusterIsDegraded() {
+            // Membership-v2 finale: SUSPECTED now arrives only via a SWIM hint override (the
+            // synthetic DRAINING→SUSPECTED lifecycle mapping was removed).
             var lifecycles = Map.of(NODE_A,
-                                    MemberLifecycle.memberLifecycle(NodeLifecycleState.DRAINING, "host-a", 9001));
+                                    MemberLifecycle.memberLifecycle("host-a", 9001));
             var input = ProjectionInput.projectionInput(1L,
                                                          0L,
                                                          3,
@@ -408,7 +392,9 @@ class ClusterGenerationProjectorTest {
                                                          Map.of(),
                                                          Map.of(),
                                                          Map.of(),
-                                                         Map.of());
+                                                         Map.of(),
+                                                         java.util.Set.of(),
+                                                         Map.of(NODE_A, HealthHint.SUSPECTED));
 
             var snapshot = PROJECTOR.project(input);
 
@@ -510,9 +496,9 @@ class ClusterGenerationProjectorTest {
         @Test
         void project_coreMemberWithoutArtifact_appearsInNodesWithoutSlices() {
             var lifecycles = Map.of(NODE_A,
-                                    MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-a", 9001),
+                                    MemberLifecycle.memberLifecycle("host-a", 9001),
                                     NODE_B,
-                                    MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-b", 9002));
+                                    MemberLifecycle.memberLifecycle("host-b", 9002));
             var input = ProjectionInput.projectionInput(1L,
                                                          0L,
                                                          3,
@@ -535,9 +521,9 @@ class ClusterGenerationProjectorTest {
         @Test
         void project_allCoreMembersWithArtifacts_nodesWithoutSlicesIsEmpty() {
             var lifecycles = Map.of(NODE_A,
-                                    MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-a", 9001),
+                                    MemberLifecycle.memberLifecycle("host-a", 9001),
                                     NODE_B,
-                                    MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-b", 9002));
+                                    MemberLifecycle.memberLifecycle("host-b", 9002));
             var input = ProjectionInput.projectionInput(1L,
                                                          0L,
                                                          3,
@@ -560,11 +546,11 @@ class ClusterGenerationProjectorTest {
         @Test
         void project_noCoreMembersHaveArtifacts_allAppearInNodesWithoutSlices() {
             var lifecycles = Map.of(NODE_A,
-                                    MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-a", 9001),
+                                    MemberLifecycle.memberLifecycle("host-a", 9001),
                                     NODE_B,
-                                    MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-b", 9002),
+                                    MemberLifecycle.memberLifecycle("host-b", 9002),
                                     NODE_C,
-                                    MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-c", 9003));
+                                    MemberLifecycle.memberLifecycle("host-c", 9003));
             var input = ProjectionInput.projectionInput(1L,
                                                          0L,
                                                          3,
@@ -589,7 +575,7 @@ class ClusterGenerationProjectorTest {
             // Scenario: NodeArtifactKey lingers for a node that has been evicted from coreMembers.
             // Only coreMembers contribute to the derived set; NODE_B should not appear anywhere.
             var lifecycles = Map.of(NODE_A,
-                                    MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-a", 9001));
+                                    MemberLifecycle.memberLifecycle("host-a", 9001));
             var input = ProjectionInput.projectionInput(1L,
                                                          0L,
                                                          3,
@@ -612,7 +598,7 @@ class ClusterGenerationProjectorTest {
         @Test
         void project_defaultNodesWithArtifacts_backwardCompatOverloadTreatedAsEmpty() {
             var lifecycles = Map.of(NODE_A,
-                                    MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-a", 9001));
+                                    MemberLifecycle.memberLifecycle("host-a", 9001));
             // 12-arg overload (no nodesWithArtifacts) must behave as if every core member has no artifact.
             var input = ProjectionInput.projectionInput(1L,
                                                          0L,

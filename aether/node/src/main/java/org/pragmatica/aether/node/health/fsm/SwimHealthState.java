@@ -129,11 +129,6 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         }
 
         private void handlePeerFaulty(SwimMember member, TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
-            if (isLocalDisconnect(member)) {
-                tx.transitionTo(new LocalDisconnect(ctx, swim, transport, encryptor, currentLeader));
-
-                return;
-            }
             tx.handle(() -> routeFaultyPeer(member));
         }
 
@@ -150,7 +145,6 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         private void handlePeerConnected(PeerConnected event) {
             var peer = event.peer();
             event.info().onPresent(info -> readdOrMarkAlive(peer, addressOf(info))).onEmpty(() -> readdOrMarkAliveFromTopology(peer));
-            ctx.resetFaultyWindow(ctx.nowMs());
             ctx.reportHint(peer, HealthHint.HEALTHY);
         }
 
@@ -179,102 +173,6 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
 
         private static InetSocketAddress addressOf(NodeInfo info) {
             return SwimHealthContext.toSwimAddress(info, SWIM_PORT_OFFSET);
-        }
-
-        private boolean isLocalDisconnect(SwimMember member) {
-            var now = ctx.nowMs();
-            var count = ctx.incrementAndGetFaulty(now);
-            var totalMembers = swim.members().size();
-
-            if (totalMembers > 0 && count > totalMembers / 2) {
-                LOG.warn("Local disconnect detected: {}/{} peers FAULTY — suppressing topology drain for {}",
-                         count,
-                         totalMembers,
-                         member.nodeId().id());
-                return true;
-            }
-
-            return false;
-        }
-
-        private void stopProtocolAndTransport() {
-            swim.stop();
-            transport.stop();
-        }
-    }
-
-    record LocalDisconnect(SwimHealthContext ctx,
-                           SwimProtocol swim,
-                           SwimTransport transport,
-                           GossipEncryptor encryptor,
-                           Option<NodeId> currentLeader) implements SwimHealthState {
-        @Override
-        public void onEntry() {
-            LOG.warn("Entering LocalDisconnect — majority of peers FAULTY within suspect window, "
-                    + "suppressing topology drain until a peer re-connects");
-        }
-
-        @Override
-        public void handle(SwimHealthEvents event, TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
-            switch (event) {
-                case StopRequested _ -> tx.transitionTo(ctx.stopped(), this::stopProtocolAndTransport);
-                case PeerConnected pc -> recoverOnPeerConnected(pc, tx);
-                case LeaderChanged lc -> handleLeaderChanged(lc, tx);
-                // A bare gossip PeerJoined is NOT proof local connectivity is restored, so it
-                // must NOT recover from LocalDisconnect nor assert HEALTHY (that would resurrect
-                // an unreachable node and wipe FAULTY evidence). Recovery flows only from a real
-                // `PeerConnected` (re-established QUIC connection) or probe-ack.
-                case PeerJoined _, PeerSuspect _, PeerFaulty _, PeerLeft _, ReportHint _ -> tx.ignore();
-                case StartRequested _, ProtocolReady _, StartFailed _ -> tx.ignore();
-            }
-        }
-
-        private void recoverOnPeerConnected(PeerConnected event,
-                                            TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
-            LOG.info("Network recovered from local disconnect via {}",
-                     event.peer().id());
-            tx.transitionTo(new Running(ctx, swim, transport, encryptor, currentLeader),
-                            () -> applyPeerConnectedRecovery(event));
-        }
-
-        private void applyPeerConnectedRecovery(PeerConnected event) {
-            var peer = event.peer();
-            event.info().onPresent(info -> readdOrMarkAlive(peer,
-                                                            SwimHealthContext.toSwimAddress(info, SWIM_PORT_OFFSET))).onEmpty(() -> readdOrMarkAliveFromTopology(peer));
-            ctx.resetFaultyWindow(ctx.nowMs());
-            ctx.reportHint(peer, HealthHint.HEALTHY);
-        }
-
-        private void readdOrMarkAliveFromTopology(NodeId peer) {
-            if (swim.members().containsKey(peer)) {
-                swim.markAlive(peer);
-
-                return;
-            }
-            ctx.resolveSwimAddress(peer, SWIM_PORT_OFFSET).onPresent(addr -> addSeedAndLog(peer, addr));
-        }
-
-        private void readdOrMarkAlive(NodeId peer, InetSocketAddress address) {
-            if (swim.members().containsKey(peer)) {
-                swim.markAlive(peer);
-
-                return;
-            }
-            addSeedAndLog(peer, address);
-        }
-
-        private void addSeedAndLog(NodeId peer, InetSocketAddress address) {
-            swim.addSeedMember(peer, address);
-            LOG.info("Re-added SWIM member {} at {} after disconnect recovery", peer.id(), address);
-        }
-
-        private void handleLeaderChanged(LeaderChanged event, TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
-            if (event.leader().equals(currentLeader)) {
-                tx.ignore();
-
-                return;
-            }
-            tx.transitionTo(new LocalDisconnect(ctx, swim, transport, encryptor, event.leader()));
         }
 
         private void stopProtocolAndTransport() {

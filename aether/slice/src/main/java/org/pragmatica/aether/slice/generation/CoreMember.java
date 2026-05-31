@@ -4,16 +4,21 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.generation;
 
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSource;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.serialization.Codec;
 
 
+/// Presence-derived core-member descriptor. The synthetic per-node lifecycle enum was removed
+/// in the membership-v2 finale: membership is now reconstructible each tick from
+/// `ntt.currentMembers()` presence, and the only real node work-state is `NodeReportedState`
+/// (SYNCING / READY / DRAINING) reported via pong — carried on the metrics heartbeat, not on
+/// this generation-snapshot record. A `CoreMember` therefore carries presence (it exists ⇒ the
+/// node is a current member), display address, the SWIM-derived `healthHint`, generation epochs,
+/// and the provisioning source.
 @Codec public record CoreMember(NodeId nodeId,
                                 String host,
                                 int port,
-                                NodeLifecycleState lifecycle,
                                 HealthHint healthHint,
                                 Epoch joinedEpoch,
                                 Epoch lastSeenEpoch,
@@ -25,14 +30,12 @@ import org.pragmatica.serialization.Codec;
     public static CoreMember coreMember(NodeId nodeId,
                                         String host,
                                         int port,
-                                        NodeLifecycleState lifecycle,
                                         HealthHint healthHint,
                                         Epoch joinedEpoch,
                                         Epoch lastSeenEpoch) {
         return new CoreMember(nodeId,
                               host,
                               port,
-                              lifecycle,
                               healthHint,
                               joinedEpoch,
                               lastSeenEpoch,
@@ -42,19 +45,17 @@ import org.pragmatica.serialization.Codec;
     public static CoreMember coreMember(NodeId nodeId,
                                         String host,
                                         int port,
-                                        NodeLifecycleState lifecycle,
                                         HealthHint healthHint,
                                         Epoch joinedEpoch,
                                         Epoch lastSeenEpoch,
                                         ProvisioningSource provisioningSource) {
-        return new CoreMember(nodeId, host, port, lifecycle, healthHint, joinedEpoch, lastSeenEpoch, provisioningSource);
+        return new CoreMember(nodeId, host, port, healthHint, joinedEpoch, lastSeenEpoch, provisioningSource);
     }
 
     public CoreMember withLastSeenEpoch(Epoch newLastSeenEpoch) {
         return new CoreMember(nodeId,
                               host,
                               port,
-                              lifecycle,
                               healthHint,
                               joinedEpoch,
                               newLastSeenEpoch,
@@ -65,19 +66,7 @@ import org.pragmatica.serialization.Codec;
         return new CoreMember(nodeId,
                               host,
                               port,
-                              lifecycle,
                               newHealthHint,
-                              joinedEpoch,
-                              lastSeenEpoch,
-                              provisioningSource);
-    }
-
-    public CoreMember withLifecycle(NodeLifecycleState newLifecycle) {
-        return new CoreMember(nodeId,
-                              host,
-                              port,
-                              newLifecycle,
-                              healthHint,
                               joinedEpoch,
                               lastSeenEpoch,
                               provisioningSource);

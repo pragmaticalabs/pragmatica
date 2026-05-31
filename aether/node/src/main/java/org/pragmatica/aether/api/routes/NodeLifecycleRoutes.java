@@ -9,12 +9,11 @@ import org.pragmatica.aether.api.ManagementApiResponses.PromoteNodeResponse;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.node.ManageableNode;
-import org.pragmatica.aether.slice.generation.CoreMember;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.HttpError;
@@ -41,6 +40,11 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 
 public final class NodeLifecycleRoutes implements RouteSource {
     private static final Cause LIFECYCLE_NOT_FOUND = Causes.cause("Node lifecycle not found");
+
+    /// Display/audit label for the operator-initiated shutdown terminal state. `NodeReportedState`
+    /// has no terminal value (a halting node simply stops reporting), so the shutdown route uses
+    /// this label for the audit + `NodeLifecycleChanged` event surface only.
+    private static final String STOPPED_STATE = "STOPPED";
 
     private final Supplier<ManageableNode> nodeSupplier;
 
@@ -108,31 +112,27 @@ public final class NodeLifecycleRoutes implements RouteSource {
         return new InFlightResponse(nodeSupplier.get().inFlightRequestTracker().count());
     }
 
-    /// Membership v2 finale: LIST and GET paths both read from the NTT-derived generation
-    /// snapshot's `coreMembers` (the per-node lifecycle enum), since the node-lifecycle KV
-    /// atom has been deleted. `updatedAt` is 0 — the snapshot carries epoch-based generation
-    /// provenance, not a per-transition consensus timestamp. The optional `state` filter is
-    /// applied against the externalised state name. Empty list when no snapshot has been
-    /// published yet (cold-start transient window).
+    /// Membership-v2 finale: LIST and GET both read the real node-authoritative
+    /// `NodeReportedState` (SYNCING / READY / DRAINING) from the metrics-pong readiness view —
+    /// the synthetic per-node lifecycle KV atom and snapshot enum were removed. `updatedAt` is 0
+    /// (the pong carries no per-transition consensus timestamp). The optional `state` filter is
+    /// applied against the state name. Empty list when no pong has been observed yet.
     private List<LifecycleEntry> getAllLifecycleStates(Option<String> stateFilter) {
         var normalizedFilter = stateFilter.map(RouteFilters::parseStateFilter);
         var entries = new ArrayList<LifecycleEntry>();
         nodeSupplier.get()
-                    .currentGenerationSnapshot()
-                    .onPresent(snapshot -> snapshot.coreMembers()
-                                                   .forEach((nodeId, member) -> appendIfMatches(entries,
-                                                                                                nodeId,
-                                                                                                member.lifecycle(),
-                                                                                                normalizedFilter)));
+                    .metricsCollector()
+                    .reportedStates()
+                    .forEach((nodeId, state) -> appendIfMatches(entries, nodeId, state, normalizedFilter));
 
         return entries;
     }
 
     private static void appendIfMatches(List<LifecycleEntry> entries,
                                         NodeId nodeId,
-                                        NodeLifecycleState state,
+                                        NodeReportedState state,
                                         Option<Set<String>> normalizedFilter) {
-        var entry = new LifecycleEntry(nodeId.id(), externalStateName(state), 0L);
+        var entry = new LifecycleEntry(nodeId.id(), state.name(), 0L);
         if (normalizedFilter.map(set -> set.contains(entry.state())).or(true)) {
             entries.add(entry);
         }
@@ -140,16 +140,12 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     private Promise<LifecycleEntry> getNodeLifecycle(String nodeIdStr) {
         return resolveLifecycleState(nodeIdStr).map(state -> new LifecycleEntry(nodeIdStr,
-                                                                               externalStateName(state),
+                                                                               state.name(),
                                                                                0L));
     }
 
-    private static String externalStateName(NodeLifecycleState state) {
-        return state.name();
-    }
-
-    /// Membership v2 (B5b) — operator drain. After the disruption-budget guard and the ON_DUTY
-    /// state guard, the target is enqueued into the leader's `DrainCommandRegistry` via
+    /// Membership v2 (B5b) — operator drain. After the disruption-budget guard and the presence
+    /// guard, the target is enqueued into the leader's `DrainCommandRegistry` via
     /// `drainCommandSink`; the leader's cluster-sync ping then carries `NodePingCommand.DRAIN` and
     /// the target self-drains via its `DrainProcedure`. The CTM grace-terminate backstop reaps the
     /// container if it never self-exits. No `LifecycleWriter` write happens here.
@@ -161,12 +157,12 @@ public final class NodeLifecycleRoutes implements RouteSource {
         return resolveLifecycleState(nodeIdStr).flatMap(state -> guardDrainState(nodeIdStr, state));
     }
 
-    private Promise<TransitionResult> guardDrainState(String nodeIdStr, NodeLifecycleState current) {
-        if (current != NodeLifecycleState.ON_DUTY) {
+    private Promise<TransitionResult> guardDrainState(String nodeIdStr, NodeReportedState current) {
+        if (current != NodeReportedState.READY) {
             return HttpError.httpError(HttpStatus.CONFLICT,
                                        Causes.cause("Cannot drain node " + nodeIdStr
                                                    + " from " + current
-                                                   + " (must be ON_DUTY)"))
+                                                   + " (must be READY)"))
                             .promise();
         }
         return NodeId.nodeId(nodeIdStr)
@@ -177,7 +173,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     private Promise<TransitionResult> enqueueDrainCommand(NodeId nodeId) {
         drainCommandSink.accept(nodeId);
         var result = drainInitiatedResult(nodeId.id());
-        auditAndEmitLifecycleTransition(result, NodeLifecycleState.DRAINING);
+        auditAndEmitLifecycleTransition(result, NodeReportedState.DRAINING.name());
 
         return Promise.success(result);
     }
@@ -185,13 +181,13 @@ public final class NodeLifecycleRoutes implements RouteSource {
     private TransitionResult drainInitiatedResult(String nodeIdStr) {
         return new TransitionResult(true,
                                     nodeIdStr,
-                                    NodeLifecycleState.DRAINING.name(),
+                                    NodeReportedState.DRAINING.name(),
                                     "Drain command enqueued; target will self-drain via heartbeat DRAIN command");
     }
 
     private Promise<TransitionResult> checkDisruptionBudget(String nodeIdStr) {
-        // Use live on-duty count; initialTopology() can accumulate stale entries across restarts.
-        var intendedSize = Math.max(nodeSupplier.get().membershipView().onDutyPeers().size(),
+        // Use live present-member count; initialTopology() can accumulate stale entries across restarts.
+        var intendedSize = Math.max(nodeSupplier.get().membershipView().presentMembers().size(),
                                     1);
         var minAvailable = (intendedSize / 2) + 1;
         var operationalAfterDrain = countOnDuty() - 1;
@@ -204,7 +200,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private int countOnDuty() {
-        return nodeSupplier.get().membershipView().onDutyPeers().size();
+        return nodeSupplier.get().membershipView().presentMembers().size();
     }
 
     private static Cause budgetExceededError(String nodeIdStr, int operationalAfterDrain, int minAvailable) {
@@ -227,7 +223,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     private Promise<TransitionResult> enqueueShutdownCommand(NodeId nodeId) {
         drainCommandSink.accept(nodeId);
         var result = shutdownInitiatedResult(nodeId.id());
-        auditAndEmitLifecycleTransition(result, NodeLifecycleState.STOPPED);
+        auditAndEmitLifecycleTransition(result, STOPPED_STATE);
 
         return Promise.success(result);
     }
@@ -235,7 +231,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     private TransitionResult shutdownInitiatedResult(String nodeIdStr) {
         return new TransitionResult(true,
                                     nodeIdStr,
-                                    NodeLifecycleState.STOPPED.name(),
+                                    STOPPED_STATE,
                                     "Shutdown command enqueued; target will self-drain then halt via heartbeat DRAIN command");
     }
 
@@ -332,34 +328,33 @@ public final class NodeLifecycleRoutes implements RouteSource {
         }
     }
 
-    /// Membership v2 finale: the node-lifecycle KV atom is deleted; the per-node lifecycle
-    /// state is read from the NTT-derived generation snapshot's `coreMembers` (the same source
-    /// the LIST path uses). `LIFECYCLE_NOT_FOUND` when the node is absent from the snapshot or
-    /// no snapshot has been published yet.
-    private Promise<NodeLifecycleState> resolveLifecycleState(String nodeIdStr) {
+    /// Membership-v2 finale: the per-node work-state is read from the real node-authoritative
+    /// `NodeReportedState` readiness view (metrics pong) — the snapshot lifecycle enum was
+    /// removed. `LIFECYCLE_NOT_FOUND` when the node has not reported a pong yet / is absent.
+    private Promise<NodeReportedState> resolveLifecycleState(String nodeIdStr) {
         return NodeId.nodeId(nodeIdStr)
                      .async()
                      .flatMap(this::lookupLifecycleState);
     }
 
-    private Promise<NodeLifecycleState> lookupLifecycleState(NodeId nodeId) {
+    private Promise<NodeReportedState> lookupLifecycleState(NodeId nodeId) {
         return readLifecycleState(nodeId).async(LIFECYCLE_NOT_FOUND);
     }
 
-    private Option<NodeLifecycleState> readLifecycleState(NodeId nodeId) {
-        return nodeSupplier.get()
-                           .currentGenerationSnapshot()
-                           .flatMap(snapshot -> Option.option(snapshot.coreMembers().get(nodeId)))
-                           .map(CoreMember::lifecycle);
+    private Option<NodeReportedState> readLifecycleState(NodeId nodeId) {
+        return Option.option(nodeSupplier.get()
+                                         .metricsCollector()
+                                         .reportedStates()
+                                         .get(nodeId));
     }
 
-    private void auditAndEmitLifecycleTransition(TransitionResult result, NodeLifecycleState newState) {
+    private void auditAndEmitLifecycleTransition(TransitionResult result, String newState) {
         AuditLog.nodeLifecycleTransition(result.nodeId(),
                                          result.state(),
                                          result.success(),
                                          result.message());
         nodeSupplier.get().route(OperationalEvent.NodeLifecycleChanged.nodeLifecycleChanged(result.nodeId(),
-                                                                                            newState.name(),
+                                                                                            newState,
                                                                                             "api"));
     }
 }

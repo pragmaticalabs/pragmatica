@@ -134,7 +134,7 @@ class SpokesmanPingLoopTest {
         void onClusterSyncPong_fromKnownGovernor_producesCommunityReport() {
             activateWith(List.of("pool-a"));
 
-            var pong = new ClusterSyncPong(GOV_A, Map.of(), 7L, 7L, 3L, "ON_DUTY", List.of(), List.of(), List.of());
+            var pong = new ClusterSyncPong(GOV_A, Map.of(), 7L, 7L, 3L, "READY", List.of(), List.of(), List.of());
             loop.onClusterSyncPong(pong);
 
             var reports = loop.currentReports();
@@ -150,7 +150,7 @@ class SpokesmanPingLoopTest {
             activateWith(List.of("pool-a"));
             var stranger = NodeId.nodeId("stranger").unwrap();
 
-            loop.onClusterSyncPong(new ClusterSyncPong(stranger, Map.of(), 7L, 7L, 3L, "ON_DUTY", List.of(), List.of(), List.of()));
+            loop.onClusterSyncPong(new ClusterSyncPong(stranger, Map.of(), 7L, 7L, 3L, "READY", List.of(), List.of(), List.of()));
 
             assertThat(loop.currentReports()).isEmpty();
         }
@@ -159,8 +159,8 @@ class SpokesmanPingLoopTest {
         void onClusterSyncPong_twoGovernors_producesTwoReports() {
             activateWith(List.of("pool-a", "pool-b"));
 
-            loop.onClusterSyncPong(new ClusterSyncPong(GOV_A, Map.of(), 7L, 7L, 3L, "ON_DUTY", List.of(), List.of(), List.of()));
-            loop.onClusterSyncPong(new ClusterSyncPong(GOV_B, Map.of(), 7L, 7L, 5L, "ON_DUTY", List.of(), List.of(), List.of()));
+            loop.onClusterSyncPong(new ClusterSyncPong(GOV_A, Map.of(), 7L, 7L, 3L, "READY", List.of(), List.of(), List.of()));
+            loop.onClusterSyncPong(new ClusterSyncPong(GOV_B, Map.of(), 7L, 7L, 5L, "READY", List.of(), List.of(), List.of()));
 
             assertThat(loop.currentReports())
                   .extracting("communityId")

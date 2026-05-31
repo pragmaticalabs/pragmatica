@@ -25,6 +25,7 @@ import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
+import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.ManageableNode;
@@ -158,7 +159,7 @@ public final class ClusterConfigRoutes implements RouteSource {
         // snapshot's
         // `coreMembers` lifecycle enum (mirrors StatusRoutes.lifecycleStateMap). Empty when no
         // snapshot has been published yet.
-        var kvStateMap = lifecycleStateMap(node);
+        var kvStateMap = reportedStateMap(node);
 
         return node.metricsCollector()
                    .allMetrics()
@@ -177,12 +178,12 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                           MembershipView view,
                                                           String kvState,
                                                           String leaderId) {
-        // derivedStatus — operator-visible projection of KV ∪ SWIM ∪ quorum,
-        // mirrors StatusRoutes.toNodeInfo.
-        var status = view.statusOf(nid);
-        var derivedStatus = status == MembershipView.MemberStatus.UNTRACKED
-                            ? "UNKNOWN"
-                            : status.name();
+        // derivedStatus — operator-visible projection, mirrors StatusRoutes.toNodeInfo:
+        // present peers surface their real reported work-state (READY when no pong yet);
+        // absent peers show UNKNOWN.
+        var derivedStatus = view.isPresent(nid)
+                            ? presentDisplay(kvState)
+                            : "UNKNOWN";
         // TODO (follow-up): role is still hardcoded "core" — should read from ActivationDirectiveValue
         // in kvStore (see StatusRoutes.collectNodeRoles). Out of scope for the state-authority split.
         return new ClusterStatusNodeInfo(nid.id(),
@@ -193,25 +194,22 @@ public final class ClusterConfigRoutes implements RouteSource {
                                          nid.id().equals(leaderId));
     }
 
-    /// External-viewer state name. Pre-Step-I this collapsed `SHUTTING_DOWN` → `DRAINING`;
-    /// post-Step-I (H/I collapse 2026-05-22) the slice-layer enum no longer carries
-    /// `SHUTTING_DOWN` — the three former terminal arms unified into `STOPPED` with a
-    /// `StopReason` sidecar — so this is now a passthrough.
-    /// See `aether/docs/specs/state-authority.md`.
-    private static String externalStateName(AetherValue.NodeLifecycleState state) {
-        return state.name();
+    private static String presentDisplay(String reportedState) {
+        return reportedState.isEmpty()
+               ? NodeReportedState.READY.name()
+               : reportedState;
     }
 
-    /// RC1 membership-v2: per-peer lifecycle display map sourced from the NTT-derived
-    /// generation snapshot's `coreMembers`. Empty map when no snapshot is published yet.
-    private static Map<NodeId, String> lifecycleStateMap(ManageableNode node) {
-        return node.currentGenerationSnapshot()
-                   .map(snapshot -> snapshot.coreMembers()
-                                            .entrySet()
-                                            .stream()
-                                            .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
-                                                                                  entry -> externalStateName(entry.getValue().lifecycle()))))
-                   .or(Map.of());
+    /// Membership-v2 finale: per-peer work-state display map sourced from the real
+    /// node-authoritative `NodeReportedState` (SYNCING / READY / DRAINING) carried on the metrics
+    /// pong — the synthetic per-node lifecycle enum was removed. Empty when no pong observed yet.
+    private static Map<NodeId, String> reportedStateMap(ManageableNode node) {
+        return node.metricsCollector()
+                   .reportedStates()
+                   .entrySet()
+                   .stream()
+                   .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                                                         entry -> entry.getValue().name()));
     }
 
     private static String reconcilerStateName(ManageableNode node) {

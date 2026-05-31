@@ -27,7 +27,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -87,7 +86,7 @@ class ClusterDeploymentManagerTest {
     private TestKVStore kvStore;
     private MessageRouter router;
     private ClusterDeploymentManager manager;
-    private final Map<NodeId, NodeLifecycleState> lifecycleSeed = new LinkedHashMap<>();
+    private final java.util.Set<NodeId> memberSeed = new java.util.LinkedHashSet<>();
 
     @BeforeEach
     void setUp() {
@@ -100,27 +99,26 @@ class ClusterDeploymentManagerTest {
         manager = buildManager(List.of(self, node2, node3), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT);
     }
 
-    // Membership-v2 finale: the node-lifecycle KV atom is deleted. Tests seed lifecycle states
-    // into `lifecycleSeed` via addTopology(); the snapshot-derived activeNodes()/drainingNodes()
-    // read from that in-memory map.
+    // Membership-v2 finale: the node-lifecycle KV atom is deleted and presence IS membership.
+    // Tests seed present members into `memberSeed`; the snapshot-derived activeNodes() reads from
+    // that in-memory set (drainingNodes() now reads the dedicated draining supplier, not the snapshot).
     private Supplier<Option<ClusterGenerationSnapshot>> kvBackedSnapshotSupplier() {
         return this::snapshotFromSeed;
     }
 
     private Option<ClusterGenerationSnapshot> snapshotFromSeed() {
         var members = new LinkedHashMap<NodeId, CoreMember>();
-        lifecycleSeed.forEach((nodeId, state) -> members.put(nodeId, seedMember(nodeId, state)));
+        memberSeed.forEach(nodeId -> members.put(nodeId, seedMember(nodeId)));
         if (members.isEmpty()) {return Option.none();}
 
         return Option.some(ClusterGenerationSnapshot.empty(1L).withDesiredCoreSize(members.size())
                                                               .withCoreMembers(members));
     }
 
-    private static CoreMember seedMember(NodeId nodeId, NodeLifecycleState state) {
+    private static CoreMember seedMember(NodeId nodeId) {
         return CoreMember.coreMember(nodeId,
                                      "host",
                                      9000,
-                                     state,
                                      HealthHint.HEALTHY,
                                      Epoch.epoch(1L, 0L),
                                      Epoch.epoch(1L, 0L));
@@ -140,7 +138,8 @@ class ClusterDeploymentManagerTest {
                                                                   NO_OP_SCHEMA,
                                                                   HealthSignalSink.noop(),
                                                                   kvBackedSnapshotSupplier(),
-                                                                  () -> Set.copyOf(initialTopology));
+                                                                  () -> Set.copyOf(initialTopology),
+                                                                  Set::of);
     }
 
     // === Leader State Tests ===
@@ -312,7 +311,7 @@ class ClusterDeploymentManagerTest {
         clusterNode.appliedCommands.clear();
 
         // Add third node with ON_DUTY lifecycle
-        lifecycleSeed.put(node3, NodeLifecycleState.ON_DUTY);
+        memberSeed.add(node3);
         manager.onMembershipDecision(MembershipDecision.nodeJoined(node3, List.of(self, node2, node3)));
 
         // Should allocate 1 more instance to reach desired 3
@@ -697,7 +696,7 @@ class ClusterDeploymentManagerTest {
 
         // Add topology so allocations can happen
         for (var nodeId : List.of(self, node2, node3)) {
-            lifecycleSeed.put(nodeId, NodeLifecycleState.ON_DUTY);
+            memberSeed.add(nodeId);
         }
         restoredManager.onMembershipDecision(MembershipDecision.nodeJoined(node3, List.of(self, node2, node3)));
 
@@ -851,7 +850,7 @@ class ClusterDeploymentManagerTest {
         var topology = List.of(nodes);
         // Register ON_DUTY lifecycle for each node so CDM considers them allocatable
         for (var nodeId : nodes) {
-            lifecycleSeed.put(nodeId, NodeLifecycleState.ON_DUTY);
+            memberSeed.add(nodeId);
         }
         mgr.onMembershipDecision(MembershipDecision.nodeJoined(nodes[nodes.length - 1], topology));
     }

@@ -604,24 +604,12 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
-    /// Collapsed 4-value lifecycle (cluster-convergence-reconciler-spec §5.1, I-step). The pre-RC1
-    /// 6-value alphabet (`DECOMMISSIONED` / `SHUTTING_DOWN` / `FAILED_DRAIN`) is unified into the
-    /// single terminal `STOPPED`. Retained as a value-object enum consumed by `CoreMember` /
-    /// `MemberLifecycle` in the generation snapshot; the node-lifecycle KV atom that previously
-    /// carried per-peer state (and a `StopReason` sidecar) was removed in the membership-v2 finale.
-    @Codec enum NodeLifecycleState {
-        JOINING,
-        ON_DUTY,
-        DRAINING,
-        STOPPED
-    }
-
     /// Three-phase model (D.3, 2026-05-11):
     /// - `COLD_BOOT` — cluster never had quorum. SWIM suppresses `FaultyObserved` for
     ///   never-healthy peers (preserves the cold-boot-during-formation invariant).
     ///   MembershipFsm structural bootstrap-safety suppresses STOPPED/DRAINING writes.
     ///   CTM auto-heal is suspended. Transition out: first time the cluster reaches a
-    ///   quorum of ON_DUTY peers AND a leader is elected, sustained for `stableWindowMs`.
+    ///   quorum of present peers AND a leader is elected, sustained for `stableWindowMs`.
     /// - `NORMAL` — full failure semantics. No suppression anywhere.
     /// - `RECOVERING` — cluster previously reached NORMAL but lost quorum (e.g.,
     ///   compose-restart, network partition, sustained chaos). SWIM emits FaultyObserved
@@ -1296,7 +1284,7 @@ import static org.pragmatica.lang.Option.none;
     /// Backward compatibility (slot-based-membership-convergence-spec §4.2): the legacy
     /// construction sites that passed a `deadlineMs` argument still compile via the deadline-arg
     /// constructors and `provisioningSlotValue(..)` factories below, which discard the now-derived
-    /// deadline. Mirrors the `NodeLifecycleValue` trailing-field pattern.
+    /// deadline. Mirrors the trailing-field backward-compat pattern used across `AetherValue`.
     record ProvisioningSlotValue(long spawnedAtMs,
                                  Option<NodeId> assignedNodeId,
                                  long occupantEpoch,
@@ -1365,7 +1353,7 @@ import static org.pragmatica.lang.Option.none;
     /// receive-time races.
     ///
     /// `version` is the wire-format schema version (LAST-position default = 1) — follows the
-    /// same pattern as `NodeLifecycleValue` for forward/backward compatibility.
+    /// standard trailing-field forward/backward compatibility pattern.
     record ClusterEventValue(HlcTimestamp at,
                               EventType type,
                               Severity severity,

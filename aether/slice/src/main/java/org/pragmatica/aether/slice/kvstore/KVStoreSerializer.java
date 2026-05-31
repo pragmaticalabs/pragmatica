@@ -611,7 +611,7 @@ import static org.pragmatica.lang.Result.success;
     ///   DISCARDED (expiry is now derived from `spawnedAtMs + provisioningTimeout`);
     /// — 5-field legacy fenced `(spawnedAtMs|deadlineMs|assignedNodeId|occupantEpoch|supersededNodeId)`
     ///   — likewise drops the stored `deadlineMs`.
-    /// Mirrors the `NodeLifecycleValue` trailing-field backward-compat (no envelope bump, spec §7).
+    /// Uses the standard trailing-field backward-compat pattern (no envelope bump, spec §7).
     static Result<Map.Entry<AetherKey, AetherValue>> parseProvisioningSlotEntry(String identity, String raw) {
         var parts = raw.split("\\|", - 1);
         var key = ProvisioningSlotKey.provisioningSlotKey(identity);

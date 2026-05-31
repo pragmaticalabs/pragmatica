@@ -446,12 +446,50 @@ public final class ClusterEventAggregator {
                                  event.cause().message()));
     }
 
-    /// Subscriber hook for `MembershipDecision` — kept as a no-op so route entries continue
-    /// to compile if callers wire it. The node-lifecycle atom that previously sourced
-    /// membership-driven NODE_FAILED / NODE_LEFT events has been deleted (membership-v2
-    /// finale); re-sourcing these events from `MembershipDecision` is future work.
-    @Contract
-    public void onMembershipDecision(@SuppressWarnings("unused") MembershipDecision decision) {}
+    /// Subscriber hook for `MembershipDecision` — re-sources the observable NODE_FAILED /
+    /// NODE_LEFT events that previously came from the now-deleted node-lifecycle atom
+    /// (membership-v2 finale). Mapping by variant:
+    /// - `NodeRemoved` → NODE_FAILED (CRITICAL): consensus dropped the node from the core
+    ///   presence set — the failure/eviction path that fires when a node is killed.
+    /// - `NodeDecommissioned` → NODE_LEFT (WARNING): durable, graceful permanent departure.
+    /// - `NodeDraining` → NODE_LEFT (WARNING): graceful drain start (retained variant).
+    /// - other variants (join/failed-drain/shutting-down) carry no user-facing departure
+    ///   semantics here and are intentionally ignored.
+    ///
+    /// Published from every node (not leader-gated): `MembershipDecision` is itself a
+    /// consensus-committed, cluster-wide fact, so the per-key originator dedup on the
+    /// replicated event log keeps the emission single even though all nodes observe it.
+    public void onMembershipDecision(MembershipDecision decision) {
+        switch (decision) {
+            case MembershipDecision.NodeRemoved removed -> publishDeparture(ClusterEventValue.EventType.NODE_FAILED,
+                                                                            ClusterEventValue.Severity.CRITICAL,
+                                                                            "removed from membership",
+                                                                            removed.nodeId());
+            case MembershipDecision.NodeDecommissioned decommissioned ->
+                    publishDeparture(ClusterEventValue.EventType.NODE_LEFT,
+                                     ClusterEventValue.Severity.WARNING,
+                                     "decommissioned",
+                                     decommissioned.nodeId());
+            case MembershipDecision.NodeDraining draining -> publishDeparture(ClusterEventValue.EventType.NODE_LEFT,
+                                                                              ClusterEventValue.Severity.WARNING,
+                                                                              "draining",
+                                                                              draining.nodeId());
+            case MembershipDecision.NodeJoined ignored -> {}
+            case MembershipDecision.NodeJoining ignored -> {}
+            case MembershipDecision.NodeFailedDrain ignored -> {}
+            case MembershipDecision.NodeShuttingDown ignored -> {}
+        }
+    }
+
+    private void publishDeparture(ClusterEventValue.EventType type,
+                                  ClusterEventValue.Severity severity,
+                                  String reason,
+                                  NodeId nodeId) {
+        publisher.publish(type,
+                          severity,
+                          "Node " + nodeId.id() + " " + reason,
+                          Map.of("nodeId", nodeId.id()));
+    }
 
     private Option<Long> computeAndRemoveDuration(String trackingKey) {
         return Option.option(deploymentStartTimes.remove(trackingKey)).map(startTime -> System.currentTimeMillis() - startTime);

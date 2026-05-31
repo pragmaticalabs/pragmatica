@@ -6,11 +6,8 @@ package org.pragmatica.aether.deployment.generation;
 
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.CoreMember;
-import org.pragmatica.aether.slice.generation.HealthHint;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSource;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.LifecycleState;
 import org.pragmatica.consensus.topology.MembershipView;
 
 import java.util.Map;
@@ -18,6 +15,11 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 
+/// Presence-derived adapter from the NTT/SWIM-projected `ClusterGenerationSnapshot` to the
+/// consensus-layer `MembershipView`. Membership-v2 finale: the synthetic per-node lifecycle
+/// layer was removed, so presence in `coreMembers` IS membership and being on duty —
+/// `onDutyMemberIds()` equals `coreMemberIds()` and `healthyOnDutyCount()` is the member count
+/// (the NTT set is healthy by construction).
 record SnapshotMembershipView(Map<NodeId, CoreMember> coreMembers,
                               int desiredCoreSize,
                               Set<NodeId> nodesWithoutSlices) implements MembershipView {
@@ -34,21 +36,12 @@ record SnapshotMembershipView(Map<NodeId, CoreMember> coreMembers,
 
     @Override
     public Set<NodeId> onDutyMemberIds() {
-        return coreMembers.entrySet()
-                          .stream()
-                          .filter(entry -> entry.getValue()
-                                                .lifecycle() == NodeLifecycleState.ON_DUTY)
-                          .map(Map.Entry::getKey)
-                          .collect(Collectors.toUnmodifiableSet());
+        return coreMemberIds();
     }
 
     @Override
     public int healthyOnDutyCount() {
-        return (int) coreMembers.values()
-                                .stream()
-                                .filter(member -> member.lifecycle() == NodeLifecycleState.ON_DUTY)
-                                .filter(member -> member.healthHint() == HealthHint.HEALTHY)
-                                .count();
+        return coreMembers.size();
     }
 
     @Override
@@ -59,26 +52,5 @@ record SnapshotMembershipView(Map<NodeId, CoreMember> coreMembers,
                                                 .provisioningSource() == ProvisioningSource.CTM)
                           .map(Map.Entry::getKey)
                           .collect(Collectors.toUnmodifiableSet());
-    }
-
-    /// RC1 Step 2: project the slice-level `NodeLifecycleState` into the consensus-layer
-    /// `LifecycleState` enum so `TopologyObserver.publishMembershipDeltas` (which lives in
-    /// `integrations/consensus` and cannot depend on `aether/slice` types) can diff the
-    /// per-snapshot lifecycle map and emit the three new `MembershipDecision` variants.
-    @Override
-    public Map<NodeId, LifecycleState> lifecycleStates() {
-        return coreMembers.entrySet()
-                          .stream()
-                          .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
-                                                                entry -> translateLifecycle(entry.getValue().lifecycle())));
-    }
-
-    private static LifecycleState translateLifecycle(NodeLifecycleState state) {
-        return switch (state) {
-            case JOINING -> LifecycleState.JOINING;
-            case ON_DUTY -> LifecycleState.ON_DUTY;
-            case DRAINING -> LifecycleState.DRAINING;
-            case STOPPED -> LifecycleState.STOPPED;
-        };
     }
 }

@@ -58,7 +58,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
@@ -288,7 +287,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void handleNodeAdded(NodeId addedNode) {
-            // Seed nodes are SWIM-derived to ON_DUTY by the membership-v2 view; only
+            // Seed nodes are SWIM-derived to present by the membership-v2 view; only
             // non-seed nodes need an explicit role assignment via ActivationDirective.
             if (!ctx.seedNodes().contains(addedNode)) {
                 assignNodeRole(addedNode);
@@ -636,7 +635,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       .map(snapshot -> snapshot.coreMembers()
                                                .values()
                                                .stream()
-                                               .filter(m -> m.lifecycle() != NodeLifecycleState.STOPPED)
                                                .map(CoreMember::nodeId)
                                                .filter(id -> !ctx.topologyManager()
                                                                  .isPassive(id))
@@ -645,15 +643,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         public Set<NodeId> drainingNodes() {
-            return ctx.snapshotSupplier()
-                      .get()
-                      .map(snapshot -> snapshot.coreMembers()
-                                               .values()
-                                               .stream()
-                                               .filter(m -> m.lifecycle() == NodeLifecycleState.DRAINING)
-                                               .map(CoreMember::nodeId)
-                                               .collect(Collectors.toUnmodifiableSet()))
-                      .or(Set::of);
+            return ctx.drainingNodesSupplier().get();
         }
 
         private Set<String> activeCommunityIds() {

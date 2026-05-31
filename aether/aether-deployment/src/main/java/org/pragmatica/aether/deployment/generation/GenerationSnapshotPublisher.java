@@ -19,7 +19,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GenerationSnapshotValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -62,7 +61,6 @@ public final class GenerationSnapshotPublisher {
     private final ClusterNode<KVCommand<AetherKey>> cluster;
     private final Executor executor;
     private final Supplier<Set<NodeId>> memberSupplier;
-    private final Supplier<Set<NodeId>> drainingSupplier;
     private final Function<NodeId, Option<NodeInfo>> addressResolver;
 
     private GenerationSnapshotPublisher(BooleanSupplier isLeader,
@@ -75,7 +73,6 @@ public final class GenerationSnapshotPublisher {
                                         ClusterNode<KVCommand<AetherKey>> cluster,
                                         Executor executor,
                                         Supplier<Set<NodeId>> memberSupplier,
-                                        Supplier<Set<NodeId>> drainingSupplier,
                                         Function<NodeId, Option<NodeInfo>> addressResolver) {
         this.isLeader = isLeader;
         this.rabiaTermSupplier = rabiaTermSupplier;
@@ -87,7 +84,6 @@ public final class GenerationSnapshotPublisher {
         this.cluster = cluster;
         this.executor = executor;
         this.memberSupplier = memberSupplier;
-        this.drainingSupplier = drainingSupplier;
         this.addressResolver = addressResolver;
     }
 
@@ -101,7 +97,6 @@ public final class GenerationSnapshotPublisher {
                                                                           ClusterNode<KVCommand<AetherKey>> cluster,
                                                                           Executor executor,
                                                                           Supplier<Set<NodeId>> memberSupplier,
-                                                                          Supplier<Set<NodeId>> drainingSupplier,
                                                                           Function<NodeId, Option<NodeInfo>> addressResolver) {
         return new GenerationSnapshotPublisher(isLeader,
                                                rabiaTermSupplier,
@@ -113,7 +108,6 @@ public final class GenerationSnapshotPublisher {
                                                cluster,
                                                executor,
                                                memberSupplier,
-                                               drainingSupplier,
                                                addressResolver);
     }
 
@@ -223,7 +217,7 @@ public final class GenerationSnapshotPublisher {
 
     private ClusterGenerationSnapshot projectFromKv(Option<ClusterGenerationSnapshot> currentInKv) {
         var kv = kvSnapshotSupplier.get();
-        var lifecycles = deriveLifecyclesFromMembership();
+        var lifecycles = deriveMembersFromPresence();
         var governors = collectGovernors(kv);
         var partitions = collectPartitions(kv);
         var spokesmen = collectSpokesmen(kv);
@@ -257,30 +251,25 @@ public final class GenerationSnapshotPublisher {
                      .map(v -> ((ClusterConfigValue) v).coreCount());
     }
 
-    /// Phase C-1: derive the lifecycle map fed to the projector from SWIM/NTT membership
-    /// instead of a KV lifecycle scan. Every converged member is
-    /// synthesized as `ON_DUTY` (or `DRAINING` when the leader readiness view reports the
-    /// node draining); departed nodes simply are not in `memberSupplier` so they never
-    /// appear (the projector's `STOPPED` filter is preserved but unused on this path).
-    /// Address is sourced from the topology observer; absent → empty host / zero port
-    /// (display-only).
-    private Map<NodeId, MemberLifecycle> deriveLifecyclesFromMembership() {
-        var draining = drainingSupplier.get();
+    /// Phase C-1 / membership-v2 finale: the member map fed to the projector is derived purely
+    /// from `ntt.currentMembers()` presence. Every present node IS a member — there is no
+    /// synthesized per-node lifecycle state (the only real work-state, `NodeReportedState`
+    /// SYNCING/READY/DRAINING, travels on the metrics pong, not the generation snapshot).
+    /// Departed nodes simply are not in `memberSupplier` so they never appear. Address is
+    /// sourced from the topology observer; absent → empty host / zero port (display-only).
+    private Map<NodeId, MemberLifecycle> deriveMembersFromPresence() {
         var result = new LinkedHashMap<NodeId, MemberLifecycle>();
-        memberSupplier.get().forEach(nodeId -> result.put(nodeId, synthesizeLifecycle(nodeId, draining.contains(nodeId))));
+        memberSupplier.get().forEach(nodeId -> result.put(nodeId, memberAddress(nodeId)));
 
         return Map.copyOf(result);
     }
 
-    private MemberLifecycle synthesizeLifecycle(NodeId nodeId, boolean isDraining) {
+    private MemberLifecycle memberAddress(NodeId nodeId) {
         var address = addressResolver.apply(nodeId).map(NodeInfo::address);
         var host = address.map(NodeAddress::host).or("");
         var port = address.map(NodeAddress::port).or(0);
-        var state = isDraining
-                    ? NodeLifecycleState.DRAINING
-                    : NodeLifecycleState.ON_DUTY;
 
-        return MemberLifecycle.memberLifecycle(state, host, port);
+        return MemberLifecycle.memberLifecycle(host, port);
     }
 
     private static Map<String, GovernorAnnouncementValue> collectGovernors(Map<AetherKey, AetherValue> kv) {

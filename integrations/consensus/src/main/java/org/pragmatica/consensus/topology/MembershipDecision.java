@@ -45,14 +45,11 @@ import java.util.List;
 /// of-truth for membership decisions is part of this contract.
 ///
 /// Note on lifecycle: `NodeJoined` and `NodeRemoved` reflect membership *view* transitions
-/// (whether the peer is in the cluster's `coreMemberIds` set). `NodeDecommissioned` is a
-/// specialised decision for the canonical "this node is permanently leaving" state, projected
-/// from the lifecycle KV-Store entry rather than the membership view diff. `NodeJoining`,
-/// `NodeDraining`, and `NodeFailedDrain` are RC1 lifecycle-projection variants emitted by the
-/// parallel lifecycle-projection walker in `publishMembershipDeltas` — they correspond to the
-/// per-node `NodeLifecycleState` transitions JOINING / DRAINING / FAILED_DRAIN respectively.
-/// Subscribers that distinguish between transient view changes and durable lifecycle decisions
-/// can react to the appropriate variant.
+/// (whether the peer is in the cluster's `coreMemberIds` presence set). `NodeDecommissioned`
+/// is a specialised decision for the canonical "this node is permanently leaving" state.
+/// `NodeJoining`, `NodeDraining`, `NodeFailedDrain`, and `NodeShuttingDown` are retained in the
+/// sealed hierarchy for backward compatibility but are no longer emitted — the synthetic
+/// per-node lifecycle-projection layer was removed in the membership-v2 finale.
 ///
 /// RC1 Step 2 added two cross-cutting metadata fields to every variant:
 /// - `logIndex` — Rabia commit index of the underlying KV snapshot used by `TopologyObserver`.
@@ -100,26 +97,24 @@ public sealed interface MembershipDecision extends Message.Local {
     /// durable, lifecycle-level decision rather than a transient view change.
     record NodeDecommissioned(NodeId nodeId, List<NodeId> topology, long logIndex, HlcTimestamp stampedAt) implements MembershipDecision {}
 
-    /// RC1 lifecycle-projection variant: the node's `NodeLifecycleValue.state` has transitioned
-    /// into `JOINING` — provisional admission, not yet fully ON_DUTY. Subscribers that previously
-    /// listened to `onNodeLifecyclePut` for the JOINING state consume this variant instead.
+    /// Lifecycle-projection variant retained in the sealed hierarchy for backward compatibility.
+    /// No longer emitted by the presence-derived membership path (membership-v2 finale): the
+    /// synthetic per-node lifecycle layer was removed. Subscribers react to `NodeJoined` /
+    /// `NodeRemoved` for membership transitions and to `NodeReportedState` (DRAINING) for drain.
     record NodeJoining(NodeId nodeId, List<NodeId> topology, long logIndex, HlcTimestamp stampedAt) implements MembershipDecision {}
 
-    /// RC1 lifecycle-projection variant: the node's `NodeLifecycleValue.state` has transitioned
-    /// into `DRAINING` — scheduled departure, slices being evicted. Subscribers that previously
-    /// listened to `onNodeLifecyclePut` for the DRAINING state consume this variant instead.
+    /// Lifecycle-projection variant retained for backward compatibility; no longer emitted by
+    /// the presence-derived membership path (membership-v2 finale).
     record NodeDraining(NodeId nodeId, List<NodeId> topology, long logIndex, HlcTimestamp stampedAt) implements MembershipDecision {}
 
-    /// RC1 lifecycle-projection variant: the node's `NodeLifecycleValue.state` has transitioned
-    /// into `FAILED_DRAIN` — drain timed out or aborted, operator intervention may be required.
+    /// Lifecycle-projection variant retained for backward compatibility; no longer emitted by
+    /// the presence-derived membership path (membership-v2 finale).
     record NodeFailedDrain(NodeId nodeId, List<NodeId> topology, long logIndex, HlcTimestamp stampedAt) implements MembershipDecision {}
 
-    /// RC1 lifecycle-projection variant: the node's `NodeLifecycleValue.state` has transitioned
-    /// into `SHUTTING_DOWN`. Emitted by `TopologyObserver`'s lifecycle walker so node-local
-    /// subscribers (`NodeDeploymentManager`) can react to operator-initiated remote shutdown
-    /// after the dual-channel KV-put listener was retired. Distinct from
-    /// `TransportObservation.SelfShutdown` (which is the local-transport notification raised
-    /// when the JVM begins shutting down its own process).
+    /// Lifecycle-projection variant retained for backward compatibility; no longer emitted by
+    /// the presence-derived membership path (membership-v2 finale). Distinct from
+    /// `TransportObservation.SelfShutdown` (the local-transport notification raised when the JVM
+    /// begins shutting down its own process).
     record NodeShuttingDown(NodeId nodeId, List<NodeId> topology, long logIndex, HlcTimestamp stampedAt) implements MembershipDecision {}
 
     static NodeJoined nodeJoined(NodeId nodeId, List<NodeId> view) {

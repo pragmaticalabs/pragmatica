@@ -10,7 +10,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GenerationSnapshotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GenerationSnapshotValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -65,14 +64,14 @@ class LeaderStuckEpochRegressionTest {
             // 1) Cold start — no KV, no snapshot.
             assertThat(source.currentMembershipView().isEmpty()).isTrue();
 
-            // 2) Seed self lifecycle, gain leadership — first publish lands.
-            seedLifecycle(fixture, SELF, NodeLifecycleState.ON_DUTY);
+            // 2) Seed self as a present member, gain leadership — first publish lands.
+            seedMember(fixture, SELF);
             fixture.publisher.onLeaderGained();
             awaitGenerationSnapshotKvPresent(fixture);
             var firstCounter = readPublishedCounter(fixture);
 
             // 3) Add a second node, mark dirty — second publish increments counter.
-            seedLifecycle(fixture, NODE_OTHER, NodeLifecycleState.ON_DUTY);
+            seedMember(fixture, NODE_OTHER);
             fixture.publisher.markDirty();
             awaitCounterAdvancesPast(fixture, firstCounter);
             var secondCounter = readPublishedCounter(fixture);
@@ -119,8 +118,8 @@ class LeaderStuckEpochRegressionTest {
         }
     }
 
-    private static void seedLifecycle(Fixture f, NodeId nodeId, NodeLifecycleState state) {
-        f.lifecycleSeed.put(nodeId, state);
+    private static void seedMember(Fixture f, NodeId nodeId) {
+        f.memberSeed.add(nodeId);
     }
 
     private static Fixture newFixture() {
@@ -134,11 +133,11 @@ class LeaderStuckEpochRegressionTest {
         var swimHints = SwimHintsRegistry.swimHintsRegistry(Duration.ofSeconds(60), () -> {});
         var cluster = new KvReflectingClusterNode(kvStore, kvRef);
         var executor = Executors.newSingleThreadExecutor();
-        // Phase C-1 / membership-v2 finale: membership is SWIM/NTT-derived; the node-lifecycle
-        // KV atom is gone. Tests seed lifecycles into a plain in-memory map; the member and
-        // draining suppliers derive their sets from those seeds so the regression intent
-        // (seeded ON_DUTY nodes drive the snapshot view + epoch counter) is preserved.
-        var lifecycleSeed = new java.util.concurrent.ConcurrentHashMap<NodeId, NodeLifecycleState>();
+        // Membership-v2 finale: membership is SWIM/NTT-derived presence; the node-lifecycle KV
+        // atom is gone. Tests seed a plain in-memory member set; the member supplier derives its
+        // set directly so the regression intent (seeded members drive the snapshot view + epoch
+        // counter) is preserved.
+        var memberSeed = java.util.concurrent.ConcurrentHashMap.<NodeId>newKeySet();
         var publisher = GenerationSnapshotPublisher.generationSnapshotPublisher(isLeader::get,
                                                                                 () -> 1L,
                                                                                 hlcClock,
@@ -148,26 +147,9 @@ class LeaderStuckEpochRegressionTest {
                                                                                 kvStore,
                                                                                 cluster,
                                                                                 executor,
-                                                                                () -> membersFromSeed(lifecycleSeed),
-                                                                                () -> drainingFromSeed(lifecycleSeed),
+                                                                                () -> java.util.Set.copyOf(memberSeed),
                                                                                 nodeId -> org.pragmatica.lang.Option.none());
-        return new Fixture(publisher, kvStore, kvRef, executor, lifecycleSeed);
-    }
-
-    private static java.util.Set<NodeId> membersFromSeed(Map<NodeId, NodeLifecycleState> seed) {
-        return seed.entrySet()
-                   .stream()
-                   .filter(e -> e.getValue() != NodeLifecycleState.STOPPED)
-                   .map(Map.Entry::getKey)
-                   .collect(java.util.stream.Collectors.toUnmodifiableSet());
-    }
-
-    private static java.util.Set<NodeId> drainingFromSeed(Map<NodeId, NodeLifecycleState> seed) {
-        return seed.entrySet()
-                   .stream()
-                   .filter(e -> e.getValue() == NodeLifecycleState.DRAINING)
-                   .map(Map.Entry::getKey)
-                   .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        return new Fixture(publisher, kvStore, kvRef, executor, memberSeed);
     }
 
     private static final class Fixture {
@@ -175,18 +157,18 @@ class LeaderStuckEpochRegressionTest {
         final KVStore<AetherKey, AetherValue> kvStore;
         final AtomicReference<Map<AetherKey, AetherValue>> kvRef;
         final ExecutorService executor;
-        final Map<NodeId, NodeLifecycleState> lifecycleSeed;
+        final java.util.Set<NodeId> memberSeed;
 
         Fixture(GenerationSnapshotPublisher publisher,
                 KVStore<AetherKey, AetherValue> kvStore,
                 AtomicReference<Map<AetherKey, AetherValue>> kvRef,
                 ExecutorService executor,
-                Map<NodeId, NodeLifecycleState> lifecycleSeed) {
+                java.util.Set<NodeId> memberSeed) {
             this.publisher = publisher;
             this.kvStore = kvStore;
             this.kvRef = kvRef;
             this.executor = executor;
-            this.lifecycleSeed = lifecycleSeed;
+            this.memberSeed = memberSeed;
         }
 
         void shutdown() {

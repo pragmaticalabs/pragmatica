@@ -319,11 +319,6 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         context.dispatch(new SwimHealthEvents.LeaderChanged(leader));
     }
 
-    public boolean isLocallyDisconnected() {
-        return context.fsm()
-                      .current() instanceof SwimHealthState.LocalDisconnect;
-    }
-
     @Contract
     public void recordTransportHint(TransportObservation hint) {
         protocol().onPresent(p -> p.recordTransportHint(hint.peer(), hint));
@@ -368,7 +363,6 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         return switch (context.fsm()
                               .current()) {
             case SwimHealthState.Running r -> option(r.swim());
-            case SwimHealthState.LocalDisconnect ld -> option(ld.swim());
             default -> none();
         };
     }
@@ -442,10 +436,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private void deliverToProtocol(InetSocketAddress sender, SwimMessage message) {
         if (context.fsm().current() instanceof SwimHealthState.Running running) {
             running.swim().onMessage(sender, message);
-
-            return;
         }
-        if (context.fsm().current() instanceof SwimHealthState.LocalDisconnect ld) {ld.swim().onMessage(sender, message);}
     }
 
     private int findSelfPort() {

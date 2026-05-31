@@ -6,6 +6,7 @@
 package org.pragmatica.aether.node.health;
 
 import org.pragmatica.aether.node.health.fsm.SwimHealthEvents;
+import org.pragmatica.aether.node.health.fsm.SwimHealthState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -126,37 +127,14 @@ class CoreSwimReconnectTest {
     }
 
     @Nested
-    class LocalDisconnectRecovery {
-        @Test
-        void localDisconnectRecovery_clearsFlag() {
-            // Manually set the flag via triggering detection (will be false without protocol)
-            assertThat(detector.isLocallyDisconnected()).isFalse();
-
-            // onNodeConnected clears the flag
-            detector.onNodeConnected(PEER_A);
-
-            assertThat(detector.isLocallyDisconnected()).isFalse();
-        }
-
-        @Test
-        void onMemberJoined_clearsLocalDisconnectFlag() {
-            assertThat(detector.isLocallyDisconnected()).isFalse();
-
-            var member = SwimMember.swimMember(PEER_A, new InetSocketAddress("127.0.0.2", 9101));
-            detector.onMemberJoined(member);
-
-            assertThat(detector.isLocallyDisconnected()).isFalse();
-        }
-    }
-
-    @Nested
     class SwimReconnect {
         @Test
         void onNodeConnected_withoutProtocol_doesNotThrow() {
-            // When SWIM is not started, onNodeConnected should be a no-op (no NPE)
+            // onNodeConnected on a running detector is a safe no-op (no NPE) and
+            // leaves the FSM in Running.
             detector.onNodeConnected(PEER_A);
 
-            assertThat(detector.isLocallyDisconnected()).isFalse();
+            assertThat(detector.lifecycleState()).isInstanceOf(SwimHealthState.Running.class);
         }
     }
 }

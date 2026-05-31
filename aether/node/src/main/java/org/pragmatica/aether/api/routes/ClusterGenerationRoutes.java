@@ -88,10 +88,13 @@ public final class ClusterGenerationRoutes implements RouteSource {
     }
 
     private static ClusterGenerationMember toMember(CoreMember member) {
+        // Membership-v2 finale: presence IS membership and being on duty — every member in the
+        // snapshot is a current core node. The synthetic per-node lifecycle enum was removed; the
+        // real per-node work-state (NodeReportedState) is exposed via the lifecycle/status routes.
         return new ClusterGenerationMember(member.nodeId().id(),
                                            member.host(),
                                            member.port(),
-                                           member.lifecycle().name(),
+                                           "PRESENT",
                                            member.healthHint().name(),
                                            toEpochInfo(member.joinedEpoch()),
                                            toEpochInfo(member.lastSeenEpoch()));

@@ -51,7 +51,7 @@ public record ReconcilerRulesConfig(RuleSpec joiningTimeout,
     ///     does not" (commonly: a peer that was force-decommissioned and then GC'd from
     ///     KV but SWIM has not yet forgotten). Auto-emitting `RecordJoining` here creates
     ///     a phantom-recovery loop with `JoiningTimeout` (the GC'd peer is re-recorded as
-    ///     JOINING, never reaches ON_DUTY, gets force-decommissioned again, GC'd again,
+    ///     JOINING, never becomes present, gets force-decommissioned again, GC'd again,
     ///     re-recorded again…). Audit-only with a future lookback guard (see spec §7.1) is
     ///     the correct design — the alert prompts the operator to investigate why SWIM is
     ///     not converging on a STOPPED peer rather than re-introducing it as JOINING.

@@ -13,7 +13,6 @@ import org.pragmatica.aether.api.ManagementApiResponses.GovernorsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.TopologyNodeDetail;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
-import org.pragmatica.aether.deployment.membership.view.MembershipView.MemberStatus;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.aether.management.route.ManagementRoute;
@@ -23,7 +22,6 @@ import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -152,7 +150,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                                                                                                   id)).filter(id -> isLiveLifecycle(membershipView,
                                                                                                                                                     id)).map(NodeId::id).toList();
         // §6 D1 slot-derived headcount: coreCount is the number of provisioning slots whose
-        // occupant is ON_DUTY, capped at clusterSize by construction (one occupant per slot,
+        // occupant is present, capped at clusterSize by construction (one occupant per slot,
         // |slots| == clusterSize). MembershipView supplies the per-occupant lifecycle+health
         // classification input. Cold-start (no slots seeded in KV yet) falls back to the
         // SWIM-derived count so self-bootstrap still reports.
@@ -186,8 +184,8 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                                                                                                                                     id)).map(NodeId::id).toList();
         // H.2 (spec §H): prefer the MembershipView-derived count; fall back to the snapshot
         // helper if the view is empty (e.g., during very-early bootstrap before SWIM has
-        // admitted self). The snapshot helper also now honours SWIM-derived ON_DUTY via the
-        // healthHint check (no KV ON_DUTY required) so both paths converge.
+        // admitted self). The snapshot helper also now honours SWIM-derived presence via the
+        // healthHint check (no KV entry required) so both paths converge.
         // §6 D1: slot-derived headcount, capped at clusterSize. Cold-start (no slots yet) →
         // SWIM-derived count → generation snapshot, preserving the prior fallback ladder.
         var viewCount = slotDerivedCoreCount(node, membershipView);
@@ -213,7 +211,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
     }
 
     /// §6 D1 slot-derived headcount. Counts provisioning slots whose occupant is
-    /// ON_DUTY. Because the cluster owns exactly `clusterSize` slots and each slot has at
+    /// present. Because the cluster owns exactly `clusterSize` slots and each slot has at
     /// most one occupant, the result is capped at `clusterSize` by construction — a stale
     /// corpse and its fresh replacement that briefly share a slot's identity contribute at
     /// most one (the slot is read once; only its current `assignedNodeId` is classified).
@@ -244,16 +242,16 @@ public final class ClusterTopologyRoutes implements RouteSource {
         return count;
     }
 
-    /// Per-slot occupancy classification (§5.1 HEALTHY): the slot's occupant counts iff its
-    /// effective lifecycle is ON_DUTY (MembershipView input).
+    /// Per-slot occupancy classification (§5.1 HEALTHY): the slot's occupant counts iff it is
+    /// present in the membership view (MembershipView input).
     private static boolean isHealthyOccupant(MembershipView view, NodeId occupant) {
-        return view.statusOf(occupant) == MemberStatus.ON_DUTY;
+        return view.isPresent(occupant);
     }
 
-    /// Cluster-canonical reachable-and-on-duty count. Reads `MembershipView.onDutyPeers()`
+    /// Cluster-canonical reachable-and-present count. Reads `MembershipView.presentMembers()`
     /// (KV-canonical); self is always included (SWIM does not observe self locally).
     private static int reachableOnDutyCount(MembershipView view) {
-        return view.onDutyPeers().size();
+        return view.presentMembers().size();
     }
 
     private static String topologyMode(TopologyManager tm) {
@@ -264,11 +262,9 @@ public final class ClusterTopologyRoutes implements RouteSource {
     }
 
     private static int snapshotCoreCount(ClusterGenerationSnapshot snapshot) {
-        // H.2 callers should use `node.membershipView().onDutyPeers().size()`. This helper
-        // remains for the snapshot path; counts members whose lifecycle is `ON_DUTY` OR
-        // whose `healthHint` is `HEALTHY` (i.e. SWIM-derived: lifecycle may be absent or
-        // any non-terminal state). Falls back to the legacy strict-`ON_DUTY` predicate
-        // when neither is present.
+        // Membership-v2 finale: presence IS membership — every snapshot member is a current
+        // core node. Count members whose SWIM-derived `healthHint` keeps them in the
+        // operational set (HEALTHY).
         return (int) snapshot.coreMembers()
                              .values()
                              .stream()
@@ -277,10 +273,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
     }
 
     private static boolean isEffectiveOnDuty(org.pragmatica.aether.slice.generation.CoreMember member) {
-        if (member.lifecycle() == NodeLifecycleState.DRAINING || member.lifecycle() == NodeLifecycleState.STOPPED) {
-            return false;
-        }
-        return member.healthHint() == HealthHint.HEALTHY || member.lifecycle() == NodeLifecycleState.ON_DUTY;
+        return member.healthHint() == HealthHint.HEALTHY;
     }
 
     private static boolean isHealthy(TopologyManager tm, NodeId id) {
@@ -289,15 +282,12 @@ public final class ClusterTopologyRoutes implements RouteSource {
                  .or(false);
     }
 
-    /// True when the peer's effective lifecycle keeps it in the operational topology.
-    /// Excludes STOPPED / UNTRACKED — KV entries for peers whose
-    /// containers no longer exist but whose topology row hasn't yet been GC'd.
-    /// JOINING / ON_DUTY / DRAINING all count as "live" — they remain valid `pick_non_leader`
-    /// targets, valid CTM provisioning slots, and valid `/api/cluster/topology` rows.
+    /// True when the peer is present in the membership view and keeps a place in the operational
+    /// topology. Membership-v2 finale: presence IS being on duty — present peers remain valid
+    /// `pick_non_leader` targets, valid CTM provisioning slots, and valid
+    /// `/api/cluster/topology` rows.
     private static boolean isLiveLifecycle(MembershipView membershipView, NodeId id) {
-        var status = membershipView.statusOf(id);
-
-        return status == MemberStatus.JOINING || status == MemberStatus.ON_DUTY || status == MemberStatus.DRAINING;
+        return membershipView.isPresent(id);
     }
 
     private static TopologyNodeDetail buildNodeDetail(TopologyManager tm, NodeId nodeId, boolean connected) {

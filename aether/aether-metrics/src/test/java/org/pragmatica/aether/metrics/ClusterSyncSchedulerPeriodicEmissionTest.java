@@ -238,9 +238,7 @@ class ClusterSyncSchedulerPeriodicEmissionTest {
         @Override public void onClusterSyncPong(ClusterSyncPong pong) {}
         @Override public long observedRabiaTerm() {return 0L;}
         @Override public Epoch observedEpoch() {return Epoch.ZERO;}
-        @Override public String currentLifecycleState() {return "ON_DUTY";}
         @Override public List<CommunityReport> collectCommunityReports() {return List.of();}
-        @Override public void setLifecycleStateSupplier(Supplier<String> supplier) {}
         @Override public void setCommunityReportSupplier(Supplier<List<CommunityReport>> supplier) {}
         @Override public void addPongListener(Consumer<ClusterSyncPong> listener) {}
         @Override public void setPongSignalFan(ClusterSyncPongSignalFan fan) {}

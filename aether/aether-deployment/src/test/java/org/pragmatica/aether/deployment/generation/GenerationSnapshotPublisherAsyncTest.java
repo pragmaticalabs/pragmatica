@@ -12,7 +12,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GenerationSnapshotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GenerationSnapshotValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -159,17 +158,16 @@ class GenerationSnapshotPublisherAsyncTest {
 
     // ---- Awaiting helpers (no Awaitility on classpath; latch-based polling) ----
 
-    /// Phase C-1: the published snapshot's coreMembers are derived from `memberSupplier`
-    /// (synthesized ON_DUTY) rather than the KV `NodeLifecycleKey` scan, and a node reported
-    /// by `drainingSupplier` projects as DRAINING. Address comes from the resolver.
+    /// Membership-v2 finale: the published snapshot's coreMembers are derived purely from
+    /// `memberSupplier` presence (no synthetic per-node lifecycle). Address comes from the
+    /// resolver; an unresolved peer defaults to empty host / zero port.
     @Test
-    void publishedSnapshot_reflectsMemberSupplier_drainingNodeProjectsDraining() throws Exception {
+    void publishedSnapshot_reflectsMemberSupplierPresence() throws Exception {
         var peerA = new NodeId("peer-a");
         var peerB = new NodeId("peer-b");
         var resolver = addressResolverOf(Map.of(SELF, address("10.0.0.1", 7001),
                                                 peerA, address("10.0.0.2", 7002)));
         var fixture = newFixture(() -> Set.of(SELF, peerA, peerB),
-                                 () -> Set.of(peerB),
                                  resolver);
         try {
             fixture.publisher.onLeaderGained();
@@ -179,9 +177,6 @@ class GenerationSnapshotPublisherAsyncTest {
             var coreMembers = snapshot.coreMembers();
 
             assertThat(coreMembers.keySet()).containsExactlyInAnyOrder(SELF, peerA, peerB);
-            assertThat(coreMembers.get(SELF).lifecycle()).isEqualTo(NodeLifecycleState.ON_DUTY);
-            assertThat(coreMembers.get(peerA).lifecycle()).isEqualTo(NodeLifecycleState.ON_DUTY);
-            assertThat(coreMembers.get(peerB).lifecycle()).isEqualTo(NodeLifecycleState.DRAINING);
             assertThat(coreMembers.get(SELF).host()).isEqualTo("10.0.0.1");
             assertThat(coreMembers.get(SELF).port()).isEqualTo(7001);
             // Address resolver returned none() for peer-b — defaults to empty host / zero port.
@@ -258,11 +253,10 @@ class GenerationSnapshotPublisherAsyncTest {
     // ---- Fixture wiring ----
 
     private static Fixture newFixture() {
-        return newFixture(() -> Set.of(SELF), Set::of, nodeId -> Option.none());
+        return newFixture(() -> Set.of(SELF), nodeId -> Option.none());
     }
 
     private static Fixture newFixture(Supplier<Set<NodeId>> memberSupplier,
-                                      Supplier<Set<NodeId>> drainingSupplier,
                                       Function<NodeId, Option<NodeInfo>> addressResolver) {
         var router = MessageRouter.mutable();
         KVStore<AetherKey, AetherValue> kvStore = new KVStore<>(router, NoOpSerializer.INSTANCE, NoOpDeserializer.INSTANCE);
@@ -285,7 +279,6 @@ class GenerationSnapshotPublisherAsyncTest {
                                                                                 cluster,
                                                                                 executor,
                                                                                 memberSupplier,
-                                                                                drainingSupplier,
                                                                                 addressResolver);
         return new Fixture(publisher, isLeader, cluster, executor);
     }

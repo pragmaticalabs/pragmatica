@@ -21,7 +21,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 
 import java.util.List;
-import java.util.Map;
+
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
@@ -275,8 +275,7 @@ class TopologyObserverTest {
     @Nested
     class MembershipDecisionEmission {
         record StubView(Set<NodeId> coreMemberIds, Set<NodeId> onDutyMemberIds,
-                        int healthyOnDutyCount, int desiredCoreSize,
-                        Map<NodeId, LifecycleState> lifecycleStates) implements MembershipView {}
+                        int healthyOnDutyCount, int desiredCoreSize) implements MembershipView {}
 
         static final class StatefulSnapshotSource implements GenerationSnapshotSource {
             private final AtomicReference<Option<MembershipView>> viewRef = new AtomicReference<>(Option.none());
@@ -308,12 +307,8 @@ class TopologyObserverTest {
             return router;
         }
 
-        private static StubView viewWithLifecycles(Map<NodeId, LifecycleState> lifecycles) {
-            var onDuty = lifecycles.entrySet().stream()
-                                       .filter(e -> e.getValue() == LifecycleState.ON_DUTY)
-                                       .map(Map.Entry::getKey)
-                                       .collect(java.util.stream.Collectors.toUnmodifiableSet());
-            return new StubView(lifecycles.keySet(), onDuty, onDuty.size(), lifecycles.size(), lifecycles);
+        private static StubView viewOf(Set<NodeId> members) {
+            return new StubView(members, members, members.size(), members.size());
         }
 
         private static void assertJoinStamps(MembershipDecision.NodeJoined j, long expectedLogIndex, HlcTimestamp expectedHlc) {
@@ -339,86 +334,47 @@ class TopologyObserverTest {
             var hlc = new HlcTimestamp(HlcTimestamp.pack(12_345L, 0), new NodeId("node-self"));
 
             // Seed snapshot before start() so initial publish observes the configured core.
-            snapshot.set(viewWithLifecycles(Map.of(SELF, LifecycleState.ON_DUTY,
-                                                   PEER_A, LifecycleState.ON_DUTY,
-                                                   PEER_B, LifecycleState.ON_DUTY)),
-                          42L);
+            snapshot.set(viewOf(Set.of(SELF, PEER_A, PEER_B)), 42L);
 
             var observer = observerWith(routerCapturing(emissions), snapshot, () -> hlc);
             observer.start().await();
 
             // First publish: 3 NodeJoined emissions (initial core set is non-empty against the
-            // empty previousCoreMembers seed) PLUS 3 lifecycle decisions if ON_DUTY transitions
-            // were emitted — ON_DUTY is intentionally NOT emitted to avoid double-firing.
+            // empty previousCoreMembers seed). Presence-derived membership emits no separate
+            // lifecycle decision.
             var joins = emissions.stream()
                                  .filter(MembershipDecision.NodeJoined.class::isInstance)
                                  .map(MembershipDecision.NodeJoined.class::cast)
                                  .toList();
             assertThat(joins).hasSize(3);
             assertThat(joins).allSatisfy(j -> assertJoinStamps(j, 42L, hlc));
-            // ON_DUTY does not produce a lifecycle decision (covered by NodeJoined).
             assertThat(emissions).noneMatch(MembershipDecision.NodeJoining.class::isInstance);
         }
 
         @Test
-        void publishMembershipDeltas_emitsNodeDraining_onLifecycleTransitionToDraining() {
+        void publishMembershipDeltas_emitsNodeRemoved_onMemberDeparture() {
             var emissions = new CopyOnWriteArrayList<MembershipDecision>();
             var snapshot = new StatefulSnapshotSource();
             var hlc = new HlcTimestamp(HlcTimestamp.pack(100L, 0), new NodeId("node-self"));
 
-            snapshot.set(viewWithLifecycles(Map.of(SELF, LifecycleState.ON_DUTY,
-                                                   PEER_A, LifecycleState.ON_DUTY,
-                                                   PEER_B, LifecycleState.ON_DUTY)),
-                          1L);
+            snapshot.set(viewOf(Set.of(SELF, PEER_A, PEER_B)), 1L);
 
             var observer = observerWith(routerCapturing(emissions), snapshot, () -> hlc);
             observer.start().await();
             emissions.clear();
 
-            // Transition PEER_A to DRAINING.
-            snapshot.set(viewWithLifecycles(Map.of(SELF, LifecycleState.ON_DUTY,
-                                                   PEER_A, LifecycleState.DRAINING,
-                                                   PEER_B, LifecycleState.ON_DUTY)),
-                          2L);
-            // Re-route the observation by re-feeding the quorum-state evaluator — calling
-            // handleSetClusterSize with the same size is a benign no-op trigger.
+            // PEER_A departs (absent from the presence set).
+            snapshot.set(viewOf(Set.of(SELF, PEER_B)), 2L);
             observer.handleSetClusterSize(new TopologyManagementMessage.SetClusterSize(3));
 
-            var drains = emissions.stream()
-                                  .filter(MembershipDecision.NodeDraining.class::isInstance)
-                                  .map(MembershipDecision.NodeDraining.class::cast)
-                                  .toList();
-            assertThat(drains).hasSize(1);
-            assertThat(drains.getFirst().nodeId()).isEqualTo(PEER_A);
-            assertThat(drains.getFirst().logIndex()).isEqualTo(2L);
-            assertThat(drains.getFirst().stampedAt()).isEqualTo(hlc);
-        }
-
-        @Test
-        void publishMembershipDeltas_emitsNodeDecommissioned_onLifecycleTransitionToStopped() {
-            // After Step H/I collapse: all terminal lifecycle transitions (former
-            // DECOMMISSIONED, FAILED_DRAIN, SHUTTING_DOWN) map to the single STOPPED
-            // value and route uniformly to MembershipDecision.NodeDecommissioned.
-            // The StopReason discriminator (FORCED / DRAIN_FAILED / GRACEFUL) lives
-            // on the slice-side NodeLifecycleValue sidecar — not on the consensus event.
-            var emissions = new CopyOnWriteArrayList<MembershipDecision>();
-            var snapshot = new StatefulSnapshotSource();
-            snapshot.set(viewWithLifecycles(Map.of(SELF, LifecycleState.ON_DUTY,
-                                                   PEER_A, LifecycleState.DRAINING,
-                                                   PEER_B, LifecycleState.ON_DUTY)),
-                          1L);
-
-            var observer = observerWith(routerCapturing(emissions), snapshot, TopologyObserver.ZERO_HLC_SUPPLIER);
-            observer.start().await();
-            emissions.clear();
-
-            snapshot.set(viewWithLifecycles(Map.of(SELF, LifecycleState.ON_DUTY,
-                                                   PEER_A, LifecycleState.STOPPED,
-                                                   PEER_B, LifecycleState.ON_DUTY)),
-                          2L);
-            observer.handleSetClusterSize(new TopologyManagementMessage.SetClusterSize(3));
-
-            assertThat(emissions).anyMatch(MembershipDecision.NodeDecommissioned.class::isInstance);
+            var removals = emissions.stream()
+                                    .filter(MembershipDecision.NodeRemoved.class::isInstance)
+                                    .map(MembershipDecision.NodeRemoved.class::cast)
+                                    .toList();
+            assertThat(removals).hasSize(1);
+            assertThat(removals.getFirst().nodeId()).isEqualTo(PEER_A);
+            assertThat(removals.getFirst().logIndex()).isEqualTo(2L);
+            assertThat(removals.getFirst().stampedAt()).isEqualTo(hlc);
         }
 
         @Test
@@ -427,7 +383,7 @@ class TopologyObserverTest {
             // contains only 1 core member; quorumEstablished latch stays false.
             var emissions = new CopyOnWriteArrayList<MembershipDecision>();
             var snapshot = new StatefulSnapshotSource();
-            snapshot.set(viewWithLifecycles(Map.of(SELF, LifecycleState.ON_DUTY)), 1L);
+            snapshot.set(viewOf(Set.of(SELF)), 1L);
 
             var observer = observerWith(routerCapturing(emissions), snapshot, TopologyObserver.ZERO_HLC_SUPPLIER);
             observer.start().await();
@@ -441,10 +397,7 @@ class TopologyObserverTest {
         void publishMembershipDeltas_emitsOncePerTransition_idempotentOnReplay() {
             var emissions = new CopyOnWriteArrayList<MembershipDecision>();
             var snapshot = new StatefulSnapshotSource();
-            snapshot.set(viewWithLifecycles(Map.of(SELF, LifecycleState.ON_DUTY,
-                                                   PEER_A, LifecycleState.ON_DUTY,
-                                                   PEER_B, LifecycleState.ON_DUTY)),
-                          1L);
+            snapshot.set(viewOf(Set.of(SELF, PEER_A, PEER_B)), 1L);
 
             var observer = observerWith(routerCapturing(emissions), snapshot, TopologyObserver.ZERO_HLC_SUPPLIER);
             observer.start().await();

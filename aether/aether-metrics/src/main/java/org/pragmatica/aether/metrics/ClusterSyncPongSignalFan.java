@@ -99,7 +99,7 @@ import org.slf4j.LoggerFactory;
 
     /// Phase 2 PR-B factory. The supplied `readySink` is invoked for every non-empty
     /// `ClusterSyncPong.readyCandidate` observed while this node is leader. Idempotency lives
-    /// in the downstream reducer — `ForceOnDuty` on already-`ON_DUTY` is a no-op there.
+    /// in the downstream reducer — re-signalling an already-present candidate is a no-op there.
     static ClusterSyncPongSignalFan clusterSyncPongSignalFan(HealthSignalSink sink,
                                                              LeaderManager leaderManager,
                                                              ReadyCandidateSink readySink) {

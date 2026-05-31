@@ -18,7 +18,6 @@ package org.pragmatica.consensus.topology;
 
 import org.pragmatica.consensus.NodeId;
 
-import java.util.Map;
 import java.util.Set;
 
 /// Read-only projection of cluster membership used by `TopologyObserver` read paths
@@ -77,32 +76,5 @@ public interface MembershipView {
     /// do not carry artifact-presence metadata.
     default Set<NodeId> nodesWithoutSlices() {
         return Set.of();
-    }
-
-    /// Per-core-member lifecycle state at the snapshot's epoch. Used by `TopologyObserver`
-    /// (RC1 Step 2) to derive the lifecycle-projection `MembershipDecision` variants
-    /// (`NodeJoining` / `NodeDraining` / `NodeFailedDrain`) — variant emission diffs the
-    /// previous snapshot's map against the current one.
-    ///
-    /// Default implementation returns the empty map — safe-by-default for views that do
-    /// not carry lifecycle metadata (e.g. legacy / test stubs). Snapshot adapters in
-    /// `aether-deployment` populate this from the slice-level `NodeLifecycleState`.
-    default Map<NodeId, LifecycleState> lifecycleStates() {
-        return Map.of();
-    }
-
-    /// Count of core members whose lifecycle is `JOINING` — capacity-in-progress that has
-    /// not yet reached `ON_DUTY`. CTM deficit math subtracts this so a still-forming or
-    /// recovering cluster (nodes SWIM-active but lagging in KV `ON_DUTY`) does not provision
-    /// redundant replacements. Genuinely-stuck `JOINING` nodes are bounded by the enforcing
-    /// `JoiningTimeout` reconciler rule, so counting them here is self-correcting.
-    ///
-    /// Derived from `lifecycleStates()`, so it inherits the empty-safe default for views
-    /// that carry no lifecycle metadata.
-    default int joiningCount() {
-        return (int) lifecycleStates().values()
-                                      .stream()
-                                      .filter(state -> state == LifecycleState.JOINING)
-                                      .count();
     }
 }

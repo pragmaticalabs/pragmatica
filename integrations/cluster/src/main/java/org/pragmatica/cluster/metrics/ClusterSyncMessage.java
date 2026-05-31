@@ -70,8 +70,8 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
     /// @param observedRabiaTerm   sender's last-accepted Rabia term
     /// @param observedEpochTerm   sender's last-accepted epoch's term
     /// @param observedEpochCounter sender's last-accepted epoch's counter
-    /// @param lifecycleState      sender's current `NodeLifecycleState` as a plain string
-    ///                            (cluster/ module stays decoupled from aether/slice enums)
+    /// @param lifecycleState      sender's current `NodeReportedState` as a plain string
+    ///                            (cluster/ module stays decoupled from aether enums)
     /// @param communityReports    Spokesman core nodes aggregate assigned communities
     ///                            here; empty otherwise
     /// @param peerHealth          per-peer SWIM health observations collected by the sender

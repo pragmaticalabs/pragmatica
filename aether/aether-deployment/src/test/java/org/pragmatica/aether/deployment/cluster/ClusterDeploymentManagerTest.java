@@ -17,7 +17,6 @@ import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -81,17 +80,16 @@ class ClusterDeploymentManagerTest {
         private final List<KVCommand<AetherKey>> capturedCommands = new ArrayList<>();
         private final CopyOnWriteArrayList<HealthSignal> capturedSignals = new CopyOnWriteArrayList<>();
         private final AtomicReference<Option<ClusterGenerationSnapshot>> snapshotRef = new AtomicReference<>(Option.none());
+        private final AtomicReference<java.util.Set<NodeId>> drainingRef = new AtomicReference<>(Set.of());
 
         @BeforeEach
         void setUp() {
             capturedCommands.clear();
             capturedSignals.clear();
-            // Pre-drain: all nodes ON_DUTY. The KV event fired in the test transitions the node
-            // to DRAINING in both KV (for test) and in the snapshot supplier.
-            snapshotRef.set(Option.some(snapshotWithLifecycles(Map.of(NODE_1, NodeLifecycleState.ON_DUTY,
-                                                                      NODE_2, NodeLifecycleState.ON_DUTY,
-                                                                      NODE_3, NodeLifecycleState.ON_DUTY,
-                                                                      DRAINING_NODE, NodeLifecycleState.ON_DUTY))));
+            // Membership-v2: presence IS membership. The draining set is the real
+            // NodeReportedState.DRAINING source, fed via drainingRef (mutated by the test).
+            snapshotRef.set(Option.some(snapshotWithMembers(Set.of(NODE_1, NODE_2, NODE_3, DRAINING_NODE))));
+            drainingRef.set(Set.of());
             var initialTopology = List.of(NODE_1, NODE_2, NODE_3, DRAINING_NODE);
             var router = MessageRouter.mutable();
 
@@ -116,24 +114,18 @@ class ClusterDeploymentManagerTest {
                                                                      NO_OP_SCHEMA_ORCHESTRATOR,
                                                                      capturingSink,
                                                                      snapshotSupplier,
-                                                                     Set::of);
+                                                                     Set::of,
+                                                                     drainingRef::get);
         }
 
         @Test
         void completeDrain_emitsDrainCompletedSignal() throws InterruptedException {
-            // Spec §8 single-writer rule: CDM MUST NOT write NodeLifecycleKey directly on drain
-            // completion. Instead it emits a DrainCompleted signal so MembershipFsm — the sole
-            // membership atom writer — can transition the lifecycle authoritatively.
+            // Spec §8 single-writer rule: CDM MUST NOT write the membership atom directly on drain
+            // completion. Instead it emits a DrainCompleted signal.
             cdm.activate().await();
 
-            // Simulate leader's Rabia write of NodeLifecycleKey=DRAINING: snapshot reflects new state
-            snapshotRef.set(Option.some(snapshotWithLifecycles(Map.of(NODE_1, NodeLifecycleState.ON_DUTY,
-                                                                      NODE_2, NodeLifecycleState.ON_DUTY,
-                                                                      NODE_3, NodeLifecycleState.ON_DUTY,
-                                                                      DRAINING_NODE, NodeLifecycleState.DRAINING))));
-            // RC1 Step 2: drain trigger is now a MembershipDecision.NodeDraining
-            // (TopologyObserver's lifecycle-projection walker emits one decision per
-            // lifecycle transition). The retired `onNodeLifecyclePut` path is gone.
+            // Membership-v2: the target now reports DRAINING via the real pong-readiness source.
+            drainingRef.set(Set.of(DRAINING_NODE));
             cdm.onMembershipDecision(MembershipDecision.nodeDraining(
                     DRAINING_NODE,
                     List.of(NODE_1, NODE_2, NODE_3, DRAINING_NODE)));
@@ -157,12 +149,14 @@ class ClusterDeploymentManagerTest {
         private final List<KVCommand<AetherKey>> capturedCommands = new ArrayList<>();
         private final CopyOnWriteArrayList<HealthSignal> capturedSignals = new CopyOnWriteArrayList<>();
         private final AtomicReference<Option<ClusterGenerationSnapshot>> snapshotRef = new AtomicReference<>(Option.none());
+        private final AtomicReference<java.util.Set<NodeId>> drainingRef = new AtomicReference<>(Set.of());
 
         @BeforeEach
         void setUp() {
             capturedCommands.clear();
             capturedSignals.clear();
             snapshotRef.set(Option.none());
+            drainingRef.set(Set.of());
             var initialTopology = List.of(NODE_1, NODE_2, NODE_3, DRAINING_NODE);
             var router = MessageRouter.mutable();
             var kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
@@ -182,38 +176,33 @@ class ClusterDeploymentManagerTest {
                                                                      NO_OP_SCHEMA_ORCHESTRATOR,
                                                                      capturingSink,
                                                                      snapshotSupplier,
-                                                                     Set::of);
+                                                                     Set::of,
+                                                                     drainingRef::get);
         }
 
         @Test
-        void drainingNodes_derived_from_snapshot_lifecycle() throws Exception {
+        void drainingNodes_derived_from_reported_state() throws Exception {
             var active = activateAndGetActive();
-            snapshotRef.set(Option.some(snapshotWithLifecycles(Map.of(NODE_1, NodeLifecycleState.ON_DUTY,
-                                                                      DRAINING_NODE, NodeLifecycleState.DRAINING))));
+            snapshotRef.set(Option.some(snapshotWithMembers(Set.of(NODE_1, DRAINING_NODE))));
+            drainingRef.set(Set.of(DRAINING_NODE));
             var draining = invokeDrainingNodes(active);
             assertThat(draining).containsExactly(DRAINING_NODE);
 
-            snapshotRef.set(Option.some(snapshotWithLifecycles(Map.of(NODE_1, NodeLifecycleState.ON_DUTY,
-                                                                      DRAINING_NODE, NodeLifecycleState.ON_DUTY))));
+            drainingRef.set(Set.of());
             var drainingAfter = invokeDrainingNodes(active);
             assertThat(drainingAfter).isEmpty();
         }
 
         @Test
-        void activeNodes_derived_from_snapshot_onDutyMemberIds() throws Exception {
+        void activeNodes_derived_from_snapshot_presence() throws Exception {
             var active = activateAndGetActive();
-            snapshotRef.set(Option.some(snapshotWithLifecycles(Map.of(NODE_1, NodeLifecycleState.ON_DUTY,
-                                                                      NODE_2, NodeLifecycleState.ON_DUTY,
-                                                                      NODE_3, NodeLifecycleState.ON_DUTY,
-                                                                      DRAINING_NODE, NodeLifecycleState.DRAINING))));
+            snapshotRef.set(Option.some(snapshotWithMembers(Set.of(NODE_1, NODE_2, NODE_3, DRAINING_NODE))));
             var activeIds = invokeActiveNodes(active);
-            // activeNodes excludes DECOMMISSIONED; DRAINING is still returned (leader tracks drain in progress)
+            // Presence-derived: every present member is active (DRAINING is still tracked while
+            // drain is in progress).
             assertThat(activeIds).containsExactlyInAnyOrder(NODE_1, NODE_2, NODE_3, DRAINING_NODE);
 
-            snapshotRef.set(Option.some(snapshotWithLifecycles(Map.of(NODE_1, NodeLifecycleState.ON_DUTY,
-                                                                      NODE_2, NodeLifecycleState.ON_DUTY,
-                                                                      NODE_3, NodeLifecycleState.ON_DUTY,
-                                                                      DRAINING_NODE, NodeLifecycleState.STOPPED))));
+            snapshotRef.set(Option.some(snapshotWithMembers(Set.of(NODE_1, NODE_2, NODE_3))));
             var activeIdsAfter = invokeActiveNodes(active);
             assertThat(activeIdsAfter).containsExactlyInAnyOrder(NODE_1, NODE_2, NODE_3);
         }
@@ -233,17 +222,16 @@ class ClusterDeploymentManagerTest {
         }
     }
 
-    private static ClusterGenerationSnapshot snapshotWithLifecycles(Map<NodeId, NodeLifecycleState> lifecycles) {
+    private static ClusterGenerationSnapshot snapshotWithMembers(java.util.Set<NodeId> memberIds) {
         var members = new LinkedHashMap<NodeId, CoreMember>();
-        lifecycles.forEach((id, state) -> members.put(id,
-                                                       CoreMember.coreMember(id,
-                                                                             "host-" + id.id(),
-                                                                             9000,
-                                                                             state,
-                                                                             HealthHint.HEALTHY,
-                                                                             Epoch.epoch(1L, 0L),
-                                                                             Epoch.epoch(1L, 0L))));
-        return ClusterGenerationSnapshot.empty(1L).withDesiredCoreSize(lifecycles.size())
+        memberIds.forEach(id -> members.put(id,
+                                            CoreMember.coreMember(id,
+                                                                  "host-" + id.id(),
+                                                                  9000,
+                                                                  HealthHint.HEALTHY,
+                                                                  Epoch.epoch(1L, 0L),
+                                                                  Epoch.epoch(1L, 0L))));
+        return ClusterGenerationSnapshot.empty(1L).withDesiredCoreSize(memberIds.size())
                                                     .withCoreMembers(members);
     }
 

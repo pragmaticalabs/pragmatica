@@ -10,7 +10,6 @@ import org.pragmatica.aether.deployment.generation.ClusterGenerationProjector.Pr
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.GenerationReason;
 import org.pragmatica.aether.slice.generation.HealthHint;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 
@@ -20,18 +19,13 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// Theme A — Fix 3: regression test for the swimHints override path in
+/// Regression test for the `swimHints` override path in
 /// `ClusterGenerationProjector.deriveHealthHint`.
 ///
-/// Without the override, `CoreMember.healthHint()` is derived solely from `NodeLifecycleState`
-/// — meaning a peer SWIM has marked FAULTY remains projected as `HEALTHY` until the eviction
-/// path writes `DECOMMISSIONED` (>=10 misses, ~25 s after detection). This delay leaves
-/// `MembershipView.healthyOnDutyCount()` blind to detected failures, so CTM sees no deficit and
-/// auto-heal stalls.
-///
-/// After the fix, the leader-side `swimHints` map is plumbed through `ProjectionInput` and
-/// overrides the lifecycle-derived hint when its value is **strictly worse**
-/// (FAULTY > SUSPECTED > HEALTHY).
+/// Membership-v2 finale: presence IS membership, so every present member is `HEALTHY` by
+/// construction. The leader-side `swimHints` map plumbed through `ProjectionInput` is the SOLE
+/// mechanism that downgrades a member's projected `healthHint` (FAULTY / SUSPECTED), so CTM can
+/// see a deficit and drive auto-heal promptly after SWIM detection.
 class ClusterGenerationProjectorSwimHintOverrideTest {
     private static final NodeId NODE_A = NodeId.nodeId("node-a").unwrap();
     private static final NodeId NODE_B = NodeId.nodeId("node-b").unwrap();
@@ -40,9 +34,9 @@ class ClusterGenerationProjectorSwimHintOverrideTest {
     @Nested
     class Override {
         @Test
-        void onDutyPeerWithFaultySwimHint_projectsAsFaulty() {
+        void presentPeerWithFaultySwimHint_projectsAsFaulty() {
             var lifecycles = Map.of(NODE_A,
-                                     MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-a", 9001));
+                                     MemberLifecycle.memberLifecycle("host-a", 9001));
             var swimHints = Map.of(NODE_A, HealthHint.FAULTY);
 
             var snapshot = projectWithSwimHints(lifecycles, swimHints);
@@ -51,9 +45,9 @@ class ClusterGenerationProjectorSwimHintOverrideTest {
         }
 
         @Test
-        void onDutyPeerWithSuspectedSwimHint_projectsAsSuspected() {
+        void presentPeerWithSuspectedSwimHint_projectsAsSuspected() {
             var lifecycles = Map.of(NODE_A,
-                                     MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-a", 9001));
+                                     MemberLifecycle.memberLifecycle("host-a", 9001));
             var swimHints = Map.of(NODE_A, HealthHint.SUSPECTED);
 
             var snapshot = projectWithSwimHints(lifecycles, swimHints);
@@ -62,9 +56,9 @@ class ClusterGenerationProjectorSwimHintOverrideTest {
         }
 
         @Test
-        void onDutyPeerWithHealthySwimHint_projectsAsHealthy() {
+        void presentPeerWithHealthySwimHint_projectsAsHealthy() {
             var lifecycles = Map.of(NODE_A,
-                                     MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-a", 9001));
+                                     MemberLifecycle.memberLifecycle("host-a", 9001));
             var swimHints = Map.of(NODE_A, HealthHint.HEALTHY);
 
             var snapshot = projectWithSwimHints(lifecycles, swimHints);
@@ -73,23 +67,22 @@ class ClusterGenerationProjectorSwimHintOverrideTest {
         }
 
         @Test
-        void absentSwimHint_fallsBackToLifecycleDerivedHint() {
+        void absentSwimHint_fallsBackToHealthyByConstruction() {
             var lifecycles = Map.of(NODE_A,
-                                     MemberLifecycle.memberLifecycle(NodeLifecycleState.DRAINING, "host-a", 9001));
+                                     MemberLifecycle.memberLifecycle("host-a", 9001));
 
             var snapshot = projectWithSwimHints(lifecycles, Map.of());
 
-            assertThat(snapshot.coreMembers().get(NODE_A).healthHint()).isEqualTo(HealthHint.SUSPECTED);
+            assertThat(snapshot.coreMembers().get(NODE_A).healthHint()).isEqualTo(HealthHint.HEALTHY);
         }
     }
 
     @Nested
     class Priority {
         @Test
-        void drainingLifecycleWithFaultySwimHint_projectsAsFaulty_swimHintIsWorse() {
-            // Lifecycle DRAINING -> SUSPECTED baseline; swim hint FAULTY is strictly worse.
+        void presentPeerWithFaultySwimHint_projectsAsFaulty_swimHintWins() {
             var lifecycles = Map.of(NODE_A,
-                                     MemberLifecycle.memberLifecycle(NodeLifecycleState.DRAINING, "host-a", 9001));
+                                     MemberLifecycle.memberLifecycle("host-a", 9001));
             var swimHints = Map.of(NODE_A, HealthHint.FAULTY);
 
             var snapshot = projectWithSwimHints(lifecycles, swimHints);
@@ -98,33 +91,17 @@ class ClusterGenerationProjectorSwimHintOverrideTest {
         }
 
         @Test
-        void decommissionedLifecycle_filteredFromProjection_swimHintIrrelevant() {
-            // DECOMMISSIONED is now filtered out of the projection regardless of swim hint;
-            // the node has left the cluster. Verify: member is absent from coreMembers,
-            // swim hint is irrelevant.
+        void presentPeerWithFaultySwimHint_excludedFromHealthyOnDutyCount() {
             var lifecycles = Map.of(NODE_A,
-                                     MemberLifecycle.memberLifecycle(NodeLifecycleState.STOPPED,
-                                                                            "host-a",
-                                                                            9001));
-            var swimHints = Map.of(NODE_A, HealthHint.SUSPECTED);
-
-            var snapshot = projectWithSwimHints(lifecycles, swimHints);
-
-            assertThat(snapshot.coreMembers()).doesNotContainKey(NODE_A);
-        }
-
-        @Test
-        void onDutyLifecycleWithFaultySwimHint_excludedFromHealthyOnDutyCount() {
-            var lifecycles = Map.of(NODE_A,
-                                     MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-a", 9001),
+                                     MemberLifecycle.memberLifecycle("host-a", 9001),
                                     NODE_B,
-                                     MemberLifecycle.memberLifecycle(NodeLifecycleState.ON_DUTY, "host-b", 9001));
+                                     MemberLifecycle.memberLifecycle("host-b", 9001));
             var swimHints = Map.of(NODE_A, HealthHint.FAULTY);
 
             var snapshot = projectWithSwimHints(lifecycles, swimHints);
 
-            // Local count of ON_DUTY + HEALTHY members reflects the override:
-            // NODE_A is ON_DUTY-but-FAULTY (excluded); NODE_B is ON_DUTY + HEALTHY (included).
+            // Presence members are on duty; healthy-on-duty count reflects the SWIM override:
+            // NODE_A is FAULTY (excluded); NODE_B is HEALTHY (included).
             assertThat(snapshot.coreMembers().get(NODE_A).healthHint()).isEqualTo(HealthHint.FAULTY);
             assertThat(snapshot.coreMembers().get(NODE_B).healthHint()).isEqualTo(HealthHint.HEALTHY);
             var healthyOnDuty = countHealthyOnDuty(snapshot);
@@ -133,7 +110,6 @@ class ClusterGenerationProjectorSwimHintOverrideTest {
 
         private long countHealthyOnDuty(ClusterGenerationSnapshot snapshot) {
             return snapshot.coreMembers().values().stream()
-                                                  .filter(member -> member.lifecycle() == NodeLifecycleState.ON_DUTY)
                                                   .filter(member -> member.healthHint() == HealthHint.HEALTHY)
                                                   .count();
         }

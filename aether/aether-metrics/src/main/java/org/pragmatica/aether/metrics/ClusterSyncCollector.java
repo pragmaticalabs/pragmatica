@@ -61,6 +61,14 @@ public interface ClusterSyncCollector {
     Map<String, Double> metricsFor(NodeId nodeId);
     Map<NodeId, List<MetricsSnapshot>> historicalMetrics();
 
+    /// Membership-v2: per-node `NodeReportedState` (SYNCING / READY / DRAINING) as last reported
+    /// on the metrics pong. This is the real, node-authoritative work-state that replaced the
+    /// synthetic per-node lifecycle enum. Sourced from the wired `ClusterSyncPongSignalFan`
+    /// readiness view. Default empty for test doubles that wire no fan.
+    default Map<NodeId, NodeReportedState> reportedStates() {
+        return Map.of();
+    }
+
     record MetricsSnapshot(long timestamp, Map<String, Double> metrics){}
 
     /// Test-only synthetic-history injection. Appends `snapshot` to the
@@ -79,9 +87,7 @@ public interface ClusterSyncCollector {
     @MessageReceiver@Contract void onClusterSyncPong(ClusterSyncPong pong);
     long observedRabiaTerm();
     Epoch observedEpoch();
-    String currentLifecycleState();
     List<CommunityReport> collectCommunityReports();
-    @Contract void setLifecycleStateSupplier(Supplier<String> supplier);
     @Contract void setCommunityReportSupplier(Supplier<List<CommunityReport>> supplier);
     @Contract void addPongListener(Consumer<ClusterSyncPong> listener);
 
@@ -117,9 +123,8 @@ public interface ClusterSyncCollector {
 
     /// Membership v2 (§7.5.3) — wire the node-reported readiness state supplier so
     /// `buildPong()` stamps `current().name()` (SYNCING|READY|DRAINING) onto
-    /// `ClusterSyncPong.lifecycleState` instead of the legacy `currentLifecycleState()`
-    /// default `() -> "ON_DUTY"`. Default no-op leaves the legacy supplier in place
-    /// (test doubles inherit; production wires in `AetherNode`).
+    /// `ClusterSyncPong.lifecycleState`. Default no-op leaves the field at the
+    /// `NodeReportedState.SYNCING` default (test doubles inherit; production wires in `AetherNode`).
     @Contract default void setNodeReportedStateSupplier(Supplier<NodeReportedState> supplier) {}
 
     /// Membership v2 (§7.5.3) — wire the per-incarnation discriminator stamped onto
@@ -169,8 +174,6 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     private final AtomicReference<Epoch> observedEpoch = new AtomicReference<>(Epoch.ZERO);
 
-    private final AtomicReference<Supplier<String>> lifecycleStateSupplier = new AtomicReference<>(() -> "ON_DUTY");
-
     private final AtomicReference<Supplier<List<CommunityReport>>> communityReportSupplier = new AtomicReference<>(List::of);
 
     private final CopyOnWriteArrayList<Consumer<ClusterSyncPong>> pongListeners = new CopyOnWriteArrayList<>();
@@ -189,8 +192,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     /// Membership v2 (§7.5.3) — node-reported readiness state supplier. `buildPong()`
     /// stamps `current().name()` onto the pong's `lifecycleState` field, repurposing it
-    /// to carry SYNCING|READY|DRAINING. Default `Option.none()` keeps the legacy
-    /// `lifecycleStateSupplier` path until `setNodeReportedStateSupplier(...)` is wired.
+    /// to carry SYNCING|READY|DRAINING. Default `Option.none()` falls back to
+    /// `NodeReportedState.SYNCING` until `setNodeReportedStateSupplier(...)` is wired.
     private final AtomicReference<Option<Supplier<NodeReportedState>>> nodeReportedStateSupplier =
         new AtomicReference<>(Option.none());
 
@@ -363,6 +366,10 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         pongSignalFan.set(fan);
     }
 
+    @Override public Map<NodeId, NodeReportedState> reportedStates() {
+        return pongSignalFan.get().readinessSnapshot();
+    }
+
     @Override@Contract public void setPeerObservationBuffer(PeerObservationBuffer buffer) {
         peerObservationBuffer.set(buffer == null
                                   ? PeerObservationBuffer.NOOP
@@ -420,16 +427,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         return observedEpoch.get();
     }
 
-    @Override public String currentLifecycleState() {
-        return lifecycleStateSupplier.get().get();
-    }
-
     @Override public List<CommunityReport> collectCommunityReports() {
         return communityReportSupplier.get().get();
-    }
-
-    @Override@Contract public void setLifecycleStateSupplier(Supplier<String> supplier) {
-        lifecycleStateSupplier.set(supplier);
     }
 
     @Override@Contract public void setCommunityReportSupplier(Supplier<List<CommunityReport>> supplier) {
@@ -471,13 +470,13 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     /// Membership v2 (§7.5.3) — the string stamped onto the pong's `lifecycleState`
     /// field. When a node-reported-state supplier is wired, the field carries the
-    /// `NodeReportedState` name (SYNCING|READY|DRAINING); otherwise it falls back to the
-    /// legacy `currentLifecycleState()` value, preserving pre-migration behaviour.
+    /// `NodeReportedState` name (SYNCING|READY|DRAINING); otherwise it defaults to
+    /// `NodeReportedState.SYNCING` (a freshly-booted node not yet wired is still syncing).
     private String reportedLifecycleState() {
         return nodeReportedStateSupplier.get()
                                         .map(Supplier::get)
-                                        .map(NodeReportedState::name)
-                                        .or(this::currentLifecycleState);
+                                        .or(NodeReportedState.SYNCING)
+                                        .name();
     }
 
     private void collectCpuMetrics(Map<String, Double> metrics) {

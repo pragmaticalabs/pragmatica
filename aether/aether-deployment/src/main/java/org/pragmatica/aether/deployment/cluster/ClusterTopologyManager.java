@@ -57,7 +57,7 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// is a no-op success. The new peer is provisioned ULID-named with `clusterMembers`
     /// seeded as PEERS by the provider boundary. Returns a `Promise<Unit>` that resolves on
     /// the provision-request acceptance (consensus commit of the FILLING reservation), NOT
-    /// on the new node reaching ON_DUTY.
+    /// on the new node becoming present.
     ///
     /// At Phase 1 this delegates to the existing slot-reconcile path
     /// (`NodeLifecycleManager.provisionNode(ProvisionSpec)` chained from a FILLING slot

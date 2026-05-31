@@ -313,9 +313,7 @@ class ControlLoopFsmTest {
         @Override public void onClusterSyncPong(ClusterSyncPong pong) {}
         @Override public long observedRabiaTerm() { return 0L; }
         @Override public Epoch observedEpoch() { throw new UnsupportedOperationException("unused"); }
-        @Override public String currentLifecycleState() { return "test"; }
         @Override public List<CommunityReport> collectCommunityReports() { return List.of(); }
-        @Override public void setLifecycleStateSupplier(Supplier<String> supplier) {}
         @Override public void setCommunityReportSupplier(Supplier<List<CommunityReport>> supplier) {}
         @Override public void addPongListener(Consumer<ClusterSyncPong> listener) {}
         @Override public void setPongSignalFan(ClusterSyncPongSignalFan fan) {}

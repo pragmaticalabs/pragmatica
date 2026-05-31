@@ -7,9 +7,7 @@ package org.pragmatica.aether.deployment.membership.view;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.deployment.membership.view.MembershipView.MemberStatus;
 import org.pragmatica.aether.deployment.membership.view.MembershipView.MemberView;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.HealthSnapshot;
@@ -25,79 +23,78 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// RC1 Step 5 — quorum-aware `MembershipView` behaviour.
 ///
 /// Verifies the two-factory contract:
-/// - `strict(...)` returns empty / UNTRACKED on a non-quorate node;
+/// - `strict(...)` reports every peer absent on a non-quorate node;
 /// - `bootstrapAware(...)` returns content regardless of quorum bit;
 /// - Both variants agree byte-for-byte when the node IS quorate.
 ///
 /// The pure-function rule-table semantics live in [MembershipViewTest]; this suite focuses
-/// strictly on the quorum gate added by Step 5.
+/// strictly on the quorum gate added by Step 5. Membership-v2 finale: membership collapsed to
+/// pure presence — non-quorate ⇒ absent (no UNTRACKED status remains).
 class MembershipViewQuorumTest {
     private static final NodeId NODE_1 = NodeId.nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = NodeId.nodeId("node-2").unwrap();
     private static final NodeId NODE_3 = NodeId.nodeId("node-3").unwrap();
 
-    @Nested @DisplayName("strict() on a non-quorate node forces empty / UNTRACKED")
+    @Nested @DisplayName("strict() on a non-quorate node reports every peer absent")
     class StrictNonQuorate {
-        @Test void onDutyPeers_areEmpty() {
+        @Test void presentMembers_areEmpty() {
             var view = strictFrom(false,
                                    Map.of(NODE_1, SwimHealth.HEALTHY,
                                           NODE_2, SwimHealth.HEALTHY,
                                           NODE_3, SwimHealth.HEALTHY),
                                    Map.of());
 
-            assertThat(view.onDutyPeers()).isEmpty();
+            assertThat(view.presentMembers()).isEmpty();
         }
 
-        @Test void snapshot_forcesOnDutyToUntracked() {
+        @Test void snapshot_isEmpty() {
             var view = strictFrom(false,
                                    Map.of(NODE_1, SwimHealth.HEALTHY),
                                    Map.of());
 
-            var snapshot = view.snapshot();
-            assertThat(snapshot).containsOnlyKeys(NODE_1);
-            assertThat(snapshot.get(NODE_1).status()).isEqualTo(MemberStatus.UNTRACKED);
+            assertThat(view.snapshot()).isEmpty();
         }
 
-        @Test void statusOf_returnsUntracked() {
+        @Test void isPresent_returnsFalse() {
             var view = strictFrom(false,
                                    Map.of(NODE_1, SwimHealth.HEALTHY),
                                    Map.of());
 
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.UNTRACKED);
+            assertThat(view.isPresent(NODE_1)).isFalse();
         }
 
-        @Test void legacyOnDutyKvWithHealthySwim_isUntracked() {
+        @Test void legacyKvWithHealthySwim_isAbsent() {
             var view = strictFrom(false,
                                    Map.of(NODE_1, SwimHealth.HEALTHY),
-                                   Map.of(NODE_1, NodeLifecycleState.ON_DUTY));
+                                   Map.of(NODE_1, "PRESENT"));
 
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.UNTRACKED);
-            assertThat(view.onDutyPeers()).isEmpty();
+            assertThat(view.isPresent(NODE_1)).isFalse();
+            assertThat(view.presentMembers()).isEmpty();
         }
 
         @Test void operatorOverrides_doNotSurviveNonQuorate() {
             // RC1 membership-v2 step 1: KV operator overrides are no longer consulted. Under
-            // the strict non-quorate gate, every HEALTHY peer downgrades to UNTRACKED — the
-            // dropped KV-override path means DRAINING/STOPPED/JOINING no longer leak through.
+            // the strict non-quorate gate, every HEALTHY peer is reported absent — the dropped
+            // KV-override path means DRAINING/STOPPED/JOINING no longer leak through.
             var view = strictFrom(false,
                                    Map.of(NODE_1, SwimHealth.HEALTHY,
                                           NODE_2, SwimHealth.HEALTHY,
                                           NODE_3, SwimHealth.HEALTHY),
-                                   Map.of(NODE_1, NodeLifecycleState.DRAINING,
-                                          NODE_2, NodeLifecycleState.STOPPED,
-                                          NODE_3, NodeLifecycleState.STOPPED));
+                                   Map.of(NODE_1, "DRAINING",
+                                          NODE_2, "STOPPED",
+                                          NODE_3, "STOPPED"));
 
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.UNTRACKED);
-            assertThat(view.statusOf(NODE_2)).isEqualTo(MemberStatus.UNTRACKED);
-            assertThat(view.statusOf(NODE_3)).isEqualTo(MemberStatus.UNTRACKED);
+            assertThat(view.isPresent(NODE_1)).isFalse();
+            assertThat(view.isPresent(NODE_2)).isFalse();
+            assertThat(view.isPresent(NODE_3)).isFalse();
         }
 
         @Test void joiningOverride_doesNotSurviveNonQuorate() {
             var view = strictFrom(false,
                                    Map.of(NODE_1, SwimHealth.HEALTHY),
-                                   Map.of(NODE_1, NodeLifecycleState.JOINING));
+                                   Map.of(NODE_1, "JOINING"));
 
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.UNTRACKED);
+            assertThat(view.isPresent(NODE_1)).isFalse();
         }
 
         @Test void faultySwim_remainsAbsent() {
@@ -106,7 +103,7 @@ class MembershipViewQuorumTest {
                                    Map.of());
 
             assertThat(view.get(NODE_1).isPresent()).isFalse();
-            assertThat(view.onDutyPeers()).isEmpty();
+            assertThat(view.presentMembers()).isEmpty();
         }
 
         @Test void getPeer_returnsNoneForHealthySwimUnderNonQuorate() {
@@ -114,45 +111,40 @@ class MembershipViewQuorumTest {
                                    Map.of(NODE_1, SwimHealth.HEALTHY),
                                    Map.of());
 
-            // Note: snapshot() yields UNTRACKED-with-SWIM-healthy via the lifecycle-iterating
-            // map path; get(peer) hits the lifecycle-absent + swim-healthy branch which
-            // also downgrades to UNTRACKED-or-empty under the strict gate. Either shape is
-            // acceptable for "non-quorate hides ON_DUTY" — assert the equivalent: no peer
-            // listed as ON_DUTY anywhere.
-            view.get(NODE_1).onPresent(entry -> assertThat(entry.status()).isNotEqualTo(MemberStatus.ON_DUTY));
-            assertThat(view.statusOf(NODE_1)).isNotEqualTo(MemberStatus.ON_DUTY);
+            assertThat(view.get(NODE_1).isPresent()).isFalse();
+            assertThat(view.isPresent(NODE_1)).isFalse();
         }
     }
 
     @Nested @DisplayName("bootstrapAware() returns content even when non-quorate")
     class BootstrapAwareNonQuorate {
-        @Test void onDutyPeers_arePresent() {
+        @Test void presentMembers_arePresent() {
             var view = bootstrapAwareFrom(Map.of(NODE_1, SwimHealth.HEALTHY,
                                                   NODE_2, SwimHealth.HEALTHY),
                                             Map.of());
 
-            assertThat(view.onDutyPeers()).containsExactlyInAnyOrder(NODE_1, NODE_2);
+            assertThat(view.presentMembers()).containsExactlyInAnyOrder(NODE_1, NODE_2);
         }
 
-        @Test void snapshot_reportsOnDuty() {
+        @Test void snapshot_reportsPresent() {
             var view = bootstrapAwareFrom(Map.of(NODE_1, SwimHealth.HEALTHY),
                                             Map.of());
 
-            assertThat(view.snapshot().get(NODE_1).status()).isEqualTo(MemberStatus.ON_DUTY);
+            assertThat(view.snapshot()).containsKey(NODE_1);
         }
 
-        @Test void statusOf_returnsOnDuty() {
+        @Test void isPresent_returnsTrue() {
             var view = bootstrapAwareFrom(Map.of(NODE_1, SwimHealth.HEALTHY),
                                             Map.of());
 
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.ON_DUTY);
+            assertThat(view.isPresent(NODE_1)).isTrue();
         }
 
-        @Test void legacyOnDutyKv_reportsOnDuty() {
+        @Test void legacyKv_reportsPresent() {
             var view = bootstrapAwareFrom(Map.of(NODE_1, SwimHealth.HEALTHY),
-                                            Map.of(NODE_1, NodeLifecycleState.ON_DUTY));
+                                            Map.of(NODE_1, "PRESENT"));
 
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.ON_DUTY);
+            assertThat(view.isPresent(NODE_1)).isTrue();
         }
     }
 
@@ -172,26 +164,26 @@ class MembershipViewQuorumTest {
             assertSnapshotsEqual(Map.of(NODE_1, SwimHealth.HEALTHY,
                                          NODE_2, SwimHealth.HEALTHY,
                                          NODE_3, SwimHealth.FAULTY),
-                                  Map.of(NODE_1, NodeLifecycleState.ON_DUTY,
-                                         NODE_2, NodeLifecycleState.DRAINING,
-                                         NODE_3, NodeLifecycleState.STOPPED));
+                                  Map.of(NODE_1, "PRESENT",
+                                         NODE_2, "DRAINING",
+                                         NODE_3, "STOPPED"));
         }
 
-        @Test void legacyOnDutyKv_equalSnapshots() {
+        @Test void legacyKv_equalSnapshots() {
             assertSnapshotsEqual(Map.of(NODE_1, SwimHealth.HEALTHY),
-                                  Map.of(NODE_1, NodeLifecycleState.ON_DUTY));
+                                  Map.of(NODE_1, "PRESENT"));
         }
 
-        @Test void onDutyPeersList_equal() {
+        @Test void presentMembersList_equal() {
             var swim = Map.of(NODE_1, SwimHealth.HEALTHY,
                               NODE_2, SwimHealth.HEALTHY,
                               NODE_3, SwimHealth.HEALTHY);
-            var kv = Map.of(NODE_2, NodeLifecycleState.DRAINING);
+            var kv = Map.of(NODE_2, "DRAINING");
 
             var strict = strictFrom(true, swim, kv);
             var bootstrap = bootstrapAwareFrom(swim, kv);
 
-            assertThat(strict.onDutyPeers()).containsExactlyInAnyOrderElementsOf(bootstrap.onDutyPeers());
+            assertThat(strict.presentMembers()).containsExactlyInAnyOrderElementsOf(bootstrap.presentMembers());
         }
     }
 
@@ -203,14 +195,14 @@ class MembershipViewQuorumTest {
                               NODE_2, SwimHealth.HEALTHY);
             var view = strictFromSupplier(quorum::get, swim, Map.of());
 
-            assertThat(view.onDutyPeers()).containsExactlyInAnyOrder(NODE_1, NODE_2);
+            assertThat(view.presentMembers()).containsExactlyInAnyOrder(NODE_1, NODE_2);
 
             quorum.set(false);
-            assertThat(view.onDutyPeers()).isEmpty();
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.UNTRACKED);
+            assertThat(view.presentMembers()).isEmpty();
+            assertThat(view.isPresent(NODE_1)).isFalse();
 
             quorum.set(true);
-            assertThat(view.onDutyPeers()).containsExactlyInAnyOrder(NODE_1, NODE_2);
+            assertThat(view.presentMembers()).containsExactlyInAnyOrder(NODE_1, NODE_2);
         }
 
         @Test void bootstrapAwareIgnoresQuorumFlip() {
@@ -220,14 +212,14 @@ class MembershipViewQuorumTest {
             var swim = Map.of(NODE_1, SwimHealth.HEALTHY);
             var view = bootstrapAwareFrom(swim, Map.of());
 
-            assertThat(view.onDutyPeers()).containsExactly(NODE_1);
+            assertThat(view.presentMembers()).containsExactly(NODE_1);
             quorum.set(false);
-            assertThat(view.onDutyPeers()).containsExactly(NODE_1);
+            assertThat(view.presentMembers()).containsExactly(NODE_1);
         }
     }
 
     private static void assertSnapshotsEqual(Map<NodeId, SwimHealth> swim,
-                                              Map<NodeId, NodeLifecycleState> kv) {
+                                              Map<NodeId, String> kv) {
         var strict = strictFrom(true, swim, kv);
         var bootstrap = bootstrapAwareFrom(swim, kv);
 
@@ -239,26 +231,25 @@ class MembershipViewQuorumTest {
     }
 
     private static void assertMemberEqual(NodeId peer, MemberView member, MemberView other) {
-        assertThat(member.status()).as("status for %s", peer).isEqualTo(other.status());
         assertThat(member.swimHealth()).as("swim for %s", peer).isEqualTo(other.swimHealth());
     }
 
     private static MembershipView strictFrom(boolean quorate,
                                               Map<NodeId, SwimHealth> swim,
-                                              Map<NodeId, NodeLifecycleState> kv) {
+                                              Map<NodeId, String> kv) {
         return strictFromSupplier(() -> quorate, swim, kv);
     }
 
     private static MembershipView strictFromSupplier(BooleanSupplier inQuorum,
                                                       Map<NodeId, SwimHealth> swim,
-                                                      @SuppressWarnings("unused") Map<NodeId, NodeLifecycleState> kv) {
+                                                      @SuppressWarnings("unused") Map<NodeId, String> kv) {
         var snapshot = HealthSnapshot.healthSnapshot(swim);
 
         return MembershipView.strict(() -> Option.some(snapshot), inQuorum);
     }
 
     private static MembershipView bootstrapAwareFrom(Map<NodeId, SwimHealth> swim,
-                                                      @SuppressWarnings("unused") Map<NodeId, NodeLifecycleState> kv) {
+                                                      @SuppressWarnings("unused") Map<NodeId, String> kv) {
         var snapshot = HealthSnapshot.healthSnapshot(swim);
 
         return MembershipView.bootstrapAware(() -> Option.some(snapshot));

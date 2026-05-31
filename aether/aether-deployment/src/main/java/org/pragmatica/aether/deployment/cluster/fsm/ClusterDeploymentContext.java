@@ -42,6 +42,7 @@ public final class ClusterDeploymentContext {
     private final HealthSignalSink healthSignalSink;
     private final Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier;
     private final Supplier<Set<NodeId>> readyNodesSupplier;
+    private final Supplier<Set<NodeId>> drainingNodesSupplier;
     private final Set<NodeId> seedNodes;
     private final DeploymentAtomicity atomicity;
     private final int coreMax;
@@ -60,6 +61,7 @@ public final class ClusterDeploymentContext {
                                     HealthSignalSink healthSignalSink,
                                     Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
                                     Supplier<Set<NodeId>> readyNodesSupplier,
+                                    Supplier<Set<NodeId>> drainingNodesSupplier,
                                     Set<NodeId> seedNodes,
                                     DeploymentAtomicity atomicity,
                                     int coreMax,
@@ -74,6 +76,7 @@ public final class ClusterDeploymentContext {
              healthSignalSink,
              snapshotSupplier,
              readyNodesSupplier,
+             drainingNodesSupplier,
              seedNodes,
              atomicity,
              coreMax,
@@ -91,6 +94,7 @@ public final class ClusterDeploymentContext {
                                     HealthSignalSink healthSignalSink,
                                     Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
                                     Supplier<Set<NodeId>> readyNodesSupplier,
+                                    Supplier<Set<NodeId>> drainingNodesSupplier,
                                     Set<NodeId> seedNodes,
                                     DeploymentAtomicity atomicity,
                                     int coreMax,
@@ -106,6 +110,7 @@ public final class ClusterDeploymentContext {
         this.healthSignalSink = healthSignalSink;
         this.snapshotSupplier = snapshotSupplier;
         this.readyNodesSupplier = readyNodesSupplier;
+        this.drainingNodesSupplier = drainingNodesSupplier;
         this.seedNodes = seedNodes;
         this.atomicity = atomicity;
         this.coreMax = coreMax;
@@ -188,6 +193,14 @@ public final class ClusterDeploymentContext {
 
     public Supplier<Set<NodeId>> readyNodesSupplier() {
         return readyNodesSupplier;
+    }
+
+    /// Membership-v2: nodes currently reporting `NodeReportedState.DRAINING` via the metrics
+    /// pong — the real, node-authoritative draining set. Replaces the synthetic
+    /// `CoreMember.lifecycle() == DRAINING` projection. Wired in `AetherNode` to the pong
+    /// readiness snapshot.
+    public Supplier<Set<NodeId>> drainingNodesSupplier() {
+        return drainingNodesSupplier;
     }
 
     public Set<NodeId> seedNodes() {

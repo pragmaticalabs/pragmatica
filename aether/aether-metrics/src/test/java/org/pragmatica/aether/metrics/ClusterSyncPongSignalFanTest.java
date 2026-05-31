@@ -42,7 +42,7 @@ class ClusterSyncPongSignalFanTest {
                                    3L,
                                    3L,
                                    17L,
-                                   "ON_DUTY",
+                                   "READY",
                                    List.of(),
                                    List.of(new PeerHealthObservation(PEER_A, HealthHintWire.FAULTY, 3L, 17L, 0L),
                                            new PeerHealthObservation(PEER_B, HealthHintWire.SUSPECTED, 3L, 18L, 0L)),
@@ -124,7 +124,7 @@ class ClusterSyncPongSignalFanTest {
             var leaderManager = new TestLeaderManager(true);
             var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager);
 
-            fan.fan(new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "ON_DUTY", List.of(), List.of(), List.of()));
+            fan.fan(new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "READY", List.of(), List.of(), List.of()));
 
             assertThat(emitted).filteredOn(HealthSignal.SwimHint.class::isInstance)
                                .extracting(HealthSignal.SwimHint.class::cast)
@@ -161,7 +161,7 @@ class ClusterSyncPongSignalFanTest {
                 (sender, candidate) -> recorded.add(java.util.Map.entry(sender, candidate));
             var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager, sink);
 
-            var pong = new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "ON_DUTY",
+            var pong = new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "READY",
                                             List.of(), List.of(), List.of(), Option.none());
 
             fan.fan(pong);
@@ -245,7 +245,7 @@ class ClusterSyncPongSignalFanTest {
         void fan_unknownLifecycleString_parsesAsSyncing() {
             var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
 
-            f.fan(pong(PEER_A, "ON_DUTY", 1L));
+            f.fan(pong(PEER_A, "BOGUS", 1L));
 
             assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.SYNCING);
         }

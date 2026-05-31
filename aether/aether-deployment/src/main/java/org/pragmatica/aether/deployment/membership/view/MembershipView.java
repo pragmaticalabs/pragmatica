@@ -9,18 +9,16 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.SwimHealth;
 
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 
 /// **H-series structural refactor: SWIM is the single source of truth for "alive".**
 ///
-/// Replaces the leader-driven `(UNTRACKED, SwimHealthy) → ON_DUTY` / `(ON_DUTY, SwimFaulty)
-/// → STOPPED` write pathway (the retired membership FSM) with a view derived purely from the
+/// Replaces the leader-driven membership-FSM write pathway with a view derived purely from the
 /// local SWIM `HealthSnapshot` — authoritative for "is this peer currently reachable?".
 ///
 /// **Why this design.** The pre-v2 model maintained four parallel stores of membership truth
@@ -30,20 +28,20 @@ import java.util.function.Supplier;
 /// structural fix — completed in the membership-v2 finale — is to delete the redundant
 /// node-lifecycle KV store entirely and compute the answer at read time from SWIM.
 ///
-/// **Rule set (per-peer):**
-///
-/// - **HEALTHY in SWIM (quorate)** → `ON_DUTY`. SWIM admission alone is sufficient; no explicit
-///   `(UNTRACKED, SwimHealthy) → ON_DUTY` write exists anymore.
-/// - **FAULTY or UNKNOWN in SWIM** → peer is absent from the view (`UNTRACKED`).
+/// **Rule set (per-peer):** membership collapsed to pure presence. A peer is **present** iff it
+/// is HEALTHY in SWIM and the local node is quorate; otherwise it is **absent**. The synthetic
+/// lifecycle layer is gone — the only real node work-state is `NodeReportedState` (SYNCING /
+/// READY / DRAINING), reported on the metrics pong and surfaced separately by the routes that
+/// need it.
 ///
 /// **RC1 Step 5 — quorum gating.** External readers of the view (HTTP routes, dashboard, CTM)
 /// MUST NOT trust local SWIM data while the node is non-quorate, otherwise a minority
-/// partition would claim ON_DUTY peers it cannot actually direct work to. The
+/// partition would claim present peers it cannot actually direct work to. The
 /// [#strict(SwimHealthProvider, BooleanSupplier)] factory enforces this: when
-/// `inQuorum.getAsBoolean()` is `false`, every derived `ON_DUTY` status is rewritten to
-/// `UNTRACKED`, `onDutyPeers()` returns the empty list, and `statusOf(peer)` returns
-/// `UNTRACKED`. The quorum bit MUST be the same `AtomicBoolean` `TopologyObserver` mutates;
-/// duplicating the source re-creates exactly the drift bug this gating exists to eliminate.
+/// `inQuorum.getAsBoolean()` is `false`, every peer is reported absent, `presentMembers()`
+/// returns the empty set, and `isPresent(peer)` returns `false`. The quorum bit MUST be the
+/// same `AtomicBoolean` `TopologyObserver` mutates; duplicating the source re-creates exactly
+/// the drift bug this gating exists to eliminate.
 ///
 /// Bootstrap-internal callers that drive the cluster TOWARD quorum (notably the
 /// `TopologyObserver` quorum-evaluation loop itself) must use
@@ -67,62 +65,38 @@ public interface MembershipView {
 
     /// Snapshot of the cluster's effective membership at call time.
     ///
-    /// Result is a flat map keyed by `NodeId`. Peers absent from the map are equivalent to
-    /// `UNTRACKED` — SWIM has not admitted them.
+    /// Result is a flat map keyed by `NodeId` containing only **present** peers. Peers absent
+    /// from the map are absent from the view — SWIM has not admitted them (or the local node is
+    /// non-quorate).
     Map<NodeId, MemberView> snapshot();
 
     /// Single-peer lookup. Returns `Option.none()` for peers absent from the view.
     Option<MemberView> get(NodeId peer);
 
-    /// Effective lifecycle state for a single peer, with `UNTRACKED` as the default for
-    /// absent peers. Useful as a drop-in for callers that previously read
-    /// `MembershipFsm.snapshot().get(peer)`.
-    default MemberStatus statusOf(NodeId peer) {
-        return get(peer).map(MemberView::status)
-                  .or(MemberStatus.UNTRACKED);
+    /// `true` iff the peer is present (HEALTHY in SWIM and the local node is quorate). Default
+    /// drop-in for callers that previously gated on per-peer presence.
+    default boolean isPresent(NodeId peer) {
+        return get(peer).isPresent();
     }
 
-    /// All peers currently effective as `ON_DUTY`. Convenience for the common
-    /// "count healthy cores" / "list active peers" call sites.
-    default List<NodeId> onDutyPeers() {
-        var list = new ArrayList<NodeId>();
-        snapshot().forEach((peer, view) -> appendIfOnDuty(list, peer, view));
-
-        return List.copyOf(list);
-    }
-
-    private static void appendIfOnDuty(List<NodeId> list, NodeId peer, MemberView view) {
-        if (view.status() == MemberStatus.ON_DUTY) {
-            list.add(peer);
-        }
+    /// All peers currently present. Convenience for the common "count healthy cores" /
+    /// "list active peers" call sites.
+    default Set<NodeId> presentMembers() {
+        return snapshot().keySet();
     }
 
     /// Per-peer view record. `swimHealth` is the raw SWIM observation (for diagnostics +
-    /// audit-trail callers); `status` is the derived state used by routing and CTM accounting.
-    /// SWIM is the single source of truth — the node-lifecycle KV atom was deleted in the
-    /// membership-v2 finale, so there is no per-peer KV override component anymore.
-    record MemberView(NodeId peer, MemberStatus status, SwimHealth swimHealth) {}
-
-    /// Effective membership states the view recognises. `UNTRACKED` means the peer is absent
-    /// from SWIM (the "default zero" state). The SWIM-derived view only ever produces
-    /// `ON_DUTY` (HEALTHY + quorate) or `UNTRACKED`; `JOINING` / `DRAINING` / `STOPPED` remain
-    /// in the vocabulary for callers that classify externally-sourced membership states.
-    enum MemberStatus {
-        UNTRACKED,
-        JOINING,
-        ON_DUTY,
-        DRAINING,
-        STOPPED
-    }
+    /// audit-trail callers). SWIM is the single source of truth — the node-lifecycle KV atom
+    /// was deleted in the membership-v2 finale, so there is no per-peer KV override component
+    /// anymore. A peer present in the view IS present in the cluster — there is no separate
+    /// status axis.
+    record MemberView(NodeId peer, SwimHealth swimHealth) {}
 
     /// **Strict factory — RC1 Step 5 default for every external reader.**
     ///
     /// Routes, dashboard, CTM, `/api/cluster/onduty` — all consume this variant. When the
-    /// `inQuorum` supplier reports `false` the view forces every derived `ON_DUTY` to
-    /// `UNTRACKED`: a minority-side node MUST NOT advertise on-duty peers that the majority
-    /// has likely re-routed work past. Operator-declared override states (JOINING /
-    /// DRAINING / STOPPED) survive — those reflect consensus-replicated
-    /// operator intent that remains true regardless of the local node's quorum status.
+    /// `inQuorum` supplier reports `false` the view reports every peer absent: a minority-side
+    /// node MUST NOT advertise present peers that the majority has likely re-routed work past.
     ///
     /// `inQuorum` MUST be backed by the same `AtomicBoolean` that `TopologyObserver` mutates
     /// (exposed via `TopologyObserver#inQuorum()`). Constructing a second quorum source here
@@ -134,7 +108,7 @@ public interface MembershipView {
 
     /// **Bootstrap-aware factory — internal use only.**
     ///
-    /// Returns content (including ON_DUTY) even when non-quorate. Required by callers that
+    /// Returns content (present peers) even when non-quorate. Required by callers that
     /// drive the cluster TOWARD quorum: if `TopologyObserver` consults a strict view to
     /// decide whether to emit `MembershipDecision` deltas, the view returns empty → no
     /// deltas → quorum never establishes (deadlock). The bootstrap-aware variant breaks
@@ -173,10 +147,18 @@ public interface MembershipView {
             var quorate = inQuorum.getAsBoolean();
             var swim = swimHealth.get().or(HealthSnapshot.healthSnapshot(Map.of()));
             var view = new HashMap<NodeId, MemberView>();
-            swim.peerHealth().forEach((peer, swimState) -> view.put(peer,
-                                                                    deriveFromSwim(peer, swimState, quorate)));
+            swim.peerHealth().forEach((peer, swimState) -> putIfPresent(view, peer, swimState, quorate));
 
             return Map.copyOf(view);
+        }
+
+        private static void putIfPresent(Map<NodeId, MemberView> view,
+                                         NodeId peer,
+                                         SwimHealth swimState,
+                                         boolean quorate) {
+            if (isPresent(swimState, quorate)) {
+                view.put(peer, new MemberView(peer, swimState));
+            }
         }
 
         @Override
@@ -185,34 +167,15 @@ public interface MembershipView {
             var swim = swimHealth.get().or(HealthSnapshot.healthSnapshot(Map.of()));
             var swimState = swim.healthOf(peer).or(SwimHealth.UNKNOWN);
 
-            return swimOnlyEntry(peer, swimState, quorate);
+            return isPresent(swimState, quorate)
+                   ? Option.some(new MemberView(peer, swimState))
+                   : Option.none();
         }
 
-        private static Option<MemberView> swimOnlyEntry(NodeId peer,
-                                                        SwimHealth swimState,
-                                                        boolean quorate) {
-            if (swimState != SwimHealth.HEALTHY) {
-                return Option.none();
-            }
-
-            return Option.some(deriveFromSwim(peer, swimState, quorate));
-        }
-
-        /// RC1 membership-v2 finale: derive purely from SWIM. The node-lifecycle KV-override
-        /// path is gone — SWIM is the single source of "alive". A HEALTHY peer becomes
-        /// `ON_DUTY` when quorate; every other SWIM observation is `UNTRACKED`.
-        private static MemberView deriveFromSwim(NodeId peer,
-                                                 SwimHealth swimState,
-                                                 boolean quorate) {
-            var status = resolveStatus(swimState, quorate);
-
-            return new MemberView(peer, status, swimState);
-        }
-
-        private static MemberStatus resolveStatus(SwimHealth swimState, boolean quorate) {
-            return swimState == SwimHealth.HEALTHY && quorate
-                   ? MemberStatus.ON_DUTY
-                   : MemberStatus.UNTRACKED;
+        /// RC1 membership-v2 finale: presence is derived purely from SWIM. A peer is present
+        /// iff it is HEALTHY in SWIM and the local node is quorate.
+        private static boolean isPresent(SwimHealth swimState, boolean quorate) {
+            return swimState == SwimHealth.HEALTHY && quorate;
         }
     }
 }

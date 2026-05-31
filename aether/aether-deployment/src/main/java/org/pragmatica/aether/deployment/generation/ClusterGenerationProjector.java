@@ -16,7 +16,6 @@ import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.PartitionOwner;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
 import org.pragmatica.consensus.NodeId;
@@ -193,56 +192,32 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
 
     private static Map<NodeId, CoreMember> projectCoreMembers(ProjectionInput input) {
         var result = new LinkedHashMap<NodeId, CoreMember>();
-        input.lifecycles().forEach((nodeId, lifecycle) -> {
-                                       if (lifecycle.state() == NodeLifecycleState.STOPPED) {
-                                       return;
-                                   }
-                                       result.put(nodeId, toCoreMember(nodeId, lifecycle, input));
-                                   });
+        input.lifecycles().forEach((nodeId, lifecycle) -> result.put(nodeId, toCoreMember(nodeId, lifecycle, input)));
 
         return Map.copyOf(result);
     }
 
     private static CoreMember toCoreMember(NodeId nodeId, MemberLifecycle lifecycle, ProjectionInput input) {
         var lastSeen = input.lastSeenPerNode().getOrDefault(nodeId, Epoch.ZERO);
-        var healthHint = deriveHealthHint(nodeId, lifecycle, input.swimHints());
+        var healthHint = deriveHealthHint(nodeId, input.swimHints());
 
         return CoreMember.coreMember(nodeId,
                                      lifecycle.host(),
                                      lifecycle.port(),
-                                     lifecycle.state(),
                                      healthHint,
                                      Epoch.ZERO,
                                      lastSeen);
     }
 
-    private static HealthHint deriveHealthHint(NodeId nodeId,
-                                               MemberLifecycle lifecycle,
-                                               Map<NodeId, HealthHint> swimHints) {
-        var lifecycleHint = switch (lifecycle.state()) {
-            case STOPPED -> HealthHint.FAULTY;
-            case DRAINING -> HealthHint.SUSPECTED;
-            case JOINING, ON_DUTY -> HealthHint.HEALTHY;
-        };
+    /// Presence-derived health: every member is healthy by construction (presence in the NTT
+    /// set means SWIM-healthy). A SWIM hint, when present, can only downgrade the displayed
+    /// health, so it wins over the HEALTHY baseline.
+    private static HealthHint deriveHealthHint(NodeId nodeId, Map<NodeId, HealthHint> swimHints) {
         var swimHint = swimHints.get(nodeId);
 
-        if (swimHint == null) {return lifecycleHint;}
+        if (swimHint == null) {return HealthHint.HEALTHY;}
 
-        return worse(lifecycleHint, swimHint);
-    }
-
-    private static HealthHint worse(HealthHint a, HealthHint b) {
-        return rank(a) >= rank(b)
-               ? a
-               : b;
-    }
-
-    private static int rank(HealthHint h) {
-        return switch (h) {
-            case FAULTY -> 2;
-            case SUSPECTED -> 1;
-            case HEALTHY -> 0;
-        };
+        return swimHint;
     }
 
     private static Map<String, NodeId> buildSpokesmanIndex(Map<NodeId, SpokesmanValue> spokesmen) {

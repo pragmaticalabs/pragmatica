@@ -41,11 +41,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// FSM-level tests for the SWIM health detector. Drives the FSM directly via
 /// [`FsmTestHarness`] — no wall-clock sleeps, no UDP sockets.
 ///
-/// Covers the four scenarios required by the refactor plan:
-/// 1. Happy path through all four states.
-/// 2. CAS contention on `Running → LocalDisconnect`.
-/// 3. Events ignored in terminal / inapplicable states.
-/// 4. Leader-routing: follower sees faulty-peer-is-current-leader and routes DisconnectNode.
+/// Covers:
+/// 1. Happy path through the lifecycle states.
+/// 2. Events ignored in terminal / inapplicable states.
+/// 3. Leader-routing: follower sees faulty-peer-is-current-leader and routes DisconnectNode.
 class SwimHealthFsmTest {
 
     private static final NodeId SELF = new NodeId("node-1");
@@ -117,7 +116,7 @@ class SwimHealthFsmTest {
     @Nested
     class HappyPath {
         @Test
-        void lifecycle_stoppedStartingRunningLocalDisconnectRunningStopped() {
+        void lifecycle_stoppedStartingRunningStopped() {
             buildHarness(false); // follower
             var ctx = ctxRef.get();
             assertThat(harness.state()).isInstanceOf(SwimHealthState.Stopped.class);
@@ -130,58 +129,18 @@ class SwimHealthFsmTest {
                                                                  GossipEncryptor.none()));
             assertThat(harness.state()).isInstanceOf(SwimHealthState.Running.class);
 
-            // Trigger local disconnect: 2 members; need > 2/2 == 1 → 2 faulty events.
+            // FAULTY peers route a health hint but no longer change FSM state — Running stays Running.
             harness.dispatch(new SwimHealthEvents.PeerFaulty(faulty(PEER_A)));
             harness.dispatch(new SwimHealthEvents.PeerFaulty(faulty(PEER_B)));
-            assertThat(harness.state()).isInstanceOf(SwimHealthState.LocalDisconnect.class);
+            assertThat(harness.state()).isInstanceOf(SwimHealthState.Running.class);
 
-            // Recovery: PeerConnected
+            // PeerConnected keeps Running and re-asserts HEALTHY.
             harness.dispatch(new SwimHealthEvents.PeerConnected(PEER_A, Option.none()));
             assertThat(harness.state()).isInstanceOf(SwimHealthState.Running.class);
 
             harness.dispatch(new SwimHealthEvents.StopRequested());
             assertThat(harness.state()).isInstanceOf(SwimHealthState.Stopped.class);
             assertThat(ctx).isNotNull();
-        }
-    }
-
-    @Nested
-    class CasContention {
-        @Test
-        void concurrentQuorumLoss_fromRunning_exactlyOneLocalDisconnectTransition() throws InterruptedException {
-            buildHarness(true); // leader, so faulty peers also route DisconnectNode
-            // Seed 8 members so threshold > 8/2 == 4 — the 5th concurrent faulty crosses it.
-            var seeds = new NodeId[]{new NodeId("peer-0"), new NodeId("peer-1"), new NodeId("peer-2"),
-                                      new NodeId("peer-3"), new NodeId("peer-4"), new NodeId("peer-5"),
-                                      new NodeId("peer-6"), new NodeId("peer-7")};
-            var swim = swimWithSeeds(seeds);
-            harness.dispatch(new SwimHealthEvents.StartRequested());
-            harness.dispatch(new SwimHealthEvents.ProtocolReady(swim, new StubTransport(),
-                                                                 GossipEncryptor.none()));
-            assertThat(harness.state()).isInstanceOf(SwimHealthState.Running.class);
-
-            // 8 threads each faulting a unique peer; threshold is > 8/2 == 4, so the 5th
-            // concurrent faulty should cross the line. Exactly ONE Running→LocalDisconnect
-            // transition must win.
-            var events = List.<SwimHealthEvents>of(
-                    new SwimHealthEvents.PeerFaulty(faulty(new NodeId("peer-0"))),
-                    new SwimHealthEvents.PeerFaulty(faulty(new NodeId("peer-1"))),
-                    new SwimHealthEvents.PeerFaulty(faulty(new NodeId("peer-2"))),
-                    new SwimHealthEvents.PeerFaulty(faulty(new NodeId("peer-3"))),
-                    new SwimHealthEvents.PeerFaulty(faulty(new NodeId("peer-4"))),
-                    new SwimHealthEvents.PeerFaulty(faulty(new NodeId("peer-5"))),
-                    new SwimHealthEvents.PeerFaulty(faulty(new NodeId("peer-6"))),
-                    new SwimHealthEvents.PeerFaulty(faulty(new NodeId("peer-7"))));
-            harness.dispatchConcurrently(events);
-
-            // Final state MUST be LocalDisconnect (once threshold crossed, no event drives back).
-            assertThat(harness.state()).isInstanceOf(SwimHealthState.LocalDisconnect.class);
-            // Exactly ONE Running→LocalDisconnect transition — the winner.
-            var toLocalDisconnect = harness.transitions().stream()
-                                           .filter(t -> t.from() instanceof SwimHealthState.Running
-                                                        && t.to() instanceof SwimHealthState.LocalDisconnect)
-                                           .count();
-            assertThat(toLocalDisconnect).isEqualTo(1L);
         }
     }
 

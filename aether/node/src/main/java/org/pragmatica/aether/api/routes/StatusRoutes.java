@@ -19,6 +19,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.ReadinessResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.StatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.WhoamiResponse;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
+import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.handler.security.Role;
@@ -114,10 +115,10 @@ public final class StatusRoutes implements RouteSource {
         var uptimeSeconds = node.uptimeSeconds();
         var leader = node.leader();
         var leaderId = leader.map(NodeId::id).or("none");
-        // H.2d (spec §H): cluster.nodes derives from MembershipView (SWIM ∪ KV override) ∪
-        // consensus topology. SWIM admits a peer ⇒ it appears here as ON_DUTY without
-        // requiring the FSM to have written `Put(L=ON_DUTY)` to KV — the cause of the
-        // pre-H "peer alive in SWIM, UNKNOWN in /api/status" stranding bug.
+        // H.2d (spec §H): cluster.nodes derives from MembershipView (SWIM presence) ∪
+        // consensus topology. SWIM admits a peer ⇒ it appears here as present without
+        // requiring any KV write — the cause of the pre-H "peer alive in SWIM, UNKNOWN in
+        // /api/status" stranding bug.
         var view = node.membershipView();
         var topologyNodes = node.topologyManager().topology();
         var allNodeIds = new LinkedHashSet<NodeId>();
@@ -129,7 +130,7 @@ public final class StatusRoutes implements RouteSource {
         // carries the equivalent per-node lifecycle enum, so the display map is built from
         // the snapshot instead of scanning the lifecycle KV table. Empty when no snapshot has
         // been published yet (cold-start transient window).
-        var kvStateMap = lifecycleStateMap(node);
+        var kvStateMap = reportedStateMap(node);
         var nodeInfos = allNodeIds.stream().map(nodeId -> toNodeInfo(view,
                                                                      nodeId,
                                                                      leader,
@@ -154,11 +155,10 @@ public final class StatusRoutes implements RouteSource {
         // captured in `lifecycleState` below.
         node.nodeLifecycle().currentState().name(),
 
-        // lifecycleState — cluster-level FSM intent from KV-Store
-        // (NodeLifecycleState: JOINING/ON_DUTY/DRAINING/STOPPED).
-        // Post-Step-I (2026-05-22): the prior `DECOMMISSIONED`/`SHUTTING_DOWN`/`FAILED_DRAIN`
-        // arms collapsed into a single `STOPPED` with a `StopReason` sidecar discriminator.
-        // Empty string when no KV entry exists yet (cold-start transient window).
+        // lifecycleState — node-reported work-state from the metrics pong
+        // (NodeReportedState: SYNCING/READY/DRAINING). Membership-v2 finale: the synthetic
+        // per-node lifecycle KV atom was removed; this surfaces the real, node-authoritative state.
+        // Empty string when no pong has been observed yet (cold-start transient window).
         // Mirrors `cluster.nodes[selfId].kvState` for top-level ergonomic access.
         kvStateMap.getOrDefault(selfId, ""),
                                   readClusterPhase(node),
@@ -173,36 +173,37 @@ public final class StatusRoutes implements RouteSource {
                                        Option<NodeId> leader,
                                        String kvState) {
         var isLeader = leader.map(l -> l.equals(nodeId)).or(false);
-        var status = view.statusOf(nodeId);
-        // kvState — authoritative FSM state (KV-direct), independent of SWIM overlay.
-        // Empty string when no KV entry exists (peer known only via SWIM in the JOINING/transient window).
-        // See aether/docs/specs/state-authority.md for the kvState vs derivedStatus contract.
-        // derivedStatus — operator-visible projection of KV ∪ SWIM ∪ quorum.
-        var derivedStatus = status == MembershipView.MemberStatus.UNTRACKED
-                            ? "UNKNOWN"
-                            : status.name();
+        var present = view.isPresent(nodeId);
+        // kvState — node-reported work-state (NodeReportedState: SYNCING/READY/DRAINING) from the
+        // metrics pong. Empty string when no pong has been observed yet (peer known only via SWIM
+        // in the transient window). See aether/docs/specs/state-authority.md for the kvState vs
+        // derivedStatus contract.
+        // derivedStatus — operator-visible projection: present peers surface their real reported
+        // work-state (READY when no pong yet); absent peers show UNKNOWN.
+        var derivedStatus = present
+                            ? presentDisplay(kvState)
+                            : "UNKNOWN";
 
         return new NodeInfo(nodeId.id(), isLeader, kvState, derivedStatus);
     }
 
-    /// External-viewer state name. Pre-Step-I this collapsed `SHUTTING_DOWN` → `DRAINING`;
-    /// post-Step-I the slice-layer enum no longer carries `SHUTTING_DOWN` (the H/I collapse
-    /// unified `SHUTTING_DOWN`/`DECOMMISSIONED`/`FAILED_DRAIN` → `STOPPED` with a `StopReason`
-    /// sidecar) so this is now a passthrough. See `aether/docs/specs/state-authority.md`.
-    private static String externalStateName(org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState state) {
-        return state.name();
+    private static String presentDisplay(String reportedState) {
+        return reportedState.isEmpty()
+               ? NodeReportedState.READY.name()
+               : reportedState;
     }
 
-    /// RC1 membership-v2: per-peer lifecycle display map sourced from the NTT-derived
-    /// generation snapshot's `coreMembers`. Empty map when no snapshot is published yet.
-    private static Map<NodeId, String> lifecycleStateMap(ManageableNode node) {
-        return node.currentGenerationSnapshot()
-                   .map(snapshot -> snapshot.coreMembers()
-                                            .entrySet()
-                                            .stream()
-                                            .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
-                                                                                  entry -> externalStateName(entry.getValue().lifecycle()))))
-                   .or(Map.of());
+    /// Membership-v2 finale: per-peer work-state display map sourced from the real
+    /// node-authoritative `NodeReportedState` (SYNCING / READY / DRAINING) carried on the metrics
+    /// pong — the synthetic per-node lifecycle enum was removed. Empty when no pong has been
+    /// observed yet (cold-start transient window).
+    private static Map<NodeId, String> reportedStateMap(ManageableNode node) {
+        return node.metricsCollector()
+                   .reportedStates()
+                   .entrySet()
+                   .stream()
+                   .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                                                         entry -> entry.getValue().name()));
     }
 
     /// E.6 (spec §7.2): route through `ManageableNode.clusterPhaseSupplier()` so the
