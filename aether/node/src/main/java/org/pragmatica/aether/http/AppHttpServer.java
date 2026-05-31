@@ -21,6 +21,7 @@ import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
+import org.pragmatica.aether.http.forward.AccessibilityFilter;
 import org.pragmatica.aether.http.forward.HttpForwarder;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
@@ -231,6 +232,40 @@ public interface AppHttpServer {
                                        Option<DeploymentManager> strategyCoordinator,
                                        Option<HttpRequestObserver> requestObserver,
                                        Option<Fn1<Result<NodeId>, TaskGroup>> taskGroupOwnerResolver) {
+        return appHttpServer(config,
+                             forwardingTimeouts,
+                             selfNodeId,
+                             routeRegistry,
+                             httpRoutePublisher,
+                             clusterNetwork,
+                             serializer,
+                             deserializer,
+                             tls,
+                             metricsCollector,
+                             bossGroup,
+                             workerGroup,
+                             strategyCoordinator,
+                             requestObserver,
+                             taskGroupOwnerResolver,
+                             AccessibilityFilter.IDENTITY);
+    }
+
+    static AppHttpServer appHttpServer(AppHttpConfig config,
+                                       ForwardingTimeouts forwardingTimeouts,
+                                       NodeId selfNodeId,
+                                       HttpRouteRegistry routeRegistry,
+                                       Option<HttpRoutePublisher> httpRoutePublisher,
+                                       Option<ClusterNetwork> clusterNetwork,
+                                       Option<Serializer> serializer,
+                                       Option<Deserializer> deserializer,
+                                       Option<TlsConfig> tls,
+                                       Option<InvocationMetricsCollector> metricsCollector,
+                                       Option<EventLoopGroup> bossGroup,
+                                       Option<EventLoopGroup> workerGroup,
+                                       Option<DeploymentManager> strategyCoordinator,
+                                       Option<HttpRequestObserver> requestObserver,
+                                       Option<Fn1<Result<NodeId>, TaskGroup>> taskGroupOwnerResolver,
+                                       AccessibilityFilter accessibilityFilter) {
         return new AppHttpServerAdapter(config,
                                         forwardingTimeouts,
                                         selfNodeId,
@@ -245,7 +280,8 @@ public interface AppHttpServer {
                                         workerGroup,
                                         strategyCoordinator,
                                         requestObserver,
-                                        taskGroupOwnerResolver);
+                                        taskGroupOwnerResolver,
+                                        accessibilityFilter);
     }
 }
 
@@ -284,7 +320,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                          Option<EventLoopGroup> workerGroup,
                          Option<DeploymentManager> strategyCoordinator,
                          Option<HttpRequestObserver> requestObserver,
-                         Option<Fn1<Result<NodeId>, TaskGroup>> taskGroupOwnerResolver) {
+                         Option<Fn1<Result<NodeId>, TaskGroup>> taskGroupOwnerResolver,
+                         AccessibilityFilter accessibilityFilter) {
         this.config = config;
         this.selfNodeId = selfNodeId;
         this.routeRegistry = routeRegistry;
@@ -305,7 +342,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                 serializer,
                                                 deserializer,
                                                 forwardingTimeouts,
-                                                taskGroupOwnerResolver);
+                                                taskGroupOwnerResolver,
+                                                accessibilityFilter);
         this.context = buildContext(selfNodeId, this::computeRouteTable, () -> quorumEstablished);
     }
 
@@ -354,7 +392,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                             Option<Serializer> serializer,
                                                             Option<Deserializer> deserializer,
                                                             ForwardingTimeouts forwardingTimeouts,
-                                                            Option<Fn1<Result<NodeId>, TaskGroup>> taskGroupOwnerResolver) {
+                                                            Option<Fn1<Result<NodeId>, TaskGroup>> taskGroupOwnerResolver,
+                                                            AccessibilityFilter accessibilityFilter) {
         var resolver = taskGroupOwnerResolver.or(HttpForwarder.UNASSIGNED_RESOLVER);
 
         return clusterNetwork.flatMap(net -> serializer.flatMap(ser -> deserializer.map(des -> HttpForwarder.httpForwarder(selfNodeId,
@@ -367,7 +406,9 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                                                                                              .millis(),
                                                                                                                            forwardingTimeouts.maxRetries(),
                                                                                                                            java.util.Set::of,
-                                                                                                                           resolver))));
+                                                                                                                           resolver,
+                                                                                                                           HttpForwarder.NO_LEADER_RESOLVER,
+                                                                                                                           accessibilityFilter))));
     }
 
     @Override

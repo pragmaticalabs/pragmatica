@@ -57,6 +57,7 @@ import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.http.HttpRouteRegistry;
+import org.pragmatica.aether.http.forward.AccessibilityFilter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.resource.ResourceProvider;
@@ -1279,6 +1280,16 @@ public interface AetherNode extends ManageableNode {
         // when no leader is committed, using the same leaderManager source as the toggle*OnLeaderChange routes.
         Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver =
             group -> clusterNode.leaderManager().leader().toResult(TaskAssignmentError.notAssigned(group));
+        // Silent-death fix: the data-path forwarder narrows candidates to NTT-accessible nodes so a
+        // hard-killed peer (QUIC still CONNECTED until eviction) is dropped from selection/retry long
+        // before the forward timeout would otherwise burn. NTT is constructed later (membership v2
+        // wiring below), so the filter derefs the shared nttRef at request time; before NTT exists it
+        // degrades to identity (forward falls back to the connectedPeers-only behavior).
+        var nttRef = new AtomicReference<NodeTopologyTracker>();
+        AccessibilityFilter accessibilityFilter =
+            candidates -> Option.option(nttRef.get())
+                                .map(tracker -> tracker.keepOnlyAccessible(candidates))
+                                .or(candidates);
         var appHttpServer = AppHttpServer.appHttpServer(config.appHttp(),
                                                         config.timeouts().forwarding(),
                                                         config.self(),
@@ -1293,7 +1304,8 @@ public interface AetherNode extends ManageableNode {
                                                         serverWorkerGroup,
                                                         Option.some(deploymentManager),
                                                         Option.empty(),
-                                                        Option.some(taskGroupOwnerResolver));
+                                                        Option.some(taskGroupOwnerResolver),
+                                                        accessibilityFilter);
         // #231 Step 1: ClusterSyncScheduler (metricsScheduler) is quorum-driven via its
         // onQuorumStateChange route below; task-assignment registration was redundant AND harmful
         // (deactivate() drove the FSM to Dormant on METRICS-group reassignment even while quorum
@@ -1501,7 +1513,6 @@ public interface AetherNode extends ManageableNode {
         IntSupplier configuredCoreCountSupplier = () -> config.topology().coreNodes().size();
         var leaderReconcilerRef = new AtomicReference<LeaderReconciler>();
         var quorumLossDetectorRef = new AtomicReference<QuorumLossDetector>();
-        var nttRef = new AtomicReference<NodeTopologyTracker>();
         Runnable nttReconcileTrigger = () -> {
             var detector = quorumLossDetectorRef.get();
             var tracker = nttRef.get();

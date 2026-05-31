@@ -186,6 +186,32 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                        Supplier<Set<NodeId>> coreNodeSupplier,
                                        Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver,
                                        Supplier<Option<NodeId>> leaderResolver) {
+        return httpForwarder(selfNodeId,
+                             routeRegistry,
+                             clusterNetwork,
+                             serializer,
+                             deserializer,
+                             forwardTimeout,
+                             retryDelayMs,
+                             maxForwardRetries,
+                             coreNodeSupplier,
+                             taskGroupOwnerResolver,
+                             leaderResolver,
+                             AccessibilityFilter.IDENTITY);
+    }
+
+    static HttpForwarder httpForwarder(NodeId selfNodeId,
+                                       HttpRouteRegistry routeRegistry,
+                                       ClusterNetwork clusterNetwork,
+                                       Serializer serializer,
+                                       Deserializer deserializer,
+                                       TimeSpan forwardTimeout,
+                                       long retryDelayMs,
+                                       int maxForwardRetries,
+                                       Supplier<Set<NodeId>> coreNodeSupplier,
+                                       Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver,
+                                       Supplier<Option<NodeId>> leaderResolver,
+                                       AccessibilityFilter accessibilityFilter) {
         @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) record httpForwarder(NodeId selfNodeId,
                                                                                HttpRouteRegistry routeRegistry,
                                                                                ClusterNetwork clusterNetwork,
@@ -199,7 +225,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                                                                Map<String, AtomicInteger> roundRobinCounters,
                                                                                Supplier<Set<NodeId>> coreNodeSupplier,
                                                                                Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver,
-                                                                               Supplier<Option<NodeId>> leaderResolver) implements HttpForwarder {
+                                                                               Supplier<Option<NodeId>> leaderResolver,
+                                                                               AccessibilityFilter accessibilityFilter) implements HttpForwarder {
             private static final Logger log = LoggerFactory.getLogger(HttpForwarder.class);
 
             private static final int MAX_PENDING_FORWARDS = 10_000;
@@ -237,7 +264,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
             @Override public Promise<HttpResponseData> forwardToAnyNode(HttpRequestContext requestContext,
                                                                         String requestId) {
                 var resultPromise = Promise.<HttpResponseData>promise();
-                var connectedNodes = List.copyOf(clusterNetwork.connectedPeers());
+                var connectedNodes = accessibilityFilter.keepOnlyAccessible(List.copyOf(clusterNetwork.connectedPeers()));
                 if (connectedNodes.isEmpty()) {
                     log.warn("No connected nodes available for fallback forward [{}]", requestId);
                     resultPromise.fail(Causes.cause("No connected nodes available"));
@@ -476,9 +503,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
             private List<NodeId> connectedCoreNodes() {
                 var connected = clusterNetwork.connectedPeers();
-                return coreNodeSupplier.get().stream()
+                var connectedCore = coreNodeSupplier.get().stream()
                                            .filter(connected::contains)
                                            .toList();
+                return accessibilityFilter.keepOnlyAccessible(connectedCore);
             }
 
             @Override public void onHttpForwardResponse(HttpForwardResponse response) {
@@ -507,8 +535,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
             private List<NodeId> filterConnectedNodes(Set<NodeId> nodes) {
                 var connected = clusterNetwork.connectedPeers();
-                return nodes.stream().filter(connected::contains)
+                var connectedNodes = nodes.stream().filter(connected::contains)
                                    .toList();
+                return accessibilityFilter.keepOnlyAccessible(connectedNodes);
             }
 
             private List<NodeId> freshCandidatesForRoute(String routeIdentity, Pipeline pipeline) {
@@ -769,6 +798,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                  new ConcurrentHashMap<>(),
                                  coreNodeSupplier,
                                  taskGroupOwnerResolver,
-                                 leaderResolver);
+                                 leaderResolver,
+                                 accessibilityFilter);
     }
 }

@@ -16,6 +16,7 @@ import org.pragmatica.swim.SwimObservation.FaultyObserved;
 import org.pragmatica.swim.SwimObservation.HealthyObserved;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -320,18 +321,57 @@ class NodeTopologyTrackerTest {
     }
 
     @Nested
-    class DownHysteresisDerivation {
+    class KeepOnlyAccessible {
+        private NodeTopologyTracker stableTracker() {
+            var ntt = tracker();
+            healthy(A);
+            healthy(B);
+            healthy(C);
+            sampleTimes(ntt, K_UP); // drive A,B,C into the stable member set
+            return ntt;
+        }
+
         @Test
-        void downHysteresisFor_ceilDivOfDepartureTimeoutOverSampleInterval() {
-            assertThat(NodeTopologyTracker.downHysteresisFor(TimeSpan.timeSpan(15).seconds(),
-                                                             TimeSpan.timeSpan(1).seconds()))
-                .isEqualTo(15);
-            assertThat(NodeTopologyTracker.downHysteresisFor(TimeSpan.timeSpan(1500).millis(),
-                                                             TimeSpan.timeSpan(1).seconds()))
-                .isEqualTo(2); // ceil(1.5) = 2
-            assertThat(NodeTopologyTracker.downHysteresisFor(TimeSpan.timeSpan(0).millis(),
-                                                             TimeSpan.timeSpan(1).seconds()))
-                .isEqualTo(1); // floored at 1
+        void keepOnlyAccessible_dropsAbsentNodes_preservingInputOrder() {
+            var ntt = stableTracker();
+            var X = NodeId.randomNodeId(); // never sampled — not in snapshot
+
+            assertThat(ntt.keepOnlyAccessible(List.of(B, X, A)))
+                .as("absent X dropped, B before A order preserved")
+                .containsExactly(B, A);
+        }
+
+        @Test
+        void keepOnlyAccessible_emptyInput_returnsEmpty() {
+            var ntt = stableTracker();
+
+            assertThat(ntt.keepOnlyAccessible(List.of())).isEmpty();
+        }
+
+        @Test
+        void keepOnlyAccessible_candidateNotInSnapshot_dropped() {
+            var ntt = stableTracker();
+            var X = NodeId.randomNodeId();
+
+            assertThat(ntt.keepOnlyAccessible(List.of(X))).isEmpty();
+        }
+
+        @Test
+        void keepOnlyAccessible_reflectsHardEvict() {
+            var ntt = stableTracker();
+            ntt.evict(B); // hard-remove B from the stable snapshot
+
+            assertThat(ntt.keepOnlyAccessible(List.of(A, B, C)))
+                .as("evicted B no longer accessible")
+                .containsExactly(A, C);
+        }
+
+        @Test
+        void keepOnlyAccessible_includesSelf() {
+            var ntt = stableTracker();
+
+            assertThat(ntt.keepOnlyAccessible(List.of(SELF, A)))
+                .containsExactly(SELF, A);
         }
     }
 }

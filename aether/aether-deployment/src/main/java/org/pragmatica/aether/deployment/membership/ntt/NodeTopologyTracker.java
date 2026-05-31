@@ -15,6 +15,7 @@ import org.pragmatica.swim.SwimHealth;
 import org.pragmatica.swim.SwimObservation;
 
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -393,5 +394,21 @@ public final class NodeTopologyTracker {
     /// replacements and for drain-victim selection.
     public Set<NodeId> currentMembers() {
         return Set.copyOf(stableMembers);
+    }
+
+    /// Order-preserving accessibility filter for the data-path forwarder (silent-death fix).
+    /// Reads the materialized stable-member snapshot ([`#lastEmitted`]) ONCE and returns a new
+    /// list containing only the input `candidates` present in that snapshot, preserving input
+    /// order (round-robin determinism). O(candidates) with O(1) membership tests against the
+    /// immutable point-in-time snapshot — does NOT call [`#currentMembers`] (which allocates a
+    /// fresh `Set.copyOf` per call). An empty/null candidate list yields an empty list.
+    public List<NodeId> keepOnlyAccessible(List<NodeId> candidates) {
+        if (candidates == null || candidates.isEmpty()) {
+            return List.of();
+        }
+        var accessible = lastEmitted.get();
+        return candidates.stream()
+                         .filter(accessible::contains)
+                         .toList();
     }
 }
