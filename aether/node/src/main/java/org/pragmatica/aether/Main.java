@@ -15,6 +15,7 @@ import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.config.Environment;
 import org.pragmatica.aether.config.SliceConfig;
+import org.pragmatica.aether.config.TlsConfig;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
@@ -25,8 +26,11 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.security.CertificateProvider;
 import org.pragmatica.net.tcp.security.SelfSignedCertificateProvider;
@@ -39,6 +43,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 
 import org.slf4j.Logger;
@@ -61,6 +66,8 @@ public record Main(String[] args) {
     private void run() {
         var aetherConfig = loadConfig();
         verifyClusterLabelConsistency(aetherConfig);
+        enforceClusterNamePresent();
+        enforceDevModeCompatibility(aetherConfig);
         var nodeId = parseNodeId(aetherConfig);
         var port = parsePort(aetherConfig);
         var managementPort = parseManagementPort(aetherConfig);
@@ -115,8 +122,77 @@ public record Main(String[] args) {
                                                                                                                                 }));
     }
 
+    /// Cluster-name format: same shape as the CLI's `InputValidators.CLUSTER_NAME_PATTERN`
+    /// (lowercase DNS-label). Inlined here because the `node` module does not depend on `cli`.
+    private static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
+
+    private static final Cause MISSING_CLUSTER_NAME =
+        Causes.cause("AETHER_CLUSTER_NAME is not set. A running node must know its cluster name. "
+                     + "Set the AETHER_CLUSTER_NAME environment variable (or bootstrap-seed it) before start.");
+
+    private static final Cause DEV_MODE_WITH_REAL_TLS =
+        Causes.cause("AETHER_INSECURE_DEV_MODE refused — operator TLS certificates are configured "
+                     + "([tls] auto_generate=false with cert/key paths). Insecure dev-mode is "
+                     + "fundamentally incompatible with a production TLS deployment.");
+
+    /// Source the TLS config from the SAME place [#resolveTls] uses, so the dev-mode guard
+    /// and the actual TLS setup never disagree about what certificates are configured.
+    private static TlsConfig resolveTlsConfig(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.flatMap(AetherConfig::tls).or(TlsConfig.tlsConfig());
+    }
+
+    /// Boot gate: a running node must know its cluster name. Reads `AETHER_CLUSTER_NAME`,
+    /// delegates to the pure [#verifyClusterNamePresent] guard, and on failure logs + exits
+    /// (mirrors the existing `System.exit(1)` pattern). The KV `ClusterConfigValue` is only
+    /// available post-join, so this start-time gate keys on the env var, never blocking on KV.
+    @Contract
+    private void enforceClusterNamePresent() {
+        verifyClusterNamePresent(System.getenv("AETHER_CLUSTER_NAME")).onFailure(this::abortBoot);
+    }
+
+    /// Pure, unit-testable guard: present + format-valid cluster name → success; missing,
+    /// blank, or malformed → failure. No side effects (no exit, no env read).
+    static Result<Unit> verifyClusterNamePresent(String clusterNameEnv) {
+        return Option.option(clusterNameEnv)
+                     .map(String::trim)
+                     .filter(s -> !s.isEmpty())
+                     .toResult(MISSING_CLUSTER_NAME)
+                     .filter(MALFORMED_CLUSTER_NAME, name -> CLUSTER_NAME_PATTERN.matcher(name).matches())
+                     .mapToUnit();
+    }
+
+    private static final Fn1<Cause, String> MALFORMED_CLUSTER_NAME =
+        Causes.forOneValue("AETHER_CLUSTER_NAME '%s' is malformed — must match "
+                           + "[a-z]([a-z0-9-]{0,61}[a-z0-9])? (lowercase DNS label, 1-63 chars, e.g. a or prod-eu).");
+
+    /// Boot gate: insecure dev-mode must be fundamentally incompatible with a real
+    /// (operator-supplied) TLS deployment. Reads the dev-mode env and the resolved TLS
+    /// config, delegates to the pure [#verifyDevModeCompatibility] guard, exits on violation.
+    @Contract
+    private void enforceDevModeCompatibility(Option<AetherConfig> aetherConfig) {
+        var devMode = Option.option(System.getenv("AETHER_INSECURE_DEV_MODE"))
+                            .map(v -> v.equalsIgnoreCase("true"))
+                            .or(false);
+        verifyDevModeCompatibility(devMode, resolveTlsConfig(aetherConfig)).onFailure(this::abortBoot);
+    }
+
+    /// Pure, unit-testable guard: dev-mode ON together with real operator certificates
+    /// ([TlsConfig#hasProvidedCertificates]) → failure. Auto-generated certs (Hetzner-shaped
+    /// `auto_generate=true`/no cert paths) or dev-mode off → success.
+    static Result<Unit> verifyDevModeCompatibility(boolean devModeOn, TlsConfig tlsConfig) {
+        return devModeOn && tlsConfig.hasProvidedCertificates()
+              ? DEV_MODE_WITH_REAL_TLS.result()
+              : Result.unitResult();
+    }
+
+    @Contract
+    private void abortBoot(Cause cause) {
+        log.error("FATAL: {}", cause.message());
+        System.exit(1);
+    }
+
     private Result<TlsBundle> resolveTls(NodeId nodeId, List<NodeInfo> peers, Option<AetherConfig> aetherConfig) {
-        var tlsCfg = aetherConfig.flatMap(AetherConfig::tls).or(org.pragmatica.aether.config.TlsConfig.tlsConfig());
+        var tlsCfg = resolveTlsConfig(aetherConfig);
 
         return resolveClusterSecret(tlsCfg).flatMap(SelfSignedCertificateProvider::selfSignedCertificateProvider)
                                    .flatMap(provider -> {
@@ -202,7 +278,7 @@ public record Main(String[] args) {
                      .or("localhost");
     }
 
-    private static Result<byte[]> resolveClusterSecret(org.pragmatica.aether.config.TlsConfig tlsCfg) {
+    private static Result<byte[]> resolveClusterSecret(TlsConfig tlsCfg) {
         return Option.option(tlsCfg.clusterSecret())
                      .filter(s -> !s.isBlank())
                      .orElse(Option.option(System.getenv("AETHER_CLUSTER_SECRET")).filter(s -> !s.isBlank()))

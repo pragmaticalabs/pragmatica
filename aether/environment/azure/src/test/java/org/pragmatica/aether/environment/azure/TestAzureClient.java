@@ -40,6 +40,7 @@ final class TestAzureClient implements AzureClient {
 
     String lastDeletedVmName;
     String lastGetVmName;
+    CreateVmRequest lastCreateRequest;
     String lastRestartedVmName;
     String lastUpdateTagsVmName;
     Map<String, String> lastUpdateTags;
@@ -53,6 +54,7 @@ final class TestAzureClient implements AzureClient {
 
     @Override
     public Promise<VirtualMachine> createVm(CreateVmRequest request) {
+        lastCreateRequest = request;
         return createVmResponse;
     }
 

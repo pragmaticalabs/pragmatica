@@ -53,10 +53,12 @@ public record CreateVmRequest(String name,
     /// Managed disk parameters.
     public record ManagedDisk(String storageAccountType) {}
 
-    /// OS profile with admin credentials.
+    /// OS profile with admin credentials. `customData` carries the base64-encoded
+    /// cloud-init / userData script Azure injects at first boot (omitted when empty).
     public record OsProfile(String computerName,
-                             String adminUsername,
-                             LinuxConfiguration linuxConfiguration) {}
+                            String adminUsername,
+                            LinuxConfiguration linuxConfiguration,
+                            @JsonInclude(JsonInclude.Include.NON_EMPTY) String customData) {}
 
     /// Linux-specific configuration.
     public record LinuxConfiguration(boolean disablePasswordAuthentication, SshConfiguration ssh) {}

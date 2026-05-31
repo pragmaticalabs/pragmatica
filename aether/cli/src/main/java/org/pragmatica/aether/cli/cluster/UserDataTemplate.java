@@ -9,6 +9,7 @@ import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.RuntimeProfile;
 import org.pragmatica.aether.config.cluster.RuntimeType;
 import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.environment.ClusterIdentityEnv;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlWriter;
 import org.pragmatica.lang.Option;
@@ -115,6 +116,7 @@ sealed interface UserDataTemplate {
                                            config.cluster().version()));
             appendComposedConfig(sb, composedConfig);
             appendJvmRun(sb,
+                         clusterName,
                          runtimeProfile.flatMap(RuntimeProfile::jvmArgs).or(""));
         }
 
@@ -219,8 +221,56 @@ sealed interface UserDataTemplate {
         sb.append("    -e CLUSTER_PORT=\"${AETHER_CLUSTER_PORT}\" \\\n");
         sb.append("    -e MANAGEMENT_PORT=\"${AETHER_MANAGEMENT_PORT}\" \\\n");
         sb.append("    -e PEERS=\"${AETHER_PEERS}\" \\\n");
-        sb.append("    -e AETHER_CLUSTER_SECRET=\"${AETHER_CLUSTER_SECRET}\" \\\n");
+        appendEnv(sb, clusterName, true);
         sb.append("    \"${AETHER_IMAGE}\"\n\n");
+    }
+
+    /// Bake the cluster-identity allow-list ([ClusterIdentityEnv#IDENTITY_VARS]) into the
+    /// cloud-init script so a provider-minted replacement inherits the same identity its
+    /// compose-fixed siblings receive. AETHER_CLUSTER_NAME is sourced from the threaded
+    /// `clusterName` param (the bootstrap-known cluster name); the rest are read from the
+    /// bootstrapping host's env and emitted only when non-empty. AETHER_CLUSTER_SECRET is
+    /// emitted HERE (single source of truth), not separately, so the allow-list is the only
+    /// place identity vars are listed.
+    ///
+    /// `dockerRun==true` emits `-e VAR="value" \` (a `docker run` line-continuation form);
+    /// `false` emits `export VAR="value"` for the JVM-run path.
+    private static void appendEnv(StringBuilder sb, String clusterName, boolean dockerRun) {
+        for (var name : ClusterIdentityEnv.IDENTITY_VARS) {
+            appendEnvVar(sb, name, resolveEnvValue(name, clusterName), dockerRun);
+        }
+        // --- Dev-mode (ISOLATED — never part of IDENTITY_VARS) ---
+        // Emit AETHER_INSECURE_DEV_MODE only when present in the bootstrapping host's env so
+        // a healed node inherits its siblings' dev-mode posture. Standalone so dev-mode can
+        // never silently ride the identity allow-list into a production deploy.
+        appendEnvVar(sb,
+                     ClusterIdentityEnv.INSECURE_DEV_MODE,
+                     Option.option(System.getenv(ClusterIdentityEnv.INSECURE_DEV_MODE)),
+                     dockerRun);
+    }
+
+    private static Option<String> resolveEnvValue(String name, String clusterName) {
+        return switch (name) {
+            // Sourced from the threaded bootstrap cluster name, not host env.
+            case "AETHER_CLUSTER_NAME" -> Option.option(clusterName).filter(s -> !s.isBlank());
+            // Sourced from the script's own AETHER_CLUSTER_SECRET shell variable (set in
+            // appendVariables from the clusterSecret param) — keep the shell-ref form so the
+            // operator-supplied secret flows in without leaking into the host env read.
+            case "AETHER_CLUSTER_SECRET" -> Option.some("${AETHER_CLUSTER_SECRET}");
+            default -> Option.option(System.getenv(name)).filter(s -> !s.isEmpty());
+        };
+    }
+
+    private static void appendEnvVar(StringBuilder sb, String name, Option<String> value, boolean dockerRun) {
+        value.onPresent(v -> appendEnvLine(sb, name, v, dockerRun));
+    }
+
+    private static void appendEnvLine(StringBuilder sb, String name, String value, boolean dockerRun) {
+        if (dockerRun) {
+            sb.append("    -e ").append(name).append("=\"").append(value).append("\" \\\n");
+        } else {
+            sb.append("export ").append(name).append("=\"").append(value).append("\"\n");
+        }
     }
 
     private static void appendJvmInstall(StringBuilder sb, String jarUrl) {
@@ -246,8 +296,11 @@ sealed interface UserDataTemplate {
         sb.append("fi\n\n");
     }
 
-    private static void appendJvmRun(StringBuilder sb, String jvmArgs) {
+    private static void appendJvmRun(StringBuilder sb, String clusterName, String jvmArgs) {
         sb.append("# --- Start Aether ---\n");
+        // Export the cluster-identity allow-list (and isolated dev-mode) so the JVM picks
+        // up the same identity a containerized sibling receives via -e flags.
+        appendEnv(sb, clusterName, false);
         sb.append("PEERS_ARG=\"\"\n");
         sb.append("if [ -n \"${AETHER_PEERS}\" ]; then PEERS_ARG=\"--peers=${AETHER_PEERS}\"; fi\n");
         sb.append("AETHER_CLUSTER_SECRET=\"${AETHER_CLUSTER_SECRET}\" java ");

@@ -38,6 +38,8 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.IdGenerator;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -60,7 +62,7 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        return client.createVm(buildCreateRequest(List.of(), defaultTags())).map(AzureComputeProvider::toInstanceInfo)
+        return client.createVm(buildCreateRequest(List.of(), defaultTags(), config.userData())).map(AzureComputeProvider::toInstanceInfo)
                               .flatMap(info -> confirmRunning(info, ReadinessPolicy.cloudDefault()))
                               .onFailure(AzureComputeProvider::logProvisionFailureRollbackGap)
                               .mapError(AzureComputeProvider::toProvisionError);
@@ -69,7 +71,8 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
     @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
         var zones = extractZones(spec.placement());
         var tags = tagsFor(spec.context());
-        return client.createVm(buildCreateRequest(zones, tags)).map(AzureComputeProvider::toInstanceInfo)
+        var userData = spec.userData().or(config.userData());
+        return client.createVm(buildCreateRequest(zones, tags, userData)).map(AzureComputeProvider::toInstanceInfo)
                               .flatMap(info -> confirmRunning(info, ReadinessPolicy.cloudDefault()))
                               .onFailure(AzureComputeProvider::logProvisionFailureRollbackGap)
                               .mapError(AzureComputeProvider::toProvisionError);
@@ -113,14 +116,14 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
                                     .mapError(AzureComputeProvider::toListInstancesError);
     }
 
-    private CreateVmRequest buildCreateRequest(List<String> zones, Map<String, String> tags) {
+    private CreateVmRequest buildCreateRequest(List<String> zones, Map<String, String> tags, String userData) {
         var name = generateVmName();
         var imageRef = parseImageUrn(config.image());
         var hardware = new HardwareProfile(config.vmSize());
         var storage = new StorageProfile(imageRef, new OsDisk("FromImage", new ManagedDisk("Standard_LRS")));
         var sshKey = new SshPublicKey("/home/" + config.adminUsername() + "/.ssh/authorized_keys", config.sshPublicKey());
         var linux = new LinuxConfiguration(true, new SshConfiguration(List.of(sshKey)));
-        var os = new OsProfile(name, config.adminUsername(), linux);
+        var os = new OsProfile(name, config.adminUsername(), linux, encodeCustomData(userData));
         var network = new NetworkProfile(List.of(new NetworkInterfaceRef(config.vnetSubnetId())));
         var properties = new VmRequestProperties(hardware, storage, os, network);
         return CreateVmRequest.createVmRequest(name,
@@ -128,6 +131,15 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
                                                tags,
                                                properties,
                                                zones);
+    }
+
+    /// Azure ARM requires `osProfile.customData` to be Base64-encoded cloud-init/userData.
+    /// Empty input yields an empty string so the NON_EMPTY-annotated field is omitted from
+    /// the request body entirely (preserves prior behaviour when no userData is supplied).
+    private static String encodeCustomData(String userData) {
+        return userData.isEmpty()
+              ? ""
+              : Base64.getEncoder().encodeToString(userData.getBytes(StandardCharsets.UTF_8));
     }
 
     private static Map<String, String> defaultTags() {

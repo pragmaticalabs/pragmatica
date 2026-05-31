@@ -26,7 +26,7 @@ import picocli.CommandLine.Option;
 @Command(name = "scaffold", description = "Emit a deployment-manifest template with cluster-scoped labels pre-set")
 @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01"})
 class ClusterScaffoldCommand implements Callable<Integer> {
-    @Option(names = "--name", required = true, description = "Cluster name (regex: ^[a-z][a-z0-9-]{0,62}$)")
+    @Option(names = "--name", required = true, description = "Cluster name (regex: ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$)")
     private String name;
 
     @Option(names = "--template", required = true, description = "Output template: docker-compose")

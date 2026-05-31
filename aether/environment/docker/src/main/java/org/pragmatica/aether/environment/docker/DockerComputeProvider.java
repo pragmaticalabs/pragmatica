@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.docker;
 
+import org.pragmatica.aether.environment.ClusterIdentityEnv;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
@@ -239,20 +240,22 @@ import static org.pragmatica.lang.Result.success;
             command.add("-e");
             command.add("AETHER_PROVISIONED_BY=" + provisionedBy);
         }
-        propagateEnvVar(command, "AETHER_CLUSTER_SECRET");
-        propagateEnvVar(command, "AETHER_DOCKER_NETWORK");
-        // Propagate AETHER_CLUSTER_NAME so a provider-minted replacement (which has no
-        // compose env and, in compose-only deploys, no seeded ClusterConfigValue) can
-        // resolve its own cluster identity and, if it becomes leader, mint the next
-        // replacement under the correct cluster name + `aether.cluster` label. Without
-        // this the env goes dark one generation deep → `clusterOrDefault` falls back to
-        // "default" → `aether-default-node-*` containers with no cluster label.
-        propagateEnvVar(command, "AETHER_CLUSTER_NAME");
-        // Propagate DOCKER_GID so a provider-minted replacement (which has no compose
-        // env) can itself resolve `docker_gid = "${env:DOCKER_GID}"` and provision the
-        // next replacement if it becomes leader. Without this, an unset DOCKER_GID leaves
-        // the literal `${env:DOCKER_GID}` unresolved → `--group-add` fails (exit 125).
-        propagateEnvVar(command, "DOCKER_GID");
+        // Single source of truth: propagate the full cluster-identity allow-list
+        // (AETHER_CLUSTER_NAME/SECRET/PROVISIONED_BY/API_KEY) then the Docker-infra
+        // allow-list (AETHER_DOCKER_NETWORK/DOCKER_GID). A provider-minted replacement
+        // has no compose env, so without this its identity goes dark one generation deep
+        // (clusterOrDefault falls back to ""/"default"; --group-add sees an unresolved
+        // ${env:DOCKER_GID}; the next replacement it mints loses the aether.cluster label).
+        // Dedupe against vars already emitted above (AETHER_PROVISIONED_BY from
+        // ctx.provisionedBy(), AETHER_API_KEY from config.apiKey()).
+        ClusterIdentityEnv.IDENTITY_VARS.forEach(name -> propagateEnvVar(command, name));
+        ClusterIdentityEnv.DOCKER_INFRA_VARS.forEach(name -> propagateEnvVar(command, name));
+        // --- Dev-mode (ISOLATED — never part of IDENTITY_VARS) ---
+        // Propagate AETHER_INSECURE_DEV_MODE only when present in env so an auto-healed
+        // replacement inherits the dev-mode posture of its siblings (dev-gated routes
+        // otherwise 503 on healed nodes). Kept standalone so dev-mode can never silently
+        // ride the identity allow-list into a production deploy.
+        propagateEnvVar(command, ClusterIdentityEnv.INSECURE_DEV_MODE);
         // Defense-in-depth: never pass an unresolved `${env:...}` literal to `--group-add`
         // (docker rejects it pre-start with exit 125). Treat it as absent.
         if (!config.dockerGid().isEmpty() && !config.dockerGid().startsWith("${env:")) {
@@ -276,11 +279,20 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static void propagateEnvVar(ArrayList<String> command, String name) {
+        if (alreadyEmitted(command, name)) {return;}
         var value = System.getenv(name);
         if (value != null && !value.isEmpty()) {
             command.add("-e");
             command.add(name + "=" + value);
         }
+    }
+
+    /// True when `-e <name>=...` was already appended (e.g. AETHER_API_KEY from
+    /// `config.apiKey()` or AETHER_PROVISIONED_BY from `ctx.provisionedBy()`), so the
+    /// allow-list loop never double-emits a var that was set explicitly upstream.
+    private static boolean alreadyEmitted(ArrayList<String> command, String name) {
+        var prefix = name + "=";
+        return command.stream().anyMatch(arg -> arg.startsWith(prefix));
     }
 
     private static void addSpecLabels(ArrayList<String> command, Map<String, String> tags) {
@@ -405,7 +417,10 @@ import static org.pragmatica.lang.Result.success;
         // their compose-fixed siblings — closes the spec's caveat-c gap.
         var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
         if (fromEnv != null && !fromEnv.isEmpty()) {return fromEnv;}
-        return "default";
+        // No cluster name anywhere: mirror the cloud providers' empty fall-through rather
+        // than silently mislabeling the node "default". An empty name now reaches the
+        // node-side boot gate (Main.verifyClusterNamePresent), which fails loud.
+        return "";
     }
 
     static List<InstanceInfo> parseContainerList(String output) {

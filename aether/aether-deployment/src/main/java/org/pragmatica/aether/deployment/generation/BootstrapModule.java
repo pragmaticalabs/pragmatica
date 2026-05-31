@@ -259,8 +259,12 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
         if (coreMax % 2 == 0) {coreMax += 1;}
 
+        // Seed the cluster name from AETHER_CLUSTER_NAME so the KV-seeded ClusterConfigValue
+        // and the env-sourced name agree (Main.verifyClusterNamePresent keys on the same env).
+        // Empty remains the last-resort fallback for self-bootstrap paths with no env name.
+        var seedClusterName = seedClusterName();
         var seed = ClusterConfigValue.clusterConfigValue("",
-                                                         "",
+                                                         seedClusterName,
                                                          "1.0.0",
                                                          initialSize,
                                                          SEED_CORE_MIN,
@@ -270,6 +274,12 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         KVCommand<AetherKey> command = new KVCommand.Put<AetherKey, AetherValue>(ClusterConfigKey.CURRENT, seed);
 
         return Option.some(new ClusterConfigSeedPlan(command, initialSize, coreMax));
+    }
+
+    /// Source the bootstrap-seed cluster name from `AETHER_CLUSTER_NAME` (empty when unset),
+    /// so KV and the node-side env gate agree on the cluster identity.
+    private static String seedClusterName() {
+        return Option.option(System.getenv("AETHER_CLUSTER_NAME")).filter(s -> !s.isBlank()).or("");
     }
 
     @Contract

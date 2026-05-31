@@ -19,7 +19,7 @@ import picocli.CommandLine.Option;
 
 
 public class ClusterTargetMixin {
-    static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z][a-z0-9-]{0,62}$");
+    static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
 
     private static final String API_KEY_FILE_NAME = "api-key";
     static Supplier<Result<ClusterRegistry>> registryLoader = ClusterRegistry::load;
@@ -109,7 +109,7 @@ public class ClusterTargetMixin {
         record InvalidClusterName(String value) implements ClusterTargetError {
             @Override
             public String message() {
-                return "Invalid --cluster value: '" + value + "': must match ^[a-z][a-z0-9-]{0,62}$";
+                return "Invalid --cluster value: '" + value + "': must match ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$";
             }
         }
 

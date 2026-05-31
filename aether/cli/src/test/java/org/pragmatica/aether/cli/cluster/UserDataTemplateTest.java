@@ -198,6 +198,55 @@ class UserDataTemplateTest {
     }
 
     @Test
+    void render_emitsClusterNameFromAllowList_inContainerEnv() {
+        // AETHER_CLUSTER_NAME is sourced from the threaded clusterName param (not host env),
+        // baked into the docker-run -e flags via the IDENTITY_VARS allow-list.
+        var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var script = UserDataTemplate.render(config,
+                                             source,
+                                             NodeRole.CORE,
+                                             "node-1",
+                                             0,
+                                             "secret-xyz",
+                                             "prod-cluster",
+                                             TomlDocument.EMPTY);
+
+        assertTrue(script.contains("-e AETHER_CLUSTER_NAME=\"prod-cluster\""),
+                   "docker run must export AETHER_CLUSTER_NAME from the threaded cluster name");
+        assertTrue(script.contains("-e AETHER_CLUSTER_SECRET=\"${AETHER_CLUSTER_SECRET}\""),
+                   "AETHER_CLUSTER_SECRET must still be emitted (shell-var form) via the allow-list");
+    }
+
+    @Test
+    void render_devModeLine_presentOnlyWhenEnvSet() {
+        // Real assertion when the bootstrapping host exports AETHER_INSECURE_DEV_MODE; a
+        // negative assertion otherwise (env unset => no dev-mode line). System.getenv cannot
+        // be set in-process, so this branches on the ambient env.
+        var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var script = UserDataTemplate.render(config,
+                                             source,
+                                             NodeRole.CORE,
+                                             "node-1",
+                                             0,
+                                             "secret",
+                                             "prod-cluster",
+                                             TomlDocument.EMPTY);
+
+        var devMode = System.getenv("AETHER_INSECURE_DEV_MODE");
+        if (devMode != null && !devMode.isEmpty()) {
+            assertTrue(script.contains("-e AETHER_INSECURE_DEV_MODE=\"" + devMode + "\""),
+                       "dev-mode line must be emitted when AETHER_INSECURE_DEV_MODE is set");
+        } else {
+            assertFalse(script.contains("AETHER_INSECURE_DEV_MODE"),
+                        "dev-mode line must be absent when AETHER_INSECURE_DEV_MODE is unset");
+        }
+    }
+
+    @Test
     void render_threadsClusterAndManagementPortsFromOperatorConfig() {
         // Defense in depth: env vars carry the truth, but the cloud-init script
         // also exports shell variables sourced from operator config so logs and

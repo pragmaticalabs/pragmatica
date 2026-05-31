@@ -273,6 +273,72 @@ class DockerComputeProviderTest {
     }
 
     @Nested
+    class IdentityEnvPropagationTests {
+
+        @Test
+        void buildRunCommand_emitsApiKeyExactlyOnce_noDoubleEmissionFromAllowList() {
+            // AETHER_API_KEY is emitted from config.apiKey() AND is a member of the
+            // IDENTITY_VARS allow-list. The dedupe guard must keep it to a single emission.
+            testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+
+            provider.provision(InstanceType.ON_DEMAND).await()
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            var command = testRunner.allCommands.getFirst();
+            var apiKeyCount = command.stream().filter(arg -> arg.startsWith("AETHER_API_KEY=")).count();
+            assertThat(apiKeyCount).isEqualTo(1);
+        }
+
+        @Test
+        void buildRunCommand_emptyCluster_noLongerYieldsDefault() {
+            // ctx with an empty cluster name + bootstrap origin (passes preflight). The old
+            // clusterOrDefault returned literal "default"; now it returns "" so the minted
+            // name carries no "default" segment and the aether.cluster label is empty.
+            testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+            var ctx = ProvisionContext.provisionContext("", "core", "default",
+                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "default", ctx).unwrap();
+
+            provider.provision(spec).await()
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                    .onSuccess(info -> assertThat(info.tags().get("aether.cluster")).isEqualTo(""));
+
+            var command = testRunner.allCommands.getFirst();
+            assertThat(command).contains("aether.cluster=");
+            assertThat(command).doesNotContain("aether.cluster=default");
+            var nameIdx = command.indexOf("--name");
+            assertThat(command.get(nameIdx + 1)).startsWith("aether--node-");
+        }
+
+        @Test
+        void buildRunCommand_allowListVarsPresent_whenSetInEnv() {
+            // Real assertion when the integration harness exports these; a no-op skip
+            // otherwise (System.getenv cannot be set in-process). Covers IDENTITY_VARS,
+            // DOCKER_INFRA_VARS, and the isolated dev-mode flag.
+            testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+
+            provider.provision(InstanceType.ON_DEMAND).await()
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            var command = testRunner.allCommands.getFirst();
+            assertEnvPropagatedIfSet(command, "AETHER_CLUSTER_SECRET");
+            assertEnvPropagatedIfSet(command, "AETHER_DOCKER_NETWORK");
+            assertEnvPropagatedIfSet(command, "DOCKER_GID");
+            assertEnvPropagatedIfSet(command, "AETHER_INSECURE_DEV_MODE");
+        }
+
+        private void assertEnvPropagatedIfSet(List<String> command, String name) {
+            var value = System.getenv(name);
+            if (value != null && !value.isEmpty()) {
+                assertThat(command).contains(name + "=" + value);
+            }
+        }
+    }
+
+    @Nested
     class TerminateTests {
 
         @Test

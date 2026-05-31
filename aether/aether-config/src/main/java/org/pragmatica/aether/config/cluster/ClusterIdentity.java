@@ -18,11 +18,11 @@ import java.util.regex.Pattern;
 ///   - KV-Store (`ClusterConfigValue.clusterName` — String for serialization)
 ///   - operator-facing identifiers (`AETHER_<UPPER>_<NAME>_API_KEY`)
 ///
-/// Names are validated against `^[a-z][a-z0-9-]{0,62}$` so they're safe everywhere — Hetzner
+/// Names are validated against `^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$` so they're safe everywhere — Hetzner
 /// label spec, DNS labels, env var derivation. Construction goes through a `Result` factory
 /// so all downstream readers can trust the invariant.
 public record ClusterIdentity(String name, String version) {
-    public static final Pattern NAME_PATTERN = Pattern.compile("^[a-z][a-z0-9-]{0,62}$");
+    public static final Pattern NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
 
     public static Result<ClusterIdentity> clusterIdentity(String name, String version) {
         return validateName(name).map(_ -> new ClusterIdentity(name, version));

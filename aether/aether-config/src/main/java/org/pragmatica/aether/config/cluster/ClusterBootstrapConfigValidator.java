@@ -19,7 +19,7 @@ import static org.pragmatica.lang.Result.success;
 
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public final class ClusterBootstrapConfigValidator {
-    private static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z][a-z0-9-]{0,62}$");
+    private static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
 
     private static final Pattern SEMVER_PATTERN = Pattern.compile("^\\d+\\.\\d+\\.\\d+$");
 
@@ -64,7 +64,7 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static void validateClusterName(String name, List<String> errors) {
-        if (!CLUSTER_NAME_PATTERN.matcher(name).matches()) {errors.add("CL-01: Cluster name '" + name + "' must match ^[a-z][a-z0-9-]{0,62}$");}
+        if (!CLUSTER_NAME_PATTERN.matcher(name).matches()) {errors.add("CL-01: Cluster name '" + name + "' must match ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");}
     }
 
     private static void validateClusterVersion(String version, List<String> errors) {

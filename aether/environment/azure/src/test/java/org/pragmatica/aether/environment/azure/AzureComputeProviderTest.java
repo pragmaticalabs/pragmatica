@@ -12,6 +12,8 @@ import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.ProvisionContext;
+import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.cloud.azure.AzureError;
 import org.pragmatica.cloud.azure.api.CreateVmRequest.ImageReference;
 import org.pragmatica.cloud.azure.api.VirtualMachine;
@@ -23,6 +25,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 
@@ -67,6 +71,38 @@ class AzureComputeProviderTest {
                     .await()
                     .onSuccess(info -> assertThat(info).isNull())
                     .onFailure(AzureComputeProviderTest::assertProvisionFailedError);
+        }
+
+        @Test
+        void provision_setsCustomDataToBase64OfConfigUserData() {
+            testClient.createVmResponse = Promise.success(runningVm("aether-test"));
+
+            provider.provision(InstanceType.ON_DEMAND)
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull());
+
+            var expected = Base64.getEncoder()
+                                 .encodeToString("#!/bin/bash\necho hello".getBytes(StandardCharsets.UTF_8));
+            var customData = testClient.lastCreateRequest.properties().osProfile().customData();
+            assertThat(customData).isEqualTo(expected);
+        }
+
+        @Test
+        void provision_specUserDataOverridesConfig_customDataIsBase64OfSpec() {
+            testClient.createVmResponse = Promise.success(runningVm("aether-test"));
+            var ctx = ProvisionContext.provisionContext("c1", "core", "default",
+                                                         ProvisionContext.PROVISIONED_BY_CTM);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "azure", "default", ctx)
+                                    .unwrap()
+                                    .withUserData("#cloud-config\nruncmd: [echo, hi]");
+
+            provider.provision(spec)
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull());
+
+            var expected = Base64.getEncoder()
+                                 .encodeToString("#cloud-config\nruncmd: [echo, hi]".getBytes(StandardCharsets.UTF_8));
+            assertThat(testClient.lastCreateRequest.properties().osProfile().customData()).isEqualTo(expected);
         }
     }
 

@@ -85,6 +85,24 @@ class BootstrapModuleTest {
             var seeded = (ClusterConfigValue) clusterConfigPuts.getFirst().value();
             assertThat(seeded.coreCount()).isEqualTo(3);
         }
+
+        @Test
+        void seedClusterName_matchesEnvClusterName() {
+            // The seed now sources clusterName from AETHER_CLUSTER_NAME so KV and the
+            // node-side env gate agree. Empty remains the last-resort fallback (env unset
+            // in CI yields ""), so we assert against the env-derived expected value.
+            var fixture = newFixture(/* initialCoreSize */ 3);
+            fixture.module.onLeaderGained();
+
+            var clusterConfigPuts = collectPuts(fixture.cluster.batches).stream()
+                                                                          .filter(p -> p.key() instanceof ClusterConfigKey)
+                                                                          .toList();
+            assertThat(clusterConfigPuts).hasSize(1);
+            var seeded = (ClusterConfigValue) clusterConfigPuts.getFirst().value();
+            var envName = System.getenv("AETHER_CLUSTER_NAME");
+            var expected = envName != null && !envName.isBlank() ? envName : "";
+            assertThat(seeded.clusterName()).isEqualTo(expected);
+        }
     }
 
     @Nested

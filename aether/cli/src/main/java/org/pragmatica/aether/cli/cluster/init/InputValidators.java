@@ -18,7 +18,7 @@ public sealed interface InputValidators {
 
     Pattern ENV_VAR_PATTERN = Pattern.compile("^[A-Z_][A-Z0-9_]*$");
 
-    Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z][a-z0-9-]{0,62}[a-z0-9]$");
+    Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
 
     static Result<String> validateCidr(String raw) {
         var value = raw == null
@@ -91,7 +91,7 @@ public sealed interface InputValidators {
         if (!CLUSTER_NAME_PATTERN.matcher(value).matches()) {
             return new ClusterInitError.InvalidValue("cluster name",
                                                      value,
-                                                     "must match [a-z][a-z0-9-]{1,62}[a-z0-9] (e.g. prod-eu)").result();
+                                                     "must match [a-z]([a-z0-9-]{0,61}[a-z0-9])? (1-63 chars, e.g. a or prod-eu)").result();
         }
 
         return Result.success(value);

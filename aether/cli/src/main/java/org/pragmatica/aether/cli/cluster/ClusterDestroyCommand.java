@@ -33,7 +33,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
     private static final int DRAIN_POLL_INTERVAL_MS = 2000;
     private static final int DRAIN_TIMEOUT_SECONDS = 120;
 
-    private static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z][a-z0-9-]{0,62}$");
+    private static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
 
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
@@ -64,7 +64,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
     public Integer call() {
         if (!isOverrideAcceptable()) {
             System.err.println("Invalid --cluster value: '" + clusterNameOverride
-                              + "': must match ^[a-z][a-z0-9-]{0,62}$");
+                              + "': must match ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
 
             return ExitCode.USAGE;
         }

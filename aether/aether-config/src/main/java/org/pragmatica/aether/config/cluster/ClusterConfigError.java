@@ -26,7 +26,7 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
 
     record InvalidClusterName(String value) implements ClusterConfigError {
         @Override public String message() {
-            return "Invalid cluster name: '" + value + "'. Must be non-empty, match [a-z0-9][a-z0-9-]*, max 63 chars";
+            return "Invalid cluster name: '" + value + "'. Must be non-empty, match [a-z]([a-z0-9-]{0,61}[a-z0-9])?, 1-63 chars";
         }
     }
 

@@ -137,6 +137,13 @@ class InputValidatorsTest {
         }
 
         @Test
+        void validateClusterName_singleChar_succeeds() {
+            InputValidators.validateClusterName("a")
+                            .onFailure(c -> fail("Expected success but got " + c.message()))
+                            .onSuccess(value -> assertThat(value).isEqualTo("a"));
+        }
+
+        @Test
         void validateClusterName_uppercase_returnsInvalidValue() {
             InputValidators.validateClusterName("ProdCluster")
                             .onSuccess(v -> fail("Expected failure but got " + v))
