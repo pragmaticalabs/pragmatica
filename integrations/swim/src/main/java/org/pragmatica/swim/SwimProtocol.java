@@ -228,13 +228,36 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     /// Add a seed member to the membership list.
+    ///
+    /// Resurrection guard (#231): a channel re-seed is NOT proof of reachability,
+    /// so the member is introduced as SUSPECT (probe-on-arrival) rather than ALIVE,
+    /// mirroring the ANNOUNCE path (`handleAnnounce`). SUSPECT keeps the member
+    /// `isProbable` so the next tick probes it; a real probe-ack or QUIC
+    /// `PeerConnected` promotes it to ALIVE/HEALTHY. SUSPECT does NOT set
+    /// `everSeenHealthy` and does NOT emit `HealthyObserved`, so a previously-dead
+    /// id re-seeded onto the channel is never re-admitted as HEALTHY off a bare add.
+    ///
+    /// Cold-start is preserved: `notifyMemberJoined` (and its `MemberDiscovered`
+    /// observation that feeds the QUIC dial set) still fires, and the registered
+    /// suspect timestamp lets the next probe-ack promote a genuine seed to ALIVE
+    /// within one probe period.
     public void addSeedMember(NodeId nodeId, InetSocketAddress address) {
         if (selfId.equals(nodeId)) {
             return;
         }
 
-        var member = SwimMember.swimMember(nodeId, address);
+        // Mirror the ANNOUNCE guard (`if (!members.containsKey(...))`): only introduce
+        // an UNKNOWN id. A re-seed of a member already tracked (notably a SUSPECT victim
+        // whose suspect-window is counting down to FAULTY) must be a no-op — otherwise
+        // each channel reconnect re-stamps `suspectTimestamps`, perpetually deferring the
+        // FAULTY transition so `NODE_FAILED` never fires (#231 lingering-victim).
+        if (members.containsKey(nodeId)) {
+            return;
+        }
+
+        var member = SwimMember.swimMember(nodeId, MemberState.SUSPECT, 0, address);
         members.put(nodeId, member);
+        suspectTimestamps.put(nodeId, System.currentTimeMillis());
         notifyMemberJoined(member);
         addMemberUpdate(member);
     }
@@ -401,6 +424,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             var entry = iterator.next();
             if (isFaultyAndExpired(entry, now, cleanupThreshold)) {
                 iterator.remove();
+                clearDeathMemory(entry.getKey());
                 emitDeparted(entry.getKey(), entry.getValue().incarnation());
             }
         }
@@ -417,6 +441,20 @@ public final class SwimProtocol implements SwimMessageHandler {
         return option(suspectTimestamps.get(member.nodeId()))
             .map(suspectTime -> now - suspectTime > threshold)
             .or(true);
+    }
+
+    /// Erase all per-peer death-memory when a FAULTY member is removed from the
+    /// membership. Without this, a subsequent re-add of the same id (channel
+    /// re-seed via `addSeedMember`, or gossip `applyNewMember`) re-creates the
+    /// member at incarnation-0 while `everSeenHealthy` still holds it "proven",
+    /// so `classify` returns HEALTHY instantly and NTT re-admits the dead node —
+    /// the #231 resurrection oscillation. Clearing the gate makes a re-added
+    /// ALIVE member classify as UNKNOWN (cold-boot suppression) until it is
+    /// re-proven by a real probe-ack.
+    private void clearDeathMemory(NodeId peer) {
+        everSeenHealthy.remove(peer);
+        revivalTimestamps.remove(peer);
+        suspectTimestamps.remove(peer);
     }
 
     private void expireSuspectIfOverdue(NodeId nodeId, long timestamp, long now, long suspectTimeoutMillis) {
