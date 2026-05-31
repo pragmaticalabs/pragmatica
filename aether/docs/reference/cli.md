@@ -1234,6 +1234,8 @@ aether scheduled-tasks inject \
     --method cleanup
 ```
 
+> Dev-mode precondition: a node with operator-provided TLS certificates refuses to start in dev-mode, so `scheduled-tasks inject` is never reachable on a node configured with real TLS.
+
 ---
 
 ### backup

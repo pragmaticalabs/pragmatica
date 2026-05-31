@@ -368,7 +368,7 @@ gate on `tlsEnabled` before reading the cert metadata.
 
 **Dev-mode only.** Reconfigures the `CertificateRenewalScheduler` so the active certificate appears to expire in `validitySeconds` from now, causing the renewal timer to reschedule at the recomputed 40%-of-remaining mark (24s for `validitySeconds=60`). Used by `Strengthen-cert-rotation-trigger` integration tests (see `aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-I) to observe automatic cert rotation in seconds rather than waiting hours.
 
-Gated by the `AETHER_INSECURE_DEV_MODE=true` environment variable on the node. When the gate is closed the endpoint returns a failure response and the scheduler is untouched.
+Gated by the `AETHER_INSECURE_DEV_MODE=true` environment variable on the node. When the gate is closed the endpoint returns a failure response and the scheduler is untouched. Precondition: a node with operator-provided TLS certificates refuses to start in dev-mode, so this route is never reachable on a node configured with real TLS.
 
 **RBAC:** OPERATOR · **Routing:** LOCAL (operates on the node receiving the request)
 
@@ -919,7 +919,9 @@ node's `ClusterSyncCollector` ring buffer so historical-range queries
 (`/api/metrics/history?range=...`) can be exercised deterministically
 without waiting hours for the sliding window to populate organically.
 Gated by `AETHER_INSECURE_DEV_MODE=true` — same gate pattern as
-`/api/scheduled-tasks/inject` and `/api/alerts/inject`.
+`/api/scheduled-tasks/inject` and `/api/alerts/inject`. Precondition: a node with
+operator-provided TLS certificates refuses to start in dev-mode, so this route is never
+reachable on a node configured with real TLS.
 
 Used by TC-11-H1 (historical-metrics range queries) to make the 5m, 15m,
 1h, 2h range assertions deterministic.
@@ -1558,7 +1560,9 @@ racing the live clock.
 Gated by `AETHER_INSECURE_DEV_MODE=true` — same gate pattern as
 `/api/alerts/inject`, `/api/scheduled-tasks/inject`, and
 `/api/metrics/backfill`. Route target is `LOCAL` — tests POST directly to
-the node they wish to mutate (no leader forwarding).
+the node they wish to mutate (no leader forwarding). Precondition: a node with
+operator-provided TLS certificates refuses to start in dev-mode, so this route is never
+reachable on a node configured with real TLS.
 
 **Request body:**
 ```json
@@ -3234,7 +3238,7 @@ Get detailed execution state for a specific scheduled task.
 
 **Dev-mode only.** Synchronously fire a scheduled task and advance its `lastExecutionAt` timestamp, bypassing the normal schedule. Used by integration tests that need a deterministic way to drive scheduled-task assertions — replaces the warn-then-pass demotion described in `aether/docs/internal/audits/integration-test-audit-2026-05-21.md` §2.2 (RC1-blocker #16).
 
-Gated by the `AETHER_INSECURE_DEV_MODE=true` environment variable on the node. When the gate is closed the endpoint returns a failure response and the task is not invoked.
+Gated by the `AETHER_INSECURE_DEV_MODE=true` environment variable on the node. When the gate is closed the endpoint returns a failure response and the task is not invoked. Precondition: a node with operator-provided TLS certificates refuses to start in dev-mode, so this route is never reachable on a node configured with real TLS.
 
 **RBAC:** OPERATOR · **Routing:** LOCAL (operates on the node receiving the request)
 

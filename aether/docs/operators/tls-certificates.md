@@ -94,6 +94,11 @@ Requirements for manual certificates:
 - Node certificates should include the node's hostname or IP as a Subject Alternative Name (SAN)
 - Certificates must be valid PEM format
 
+> **Dev-mode is incompatible with real TLS.** A node configured with `auto_generate = false` and
+> operator-provided `cert_path`/`key_path` **refuses to start** when `AETHER_INSECURE_DEV_MODE=true`
+> is also set. Insecure dev-mode and real operator certificates are mutually exclusive — unset
+> `AETHER_INSECURE_DEV_MODE` for any node that carries provided certificates.
+
 ## Certificate Rotation Lifecycle
 
 The `CertificateRenewalScheduler` handles automatic renewal for auto-generated certificates.
