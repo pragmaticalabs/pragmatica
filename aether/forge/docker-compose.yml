@@ -23,7 +23,14 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
-    restart: unless-stopped
+    # Aether uses a TERMINAL-REMOVAL membership model: a dead NodeId NEVER returns
+    # under the same id — recovery is always a brand-new node with a new ULID NodeId,
+    # minted by the cluster's auto-heal. Auto-restarting a crashed node under the SAME
+    # identity resurrects a NodeId the cluster has already terminally removed and
+    # corrupts membership. Keep `restart: "no"` for any Aether node runtime.
+    # (Forge runs all nodes in one JVM, so a restart here would re-mint the whole
+    # cluster under stale identities — the same hazard at cluster scope.)
+    restart: "no"
 
 # Alternative: Multi-container setup for realistic cloud simulation
 # Uncomment below for distributed mode

@@ -57,9 +57,18 @@ A chaos test that kills a process to verify recovery cannot run when the orchest
 
 ### 2.2 The architectural intent
 
-Aether is designed around a specific failure model:
+Aether is designed around a specific failure model — **terminal removal**:
 
-> **Each VM (or pod, or systemd-managed host) hosts exactly one aether-node. If that node dies, the host is dead from the cluster's perspective. CTM provisions a replacement on a fresh host.**
+> **A dead NodeId NEVER returns under the same identity.** When a node leaves the
+> presence-derived membership view, the cluster terminally removes that NodeId and never
+> re-admits it. Recovery is *always* a brand-new node with a new ULID NodeId, minted by
+> CTM auto-heal on a fresh host. Each VM (or pod, or systemd-managed host) hosts exactly
+> one aether-node; if that node dies, the host is dead from the cluster's perspective.
+
+This is why container/process auto-restart must be **disabled**: a runtime that auto-restarts
+a crashed node container under the SAME identity resurrects a NodeId the cluster has already
+terminally removed — corrupting membership, because the model assumes a crashed node is gone
+for good and that a fresh-ULID replacement has been (or will be) minted in its place.
 
 This is not the same as "make the process highly available with automatic restart." Restart-on-failure is the right pattern for stateless services where any pod can serve any request. Aether nodes carry distributed state — slice ownership, partition assignments, consensus state, peer connections. Restarting a process and rejoining is meaningfully different from reprovisioning a node:
 
@@ -169,7 +178,8 @@ A first-class Aether-on-k8s operator (a Kubernetes Operator / CRD that wraps CTM
 - `aether/docs/internal/audits/membership-state-tracker-audit-2026-05-07.md` — single-source-of-truth design that requires the recovery layer to be Aether, not the orchestrator
 - `ClusterTopologyManagerRecord` — CTM implementation, including the circuit breaker that prevents runaway provisioning
 - `BootstrapPhaseDeploy.buildRestartCommand` — the cloud-init / SSH command that uses `--restart no`
-- `UserDataTemplate.appendContainerRun` — the cloud-init template for container mode
+- `UserDataTemplate.appendContainerRun` — the cloud-init template for container mode (emits `--restart no`)
+- `SystemdUnitTemplate.generate` — the systemd unit template for JVM-on-host mode (emits `Restart=no`)
 
 ---
 

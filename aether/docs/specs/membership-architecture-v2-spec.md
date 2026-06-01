@@ -350,6 +350,20 @@ When the partition heals and minority containers restart (per their restart poli
 No special "partition heal" code path; it composes from §12.7 + §7.2's overprovision drain.
 
 ### 12.7 Container restart with same NodeId
+
+> **Invariant update — terminal removal (supersedes this subsection's "same NodeId returning"
+> framing).** The terminal-removal rework that this spec's successor
+> (`membership-placement-split-spec.md`) builds on establishes that **a dead NodeId NEVER
+> returns under the same identity**: once a node leaves the presence-derived view it is
+> terminally removed, and recovery is *always* a brand-new node with a new ULID NodeId minted by
+> auto-heal (KSUID replacement naming below is likewise superseded by ULID). Consequently
+> **runtime auto-restart of aether-node must be disabled** (`--restart no` / `restart: "no"` /
+> systemd `Restart=no`); a runtime that revives a crashed container under the same NodeId
+> resurrects a terminally-removed identity and corrupts membership. The "same NodeId restart is
+> mildly convenient / operator chooses restart policy" analysis below describes the pre-rework
+> transitional behavior and is retained for migration context only. See
+> [`../operator/deployment-recovery.md`](../operator/deployment-recovery.md) for the operator-facing rule.
+
 A node's container restarts (any cause — crash, kill, operator restart, `halt(2)` followed by Docker auto-restart):
 
 - **Within NTT window:** QUIC reconnect cancels the timer (I7). No replacement provisioned. The restart is invisible to membership beyond the brief QUIC disconnect/reconnect.

@@ -30,6 +30,14 @@ The script upgrades one node at a time through the Management API:
 
 If any node fails its canary check, the upgrade halts. The cluster remains in a valid mixed-version state (envelope versioning handles version compatibility).
 
+> **Note — restart here means operator-orchestrated, not runtime auto-restart.** The "Restart"
+> step above is a deliberate, drain-gated action you perform with the new binary. It is NOT the
+> same as a container/process runtime auto-restarting a *crashed* node. Aether uses a
+> terminal-removal membership model (a dead NodeId never returns under the same identity;
+> crash recovery is a new-ULID replacement minted by auto-heal), so runtime auto-restart
+> (`restart: unless-stopped`/`always`, systemd `Restart=on-failure`/`always`) **must stay
+> disabled** on aether-node. See [`../operator/deployment-recovery.md`](../operator/deployment-recovery.md).
+
 ## Options
 
 | Option | Description | Default |

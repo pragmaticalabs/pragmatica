@@ -32,7 +32,14 @@ x-node-common: &node-common
     timeout: 5s
     retries: 6
     start_period: 30s
-  restart: unless-stopped
+  # Aether uses a TERMINAL-REMOVAL membership model: a dead NodeId NEVER returns under
+  # the same id — recovery is always a brand-new node with a new ULID NodeId minted by
+  # CTM auto-heal. Container auto-restart (`unless-stopped`/`always`) would revive a
+  # crashed node under the SAME identity, resurrecting a NodeId the cluster has already
+  # terminally removed and corrupting membership. `restart: "no"` keeps `docker kill`
+  # authoritative and lets auto-heal own recovery. (postgres below is infra, not an
+  # Aether node, so it legitimately restarts.)
+  restart: "no"
 
 services:
   # --- PostgreSQL (for database/schema tests and @PgSql persistence) ---

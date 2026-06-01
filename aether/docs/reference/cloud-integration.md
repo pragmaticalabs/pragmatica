@@ -470,6 +470,14 @@ poll_interval_ms = "15000"
 
 The CDM (ClusterDeploymentManager) monitors cluster size and automatically provisions replacement nodes when a deficit is detected. The `ComputeProvider` facet handles instance creation with proper tagging, network configuration, and user data injection. The `NodeLifecycleManager` uses tag-based server lookup for instance termination.
 
+> **Terminal-removal invariant — disable runtime auto-restart.** A failed node's NodeId is
+> terminally removed and never re-admitted; auto-heal mints a brand-new replacement with a new
+> ULID NodeId on a fresh instance. Provider user-data/cloud-init therefore launches the node
+> with auto-restart **disabled** (`docker run --restart no`, systemd `Restart=no`). Do not
+> configure instance- or container-level auto-restart for aether-node — reviving a crashed node
+> under the same identity resurrects a terminally-removed NodeId and corrupts membership. See
+> [`../operator/deployment-recovery.md`](../operator/deployment-recovery.md).
+
 ### Peer Discovery
 
 Tag/label-based discovery replaces static peer lists in cloud deployments. Each provider queries its respective API (Hetzner labels, AWS EC2 tags, GCP instance labels, Azure Resource Graph tags) to find instances tagged with the configured `cluster_name`. The discovery provider polls at the configured interval and automatically registers/deregisters peers.
