@@ -287,93 +287,99 @@ pick_non_leader() {
         return 1
     fi
 
-    # Re-derive leader from /api/nodes/status to close the MGMT_ENTRY_POINT
-    # round-robin race: the caller's `cluster_leader` call could have hit a
-    # different backend than the one we're about to query, and a fast
-    # re-election between the two reads would let us hand back the new leader
-    # as a "non-leader" victim. We tolerate `"leaderId":null` (empty string
-    # parse) — that just means we fall back to the caller-supplied leader.
-    local status_payload
-    status_payload=$(api_get "/api/nodes/status" 2>/dev/null || true)
-    if [ -z "$status_payload" ]; then
-        log_fail "pick_non_leader: /api/nodes/status returned empty body — cannot select victim" >&2
-        return 1
-    fi
-    local derived_leader
-    derived_leader=$(printf '%s' "$status_payload" \
-        | grep -o '"leaderId"[[:space:]]*:[[:space:]]*"[^"]*"' \
-        | head -1 \
-        | sed 's/.*"leaderId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' || true)
-    if [ -n "$derived_leader" ] && [ "$derived_leader" != "none" ]; then
-        leader="$derived_leader"
-    fi
+    # Convergence-retry loop. A kill/heal in a PRIOR block can leave the cluster
+    # mid-converge at the moment we're asked to pick: a just-killed node may still
+    # report READY (not yet evicted from the SWIM-fed membership), and its ULID
+    # replacement may not have joined yet. Rather than assert on that momentary
+    # undercount, poll until `count` LIVE non-leader candidates exist (dead-but-READY
+    # excluded by the docker-ps liveness guard) or a deadline passes. This makes
+    # pick_non_leader WAIT for membership to converge; it only ever waits longer than
+    # the old single-pass — never picks fewer, and never streams partial output on
+    # failure (candidates are buffered and emitted only on full success).
+    #
+    # stderr/stdout contract: pick_non_leader is consumed via `$(...)`, so candidate
+    # ids go to stdout ONLY on success (exactly `count` lines); all diagnostics go to
+    # stderr. Override the wait with PICK_NON_LEADER_TIMEOUT (default 60s).
+    local deadline=$(( $(date +%s) + ${PICK_NON_LEADER_TIMEOUT:-60} ))
+    local attempt_found=0
+    local attempt_list=""
+    local last_reason="no candidates yet"
+    while :; do
+        attempt_found=0
+        attempt_list=""
 
-    # Candidate enumeration: server-side state filter via the aether CLI. The
-    # response is a JSON array of `{nodeId, state, updatedAt}` triplets, all
-    # already ON_DUTY post-filter — we just extract the `nodeId` field with
-    # grep+sed (BSD-awk-compatible, no jq dependency).
-    # NOTE: `aether_json` only accepts single-word subcommands ($1 is the command);
-    # `nodes lifecycle` is a parent+sub pair that picocli won't auto-split if quoted as one arg.
-    # Call `aether_failover` directly here so the subcommand is passed as two distinct args.
-    local lifecycle_payload
-    lifecycle_payload=$(aether_failover nodes lifecycle --state READY --format json 2>/dev/null || true)
-    if [ -z "$lifecycle_payload" ]; then
-        log_fail "pick_non_leader: 'aether nodes lifecycle --state READY' returned empty body — cannot select victim" >&2
-        return 1
-    fi
-    local current_members
-    current_members=$(printf '%s' "$lifecycle_payload" \
-        | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
-        | sed 's/"nodeId"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' || true)
-    if [ -z "$current_members" ]; then
-        # Fail-closed: if lifecycle has no READY members, the test premise
-        # (a healthy cluster from which we can pick a non-leader) is broken.
-        #
-        # log_fail goes to stderr — pick_non_leader is consumed via `$(...)`, so any
-        # stdout output is interpreted by the caller as a node-id. Sending the error
-        # to stderr lets callers see the FAIL banner while `$(...)` captures the empty
-        # string and the caller's `if [ -z ... ]` check fires correctly.
-        log_fail "pick_non_leader: 'aether nodes lifecycle --state READY' returned no entries — cannot select victim" >&2
-        return 1
-    fi
+        # Re-derive leader from /api/nodes/status each pass to close the
+        # MGMT_ENTRY_POINT round-robin race: a fast re-election between the
+        # caller's read and ours must not let us hand back the new leader as a
+        # "non-leader" victim. `"leaderId":null` (empty parse) falls back to the
+        # caller-supplied leader.
+        local status_payload
+        status_payload=$(api_get "/api/nodes/status" 2>/dev/null || true)
+        if [ -z "$status_payload" ]; then
+            last_reason="/api/nodes/status returned empty body"
+        else
+            local derived_leader
+            derived_leader=$(printf '%s' "$status_payload" \
+                | grep -o '"leaderId"[[:space:]]*:[[:space:]]*"[^"]*"' \
+                | head -1 \
+                | sed 's/.*"leaderId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' || true)
+            if [ -n "$derived_leader" ] && [ "$derived_leader" != "none" ]; then
+                leader="$derived_leader"
+            fi
 
-    local found=0
-    local candidate
-    while IFS= read -r candidate; do
-        [ -z "$candidate" ] && continue
-        if [ "$candidate" = "$leader" ]; then continue; fi
-        if [ -n "$pinned" ] && [ "$candidate" = "$pinned" ]; then continue; fi
-        # Docker-mode liveness guard.
-        # Lifecycle reports `state=READY` from the node's own NodeReportedState.
-        # A node killed in a previous test file may still appear READY across the
-        # boundary into the next file if (a) CTM has not tombstoned its slot yet,
-        # or (b) the SWIM-fed membership has not yet propagated the node's
-        # absence. The cluster-side fix lives upstream; in the meantime we skip
-        # dead candidates so the test can pick a live one — and log the skip so
-        # the underlying staleness stays visible instead of being silently papered over.
-        #
-        # NodeId == container_name (post-migration): probe directly by name via
-        # `docker ps` rather than the legacy label lookup. A label lookup would
-        # still match a stopped container; `docker ps` (no -a) returns running
-        # only, which is what we want for the "live candidate" assertion.
-        if [ "${CLOUD_MODE:-false}" != "true" ]; then
-            local _alive_name
-            _alive_name=$(remote_exec "docker ps --filter 'name=^${candidate}\$' --format '{{.Names}}' | head -1" 2>/dev/null || true)
-            if [ -z "$_alive_name" ]; then
-                log_warn "pick_non_leader: lifecycle reports '${candidate}' as READY but no live container named '${candidate}' on ${TARGET_HOST:-<host>} — skipping stale candidate (upstream: membership/CTM tombstone propagation)" >&2
-                continue
+            # Candidate enumeration: server-side READY filter via the aether CLI.
+            # The response is a JSON array of `{nodeId, state, updatedAt}` triplets,
+            # all already READY post-filter — extract `nodeId` with grep+sed (no jq).
+            # `aether_failover` is called directly (not `aether_json`) so the
+            # `nodes lifecycle` parent+sub pair is passed as two distinct args.
+            local lifecycle_payload
+            lifecycle_payload=$(aether_failover nodes lifecycle --state READY --format json 2>/dev/null || true)
+            if [ -z "$lifecycle_payload" ]; then
+                last_reason="'nodes lifecycle --state READY' returned empty body"
+            else
+                local current_members
+                current_members=$(printf '%s' "$lifecycle_payload" \
+                    | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
+                    | sed 's/"nodeId"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' || true)
+
+                local candidate
+                while IFS= read -r candidate; do
+                    [ -z "$candidate" ] && continue
+                    if [ "$candidate" = "$leader" ]; then continue; fi
+                    if [ -n "$pinned" ] && [ "$candidate" = "$pinned" ]; then continue; fi
+                    # Docker-mode liveness guard: lifecycle may still report a
+                    # just-killed node as READY before membership evicts it.
+                    # NodeId == container_name (post-migration); `docker ps` (no -a)
+                    # returns running only — the "live candidate" assertion.
+                    if [ "${CLOUD_MODE:-false}" != "true" ]; then
+                        local _alive_name
+                        _alive_name=$(remote_exec "docker ps --filter 'name=^${candidate}\$' --format '{{.Names}}' | head -1" 2>/dev/null || true)
+                        if [ -z "$_alive_name" ]; then
+                            continue
+                        fi
+                    fi
+                    attempt_list="${attempt_list}${candidate}"$'\n'
+                    attempt_found=$((attempt_found + 1))
+                    if [ "$attempt_found" -ge "$count" ]; then break; fi
+                done <<< "$current_members"
+
+                if [ "$attempt_found" -ge "$count" ]; then
+                    printf '%s' "$attempt_list" | grep -v '^$' | head -n "$count"
+                    return 0
+                fi
+                last_reason="only ${attempt_found}/${count} live non-leader candidates (leader=${leader})"
             fi
         fi
-        echo "$candidate"
-        found=$((found + 1))
-        if [ "$found" -ge "$count" ]; then return 0; fi
-    done <<< "$current_members"
 
-    if [ "$found" -lt "$count" ]; then
-        # See note above on stderr redirection — caller consumes stdout.
-        log_fail "pick_non_leader: only ${found}/${count} candidates available (leader=${leader}, pinned=${pinned:-<none>}, cluster=${CLUSTER_ID:-<none>})" >&2
-        return 1
-    fi
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            break
+        fi
+        sleep 2
+    done
+
+    # Deadline passed: a genuine non-convergence (not a transient), surfaced loudly.
+    log_fail "pick_non_leader: ${last_reason} after ${PICK_NON_LEADER_TIMEOUT:-60}s waiting for convergence (pinned=${pinned:-<none>}, cluster=${CLUSTER_ID:-<none>})" >&2
+    return 1
 }
 
 # Wait for every node (ports MGMT_PORT..MGMT_PORT+NODE_COUNT-1) to report
