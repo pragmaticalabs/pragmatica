@@ -8,7 +8,7 @@ Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 **Status:** Living research doc (open). Started 2026-05-24.
 **Branch target:** `release-1.0.0-rc1` and beyond.
 **Owners:** (membership/consensus)
-**Related specs:** [`membership-architecture-spec.md`](../specs/membership-architecture-spec.md) (§16 scenario oracle), [`swim-driven-topology-spec.md`](../specs/swim-driven-topology-spec.md), [`reachability-aggregator-spec.md`](../specs/reachability-aggregator-spec.md), [`quic-transport-spec.md`](../specs/quic-transport-spec.md), [`cluster-convergence-reconciler-spec.md`](../specs/cluster-convergence-reconciler-spec.md).
+**Related specs:** the v1 membership-architecture spec (§16 scenario oracle) and the cluster-convergence-reconciler spec — both removed; see git history — plus [`swim-driven-topology-spec.md`](../specs/swim-driven-topology-spec.md), [`quic-transport-spec.md`](../specs/quic-transport-spec.md). **Note:** this analysis predates membership-v2 (derive-from-reality); see [`../specs/membership-architecture-v2-spec.md`](../specs/membership-architecture-v2-spec.md) for the current model.
 
 > Purpose: track *all* considerations, options, constraints, and decisions for the membership / failure-detection redesign in one place, so we stop rediscovering the same tradeoffs. This is a decision log, not a spec — when a decision lands and stabilizes, fold it into the relevant spec and link back here.
 
@@ -53,7 +53,7 @@ And **four reason vocabularies** for the same terminal transition: `transport-fa
 
 ## 2. The scenario oracle (acceptance criteria)
 
-Any structural change must satisfy **all 20 scenarios** in [`membership-architecture-spec.md` §16](../specs/membership-architecture-spec.md) (S01–S20). This is the test oracle — a redesign is only "done" when it covers these, and they are exactly what cluster-B integration exercises.
+Any structural change must satisfy **all 20 scenarios** in the v1 membership-architecture spec §16 (S01–S20; spec removed, see git history). This is the test oracle — a redesign is only "done" when it covers these, and they are exactly what cluster-B integration exercises.
 
 | ID | Scenario | Stresses |
 |---|---|---|
@@ -255,7 +255,7 @@ Goal: decide option-2e vs status quo **with data**, via a detector that ships sh
 ---
 
 ## 10. References
-- Specs: membership-architecture-spec.md (§16 S01–S20), swim-driven-topology-spec.md (§5.2 ANNOUNCE, §6 SWIM→QUIC), reachability-aggregator-spec.md, quic-transport-spec.md (§3.3), cluster-convergence-reconciler-spec.md.
+- Specs: v1 membership-architecture (§16 S01–S20) and cluster-convergence-reconciler — both removed, see git history; swim-driven-topology-spec.md (§5.2 ANNOUNCE, §6 SWIM→QUIC), quic-transport-spec.md (§3.3).
 - Session handover: `progress/session-handover-2026-05-24.md` (codec/DHT/backpressure/self-drain chain).
 - Commits: `a2dfeb0f7` (codec revival), `247a55fa4` (FSM-routed reason + reclaim budget), `6ae906fe8` (SlotClaimed-nop), `f1a451958`/`b0d3bfa1d` (Spike-2 harness).
 - Tracking issues: **#230** (Pillar-1 FSM sovereignty, `rc1`), **#231** (Spike-1 φ-accrual shadow eval), **#232** (revive in-process Ember chaos substrate).

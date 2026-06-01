@@ -26,9 +26,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// `OrphanSelfDrainChecker` triad — all of which braided trigger detection (φ-accrual,
 /// 1Hz visibility tick, orphan slot-binding check, Rabia-paused) with the actual drain
 /// execution. Phase 2b extracts execution only: triggers are owned upstream
-/// (`LocalQuorumWatcher` at present; `DrainRequestKey` KV-subscribe and the §8.1
-/// operator path land in Phase 6). This class observes nothing — it just runs the
-/// procedure when called.
+/// (`LocalQuorumWatcher` for quorum-loss; the operator/CTM path delivers a `DRAIN`
+/// command on the leader↔node heartbeat per spec §7.5.4 — there is no KV drain record).
+/// This class observes nothing — it just runs the procedure when called.
 ///
 /// **State machine (single CAS guard).**
 /// ```text

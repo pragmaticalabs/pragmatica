@@ -20,7 +20,7 @@
 
 ## 3. Principle
 
-The cluster's authoritative state is expressed as a set of **atoms** committed via Rabia into KV-Store. Each atom is an independent, versioned fact about one slice of reality (one node's lifecycle, one community's governor, one partition's owner).
+The cluster's authoritative state is expressed as a set of **atoms** committed via Rabia into KV-Store. Each atom is an independent, versioned fact about one slice of reality (one community's governor, one partition's owner, the desired core size). Node membership is **not** an atom: it is presence-derived (SWIM/QUIC via NTT), and node readiness/drain is heartbeat-reported and leader-cached — never stored in or committed to the KV-Store (see `aether/docs/specs/membership-architecture-v2-spec.md`).
 
 The **generation snapshot** (`ClusterGenerationSnapshot`) is a **projection** of those atoms, held in the elected leader's memory, distributed via periodic ping, and consumed by all nodes as a single coherent view. The snapshot itself is **ephemeral** — never committed to KV-Store. Its epoch is derived from `(rabiaTerm, localMutationCounter)`, which is globally monotonic.
 
@@ -41,7 +41,7 @@ Ordering: `(t₁,c₁) < (t₂,c₂)` iff `t₁<t₂ || (t₁==t₂ && c₁<c₂
 
 Leader behavior:
 - On election, leader reads its Rabia term `T`. Local counter resets to 0. First emitted epoch is `(T, 0)`.
-- On each atom-mutating action the leader takes, local counter increments. Example: applying `NodeLifecycleKey(n) = LEFT` increments the counter; snapshot is reprojected; next ping carries `(T, counter+1)`.
+- On each atom-mutating action the leader takes, local counter increments. Example: applying a `DhtPartitionOwnershipKey` transfer increments the counter; snapshot is reprojected; next ping carries `(T, counter+1)`.
 - Epoch is **strictly monotonic across all leader terms** because Rabia guarantees `T` is monotonic.
 
 Node behavior:
@@ -59,17 +59,12 @@ Consumer fencing:
 
 | Key | Value | Written by | Role |
 |---|---|---|---|
-| `NodeLifecycleKey(nodeId)` | `NodeLifecycleValue { role, state, host, port, ... }` | Node on startup; leader on health decisions | Per-node lifecycle (JOINING/ON_DUTY/DRAINING/LEFT) |
 | `SliceTargetKey(sliceId)` | `SliceTargetValue { version, instanceCount, ... }` | ControlLoop / operator | Desired slice state |
 | `NodeArtifactKey(nodeId, artifact)` | `NodeArtifactValue { state, ... }` | CDM (command state) | Per-node per-slice command |
 | `SliceNodeKey(sliceId, nodeId)` | `SliceNodeValue { state, ... }` | NDM (state transitions) | Per-node per-slice observed state |
 | `NodeRoutesKey(nodeId, artifact)` | `NodeRoutesValue { routes[] }` | NDM on activation | Per-node published routes |
 
 ### 5.2 Extensions to existing atoms
-
-**`NodeLifecycleValue` gains:**
-- `observedCoreEpoch: Epoch` — the core generation epoch observed when this value was last written. Used for cross-layer coherence (workers stamped against core epoch).
-- `transitionedAt: HlcTimestamp` — when this state was first entered. Updated only when `state` field changes; preserved on metadata-only rewrites. Enables time-in-state metrics, transition-latency analysis, operator UX ("joined 5 min ago").
 
 **`GovernorAnnouncementValue` gains:**
 - `communityTerm: long` — bumps on each governor change within a community. Community-level equivalent of Rabia term.
@@ -139,7 +134,7 @@ ClusterGenerationSnapshot {
 
 CoreMember {
   nodeId, host, port,
-  lifecycle:     JOINING | ON_DUTY | DRAINING | LEFT,
+  readiness:     SYNCING | READY | DRAINING,   // heartbeat-reported, leader-cached — never KV
   healthHint:    HEALTHY | SUSPECTED | FAULTY,
   joinedEpoch:   Epoch,
   lastSeenEpoch: Epoch          // last epoch at which leader received a pong
@@ -204,7 +199,7 @@ MetricsPong {
   sender:                NodeId,
   observedRabiaTerm:     long,
   observedEpoch:         Epoch,
-  lifecycleState:        NodeLifecycleState,
+  readiness:             NodeReadiness,                  // node-authoritative (SYNCING/READY/DRAINING), heartbeat-reported — never KV
   metrics:               Map<String, Double>             // existing
 }
 ```
@@ -256,7 +251,7 @@ MetricsPong (core node → leader) additionally carries:
 
 **Orphan window:** Between a community forming (governor writes `GovernorAnnouncementKey`) and its Spokesman assignment committing, the community has no assigned core node. Duration: ≤1 rebalance cycle (≤ ping interval). Workers keep Tier 3 running; core simply lacks observation for that interval. Acceptable.
 
-**Failover:** If core node C is marked FAULTY (§8), HealthReconciler rebalances C's communities across survivors in the same Rabia batch that writes `NodeLifecycleKey(C) = LEFT`. No observation gap for survivors; brief gap for C's former assignees until the rebalanced core node's first Tier 2 ping.
+**Failover:** When core node C departs (presence loss observed via SWIM/QUIC, §8), the leader rebalances C's communities across survivors. No observation gap for survivors; brief gap for C's former assignees until the rebalanced core node's first Tier 2 ping. C's departure is presence-derived — there is no node-state KV write.
 
 ### 7.4 Tier 3 — Governor ↔ community workers (extend `WorkerMetricsPing/Pong`)
 
@@ -301,7 +296,7 @@ Gap: Rabia election (~1–2s) + projection (<100ms) + ≤1 ping interval (500ms)
 
 ## 8. HealthReconciler (leader-only, single-writer)
 
-The `HealthReconciler` is the leader-resident component that consumes health signals and decides which atoms to mutate. It is the **only path** that writes `NodeLifecycleKey(n) = LEFT`, issues `DhtPartitionOwnershipKey` transfers, and drives the ephemeral epoch counter.
+The `HealthReconciler` is the leader-resident component that consumes health signals and decides which atoms to mutate. It issues `DhtPartitionOwnershipKey` transfers and `SpokesmanKey` updates in response to node presence changes, and drives the ephemeral epoch counter. Node membership itself is presence-derived (SWIM/QUIC via NTT) and is **not** an atom it writes — there is no node-state KV record (see `aether/docs/specs/membership-architecture-v2-spec.md`).
 
 ### 8.1 Input signals
 
@@ -319,15 +314,15 @@ The `HealthReconciler` is the leader-resident component that consumes health sig
 
 | Event | Gate | Action (atom writes, in Rabia batch) | Epoch effect |
 |---|---|---|---|
-| `PingTimeout(n)` for 3 × interval AND `n.lifecycle == ON_DUTY` | Not in `pendingRems` | → mark `healthHint=SUSPECTED`; no atom write yet | counter++ |
-| `PingTimeout(n)` for 10 × interval AND `SwimHint(n, FAULTY)` | Not in `pendingRems` | `NodeLifecycleKey(n) = LEFT`; if `n` owned partitions → schedule transfer | counter++ |
+| `PingTimeout(n)` for 3 × interval AND `n` is a present member | Not in `pendingRems` | → mark `healthHint=SUSPECTED`; no membership change yet | counter++ |
+| `PingTimeout(n)` for 10 × interval AND `SwimHint(n, FAULTY)` | Not in `pendingRems` | presence loss confirmed → if `n` owned partitions, schedule transfer (membership update is presence-derived, no KV node-state write) | counter++ |
 | `SwimHint(n, FAULTY)` alone (no ping timeout) | — | `healthHint=SUSPECTED` only (don't remove on SWIM alone) | counter++ |
-| `OperatorAction(remove(n))` | Budget check | `NodeLifecycleKey(n) = DRAINING` → await drain → `= LEFT` | counter++ (twice) |
+| `OperatorAction(remove(n))` | Budget check | send `DRAIN` command to `n` on the heartbeat → await node's `DRAINING`/departure self-report (no KV node-state write) | counter++ |
 | `GovernorAnnouncement(c, g_new)` | `communityTerm` > current | Update projection only (atom is already committed) | counter++ |
 | `CommunityDissolved(c)` | `GovernorAnnouncementKey(c)` has `dissolved=true` | Select core node `n`; `DhtPartitionOwnershipKey(p) = (n, "core", newEpoch, termᐩᐩ)` for each `p` held by `c`; remove `c` from all `SpokesmanKey(*)` lists | counter++ per partition |
 | `CommunityFormed(c)` (new announcement for new `c`) | — | Append `c` to least-loaded core node's `SpokesmanKey`; optionally transfer partition ownership from "core" to governor | counter++ |
-| `NodeLifecycleKey(C) = LEFT` where C is core | — | Remove C's `SpokesmanKey`; redistribute C's communities across remaining core nodes (single Rabia batch) | counter++ |
-| `NodeLifecycleKey(C) = ON_DUTY` where C is new core | — | Create `SpokesmanKey(C)` with initial share rebalanced from overloaded peers | counter++ |
+| core node C departs (presence loss) | — | Remove C's `SpokesmanKey`; redistribute C's communities across remaining core nodes (single Rabia batch) | counter++ |
+| core node C becomes present and `READY` (heartbeat) | — | Create `SpokesmanKey(C)` with initial share rebalanced from overloaded peers | counter++ |
 | `SpokesmanAssignmentFailed(C, communities)` | — | Reassign `communities` to other core nodes; clear FAILED state | counter++ |
 
 ### 8.3 Atomicity
@@ -418,8 +413,8 @@ sequenceDiagram
     participant KV as Rabia KV
 
     Op->>W: provision workers
-    W->>KV: NodeLifecycleKey(w_i) = ON_DUTY
-    W->>SWIM: join SWIM community
+    W->>SWIM: join SWIM community (presence-derived membership)
+    W->>L: heartbeat reports READY
     SWIM->>G: elect lowest NodeId as governor
     G->>KV: GovernorAnnouncementKey(c) = {governorId=G, communityTerm=1, communityEpoch=(1,0), ...}
     KV-->>L: watch fires
@@ -440,7 +435,7 @@ sequenceDiagram
     participant C as Selected core node
     participant KV as Rabia KV
 
-    W->>KV: NodeLifecycleKey(w) = LEFT (or drain-then-leave)
+    W->>SWIM: leave (drain-then-depart) — presence loss observed
     G->>G: community member count → 0
     G->>KV: GovernorAnnouncementKey(c) = {dissolved=true}
     KV-->>L: watch fires
@@ -479,7 +474,7 @@ Every node receives snapshots via ping and updates projections:
 | `ClusterDeploymentManager` | `coreMembers`, `communities` for scheduling | Stale-cleanup timer → now snapshot-delta-driven (nodes that disappear → cleanup their artifacts in next reconcile triggered by snapshot change) |
 | `HttpRouteRegistry` | `coreMembers` + `communities` for route presence | `NodeRoutesKey` watch stays, but ACTIVE transition is epoch-fenced |
 | `NodeDeploymentManager` | current `epoch` for ROUTING → ACTIVE gate | Timer-based ROUTING wait → epoch-fenced |
-| `QuicClusterNetwork` | informational only | No longer authoritative writer — emits only `TransportObservation` (local OBSERVATION stream); the cluster-canonical `MembershipDecision.NodeRemoved` comes exclusively from `TopologyObserver.publishMembershipDeltas`. See membership-architecture-spec §3.1 (typed-stream split). |
+| `QuicClusterNetwork` | informational only | No longer authoritative writer — emits only `TransportObservation` (local OBSERVATION stream); the cluster-canonical `MembershipDecision.NodeRemoved` comes exclusively from `TopologyObserver.publishMembershipDeltas`. See `membership-architecture-v2-spec.md` (typed-stream split). |
 | Dashboard / `/api/cluster/topology` | core+communities+partitions | Single source |
 
 ## 13. What gets deleted
@@ -572,7 +567,7 @@ Kept:
 ### 14.2 Quiesced = what exactly?
 
 A snapshot at epoch `E` is **quiesced** iff, on the leader:
-- Every core member with `lifecycle == ON_DUTY` has `lastSeenEpoch ≥ E`.
+- Every present core member that reports `READY` (heartbeat) has `lastSeenEpoch ≥ E`.
 - No `pendingAdds` / `pendingRems` (structural fields inside the snapshot's mutation queue — held on leader only).
 - Every community governor has `lastAckAtCore ≥ E` AND reports its own community quiesced (`communityEpoch` stable for ≥ 1 cycle with all members acking).
 - Every partition has `ownerEpoch ≤ E` and owner confirms ownership in its pong.
@@ -623,7 +618,7 @@ aether cluster await-quiesced --epoch=7:142 [--timeout=30s]
 
 ### 15.6 Bootstrap
 
-- First-ever boot: no committed atoms. Leader elected (Rabia). `HealthReconciler` sees empty atom set → builds initial snapshot from `ClusterFormationConfig` (existing). Writes initial `NodeLifecycleKey` for each formation peer. Emits `(rabiaTerm, 0)`.
+- First-ever boot: no committed atoms. Leader elected (Rabia). `HealthReconciler` sees empty atom set → builds initial snapshot from `ClusterFormationConfig` (existing). Formation peers appear via presence (SWIM/QUIC) and report `READY` on the heartbeat — there is no node-state KV write. Emits `(rabiaTerm, 0)`.
 - First ping distributes initial snapshot. All core members accept.
 
 ### 15.7 Operator wipes KV-Store and restarts
@@ -634,7 +629,7 @@ aether cluster await-quiesced --epoch=7:142 [--timeout=30s]
 
 ### Commit 1 — Atoms + extensions
 - New: `DhtPartitionOwnershipKey`, `DhtPartitionOwnershipValue`.
-- Extend: `NodeLifecycleValue` with `observedCoreEpoch`, `GovernorAnnouncementValue` with `communityTerm`, `communityEpoch`, `observedCoreEpoch`, `dissolved`.
+- Extend: `GovernorAnnouncementValue` with `communityTerm`, `communityEpoch`, `observedCoreEpoch`, `dissolved`.
 - No behavior change yet; just data model + codec generation.
 - Tests: serialization round-trips.
 

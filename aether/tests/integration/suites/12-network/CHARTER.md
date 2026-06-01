@@ -10,16 +10,16 @@
 
 | ID | Contract | Spec citation |
 |---|---|---|
-| C1 | Cluster reaches canonical "ready" state with N=5 ON_DUTY healthy cores and an elected leader before any network probe runs | `aether/docs/specs/test-readiness-contract.md §1.1`; `cluster-membership-fsm-spec.md §§3-5` |
+| C1 | Cluster reaches canonical "ready" state with N=5 ON_DUTY healthy cores and an elected leader before any network probe runs | `aether/docs/specs/test-readiness-contract.md §1.1`; `membership-architecture-v2-spec.md §§3-5` |
 | C2 | Gossip transport is TLS — every cluster peer-to-peer connection is initiated through `QuicSslContext` and reports a non-zero handshake counter | `aether/docs/specs/quic-transport-spec.md §3.6` (TLS Always On); `aether/docs/specs/swim-driven-topology-spec.md §6` (SWIM → QUIC lifecycle) |
 | C3 | TLS handshake success ratio is high — `quic_handshake_failures_total / quic_handshake_total ≤ 0.5` (current threshold; audit §1.14 marks 50% lax — should tighten to ≤ 0.05 post-RC1) | `aether/docs/specs/quic-transport-spec.md §3.6, §3.8` |
 | C4 | Health/liveness endpoints serve 200 over the encrypted management path while gossip is encrypted | `aether/docs/specs/quic-transport-spec.md §3.6`; `test-readiness-contract.md §3` |
 | C5 | Every cluster peer is QUIC-connected to ≥ N-1 others — partial-connectivity (one-sided peering) is a violation | `aether/docs/specs/quic-transport-spec.md §3.1, §3.7` (one connection per peer pair, NodeId-ordered) |
-| C6 | A killed cluster member produces `NODE_FAILED` in the event log AND a CTM-driven replacement NODE_JOINED, without breaking quorum during the transition | `aether/docs/specs/swim-driven-topology-spec.md §6`; `cluster-membership-fsm-spec.md §5.1` (ON_DUTY+SwimFaulty→DECOMMISSIONED) |
-| C7 | Post-kill convergence: cluster returns to 5 ON_DUTY healthy cores within the convergence budget (180s test window; backed by elastic-cluster model — killed NodeId does NOT revive) | `cluster-membership-fsm-spec.md §5.1 note 5` (DECOMMISSIONED revival TTL); `cluster-membership-fsm-spec.md §3.3` (CTM replacement) |
+| C6 | A killed cluster member produces `NODE_FAILED` in the event log AND a CTM-driven replacement NODE_JOINED, without breaking quorum during the transition | `aether/docs/specs/swim-driven-topology-spec.md §6`; `membership-architecture-v2-spec.md §5.1` (ON_DUTY+SwimFaulty→DECOMMISSIONED) |
+| C7 | Post-kill convergence: cluster returns to 5 ON_DUTY healthy cores within the convergence budget (180s test window; backed by elastic-cluster model — killed NodeId does NOT revive) | `membership-architecture-v2-spec.md §5.1 note 5` (DECOMMISSIONED revival TTL); `membership-architecture-v2-spec.md §3.3` (CTM replacement) |
 | C8 | SWIM detects a faulty node within `DETECTION_TIMEOUT` (default 15s) | `aether/docs/specs/swim-driven-topology-spec.md §6` (SWIM lifecycle); audit §1.14 — **threshold NOT enforced** in the current test |
-| C9 | Partition quorum gate S05: within `self-drain` window (8s default), the FSM does NOT write DECOMMISSIONED for minority NodeIds even when the leader sees them as faulty | `cluster-membership-fsm-spec.md §5.1` (ON_DUTY+SwimFaulty); single-writer invariant I2; `aether/docs/internal/progress/v1-roadmap.md` #17 (CLOSED in db221dee4) |
-| C10 | Partition heal S06: after partition heal, cluster returns to 5 ON_DUTY within `HEAL_BUDGET_S` (30s) | `cluster-membership-fsm-spec.md §5.1` (revival TTL window); reconciler loop |
+| C9 | Partition quorum gate S05: within `self-drain` window (8s default), the FSM does NOT write DECOMMISSIONED for minority NodeIds even when the leader sees them as faulty | `membership-architecture-v2-spec.md §5.1` (ON_DUTY+SwimFaulty); single-writer invariant I2; `aether/docs/internal/progress/v1-roadmap.md` #17 (CLOSED in db221dee4) |
+| C10 | Partition heal S06: after partition heal, cluster returns to 5 ON_DUTY within `HEAL_BUDGET_S` (30s) | `membership-architecture-v2-spec.md §5.1` (revival TTL window); reconciler loop |
 
 **Contract gaps surfaced by this audit:**
 - `[CONTRACT-GAP-12.A]` — Per-node QUIC connectivity coverage: spec mandates full mesh but `test_all_nodes_connected` samples only the entry node (audit §1.14, MEDIUM). The "every node sees ≥ N-1 peers" assertion is structurally untestable today; needs a `for node in $(cluster_node_list); do api_get $node/api/network/quic; done` iteration helper.

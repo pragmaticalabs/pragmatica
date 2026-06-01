@@ -134,8 +134,8 @@ Get overall cluster status including uptime, cluster info, slice count, and metr
     "nodeCount": 3,
     "leaderId": "node-1",
     "nodes": [
-      {"id": "node-1", "isLeader": true},
-      {"id": "node-2", "isLeader": false}
+      {"id": "node-1", "isLeader": true, "kvState": "READY", "derivedStatus": "READY"},
+      {"id": "node-2", "isLeader": false, "kvState": "READY", "derivedStatus": "READY"}
     ]
   },
   "sliceCount": 5,
@@ -147,7 +147,7 @@ Get overall cluster status including uptime, cluster info, slice count, and metr
   "nodeId": "node-1",
   "status": "running",
   "runtimeState": "ACTIVE",
-  "lifecycleState": "ON_DUTY",
+  "lifecycleState": "READY",
   "clusterPhase": "NORMAL",
   "isLeader": true,
   "leader": "node-1"
@@ -156,7 +156,7 @@ Get overall cluster status including uptime, cluster info, slice count, and metr
 
 `runtimeState` carries the JVM/process state machine (`NodeState`: `STARTING` / `JOINING` / `ACTIVE` / `DRAINING` / `STOPPED`) — "is the process up and serving".
 
-`lifecycleState` carries the cluster-level FSM intent from KV-Store (`NodeLifecycleState`: `JOINING` / `ON_DUTY` / `DRAINING` / `DECOMMISSIONED` / `FAILED_DRAIN`; `SHUTTING_DOWN` is normalized to `DRAINING`). Empty string when no KV entry exists yet (cold-start transient).
+`lifecycleState` carries the node's heartbeat-reported readiness (`SYNCING` / `READY` / `DRAINING`) as cached by the leader from the leader↔node heartbeat. This state is node-authoritative and is **never** stored in or committed to the KV-Store. Empty string when the leader has not yet received a heartbeat from the node (cold-start transient). See `aether/docs/specs/membership-architecture-v2-spec.md`.
 
 ### GET /api/health
 
@@ -322,7 +322,7 @@ curl "http://localhost:8080/api/events?sinceEpoch=3&sinceSeq=42"
 
 `GENERATION_CHANGED` events are emitted by the leader's `HealthReconciler` whenever the cluster generation epoch advances. `details` carries `oldEpoch`, `newEpoch`, and `reason` (a `GenerationReason` enum name). See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.4.
 
-`SELF_DRAIN_INITIATED` (severity `WARNING`) is emitted by the draining node itself when its `SelfDrainCoordinator` flips from `ACTIVE` to `DRAINING` (membership-architecture-spec.md §16.1, S19/S20). Unlike most other events, this one is NOT leader-gated — a partition victim is the only authoritative source for "I'm self-draining" and may not be able to reach the leader at all. `details` carries `nodeId` (the draining node), `reason` (one of `sustained-below-quorum`, `quorum-disappeared`, `rabia-paused`), and `graceMs` (the configured in-flight grace before forced halt). Best-effort: if the publish does not reach a quorum before `Runtime.halt(2)` lands, the event is lost.
+`SELF_DRAIN_INITIATED` (severity `WARNING`) is emitted by the draining node itself when its `SelfDrainCoordinator` flips from `ACTIVE` to `DRAINING` (see `aether/docs/specs/membership-architecture-v2-spec.md`). Unlike most other events, this one is NOT leader-gated — a partition victim is the only authoritative source for "I'm self-draining" and may not be able to reach the leader at all. `details` carries `nodeId` (the draining node), `reason` (one of `sustained-below-quorum`, `quorum-disappeared`, `rabia-paused`), and `graceMs` (the configured in-flight grace before forced halt). Best-effort: if the publish does not reach a quorum before `Runtime.halt(2)` lands, the event is lost.
 
 **Severity Levels:** `INFO`, `WARNING`, `CRITICAL`
 
@@ -2139,7 +2139,7 @@ Get aggregated cluster status including node health, slice deployment info, and 
   "state": "CONVERGED",
   "leaderId": "node-1",
   "nodes": [
-    {"nodeId": "node-1", "role": "core", "kvState": "ON_DUTY", "derivedStatus": "ON_DUTY", "version": "0.21.1", "isLeader": true}
+    {"nodeId": "node-1", "role": "core", "kvState": "READY", "derivedStatus": "READY", "version": "0.21.1", "isLeader": true}
   ],
   "slicesDeployed": 12,
   "sliceInstances": 36,
@@ -2149,7 +2149,7 @@ Get aggregated cluster status including node health, slice deployment info, and 
   "uptimeSeconds": 86400
 }
 ```
-Per-node fields: `kvState` is the authoritative FSM state read directly from KV-Store (`NodeLifecycleState`: `JOINING` / `ON_DUTY` / `DRAINING` / `DECOMMISSIONED` / `FAILED_DRAIN`; `SHUTTING_DOWN` normalized to `DRAINING`; empty string when no KV entry exists yet). `derivedStatus` is the operator-visible projection of KV ∪ SWIM ∪ quorum. See `aether/docs/specs/state-authority.md`.
+Per-node fields: `kvState` is the node's heartbeat-reported readiness (`SYNCING` / `READY` / `DRAINING`) as cached by the leader from the leader↔node heartbeat. Despite the legacy field name, this value is **never** read from, stored in, or committed to the KV-Store — it is node-authoritative and presence/heartbeat-derived; empty string when the leader has not yet received a heartbeat. `derivedStatus` is the operator-visible projection of presence (SWIM/QUIC) ∪ heartbeat-readiness ∪ quorum. See `aether/docs/specs/membership-architecture-v2-spec.md`.
 
 ### POST /api/cluster/config
 
@@ -2955,65 +2955,62 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 
 ## Node Lifecycle
 
-Manage node lifecycle states for graceful operations (drain, shutdown, activation).
+Observe node membership/readiness and drive graceful operations (drain, shutdown, activation).
 
-**States:** `JOINING`, `ON_DUTY`, `DRAINING`, `DECOMMISSIONED`, `SHUTTING_DOWN`
+Node membership is presence-derived (SWIM/QUIC via NTT); node readiness/drain is heartbeat-reported and leader-cached. This state is **never** stored in or committed to the KV-Store. See `aether/docs/specs/membership-architecture-v2-spec.md`.
 
-**State transitions:**
-```
-JOINING → ON_DUTY ←→ DRAINING → DECOMMISSIONED → SHUTTING_DOWN
-                   ←────────────┘
-         any KV state ──────────→ SHUTTING_DOWN
-```
+**Readiness values (heartbeat-reported):** `SYNCING`, `READY`, `DRAINING`. A node that is no longer present (SWIM/QUIC) simply disappears from the membership view — there is no terminal KV state.
 
 ### GET /api/nodes/lifecycle
 
-Get lifecycle state for all nodes.
+Get membership + readiness for all nodes.
 
-**Routing:** LEADER — node lifecycle state is part of the leader-only control plane, so a request received by a follower is forwarded to the current leader.
+**Routing:** LEADER — the readiness view is leader-cached from the heartbeat, so a request received by a follower is forwarded to the current leader.
 
 **Query parameters:**
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| `state` | string | no | Case-insensitive lifecycle state (e.g. `ON_DUTY`, `DRAINING`), or a `+`-separated union of states (e.g. `ON_DUTY+JOINING`). When present, the response is filtered to entries whose `state` is a member of the set (uppercase normalisation + split-on-`+` server-side). Omit for the unfiltered list. An empty filter (`+` alone) matches no entry. |
+| `state` | string | no | Case-insensitive readiness value (e.g. `READY`, `DRAINING`), or a `+`-separated union (e.g. `READY+SYNCING`). When present, the response is filtered to entries whose `state` is a member of the set. Omit for the unfiltered list. An empty filter (`+` alone) matches no entry. |
 
 **Examples:**
-- `GET /api/nodes/lifecycle?state=ON_DUTY` — only entries currently `ON_DUTY`.
-- `GET /api/nodes/lifecycle?state=ON_DUTY+JOINING` — entries whose state is `ON_DUTY` or `JOINING`.
+- `GET /api/nodes/lifecycle?state=READY` — only nodes currently `READY`.
+- `GET /api/nodes/lifecycle?state=READY+SYNCING` — nodes whose readiness is `READY` or `SYNCING`.
+
+The `state` value is node-authoritative and heartbeat-reported (`NodeReportedState`); it is never read from the KV-Store.
 
 **Response:**
 ```json
 [
   {
     "nodeId": "node-1",
-    "state": "ON_DUTY",
-    "updatedAt": 1704067200000
+    "state": "READY",
+    "updatedAt": 0
   },
   {
     "nodeId": "node-2",
     "state": "DRAINING",
-    "updatedAt": 1704067201000
+    "updatedAt": 0
   }
 ]
 ```
 
 ### GET /api/nodes/lifecycle/{id}
 
-Get lifecycle state for a specific node.
+Get membership + readiness for a specific node.
 
 **Response:**
 ```json
 {
   "nodeId": "node-1",
-  "state": "ON_DUTY",
-  "updatedAt": 1704067200000
+  "state": "READY",
+  "updatedAt": 0
 }
 ```
 
 ### POST /api/nodes/drain/{id}
 
-Transition a node from `ON_DUTY` to `DRAINING`. The CDM will evacuate slices respecting the disruption budget.
+Begin draining a node. The leader delivers a `DRAIN` command on the leader↔node heartbeat; the node self-drains (finishes in-flight requests) and reports `DRAINING` on its heartbeat. The CDM evacuates slices respecting the disruption budget. No node-state KV write happens on this path.
 
 **Response:**
 ```json
@@ -3073,7 +3070,7 @@ Accepted values for `targetRole` (case-insensitive): `"CORE"`, `"WORKER"`. Promo
 
 ### GET /api/audit/commands
 
-**Phase 3 PR-C (cluster-convergence-reconciler):** operator inspection surface for the `audit.lifecycle.commands` stream — surfaces the most recent `CommandReceived` / `CommandApplied` events the local node has emitted (via `DirectLifecycleWriter`).
+**Phase 3 PR-C (lifecycle reconciler):** operator inspection surface for the `audit.lifecycle.commands` stream — surfaces the most recent `CommandReceived` / `CommandApplied` events the local node has emitted (via `DirectLifecycleWriter`).
 
 **Scope note:** the backing store is a per-node in-memory ring buffer (capacity 1024 by default), not a full stream subscription. Events survive the lifetime of the JVM only. For cluster-wide audit visibility operators should target the leader (`-c <leader-host>`); a follower will only surface events emitted via writers running on this same node. RC2 follow-up: replace with a proper `StreamReadRouter`-backed subscription so audit history survives node restarts.
 

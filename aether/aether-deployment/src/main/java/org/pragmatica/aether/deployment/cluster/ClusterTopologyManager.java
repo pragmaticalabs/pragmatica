@@ -73,12 +73,11 @@ public interface ClusterTopologyManager extends TopologyManager {
 
     /// Membership v2 / E2 — drain a specific node. Targets either the operator/scale-down
     /// flow or the overprovision-drain path. `reason` is observability-only at this layer.
-    /// Returns a `Promise<Unit>` resolving on drain-request commit (the target node observes
-    /// the directive and self-drains per spec §8).
+    /// Returns a `Promise<Unit>` resolving once the drain has been initiated (the target node
+    /// observes the `DRAIN` command on the leader↔node heartbeat and self-drains per spec §8).
     ///
-    /// At Phase 1 this routes through the existing
-    /// `NodeLifecycleManager.terminateNode(NodeId)` path. A KV-record-driven `DrainRequestKey`
-    /// surface (spec §8.5) is deferred to Phase 2.
+    /// Drain is delivered as a heartbeat command (spec §7.5.4) and is heartbeat-reported /
+    /// leader-cached — there is no KV drain record and no node-state KV write on this path.
     Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason);
 
     /// Membership v2 / E2 — reconcile current cluster membership against configured size

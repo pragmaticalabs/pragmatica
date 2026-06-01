@@ -7,7 +7,7 @@ Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 
 **Status:** Foundation spec complete (8 scenarios settled). Implementation pending — see §13 migration plan.
 **Branch:** `experimental/membership-redesign` (from `release-1.0.0-rc1` HEAD `b96619ea2`).
-**Supersedes (when implemented):** the topology-management layer of `aether/docs/specs/membership-architecture-spec.md` — specifically the membership FSM, the slot-occupancy classifier, the reachability gates, the leader-pinned membership timers, and the drain coordinator's FSM integration. The **simple scheme at its base — SWIM, QUIC, Rabia, LeaderManager — is preserved unchanged**, and its reliability is the foundation this design builds on.
+**Supersedes (when implemented):** the topology-management layer of the v1 membership-architecture spec (removed; see git history) — specifically the membership FSM, the slot-occupancy classifier, the reachability gates, the leader-pinned membership timers, and the drain coordinator's FSM integration. The **simple scheme at its base — SWIM, QUIC, Rabia, LeaderManager — is preserved unchanged**, and its reliability is the foundation this design builds on.
 **Implementation target:** RC1 (foundational work per the project's RC1 vs RC2 scope rule — anything affecting architecture or foundation belongs in RC1).
 
 ---
@@ -262,12 +262,12 @@ For implementation traceability, the following are removed (entire modules / cla
 
 | Removed | Reason | Status |
 |---|---|---|
-| `MembershipFsm` + lifecycle states `Untracked` / `Provisioning` / `Joining` / `OnDuty` / `Draining` / `Stopped` | State derived from SWIM + QUIC, not maintained | PENDING (Phase 2c) |
+| `MembershipFsm` + lifecycle states `Untracked` / `Provisioning` / `Joining` / `OnDuty` / `Draining` / `Stopped` | State derived from SWIM + QUIC, not maintained | **DELETED** |
 | `ClusterMembershipReducer` | Pure-function reducer over the deleted lifecycle | PENDING (Phase 2c) |
 | `ReachabilityGate.isConfirmedUnreachable` (2-plane gate) | SWIM convergence does this natively | PENDING |
 | φ-accrual detector (`PhiAccrualDetector`, `PhiAccrualConfig`, `PhiObserver`, `PhiWarmth`) + DivergenceLogger + `FsmDecisionEvent`/`Type` + `NttObservationFlag` | SWIM is the detector; observation-only ramp completed | **DELETED (Phase 2a, 2026-05-28)** |
 | `JoinDeadlineExpired` event + leader-pinned timer | NTT replaces | PENDING (Phase 2c) |
-| Slot KV records (`ProvisioningSlotValue` with `occupantEpoch`/`supersededNodeId`) | Slots become count-derived positions | PENDING (Phase 2c) |
+| Slot KV records (`ProvisioningSlotValue` with `occupantEpoch`/`supersededNodeId` as node-membership state) | Slots become count-derived positions; node membership is presence-derived, not slot-keyed | **DELETED** |
 | `freeStaleFillingSlots` / `freeDeadSlots` / FILLING expiry | No FILLING state to reclaim | PENDING (Phase 2c) |
 | `applyExternalLifecycleRemove` → `applyLifecycleRemoveWithSlot` re-bind chain | No parallel lifecycle to remove | PENDING (Phase 2c) |
 | `(Untracked, SwimHealthy) → untrackedDirectToOnDuty` reducer cell (the resurrection vector) | No parallel lifecycle to write | PENDING (Phase 2c) |
@@ -278,8 +278,8 @@ For implementation traceability, the following are removed (entire modules / cla
 | `DecommissionedAtomGc` | No lifecycle atoms to GC (subject to confirmation during implementation) | PENDING |
 | SWIM voluntary `LEAVE` message **as a membership-layer state transition** (the FSM's Draining→Stopped path with `awaitDrainAck`) | Membership layer is cause-agnostic (P2). LEAVE is **preserved as a SWIM-internal acceleration of `DepartedObserved`** (peer skips suspect-aging on authenticated LEAVE receipt); see §8.2 step 3 | PENDING |
 
-| `NodeLifecycleKey` / `NodeLifecycleValue` + `ON_DUTY`/`JOINING`/etc. states + serializer cases | No lifecycle cache — readiness is node-reported on the heartbeat (§7.5), membership is SWIM-derived (`MembershipView`) | PENDING (Phase 2c) |
-| `NodeReadinessTracker` + `ClusterSyncPong.readyCandidate` + `ClusterSyncPongSignalFan.ReadyCandidateSink` + `emitForceOnDuty` + `clearReadinessOnSelfOnDuty` | Replaced by the node-reported `SYNCING/READY/DRAINING` state on the pong (§7.5.3) | PENDING (Phase 2c) |
+| `NodeLifecycleKey` / `NodeLifecycleValue` + `ON_DUTY`/`JOINING`/etc. states + serializer cases | No lifecycle cache — readiness is node-reported on the heartbeat (§7.5), membership is SWIM-derived (`MembershipView`) | **DELETED** |
+| `NodeReadinessTracker` + `ClusterSyncPong.readyCandidate` + `ClusterSyncPongSignalFan.ReadyCandidateSink` + `emitForceOnDuty` + `clearReadinessOnSelfOnDuty` | Replaced by the node-reported `SYNCING/READY/DRAINING` state on the pong (§7.5.3) | **DELETED** |
 | `DrainRequestKey` / `DrainRequestValue` (never implemented) | Drain delivered as a heartbeat command (§7.5.4); no KV record | N/A — not built |
 
 What remains: SWIM, QUIC, Rabia, `LeaderManager` (all unchanged), simplified CTM (§7), NTT (§6), per-node `LocalQuorumWatcher` (drives §8's quorum-loss trigger), and the leader↔node control heartbeat carrying node-reported readiness state + `DRAIN` commands (§7.5). **No membership/readiness/drain KV records.**
@@ -404,9 +404,8 @@ Explicitly delimited so the boundary is clear:
 
 ## 16. References
 
-- Predecessor: `aether/docs/specs/membership-architecture-spec.md` (the layered model being superseded for topology management; the simple scheme at its base — SWIM, QUIC, Rabia — is preserved).
+- Predecessor: the v1 membership-architecture spec (removed; see git history) — the layered model being superseded for topology management; the simple scheme at its base — SWIM, QUIC, Rabia — is preserved.
 - Discovery: `aether/docs/specs/swim-driven-topology-spec.md`.
-- Current convergence (to be retired): `aether/docs/specs/slot-based-membership-convergence-spec.md`.
 - Layered-stack diagnosis (root-cause of the bug class this redesign eliminates): `aether/docs/internal/progress/session-handover-2026-05-28.md`.
 - Session handover for this design work: `aether/docs/internal/progress/session-handover-2026-05-28-experimental.md`.
 - Memory: `[[project_cluster_b_wedge_layered_stack]]`, `[[project_membership_v2_redesign]]`.

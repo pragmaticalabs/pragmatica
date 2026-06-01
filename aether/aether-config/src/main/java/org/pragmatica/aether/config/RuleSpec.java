@@ -6,7 +6,7 @@ package org.pragmatica.aether.config;
 
 
 /// Per-rule toggle pair for the Phase 4 PR-D `LifecycleReconciler`. Each of the seven
-/// reconciliation rules (cluster-convergence-reconciler-spec §7.1) carries its own
+/// reconciliation rules carries its own
 /// `RuleSpec`:
 ///
 ///   - `enabled` — when `false` the rule is skipped entirely at evaluation time; no

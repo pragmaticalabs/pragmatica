@@ -176,7 +176,9 @@ public final class StatusRoutes implements RouteSource {
         var present = view.isPresent(nodeId);
         // kvState — node-reported work-state (NodeReportedState: SYNCING/READY/DRAINING) from the
         // metrics pong. Empty string when no pong has been observed yet (peer known only via SWIM
-        // in the transient window). See aether/docs/specs/state-authority.md for the kvState vs
+        // in the transient window). Despite the legacy field name, this value is NOT read from the
+        // KV-Store — it is heartbeat-reported and presence-derived. See
+        // aether/docs/specs/membership-architecture-v2-spec.md for the kvState vs
         // derivedStatus contract.
         // derivedStatus — operator-visible projection: present peers surface their real reported
         // work-state (READY when no pong yet); absent peers show UNKNOWN.

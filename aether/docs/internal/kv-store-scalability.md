@@ -4,6 +4,8 @@
 
 Assessment of data stored in the Rabia consensus KV-store, how it scales with cluster size, and architectural implications for the planned 2-layer cluster topology.
 
+> **Note (membership-v2).** Node membership/readiness state is **not** stored in the KV-Store — it is presence-derived (SWIM/QUIC via NTT) and heartbeat-reported/leader-cached. The earlier `NodeLifecycleValue` entry referenced by older drafts has been removed from this assessment. See [`../specs/membership-architecture-v2-spec.md`](../specs/membership-architecture-v2-spec.md). The scaling analysis below (endpoint/slice-node/route cardinality, consensus replication cost, 2-layer registry split) is unaffected and remains current.
+
 ## Current KV-Store Contents
 
 15 key types, 15 value types, all replicated to every node via Rabia consensus. Binary codec serialization (compact, code-generated).
@@ -15,7 +17,6 @@ Assessment of data stored in the Rabia consensus KV-store, how it scales with cl
 | `EndpointValue` | ~20B | N x S x M x I |
 | `SliceNodeValue` | ~40B | N x S |
 | `TopicSubscriptionValue` | ~20B | T x S x M |
-| `NodeLifecycleValue` | ~12B | N |
 | `LogLevelValue` | ~40B | operator-driven |
 | `ConfigValue` | ~60B | operator-driven |
 | `ObservabilityDepthValue` | ~50B | operator-driven |
@@ -120,7 +121,6 @@ The current design puts **per-instance, per-node state** into the consensus KV-s
 | ObservabilityDepthValue | operator-driven | Config |
 | ConfigValue | operator-driven | Config |
 | ScheduledTaskValue | SC | Config |
-| NodeLifecycleValue | core nodes only | Core membership |
 
 **Total: < 1 MB regardless of passive node count.**
 
@@ -131,7 +131,6 @@ The current design puts **per-instance, per-node state** into the consensus KV-s
 | EndpointKey/Value | O(N x S x M x I) | Passive nodes report to core; core maintains routing table outside consensus |
 | SliceNodeKey/Value | O(N x S) | Passive nodes report state via heartbeat/gossip |
 | HttpNodeRouteKey/Value | N x R entries grows to millions | Derived from endpoint registry, not stored |
-| NodeLifecycleValue (passive) | O(N) passive nodes | Tracked by core layer via connection state |
 
 ### Target Architecture
 

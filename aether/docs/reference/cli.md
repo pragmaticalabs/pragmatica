@@ -1110,15 +1110,15 @@ Manage node lifecycle states:
 aether nodes lifecycle
 
 # Filter the list to a single state (case-insensitive)
-aether nodes lifecycle --state ON_DUTY
+aether nodes lifecycle --state READY
 
 # Multi-state union via `+`
-aether nodes lifecycle --state ON_DUTY+JOINING
+aether nodes lifecycle --state READY+SYNCING
 
 # Get lifecycle state for a specific node (--state ignored when [id] is supplied)
 aether nodes lifecycle <nodeId>
 
-# Drain a node (ON_DUTY → DRAINING via the membership-v2 DRAIN-command heartbeat;
+# Drain a node (READY → DRAINING via the membership-v2 DRAIN-command heartbeat;
 # the target self-drains, finishing in-flight requests, respecting disruption budget)
 aether nodes drain <nodeId>
 
@@ -1634,7 +1634,7 @@ aether cluster governors
 
 ### `aether cluster audit`
 
-**Phase 3 PR-C (cluster-convergence-reconciler):** show recent `audit.lifecycle.commands` events seen by the target node. Backed by the per-node in-memory `RecentCommandsBuffer` populated via a tee on the lifecycle audit publisher.
+**Phase 3 PR-C (lifecycle reconciler):** show recent `audit.lifecycle.commands` events seen by the target node. Backed by the per-node in-memory `RecentCommandsBuffer` populated via a tee on the lifecycle audit publisher.
 
 Each `LifecycleCommand` emitted via `LifecycleWriter.applyCommand(...)` produces a `CommandReceived` + `CommandApplied` pair in the buffer. Use this to inspect operator-issued `aether nodes decommission|force-on-duty|...` actions, and (Phase 4-5) reconciler-emitted recovery commands.
 
@@ -1665,7 +1665,7 @@ Options:
 ### LifecycleReconciler observability (Phase 4 PR-D)
 
 **No dedicated CLI subcommand.** Observability for the leader-only
-`LifecycleReconciler` (cluster-convergence-reconciler-spec §7) is exposed through the
+`LifecycleReconciler` (see `aether/docs/specs/membership-architecture-v2-spec.md`) is exposed through the
 audit channel:
 
 - **`aether cluster audit --source reconciler`** — surfaces the reconciler's rule

@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicReference;
 /// Increment on request entry, decrement on response/error exit. The counter is
 /// guaranteed non-negative; decrementing past zero is logged and clamped.
 ///
-/// Self-drain gate (membership-architecture-spec.md §16.1):
+/// Self-drain gate (see membership-architecture-v2-spec.md):
 ///
 /// * `setAcceptingNewWork(false)` flips the gate closed. After that point, `tryEnter()`
 ///   returns `false` (and `enter()` is a no-op that does NOT increment the counter) so

@@ -72,9 +72,9 @@ class BootstrapModuleTest {
         @Test
         void initialCoreSizeAtQuorum_seedEmitted() {
             // initialCoreSize == 3 (>= quorum) and no existing ClusterConfig — seed is emitted.
-            // The lifecycle-count grace window was intentionally removed (commit 62ae7b19f,
-            // "drop seed grace period"); the seed no longer waits for NodeLifecycleKey
-            // entries to materialize. Spec §8: at-or-above quorum, seed on first leader gain.
+            // The membership-count grace window was intentionally removed (commit 62ae7b19f,
+            // "drop seed grace period"); the seed no longer waits for presence-derived members
+            // to materialize. Spec §8: at-or-above quorum, seed on first leader gain.
             var fixture = newFixture(/* initialCoreSize */ 3);
             fixture.module.onLeaderGained();
 

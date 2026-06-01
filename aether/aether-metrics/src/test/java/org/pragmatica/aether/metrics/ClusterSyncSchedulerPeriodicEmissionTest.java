@@ -92,12 +92,12 @@ class ClusterSyncSchedulerPeriodicEmissionTest {
 
     @Test
     void onMembershipDecision_nodeJoining_includesJoiningPeerInTopologyEmission() {
-        // RC1 resilience regression guard. A JOINING peer is NOT in `coreMemberIds` yet,
-        // so `MembershipDecision.NodeJoining.topology()` reflects the ON_DUTY view only.
+        // RC1 resilience regression guard. A joining peer is NOT in `coreMemberIds` yet,
+        // so `MembershipDecision.NodeJoining.topology()` reflects the ready-member view only.
         // ClusterSyncScheduler MUST augment the metrics topology with the joining nodeId,
         // otherwise the periodic emission never reports DISCONNECTED for a crashed
         // pre-promotion replacement and the aggregator-quorum gate refuses to confirm
-        // UNREACHABLE — leaving stale ON_DUTY NodeLifecycleKeys behind.
+        // UNREACHABLE — leaving a stale member in the presence-derived view.
         var connectedPeers = Set.of(PEER_A);
         var network = new RecordingNetwork(connectedPeers);
         var collector = new RecordingCollector();

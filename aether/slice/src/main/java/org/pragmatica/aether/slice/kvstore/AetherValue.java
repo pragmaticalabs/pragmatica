@@ -1281,7 +1281,7 @@ import static org.pragmatica.lang.Option.none;
     /// slot-local generation counter; `0` means empty/never-occupied. `supersededNodeId` records the
     /// predecessor occupant this assignment replaced; `none()` on first fill.
     ///
-    /// Backward compatibility (slot-based-membership-convergence-spec §4.2): the legacy
+    /// Backward compatibility (legacy slot-based-membership convergence, §4.2; spec removed, see git history): the legacy
     /// construction sites that passed a `deadlineMs` argument still compile via the deadline-arg
     /// constructors and `provisioningSlotValue(..)` factories below, which discard the now-derived
     /// deadline. Mirrors the trailing-field backward-compat pattern used across `AetherValue`.
@@ -1419,8 +1419,7 @@ import static org.pragmatica.lang.Option.none;
             ALERT_INJECTED,
             TRACE_INJECTED,
             /// Emitted by the draining node itself when its `SelfDrainCoordinator` flips
-            /// from `ACTIVE` to `DRAINING` (membership-architecture-spec.md §16.1, scenarios
-            /// S19/S20). Severity WARNING — operational event indicating the node is about
+            /// from `ACTIVE` to `DRAINING` (see membership-architecture-v2-spec.md). Severity WARNING — operational event indicating the node is about
             /// to halt because it observed sustained-below-quorum visibility,
             /// `ClusterStateNotification.DISAPPEARED`, or `RabiaEngine.Paused`. The originator
             /// in `nodeId` is the draining node, NOT the cluster leader; this event is

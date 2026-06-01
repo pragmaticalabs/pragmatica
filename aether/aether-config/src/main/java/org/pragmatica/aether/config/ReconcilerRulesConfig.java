@@ -4,8 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config;
 
-/// Per-rule enable + enforce toggles for the seven `LifecycleReconciler` rules
-/// (cluster-convergence-reconciler-spec §7.1). One `RuleSpec` per rule:
+/// Per-rule enable + enforce toggles for the seven `LifecycleReconciler` rules.
+/// One `RuleSpec` per rule:
 ///
 ///   - `joiningTimeout`           — SWIM Faulty/Departed AND `JOIN_DEADLINE × 1.5` elapsed
 ///   - `joiningStuckAlert`        — SWIM Alive past `JOIN_DEADLINE × 3`

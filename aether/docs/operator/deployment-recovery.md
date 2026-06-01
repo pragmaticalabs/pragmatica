@@ -31,7 +31,7 @@ A clustered system has two competing resilience layers when an `aether-node` pro
 | Layer | Action on node exit |
 |-------|---------------------|
 | Container/orchestrator restart | Re-launch the same process on the same host within ~1s |
-| Aether CTM auto-heal | Mark the node FAULTY → DECOMMISSIONED → provision a fresh VM/host with a new node-id |
+| Aether CTM auto-heal | Observe the node leave the presence-derived membership view → provision a fresh VM/host with a new node-id |
 
 These actions are mutually exclusive. They cannot both run on the same failure event.
 
@@ -45,7 +45,7 @@ A node that crashes once every five minutes and is silently restarted by Docker 
 
 #### Decommissioned nodes resurrect and flap
 
-Aether's lifecycle has a single-writer rule: once a node is `DECOMMISSIONED` in the KV-store, it cannot rejoin under the same node-id. The cluster has already redistributed its slices, removed it from SWIM membership, and moved on.
+Once a node has departed and been replaced, the cluster has redistributed its slices, dropped it from the presence-derived membership view, and moved on. A departed node-id is not re-admitted as a present member just because a channel reopens — presence must be re-established through SWIM/QUIC, and re-admission is gated to prevent a dead node-id resurrecting. None of this involves a node-state KV record.
 
 When a Docker-restarted aether-node tries to rejoin with the same node-id, the cluster rejects it. The container exits. Docker restarts it. The cluster rejects it. The container exits. **This is a flap loop.** The orchestrator generates churn the cluster has no productive use for.
 
@@ -86,11 +86,11 @@ In practice, most production deployments use immutable VMs/pods: hosts are cattl
 
 Aether's recovery flow:
 
-1. **Failure detection** — SWIM gossip detects a peer is unreachable; HealthReconciler aggregates per-peer suspicion across N witnesses; threshold trips → leader writes `NodeLifecycleKey[id] = FAULTY` to consensus KV-store.
-2. **Decommission** — leader transitions FAULTY → DECOMMISSIONED in KV-store. The single-writer rule is now armed: the node-id is permanently retired.
-3. **CTM reaction** — CTM observes lifecycle change, computes `actual = healthyOnDutyCount, desired = configured`, sees deficit, calls `provisionSingleNode()`.
+1. **Failure detection** — SWIM gossip detects a peer is unreachable and QUIC transport confirms the disconnect; the node drops out of the presence-derived membership view (SWIM/QUIC via NTT). Node membership is never stored in or committed to the KV-Store. See `aether/docs/specs/membership-architecture-v2-spec.md`.
+2. **Departure** — once presence is lost, the node is removed from the cluster's membership view. There is no node-state KV write; the node-id simply ceases to be a present member.
+3. **CTM reaction** — CTM observes the membership change, computes `actual = present-and-ready core count, desired = configured`, sees a deficit, and calls `provisionSingleNode()`.
 4. **Replacement provisioning** — for cloud providers, this issues a `CreateServer` API call; for `manual` provisioning, this is a no-op and operator intervention is expected; for `docker` runtime (test fixtures), this runs `docker run` against the local daemon.
-5. **New node onboarding** — the new VM/pod cloud-inits, downloads aether-node, joins via SWIM with the finalized PEERS list, transitions JOINING → ON_DUTY.
+5. **New node onboarding** — the new VM/pod cloud-inits, downloads aether-node, joins via SWIM with the finalized PEERS list, becomes a present member, and reports `READY` on its heartbeat once synced.
 6. **State convergence** — slices migrate, partitions rebalance, generation snapshot publishes the new topology.
 
 The whole loop is observable, gated by configurable policies (disruption budget, circuit breaker, retry backoff), and produces structured events (`NODE_FAILED`, `NODE_LEFT`, `NODE_JOINED`, `GenerationChanged`) that operators can subscribe to.

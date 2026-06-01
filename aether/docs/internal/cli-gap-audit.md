@@ -141,14 +141,14 @@ Resolved in commit (Phase B.1 — error envelope standardization). The framework
 
 Resolved in commit (Phase B.2 — state authority cleanup). Original framing of "fix the projection OR demote it" was reframed by deeper investigation: **both endpoints are needed by design**; the real issues were silent inconsistencies and missing documentation.
 
-**Foundational spec**: `aether/docs/specs/state-authority.md` — declares the two-endpoint contract.
+**Foundational spec**: the `state-authority.md` spec (removed; see git history) — declared the two-endpoint contract. **Note (membership-v2):** the FSM/`kvState`-as-KV-direct model below has since been scrapped; `kvState` is now a node-reported readiness field (`NodeReportedState`) and is never read from the KV-Store. See [`../specs/membership-architecture-v2-spec.md`](../specs/membership-architecture-v2-spec.md).
 
 **What landed**:
 - **F1**: `/api/nodes/lifecycle` (mass form) switched from MembershipView-derived to KV-direct, matching the `/{id}` single form. Both list and get share authority now.
 - **F2**: `NodeInfo` record gained a `kvState` field; `lifecycleState` renamed to `derivedStatus`. Wire-format break (RC1, acceptable). Operators can now compare FSM intent (kvState) against the derived operator view (derivedStatus) side-by-side.
 - **F3**: `StatusRoutes.toNodeInfo` route-layer reachability downgrade documented inline as belt-and-suspenders on top of MembershipView. Intentionally stricter — operator dashboards stop trusting a peer the aggregator has consensus-lost even before the FSM commits a transition.
 - **F4**: `SHUTTING_DOWN` collapsed to `DRAINING` at both external API endpoints via `externalStateName`. Internal FSM and `NodeDeploymentManager` still distinguish (the transient `SHUTTING_DOWN` write triggers self-shutdown), but the operator-visible API exposes them as the same "node going away" state. Documented in `NodeLifecycleRoutes.externalStateName` and the spec doc.
-- **F5**: Spec doc `state-authority.md` published. Operator-facing contract for which endpoint is authoritative for what.
+- **F5**: Spec doc `state-authority.md` published (since removed; see git history). Operator-facing contract for which endpoint is authoritative for what.
 - **B5** (indexing): TODO comment added at `StatusRoutes.java` referring to RC2 follow-up.
 
 **Test infra updated**:

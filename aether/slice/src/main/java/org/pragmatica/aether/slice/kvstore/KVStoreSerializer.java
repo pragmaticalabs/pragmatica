@@ -605,7 +605,7 @@ import static org.pragmatica.lang.Result.success;
     }
 
     /// Deserializes a provisioning-slot value. Tolerates THREE wire forms, disambiguated by field
-    /// count (slot-based-membership-convergence-spec §4.2; deadline-remodel #230 backward-compat):
+    /// count (legacy slot-based-membership convergence §4.2, spec removed — see git history; deadline-remodel #230 backward-compat):
     /// — 4-field CURRENT form `(spawnedAtMs|assignedNodeId|occupantEpoch|supersededNodeId)`;
     /// — 3-field legacy `(spawnedAtMs|deadlineMs|assignedNodeId)` — the stored `deadlineMs` is
     ///   DISCARDED (expiry is now derived from `spawnedAtMs + provisioningTimeout`);

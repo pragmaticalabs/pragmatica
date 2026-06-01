@@ -221,8 +221,8 @@ observe_quorum_window() {
 # Events carry the runtime form, so we translate before matching on cloud.
 #
 # Background: SELF_DRAIN_INITIATED is published by the draining node itself when
-# its SelfDrainCoordinator flips ACTIVE → DRAINING (membership-architecture-spec.md
-# §16.1). It is NOT leader-gated because a partition victim is the only
+# its SelfDrainCoordinator flips ACTIVE → DRAINING (see membership-architecture-v2-spec.md).
+# It is NOT leader-gated because a partition victim is the only
 # authoritative source for "I'm self-draining" — and may not be able to reach the
 # leader at all. The event therefore must be polled from the survivor's own
 # /api/events buffer (or any node that observed the replicated commit before the

@@ -6,7 +6,7 @@
 title: DHT Resilience — Layered Architecture for Chaos-Safe Writes
 status: approved
 target: RC1
-related: aether/docs/specs/membership-architecture-spec.md, RFC-0012-resource-provisioning.md
+related: aether/docs/specs/membership-architecture-v2-spec.md, RFC-0012-resource-provisioning.md
 ---
 
 # DHT Resilience: Layered Architecture for Chaos-Safe Writes

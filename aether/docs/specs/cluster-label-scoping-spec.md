@@ -6,7 +6,7 @@
 title: Cluster-Label Scoping — Architectural Spec
 status: proposed
 target: RC1 (items 1-4) + RC2 (items 5-7)
-related: docs/rfc/RFC-0003-http-layer.md, aether/docs/specs/membership-architecture-spec.md
+related: docs/rfc/RFC-0003-http-layer.md, aether/docs/specs/membership-architecture-v2-spec.md
 ---
 
 # Cluster-Label Scoping

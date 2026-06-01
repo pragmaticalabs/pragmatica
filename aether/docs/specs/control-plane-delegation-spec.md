@@ -194,7 +194,7 @@ package org.pragmatica.aether.delegation;
 public interface TaskAssignmentCoordinator {
     @MessageReceiver void onLeaderChange(LeaderChange leaderChange);
     // v2: subscribes to MembershipDecision (DECISION stream), not the deleted TopologyChangeNotification.
-    // See membership-architecture-spec §3.1 for the typed-stream split.
+    // See membership-architecture-v2-spec for the typed-stream split.
     @MessageReceiver void onMembershipDecision(MembershipDecision decision);
 
     /// Current assignment map (for observability).
@@ -561,7 +561,7 @@ var coordinator = TaskAssignmentCoordinator.taskAssignmentCoordinator(
 
 // Only the coordinator listens to leader change
 entries.add(route(LeaderChange.class, coordinator::onLeaderChange));
-// v2: typed DECISION stream (replaced TopologyChangeNotification — see membership-architecture-spec §3.1).
+// v2: typed DECISION stream (replaced TopologyChangeNotification — see membership-architecture-v2-spec).
 entries.add(route(MembershipDecision.NodeJoined.class, coordinator::onMembershipDecision));
 entries.add(route(MembershipDecision.NodeRemoved.class, coordinator::onMembershipDecision));
 entries.add(route(MembershipDecision.NodeDecommissioned.class, coordinator::onMembershipDecision));

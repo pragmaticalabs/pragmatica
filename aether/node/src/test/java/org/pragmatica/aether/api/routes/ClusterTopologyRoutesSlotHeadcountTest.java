@@ -28,7 +28,7 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// §8.3 headcount-cap oracle (slot-based-membership-convergence-spec §6/§2 invariant). The
+/// §8.3 headcount-cap oracle (legacy slot-based-membership convergence §6/§2 invariant; spec removed, see git history). The
 /// operator-visible `coreCount` is slot-derived: it counts provisioning slots whose occupant is
 /// present. Because the cluster owns exactly `clusterSize` slots and each
 /// slot has at most one occupant, the count is capped at `clusterSize` by construction. A dead

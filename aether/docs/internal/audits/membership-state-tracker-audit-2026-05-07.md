@@ -2,7 +2,7 @@
 
 **Branch:** `release-1.0.0-rc1`
 **Trigger:** 12-network suite flake on cloud cluster (50–150 ms RTT). Single SWIM `FaultyObserved` for peer-X amplifies into 3–5 redundant `processViewChange(REMOVE)` routings, racing with KV replication and resetting CTM stability anchors. Localhost (~0 ms RTT) hides the race; cloud surfaces it.
-**Compared against:** `aether/docs/specs/membership-architecture-spec.md` (the R1–R10 redesign, drafted 2026-05-01).
+**Compared against:** the v1 membership-architecture spec (the R1–R10 redesign, drafted 2026-05-01; spec removed, see git history).
 
 ---
 
@@ -382,7 +382,7 @@ In `emitFaultyOrUnknown`, suppress only if `phase == BOOTING`. Once `NORMAL` is 
 
 - Delete `TopologyObserver.handleConnectionEstablished/Failed` if any remnants.
 - Remove `routeDisconnect` from `SwimHealthContext` if step 3 retired its callers.
-- Update `aether/docs/specs/membership-architecture-spec.md` §13 ("Migration Note") with the implementation status (R1–R3 still TBD; D1, D6 closed).
+- Update the v1 membership-architecture spec §13 ("Migration Note") with the implementation status (R1–R3 still TBD; D1, D6 closed). _(Spec since removed — see git history; superseded by membership-v2.)_
 - Add a small architecture diagram to `aether/docs/internal/` showing the consolidated flow.
 
 **Risk:** **LOW.**
