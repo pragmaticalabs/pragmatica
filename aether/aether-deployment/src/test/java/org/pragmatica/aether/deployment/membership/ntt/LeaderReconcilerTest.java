@@ -38,6 +38,7 @@ import java.util.concurrent.Delayed;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
@@ -73,6 +74,7 @@ class LeaderReconcilerTest {
     private ManualScheduler scheduler;
     private RecordingListener listener;
     private MutableIntSupplier configuredCoreCount;
+    private MutableLongSupplier leaderTerm;
     private RecordingCtm ctm;
     private MutableHealthSource health;
     private NodeTopologyTracker ntt;
@@ -84,6 +86,7 @@ class LeaderReconcilerTest {
         scheduler = new ManualScheduler();
         listener = new RecordingListener();
         configuredCoreCount = new MutableIntSupplier(0);
+        leaderTerm = new MutableLongSupplier(1L);
         ctm = new RecordingCtm();
         health = new MutableHealthSource();
         // upHysteresis = downHysteresis = 1 so a single sample() converges the member set
@@ -97,6 +100,7 @@ class LeaderReconcilerTest {
         reconciler = leaderReconciler(membershipConfig(),
                                       ntt,
                                       configuredCoreCount,
+                                      leaderTerm,
                                       ctm,
                                       timeSource,
                                       scheduler);
@@ -710,6 +714,235 @@ class LeaderReconcilerTest {
         }
     }
 
+    /// Reached-full-membership latch decision table (the auto-heal fix). The buggy timer-anchored
+    /// cold-start grace is replaced by a FACT latch: provisioning is suppressed
+    /// (`COLD_START_NOT_FULL`) while the cluster has never been observed at full configured size;
+    /// once full is seen (or this leader was re-elected onto an already-formed cluster) a deficit is
+    /// a departure, gated only by deficit-debounce + quorum-safety + the arm latch. A pass suppressed
+    /// purely by the debounce schedules a single re-evaluation follow-up so a stable-in-deficit
+    /// cluster is healed without any further NTT event.
+    @Nested
+    class ReachedFullMembershipLatch {
+        /// Row 1 — cold-start climbing: count 1..4 below configured, never reached full, deficit.
+        /// Provisioning is suppressed (`COLD_START_NOT_FULL` — Bug-C guard preserved): a deficit
+        /// during formation may be a slow-joining configured peer, never a phantom replacement.
+        @Test
+        void coldStartClimbingBelowFull_provisionsNothing_andStaysUnlatched() {
+            configuredCoreCount.set(5);
+            // SELF + PEER_A..PEER_C = 4 (>= quorum 3, but < full 5). Never reaches full.
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            // A second pass after a long advance — still below full, still suppressed by cold-start.
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+
+            assertThat(reconciler.isReachedFullMembership()).isFalse();
+            var intent = listener.events().getLast();
+            assertThat(intent.clusterMembershipCount()).isEqualTo(4);
+            assertThat(intent.configuredCoreCount()).isEqualTo(5);
+            assertThat(intent.provisionCount()).isZero();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+        }
+
+        /// Row 2 — reaching full configured membership latches `reachedFullMembership` true.
+        @Test
+        void countReachesConfigured_latchesReachedFullMembership() {
+            configuredCoreCount.set(5);
+            assertThat(reconciler.isReachedFullMembership()).isFalse();
+
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(reconciler.isReachedFullMembership()).isTrue();
+        }
+
+        /// Row 3 — after the latch, a departure that holds past the debounce while quorum-safe and
+        /// armed PERMITS provisioning (peersToProvision non-empty, dispatch logged). This is the
+        /// auto-heal path the buggy grace used to wedge forever.
+        @Test
+        void afterLatch_departurePastDebounceQuorumSafeArmed_provisions() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(reconciler.isReachedFullMembership()).isTrue();
+            listener.clear();
+
+            // Genuine departure: PEER_D leaves. First pass anchors the deficit (suppressed by
+            // debounce); advance past the debounce window, then provision on the second pass.
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            listener.clear();
+            triggerAndFireReconcile();
+
+            var intent = listener.events().getLast();
+            assertThat(intent.clusterMembershipCount()).isEqualTo(4);
+            assertThat(intent.provisionCount()).isEqualTo(1);
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
+        /// Row 4 — after the latch, a departure whose debounce has NOT elapsed is suppressed
+        /// (`WITHIN_DEBOUNCE`) AND a single re-evaluation follow-up reconcile is scheduled so the
+        /// deficit is acted on when the gate clears, without any further NTT event.
+        @Test
+        void afterLatch_departureWithinDebounce_suppressedAndSchedulesReEval() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(reconciler.isReachedFullMembership()).isTrue();
+            listener.clear();
+
+            // Departure observed; debounce not yet elapsed → suppressed this pass.
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            assertThat(listener.events().getLast().provisionCount()).isZero();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+
+            // A re-evaluation follow-up was scheduled on the debounce-delay band: remaining debounce
+            // (full window, deficit age 0) + the short margin.
+            var reEvalDelay = timeSpan(EXPECTED_DEBOUNCE_WINDOW.nanos() + DEBOUNCE_DELAY.nanos()).nanos();
+            assertThat(scheduler.tasksByDelay(reEvalDelay)).hasSize(1);
+
+            // Fire the follow-up after the debounce elapses: it re-triggers a reconcile that
+            // provisions the now-aged deficit — no external membership event was needed.
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            scheduler.tasksByDelay(reEvalDelay).getFirst().runIfLive();
+            fireDebouncedReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
+        /// Row 5 — below quorum: `NOT_QUORUM_SAFE` suppresses BOTH provisioning and draining
+        /// regardless of the latch (a sub-quorum minority must not spawn a phantom split-brain).
+        @Test
+        void belowQuorum_neitherProvisionsNorDrains_regardlessOfLatch() {
+            configuredCoreCount.set(5);
+            // SELF + PEER_A = 2, below quorum threshold 3.
+            seedClusterWithPeers(PEER_A);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            var intent = listener.events().getLast();
+            assertThat(intent.clusterMembershipCount()).isEqualTo(2);
+            assertThat(intent.configuredCoreCount()).isEqualTo(5);
+            assertThat(intent.provisionCount()).isZero();
+            assertThat(intent.drainCount()).isZero();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+            assertThat(ctm.drainNodeCalls()).isEmpty();
+        }
+
+        /// Row 6 — re-election (term > 1) onto an already-formed, now-deficient cluster: this leader
+        /// never observes full membership (the dead peers never return), so the latch must be
+        /// pre-set on activation. After the debounce, provisioning is PERMITTED even though the
+        /// count was always below configured for this leader instance.
+        @Test
+        void reElectionActivationBelowFull_preLatches_andProvisionsAfterDebounce() {
+            configuredCoreCount.set(5);
+            // Re-election: a prior leader existed (term advanced to 2) before this leader gains it.
+            leaderTerm.set(2L);
+            // Cluster is already formed but deficient: SELF + PEER_A..PEER_C = 4 (>= quorum 3, < 5).
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+            reconciler.activate();
+
+            // Activation pre-latches reachedFullMembership before the first reconcile runs.
+            assertThat(reconciler.isReachedFullMembership()).isTrue();
+
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            // First pass anchors the deficit (suppressed by debounce only — NOT cold-start).
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+            assertThat(listener.events().getLast().provisionCount()).isZero();
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            listener.clear();
+            triggerAndFireReconcile();
+
+            var intent = listener.events().getLast();
+            assertThat(intent.clusterMembershipCount()).isEqualTo(4);
+            assertThat(intent.provisionCount()).isEqualTo(1);
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
+        /// Re-election suppression reason: a term-1 (initial) leader below full is suppressed by the
+        /// cold-start latch, NOT debounce — confirming term=1 does NOT pre-latch.
+        @Test
+        void initialTermBelowFull_staysColdStartUnlatched() {
+            configuredCoreCount.set(5);
+            assertThat(leaderTerm.get()).isEqualTo(1L);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+            reconciler.activate();
+
+            assertThat(reconciler.isReachedFullMembership()).isFalse();
+        }
+
+        /// THE auto-heal fix, reproducing the live Docker trace exactly. NTT reaches full size 5 at
+        /// formation (peakMembershipCount→5), then a priming kill drops membership to 4 BEFORE the
+        /// reconciler runs a single pass — so the reconciler is departure-triggered and its FIRST
+        /// pass observes clusterMembershipCount=4, NEVER 5. With the latch sourced from NTT's
+        /// peakMembershipCount() (=5) instead of the per-pass count, that first pass latches
+        /// reachedFullMembership=true even at count=4 → COLD_START_NOT_FULL no longer applies → after
+        /// the debounce the deficit provisions. (term=1: NOT a re-election; the peak alone latches.)
+        @Test
+        void peakReachedFullButFirstPassAtDeficit_latchesViaPeak_andProvisionsAfterDebounce() {
+            configuredCoreCount.set(5);
+            assertThat(leaderTerm.get()).isEqualTo(1L);
+            // Formation: NTT reaches full size 5 (peak→5).
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            assertThat(ntt.peakMembershipCount()).isEqualTo(5);
+            // Priming kill BEFORE any reconcile pass: membership 5 -> 4. peak stays 5.
+            removePeers(PEER_D);
+            assertThat(ntt.currentMembers()).hasSize(4);
+            assertThat(ntt.peakMembershipCount()).isEqualTo(5);
+
+            // Activate AFTER the kill, then run the first (departure-triggered) pass at count=4.
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            // First pass at count=4 latches via peak=5 — the bug was reachedFullMembership=FALSE here.
+            assertThat(reconciler.isReachedFullMembership()).isTrue();
+            var firstPass = listener.events().getLast();
+            assertThat(firstPass.clusterMembershipCount()).isEqualTo(4);
+            assertThat(firstPass.provisionCount()).isZero();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+
+            // After the debounce window, the sustained deficit provisions.
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            listener.clear();
+            triggerAndFireReconcile();
+
+            var intent = listener.events().getLast();
+            assertThat(intent.clusterMembershipCount()).isEqualTo(4);
+            assertThat(intent.provisionCount()).isEqualTo(1);
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
+        /// Bug-C guard preserved: a cluster that NEVER reached full configured size (peak stays 4 < 5
+        /// — a still-forming cluster / slow-joining configured peer) is suppressed by
+        /// COLD_START_NOT_FULL and provisions nothing, even after the debounce window elapses.
+        @Test
+        void peakNeverReachedFull_staysColdStart_provisionsNothing() {
+            configuredCoreCount.set(5);
+            // Cluster only ever climbs to 4 (SELF + 3 peers) — never reaches full 5.
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+            assertThat(ntt.peakMembershipCount()).isEqualTo(4);
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            // Advance well past the debounce — cold-start (not debounce) is the suppressor.
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+
+            assertThat(reconciler.isReachedFullMembership()).isFalse();
+            var intent = listener.events().getLast();
+            assertThat(intent.clusterMembershipCount()).isEqualTo(4);
+            assertThat(intent.provisionCount()).isZero();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+        }
+    }
+
     @Nested
     class InFlightDeathSweep {
         /// Boot-then-die replacement: a provisioned node never reaches READY and its SWIM/QUIC
@@ -1182,6 +1415,26 @@ class LeaderReconcilerTest {
 
         @Contract
         void set(int newValue) {
+            value.set(newValue);
+        }
+    }
+
+    /// Mutable leader-term supplier. Term `1` = initial leadership (cold-start applies); term `> 1`
+    /// = re-election (the reconciler pre-latches reachedFullMembership on activation).
+    private static final class MutableLongSupplier implements Supplier<Long> {
+        private final AtomicLong value;
+
+        MutableLongSupplier(long initial) {
+            this.value = new AtomicLong(initial);
+        }
+
+        @Override
+        public Long get() {
+            return value.get();
+        }
+
+        @Contract
+        void set(long newValue) {
             value.set(newValue);
         }
     }

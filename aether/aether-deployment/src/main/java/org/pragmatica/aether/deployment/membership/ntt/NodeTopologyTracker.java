@@ -111,6 +111,17 @@ public final class NodeTopologyTracker {
     private final AtomicReference<Option<ScheduledFuture<?>>> tickFuture = new AtomicReference<>(Option.none());
     private final Object sampleLock = new Object();
 
+    /// One-way high-water mark of the stable member-set size ever observed (init 1 = self).
+    /// Updated to `max(peak, current.size())` on every emitted membership change — including the
+    /// initial 1→full-size formation growth — so it records that the cluster REACHED full
+    /// configured size independently of any reconcile-pass timing. The leader reconciler latches
+    /// its reached-full-membership cold-start guard off this peak, NOT off the per-pass member
+    /// count: the reconciler is departure-triggered, so its first pass runs at the post-departure
+    /// count (e.g. 4/5) and never during the full-membership window — a per-pass `>= configured`
+    /// check could therefore never latch. Mutated only under `sampleLock`; read via the
+    /// synchronized accessor.
+    private int peakMembershipCount = 1;
+
     private NodeTopologyTracker(NodeId self,
                                 Supplier<HealthSnapshot> healthSupplier,
                                 TimeSpan sampleInterval,
@@ -333,15 +344,16 @@ public final class NodeTopologyTracker {
 
     private void emitIfChanged() {
         var current = Set.copyOf(stableMembers);
+        peakMembershipCount = Math.max(peakMembershipCount, current.size());
         var previous = lastEmitted.getAndSet(current);
         if (current.equals(previous)) {
             return;
         }
-        log.debug("Membership transition @{}ns: joined={} left={} members={}",
-                  nowNanos.getAsLong(),
-                  difference(current, previous),
-                  difference(previous, current),
-                  current);
+        log.info("NTT membership changed: {} -> {} (added={}, removed={})",
+                 previous.size(),
+                 current.size(),
+                 difference(current, previous),
+                 difference(previous, current));
         onReconcileNeeded.run();
     }
 
@@ -376,7 +388,9 @@ public final class NodeTopologyTracker {
     private void evictLocked(NodeId node) {
         streaks.remove(node);
         biases.remove(node);
-        if (!stableMembers.remove(node)) {
+        var wasStableMember = stableMembers.remove(node);
+        log.info("NTT evict({}): wasStableMember={}", node, wasStableMember);
+        if (!wasStableMember) {
             return;
         }
         lastEmitted.set(Set.copyOf(stableMembers));
@@ -387,6 +401,16 @@ public final class NodeTopologyTracker {
     /// Count of currently-tracked cluster members (includes self).
     public int currentMemberCount() {
         return stableMembers.size();
+    }
+
+    /// One-way high-water mark of the largest stable member-set size ever observed (>= 1, includes
+    /// self). Records that the cluster REACHED a given size independently of reconcile-pass timing —
+    /// the leader reconciler uses this to decide cold-start-over (the cluster was once at full
+    /// configured membership) rather than the post-departure per-pass count. Never decreases.
+    public int peakMembershipCount() {
+        synchronized (sampleLock) {
+            return peakMembershipCount;
+        }
     }
 
     /// Read-only snapshot of the currently-tracked cluster member set (includes self).

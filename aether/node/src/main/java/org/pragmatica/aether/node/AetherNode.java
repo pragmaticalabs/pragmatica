@@ -80,6 +80,7 @@ import org.pragmatica.aether.deployment.generation.ClusterGenerationProjector;
 import org.pragmatica.aether.deployment.generation.BootstrapModule;
 import org.pragmatica.aether.deployment.generation.GenerationSnapshotPublisher;
 import org.pragmatica.aether.deployment.generation.KvBackedGenerationSnapshotSource;
+import org.pragmatica.aether.deployment.generation.PresenceGenerationSnapshotSource;
 import org.pragmatica.aether.deployment.generation.SwimHintsRegistry;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.ClusterSyncPongSignalFan;
@@ -380,9 +381,33 @@ public interface AetherNode extends ManageableNode {
                                                                             .map(LeaderValue::leader);
         var hlcClock = HlcClock.hlcClock(config.self());
         var rawSnapshotSource = KvBackedGenerationSnapshotSource.kvBackedGenerationSnapshotSource(kvStore);
-        // Consensus quorum is QUIC-local per v2 §4; the swim-tracker injection is removed —
-        // consensus uses the KV-projected snapshot view as before unification.
-        var snapshotSource = rawSnapshotSource;
+        // Membership/placement split (spec §4.1–4.2, step 2): TopologyObserver's membership
+        // (publishMembershipDeltas) and quorum eval now read LOCAL NTT presence, not the
+        // committed GenerationSnapshot — so NodeRemoved/NodeJoined fire decoupled from
+        // consensus commits. The NTT is built later in assembleNode; nttRef is the empty
+        // deferred holder (declared here, populated at NTT construction, threaded through).
+        // memberSupplier returns Set.of() until NTT exists → PresenceGenerationSnapshotSource
+        // yields none() → TopologyObserver falls back to its legacy BOOTING quorum path
+        // (CRITICAL for cold-start formation). desiredCoreSize is supplied from
+        // ClusterConfigKey.CURRENT (fallback: topology core count) — NTT doesn't carry it.
+        // ctmProvisioned + observedRabiaTerm delegate to the retained KV source / leader term.
+        // rawSnapshotSource (KV-backed) stays alive — it is the ctmProvisioned delegate
+        // below, and the committed placement snapshot it reads still backs BootstrapModule.
+        var nttRef = new AtomicReference<NodeTopologyTracker>();
+        Supplier<Set<NodeId>> presenceMemberSupplier = () -> Option.option(nttRef.get())
+                                                                   .map(NodeTopologyTracker::currentMembers)
+                                                                   .or(Set.of());
+        IntSupplier presenceCoreSizeSupplier = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT)
+                                                            .filter(v -> v instanceof AetherValue.ClusterConfigValue)
+                                                            .map(v -> ((AetherValue.ClusterConfigValue) v).coreCount())
+                                                            .or(() -> config.topology().coreNodes().size());
+        Supplier<Set<NodeId>> ctmProvisionedSupplier = () -> rawSnapshotSource.currentMembershipView()
+                                                                              .map(org.pragmatica.consensus.topology.MembershipView::ctmProvisionedNodeIds)
+                                                                              .or(Set.of());
+        var snapshotSource = PresenceGenerationSnapshotSource.presenceGenerationSnapshotSource(presenceMemberSupplier,
+                                                                                               presenceCoreSizeSupplier,
+                                                                                               ctmProvisionedSupplier,
+                                                                                               rabiaTermSupplier);
         // Membership v2 — `syncHoldRegistry` is consulted by the leader reconciler to skip nodes
         // that are legitimately syncing KV state. The KVSyncResponse signal no longer drives a
         // readiness candidate; the v2 control-heartbeat carries node-reported readiness instead.
@@ -422,6 +447,7 @@ public interface AetherNode extends ManageableNode {
                                                              leaderTerm,
                                                              hlcClock,
                                                              snapshotSource,
+                                                             nttRef,
                                                              syncHoldRegistry,
                                                              jvmExit));
     }
@@ -503,6 +529,7 @@ public interface AetherNode extends ManageableNode {
                                                    AtomicLong leaderTerm,
                                                    HlcClock hlcClock,
                                                    GenerationSnapshotSource snapshotSource,
+                                                   AtomicReference<NodeTopologyTracker> nttRef,
                                                    org.pragmatica.cluster.node.rabia.SyncHoldRegistry syncHoldRegistry,
                                                    Runnable jvmExit) {
         // Concrete adapter (not a lambda) so we can override `sendOutcome` and forward
@@ -1310,7 +1337,8 @@ public interface AetherNode extends ManageableNode {
         // before the forward timeout would otherwise burn. NTT is constructed later (membership v2
         // wiring below), so the filter derefs the shared nttRef at request time; before NTT exists it
         // degrades to identity (forward falls back to the connectedPeers-only behavior).
-        var nttRef = new AtomicReference<NodeTopologyTracker>();
+        // `nttRef` is the deferred holder built in createNode (also feeds the
+        // PresenceGenerationSnapshotSource membership supplier); populated at NTT construction below.
         AccessibilityFilter accessibilityFilter =
             candidates -> Option.option(nttRef.get())
                                 .map(tracker -> tracker.keepOnlyAccessible(candidates))
@@ -1559,6 +1587,7 @@ public interface AetherNode extends ManageableNode {
         var leaderReconciler = LeaderReconciler.leaderReconciler(membershipConfig,
                                                                  ntt,
                                                                  configuredCoreCountSupplier,
+                                                                 leaderTerm::get,
                                                                  clusterTopologyManager,
                                                                  TimeSource.system(),
                                                                  SharedScheduler::schedule);

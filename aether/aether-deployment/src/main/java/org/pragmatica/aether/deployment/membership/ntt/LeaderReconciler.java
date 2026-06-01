@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
+import java.util.function.Supplier;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -74,21 +75,40 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// does not forget an in-flight node and re-provision a phantom replacement (the auto-heal
 /// provisioning storm). The map is internal — exposed only via observability accessors.
 ///
-/// **Arm-after-first-full-membership latch (safety-critical — Bug C).** The reconciler
-/// must NEVER provision a replacement for a configured core peer that has not yet joined
-/// (initial cluster formation / slow join). Provisioning is identity-aware, not
-/// count-aware: a deficit (`effective < configuredCoreCount`) is ambiguous on its own.
-/// Before the cluster has reached full configured membership at least once, a deficit
-/// means "configured peers are still joining" → the reconciler must WAIT (provision
-/// nothing). Only after the cluster has been observed at full configured membership
-/// (`clusterMembershipCount >= configuredCoreCount`, with `configuredCoreCount >= 1`) does
-/// `armedForProvisioning` latch to `true` (set-only, never reset); after arming, a deficit
-/// means "a node that WAS present departed" → provision a replacement (auto-heal). Without
-/// this latch the count-only reconciler spawns PHANTOM replacement containers for
-/// still-joining peers during formation, driving a host-OOM death-spiral (cite
-/// membership-unification-spec P5 — identity-aware reconciler). The latch gates
-/// provisioning ONLY; draining excess is always safe and is never gated (during formation
+/// **Reached-full-membership latch (safety-critical — Bug C).** The reconciler must NEVER
+/// provision a replacement for a configured core peer that has not yet joined (initial
+/// cluster formation / slow join). Provisioning is identity-aware, not count-aware: a
+/// deficit (`effective < configuredCoreCount`) is ambiguous on its own. The correct signal
+/// for "cold-start is over" is a FACT, not a timer: the cluster has been OBSERVED at full
+/// configured size. Before that, a deficit means "configured peers are still climbing" →
+/// the reconciler must WAIT (provision nothing). Once `clusterMembershipCount >=
+/// configuredCoreCount` is observed (with `configuredCoreCount >= 1`), `reachedFullMembership`
+/// latches to `true` (one-way, never reset); thereafter a deficit means "a node that WAS
+/// present departed" → provision a replacement (auto-heal), gated ONLY by the deficit-debounce
+/// + quorum-safety + the `armedForProvisioning` arm-latch. The previous timer-anchored
+/// cold-start grace (`armedAtNanos + nttDepartureTimeout × 1.5`) is GONE as the provisioning
+/// suppressor: it was the auto-heal bug — its window was anchored at the FIRST reconcile pass
+/// (a node's death, not formation), so it suppressed forever once the deficit was observed and
+/// no further pass re-evaluated. Without the latch the count-only reconciler spawns PHANTOM
+/// replacement containers for still-joining peers during formation, driving a host-OOM
+/// death-spiral (cite membership-unification-spec P5 — identity-aware reconciler). The latch
+/// gates provisioning ONLY; draining excess is always safe and is never gated (during formation
 /// `effective <= configured` so the drain set is naturally empty).
+///
+/// **Re-election variant.** A freshly-promoted leader inheriting an already-formed, now-deficient
+/// cluster (e.g. 4/5) starts with `reachedFullMembership=false` and would never observe full
+/// membership again (the dead peers never return under restart:"no") — wedging in cold-start
+/// suppression. To break this, when leadership is gained via RE-ELECTION (the leader term > 1,
+/// meaning a prior leader existed and the cluster formed under it), `reachedFullMembership` is set
+/// `true` on activation: this is not initial formation, so a sub-full count is a departure, not a
+/// slow join. The term is read from the injected `leaderTermSupplier`.
+///
+/// **Suppressed-deficit re-evaluation tick (Fix 2).** A pass that computes a deficit but suppresses
+/// provisioning purely on the deficit-debounce TIME gate (`WITHIN_DEBOUNCE`) schedules a single
+/// follow-up reconcile after the remaining debounce window (+ a small margin), so the deficit is
+/// acted on when the gate clears instead of waiting for the next NTT membership-change event (which
+/// never arrives when membership is stable in deficit). At most one such follow-up is pending at a
+/// time (deduped via [`#debounceReEvalFutureRef`]); it does not busy-loop.
 ///
 /// **Concurrency.** `isLeader`, `reconcileInFlight`, `rescheduleRequested` are
 /// [`AtomicBoolean`]s; `activationFutureRef` is an [`AtomicReference`];
@@ -110,6 +130,11 @@ public final class LeaderReconciler {
     private final TimeSpan inFlightExpiry;
     private final NodeTopologyTracker ntt;
     private final IntSupplier configuredCoreCountSupplier;
+    /// Leader-term supplier (monotonic, incremented once per election). A value `> 1` on
+    /// activation means a prior leader existed → this leadership was gained via RE-ELECTION
+    /// (the cluster formed under a prior leader), so [`#reachedFullMembership`] is pre-latched
+    /// on activation to avoid wedging in cold-start suppression on an already-formed cluster.
+    private final Supplier<Long> leaderTermSupplier;
     private final ClusterTopologyManager ctm;
     private final TimeSource timeSource;
     private final NttTimerScheduler scheduler;
@@ -118,12 +143,15 @@ public final class LeaderReconciler {
     private final AtomicBoolean reconcileInFlight = new AtomicBoolean(false);
     private final AtomicBoolean rescheduleRequested = new AtomicBoolean(false);
     private final AtomicBoolean armedForProvisioning = new AtomicBoolean(false);
-    /// Nanosecond timestamp captured exactly once when `armedForProvisioning` first
-    /// transitions false→true (cold-start grace anchor). `UNSET_NANOS` until armed; never
-    /// rewritten thereafter, so the grace window is a one-time cold-start suppression and a
-    /// leader elected long after formation has `armedAtNanos` far in the past — grace never
-    /// re-suppresses legitimate later auto-heal.
-    private volatile long armedAtNanos = UNSET_NANOS;
+    /// One-way latch: `true` once the cluster has been OBSERVED at full configured membership
+    /// (`clusterMembershipCount >= configuredCoreCount`, `configuredCoreCount >= 1`), or pre-set on
+    /// a RE-ELECTION activation (leader term > 1). Provisioning is suppressed while this is `false`
+    /// (still cold-starting / climbing — a deficit may be a slow-joining configured node; never
+    /// spawn a phantom). Once `true` the cold-start grace NO LONGER applies — a deficit is a
+    /// departure and provisioning is gated only by the deficit-debounce + quorum-safety +
+    /// [`#armedForProvisioning`]. Replaces the buggy timer-anchored grace as the cold-start
+    /// suppressor (Bug C; membership-unification-spec P5).
+    private final AtomicBoolean reachedFullMembership = new AtomicBoolean(false);
     /// Nanosecond timestamp of the leading edge of the current deficit run (deficit debounce
     /// anchor). Set when a deficit (`effective < configuredCoreCount`) is first observed after a
     /// non-deficit pass; reset to `UNSET_NANOS` whenever `effective >= configuredCoreCount`. A
@@ -132,6 +160,11 @@ public final class LeaderReconciler {
     private volatile long deficitSinceNanos = UNSET_NANOS;
     private final AtomicReference<ScheduledFuture<?>> activationFutureRef = new AtomicReference<>();
     private final AtomicReference<ScheduledFuture<?>> inFlightSweepFutureRef = new AtomicReference<>();
+    /// At most one pending suppressed-deficit re-evaluation follow-up (Fix 2). A `WITHIN_DEBOUNCE`
+    /// pass schedules one reconcile after the remaining debounce window; concurrent attempts to
+    /// schedule a second are deduped (a non-null ref short-circuits the schedule), and the ref is
+    /// nulled when the follow-up fires so the next debounce window can arm a fresh one.
+    private final AtomicReference<ScheduledFuture<?>> debounceReEvalFutureRef = new AtomicReference<>();
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
     private final ConcurrentHashMap<NodeId, Long> inFlightProvisioning = new ConcurrentHashMap<>();
     /// Leader-side confirmed-death co-confirmation tracker (NTT hard-evict fast path).
@@ -159,6 +192,7 @@ public final class LeaderReconciler {
     private LeaderReconciler(MembershipConfig membershipConfig,
                              NodeTopologyTracker ntt,
                              IntSupplier configuredCoreCountSupplier,
+                             Supplier<Long> leaderTermSupplier,
                              ClusterTopologyManager ctm,
                              TimeSource timeSource,
                              NttTimerScheduler scheduler) {
@@ -178,6 +212,7 @@ public final class LeaderReconciler {
         this.inFlightExpiry = computeInFlightExpiry(membershipConfig.nttDepartureTimeout());
         this.ntt = ntt;
         this.configuredCoreCountSupplier = configuredCoreCountSupplier;
+        this.leaderTermSupplier = leaderTermSupplier;
         this.ctm = ctm;
         this.timeSource = timeSource;
         this.scheduler = scheduler;
@@ -187,10 +222,12 @@ public final class LeaderReconciler {
     public static LeaderReconciler leaderReconciler(MembershipConfig membershipConfig,
                                                     NodeTopologyTracker ntt,
                                                     IntSupplier configuredCoreCountSupplier,
+                                                    Supplier<Long> leaderTermSupplier,
                                                     ClusterTopologyManager ctm) {
         return new LeaderReconciler(membershipConfig,
                                     ntt,
                                     configuredCoreCountSupplier,
+                                    leaderTermSupplier,
                                     ctm,
                                     TimeSource.system(),
                                     SharedScheduler::schedule);
@@ -201,12 +238,14 @@ public final class LeaderReconciler {
     public static LeaderReconciler leaderReconciler(MembershipConfig membershipConfig,
                                                     NodeTopologyTracker ntt,
                                                     IntSupplier configuredCoreCountSupplier,
+                                                    Supplier<Long> leaderTermSupplier,
                                                     ClusterTopologyManager ctm,
                                                     TimeSource timeSource,
                                                     NttTimerScheduler scheduler) {
         return new LeaderReconciler(membershipConfig,
                                     ntt,
                                     configuredCoreCountSupplier,
+                                    leaderTermSupplier,
                                     ctm,
                                     timeSource,
                                     scheduler);
@@ -215,13 +254,21 @@ public final class LeaderReconciler {
     /// Activate the leader-pinned reconciler. Idempotent — if already active, returns
     /// without altering state.
     ///
-    /// On the leader-edge transition: schedule a single one-shot delayed reconcile at
-    /// `nttDepartureTimeout × 1.5`. No immediate reconcile is emitted — the delay lets
-    /// SWIM gossip and QUIC connections quiesce before the first reconcile pass runs.
+    /// On the leader-edge transition: if leadership was gained via RE-ELECTION (leader term > 1,
+    /// meaning a prior leader existed and the cluster already formed under it), pre-latch
+    /// [`#reachedFullMembership`] so a new leader inheriting an already-formed, now-deficient
+    /// cluster (e.g. 4/5) is not wedged in cold-start suppression by never re-observing full
+    /// membership. Then schedule a single one-shot delayed reconcile at `nttDepartureTimeout × 1.5`.
+    /// No immediate reconcile is emitted — the delay lets SWIM gossip and QUIC connections quiesce
+    /// before the first reconcile pass runs.
     @Contract
     public void activate() {
         if (!isLeader.compareAndSet(false, true)) {
             return;
+        }
+        if (leaderTermSupplier.get() > 1L) {
+            reachedFullMembership.set(true);
+            log.info("LeaderReconciler re-election activation (leaderTerm={}) — reachedFullMembership pre-latched", leaderTermSupplier.get());
         }
         var future = scheduler.schedule(this::onActivationDelayFire, leaderActivationDelay);
 
@@ -238,8 +285,10 @@ public final class LeaderReconciler {
         }
         cancelPendingActivation();
         cancelInFlightSweep();
+        cancelDebounceReEval();
         inFlightProvisioning.clear();
         deficitSinceNanos = UNSET_NANOS;
+        reachedFullMembership.set(false);
         swimFaulty.clear();
         livenessGone.clear();
         terminallyEvicted.clear();
@@ -372,12 +421,21 @@ public final class LeaderReconciler {
     }
 
     /// Observability — whether the provisioning latch has armed. Starts `false`; latches
-    /// `true` the first reconcile pass that observes the cluster at full configured
-    /// membership (`clusterMembershipCount >= configuredCoreCount`, `configuredCoreCount >=
-    /// 1`); never resets. While unarmed, provisioning is suppressed (Bug C cold-start
-    /// guard — membership-unification-spec P5).
+    /// `true` the first reconcile pass that observes the cluster at configured quorum
+    /// (`clusterMembershipCount >= quorumThreshold(configuredCoreCount)`, `configuredCoreCount >=
+    /// 1`); never resets within a leader term. While unarmed, provisioning is suppressed.
     public boolean isArmedForProvisioning() {
         return armedForProvisioning.get();
+    }
+
+    /// Observability — whether the reached-full-membership latch has set. Starts `false`; latches
+    /// `true` the first reconcile pass that observes the cluster at FULL configured membership
+    /// (`clusterMembershipCount >= configuredCoreCount`, `configuredCoreCount >= 1`), or on a
+    /// RE-ELECTION activation (leader term > 1); never resets within a leader term. While `false`
+    /// provisioning is suppressed (Bug C cold-start guard — replaces the buggy timer-anchored
+    /// grace; membership-unification-spec P5).
+    public boolean isReachedFullMembership() {
+        return reachedFullMembership.get();
     }
 
     /// Observability — number of in-flight provisioning records this leader is tracking.
@@ -446,16 +504,18 @@ public final class LeaderReconciler {
             return;
         }
         activationFutureRef.set(null);
+        log.info("LeaderReconciler activated (leadership gained) at nanoTime={}", timeSource.nanoTime());
         runReconcileBody(ReconcileTrigger.LEADER_ACTIVATION);
     }
 
     /// Single reconcile pass. Derives `clusterMembershipCount` and the current member set
-    /// from [`NodeTopologyTracker#currentMembers`], arms the provisioning latch on first full
-    /// configured membership, then gates provisioning behind `quorumSafe &&
-    /// armedForProvisioning` (identity-aware rule — membership-unification-spec P5).
-    /// Provisioning is suppressed until the latch arms so a deficit during initial
-    /// formation / slow join never spawns phantom replacements for still-joining configured
-    /// peers (Bug C). Draining is independently protected by a HARD FLOOR in
+    /// from [`NodeTopologyTracker#currentMembers`], latches [`#reachedFullMembership`] on first
+    /// observed full configured membership, then gates provisioning behind `quorumSafe &&
+    /// armedForProvisioning && reachedFullMembership && deficitDebounced` (identity-aware rule —
+    /// membership-unification-spec P5). Provisioning is suppressed until the latch reaches full
+    /// membership so a deficit during initial formation / slow join never spawns phantom
+    /// replacements for still-joining configured peers (Bug C); once full, the only remaining
+    /// time-gate is the deficit-debounce. Draining is independently protected by a HARD FLOOR in
     /// [`#computePeersToDrain`]: it never drains confirmed members below `configuredCoreCount`
     /// in a single pass, so an `effective` count inflated by in-flight placeholders (a
     /// requested-but-not-joined replacement) can never trigger a quorum-dissolving drain of a
@@ -504,7 +564,26 @@ public final class LeaderReconciler {
         // must be >= 1 to be armable.
         if (configuredCoreCount >= 1 && clusterMembershipCount >= quorumThreshold(configuredCoreCount)) {
             if (armedForProvisioning.compareAndSet(false, true)) {
-                armedAtNanos = now;
+                log.info("Provisioning ARMED at nanoTime={} (clusterMembershipCount={}, configuredCoreCount={}, quorumThreshold={})",
+                         now, clusterMembershipCount, configuredCoreCount, quorumThreshold(configuredCoreCount));
+            }
+        }
+
+        // Reached-full-membership latch (Bug C — cold-start-over is a FACT, not a timer). Sourced
+        // from NTT's INDEPENDENT high-water mark ([`NodeTopologyTracker#peakMembershipCount`]), NOT
+        // the per-pass `clusterMembershipCount`: the reconciler is departure-triggered, so its FIRST
+        // pass runs at the post-departure count (e.g. 4/5) and never during the full-membership
+        // window — a per-pass `>= configured` check could therefore never latch (live Docker trace
+        // proved it). NTT updates the peak on the 1→full formation growth regardless of reconcile
+        // timing, so the first pass at 4/5 sees peak=5 → latches. Latch true once; never resets.
+        // While false the cluster never reached full — a deficit may be a slow-joining configured
+        // peer, so provisioning is suppressed (COLD_START_NOT_FULL). Once true the cold-start guard
+        // no longer applies: a deficit is a departure, gated only by deficit-debounce +
+        // quorum-safety + the arm latch.
+        if (configuredCoreCount >= 1 && ntt.peakMembershipCount() >= configuredCoreCount) {
+            if (reachedFullMembership.compareAndSet(false, true)) {
+                log.info("Reached full membership at nanoTime={} (peakMembershipCount={}, configuredCoreCount={})",
+                         now, ntt.peakMembershipCount(), configuredCoreCount);
             }
         }
 
@@ -528,12 +607,19 @@ public final class LeaderReconciler {
 
         var quorumSafe = clusterMembershipCount >= quorumThreshold(configuredCoreCount);
         var provisioningPermitted = quorumSafe && provisioningAllowed(now, effective, configuredCoreCount);
-        logProvisioningSuppression(now, effective, configuredCoreCount, quorumSafe, provisioningPermitted);
+        logProvisioningDecision(now, trigger, currentMembers, effective, configuredCoreCount, quorumSafe, provisioningPermitted);
         var peersToProvision = provisioningPermitted ? computePeersToProvision(configuredCoreCount, effective) : Set.<NodeId>of();
         var peersToDrain = quorumSafe ? computePeersToDrain(currentMembers, configuredCoreCount, effective) : Set.<NodeId>of();
 
         dispatchProvisionActions(now, peersToProvision, currentMembers);
         dispatchDrainActions(peersToDrain);
+
+        // Fix 2 — suppressed-deficit re-evaluation tick. A pass that has a quorum-safe, armed,
+        // full-membership deficit suppressed ONLY by the deficit-debounce time gate schedules a
+        // single follow-up reconcile after the remaining debounce window so the deficit is acted on
+        // when the gate clears — instead of waiting for an NTT membership-change event that never
+        // arrives while membership is stable in deficit. Deduped + bounded; does not busy-loop.
+        scheduleDebounceReEvalIfNeeded(now, effective, configuredCoreCount, quorumSafe, provisioningPermitted);
 
         // Restart the debounce clock once we ACT on a deficit. The just-dispatched in-flight
         // placeholder makes `effective` meet target on the next pass (anchor would reset anyway),
@@ -573,23 +659,20 @@ public final class LeaderReconciler {
 
     /// Provisioning gate (three AND-ed conditions; provisioning fires only when ALL hold):
     /// (1) the arm-after-first-quorum latch has armed (Bug C — never provision for a configured
-    /// peer still joining during formation); (2) the cold-start grace window has elapsed since the
-    /// latch armed (`now - armedAtNanos >= provisioningGraceWindow`, == nttDepartureTimeout × 1.5)
-    /// — suppresses the transient sub-count seen while QUIC peers reconnect through the
-    /// election view-change immediately after a freshly-elected leader arms; (3) the deficit has
-    /// persisted past the debounce window (`now - deficitSinceNanos >= deficitDebounceWindow`, ==
-    /// nttDepartureTimeout) — a single transient pass below configured never provisions, only a
-    /// sustained deficit (a real departure) does. Grace is one-time (anchored to the never-reset
-    /// arm time); debounce is per-deficit-run (reset on recovery), so genuine later auto-heal is
-    /// never permanently suppressed.
+    /// peer still joining during formation); (2) the cluster has been OBSERVED at full configured
+    /// membership ([`#reachedFullMembership`]) — the cold-start-over signal is a FACT, not a timer.
+    /// While the cluster is still climbing to target during formation a deficit may be a
+    /// slow-joining configured peer, so provisioning is suppressed; once full has been seen (or this
+    /// leader was re-elected onto an already-formed cluster), a deficit is a departure;
+    /// (3) the deficit has persisted past the debounce window (`now - deficitSinceNanos >=
+    /// deficitDebounceWindow`, == nttDepartureTimeout) — a single transient pass below configured
+    /// never provisions, only a sustained deficit (a real departure) does. The latch is one-time
+    /// (never reset within a leader term); debounce is per-deficit-run (reset on recovery), so
+    /// genuine later auto-heal is never permanently suppressed.
     private boolean provisioningAllowed(long now, int effective, int configuredCoreCount) {
         return armedForProvisioning.get()
-               && pastGraceWindow(now)
+               && reachedFullMembership.get()
                && deficitDebounced(now, effective, configuredCoreCount);
-    }
-
-    private boolean pastGraceWindow(long now) {
-        return armedAtNanos != UNSET_NANOS && now - armedAtNanos >= provisioningGraceWindow.nanos();
     }
 
     private boolean deficitDebounced(long now, int effective, int configuredCoreCount) {
@@ -598,26 +681,71 @@ public final class LeaderReconciler {
                && now - deficitSinceNanos >= deficitDebounceWindow.nanos();
     }
 
-    /// Operator-facing debug trace: when a genuine deficit exists and is quorum-safe but
-    /// provisioning was nonetheless suppressed, record which gate blocked it so the cold-start
-    /// "grace" suppression is distinguishable from the "deficit debounce pending" suppression in
-    /// node logs. No-op when there is no deficit or provisioning was permitted.
+    /// Operator-facing INFO trace (one line per reconcile pass that has a deficit OR a permitted
+    /// provision; healthy at-target no-op passes are NOT logged, bounding volume). Records the full
+    /// provisioning-decision context so a Docker run can pin exactly why no replacement is
+    /// provisioned after a kill: trigger, membership count + member ids, effective capacity,
+    /// configured core count, the arm latch, the reached-full-membership latch, deficit age, quorum
+    /// safety, and the precise suppression REASON. Pure logging — computes deficitAgeMs locally,
+    /// mutates no state, alters no control flow.
     @Contract
-    private void logProvisioningSuppression(long now,
-                                            int effective,
-                                            int configuredCoreCount,
-                                            boolean quorumSafe,
-                                            boolean provisioningPermitted) {
-        if (!quorumSafe || provisioningPermitted || effective >= configuredCoreCount || !armedForProvisioning.get()) {
+    private void logProvisioningDecision(long now,
+                                         ReconcileTrigger trigger,
+                                         Set<NodeId> currentMembers,
+                                         int effective,
+                                         int configuredCoreCount,
+                                         boolean quorumSafe,
+                                         boolean provisioningPermitted) {
+        var hasDeficit = effective < configuredCoreCount;
+
+        if (!hasDeficit && !provisioningPermitted) {
             return;
         }
-        if (!pastGraceWindow(now)) {
-            log.debug("Provisioning suppressed: cold-start grace (effective={} configured={} armedAtNanos={} now={})",
-                      effective, configuredCoreCount, armedAtNanos, now);
-        } else {
-            log.debug("Provisioning suppressed: deficit debounce pending (effective={} configured={} deficitSinceNanos={} now={})",
-                      effective, configuredCoreCount, deficitSinceNanos, now);
+        log.info("LeaderReconciler pass: trigger={} clusterMembershipCount={} peakMembershipCount={} members={} effective={} configuredCoreCount={} armedForProvisioning={} reachedFullMembership={} deficitAgeMs={} quorumSafe={} reason={}",
+                 trigger,
+                 currentMembers.size(),
+                 ntt.peakMembershipCount(),
+                 currentMembers,
+                 effective,
+                 configuredCoreCount,
+                 armedForProvisioning.get(),
+                 reachedFullMembership.get(),
+                 deficitAgeMs(now),
+                 quorumSafe,
+                 suppressionReason(effective, configuredCoreCount, quorumSafe, provisioningPermitted));
+    }
+
+    /// Age in milliseconds of the current deficit run (`now - deficitSinceNanos`), or `-1` when no
+    /// deficit run is in progress. Pure logging computation.
+    private long deficitAgeMs(long now) {
+        if (deficitSinceNanos == UNSET_NANOS) {
+            return -1L;
         }
+        return (now - deficitSinceNanos) / 1_000_000L;
+    }
+
+    /// Precise suppression reason for the decision log. `NONE_PROVISIONING` when a provision is
+    /// permitted; otherwise the first failing gate in evaluation order. Pure logging computation.
+    private String suppressionReason(int effective,
+                                     int configuredCoreCount,
+                                     boolean quorumSafe,
+                                     boolean provisioningPermitted) {
+        if (provisioningPermitted) {
+            return "NONE_PROVISIONING";
+        }
+        if (effective >= configuredCoreCount) {
+            return "NO_DEFICIT";
+        }
+        if (!quorumSafe) {
+            return "NOT_QUORUM_SAFE";
+        }
+        if (!armedForProvisioning.get()) {
+            return "NOT_ARMED";
+        }
+        if (!reachedFullMembership.get()) {
+            return "COLD_START_NOT_FULL";
+        }
+        return "WITHIN_DEBOUNCE";
     }
 
     /// Effective cluster capacity = the size of the UNION of confirmed members and in-flight
@@ -689,6 +817,9 @@ public final class LeaderReconciler {
 
     @Contract
     private void dispatchProvisionActions(long nowNanos, Set<NodeId> peersToProvision, Set<NodeId> currentMembers) {
+        if (!peersToProvision.isEmpty()) {
+            log.info("LeaderReconciler dispatching provision for {} peer(s): {}", peersToProvision.size(), peersToProvision);
+        }
         peersToProvision.forEach(placeholder -> dispatchSingleProvision(nowNanos, placeholder, currentMembers));
     }
 
@@ -759,6 +890,69 @@ public final class LeaderReconciler {
         }
         if (!inFlightProvisioning.isEmpty()) {
             armInFlightSweep();
+        }
+    }
+
+    /// Fix 2 — schedule a single suppressed-deficit re-evaluation follow-up when this pass had a
+    /// quorum-safe, armed, full-membership deficit suppressed ONLY by the deficit-debounce time gate
+    /// (the `WITHIN_DEBOUNCE` reason). The follow-up fires after the remaining debounce window plus a
+    /// small margin, re-entering the reconcile path so the now-aged deficit can provision — instead
+    /// of waiting for an NTT membership-change event that never arrives while membership is stable in
+    /// deficit. Deduped: a non-null [`#debounceReEvalFutureRef`] short-circuits (at most one pending),
+    /// the CAS-arm cancels a lost race, so it never busy-loops or unbounded-schedules.
+    @Contract
+    private void scheduleDebounceReEvalIfNeeded(long now,
+                                                int effective,
+                                                int configuredCoreCount,
+                                                boolean quorumSafe,
+                                                boolean provisioningPermitted) {
+        var suppressedByDebounceOnly = !provisioningPermitted
+                                       && quorumSafe
+                                       && armedForProvisioning.get()
+                                       && reachedFullMembership.get()
+                                       && effective < configuredCoreCount
+                                       && deficitSinceNanos != UNSET_NANOS;
+
+        if (!suppressedByDebounceOnly || debounceReEvalFutureRef.get() != null) {
+            return;
+        }
+        var future = scheduler.schedule(this::runDebounceReEval, debounceReEvalDelay(now));
+
+        if (!debounceReEvalFutureRef.compareAndSet(null, future)) {
+            future.cancel(false);
+        }
+    }
+
+    /// Remaining time until the deficit-debounce window elapses for the current deficit run, plus the
+    /// short debounce margin so the follow-up reconcile observes the gate already cleared. Clamped to
+    /// at least the margin so a near-elapsed deficit still defers by one short tick rather than firing
+    /// inline.
+    private TimeSpan debounceReEvalDelay(long now) {
+        var elapsed = now - deficitSinceNanos;
+        var remaining = deficitDebounceWindow.nanos() - elapsed;
+        var delayNanos = Math.max(remaining, 0L) + DEBOUNCE_DELAY.nanos();
+
+        return timeSpan(delayNanos).nanos();
+    }
+
+    /// Re-evaluation follow-up tick (Fix 2): clear the pending ref and re-trigger a reconcile so the
+    /// sustained deficit is re-evaluated now that the debounce window has elapsed. Non-leader nodes
+    /// no-op (a deposed leader's follow-up must not act).
+    @Contract
+    private void runDebounceReEval() {
+        debounceReEvalFutureRef.set(null);
+        if (!isLeader.get()) {
+            return;
+        }
+        triggerReconcile(ReconcileTrigger.NTT_FIRE);
+    }
+
+    @Contract
+    private void cancelDebounceReEval() {
+        var prev = debounceReEvalFutureRef.getAndSet(null);
+
+        if (prev != null) {
+            prev.cancel(false);
         }
     }
 

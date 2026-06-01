@@ -374,4 +374,53 @@ class NodeTopologyTrackerTest {
                 .containsExactly(SELF, A);
         }
     }
+
+    /// High-water membership mark — the one-way peak the leader reconciler latches its
+    /// cold-start-over guard off (independent of reconcile-pass timing).
+    @Nested
+    class PeakMembership {
+        private NodeTopologyTracker formedTracker() {
+            var ntt = tracker();
+            healthy(A);
+            healthy(B);
+            healthy(C);
+            sampleTimes(ntt, K_UP); // SELF + A + B + C = 4 stable
+            return ntt;
+        }
+
+        @Test
+        void freshTracker_peakIsSelfOnly() {
+            assertThat(tracker().peakMembershipCount()).isEqualTo(1);
+        }
+
+        @Test
+        void peakRecordsFormationGrowth() {
+            var ntt = formedTracker();
+
+            assertThat(ntt.currentMemberCount()).isEqualTo(4);
+            assertThat(ntt.peakMembershipCount()).isEqualTo(4);
+        }
+
+        @Test
+        void peakNeverDecreasesAfterDeparture() {
+            var ntt = formedTracker(); // SELF + A + B + C = 4
+            assertThat(ntt.peakMembershipCount()).isEqualTo(4);
+
+            absent(C);
+            sampleTimes(ntt, K_DOWN); // C leaves the stable set: 4 -> 3
+
+            assertThat(ntt.currentMemberCount()).isEqualTo(3);
+            // Peak is a one-way high-water mark — it holds at the formation maximum.
+            assertThat(ntt.peakMembershipCount()).isEqualTo(4);
+        }
+
+        @Test
+        void peakSurvivesHardEvict() {
+            var ntt = formedTracker(); // peak 4
+            ntt.evict(C);
+
+            assertThat(ntt.currentMemberCount()).isEqualTo(3);
+            assertThat(ntt.peakMembershipCount()).isEqualTo(4);
+        }
+    }
 }
