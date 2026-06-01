@@ -9,8 +9,9 @@ Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 
 This session **fixed the auto-heal provisioning failure** that has blocked the destructive suite for many sessions, and Docker-validated it. It also landed steps 1-2 of the membership/placement split. **The root of the auto-heal failure was NOT consensus** — correcting the morning handover (`session-handover-2026-06-01.md` §4b), which concluded the blocker was a Rabia consensus wedge. That conclusion came from a **dual-run-contaminated** investigation; on a clean single-instance run the real root was reconciler-side grace/latch logic.
 
-- **Branch `release-1.0.0-rc1`. HEAD `f0f0caea1`. +36 commits unpushed (DO NOT push — RC1 not green). Working tree clean.**
+- **Branch `release-1.0.0-rc1`. HEAD `9fab3ce5a` (auto-heal fix `f0f0caea1` + 2 doc commits). +38 commits unpushed (DO NOT push — RC1 not green). Working tree clean.**
 - **Docker oracle: single-instance only, clean slate** (see `feedback_check_orphan_runs_before_docker` — a contaminated dual run produced a false consensus-wedge root-cause earlier).
+- **A durable exit-137 death-watcher is running on `$TARGET_HOST`** (`/tmp/aether-deaths.log`) and survives across sessions — see memory `reference_exit137_death_watcher` and §5.
 
 ## 1. What shipped + Docker-validated this session
 
