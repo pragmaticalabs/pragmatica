@@ -1701,9 +1701,7 @@ public interface AetherNode extends ManageableNode {
                                                                          .orElse(() -> topologyForSwim.get(connection.nodeId()))
                                                                          .onPresent(swimHealthDetector::onNodeConnected)
                                                                          .onEmpty(() -> swimHealthDetector.onNodeConnected(connection.nodeId()))));
-        Supplier<Integer> initialCoreSizeSupplier = () -> config.topology()
-                                                                .coreNodes()
-                                                                .size();
+        Supplier<BootstrapModule.ClusterConfigBaseline> configBaselineSupplier = () -> clusterConfigBaseline(config.topology());
         var publisherExecutor = java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> {
                                                                                            var thread = new Thread(runnable,
                                                                                                                    "generation-snapshot-publisher");
@@ -1734,7 +1732,7 @@ public interface AetherNode extends ManageableNode {
                                                               projectorEarly,
                                                               kvStore::snapshot,
                                                               config::self,
-                                                              initialCoreSizeSupplier,
+                                                              configBaselineSupplier,
                                                               clusterNode);
         var publisherTickExecutor = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(runnable -> {
                                                                                                         var thread = new Thread(runnable,
@@ -2305,6 +2303,15 @@ public interface AetherNode extends ManageableNode {
         return kvStore.get(AetherKey.GovernorAnnouncementKey.forCommunity(communityId))
                       .filter(v -> v instanceof AetherValue.GovernorAnnouncementValue)
                       .map(v -> ((AetherValue.GovernorAnnouncementValue) v).governorId());
+    }
+
+    /// Project the node's static cluster configuration into the bootstrap-seed baseline used to
+    /// seed `ClusterConfigKey.CURRENT` on leader gain when absent. Sourced from `TopologyConfig`
+    /// (configured cluster size / core bounds) rather than the live committed-topology member
+    /// count, so a freshly-elected leader can seed a faithful baseline on the non-bootstrap and
+    /// restart-with-empty-KV paths before presence-derived membership has converged.
+    private static BootstrapModule.ClusterConfigBaseline clusterConfigBaseline(TopologyConfig topology) {
+        return new BootstrapModule.ClusterConfigBaseline(topology.clusterSize(), topology.coreMin(), topology.coreMax());
     }
 
     private static GenerationChangedSink buildGenerationChangedSink(MessageRouter router) {

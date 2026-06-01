@@ -103,6 +103,49 @@ class BootstrapModuleTest {
             var expected = envName != null && !envName.isBlank() ? envName : "";
             assertThat(seeded.clusterName()).isEqualTo(expected);
         }
+
+        @Test
+        void onLeaderGained_emptyKv_seedsClusterConfigFromStaticConfig() {
+            // Non-bootstrap leader-gain path: ClusterConfigKey.CURRENT is absent and the seed
+            // must be sourced from the node's static ClusterConfig baseline (coreCount / coreMin
+            // / coreMax) — not from the live committed-topology member count.
+            var baseline = new BootstrapModule.ClusterConfigBaseline(/* coreCount */ 5, /* coreMin */ 5, /* coreMax */ 9);
+            var fixture = newFixture(baseline);
+            fixture.module.onLeaderGained();
+
+            var clusterConfigPuts = collectPuts(fixture.cluster.batches).stream()
+                                                                          .filter(p -> p.key() instanceof ClusterConfigKey)
+                                                                          .toList();
+            assertThat(clusterConfigPuts).hasSize(1);
+            var seeded = (ClusterConfigValue) clusterConfigPuts.getFirst().value();
+            assertThat(seeded.coreCount()).isEqualTo(5);
+            assertThat(seeded.coreMin()).isEqualTo(5);
+            assertThat(seeded.coreMax()).isEqualTo(9);
+        }
+
+        @Test
+        void onLeaderGained_existingClusterConfig_notOverwritten() {
+            // Idempotency / single-writer safety: when ClusterConfigKey.CURRENT already exists,
+            // leader-gain must NOT re-seed or overwrite it, regardless of the static baseline.
+            var existingConfig = ClusterConfigValue.clusterConfigValue("",
+                                                                        "existing-cluster",
+                                                                        "1.0.0",
+                                                                        7,
+                                                                        7,
+                                                                        11,
+                                                                        "applied",
+                                                                        42L);
+            var baseline = new BootstrapModule.ClusterConfigBaseline(/* coreCount */ 5, /* coreMin */ 5, /* coreMax */ 9);
+            var fixture = newFixture(baseline);
+            fixture.kv.put(ClusterConfigKey.CURRENT, existingConfig);
+
+            fixture.module.onLeaderGained();
+
+            var clusterConfigPuts = collectPuts(fixture.cluster.batches).stream()
+                                                                          .filter(p -> p.key() instanceof ClusterConfigKey)
+                                                                          .toList();
+            assertThat(clusterConfigPuts).isEmpty();
+        }
     }
 
     @Nested
@@ -191,6 +234,10 @@ class BootstrapModuleTest {
     // ---- Fixture wiring ----
 
     private static Fixture newFixture(int initialCoreSize) {
+        return newFixture(new BootstrapModule.ClusterConfigBaseline(initialCoreSize, initialCoreSize, 0));
+    }
+
+    private static Fixture newFixture(BootstrapModule.ClusterConfigBaseline baseline) {
         var hlcClock = HlcClock.hlcClock(new NodeId("test-self"));
         var projector = ClusterGenerationProjector.clusterGenerationProjector();
         Map<AetherKey, AetherValue> kv = new HashMap<>();
@@ -203,7 +250,7 @@ class BootstrapModuleTest {
                                                       projector,
                                                       () -> Map.copyOf(kv),
                                                       () -> SELF,
-                                                      () -> initialCoreSize,
+                                                      () -> baseline,
                                                       cluster);
         return new Fixture(module, cluster, kv);
     }

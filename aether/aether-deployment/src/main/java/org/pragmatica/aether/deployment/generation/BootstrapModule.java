@@ -51,6 +51,13 @@ public interface BootstrapModule {
     String CORE_COMMUNITY_ID = "core";
     int BOOTSTRAP_MAX_ATTEMPTS = 3;
 
+    /// Static cluster-config baseline carried from the node's `ClusterConfig`/`TopologyConfig`.
+    /// Used to seed `ClusterConfigKey.CURRENT` on leader gain when it is absent — covering both
+    /// the explicit-bootstrap path and the non-bootstrap / restart-with-empty-KV path. Sourced
+    /// from configuration (not the live committed-topology member count), so a leader can seed a
+    /// faithful baseline before presence-derived membership has converged.
+    record ClusterConfigBaseline(int coreCount, int coreMin, int coreMax) {}
+
     @Contract
     void onLeaderGained();
 
@@ -78,7 +85,7 @@ public interface BootstrapModule {
                                            ClusterGenerationProjector projector,
                                            Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier,
                                            Supplier<NodeId> selfSupplier,
-                                           Supplier<Integer> initialCoreSizeSupplier,
+                                           Supplier<ClusterConfigBaseline> configBaselineSupplier,
                                            ClusterNode<KVCommand<AetherKey>> cluster) {
         return new BootstrapModuleRecord(isLeaderSupplier,
                                          rabiaTermSupplier,
@@ -87,7 +94,7 @@ public interface BootstrapModule {
                                          projector,
                                          kvSnapshotSupplier,
                                          selfSupplier,
-                                         initialCoreSizeSupplier,
+                                         configBaselineSupplier,
                                          Option.some(cluster),
                                          new AtomicBoolean(false),
                                          new AtomicInteger(),
@@ -102,7 +109,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                              ClusterGenerationProjector projector,
                              Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier,
                              Supplier<NodeId> selfSupplier,
-                             Supplier<Integer> initialCoreSizeSupplier,
+                             Supplier<BootstrapModule.ClusterConfigBaseline> configBaselineSupplier,
                              Option<ClusterNode<KVCommand<AetherKey>>> cluster,
                              AtomicBoolean bootstrapComplete,
                              AtomicInteger bootstrapAttempts,
@@ -247,17 +254,17 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
         if (existing instanceof ClusterConfigValue) {return Option.none();}
 
-        var initialSize = initialCoreSizeSupplier.get();
+        var baseline = configBaselineSupplier.get();
+        var coreCount = baseline.coreCount();
 
-        if (initialSize <3) {
-            log.debug("Skipping ClusterConfigValue seed: initial core size {} below quorum minimum", initialSize);
+        if (coreCount <3) {
+            log.debug("Skipping ClusterConfigValue seed: configured core count {} below quorum minimum", coreCount);
 
             return Option.none();
         }
 
-        var coreMax = Math.max(initialSize, SEED_CORE_MAX);
-
-        if (coreMax % 2 == 0) {coreMax += 1;}
+        var coreMin = Math.max(SEED_CORE_MIN, baseline.coreMin());
+        var coreMax = normalizeCoreMax(coreCount, baseline.coreMax());
 
         // Seed the cluster name from AETHER_CLUSTER_NAME so the KV-seeded ClusterConfigValue
         // and the env-sourced name agree (Main.verifyClusterNamePresent keys on the same env).
@@ -266,14 +273,28 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         var seed = ClusterConfigValue.clusterConfigValue("",
                                                          seedClusterName,
                                                          "1.0.0",
-                                                         initialSize,
-                                                         SEED_CORE_MIN,
+                                                         coreCount,
+                                                         coreMin,
                                                          coreMax,
                                                          "bootstrap-seed",
                                                          1L);
         KVCommand<AetherKey> command = new KVCommand.Put<AetherKey, AetherValue>(ClusterConfigKey.CURRENT, seed);
 
-        return Option.some(new ClusterConfigSeedPlan(command, initialSize, coreMax));
+        return Option.some(new ClusterConfigSeedPlan(command, coreCount, coreMin, coreMax));
+    }
+
+    /// Normalize the seed `coreMax`: a configured `coreMax` of 0 means "unlimited" — fall back to
+    /// the `SEED_CORE_MAX` ceiling. The result is clamped to be at least `coreCount` and forced
+    /// odd to preserve quorum arithmetic.
+    private static int normalizeCoreMax(int coreCount, int configuredCoreMax) {
+        var ceiling = configuredCoreMax > 0
+                      ? configuredCoreMax
+                      : SEED_CORE_MAX;
+        var coreMax = Math.max(coreCount, ceiling);
+
+        return coreMax % 2 == 0
+               ? coreMax + 1
+               : coreMax;
     }
 
     /// Source the bootstrap-seed cluster name from `AETHER_CLUSTER_NAME` (empty when unset),
@@ -285,8 +306,8 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     @Contract
     private void logClusterConfigSeed(ClusterConfigSeedPlan plan) {
         log.info("Seeding ClusterConfigValue with coreCount={}, coreMin={}, coreMax={}",
-                 plan.initialSize(),
-                 SEED_CORE_MIN,
+                 plan.coreCount(),
+                 plan.coreMin(),
                  plan.coreMax());
     }
 
@@ -502,5 +523,5 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
     private record CoreBootstrapPlan(KVCommand<AetherKey> command, Option<PartitionOwner> existing, NodeId self) {}
 
-    private record ClusterConfigSeedPlan(KVCommand<AetherKey> command, int initialSize, int coreMax) {}
+    private record ClusterConfigSeedPlan(KVCommand<AetherKey> command, int coreCount, int coreMin, int coreMax) {}
 }
