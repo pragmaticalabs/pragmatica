@@ -29,6 +29,7 @@ import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyObserver;
@@ -47,6 +48,7 @@ import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -65,6 +67,7 @@ class QuicClusterNetworkHintEmissionTest {
     private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(5).seconds();
     private static final TimeSpan PING_INTERVAL = TimeSpan.timeSpan(1).seconds();
     private static final TimeSpan HELLO_TIMEOUT = TimeSpan.timeSpan(5).seconds();
+    private static final long T0 = 1_000_000_000L;
 
     private SliceCodec codec;
     private QuicSslContext serverSsl;
@@ -172,6 +175,111 @@ class QuicClusterNetworkHintEmissionTest {
     }
 
     private record ReportedDisconnect(NodeId peerId, long term, long counter) {}
+
+    @Test
+    void onPeerConnected_replaceWinningInitiator_swapsConnection_closesLoser_withoutEmittingRemove() {
+        // Natural establishment dual-dial: a CONNECTED incumbent exists whose initiator is the
+        // HIGHER id. A new client-initiated connection (initiator = self, the LOWER id) wins the
+        // deterministic tiebreak → REPLACE. The displaced incumbent is closed in isolation;
+        // REMOVE must stay SWIM-authoritative — NO PeerDisconnected, NO disconnect listener.
+        var disconnected = new CopyOnWriteArrayList<NodeId>();
+        var listenerInvocations = new CopyOnWriteArrayList<NodeId>();
+        var router = MessageRouter.mutable();
+        router.addRoute(TransportObservation.PeerDisconnected.class, n -> disconnected.add(n.nodeId()));
+        var self = new NodeId("aaa-self");
+        var network = createNetworkWithListener(self, List.of(), router, listenerInvocations::add);
+
+        var peerId = new NodeId("mmm-peer");
+        var incumbentInitiator = new NodeId("zzz-incumbent"); // higher than self → loses tiebreak
+        var incumbent = liveMockConnection(peerId);
+        var state = network.seedPeerForTests(peerId, peerStateWith(peerId, incumbent, incumbentInitiator));
+
+        var winner = liveMockConnection(peerId);
+        // clientInitiated=true → initiator = self.id() = "aaa-self" (lower) → wins.
+        network.onPeerConnectedForTests(winner, NodeRole.ACTIVE, addressOf(peerId), Map.of(), true);
+
+        assertThat(state.activeConnection().or((QuicPeerConnection) null))
+            .as("winner (lower initiator) is now the held connection").isSameAs(winner);
+        assertThat(disconnected).as("REPLACE close must NOT emit PeerDisconnected (REMOVE is SWIM-only)").isEmpty();
+        assertThat(listenerInvocations).as("REPLACE close must NOT fire the disconnect listener").isEmpty();
+    }
+
+    @Test
+    void onPeerConnected_duplicateLosingInitiator_keepsIncumbent_withoutEmittingRemove() {
+        // The mirror case: the CONNECTED incumbent has the LOWER initiator and wins. The new
+        // higher-initiator connection is rejected as DUPLICATE; the incumbent is untouched and
+        // no REMOVE/listener fires.
+        var disconnected = new CopyOnWriteArrayList<NodeId>();
+        var listenerInvocations = new CopyOnWriteArrayList<NodeId>();
+        var router = MessageRouter.mutable();
+        router.addRoute(TransportObservation.PeerDisconnected.class, n -> disconnected.add(n.nodeId()));
+        var self = new NodeId("zzz-self"); // higher than the incumbent initiator below
+        var network = createNetworkWithListener(self, List.of(), router, listenerInvocations::add);
+
+        var peerId = new NodeId("mmm-peer");
+        var incumbentInitiator = new NodeId("aaa-incumbent"); // lower than self → wins tiebreak
+        var incumbent = liveMockConnection(peerId);
+        var state = network.seedPeerForTests(peerId, peerStateWith(peerId, incumbent, incumbentInitiator));
+
+        var loser = liveMockConnection(peerId);
+        // clientInitiated=true → initiator = self.id() = "zzz-self" (higher) → loses, DUPLICATE.
+        network.onPeerConnectedForTests(loser, NodeRole.ACTIVE, addressOf(peerId), Map.of(), true);
+
+        assertThat(state.activeConnection().or((QuicPeerConnection) null))
+            .as("incumbent (lower initiator) is retained").isSameAs(incumbent);
+        assertThat(disconnected).as("DUPLICATE close must NOT emit PeerDisconnected").isEmpty();
+        assertThat(listenerInvocations).as("DUPLICATE close must NOT fire the disconnect listener").isEmpty();
+    }
+
+    @Test
+    void disconnect_afterDuplicateResolutionChanges_stillEmitsRemove_swimPathUnchanged() {
+        // Regression guard: the duplicate-resolution closes (REPLACE / DUPLICATE) are isolated,
+        // but the SWIM authoritative path (disconnect → evict → REMOVE) must remain intact. A
+        // genuine DisconnectNode on a CONNECTED peer (stamped outside the protection window)
+        // still fires PeerDisconnected exactly once — the new tiebreak code did not weaken it.
+        var disconnected = new CopyOnWriteArrayList<NodeId>();
+        var router = MessageRouter.mutable();
+        router.addRoute(TransportObservation.PeerDisconnected.class, n -> disconnected.add(n.nodeId()));
+        var self = new NodeId("aaa-self");
+        var network = createNetworkWithListener(self, List.of(), router, QuicDisconnectListener.noop());
+
+        var peerId = new NodeId("mmm-peer");
+        var incumbentInitiator = new NodeId("zzz-incumbent");
+        var past = System.nanoTime() - Duration.ofMinutes(1).toNanos();
+        var incumbent = liveMockConnection(peerId);
+        // Seed with a past timestamp so the SWIM disconnect protection window does not shield it.
+        network.seedPeerForTests(peerId, peerStateWith(peerId, incumbent, incumbentInitiator, past));
+
+        network.disconnect(new NetworkServiceMessage.DisconnectNode(peerId));
+
+        assertThat(disconnected)
+            .as("authoritative SWIM disconnect still emits REMOVE exactly once (tiebreak code unchanged this path)")
+            .containsExactly(peerId);
+    }
+
+    private QuicPeerConnection liveMockConnection(NodeId peerId) {
+        var chan = mock(QuicChannel.class);
+        when(chan.isActive()).thenReturn(true);
+        // Note: the loser-close path (connection.close() → QuicChannel.close().sync()) runs on a
+        // mock whose close() returns null; the isolated close logs a benign WARN and resolves to
+        // a Cause (no throw, no REMOVE). That is itself evidence the loser IS closed in isolation.
+        return QuicPeerConnection.quicPeerConnection(peerId, chan);
+    }
+
+    private static NodeAddress addressOf(NodeId peerId) {
+        return NodeAddress.nodeAddress("127.0.0.1", 29999).fold(_ -> fail("bad address"), a -> a);
+    }
+
+    private static PeerState peerStateWith(NodeId peerId, QuicPeerConnection connection, NodeId initiatorId) {
+        return peerStateWith(peerId, connection, initiatorId, T0);
+    }
+
+    private static PeerState peerStateWith(NodeId peerId, QuicPeerConnection connection, NodeId initiatorId, long nowNanos) {
+        var state = PeerState.peerState(peerId, nowNanos);
+        state.beginConnecting(nowNanos);
+        state.attach(connection, initiatorId, nowNanos);
+        return state;
+    }
 
     @Test
     void evictionBackoff_suppressesRapidReconnects_underDeterministicClock() {
@@ -366,7 +474,7 @@ class QuicClusterNetworkHintEmissionTest {
         var past = System.nanoTime() - Duration.ofMinutes(1).toNanos();
         var state = PeerState.peerState(peerId, past);
         state.beginConnecting(past);
-        state.attach(QuicPeerConnection.quicPeerConnection(peerId, chan), past);
+        state.attach(QuicPeerConnection.quicPeerConnection(peerId, chan), peerId, past);
         return state;
     }
 

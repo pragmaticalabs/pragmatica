@@ -90,9 +90,8 @@ class QuicClusterNetworkReconcilerTest {
 
     @Test
     void reconcileMissingPeersTick_oneMissingPeer_dispatchesSingleDial() {
-        // Self has lower NodeId than the configured peer so ConnectionDirection lets us
-        // initiate. Peer is unreachable (port 1 is reserved/blackhole). The reconciler should
-        // count it as missing on the first tick and request its NodeInfo from topology.
+        // Peer is unreachable (port 1 is reserved/blackhole). The reconciler should count it
+        // as missing on the first tick and request its NodeInfo from topology (no dial-gate).
         var self = new NodeId("aaa-self");
         var missingPeer = new NodeId("zzz-missing");
         var peerInfo = NodeInfo.nodeInfo(missingPeer, addressOf("127.0.0.1", 1));
@@ -193,21 +192,23 @@ class QuicClusterNetworkReconcilerTest {
     }
 
     @Test
-    void reconcileMissingPeersTick_skipsPeerWhereSelfShouldNotInitiate() {
-        // ConnectionDirection: only the lower NodeId initiates. Self has higher NodeId than
-        // the missing peer here, so the reconciler must skip the dial — the peer accepts
-        // inbound, so any reconnect must come from the lower-id side.
+    void reconcileMissingPeersTick_higherIdSelf_stillDialsMissingPeer() {
+        // No dial-gate: natural establishment. Even when self has the HIGHER NodeId, the
+        // reconciler dials the missing peer — a concurrent dual-dial is resolved by the
+        // deterministic initiator tiebreak in PeerState.attach, not by suppressing the dial.
         var self = new NodeId("zzz-self");
         var lowerPeer = new NodeId("aaa-lower");
         var peerInfo = NodeInfo.nodeInfo(lowerPeer, addressOf("127.0.0.1", 1));
         var stub = countingTopology(self, List.of(peerInfo));
+        var clock = new AtomicLong(1_000_000L);
         var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+        network.overrideWallClockForTests(clock::get);
 
         network.reconcileMissingPeersTick();
 
         assertThat(stub.lookups.getOrDefault(lowerPeer, 0L))
-            .as("higher-NodeId side must not initiate reconciler dial")
-            .isEqualTo(0L);
+            .as("higher-NodeId side must also dial now that the dial-gate is removed")
+            .isEqualTo(1L);
     }
 
     @Test

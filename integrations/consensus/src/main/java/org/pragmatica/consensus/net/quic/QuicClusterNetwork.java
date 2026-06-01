@@ -139,13 +139,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private final Map<NodeId, ReconnectBackoff> reconnectBackoff = new ConcurrentHashMap<>();
     /// Tracks the wall-clock millis at which each peer was first observed missing from
     /// `connectedPeers()` despite being in topology. Cleared when the peer reconnects or
-    /// is authoritatively removed. Used to gate the higher-id side's reconciler attempts:
-    /// `ConnectionDirection.shouldInitiate` normally restricts dialing to the lower-id
-    /// side (preventing dual-Hello collapse at cold start). If the peer has been observed
-    /// unreachable for longer than `RECONCILE_BACKOFF_CAP_MS`, the lower-id side has
-    /// already saturated its backoff curve without success — the higher-id side may then
-    /// also attempt, since one side is provably stuck and the cold-boot dual-Hello race
-    /// window has long since passed.
+    /// is authoritatively removed. Retained for diagnostics/metrics: with natural
+    /// establishment there is no longer a NodeId dial-gate (and no higher-id grace
+    /// window) — any node re-dials any missing peer and a concurrent dual-dial is resolved
+    /// by the deterministic initiator tiebreak in `PeerState.attach`.
     private final Map<NodeId, Long> firstObservedMissingMs = new ConcurrentHashMap<>();
     private volatile LongSupplier wallClockMs = System::currentTimeMillis;
 
@@ -710,15 +707,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @SuppressWarnings("JBCT-PAT-01") // Netty future callback chain
     private void connectPeer(NodeInfo peer) {
         var peerId = peer.id();
-        // Strict ConnectionDirection: only the lower NodeId initiates. The higher NodeId
-        // accepts the inbound connection. Bypassing this caused both sides to dial
-        // concurrently at cold start — both Hellos completed, the second arrival closed
-        // its own QuicChannel as duplicate, and that close cascaded a CONNECTION_CLOSE
-        // to the OTHER side's peer link, silently killing reachability for cluster pairs.
-        if (!ConnectionDirection.shouldInitiate(self.id(), peerId)) {
-            log.debug("Skipping connection to {}: higher NodeId does not initiate (waits for inbound)", peerId);
-            return;
-        }
+        // Natural establishment: any node dials any peer it is missing — there is no longer a
+        // NodeId dial-gate. The original asymmetric gate existed only to dodge a dual-dial
+        // cascade where the duplicate-close fired `channelInactive → processViewChange(REMOVE)`
+        // on the OTHER side, killing reachability. That handler no longer exists (REMOVE is now
+        // SWIM-authoritative only), so concurrent dials are safe: the deterministic
+        // initiator tiebreak in `PeerState.attach` converges both ends on one survivor and
+        // closes the loser in isolation (no REMOVE, no view-change).
         var state = getOrCreatePeer(peerId);
         if (!state.beginConnecting(System.nanoTime())) {
             // Already CONNECTING, CONNECTED, or REMOVED — nothing to do.
@@ -729,7 +724,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // there. peer.address() remains the identity/reporting address everywhere below.
         var address = new InetSocketAddress(peer.resolvedAddress().host(), peer.resolvedAddress().port());
         client.connect(peerId, address)
-              .onSuccess(conn -> onPeerConnected(conn, peer.role(), peer.address(), peer.labels()))
+              .onSuccess(conn -> onPeerConnected(conn, peer.role(), peer.address(), peer.labels(), true))
               .onFailure(cause -> onConnectFailed(peer, cause));
     }
 
@@ -746,7 +741,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Multi-step peer registration with attach outcome dispatch
-    private void onPeerConnected(QuicPeerConnection connection, NodeRole peerRole, NodeAddress peerAddress, Map<String, String> peerLabels) {
+    private void onPeerConnected(QuicPeerConnection connection, NodeRole peerRole, NodeAddress peerAddress, Map<String, String> peerLabels, boolean clientInitiated) {
         var peerId = connection.peerId();
 
         // Never register self as a peer — self-connections cause removal cascades
@@ -767,16 +762,20 @@ public class QuicClusterNetwork implements ClusterNetwork {
             state.markPassive();
         }
 
-        var outcome = state.attach(connection, System.nanoTime());
+        // Initiator identity for the deterministic duplicate tiebreak: our id when WE dialed
+        // (client), the peer's id when WE accepted (server). Both ends, fed the same pair,
+        // converge on the same survivor.
+        var initiatorId = clientInitiated ? self.id() : peerId;
+        var outcome = state.attach(connection, initiatorId, System.nanoTime());
         boolean isReconnect;
-        switch (outcome) {
+        switch (outcome.result()) {
             case PeerState.AttachResult.REJECTED -> {
                 log.debug("Rejecting connection from REMOVED peer {}", peerId);
                 connection.close();
                 return;
             }
             case PeerState.AttachResult.DUPLICATE -> {
-                log.debug("Duplicate connection from {}, closing new (existing is active)", peerId);
+                log.debug("Duplicate connection from {}, closing new (existing initiator wins tiebreak)", peerId);
                 connection.close();
                 return;
             }
@@ -785,6 +784,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 isReconnect = false;
             }
             case PeerState.AttachResult.RECONNECTED -> {
+                quicMetrics.onConnectionEstablished();
+                isReconnect = true;
+            }
+            case PeerState.AttachResult.REPLACED -> {
+                // New initiator won the tiebreak. Close the displaced (losing) link in
+                // isolation — same path as DUPLICATE close: QuicPeerConnection.close() tears
+                // down streams + QUIC channel only. NO processViewChange(REMOVE), NO
+                // disconnect-listener: REMOVE stays SWIM-authoritative. The peer is already
+                // known upstream, so this is treated as a reconnect (no duplicate ADD).
+                outcome.displaced().onPresent(this::closeDroppedConnection);
                 quicMetrics.onConnectionEstablished();
                 isReconnect = true;
             }
@@ -1193,27 +1202,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
             // timestamp via putIfAbsent semantics — the grace window is anchored to the
             // first observation, not the most recent.
             firstObservedMissingMs.putIfAbsent(peerId, nowMs);
-            // ConnectionDirection: lower-id initiates first; higher-id waits for inbound.
-            // RC1 chaos-recovery fix: when the peer has been observed missing for longer
-            // than RECONCILE_BACKOFF_CAP_MS (60s), the lower-id side has provably failed
-            // to initiate (its backoff is capped at 60s, so by now it has tried many
-            // times). Let the higher-id side also attempt. PeerState.beginConnecting
-            // dedup keeps per-side concurrency safe; the 60s grace window is long enough
-            // that the cold-boot dual-Hello race (the original reason for asymmetric dial)
-            // is no longer relevant — both sides discover each other in <1s on cold boot,
-            // so reaching 60s missing means a real partition was attempted-and-failed.
-            if (!ConnectionDirection.shouldInitiate(self.id(), peerId)
-                && !higherIdGracePeriodElapsed(peerId, nowMs)) {
-                continue;
-            }
+            // Natural establishment: there is no NodeId dial-gate. Any node re-dials any peer
+            // it is missing, subject only to membership eligibility (swimMembershipAllows) and
+            // per-peer backoff. A concurrent dual-dial is resolved deterministically by the
+            // initiator tiebreak in `PeerState.attach` — id-order-independent, multi-cloud safe.
             considerPeerForReconcile(peerId, nowMs);
         }
         return unit();
-    }
-
-    private boolean higherIdGracePeriodElapsed(NodeId peerId, long nowMs) {
-        var firstMissed = firstObservedMissingMs.get(peerId);
-        return firstMissed != null && (nowMs - firstMissed) >= RECONCILE_BACKOFF_CAP_MS;
     }
 
     private void considerPeerForReconcile(NodeId peerId, long nowMs) {
@@ -1286,8 +1281,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// peer that flaps once does not pay the doubled delay forever.
     @Contract void resetReconnectBackoff(NodeId peerId) {
         reconnectBackoff.remove(peerId);
-        // Connection restored: clear the missing-since marker so a future drop restarts
-        // the higher-id-grace window. See firstObservedMissingMs documentation.
+        // Connection restored: clear the missing-since marker. See firstObservedMissingMs documentation.
         firstObservedMissingMs.remove(peerId);
     }
 
@@ -1306,6 +1300,21 @@ public class QuicClusterNetwork implements ClusterNetwork {
     PeerState seedPeerForTests(NodeId peerId, PeerState peerState) {
         peers.put(peerId, peerState);
         return peerState;
+    }
+
+    /// Drive the post-handshake `onPeerConnected` attach/dispatch path directly, bypassing a
+    /// live QUIC datagram channel. Used by transport-level tests to exercise the deterministic
+    /// duplicate-resolution (REPLACE / DUPLICATE) and the SWIM-authoritative-REMOVE invariant
+    /// (the loser-close must NOT emit REMOVE / fire the disconnect listener). `clientInitiated`
+    /// mirrors the production origin flag: `true` when THIS node dialed (client), `false` when
+    /// THIS node accepted (server).
+    @Contract
+    void onPeerConnectedForTests(QuicPeerConnection connection,
+                                 NodeRole peerRole,
+                                 NodeAddress peerAddress,
+                                 Map<String, String> peerLabels,
+                                 boolean clientInitiated) {
+        onPeerConnected(connection, peerRole, peerAddress, peerLabels, clientInitiated);
     }
 
     // --- Internal: view change ---
