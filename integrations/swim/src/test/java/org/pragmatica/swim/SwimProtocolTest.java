@@ -28,6 +28,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Option;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.Ack;
@@ -66,11 +67,14 @@ class SwimProtocolTest {
         }
 
         @Test
-        void addSeedMember_newMember_addedAsAlive() {
+        void addSeedMember_newMember_addedAsSuspect() {
+            // Resurrection guard (#231): a channel re-seed is NOT proof of reachability,
+            // so a seeded member is introduced as SUSPECT (probe-on-arrival), not ALIVE.
+            // A real probe-ack or QUIC PeerConnected later promotes it to ALIVE.
             protocol.addSeedMember(NODE_A, ADDR_A);
 
             assertThat(protocol.members()).containsKey(NODE_A);
-            assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.ALIVE);
+            assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.SUSPECT);
             assertThat(listener.joined).hasSize(1);
             assertThat(listener.joined.getFirst().nodeId()).isEqualTo(NODE_A);
         }
@@ -374,8 +378,15 @@ class SwimProtocolTest {
 
             localProtocol.addSeedMember(NODE_A, ADDR_A);
 
-            // Drive ALIVE -> SUSPECT (incarnation=0) via a piggybacked update from a peer.
-            var initialSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0L, ADDR_A);
+            // Seed introduces NODE_A as SUSPECT (probe-on-arrival). Drive it to ALIVE
+            // via positive gossip first so the subsequent SUSPECT gossip is a genuine
+            // ALIVE->SUSPECT edge (not a same-state no-op against the seeded SUSPECT).
+            var aliveGossip = new MembershipUpdate(NODE_A, MemberState.ALIVE, 1L, ADDR_A);
+            localProtocol.onMessage(ADDR_B, new Ping(NODE_B, 0L, List.of(aliveGossip)));
+            assertThat(localProtocol.members().get(NODE_A).state()).isEqualTo(MemberState.ALIVE);
+
+            // Drive ALIVE -> SUSPECT (incarnation=2) via a piggybacked update from a peer.
+            var initialSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 2L, ADDR_A);
             localProtocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(initialSuspect)));
 
             assertThat(localListener.suspected).hasSize(1);
@@ -386,11 +397,11 @@ class SwimProtocolTest {
             var memberRefBefore = localProtocol.members().get(NODE_A);
             assertThat(memberRefBefore.state()).isEqualTo(MemberState.SUSPECT);
 
-            // Flood 14 rebroadcasts of (NODE_A, SUSPECT, incarnation=0). With the bug,
+            // Flood 14 rebroadcasts of (NODE_A, SUSPECT, incarnation=2). With the bug,
             // each of these would replace members.get(NODE_A) and (in the original
             // diagnosis) reset the suspect timer. With the fix they are no-ops.
             for (var i = 0; i < 14; i++) {
-                var rebroadcast = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0L, ADDR_A);
+                var rebroadcast = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 2L, ADDR_A);
                 localProtocol.onMessage(ADDR_B, new Ping(NODE_B, 100L + i, List.of(rebroadcast)));
             }
 
@@ -544,6 +555,118 @@ class SwimProtocolTest {
             var result = protocol.stop();
 
             assertThat(result.isSuccess()).isFalse();
+        }
+    }
+
+    /// Durable monotonic self-incarnation (cluster-churn root-cause fix). A live-but-
+    /// suspected node must refute with a STRICTLY ADVANCING, durably-stored incarnation,
+    /// and must proactively re-advertise its own ALIVE at that incarnation. The prior
+    /// reactive path re-sent the same value forever (`incoming + 1`, never stored), which
+    /// an equal-incarnation Suspect out-ordered (FAULTY>SUSPECT>ALIVE at equal incarnation),
+    /// so a live node could be driven SUSPECT->FAULTY->evicted under loss/churn.
+    @Nested
+    class SelfRefutation {
+        private RecordingTransport transport;
+        private RecordingListener listener;
+        private SwimProtocol protocol;
+
+        @BeforeEach
+        void setUp() {
+            transport = new RecordingTransport();
+            listener = new RecordingListener();
+            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+                                   .fold(cause -> null, v -> v);
+        }
+
+        @Test
+        void handleSelfUpdate_repeatedSuspicion_refutesWithStrictlyIncreasingDurableIncarnation() {
+            // Three suspicions of self at the same incarnation X=5. Each refutation must
+            // strictly advance the durably-stored self-incarnation past 5 (not re-send 6).
+            var selfSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, 5L, SELF_ADDR);
+
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(selfSuspect)));
+            var afterFirst = protocol.selfIncarnationForTest();
+            assertThat(afterFirst)
+                .as("first refutation must strictly exceed the suspicion incarnation (5)")
+                .isGreaterThan(5L);
+
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 2L, List.of(selfSuspect)));
+            var afterSecond = protocol.selfIncarnationForTest();
+            assertThat(afterSecond)
+                .as("durable: each refutation strictly advances the stored incarnation")
+                .isGreaterThan(afterFirst);
+
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 3L, List.of(selfSuspect)));
+            assertThat(protocol.selfIncarnationForTest())
+                .as("monotonic advance persists across repeated suspicions")
+                .isGreaterThan(afterSecond);
+        }
+
+        @Test
+        void handleSelfUpdate_higherSuspicionIncarnation_refutationOutpacesIt() {
+            // A suspicion raised at a high incarnation must still be strictly out-paced.
+            var highSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, 42L, SELF_ADDR);
+
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(highSuspect)));
+
+            assertThat(protocol.selfIncarnationForTest())
+                .as("refutation must strictly exceed the (higher) suspicion incarnation 42")
+                .isGreaterThan(42L);
+        }
+
+        @Test
+        void refreshSelfAlive_afterRefutation_gossipsSelfAliveAtAdvancedIncarnation() throws InterruptedException {
+            // Establish a non-zero self-incarnation via announceJoin (boot incarnation 7),
+            // then refute a suspicion to advance it. The proactive self-ALIVE that rides
+            // each probe round must carry the ADVANCED incarnation.
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 7L, List.of(ADDR_A));
+
+            var selfSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, 7L, SELF_ADDR);
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(selfSuspect)));
+            var advanced = protocol.selfIncarnationForTest();
+            assertThat(advanced).isGreaterThan(7L);
+
+            // Start the protocol so a tick fires refreshSelfAlive(), seeding the
+            // piggyback buffer with self-ALIVE at the advanced incarnation.
+            protocol.start();
+            try {
+                // Drive an inbound Ping each poll; the returned Ack piggyback carries the
+                // buffered self-ALIVE once a probe tick has refreshed it.
+                var deadline = System.currentTimeMillis() + 3_000L;
+                Option<MembershipUpdate> selfAlive = Option.none();
+                while (selfAlive.isEmpty() && System.currentTimeMillis() < deadline) {
+                    protocol.onMessage(ADDR_A, new Ping(NODE_A, 99L, List.of()));
+                    selfAlive = latestSelfAliveInLastAck();
+                    if (selfAlive.isEmpty()) {
+                        Thread.sleep(25L);
+                    }
+                }
+
+                assertThat(selfAlive.isPresent())
+                    .as("a proactive self-ALIVE must be disseminated on the probe round")
+                    .isTrue();
+                selfAlive.onPresent(update -> assertThat(update.incarnation())
+                    .as("proactively-gossiped self-ALIVE must carry the advanced incarnation")
+                    .isEqualTo(advanced));
+            } finally {
+                protocol.stop();
+            }
+        }
+
+        private Option<MembershipUpdate> latestSelfAliveInLastAck() {
+            return transport.sentMessages.stream()
+                                         .map(SentMessage::message)
+                                         .filter(m -> m instanceof Ack)
+                                         .map(m -> (Ack) m)
+                                         .flatMap(ack -> ack.piggyback().stream())
+                                         .filter(u -> u.nodeId().equals(SELF_ID) && u.state() == MemberState.ALIVE)
+                                         .reduce((a, b) -> b)
+                                         .map(Option::option)
+                                         .orElse(Option.none());
+        }
+
+        private static NodeInfo nodeInfoFor(NodeId id, InetSocketAddress addr) {
+            return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress(addr.getHostString(), addr.getPort()).unwrap());
         }
     }
 

@@ -111,6 +111,22 @@ public final class SwimProtocol implements SwimMessageHandler {
     private final Map<NodeId, Long> suspectTimestamps = new ConcurrentHashMap<>();
     private final PiggybackBuffer piggybackBuffer;
     private final AtomicLong sequenceCounter = new AtomicLong(0);
+    /// Durable, monotonic self-incarnation — the SWIM liveness epoch this node
+    /// advertises for ITSELF. Seeded from the boot incarnation in [#announceJoin]
+    /// and bumped strictly past any incoming suspicion in [#handleSelfUpdate].
+    ///
+    /// Invariant: a refutation is only authoritative if it carries an incarnation
+    /// STRICTLY GREATER than the one the suspicion was raised at. Canonical SWIM
+    /// orders (state, incarnation) lexically with FAULTY>SUSPECT>ALIVE at equal
+    /// incarnation, so an `Alive(self, k)` can NEVER supersede a `Suspect(self, k)`
+    /// at the same `k`. The previous reactive refutation re-sent the same value
+    /// forever and was silently out-ordered, so a live-but-suspected node could be
+    /// driven SUSPECT->FAULTY->evicted under loss/churn. Storing and strictly
+    /// advancing this value makes every refutation win. `0` means "pre-announce":
+    /// the proactive self-ALIVE advertisement ([#refreshSelfAlive]) is suppressed
+    /// until [#announceJoin] seeds a real incarnation, so a bogus incarnation-0
+    /// self is never gossiped.
+    private final AtomicLong selfIncarnation = new AtomicLong(0);
     private final AtomicReference<Option<ScheduledFuture<?>>> tickFuture = new AtomicReference<>(none());
     private final AtomicInteger probeIndex = new AtomicInteger(0);
     /// Single false->true latch set on the first inbound SWIM Ping (proof a peer
@@ -406,9 +422,33 @@ public final class SwimProtocol implements SwimMessageHandler {
     // -- Internal tick --
 
     private void tick() {
+        refreshSelfAlive();
         expireSuspectMembers();
         cleanupFaultyMembers();
         selectNextProbeTarget().onPresent(this::probeTarget);
+    }
+
+    /// Proactively disseminate this node's own latest `Alive(selfId, selfIncarnation)`
+    /// once per probe round (canonical SWIM self-dissemination). This propagates
+    /// liveness BEFORE a remote suspect window can expire, rather than only reacting
+    /// to an inbound suspicion in [#handleSelfUpdate] — closing the window in which a
+    /// live-but-temporarily-silent node is driven SUSPECT->FAULTY under loss/churn.
+    ///
+    /// Injected at the probe tick (NOT per outgoing message): `PiggybackBuffer` does
+    /// not dedup by nodeId, so a per-message add would accumulate. One add per round
+    /// rides the next probe/ack/relay via the shared buffer and is bounded by the
+    /// buffer's dissemination-count eviction; each round's entry supersedes the prior
+    /// by carrying the same-or-higher incarnation.
+    ///
+    /// Suppressed while `selfIncarnation == 0` (pre-announce) so a bogus incarnation-0
+    /// self is never advertised.
+    @Contract
+    private void refreshSelfAlive() {
+        var incarnation = selfIncarnation.get();
+        if (incarnation == 0) {
+            return;
+        }
+        addMemberUpdate(MembershipUpdate.membershipUpdate(selfId, MemberState.ALIVE, incarnation, selfAddress));
     }
 
     private void probeTarget(SwimMember target) {
@@ -792,6 +832,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Runs on the shared scheduler. Stops once this node is acknowledged by a peer (inbound probe) or after 60 attempts (30s).
     @Contract public void announceJoin(NodeInfo self, String clusterName, long incarnation,
                                        List<InetSocketAddress> seeds) {
+        // Seed the durable self-incarnation from the boot incarnation BEFORE the
+        // announce loop runs. Monotonic max so a re-announce (or a refutation that
+        // already advanced the value) never regresses it.
+        selfIncarnation.updateAndGet(cur -> Math.max(cur, incarnation));
         var attempts = new AtomicInteger(0);
         var future = new AtomicReference<ScheduledFuture<?>>();
         var task = SharedScheduler.scheduleAtFixedRate(
@@ -924,11 +968,21 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
     }
 
-    /// Notify listener when self is suspected — application may want to log/alert.
+    /// Refute a remote suspicion of SELF with a durable, monotonically-advancing
+    /// incarnation. The bump is `max(stored, incoming) + 1`, so the refutation always
+    /// carries an incarnation STRICTLY GREATER than both the stored self-incarnation
+    /// and the incarnation the suspicion was raised at. This is the crux of the fix:
+    /// an equal-incarnation `Alive(self, k)` can never supersede a `Suspect(self, k)`
+    /// (FAULTY>SUSPECT>ALIVE at equal incarnation), so the prior reactive refutation
+    /// re-broadcast the same value forever and was out-ordered — letting a live node
+    /// be driven SUSPECT->FAULTY under loss. Storing the bumped value also makes the
+    /// proactive self-ALIVE advertisement ([#refreshSelfAlive]) carry the advanced
+    /// incarnation on subsequent rounds.
     private void handleSelfUpdate(MembershipUpdate update) {
         if (update.state() == MemberState.SUSPECT || update.state() == MemberState.FAULTY) {
-            LOG.warn("Self suspected/faulted by remote node, refuting with incarnation {}", update.incarnation() + 1);
-            addMemberUpdate(MembershipUpdate.membershipUpdate(selfId, MemberState.ALIVE, update.incarnation() + 1, selfAddress));
+            long bumped = selfIncarnation.updateAndGet(cur -> Math.max(cur, update.incarnation()) + 1);
+            LOG.warn("Self suspected/faulted by remote node, refuting with incarnation {}", bumped);
+            addMemberUpdate(MembershipUpdate.membershipUpdate(selfId, MemberState.ALIVE, bumped, selfAddress));
         }
     }
 
@@ -1220,5 +1274,12 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// anti-oscillation regression tests to assert tombstone set/clear/supersede.
     boolean tombstonedForTest(NodeId peer) {
         return tombstones.containsKey(peer);
+    }
+
+    /// Test-only accessor for the durable self-incarnation. Used by the
+    /// self-refutation regression test to assert the refutation incarnation
+    /// strictly advances and is durably stored.
+    long selfIncarnationForTest() {
+        return selfIncarnation.get();
     }
 }

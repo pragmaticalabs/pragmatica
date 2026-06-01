@@ -282,7 +282,11 @@ class SwimObservationStreamTest {
             var faultyUpdate = new MembershipUpdate(NODE_A, MemberState.FAULTY, 2, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 3L, List.of(faultyUpdate)));
 
-            assertThat(observations.all)
+            // MemberDiscovered is a join event (feeds the QUIC dial set), not a health
+            // edge — exclude it and assert exactly one observation per health-state edge.
+            assertThat(observations.all.stream()
+                                       .filter(o -> !(o instanceof SwimObservation.MemberDiscovered))
+                                       .toList())
                 .as("Edge-triggered emission: exactly one observation per state edge")
                 .hasSize(3);
             assertThat(observations.byType(SwimObservation.HealthyObserved.class)).hasSize(1);
@@ -320,6 +324,11 @@ class SwimObservationStreamTest {
                                               .fold(() -> SwimHealth.UNKNOWN, h -> h);
             assertThat(healthBefore).isEqualTo(SwimHealth.HEALTHY);
 
+            // Snapshot the observation count BEFORE the hint (the ALIVE gossip emits a
+            // MemberDiscovered join event plus the HealthyObserved health edge); the
+            // assertion below proves the hint adds NOTHING, independent of that count.
+            var observationsBeforeHint = observations.all.size();
+
             // QUIC says peer is unreachable — but SWIM has not observed any failure.
             // SWIM remains authoritative: the hint biases timers but does not override state.
             protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A,
@@ -328,7 +337,7 @@ class SwimObservationStreamTest {
             // No new observation produced — SWIM state unchanged.
             assertThat(observations.all)
                 .as("Transport hint alone must NOT produce a SwimObservation — SWIM is authoritative")
-                .hasSize(1);
+                .hasSize(observationsBeforeHint);
             SwimHealth healthAfter = protocol.currentHealth()
                                              .healthOf(NODE_A)
                                              .fold(() -> SwimHealth.UNKNOWN, h -> h);
