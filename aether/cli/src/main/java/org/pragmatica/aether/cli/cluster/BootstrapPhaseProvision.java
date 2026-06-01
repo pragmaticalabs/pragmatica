@@ -310,14 +310,7 @@ sealed interface BootstrapPhaseProvision {
                            ? source.roles().get(role).instanceType().or("default")
                            : "default";
         var zone = source.zone().or("default");
-        var context = ProvisionContext.provisionContext(clusterName,
-                                                        role.value(),
-                                                        sourceName,
-                                                        Option.some(nodeId),
-                                                        Option.empty(),
-                                                        ProvisionContext.DEFAULT_CORE_MAX,
-                                                        ProvisionContext.PROVISIONED_BY_BOOTSTRAP,
-                                                        Map.of());
+        var context = ProvisionContext.forBootstrap(clusterName, role.value(), sourceName, nodeId);
 
         return NodeConfigBuilder.compose(ctx,
                                          source,

@@ -52,6 +52,38 @@ class ProvisionContextTest {
     }
 
     @Nested
+    class SharedPreparationTests {
+
+        @Test
+        void forBootstrap_validInputs_emptyPeersAndDefaultCoreMax() {
+            var ctx = ProvisionContext.forBootstrap("prod", "worker", "eu-1", "eu-1-worker-0");
+
+            assertThat(ctx.clusterName()).isEqualTo("prod");
+            assertThat(ctx.role()).isEqualTo("worker");
+            assertThat(ctx.sourceName()).isEqualTo("eu-1");
+            assertThat(ctx.nodeId().or("")).isEqualTo("eu-1-worker-0");
+            assertThat(ctx.peers().isEmpty()).isTrue();
+            assertThat(ctx.coreMax()).isEqualTo(ProvisionContext.DEFAULT_CORE_MAX);
+            assertThat(ctx.provisionedBy()).isEqualTo(ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            assertThat(ctx.extraTags()).isEmpty();
+        }
+
+        @Test
+        void forReplacement_validInputs_givenPeersAndGivenCoreMax() {
+            var ctx = ProvisionContext.forReplacement("prod", "node-abc", "n1:h1:6000,n2:h2:6000", 5);
+
+            assertThat(ctx.clusterName()).isEqualTo("prod");
+            assertThat(ctx.role()).isEqualTo("core");
+            assertThat(ctx.sourceName()).isEqualTo("default");
+            assertThat(ctx.nodeId().or("")).isEqualTo("node-abc");
+            assertThat(ctx.peers().or("")).isEqualTo("n1:h1:6000,n2:h2:6000");
+            assertThat(ctx.coreMax()).isEqualTo(5);
+            assertThat(ctx.provisionedBy()).isEqualTo(ProvisionContext.PROVISIONED_BY_CTM);
+            assertThat(ctx.extraTags()).isEmpty();
+        }
+    }
+
+    @Nested
     class ImmutabilityTests {
 
         @Test

@@ -95,6 +95,44 @@ public record ProvisionContext(String clusterName,
                                     Map.of());
     }
 
+    /// Bootstrap-time provisioning context. The cluster has not formed yet, so [#peers]
+    /// is empty and [#coreMax] is the [#DEFAULT_CORE_MAX]. The caller supplies the role,
+    /// source profile name and the pre-allocated node id; [#provisionedBy] is fixed to
+    /// [#PROVISIONED_BY_BOOTSTRAP]. Shared with the CTM auto-heal path
+    /// ([#forReplacement]) so both intents are minted through one preparation path.
+    public static ProvisionContext forBootstrap(String clusterName,
+                                                String role,
+                                                String sourceName,
+                                                String nodeId) {
+        return new ProvisionContext(clusterName,
+                                    role,
+                                    sourceName,
+                                    Option.some(nodeId),
+                                    Option.empty(),
+                                    DEFAULT_CORE_MAX,
+                                    PROVISIONED_BY_BOOTSTRAP,
+                                    Map.of());
+    }
+
+    /// Auto-heal (CTM) replacement provisioning context. The cluster has formed, so the
+    /// caller threads the live-member-derived [#peers] list and the snapshot-desired
+    /// [#coreMax]. Role/source are fixed to `core`/`default` and [#provisionedBy] to
+    /// [#PROVISIONED_BY_CTM]. Shared with the bootstrap path ([#forBootstrap]) so both
+    /// intents are minted through one preparation path.
+    public static ProvisionContext forReplacement(String clusterName,
+                                                  String nodeId,
+                                                  String peers,
+                                                  int coreMax) {
+        return new ProvisionContext(clusterName,
+                                    "core",
+                                    "default",
+                                    Option.some(nodeId),
+                                    Option.some(peers),
+                                    coreMax,
+                                    PROVISIONED_BY_CTM,
+                                    Map.of());
+    }
+
     public ProvisionContext withNodeId(String value) {
         return new ProvisionContext(clusterName,
                                     role,

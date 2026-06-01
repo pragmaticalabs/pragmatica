@@ -732,14 +732,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // this id (provider injects it as AETHER_NODE_ID / Docker container name; the node adopts
         // it as `self`). NodeId.id() is `node-<lowercase-ULID>` — alphanumeric + hyphen, a valid
         // Docker container name and cluster boot identity.
-        return ProvisionContext.provisionContext(clusterName,
-                                                 "core",
-                                                 "default",
-                                                 Option.some(newNodeId.id()),
-                                                 Option.some(peers),
-                                                 snapshotDesiredCoreSize(),
-                                                 ProvisionContext.PROVISIONED_BY_CTM,
-                                                 Map.of());
+        return ProvisionContext.forReplacement(clusterName, newNodeId.id(), peers, snapshotDesiredCoreSize());
     }
 
     private boolean isHealthyPeer(NodeId nodeId) {
