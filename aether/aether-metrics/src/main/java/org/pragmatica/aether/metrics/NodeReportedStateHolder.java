@@ -7,6 +7,7 @@ package org.pragmatica.aether.metrics;
 import org.pragmatica.lang.Contract;
 
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 
 /// Node-local holder for the node's self-reported readiness state
 /// (membership-architecture-v2-spec §7.5.1). Owned per-node (NOT leader-only). The
@@ -14,73 +15,71 @@ import java.util.concurrent.atomic.AtomicReference;
 /// every outgoing pong; `ClusterSyncCollector.buildPong` reads [current] and stamps
 /// the value onto `ClusterSyncPong.lifecycleState` (repurposed per §7.5.3).
 ///
-/// State is recomputed on every transition from three flags:
-/// - **consensus-active** — set/cleared by [onConsensusActive] / [onConsensusPassive]
-///   (driven by RabiaEngine `ConsensusActive` / `ConsensusPassive` edges).
-/// - **subsystems-ready** — set by [onSubsystemsReady] once local subsystems are up.
+/// State is recomputed on every read of [current] from one LIVE input and two latched flags:
+/// - **consensus-active** — a LIVE LEVEL signal sampled on every [current] call via the
+///   injected `consensusActiveLevel` supplier (wired to `RabiaEngine::isActive`, the SAME
+///   accessor leader election uses as its `consensusReadySupplier`). This replaces the former
+///   edge-cached flag, which desynced when a `ConsensusPassive` edge was not followed by a
+///   fresh `ConsensusActive` edge (the CAS quorum edge `false→true` does not re-fire while
+///   quorum is already established) — leaving a healthy in-quorum node stuck reporting
+///   `SYNCING`. Sampling the level every pong self-heals: a catching-up node reports `SYNCING`
+///   (RabiaEngine `isActive` returns false during `Syncing`) and flips to `READY` on the next
+///   pong once active.
+/// - **subsystems-ready** — latched by [onSubsystemsReady] once local subsystems are up.
 /// - **draining** — a sticky flag set by [onDrainStarted]; once draining the node
 ///   stays [NodeReportedState#DRAINING] (drain is uninterruptible per spec I9).
 ///
-/// Resulting state: [NodeReportedState#DRAINING] if draining, else
-/// [NodeReportedState#READY] if BOTH consensus-active and subsystems-ready, else
-/// [NodeReportedState#SYNCING]. Starts in [NodeReportedState#SYNCING].
+/// Resulting state: [NodeReportedState#DRAINING] if draining, else [NodeReportedState#READY]
+/// if BOTH consensus-active (live) and subsystems-ready, else [NodeReportedState#SYNCING].
+/// Starts in [NodeReportedState#SYNCING] (consensus-active level false at construction).
 ///
-/// All transitions are thread-safe via a single [AtomicReference] holding an immutable
-/// flag snapshot updated with a CAS loop. Transition methods are idempotent.
+/// The two latched flags are held in a single [AtomicReference] over an immutable snapshot
+/// updated with a CAS loop; the consensus-active level is read directly from the supplier.
+/// Latch methods are idempotent.
 @Contract public interface NodeReportedStateHolder {
     /// Read the current node-reported state. Invoked by `ClusterSyncCollector` when
-    /// building outgoing pongs.
+    /// building outgoing pongs. Samples the live consensus-active level on each call.
     NodeReportedState current();
 
-    /// Local consensus reached `Active` — RabiaEngine `ConsensusActive` edge.
-    @Contract void onConsensusActive();
-
-    /// Local consensus dropped to `Passive` — RabiaEngine `ConsensusPassive` edge.
-    /// Clears the consensus-active flag (a `READY` node falls back to `SYNCING` and
-    /// must re-sync), unless already draining.
-    @Contract void onConsensusPassive();
-
-    /// Local subsystems are up. Combined with consensus-active this promotes the node
-    /// to `READY`.
+    /// Local subsystems are up. Combined with a live consensus-active level this promotes the
+    /// node to `READY`.
     @Contract void onSubsystemsReady();
 
     /// The node has entered the §8 drain procedure. Sticky: once set the node stays
-    /// `DRAINING` regardless of subsequent consensus / subsystem edges (I9).
+    /// `DRAINING` regardless of subsequent consensus level / subsystem state (I9).
     @Contract void onDrainStarted();
 
-    /// Default in-memory holder backed by an [AtomicReference] of an immutable flag
-    /// snapshot. Starts in [NodeReportedState#SYNCING].
-    static NodeReportedStateHolder nodeReportedStateHolder() {
-        return new AtomicNodeReportedStateHolder();
+    /// Default in-memory holder backed by an [AtomicReference] of an immutable latch snapshot.
+    /// `consensusActiveLevel` is a LIVE level signal sampled on each [current] call (wire it to
+    /// `RabiaEngine::isActive`). Starts in [NodeReportedState#SYNCING].
+    static NodeReportedStateHolder nodeReportedStateHolder(BooleanSupplier consensusActiveLevel) {
+        return new AtomicNodeReportedStateHolder(consensusActiveLevel);
     }
 
     final class AtomicNodeReportedStateHolder implements NodeReportedStateHolder {
-        private final AtomicReference<Flags> flags = new AtomicReference<>(Flags.INITIAL);
+        private final BooleanSupplier consensusActiveLevel;
+        private final AtomicReference<Latches> latches = new AtomicReference<>(Latches.INITIAL);
+
+        private AtomicNodeReportedStateHolder(BooleanSupplier consensusActiveLevel) {
+            this.consensusActiveLevel = consensusActiveLevel;
+        }
 
         @Override public NodeReportedState current() {
-            return flags.get().toState();
-        }
-
-        @Override @Contract public void onConsensusActive() {
-            flags.updateAndGet(Flags::withConsensusActive);
-        }
-
-        @Override @Contract public void onConsensusPassive() {
-            flags.updateAndGet(Flags::withConsensusPassive);
+            return latches.get().toState(consensusActiveLevel.getAsBoolean());
         }
 
         @Override @Contract public void onSubsystemsReady() {
-            flags.updateAndGet(Flags::withSubsystemsReady);
+            latches.updateAndGet(Latches::withSubsystemsReady);
         }
 
         @Override @Contract public void onDrainStarted() {
-            flags.updateAndGet(Flags::withDraining);
+            latches.updateAndGet(Latches::withDraining);
         }
 
-        private record Flags(boolean consensusActive, boolean subsystemsReady, boolean draining) {
-            private static final Flags INITIAL = new Flags(false, false, false);
+        private record Latches(boolean subsystemsReady, boolean draining) {
+            private static final Latches INITIAL = new Latches(false, false);
 
-            private NodeReportedState toState() {
+            private NodeReportedState toState(boolean consensusActive) {
                 return draining
                        ? NodeReportedState.DRAINING
                        : consensusActive && subsystemsReady
@@ -88,20 +87,12 @@ import java.util.concurrent.atomic.AtomicReference;
                          : NodeReportedState.SYNCING;
             }
 
-            private Flags withConsensusActive() {
-                return new Flags(true, subsystemsReady, draining);
+            private Latches withSubsystemsReady() {
+                return new Latches(true, draining);
             }
 
-            private Flags withConsensusPassive() {
-                return new Flags(false, subsystemsReady, draining);
-            }
-
-            private Flags withSubsystemsReady() {
-                return new Flags(consensusActive, true, draining);
-            }
-
-            private Flags withDraining() {
-                return new Flags(consensusActive, subsystemsReady, true);
+            private Latches withDraining() {
+                return new Latches(subsystemsReady, true);
             }
         }
     }

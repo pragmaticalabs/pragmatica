@@ -52,12 +52,11 @@ class CoreSwimHealthDetectorConfigTest {
     void fromTimeouts_preservesNonExposedConstantsFromDefault() {
         var built = SwimConfig.fromTimeouts(timeSpan(2).seconds(), timeSpan(750).millis(), timeSpan(4).seconds());
 
-        // The four fields that are NOT exposed at the SwimTimeouts boundary must equal
-        // SwimConfig.DEFAULT's tuning constants — preserves indirect probing, piggyback,
-        // revival grace and startup delay.
+        // The fields that are NOT exposed at the SwimTimeouts boundary must equal
+        // SwimConfig.DEFAULT's tuning constants — preserves indirect probing, piggyback
+        // and startup delay.
         assertThat(built.indirectProbes()).isEqualTo(SwimConfig.DEFAULT.indirectProbes());
         assertThat(built.maxPiggyback()).isEqualTo(SwimConfig.DEFAULT.maxPiggyback());
-        assertThat(built.revivalGrace()).isEqualTo(SwimConfig.DEFAULT.revivalGrace());
         assertThat(built.startupDelay()).isEqualTo(SwimConfig.DEFAULT.startupDelay());
     }
 

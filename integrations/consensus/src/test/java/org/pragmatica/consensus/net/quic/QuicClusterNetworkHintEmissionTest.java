@@ -335,10 +335,11 @@ class QuicClusterNetworkHintEmissionTest {
 
     @Test
     void departurePermanent_secondCallOnRemovedPeer_isNoopEmission() {
-        // departurePermanent idempotency: the first call removes the peer from the table and
-        // transitions it to REMOVED, routing one PeerDisconnected. Subsequent calls find the
-        // peer absent (already removed from the map) and must route nothing — no duplicate
-        // authoritative-departure observation floods ReachabilityAggregator/SWIM.
+        // departurePermanent idempotency: the first call transitions the peer to REMOVED in
+        // place (the entry stays RESIDENT so re-dial paths key off it), routing one
+        // PeerDisconnected. Subsequent calls find the peer already REMOVED and must route
+        // nothing — no duplicate authoritative-departure observation floods
+        // ReachabilityAggregator/SWIM.
         var disconnected = new CopyOnWriteArrayList<NodeId>();
         var router = MessageRouter.mutable();
         router.addRoute(TransportObservation.PeerDisconnected.class, n -> disconnected.add(n.nodeId()));

@@ -143,33 +143,31 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         }
 
         private void handlePeerConnected(PeerConnected event) {
-            // Channel-open is NOT proof of liveness: a hard-killed ("black-holed") node keeps its
-            // QUIC channel open, so PeerConnected/reconnect can fire repeatedly for a silently-dead
-            // peer. For a KNOWN SWIM member we therefore do NOTHING here — no `markAlive` (which
-            // would reset SUSPECT/FAULTY and wipe the suspicion timer) and no HEALTHY hint (which
-            // `SwimHintsRegistry.onPeerHealth(HEALTHY)` turns into `clear(peer)`, erasing the
-            // leader-side FAULTY/SUSPECTED hint). ALIVE-promotion is the sole authority of a real
-            // probe-ack. Only a GENUINELY-UNKNOWN peer is re-added so it can be probed.
+            // A completed QUIC channel IS transport-plane liveness proof. For a KNOWN SWIM
+            // member we promote it ALIVE via `markAliveFromTransport`, which is tombstone-gated
+            // inside SwimProtocol: only a proven-healthy-then-silently-dead ("black-holed")
+            // id is refused (#231 — not resurrected off a stale/reopened channel). A
+            // never-tombstoned member (cold-start seed / live flap) is promoted so its SUSPECT
+            // window survives until the first probe-ack — closing the formation race where
+            // startupDelay ≈ suspectTimeout would otherwise evict a reachable follower.
+            // A GENUINELY-UNKNOWN peer is re-added so it can be probed.
             var peer = event.peer();
-            event.info().onPresent(info -> readdUnknown(peer, addressOf(info))).onEmpty(() -> readdUnknownFromTopology(peer));
+            if (swim.members().containsKey(peer)) {
+                promoteKnownMember(peer);
+
+                return;
+            }
+            event.info().onPresent(info -> addSeedAndLog(peer, addressOf(info)))
+                        .onEmpty(() -> readdUnknownFromTopology(peer));
+        }
+
+        private void promoteKnownMember(NodeId peer) {
+            swim.markAliveFromTransport(peer);
+            LOG.debug("PeerConnected for known SWIM member {} — transport liveness proof, markAliveFromTransport (tombstone-gated)", peer.id());
         }
 
         private void readdUnknownFromTopology(NodeId peer) {
-            if (swim.members().containsKey(peer)) {
-                LOG.debug("PeerConnected for known SWIM member {} — no markAlive/HEALTHY; awaiting probe-ack", peer.id());
-
-                return;
-            }
             ctx.resolveSwimAddress(peer, SWIM_PORT_OFFSET).onPresent(addr -> addSeedAndLog(peer, addr));
-        }
-
-        private void readdUnknown(NodeId peer, InetSocketAddress address) {
-            if (swim.members().containsKey(peer)) {
-                LOG.debug("PeerConnected for known SWIM member {} — no markAlive/HEALTHY; awaiting probe-ack", peer.id());
-
-                return;
-            }
-            addSeedAndLog(peer, address);
         }
 
         private void addSeedAndLog(NodeId peer, InetSocketAddress address) {

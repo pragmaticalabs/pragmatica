@@ -469,16 +469,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
             }
         }
         // Soft-evict (CONNECTED → EVICTED), NOT authoritativeRemove (any → REMOVED).
-        // Reasoning: a previously-FAULTY peer can come back with the same NodeId — either
-        // because the operator restarted the same container (test harness pattern) or
-        // because Kubernetes/Docker auto-restarted the workload. REMOVED is terminal:
-        // every subsequent inbound Hello from that NodeId returns AttachResult.REJECTED,
-        // and we never re-promote the peer to ALIVE in SWIM, so a second FAULTY transition
-        // cannot fire (no edge), the events buffer stays silent, and CTM thinks the peer
-        // is "always" gone. EVICTED preserves the offline buffer + allows future Hello to
-        // return RECONNECTED, which routes ConnectionEstablished upstream → SWIM markAlive.
-        // Stuck-EVICTED peers are GCed to REMOVED via `expireEvicted` after TTL elapse —
-        // production decommission still reaches the terminal state on its own clock.
+        // Reasoning: EVICTED is the transient live-peer flap state. A peer whose QUIC link
+        // momentarily drops (heartbeat-loop reconnect, brief partition) re-attaches via
+        // `attach`, which returns RECONNECTED (EVICTED → CONNECTED), preserves the offline
+        // buffer, and routes ConnectionEstablished upstream → SWIM markAlive — without firing
+        // a spurious duplicate ADD. Terminal removal of a *confirmed-dead* peer is a separate
+        // concern handled by `departurePermanent` (the leader's co-confirmed-death verdict /
+        // DECOMMISSIONED / SWIM DepartedObserved), which drives the peer to REMOVED. Because
+        // restart is disabled cluster-wide, a same-NodeId never returns; the only paths from
+        // EVICTED to REMOVED are `departurePermanent` and shutdown — `disconnect` itself never
+        // makes the transition terminal.
         //
         // REMOVE-emission idempotency: five independent producers (SWIM departure, health
         // reconciler, topology pruning, etc.) can call `disconnect` for the same peer in a
@@ -513,7 +513,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @Override
     @SuppressWarnings("JBCT-PAT-01") // Peer removal + channel close + view change
     public void departurePermanent(NodeId nodeId) {
-        var peer = peers.remove(nodeId);
+        var peer = peers.get(nodeId);
         firstObservedMissingMs.remove(nodeId);
         // `authoritativeRemove()` always transitions to REMOVED, so it cannot self-report
         // whether the peer was already terminal. Read the phase before the call: emit REMOVE
@@ -522,6 +522,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // preventing the duplicate PeerDisconnected flood into ReachabilityAggregator/SWIM.
         var emitRemove = peer != null && peer.phase() != PeerState.Phase.REMOVED;
         if (peer != null) {
+            // Keep the REMOVED-phase PeerState RESIDENT in `peers` (no `peers.remove`): a
+            // reconciler tick with this id still present in `topologyManager.topology()` would
+            // otherwise `getOrCreatePeer` a fresh INIT state and re-dial the corpse. Resident
+            // REMOVED makes `considerPeerForReconcile`'s REMOVED-skip and `beginConnecting`→false
+            // fire, so no re-dial path can revive a confirmed-dead NodeId (restart disabled).
             peer.authoritativeRemove(System.nanoTime())
                 .onPresent(this::closeDroppedConnection);
         }
@@ -1013,6 +1018,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// Reports `Sent` optimistically — consensus callers ignore the synchronous outcome and
     /// the retry (plus Rabia's own retransmit as ultimate backstop) owns eventual delivery.
     private WriteOutcome retryConsensusWrite(QuicStreamChannel ch, byte[] bytes, NodeId peerId) {
+        if (isPeerRemoved(peerId)) {
+            log.debug("CONSENSUS retry to {} dropped: peer is REMOVED (terminal) — not rescheduling", peerId);
+            return new WriteOutcome.Sent(peerId);
+        }
         quicMetrics.onBackpressureRetry();
         log.debug("CONSENSUS channel to {} not writable — retrying via async backoff (not dropping)", peerId);
         var _ = consensusRetry.execute(() -> rawConsensusWrite(ch, bytes, peerId))
@@ -1022,12 +1031,24 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return new WriteOutcome.Sent(peerId);
     }
 
+    /// A peer driven to terminal REMOVED by `departurePermanent` (restart disabled — a dead
+    /// NodeId never returns under the same id) must not be written to or retried. Distinct from
+    /// EVICTED (transient live-flap), which keeps buffering via `offerOutbound` and drains on
+    /// reconnect — only REMOVED short-circuits here.
+    private boolean isPeerRemoved(NodeId peerId) {
+        var state = peers.get(peerId);
+        return state != null && state.phase() == PeerState.Phase.REMOVED;
+    }
+
     /// One write attempt against the captured CONSENSUS stream. Re-validated every attempt:
     /// if the channel went inactive or is still backpressured this fails (a `Cause`, never a
     /// throw) and the enclosing Retry either reschedules or gives up. A peer disconnecting
     /// mid-retry therefore fails cleanly — the offline buffer handles reconnect delivery.
     /// This is the atomic unit the Retry re-invokes, so it performs NO retry itself.
     private Promise<Unit> rawConsensusWrite(QuicStreamChannel ch, byte[] bytes, NodeId peerId) {
+        if (isPeerRemoved(peerId)) {
+            return Causes.cause("CONSENSUS stream dropped: peer " + peerId + " is REMOVED (terminal)").promise();
+        }
         if (ch.isActive() && ch.isWritable()) {
             quicMetrics.onMessageSent();
             ch.writeAndFlush(Unpooled.wrappedBuffer(bytes))

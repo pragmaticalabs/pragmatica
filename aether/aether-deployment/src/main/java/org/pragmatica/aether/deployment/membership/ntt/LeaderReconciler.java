@@ -145,6 +145,15 @@ public final class LeaderReconciler {
     /// [`#isLeader`]); only the leader evicts.
     private final Set<NodeId> swimFaulty = ConcurrentHashMap.newKeySet();
     private final Set<NodeId> livenessGone = ConcurrentHashMap.newKeySet();
+    /// Leader-local TERMINAL eviction set. An id co-confirmed dead (`swimFaulty ∧ livenessGone`)
+    /// and hard-evicted via [`#evictIfConfirmedDead`] is recorded here. Under restart-disabled a
+    /// co-confirmed-dead id NEVER legitimately returns — a genuine return is always a NEW ULID,
+    /// which is never in this set. The verdict is therefore TERMINAL: a stale recovery signal
+    /// (`onSwimHealthy` / `onPeerRecovered`) arriving AFTER the eviction for the SAME id is a
+    /// no-op and cannot resurrect it. Belt-and-suspenders behind the SWIM-side fixes (a
+    /// tombstoned was-healthy id no longer emits HealthyObserved; a REMOVED QUIC peer never
+    /// reconnects). Leader-local: cleared on [`#deactivate`] so a new leader term starts fresh.
+    private final Set<NodeId> terminallyEvicted = ConcurrentHashMap.newKeySet();
     private volatile Consumer<ReconcileIntent> reconcileListener = NOOP_LISTENER;
 
     private LeaderReconciler(MembershipConfig membershipConfig,
@@ -233,6 +242,7 @@ public final class LeaderReconciler {
         deficitSinceNanos = UNSET_NANOS;
         swimFaulty.clear();
         livenessGone.clear();
+        terminallyEvicted.clear();
     }
 
     /// Live-event ingress for NTT timer-expiry. Stage 6 wires this from the NTT
@@ -290,10 +300,12 @@ public final class LeaderReconciler {
 
     /// Live-event ingress: SWIM declared `peerId` HEALTHY (recovery). Clears the peer from
     /// BOTH co-confirmation sets so a re-joined node is not instantly re-evicted by a stale
-    /// FAULTY/liveness-gone record. Non-leader nodes ignore.
+    /// FAULTY/liveness-gone record. A TERMINALLY-evicted id (already co-confirmed dead and
+    /// hard-evicted) is NOT cleared — under restart-disabled it never legitimately returns, so a
+    /// stale HEALTHY for that exact id cannot resurrect it. Non-leader nodes ignore.
     @Contract
     public void onSwimHealthy(NodeId peerId) {
-        if (!isLeader.get()) {
+        if (!isLeader.get() || terminallyEvicted.contains(peerId)) {
             return;
         }
         clearConfirmedDeath(peerId);
@@ -314,10 +326,12 @@ public final class LeaderReconciler {
 
     /// Live-event ingress: `peerId` reconnected at the transport layer (QUIC PeerConnected,
     /// recovery). Clears the peer from BOTH co-confirmation sets so a re-joined node is not
-    /// instantly re-evicted. Non-leader nodes ignore.
+    /// instantly re-evicted. A TERMINALLY-evicted id (already co-confirmed dead and hard-evicted)
+    /// is NOT cleared — under restart-disabled it never legitimately returns, so a stale
+    /// reconnect signal for that exact id cannot resurrect it. Non-leader nodes ignore.
     @Contract
     public void onPeerRecovered(NodeId peerId) {
-        if (!isLeader.get()) {
+        if (!isLeader.get() || terminallyEvicted.contains(peerId)) {
             return;
         }
         clearConfirmedDeath(peerId);
@@ -325,11 +339,15 @@ public final class LeaderReconciler {
 
     /// Hard-evict `peerId` from NTT membership iff it is co-confirmed dead — present in BOTH
     /// the SWIM-FAULTY and liveness-gone sets. Clears both records on eviction so the node
-    /// starts clean if it later re-joins. NTT's `evict` is idempotent (no-op if already gone).
+    /// starts clean if it later re-joins, and records the id as TERMINALLY evicted so a stale
+    /// recovery signal (SWIM-HEALTHY / QUIC reconnect) for that exact id can no longer un-evict
+    /// it (a genuine return is a NEW ULID, never in the terminal set). NTT's `evict` is
+    /// idempotent (no-op if already gone).
     @Contract
     private void evictIfConfirmedDead(NodeId peerId) {
         if (swimFaulty.contains(peerId) && livenessGone.contains(peerId)) {
             clearConfirmedDeath(peerId);
+            terminallyEvicted.add(peerId);
             ntt.evict(peerId);
         }
     }
@@ -365,6 +383,14 @@ public final class LeaderReconciler {
     /// Observability — number of in-flight provisioning records this leader is tracking.
     public int inFlightProvisioningCount() {
         return inFlightProvisioning.size();
+    }
+
+    /// Observability — whether `peerId` has been TERMINALLY evicted by this leader (co-confirmed
+    /// dead then hard-evicted). A terminally-evicted id ignores subsequent recovery signals so a
+    /// stale SWIM-HEALTHY / QUIC reconnect for that exact id cannot resurrect it. Cleared on
+    /// [`#deactivate`] (new leader term starts fresh).
+    public boolean isTerminallyEvicted(NodeId peerId) {
+        return terminallyEvicted.contains(peerId);
     }
 
     /// Observability — the one-shot leader-activation delay, computed once as

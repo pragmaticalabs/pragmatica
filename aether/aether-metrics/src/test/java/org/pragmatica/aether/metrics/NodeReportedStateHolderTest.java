@@ -7,6 +7,8 @@ package org.pragmatica.aether.metrics;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 
@@ -14,8 +16,8 @@ class NodeReportedStateHolderTest {
     @Nested
     class InitialState {
         @Test
-        void current_freshHolder_isSyncing() {
-            var holder = NodeReportedStateHolder.nodeReportedStateHolder();
+        void current_freshHolderWithInactiveConsensus_isSyncing() {
+            var holder = NodeReportedStateHolder.nodeReportedStateHolder(() -> false);
 
             assertThat(holder.current()).isEqualTo(NodeReportedState.SYNCING);
         }
@@ -24,17 +26,15 @@ class NodeReportedStateHolderTest {
     @Nested
     class Promotion {
         @Test
-        void onConsensusActive_withoutSubsystems_staysSyncing() {
-            var holder = NodeReportedStateHolder.nodeReportedStateHolder();
-
-            holder.onConsensusActive();
+        void current_consensusActiveWithoutSubsystems_isSyncing() {
+            var holder = NodeReportedStateHolder.nodeReportedStateHolder(() -> true);
 
             assertThat(holder.current()).isEqualTo(NodeReportedState.SYNCING);
         }
 
         @Test
-        void onSubsystemsReady_withoutConsensus_staysSyncing() {
-            var holder = NodeReportedStateHolder.nodeReportedStateHolder();
+        void current_subsystemsReadyWithoutConsensus_isSyncing() {
+            var holder = NodeReportedStateHolder.nodeReportedStateHolder(() -> false);
 
             holder.onSubsystemsReady();
 
@@ -42,10 +42,9 @@ class NodeReportedStateHolderTest {
         }
 
         @Test
-        void onConsensusActive_withSubsystemsReady_becomesReady() {
-            var holder = NodeReportedStateHolder.nodeReportedStateHolder();
+        void current_consensusActiveAndSubsystemsReady_isReady() {
+            var holder = NodeReportedStateHolder.nodeReportedStateHolder(() -> true);
 
-            holder.onConsensusActive();
             holder.onSubsystemsReady();
 
             assertThat(holder.current()).isEqualTo(NodeReportedState.READY);
@@ -53,24 +52,44 @@ class NodeReportedStateHolderTest {
     }
 
     @Nested
-    class ConsensusPassive {
+    class LiveConsensusLevel {
         @Test
-        void onConsensusPassive_afterReady_fallsBackToSyncing() {
-            var holder = NodeReportedStateHolder.nodeReportedStateHolder();
-            holder.onConsensusActive();
+        void current_consensusLevelTrueThenFalse_fallsBackToSyncing() {
+            var active = new AtomicBoolean(true);
+            var holder = NodeReportedStateHolder.nodeReportedStateHolder(active::get);
             holder.onSubsystemsReady();
 
-            holder.onConsensusPassive();
+            assertThat(holder.current()).isEqualTo(NodeReportedState.READY);
+
+            active.set(false);
 
             assertThat(holder.current()).isEqualTo(NodeReportedState.SYNCING);
+        }
+
+        @Test
+        void current_consensusLevelTrueFalseTrue_recoversToReady() {
+            // Regression for the edge-cached desync bug: a PASSIVE not followed by a fresh ACTIVE
+            // edge left the cached flag stuck SYNCING. The live level signal self-heals — once the
+            // level returns to active the node reports READY again on the next pong, no stuck state.
+            var active = new AtomicBoolean(true);
+            var holder = NodeReportedStateHolder.nodeReportedStateHolder(active::get);
+            holder.onSubsystemsReady();
+
+            assertThat(holder.current()).isEqualTo(NodeReportedState.READY);
+
+            active.set(false);
+            assertThat(holder.current()).isEqualTo(NodeReportedState.SYNCING);
+
+            active.set(true);
+            assertThat(holder.current()).isEqualTo(NodeReportedState.READY);
         }
     }
 
     @Nested
     class Draining {
         @Test
-        void onDrainStarted_fromSyncing_becomesDraining() {
-            var holder = NodeReportedStateHolder.nodeReportedStateHolder();
+        void current_drainStartedFromSyncing_isDraining() {
+            var holder = NodeReportedStateHolder.nodeReportedStateHolder(() -> false);
 
             holder.onDrainStarted();
 
@@ -78,16 +97,20 @@ class NodeReportedStateHolderTest {
         }
 
         @Test
-        void onDrainStarted_isStickyAcrossSubsequentEdges_staysDraining() {
-            // Drain is uninterruptible per spec I9: once DRAINING, no consensus or
-            // subsystem edge can promote the node back to READY/SYNCING.
-            var holder = NodeReportedStateHolder.nodeReportedStateHolder();
+        void current_drainStartedWhileConsensusActiveAndReady_staysDraining() {
+            // Drain is uninterruptible per spec I9: once DRAINING, neither a live consensus-active
+            // level nor subsystems-ready can promote the node back to READY/SYNCING.
+            var active = new AtomicBoolean(true);
+            var holder = NodeReportedStateHolder.nodeReportedStateHolder(active::get);
+            holder.onSubsystemsReady();
             holder.onDrainStarted();
 
-            holder.onConsensusActive();
-            holder.onSubsystemsReady();
-            holder.onConsensusPassive();
+            assertThat(holder.current()).isEqualTo(NodeReportedState.DRAINING);
 
+            active.set(false);
+            assertThat(holder.current()).isEqualTo(NodeReportedState.DRAINING);
+
+            active.set(true);
             assertThat(holder.current()).isEqualTo(NodeReportedState.DRAINING);
         }
     }

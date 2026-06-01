@@ -365,7 +365,6 @@ class SwimProtocolTest {
                 3,
                 timeSpan(500).millis(),
                 8,
-                timeSpan(5).seconds(),
                 timeSpan(50).millis()
             );
             var localTransport = new RecordingTransport();

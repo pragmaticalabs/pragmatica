@@ -78,6 +78,15 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// open question proposes 3s as the WAN-safe minimum.
     private static final long TRANSPORT_HINT_SUSPECT_FLOOR_MS = 3_000L;
 
+    /// TTL multiplier (vs `suspectTimeout`) bounding tombstone-map growth for
+    /// permanently-dead ids. Chosen generous (10x) so the tombstone always outlives
+    /// gossip convergence — survivors stop re-gossiping a removed id well within this
+    /// window. Legitimate rejoin does NOT depend on the TTL: an authoritative
+    /// self-ANNOUNCE (`handleAnnounce`) or a strictly-higher incarnation clears the
+    /// tombstone immediately. The TTL exists purely to reclaim map entries for ids
+    /// that never come back.
+    private static final long TOMBSTONE_TTL_MULTIPLIER = 10L;
+
     private final SwimConfig config;
     private final SwimTransport transport;
     private final SwimMembershipListener listener;
@@ -111,7 +120,16 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// because the quorum predicate is satisfied at join time. Volatile: written on
     /// the message thread, read on the scheduler thread.
     private volatile boolean inboundProbeReceived = false;
-    private final Map<NodeId, Long> revivalTimestamps = new ConcurrentHashMap<>();
+    /// Incarnation-aware, TTL-bounded tombstones for ids that were PROVEN HEALTHY
+    /// and then died and got cleaned up. Refuses third-party re-introduction of a
+    /// dead id (gossip dissemination + bare channel re-seed) that would otherwise
+    /// re-create it as SUSPECT and restart the SUSPECT<->FAULTY oscillation (#231).
+    /// Crucially, a never-HEALTHY id is NEVER tombstoned: it may be a cold-boot seed
+    /// that is simply slow to form, and tombstoning it would break cluster formation
+    /// (the reason an earlier non-gated tombstone attempt was reverted). The
+    /// tombstone is cleared by an authoritative self-ANNOUNCE (partition-heal) and
+    /// superseded by a strictly higher incarnation (genuine restart/refutation).
+    private final Map<NodeId, Tombstone> tombstones = new ConcurrentHashMap<>();
     /// Per-peer "ever observed HEALTHY at least once" flag. Cold-boot suppression:
     /// a never-healthy peer is emitted as `UnknownObserved` instead of `FaultyObserved`
     /// (spec §4.2 "Behavior contract: Cold-boot mode").
@@ -150,6 +168,11 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// Tracks a relayed PingReq: maps the relay's own sequence to the original requester info.
     private record RelayInfo(long originalSequence, InetSocketAddress requesterAddress, long createdAt) {}
+
+    /// Death-record for a PROVEN-HEALTHY id that died and was cleaned up. `incarnation`
+    /// is the incarnation at which the id was tombstoned; a strictly-higher incoming
+    /// incarnation supersedes it. `createdAtMs` bounds map growth via the TTL sweep.
+    private record Tombstone(long incarnation, long createdAtMs) {}
 
     private SwimProtocol(SwimConfig config,
                          SwimTransport transport,
@@ -255,6 +278,15 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
+        // Tombstone refusal (#231 oscillation): a bare channel re-seed is NOT proof the
+        // node is alive — it carries no incarnation, so treat it as incarnation 0. A
+        // dead-and-cleaned id that is still tombstoned must not be re-introduced as
+        // SUSPECT (which would restart the SUSPECT<->FAULTY oscillation). A genuine
+        // rejoin arrives via self-ANNOUNCE (`handleAnnounce`), which clears the tombstone.
+        if (isTombstoned(nodeId, 0L)) {
+            return;
+        }
+
         var member = SwimMember.swimMember(nodeId, MemberState.SUSPECT, 0, address);
         members.put(nodeId, member);
         suspectTimestamps.put(nodeId, System.currentTimeMillis());
@@ -265,19 +297,6 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Return an unmodifiable snapshot of the current membership.
     public Map<NodeId, SwimMember> members() {
         return Collections.unmodifiableMap(members);
-    }
-
-    /// Mark a member as ALIVE, resetting SUSPECT or FAULTY state.
-    /// Called when external evidence (e.g. TCP connection) confirms the node is reachable.
-    /// This enables SWIM to detect future departures of previously-FAULTY members.
-    public void markAlive(NodeId nodeId) {
-        if (selfId.equals(nodeId)) {
-            return;
-        }
-
-        option(members.get(nodeId))
-            .filter(member -> member.state() != MemberState.ALIVE)
-            .onPresent(member -> applyAliveRevival(nodeId, member));
     }
 
     /// Register a push-channel listener for [`SwimObservation`] edge transitions.
@@ -424,10 +443,87 @@ public final class SwimProtocol implements SwimMessageHandler {
             var entry = iterator.next();
             if (isFaultyAndExpired(entry, now, cleanupThreshold)) {
                 iterator.remove();
+                tombstoneIfWasHealthy(entry.getKey(), entry.getValue().incarnation(), now);
                 clearDeathMemory(entry.getKey());
                 emitDeparted(entry.getKey(), entry.getValue().incarnation());
             }
         }
+
+        sweepExpiredTombstones(now);
+    }
+
+    /// Tombstone a removed FAULTY id ONLY if it was PROVEN HEALTHY at some point.
+    /// MUST be called BEFORE `clearDeathMemory` (which erases `everSeenHealthy`). A
+    /// never-HEALTHY id is a cold-boot seed that may simply be slow to form, so it is
+    /// NOT tombstoned — tombstoning it would break formation (the prior tombstone
+    /// attempt was reverted for exactly this). Only a node that actually lived and
+    /// then died is tombstoned, blocking its third-party resurrection (#231).
+    ///
+    /// Sweep-time backstop: the PRIMARY tombstone is now set at the FAULTY edge
+    /// ([#tombstoneIfProvenHealthy]) so a re-admit during the FAULTY->sweep window is
+    /// refused. This sweep-time set is retained as a backstop for the rare path where
+    /// a member reaches the sweep still FAULTY without having traversed an instrumented
+    /// FAULTY edge (idempotent: re-stamping at the same incarnation is harmless).
+    private void tombstoneIfWasHealthy(NodeId peer, long incarnation, long now) {
+        if (everSeenHealthy.contains(peer)) {
+            tombstones.put(peer, new Tombstone(incarnation, now));
+        }
+    }
+
+    /// PRIMARY tombstone set: stamp the death-record at the FAULTY EDGE (the moment a
+    /// member transitions to FAULTY), not at sweep. This closes the FAULTY->sweep
+    /// window during which the member is still resident in `members` and an incoming
+    /// ALIVE/SUSPECT gossip (or a stray relayed Ack) would otherwise re-admit it via
+    /// `applyExistingMember` / `markAliveIfNeeded`, re-firing `HealthyObserved` and
+    /// restarting the SUSPECT<->FAULTY oscillation (#231).
+    ///
+    /// Set ONLY on the FAULTY edge and ONLY for a PROVEN-HEALTHY id (`everSeenHealthy`).
+    /// A SUSPECT flap that later recovers to ALIVE (S04/S13 transient) is never
+    /// tombstoned because this is never invoked on the SUSPECT edge. A never-HEALTHY
+    /// cold-boot seed is never tombstoned because of the `everSeenHealthy` gate.
+    private void tombstoneIfProvenHealthy(NodeId peer, long incarnation) {
+        if (everSeenHealthy.contains(peer)) {
+            tombstones.put(peer, new Tombstone(incarnation, System.currentTimeMillis()));
+            LOG.debug("SWIM tombstone set at FAULTY edge for proven-healthy id {} (incarnation {})",
+                      peer.id(), incarnation);
+        }
+    }
+
+    /// Bound tombstone-map growth: drop tombstones older than the TTL. Legitimate
+    /// rejoin is handled by self-ANNOUNCE clear / higher-incarnation supersede, so the
+    /// TTL only reclaims entries for permanently-dead ids.
+    private void sweepExpiredTombstones(long now) {
+        var ttlMs = config.suspectTimeout().millis() * TOMBSTONE_TTL_MULTIPLIER;
+        tombstones.entrySet().removeIf(entry -> now - entry.getValue().createdAtMs() > ttlMs);
+    }
+
+    /// Whether `id` is currently tombstoned against an incoming re-add at
+    /// `incomingIncarnation`. Absent -> false. Present but `incomingIncarnation`
+    /// strictly exceeds the tombstoned incarnation -> remove and return false
+    /// (a genuine restart/refutation at a higher incarnation always wins). Otherwise
+    /// -> true (refuse the re-add).
+    private boolean isTombstoned(NodeId id, long incomingIncarnation) {
+        return option(tombstones.get(id))
+            .map(tombstone -> supersedeOrRefuse(id, tombstone, incomingIncarnation))
+            .or(false);
+    }
+
+    private boolean supersedeOrRefuse(NodeId id, Tombstone tombstone, long incomingIncarnation) {
+        if (incomingIncarnation > tombstone.incarnation()) {
+            tombstones.remove(id);
+            return false;
+        }
+        return true;
+    }
+
+    /// Whether an ALIVE-promotion (or re-admit) of `id` at `incomingIncarnation` must
+    /// be refused because the id is tombstoned. Thin alias over [#isTombstoned] so the
+    /// higher-incarnation supersede semantics are shared by EVERY ALIVE-promotion path
+    /// (the `applyUpdate` isEmpty add-path, the `applyExistingMember` regression-toward-
+    /// ALIVE path, and the `markAliveIfNeeded` Ack path). A strictly-higher incarnation
+    /// still supersedes and re-admits (genuine restart / partition-heal).
+    private boolean blockedByTombstone(NodeId id, long incomingIncarnation) {
+        return isTombstoned(id, incomingIncarnation);
     }
 
     private boolean isFaultyAndExpired(Map.Entry<NodeId, SwimMember> entry, long now, long threshold) {
@@ -453,7 +549,6 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// re-proven by a real probe-ack.
     private void clearDeathMemory(NodeId peer) {
         everSeenHealthy.remove(peer);
-        revivalTimestamps.remove(peer);
         suspectTimestamps.remove(peer);
     }
 
@@ -485,6 +580,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         var faulty = member.withState(MemberState.FAULTY);
         members.put(member.nodeId(), faulty);
         suspectTimestamps.put(member.nodeId(), System.currentTimeMillis());
+        tombstoneIfProvenHealthy(member.nodeId(), faulty.incarnation());
         listener.onMemberFaulty(faulty);
         addMemberUpdate(faulty);
         emitFaultyOrUnknown(member.nodeId(), faulty.incarnation());
@@ -510,22 +606,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private boolean isProbable(SwimMember member) {
-        if (member.state() != MemberState.ALIVE && member.state() != MemberState.SUSPECT) {
-            return false;
-        }
-
-        return option(revivalTimestamps.get(member.nodeId()))
-            .map(revivalTime -> isRevivalGraceExpired(member.nodeId(), revivalTime))
-            .or(true);
-    }
-
-    private boolean isRevivalGraceExpired(NodeId nodeId, long revivalTime) {
-        if (System.currentTimeMillis() - revivalTime < config.revivalGrace().millis()) {
-            return false;
-        }
-
-        revivalTimestamps.remove(nodeId);
-        return true;
+        return member.state() == MemberState.ALIVE || member.state() == MemberState.SUSPECT;
     }
 
     private void scheduleProbeTimeout(long seq) {
@@ -631,6 +712,14 @@ public final class SwimProtocol implements SwimMessageHandler {
                      announce.nodeInfo().id().id(), announce.clusterName(), expectedName);
             return;
         }
+
+        // Authoritative liveness: a node announcing ITSELF is proof it is alive.
+        // Clear any tombstone UNCONDITIONALLY (whether or not the id is still resident):
+        // with the FAULTY-edge tombstone, a killed-then-returning node is frequently
+        // still present as FAULTY when its self-ANNOUNCE arrives, so the clear must not
+        // be gated on absence. A dead node never self-announces, so this cannot reopen
+        // the oscillation; this is what preserves partition-heal (suite 12 S06).
+        tombstones.remove(announce.nodeInfo().id());
 
         if (!members.containsKey(announce.nodeInfo().id())) {
             // Resurrection guard: a bare ANNOUNCE is gossip, NOT proof of reachability.
@@ -759,8 +848,40 @@ public final class SwimProtocol implements SwimMessageHandler {
         transport.send(target.address(), ping);
     }
 
+    /// Transport-plane liveness promotion for a KNOWN member, driven by a completed QUIC
+    /// connection (`PeerConnected`).
+    ///
+    /// (a) Cold-start formation race: a follower completes its QUIC Hello (consensus-ACTIVE)
+    /// in ~1s, but the first SWIM probe only fires after `startupDelay` (≈ the suspect
+    /// timeout). The seeded member's SUSPECT window can therefore expire SUSPECT→FAULTY
+    /// before any probe-ack arrives, evicting a node that is provably reachable.
+    ///
+    /// (b) A completed QUIC channel to a known member IS transport-plane reachability proof.
+    /// Promoting it ALIVE resets the suspect window so it survives until the first probe-ack.
+    ///
+    /// (c) Tombstone-gated (#231): `markAliveIfNeeded` refuses promotion of a
+    /// proven-healthy-then-silently-dead id (tombstoned), so a black-holed peer is NOT
+    /// resurrected off a stale/reopened channel. Only never-tombstoned members
+    /// (cold-start seeds / live-flapping) are promoted — the tombstone is the discriminator.
+    ///
+    /// (d) This is the dual of two-plane death confirmation: the transport plane confirms
+    /// life here just as it confirms death elsewhere.
+    @Contract public void markAliveFromTransport(NodeId nodeId) {
+        markAliveIfNeeded(nodeId);
+    }
+
     /// Bump incarnation when marking alive via Ack — prevents stale SUSPECT piggyback from overriding.
+    ///
+    /// Tombstone gate (#231): an Ack relayed for a FAULTY-resident tombstoned id is NOT
+    /// proof of genuine liveness — it carries no incarnation for the target, so treat it
+    /// as incarnation 0. A tombstoned id is therefore not flipped ALIVE off a stray Ack;
+    /// a real return arrives via self-ANNOUNCE (clears the tombstone) or a higher
+    /// incarnation (supersedes). A non-tombstoned member is promoted normally.
     private void markAliveIfNeeded(NodeId nodeId) {
+        if (blockedByTombstone(nodeId, 0L)) {
+            return;
+        }
+
         option(members.get(nodeId))
             .filter(member -> member.state() != MemberState.ALIVE)
             .onPresent(member -> applyAliveFromAck(nodeId, member));
@@ -773,18 +894,6 @@ public final class SwimProtocol implements SwimMessageHandler {
         suspectTimestamps.remove(nodeId);
         addMemberUpdate(alive);
         recordHealthyAndEmit(nodeId, alive.incarnation());
-    }
-
-    private void applyAliveRevival(NodeId nodeId, SwimMember member) {
-        var alive = member.withState(MemberState.ALIVE)
-                          .withIncarnation(member.incarnation() + 1);
-        members.put(nodeId, alive);
-        suspectTimestamps.remove(nodeId);
-        revivalTimestamps.put(nodeId, System.currentTimeMillis());
-        notifyMemberJoined(alive);
-        addMemberUpdate(alive);
-        recordHealthyAndEmit(nodeId, alive.incarnation());
-        LOG.info("Member {} externally marked ALIVE (was {})", nodeId.id(), member.state());
     }
 
     private void processPiggyback(List<MembershipUpdate> updates) {
@@ -802,6 +911,15 @@ public final class SwimProtocol implements SwimMessageHandler {
         if (existing.isPresent()) {
             existing.onPresent(member -> applyExistingMember(member, update));
         } else {
+            // Tombstone refusal (#231 oscillation): third-party GOSSIP about an unknown
+            // id is NOT proof it is alive — survivors still holding a dead id re-gossip
+            // it. Refuse re-creation while tombstoned at this incarnation; a strictly
+            // higher incarnation supersedes the tombstone (genuine restart). Gated at the
+            // call site (not inside `applyNewMember`) so the authoritative self-ANNOUNCE
+            // re-add path in `handleAnnounce` stays open.
+            if (isTombstoned(update.nodeId(), update.incarnation())) {
+                return;
+            }
             applyNewMember(update);
         }
     }
@@ -849,6 +967,19 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
+        // Tombstone gate (#231 oscillation): refuse a regression TOWARD ALIVE for a
+        // tombstoned id while it is still resident (the FAULTY->sweep window). Without
+        // this, an ALIVE/SUSPECT gossip arriving before the sweep re-admits a dead
+        // proven-healthy id via `notifyStateChange`->`notifyAlive`->`recordHealthyAndEmit`,
+        // re-firing `HealthyObserved` and restarting the oscillation. Only re-admits are
+        // blocked: FAULTY-progression updates are NOT (they must still advance the member
+        // to FAULTY); a strictly-higher incarnation supersedes the tombstone and is
+        // allowed (genuine restart). Self-ANNOUNCE clears the tombstone via a separate
+        // path (`handleAnnounce`) and is unaffected.
+        if (isReAdmitTowardAlive(existing, update) && blockedByTombstone(update.nodeId(), update.incarnation())) {
+            return;
+        }
+
         // Same-state same-incarnation: gossip rebroadcast, not a state event.
         // Canonical SWIM: ignore. Otherwise repeated gossip would re-fire listener
         // notifications and reset suspect timers, preventing FAULTY transition.
@@ -866,6 +997,13 @@ public final class SwimProtocol implements SwimMessageHandler {
         members.put(update.nodeId(), updated);
 
         notifyStateChange(existing.state(), updated);
+    }
+
+    /// A re-admit toward ALIVE: the resident member is currently FAULTY or SUSPECT and
+    /// the update would promote it back to ALIVE. This is the only direction the
+    /// tombstone blocks in `applyExistingMember`; FAULTY-progression is never blocked.
+    private static boolean isReAdmitTowardAlive(SwimMember existing, MembershipUpdate update) {
+        return update.state() == MemberState.ALIVE && existing.state() != MemberState.ALIVE;
     }
 
     /// State priority for SWIM: FAULTY > SUSPECT > ALIVE.
@@ -902,6 +1040,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     private void notifyFaulty(SwimMember updated) {
         suspectTimestamps.remove(updated.nodeId());
+        tombstoneIfProvenHealthy(updated.nodeId(), updated.incarnation());
         listener.onMemberFaulty(updated);
         emitFaultyOrUnknown(updated.nodeId(), updated.incarnation());
     }
@@ -1075,5 +1214,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// transport-hint tests to validate the timer-bias mechanism deterministically.
     Option<Long> suspectTimestampForTest(NodeId peer) {
         return option(suspectTimestamps.get(peer));
+    }
+
+    /// Test-only accessor for the per-peer tombstone state. Used by the
+    /// anti-oscillation regression tests to assert tombstone set/clear/supersede.
+    boolean tombstonedForTest(NodeId peer) {
+        return tombstones.containsKey(peer);
     }
 }

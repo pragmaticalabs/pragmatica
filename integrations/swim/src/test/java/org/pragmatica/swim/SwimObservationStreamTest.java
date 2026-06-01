@@ -72,7 +72,6 @@ class SwimObservationStreamTest {
                                     3,
                                     timeSpan(150).millis(),
                                     8,
-                                    timeSpan(50).millis(),
                                     timeSpan(50).millis());
             transport = new RecordingTransport();
             listener = new RecordingListener();
@@ -164,7 +163,6 @@ class SwimObservationStreamTest {
                                 3,
                                 timeSpan(10).seconds(),
                                 8,
-                                timeSpan(50).millis(),
                                 timeSpan(50).millis());
             transport = new RecordingTransport();
             listener = new RecordingListener();

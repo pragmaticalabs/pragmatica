@@ -1062,16 +1062,10 @@ public interface AetherNode extends ManageableNode {
         // transition burst.
         var periodicConfig = PeriodicObservationConfig.defaultConfig();
         BooleanSupplier isLeaderSupplier = clusterNode.leaderManager()::isLeader;
-        // Decision-plane peer set: KV-known nodes in non-terminal lifecycle states
-        // (everything except DECOMMISSIONED), plus self. The aggregator MUST iterate
-        // this set — not the QUIC-driven `topologyManager().topology()` — otherwise a
-        // killed peer drops out of the self-fold the moment QUIC fires REMOVE, no
-        // fresh UNREACHABLE observations are produced, prior entries age out in 15s,
-        // and the dead peer becomes structurally invisible to the UNREACHABLE-quorum
-        // gate (see reachability-aggregator-spec.md "Periodic Observation Mode").
-        // Decision plane (KV) = "what to track"; observation plane (QUIC) =
-        // "what state". Keeping them on separate sources is the architectural
-        // invariant.
+        // Membership is presence-derived (SWIM/QUIC via NTT); node readiness/drain is
+        // heartbeat-reported and leader-cached — never stored in or committed to the KV-Store.
+        // (The former leader-side reachability aggregator that folded a separate peer set is
+        // deleted; see the P3 note immediately below.)
         // P3 (membership unification): the leader-side ReachabilityAggregator is deleted —
         // SWIM (fed by QUIC hints) is the single liveness signal, so the pong-derived
         // reachability fold (and the KV-tracked-peers quorum-N it used) is redundant. The
@@ -1080,7 +1074,12 @@ public interface AetherNode extends ManageableNode {
         // readyCandidate→ForceOnDuty path (the FSM is gone); readiness is node-reported on the
         // control-heartbeat pong and consumed by the CDM allocatable gate (B4).
         ClusterSyncPongSignalFan.ReadyCandidateSink readyCandidateSink = (sender, candidate) -> {};
-        var nodeReportedStateHolder = NodeReportedStateHolder.nodeReportedStateHolder();
+        // B1 (membership v2 §7.5): node-reported readiness reads a LIVE consensus-active LEVEL on
+        // every pong via `clusterNode::isActive` — the SAME `RabiaEngine::isActive` accessor leader
+        // election wires as its `consensusReadySupplier` (RabiaNode.isActive -> consensus().isActive()).
+        // Sampling the level each pong self-heals: the former edge-cached flag could stick SYNCING
+        // when a PASSIVE edge was not followed by a fresh ACTIVE edge.
+        var nodeReportedStateHolder = NodeReportedStateHolder.nodeReportedStateHolder(clusterNode::isActive);
         var drainCommandRegistry = org.pragmatica.aether.metrics.DrainCommandRegistry.drainCommandRegistry();
         metricsCollector.setNodeReportedStateSupplier(nodeReportedStateHolder::current);
         metricsCollector.setIncarnationSupplier(org.pragmatica.aether.metrics.BootEpoch::bootEpoch);
@@ -1149,8 +1148,9 @@ public interface AetherNode extends ManageableNode {
         // E2 Phase 2b (2026-05-28): DrainProcedure replaces SelfDrainCoordinator's execution
         // surface. It is a *pure procedure* — no triggers, no periodic ticks, no orphan
         // checker. The single caller in Phase 2b is the QuorumLossDetector quorum-loss
-        // listener wired further down. Operator-initiated drain (DrainRequestKey) and
-        // FSM-routed drain land in Phase 6.
+        // listener wired further down. Operator/CTM-initiated drain is delivered as a `DRAIN`
+        // command on the leader↔node heartbeat (membership v2 §7.5.4) — there is no KV drain
+        // record. Drain is heartbeat-reported and leader-cached, never stored in the KV-Store.
         //
         // `jvmExit` is threaded in from the factory: production is
         // `Runtime.getRuntime().halt(2)`, single-JVM hosts (Forge/Ember) pass a per-node
@@ -1608,9 +1608,9 @@ public interface AetherNode extends ManageableNode {
         // router is actually built from below). Previously they were appended to the
         // already-merged `aetherEntries`, so they never installed — node readiness was never
         // reported, CDM `allocatableNodes` stayed empty, and zero slices were placed.
-        // B1 (membership v2 §7.5): node-reported readiness state tracks local consensus edges.
-        allEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class,
-                                                 n -> routeConsensusEdgeToReportedState(n, nodeReportedStateHolder)));
+        // B1 (membership v2 §7.5): node-reported readiness no longer routes a ClusterStateNotification
+        // edge into the holder — consensus-active is now a LIVE LEVEL sampled per pong via
+        // `clusterNode::isActive` at the holder-construction site above, eliminating edge desync.
         // B3 (membership v2 §7.5.5): evict a node from the leader readiness view on routed QUIC
         // disconnect (TransportObservation.PeerDisconnected fires on QUIC REMOVE, not on RECONNECT
         // flaps). Fast clean-departure eviction; the stale-sweep above is the silent-node backstop.
@@ -1621,17 +1621,16 @@ public interface AetherNode extends ManageableNode {
         // ClusterFsmRouter, etc.) reach all `TransportObservation.PeerObservedFaulty` edges.
         swimHealthDetector.addTransportObservationEmitter(delegateRouter::route);
         // RC1-9 audit Step 4: ClusterEventAggregator no longer subscribes to SWIM
-        // observations directly. NODE_FAILED / NODE_LEFT events are emitted only via
-        // `onNodeLifecyclePut` (the leader FSM writing DECOMMISSIONED to
-        // KV-Store with prior-state context). The SWIM-witnessed duplicate emit was
+        // observations directly. NODE_FAILED / NODE_LEFT events are emitted via the
+        // canonical MembershipDecision route (TopologyObserver), keyed off presence-derived
+        // membership (SWIM/QUIC via NTT). The SWIM-witnessed duplicate emit was
         // amplifying the membership-tracker cascade audit identified.
         // RC1-9 audit Step 3: the SWIM-FAULTY-to-disconnect short-circuit lambda is
         // gone. QUIC eviction now flows from `MembershipDecision.NodeRemoved`
-        // (published by `TopologyObserver.publishMembershipDeltas` after the leader's
-        // `MembershipFsm` writes `DECOMMISSIONED` and the snapshot re-projects).
+        // (published by `TopologyObserver.publishMembershipDeltas` when a peer leaves the
+        // presence-derived membership view). There is no node-state KV write on this path.
         // The membership-delta-driven path is a single canonical edge instead of N+1
-        // fan-out across every survivor's local SWIM listener; eviction trades sub-ms
-        // local-SWIM latency for a Rabia round-trip + projection (~200-500ms cloud RTT).
+        // fan-out across every survivor's local SWIM listener.
         var clusterNetworkRef = clusterNode.network();
         allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
                                                  (MembershipDecision.NodeRemoved removed) -> clusterNetworkRef.disconnect(new NetworkServiceMessage.DisconnectNode(removed.nodeId()))));
@@ -1735,8 +1734,8 @@ public interface AetherNode extends ManageableNode {
         // consume the current KV snapshot via their `kvSnapshotSupplier` at the time
         // of `projectFromKv` / `projectFromCommittedAtoms`. The routes attached below
         // provide the "tail" — every MembershipDecision variant routed by TopologyObserver
-        // (single canonical emitter) signals dirty + bootstrap retry, replacing the
-        // retired dual-channel `onPut(NodeLifecycleKey)` listener.
+        // (single canonical emitter) signals dirty + bootstrap retry. Membership is
+        // presence-derived (SWIM/QUIC via NTT); there is no node-state KV listener.
         wireMembershipDecisionTail(allEntries, generationSnapshotPublisher::onMembershipDecision);
         wireMembershipDecisionTail(allEntries, bootstrapModule::onMembershipDecision);
         var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.GovernorAnnouncementKey.class,
@@ -1747,11 +1746,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                                          bootstrapModule.retryIfNeeded();
                                                                                                                                                                                                                      }).onRemove(AetherKey.SpokesmanKey.class,
                                                                                                                                                                                                                                  _ -> generationSnapshotPublisher.markDirty())
-        // RC1 Step 2: NodeLifecycleKey put listener retired — the equivalent
-        // dirty signal arrives via the MembershipDecision route attached
-        // below (TopologyObserver's lifecycle-projection walker emits one
-        // decision per lifecycle transition, with snapshot-then-tail
-        // semantics for GSP + BootstrapModule).
+        // Membership dirty signal arrives via the MembershipDecision route attached
+        // below (TopologyObserver emits one decision per membership change, with
+        // snapshot-then-tail semantics for GSP + BootstrapModule). Membership is
+        // presence-derived; there is no node-state KV listener.
         .onPut(AetherKey.ClusterConfigKey.class,
                                                                                                         _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.ClusterConfigKey.class,
                                                                                                                                                                _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.ClusterConfigKey.class,
@@ -2049,25 +2047,8 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    /// E2 Phase 2b (2026-05-28): bridge `ClusterStateNotification.DISAPPEARED` into the §8.2
-    /// `DrainProcedure`. Replaces the Phase 1 routing through
-    /// `SelfDrainCoordinator.onQuorumDisappeared` + `.onRabiaPaused` (Rabia's `Paused` fires
-    /// on the same DISAPPEARED signal — both legacy entry points collapsed into the single
-    /// `initiate(QUORUM_LOSS)` call by the CAS guard).
-    /// B1 (membership v2 §7.5): translate a local consensus-state edge into the node-reported
-    /// readiness state — ACTIVE → consensus-active, otherwise consensus-passive.
-    @Contract
-    private static void routeConsensusEdgeToReportedState(ClusterStateNotification notification,
-                                                          NodeReportedStateHolder holder) {
-        if (notification.state() == ClusterStateNotification.State.ACTIVE) {
-            holder.onConsensusActive();
-            return;
-        }
-        holder.onConsensusPassive();
-    }
-
     /// B1 (membership v2 §7.5): the node's self-ready signal also marks subsystems ready for the
-    /// node-reported readiness state (READY requires consensus-active AND subsystems-ready).
+    /// node-reported readiness state (READY requires a live consensus-active level AND subsystems-ready).
     @Contract
     private static void markSubsystemsReady(Runnable signalReady, NodeReportedStateHolder holder) {
         signalReady.run();
@@ -2103,6 +2084,11 @@ public interface AetherNode extends ManageableNode {
         holder.onDrainStarted();
     }
 
+    /// E2 Phase 2b (2026-05-28): bridge `ClusterStateNotification.DISAPPEARED` into the §8.2
+    /// `DrainProcedure`. Replaces the Phase 1 routing through
+    /// `SelfDrainCoordinator.onQuorumDisappeared` + `.onRabiaPaused` (Rabia's `Paused` fires
+    /// on the same DISAPPEARED signal — both legacy entry points collapsed into the single
+    /// `initiate(QUORUM_LOSS)` call by the CAS guard).
     @Contract
     private static void routeQuorumDisappearedToDrain(ClusterStateNotification notification,
                                                        DrainProcedure drainProcedure) {

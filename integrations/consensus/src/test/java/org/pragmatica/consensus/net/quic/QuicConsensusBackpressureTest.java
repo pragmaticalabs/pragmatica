@@ -229,6 +229,57 @@ class QuicConsensusBackpressureTest {
         }
     }
 
+    @Nested
+    class RemovedPeerShortCircuit {
+
+        private static final NodeId DEAD = new NodeId("dead-peer");
+
+        /// rawConsensusWrite to a REMOVED peer DROPS (fails with a terminal Cause) without ever
+        /// touching the channel — even when the channel is active and writable. Closes the
+        /// 200x "CONSENSUS stream backpressured or inactive" retry loop against a corpse.
+        @Test
+        void rawConsensusWrite_removedPeer_dropsWithoutWriting() {
+            var ch = mock(QuicStreamChannel.class);
+            when(ch.isActive()).thenReturn(true);
+            when(ch.isWritable()).thenReturn(true);
+
+            var network = network();
+            network.seedPeerForTests(DEAD, removedPeerState(DEAD));
+
+            network.rawConsensusWriteForTest(ch, payload(), DEAD)
+                   .await(TimeSpan.timeSpan(5).seconds())
+                   .onSuccess(_ -> fail("REMOVED peer must drop, not deliver"));
+            verify(ch, never()).writeAndFlush(any());
+        }
+
+        /// A peer that is NOT removed (no resident state / EVICTED-style) still writes normally —
+        /// proving the short-circuit triggers ONLY on REMOVED and never on a live/flapping peer.
+        @Test
+        void rawConsensusWrite_nonRemovedPeer_writesNormally() {
+            var ch = mock(QuicStreamChannel.class);
+            var future = mock(ChannelFuture.class);
+            when(future.addListener(any())).thenReturn(future);
+            when(ch.writeAndFlush(any())).thenReturn(future);
+            when(ch.isActive()).thenReturn(true);
+            when(ch.isWritable()).thenReturn(true);
+
+            var network = network();
+
+            network.rawConsensusWriteForTest(ch, payload(), PEER)
+                   .await(TimeSpan.timeSpan(5).seconds())
+                   .onFailure(cause -> fail("non-REMOVED peer must deliver: " + cause.message()));
+            verify(ch, times(1)).writeAndFlush(any());
+        }
+
+        private static PeerState removedPeerState(NodeId peerId) {
+            var s = PeerState.peerState(peerId, System.nanoTime());
+            var dropped = s.authoritativeRemove(System.nanoTime());
+            assertThat(dropped.isEmpty()).isTrue();
+            assertThat(s.phase()).isEqualTo(PeerState.Phase.REMOVED);
+            return s;
+        }
+    }
+
     // --- Helpers ---
 
     private static Retry fastRetry(int attempts) {

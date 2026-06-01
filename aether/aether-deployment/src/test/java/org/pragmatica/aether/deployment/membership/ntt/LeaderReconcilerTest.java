@@ -833,6 +833,90 @@ class LeaderReconcilerTest {
     }
 
     @Nested
+    class TerminalEviction {
+        /// Co-confirm an id dead (SWIM-FAULTY ∧ liveness-gone) so it is hard-evicted and recorded
+        /// TERMINAL; then deliver a STALE SWIM-HEALTHY for that SAME id. Under restart-disabled the
+        /// id never legitimately returns (a genuine return is a NEW ULID), so the stale signal must
+        /// be a no-op — the id stays terminally evicted and is not re-admitted.
+        @Test
+        void coConfirmedDead_thenStaleSwimHealthy_doesNotUnEvict() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            reconciler.onSwimFaulty(PEER_D);
+            reconciler.onLivenessGone(PEER_D);
+            assertThat(reconciler.isTerminallyEvicted(PEER_D)).isTrue();
+
+            // Stale recovery for the SAME id arrives AFTER the verdict — must not un-evict.
+            reconciler.onSwimHealthy(PEER_D);
+
+            assertThat(reconciler.isTerminallyEvicted(PEER_D)).isTrue();
+        }
+
+        /// Same terminal-verdict guard via the transport-recovery ingress: a stale QUIC reconnect
+        /// (`onPeerRecovered`) for a terminally-evicted id must not un-evict it.
+        @Test
+        void coConfirmedDead_thenStalePeerRecovered_doesNotUnEvict() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            reconciler.onSwimFaulty(PEER_D);
+            reconciler.onLivenessGone(PEER_D);
+            assertThat(reconciler.isTerminallyEvicted(PEER_D)).isTrue();
+
+            reconciler.onPeerRecovered(PEER_D);
+
+            assertThat(reconciler.isTerminallyEvicted(PEER_D)).isTrue();
+        }
+
+        /// Leader-local lifecycle: deactivation (leader-term end) clears the terminal set so a new
+        /// leader term starts fresh — consistent with the existing `swimFaulty`/`livenessGone`
+        /// reset on deactivate.
+        @Test
+        void deactivate_clearsTerminalSet() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            reconciler.onSwimFaulty(PEER_D);
+            reconciler.onLivenessGone(PEER_D);
+            assertThat(reconciler.isTerminallyEvicted(PEER_D)).isTrue();
+
+            reconciler.deactivate();
+
+            assertThat(reconciler.isTerminallyEvicted(PEER_D)).isFalse();
+        }
+
+        /// Non-terminal path intact: an id that is only SWIM-FAULTY (NOT co-confirmed dead — no
+        /// liveness-gone) is never hard-evicted, so it is never in the terminal set, and a
+        /// subsequent SWIM-HEALTHY clears it normally. Proven by: after the un-confirmed FAULTY +
+        /// HEALTHY, a fresh liveness-gone ALONE does not evict (the FAULTY record was cleared), so
+        /// the id never becomes terminally evicted.
+        @Test
+        void unconfirmedFaulty_notTerminal_andSwimHealthyClearsNormally() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            reconciler.onSwimFaulty(PEER_D);
+            assertThat(reconciler.isTerminallyEvicted(PEER_D)).isFalse();
+
+            // Non-terminal recovery clears the bare FAULTY record (id was never co-confirmed).
+            reconciler.onSwimHealthy(PEER_D);
+
+            // A later liveness-gone ALONE cannot evict (swimFaulty was cleared), so the id never
+            // becomes co-confirmed-dead and never enters the terminal set.
+            reconciler.onLivenessGone(PEER_D);
+            assertThat(reconciler.isTerminallyEvicted(PEER_D)).isFalse();
+        }
+    }
+
+    @Nested
     class DrainSafetyFloor {
         /// Defect 1 (double-count): a freshly provisioned replacement appears in BOTH the
         /// membership view AND the in-flight provisioning map within the expiry window.

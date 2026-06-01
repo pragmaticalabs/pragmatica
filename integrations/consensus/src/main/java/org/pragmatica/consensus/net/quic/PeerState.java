@@ -41,8 +41,8 @@ import static org.pragmatica.lang.Unit.unit;
 ///   INIT ─────► CONNECTING ─────► CONNECTED ────► EVICTED ────► REMOVED
 ///    ▲              │                 │               │             ▲
 ///    │              └───fail──────────┤               │             │
-///    │                                └──auth remove──┴─────────────┤
-///    └────────────────── expire-evicted ────────────────────────────┘
+///    │                                └──auth remove──┴─────────────┘
+///    └──────────────── attach (reconnect from EVICTED) ◄────────────┘
 /// ```
 ///
 /// Events and their transitions:
@@ -52,9 +52,11 @@ import static org.pragmatica.lang.Unit.unit;
 ///     Returns false when in REMOVED (caller closes the new connection) or when a live CONNECTED
 ///     link already exists (duplicate — caller closes the new connection).
 ///   - `evict()` — CONNECTED → EVICTED. Offline buffer preserved for reconnect drain.
-///   - `expireEvicted()` — EVICTED → REMOVED when the peer stays evicted past a grace TTL.
-///   - `authoritativeRemove()` — any → REMOVED. Clears buffer and connection unconditionally.
-///     Driven by `DisconnectNode` (SWIM-confirmed departure) and `unregisterPeer` (topology pruning).
+///   - `authoritativeRemove()` — any → REMOVED. Clears buffer and connection unconditionally. Terminal:
+///     `attach` from REMOVED returns REJECTED and `beginConnecting` from REMOVED returns false, so a
+///     same-NodeId peer never re-enters the live phases. Driven by `departurePermanent` (the leader's
+///     co-confirmed-death verdict / DECOMMISSIONED / SWIM `DepartedObserved`) and shutdown. EVICTED is
+///     reached on REMOVED only through this path — there is no TTL-based EVICTED → REMOVED expiry.
 ///
 /// ## Offline buffer
 ///
@@ -63,8 +65,7 @@ import static org.pragmatica.lang.Unit.unit;
 /// CONNECTING or EVICTED. Bounded by [OFFLINE_BUFFER_MAX]; overflow drops the oldest entry
 /// (consensus messages are idempotent — the stall detector re-broadcasts stuck rounds).
 ///
-/// Drained by [drainOfflineBuffer] right after `attach` completes. Cleared by
-/// `authoritativeRemove` and `expireEvicted`.
+/// Drained by [drainOfflineBuffer] right after `attach` completes. Cleared by `authoritativeRemove`.
 public final class PeerState {
     public static final int OFFLINE_BUFFER_MAX = 10_000;
 
@@ -156,7 +157,7 @@ public final class PeerState {
     }
 
     /// Returns nanoseconds since the most recent phase transition.
-    /// Used by the protection window check in `handleDisconnect` and by `expireEvicted`.
+    /// Used by the protection window check in `handleDisconnect`.
     public synchronized long phaseAgeNanos(long nowNanos) {
         return nowNanos - phaseChangedAtNanos;
     }
@@ -216,20 +217,10 @@ public final class PeerState {
         return option(evicted);
     }
 
-    /// Transitions EVICTED → REMOVED when the peer stays evicted past `ttlNanos`.
-    /// Returns true when the transition fired. Clears offline buffer.
-    public synchronized boolean expireEvicted(long nowNanos, long ttlNanos) {
-        if (phase != Phase.EVICTED || (nowNanos - phaseChangedAtNanos) < ttlNanos) {
-            return false;
-        }
-        changePhase(Phase.REMOVED, nowNanos);
-        offlineBuffer.clear();
-        return true;
-    }
-
     /// Authoritative removal — any → REMOVED. Caller owns contract that this peer is truly gone
-    /// (SWIM-confirmed DisconnectNode, explicit unregisterPeer, shutdown). Clears offline buffer
-    /// and drops any held connection. Returns the dropped connection for the caller to close.
+    /// (`departurePermanent`: co-confirmed-death verdict / DECOMMISSIONED / SWIM DepartedObserved,
+    /// shutdown). Clears offline buffer and drops any held connection. Returns the dropped
+    /// connection for the caller to close.
     public synchronized Option<QuicPeerConnection> authoritativeRemove(long nowNanos) {
         var dropped = connection;
         this.connection = null;

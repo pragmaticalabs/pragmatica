@@ -140,30 +140,6 @@ class PeerStateTest {
     }
 
     @Test
-    void expireEvicted_before_ttl_returns_false_and_stays_EVICTED() {
-        var s = state();
-        s.beginConnecting(T0 + 1);
-        s.attach(liveConnection(), T0 + 2);
-        s.evict(T0 + 3);
-        assertThat(s.expireEvicted(T0 + 4, 1_000L)).isFalse();
-        assertThat(s.phase()).isEqualTo(Phase.EVICTED);
-    }
-
-    @Test
-    void expireEvicted_after_ttl_moves_to_REMOVED_and_clears_buffer() {
-        var s = state();
-        s.beginConnecting(T0 + 1);
-        s.offerOutbound(new byte[]{1});   // queued while CONNECTING
-        s.attach(liveConnection(), T0 + 2); // CONNECTING -> CONNECTED (buffer not drained by this call)
-        assertThat(s.offlineBufferSize()).isEqualTo(1);
-        s.evict(T0 + 3);                   // CONNECTED -> EVICTED, buffer preserved
-        assertThat(s.offlineBufferSize()).isEqualTo(1);
-        assertThat(s.expireEvicted(T0 + 100, 50L)).isTrue();
-        assertThat(s.phase()).isEqualTo(Phase.REMOVED);
-        assertThat(s.offlineBufferSize()).isZero();
-    }
-
-    @Test
     void authoritativeRemove_drops_connection_and_clears_buffer() {
         var s = state();
         s.beginConnecting(T0 + 1);
