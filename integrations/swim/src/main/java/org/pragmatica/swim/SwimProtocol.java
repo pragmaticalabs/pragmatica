@@ -762,20 +762,27 @@ public final class SwimProtocol implements SwimMessageHandler {
         tombstones.remove(announce.nodeInfo().id());
 
         if (!members.containsKey(announce.nodeInfo().id())) {
-            // Resurrection guard: a bare ANNOUNCE is gossip, NOT proof of reachability.
-            // Introduce the unknown member as SUSPECT (probe-on-arrival) rather than
-            // ALIVE. SUSPECT keeps the member `isProbable` so the next tick probes it;
-            // a real probe-ack (`processAckProbe`) or a QUIC `PeerConnected` promotes it
-            // to ALIVE/HEALTHY. Crucially SUSPECT does NOT set `everSeenHealthy` and does
-            // NOT emit `HealthyObserved`, so a dead node re-announced via stale gossip is
-            // never re-admitted as HEALTHY off a bare join. If the node is genuinely
-            // unreachable the suspect-window expiry drives it to FAULTY/UNKNOWN.
-            // `JoinAnnounced` (below) still fires, so the legitimate reachability probe
-            // (`clusterNetwork.connect`) proceeds — formation is unaffected.
-            var update = MembershipUpdate.membershipUpdate(
-                announce.nodeInfo().id(), MemberState.SUSPECT, announce.incarnation(),
-                swimAddressFor(announce.nodeInfo()));
-            applyNewMember(update);
+            // FIX A — Direct liveness evidence: a self-ANNOUNCE datagram is a node
+            // speaking for ITSELF (canonical SWIM positive liveness), NOT third-party
+            // gossip. Introduce it as ALIVE (no suspect-timer armed at birth) instead of
+            // SUSPECT, so it reaches HEALTHY immediately and enters membership without
+            // racing a later probe-ack. Third-party gossip (`applyUpdate`/`applyNewMember`)
+            // is UNCHANGED — it still introduces unknown gossiped members as SUSPECT,
+            // because there is no direct evidence on that path.
+            //
+            // #231 invariant preserved: the ALIVE introduction is routed THROUGH the
+            // tombstone gate (`introduceAnnouncedAlive` -> `blockedByTombstone`), never
+            // around it. A proven-dead id is therefore NOT revived by a bare ANNOUNCE at
+            // an incarnation that does not strictly exceed the tombstone. (The
+            // unconditional tombstone-CLEAR above is the partition-heal path and is what a
+            // GENUINE returning node relies on; the gate here is the residual safety net.)
+            //
+            // FIX B — the SWIM probe address is taken from the ANNOUNCE SOURCE IP
+            // (kernel-resolved, asymmetry-proof) rather than the gossiped hostname routed
+            // through async DNS, falling back to the advertised address when no source IP
+            // is available (cold-boot static seeds / NAT). `JoinAnnounced` (below) still
+            // fires, so the QUIC reachability probe proceeds — formation is unaffected.
+            introduceAnnouncedAlive(announce, swimProbeAddressFor(sender, announce.nodeInfo()));
         }
 
         // Attach the dial-preferred QUIC address: the IP the ANNOUNCE datagram physically
@@ -804,6 +811,45 @@ public final class SwimProtocol implements SwimMessageHandler {
     private InetSocketAddress swimAddressFor(NodeInfo nodeInfo) {
         return new InetSocketAddress(nodeInfo.address().host(),
                                      nodeInfo.address().port() + config.swimPortOffset());
+    }
+
+    /// FIX B — SWIM probe target for an announcing peer, derived from the ANNOUNCE
+    /// SOURCE IP (resolved by the kernel) combined with the SWIM port. The SWIM port
+    /// keeps the existing `swimPortOffset` derivation (`advertised QUIC port + offset`),
+    /// identical to [#swimAddressFor], so the dial/probe port math stays consistent with
+    /// [#dialInfoFor]'s inverse. The source IP is asymmetry-proof: it is the address the
+    /// datagram physically arrived from, so the very next probe targets a proven-reachable
+    /// IP rather than re-resolving the gossiped hostname through async DNS. Falls back to
+    /// the advertised host when no source IP is available (cold-boot static seeds and
+    /// NAT/non-Docker envs where source-IP != advertised host) — resolution is never
+    /// mandatory.
+    private InetSocketAddress swimProbeAddressFor(InetSocketAddress sender, NodeInfo nodeInfo) {
+        var swimPort = nodeInfo.address().port() + config.swimPortOffset();
+        return Option.option(sender.getAddress())
+                     .map(resolvedIp -> new InetSocketAddress(resolvedIp.getHostAddress(), swimPort))
+                     .or(swimAddressFor(nodeInfo));
+    }
+
+    /// FIX A — Introduce a self-announced (direct-liveness-evidence) member as ALIVE,
+    /// routed THROUGH the tombstone gate (#231): a proven-dead id whose tombstone the
+    /// preceding unconditional clear did not remove — or one at an incarnation that does
+    /// not strictly exceed the tombstone — is refused here too, never resurrected off a
+    /// bare ANNOUNCE. On admission the member is recorded ALIVE (no suspect-timer armed at
+    /// birth), `notifyMemberJoined` fires (QUIC dial set + listener), and `HealthyObserved`
+    /// is emitted via [#recordHealthyAndEmit]. Distinct from gossip introduction
+    /// ([#applyNewSuspectMember]), which has no direct evidence and stays SUSPECT.
+    private void introduceAnnouncedAlive(Announce announce, InetSocketAddress probeAddress) {
+        if (blockedByTombstone(announce.nodeInfo().id(), announce.incarnation())) {
+            return;
+        }
+
+        var member = SwimMember.swimMember(announce.nodeInfo().id(), MemberState.ALIVE,
+                                           announce.incarnation(), probeAddress);
+        members.put(member.nodeId(), member);
+        suspectTimestamps.remove(member.nodeId());
+        addMemberUpdate(member);
+        notifyMemberJoined(member);
+        recordHealthyAndEmit(member.nodeId(), member.incarnation());
     }
 
     /// Notify membership-join to BOTH the membership listener and the observation channel.

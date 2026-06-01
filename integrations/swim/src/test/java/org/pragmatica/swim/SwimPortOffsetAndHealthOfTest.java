@@ -101,6 +101,62 @@ class SwimPortOffsetAndHealthOfTest {
         }
     }
 
+    /// FIX B: the SWIM probe address for an announced member is taken from the ANNOUNCE
+    /// SOURCE IP (asymmetry-proof, kernel-resolved) combined with the SWIM port, falling
+    /// back to the gossiped hostname when no source IP is available.
+    @Nested
+    class HandleAnnounceProbeAddressFromSourceIp {
+
+        private static final NodeId NODE_B = new NodeId("node-b");
+        // Advertised (gossiped) host differs from the datagram's source IP — the
+        // asymmetry FIX B resolves. Source IP must win.
+        private static final NodeAddress NODE_B_ADV = NodeAddress.nodeAddress("advertised-host.invalid", QUIC_PORT).unwrap();
+        private static final NodeInfo NODE_B_INFO = nodeInfo(NODE_B, NODE_B_ADV, NodeRole.ACTIVE, Map.of());
+
+        private SwimProtocol protocol;
+
+        @BeforeEach
+        void setUp() {
+            var cfg = SwimConfig.DEFAULT.withSwimPortOffset(SWIM_OFFSET);
+            protocol = SwimProtocol.swimProtocol(cfg, new StubTransport(), new RecordingMembershipListener(), SELF_ID, SELF_ADDR)
+                                   .fold(_ -> null, v -> v);
+        }
+
+        @Test
+        void handleAnnounce_sourceIpPresent_probeAddressUsesSourceIpNotGossipedHost() {
+            // Datagram physically arrives from 10.0.0.9 (resolved), gossiped host is
+            // advertised-host.invalid. The probe address must use the source IP.
+            var sender = new InetSocketAddress("10.0.0.9", QUIC_PORT + SWIM_OFFSET);
+            protocol.onMessage(sender, Announce.announce(NODE_B_INFO, "", 1L));
+
+            var member = protocol.members().get(NODE_B);
+            assertThat(member).as("ANNOUNCE registers the peer").isNotNull();
+            assertThat(member.address().getAddress().getHostAddress())
+                .as("probe address must use the ANNOUNCE source IP, not the gossiped hostname")
+                .isEqualTo("10.0.0.9");
+            assertThat(member.address().getPort())
+                .as("probe address port keeps the swim port offset derivation")
+                .isEqualTo(QUIC_PORT + SWIM_OFFSET);
+        }
+
+        @Test
+        void handleAnnounce_sourceIpAbsent_probeAddressFallsBackToGossipedHost() {
+            // An unresolved sender (no kernel-resolved IP) forces the fallback to the
+            // gossiped hostname (cold-boot static seeds / NAT) — resolution is never
+            // mandatory.
+            var unresolved = InetSocketAddress.createUnresolved("ignored-host", QUIC_PORT + SWIM_OFFSET);
+            protocol.onMessage(unresolved, Announce.announce(NODE_B_INFO, "", 1L));
+
+            var member = protocol.members().get(NODE_B);
+            assertThat(member).as("ANNOUNCE registers the peer").isNotNull();
+            assertThat(member.address().getHostString())
+                .as("with no source IP the probe address falls back to the gossiped host")
+                .isEqualTo("advertised-host.invalid");
+            assertThat(member.address().getPort())
+                .isEqualTo(QUIC_PORT + SWIM_OFFSET);
+        }
+    }
+
     @Nested
     class HealthOfFallback {
 

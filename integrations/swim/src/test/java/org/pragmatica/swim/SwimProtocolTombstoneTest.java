@@ -136,11 +136,15 @@ class SwimProtocolTombstoneTest {
     }
 
     @Test
-    void selfAnnounce_ofTombstonedId_isReAdmittedAsSuspect_andClearsTombstone() {
+    void selfAnnounce_ofTombstonedId_isReAdmittedAsAlive_andClearsTombstone() {
         try {
             driveProvenHealthyToTombstone();
 
             // Authoritative self-ANNOUNCE: proof the node is alive again (partition heal).
+            // FIX A: direct liveness evidence => re-admitted as ALIVE (not SUSPECT), with
+            // no suspect-timer armed at birth. The unconditional tombstone-clear in
+            // handleAnnounce removes the tombstone first, so the gated ALIVE introduction
+            // is admitted.
             var nodeInfoA = NodeInfo.nodeInfo(NODE_A, new NodeAddress("127.0.0.1", 9001));
             protocol.onMessage(ADDR_A, new Announce(nodeInfoA, "", 0));
 
@@ -148,16 +152,14 @@ class SwimProtocolTombstoneTest {
                 .as("Self-ANNOUNCE must re-admit a tombstoned id")
                 .isTrue();
             assertThat(protocol.members().get(NODE_A).state())
-                .as("Re-admitted via ANNOUNCE as SUSPECT (probe-on-arrival)")
-                .isEqualTo(MemberState.SUSPECT);
+                .as("Re-admitted via ANNOUNCE as ALIVE (direct liveness evidence)")
+                .isEqualTo(MemberState.ALIVE);
             assertThat(protocol.tombstonedForTest(NODE_A))
                 .as("Self-ANNOUNCE must clear the tombstone")
                 .isFalse();
-
-            // It can be probed back to ALIVE via a positive ack-equivalent gossip.
-            var aliveAgain = new MembershipUpdate(NODE_A, MemberState.ALIVE, 5, ADDR_A);
-            protocol.onMessage(ADDR_B, new Ping(NODE_B, 9L, List.of(aliveAgain)));
-            assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.ALIVE);
+            assertThat(protocol.everSeenHealthyForTest(NODE_A))
+                .as("ALIVE re-admit via ANNOUNCE records proven-healthy")
+                .isTrue();
         } finally {
             protocol.stop();
         }
@@ -303,10 +305,12 @@ class SwimProtocolTombstoneTest {
     void partitionHeal_selfAnnounceHigherIncarnation_readmits() {
         driveProvenHealthyToFaultyResident();
 
-        // S06 partition-heal: the node itself ANNOUNCEs at a higher incarnation. The
-        // ANNOUNCE clears the tombstone; because the id is still resident as FAULTY, the
-        // re-admit flows through the membership update path and lands as SUSPECT (probe-
-        // on-arrival). Authoritative self-liveness always wins.
+        // S06 partition-heal: the node itself ANNOUNCEs at a higher incarnation. The id is
+        // still resident as FAULTY, so the ANNOUNCE only CLEARS the tombstone here (FIX A's
+        // ALIVE introduction is the unknown-member branch; a resident member is untouched
+        // by the announce datagram beyond the tombstone clear). The subsequent
+        // higher-incarnation gossip then re-admits the member as SUSPECT. Authoritative
+        // self-liveness wins via the clear.
         var nodeInfoA = NodeInfo.nodeInfo(NODE_A, new NodeAddress("127.0.0.1", 9001));
         protocol.onMessage(ADDR_A, new Announce(nodeInfoA, "", 5));
 
@@ -318,7 +322,7 @@ class SwimProtocolTombstoneTest {
         var reSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 5, ADDR_A);
         protocol.onMessage(ADDR_B, new Ping(NODE_B, 7L, List.of(reSuspect)));
         assertThat(protocol.members().get(NODE_A).state())
-            .as("After partition-heal clear, id is re-admitted as SUSPECT")
+            .as("After partition-heal clear, higher-incarnation gossip re-admits as SUSPECT")
             .isEqualTo(MemberState.SUSPECT);
     }
 

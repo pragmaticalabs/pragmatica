@@ -195,12 +195,13 @@ class SwimProtocolTest {
         }
     }
 
-    /// Resurrection guard (SWIM dead-node-revival fix). A bare ANNOUNCE is gossip, NOT proof of
-    /// reachability. An unknown member learned from a bare ANNOUNCE must NOT be introduced as
-    /// ALIVE/HEALTHY — it enters SUSPECT (probe-on-arrival) and is only promoted to ALIVE by a
-    /// real probe-ack. `JoinAnnounced` still fires so the reachability probe proceeds.
+    /// Self-ANNOUNCE = direct liveness evidence (canonical SWIM). A node announcing
+    /// ITSELF is positive proof it is alive, so an unknown member learned from a
+    /// self-ANNOUNCE datagram is introduced as ALIVE (no suspect-timer armed at birth),
+    /// reaching HEALTHY immediately. Third-party gossip is UNCHANGED (still SUSPECT), and
+    /// a tombstoned (proven-dead) id is still refused (#231 anti-resurrection).
     @Nested
-    class AnnounceResurrectionGuard {
+    class AnnounceDirectLiveness {
         private RecordingTransport transport;
         private RecordingListener listener;
         private SwimProtocol protocol;
@@ -217,31 +218,40 @@ class SwimProtocolTest {
         }
 
         @Test
-        void handleAnnounce_unknownMember_addedAsSuspectNotAlive() {
+        void handleAnnounce_nonTombstonedSelfAnnounce_introducedAsAlive() {
             protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
 
             assertThat(protocol.members()).containsKey(NODE_A);
             assertThat(protocol.members().get(NODE_A).state())
-                .as("bare ANNOUNCE must introduce the member as SUSPECT (probe-on-arrival), not ALIVE")
-                .isEqualTo(MemberState.SUSPECT);
+                .as("self-ANNOUNCE is direct liveness evidence — introduce as ALIVE, not SUSPECT")
+                .isEqualTo(MemberState.ALIVE);
         }
 
         @Test
-        void handleAnnounce_unknownMember_doesNotSetEverSeenHealthy() {
+        void handleAnnounce_nonTombstonedSelfAnnounce_setsEverSeenHealthyAndEmitsHealthy() {
             protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
 
             assertThat(protocol.everSeenHealthyForTest(NODE_A))
-                .as("bare ANNOUNCE is not reachability proof — must NOT mark the peer ever-healthy")
-                .isFalse();
+                .as("direct liveness evidence marks the peer ever-healthy")
+                .isTrue();
             assertThat(observations.byType(SwimObservation.HealthyObserved.class))
-                .as("bare ANNOUNCE must NOT emit HealthyObserved")
-                .isEmpty();
+                .as("ALIVE introduction must emit HealthyObserved")
+                .isNotEmpty();
+        }
+
+        @Test
+        void handleAnnounce_nonTombstonedSelfAnnounce_armsNoSuspectTimer() {
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+
+            assertThat(protocol.suspectTimestampForTest(NODE_A).isEmpty())
+                .as("ALIVE introduction must NOT arm a decay-to-FAULTY suspect timer at birth")
+                .isTrue();
         }
 
         @Test
         void handleAnnounce_unknownMember_stillDeliversJoinAnnounced() {
             // The legitimate reachability probe (clusterNetwork.connect) is driven by
-            // JoinAnnounced — formation must remain unaffected by the resurrection guard.
+            // JoinAnnounced — formation must remain unaffected.
             protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
 
             assertThat(observations.byType(SwimObservation.JoinAnnounced.class))
@@ -250,21 +260,20 @@ class SwimProtocolTest {
         }
 
         @Test
-        void handleAnnounce_thenProbeAck_promotesToAlive() {
-            // After the SUSPECT introduction, a real probe-ack from the peer promotes it to
-            // ALIVE/HEALTHY — the reachability-backed path that formation depends on.
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
-            assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.SUSPECT);
-
-            // Simulate a probe-ack from NODE_A (markAliveIfNeeded path).
-            protocol.onMessage(ADDR_A, Ack.ack(NODE_A, 1L, List.of()));
+        void handleAnnounce_thirdPartyGossipOfUnknownMember_stillIntroducedAsSuspect() {
+            // ONLY the self-ANNOUNCE datagram carries direct evidence. Third-party gossip
+            // (piggyback in a Ping) about an unknown member has NO direct evidence and is
+            // honored AS GOSSIPED (unchanged path): a SUSPECT gossip stays SUSPECT and is
+            // NOT promoted to ALIVE by the FIX A direct-evidence path.
+            var gossip = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            protocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(gossip)));
 
             assertThat(protocol.members().get(NODE_A).state())
-                .as("a real probe-ack must promote the SUSPECT-on-arrival member to ALIVE")
-                .isEqualTo(MemberState.ALIVE);
+                .as("third-party SUSPECT gossip of an unknown member must stay SUSPECT (no direct evidence)")
+                .isEqualTo(MemberState.SUSPECT);
             assertThat(protocol.everSeenHealthyForTest(NODE_A))
-                .as("probe-ack is reachability proof — peer becomes ever-healthy")
-                .isTrue();
+                .as("third-party gossip is not reachability proof")
+                .isFalse();
         }
 
         private static NodeInfo nodeInfoFor(NodeId id, InetSocketAddress addr) {
