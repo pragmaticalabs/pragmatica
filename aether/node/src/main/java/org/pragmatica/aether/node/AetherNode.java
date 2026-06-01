@@ -1535,7 +1535,10 @@ public interface AetherNode extends ManageableNode {
         // constructed and listeners registered on every node. The migration-ramp
         // observation-flag and DivergenceLogger are gone.
         var membershipConfig = config.membership().or(MembershipConfig::membershipConfig);
-        IntSupplier configuredCoreCountSupplier = () -> config.topology().coreNodes().size();
+        IntSupplier configuredCoreCountSupplier = () ->
+            clusterConfigReader.get()
+                               .map(AetherValue.ClusterConfigValue::coreCount)
+                               .or(() -> config.topology().coreNodes().size());
         var leaderReconcilerRef = new AtomicReference<LeaderReconciler>();
         var quorumLossDetectorRef = new AtomicReference<QuorumLossDetector>();
         var publisherRef = new AtomicReference<GenerationSnapshotPublisher>();
