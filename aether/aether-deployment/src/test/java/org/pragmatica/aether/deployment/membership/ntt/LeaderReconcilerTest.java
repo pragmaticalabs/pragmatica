@@ -64,6 +64,9 @@ class LeaderReconcilerTest {
         timeSpan(membershipConfig().nttDepartureTimeout().nanos() * 3 / 2).nanos();
     private static final TimeSpan EXPECTED_INFLIGHT_EXPIRY =
         timeSpan(membershipConfig().nttDepartureTimeout().nanos() * 3).nanos();
+    private static final TimeSpan EXPECTED_GRACE_WINDOW =
+        timeSpan(membershipConfig().nttDepartureTimeout().nanos() * 3 / 2).nanos();
+    private static final TimeSpan EXPECTED_DEBOUNCE_WINDOW = membershipConfig().nttDepartureTimeout();
     private static final TimeSpan DEBOUNCE_DELAY = timeSpan(100L).millis();
 
     private TestTimeSource timeSource;
@@ -128,6 +131,24 @@ class LeaderReconcilerTest {
         scheduler.tasksByDelay(DEBOUNCE_DELAY).getLast().runIfLive();
     }
 
+    /// Advance the test clock past BOTH provisioning gates (cold-start grace = nttDepartureTimeout
+    /// × 1.5, then deficit debounce = nttDepartureTimeout) so a sustained, armed, quorum-safe
+    /// deficit is allowed to provision. Used by tests that assert auto-heal FIRES — they create a
+    /// deficit, run one (suppressed) reconcile pass that anchors the deficit run, advance past the
+    /// gates, then run a second pass that provisions.
+    @Contract
+    private void advancePastProvisioningGates() {
+        timeSource.advanceTimeMillis(EXPECTED_GRACE_WINDOW.millis() + EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+    }
+
+    /// Convenience: trigger an NTT-fire reconcile and fire its debounced pass. The standard
+    /// "observe current membership and reconcile" step used between time advances.
+    @Contract
+    private void triggerAndFireReconcile() {
+        reconciler.onTopologyUnhealthy();
+        fireDebouncedReconcile();
+    }
+
     @Nested
     class DefaultState {
         @Test
@@ -173,8 +194,13 @@ class LeaderReconcilerTest {
 
             listener.clear();
             removePeers(PEER_C, PEER_D);
-            reconciler.onTopologyUnhealthy();
-            fireDebouncedReconcile();
+            // First pass anchors the deficit run (suppressed by grace + debounce); advance past
+            // both gates so the sustained deficit provisions on the second pass.
+            triggerAndFireReconcile();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+            listener.clear();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
 
             assertThat(listener.events()).hasSize(1);
             var emitted = listener.events().getFirst();
@@ -368,8 +394,10 @@ class LeaderReconcilerTest {
             listener.clear();
 
             removePeers(PEER_C, PEER_D);
-            reconciler.onTopologyUnhealthy();
-            fireDebouncedReconcile();
+            triggerAndFireReconcile();
+            listener.clear();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
 
             var intent = listener.events().getFirst();
             assertThat(intent.clusterMembershipCount()).isEqualTo(3);
@@ -429,8 +457,9 @@ class LeaderReconcilerTest {
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
             removePeers(PEER_C, PEER_D);
-            reconciler.onTopologyUnhealthy();
-            fireDebouncedReconcile();
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(2);
             listener.clear();
             seedClusterWithPeers(NodeId.randomNodeId(), NodeId.randomNodeId());
@@ -453,8 +482,9 @@ class LeaderReconcilerTest {
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
             removePeers(PEER_C, PEER_D);
-            reconciler.onTopologyUnhealthy();
-            fireDebouncedReconcile();
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(2);
             listener.clear();
             timeSource.advanceTimeMillis(EXPECTED_INFLIGHT_EXPIRY.millis() - 1);
@@ -468,20 +498,20 @@ class LeaderReconcilerTest {
 
     @Nested
     class ProvisioningArmLatch {
-        /// Bug C: members < configured from the very start (initial formation / slow join).
-        /// A deficit before first full membership means "configured peers still joining" —
-        /// the reconciler must NOT provision phantom replacements. Latch stays unarmed.
+        /// Bug C: a sub-quorum membership from the very start (initial formation / slow join).
+        /// configured=5 → quorum threshold 3; SELF+PEER_A = 2 is below quorum, so the latch never
+        /// arms and the reconciler must NOT provision phantom replacements for peers still joining.
         @Test
-        void deficitFromStart_beforeFullMembership_provisionsNothing_andStaysUnarmed() {
+        void deficitFromStart_belowQuorum_provisionsNothing_andStaysUnarmed() {
             configuredCoreCount.set(5);
-            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+            seedClusterWithPeers(PEER_A);
             reconciler.activate();
 
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
             assertThat(reconciler.isArmedForProvisioning()).isFalse();
             var intent = listener.events().getFirst();
-            assertThat(intent.clusterMembershipCount()).isEqualTo(4);
+            assertThat(intent.clusterMembershipCount()).isEqualTo(2);
             assertThat(intent.configuredCoreCount()).isEqualTo(5);
             assertThat(intent.provisionCount()).isZero();
             assertThat(ctm.provisionReplacementCalls()).isEmpty();
@@ -500,8 +530,10 @@ class LeaderReconcilerTest {
             listener.clear();
 
             removePeers(PEER_D);
-            reconciler.onTopologyUnhealthy();
-            fireDebouncedReconcile();
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            listener.clear();
+            triggerAndFireReconcile();
 
             assertThat(reconciler.isArmedForProvisioning()).isTrue();
             var intent = listener.events().getFirst();
@@ -520,28 +552,161 @@ class LeaderReconcilerTest {
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
             assertThat(reconciler.isArmedForProvisioning()).isTrue();
 
-            // First post-arm deficit: drop PEER_D, one provision, evict before next pass.
+            // First post-arm deficit: drop PEER_D. One suppressed pass anchors the deficit, then
+            // advance past the gates so the sustained deficit provisions.
             removePeers(PEER_D);
-            reconciler.onTopologyUnhealthy();
-            fireDebouncedReconcile();
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
             assertThat(ctm.provisionReplacementCalls()).hasSize(1);
 
-            // Recover to full membership and let the in-flight entry expire (past ×3 window).
+            // Recover to full membership and let the in-flight entry expire (past ×3 window). The
+            // recovery pass clears the deficit anchor (effective >= configured).
             seedClusterWithPeers(PEER_D);
             timeSource.advanceTimeMillis(EXPECTED_INFLIGHT_EXPIRY.millis() + 1);
             reconciler.onSwimMemberHealthy(PEER_D);
             fireDebouncedReconcile();
             assertThat(reconciler.inFlightProvisioningCount()).isZero();
 
-            // Second post-arm deficit: still provisions, latch still armed.
+            // Second post-arm deficit: grace is one-time (already elapsed), but the debounce
+            // re-anchors for this new deficit run, so it still needs a suppressed pass + advance.
             removePeers(PEER_C);
-            reconciler.onTopologyUnhealthy();
-            fireDebouncedReconcile();
+            triggerAndFireReconcile();
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
 
             assertThat(reconciler.isArmedForProvisioning()).isTrue();
             assertThat(ctm.provisionReplacementCalls()).hasSize(2);
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
+        }
+    }
+
+    /// Cold-start grace + deficit-debounce gates on the PROVISIONING decision (the convergence
+    /// phantom-provisioning fix). Both gates AND into provisioning (in addition to the arm latch
+    /// and quorum-safety): (a) suppress until `nttDepartureTimeout × 1.5` past the arm time
+    /// (covers the post-election QUIC reconnect churn); (b) suppress until the deficit has held
+    /// past `nttDepartureTimeout` (a transient dip resolves within it; a real departure persists).
+    /// The drain path is NOT gated by either — verified in [`DrainSafetyFloor`].
+    @Nested
+    class ColdStartGraceAndDebounce {
+        /// Scenario 1 — the exact cold-start bug. The leader arms at quorum during formation, then
+        /// `ntt.currentMembers()` transiently shows fewer than configured while QUIC peers are
+        /// still reconnecting (NOT a departure). Reconciling DURING the grace window must provision
+        /// nothing — no phantom replacements for mid-reconnect peers.
+        @Test
+        void transientSubCountDuringGraceWindow_provisionsNothing() {
+            configuredCoreCount.set(5);
+            // Arm at full membership (5) so armedAtNanos anchors at t0.
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(reconciler.isArmedForProvisioning()).isTrue();
+            listener.clear();
+
+            // Transient deficit (two peers mid-reconnect) WITHIN the grace window. Both reconcile
+            // passes stay inside the grace window (total advance < grace), so grace binds even
+            // though the deficit has technically persisted long enough to satisfy debounce alone.
+            removePeers(PEER_C, PEER_D);
+            timeSource.advanceTimeMillis(EXPECTED_GRACE_WINDOW.millis() / 4);
+            triggerAndFireReconcile();
+            timeSource.advanceTimeMillis(EXPECTED_GRACE_WINDOW.millis() / 4);
+            triggerAndFireReconcile();
+
+            var intent = listener.events().getLast();
+            assertThat(intent.provisionCount()).isZero();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+        }
+
+        /// Scenario 2 — past the grace window, but the deficit resolves within the debounce window
+        /// (the reconnecting peers came back). No provision: a single transient sub-count pass that
+        /// recovers before the debounce elapses must not auto-heal.
+        @Test
+        void transientSubCountAfterGraceButResolvesWithinDebounce_provisionsNothing() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(reconciler.isArmedForProvisioning()).isTrue();
+            // Clear the grace window so only the debounce gate is under test.
+            timeSource.advanceTimeMillis(EXPECTED_GRACE_WINDOW.millis() + 1);
+            listener.clear();
+
+            // Deficit appears (anchors the run), then resolves before the debounce window elapses.
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            assertThat(listener.events().getLast().provisionCount()).isZero();
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() / 2);
+            seedClusterWithPeers(PEER_D);
+            reconciler.onSwimMemberHealthy(PEER_D);
+            fireDebouncedReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+            assertThat(listener.events().getLast().provisionCount()).isZero();
+        }
+
+        /// Scenario 3 — past the grace window and the deficit PERSISTS beyond the debounce window:
+        /// auto-heal fires. This is the genuine-departure path that must NOT be permanently
+        /// suppressed by the gates.
+        @Test
+        void persistentDeficitAfterGraceHeldBeyondDebounce_provisions() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(reconciler.isArmedForProvisioning()).isTrue();
+            timeSource.advanceTimeMillis(EXPECTED_GRACE_WINDOW.millis() + 1);
+            listener.clear();
+
+            // A genuine departure: PEER_D leaves and never returns. First pass anchors the deficit
+            // (suppressed); after the debounce window elapses the sustained deficit provisions.
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            assertThat(listener.events().getLast().provisionCount()).isZero();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+
+            var intent = listener.events().getLast();
+            assertThat(intent.clusterMembershipCount()).isEqualTo(4);
+            assertThat(intent.provisionCount()).isEqualTo(1);
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
+        /// Scenario 4 — genuine multi-kill: several peers die at once leaving only the quorum-
+        /// holding survivors below full count, deficit persists. The gates must NOT permanently
+        /// suppress this — after grace + debounce the survivors-only auto-heal provisions the gap
+        /// (here configured=5, survivors SELF+PEER_A+PEER_B = 3 == quorum, gap = 2).
+        @Test
+        void genuineMultiKillSurvivorsBelowFull_provisionsAfterDebounce() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(reconciler.isArmedForProvisioning()).isTrue();
+            timeSource.advanceTimeMillis(EXPECTED_GRACE_WINDOW.millis() + 1);
+            listener.clear();
+
+            // Multi-kill: PEER_C and PEER_D die together; survivors = SELF + PEER_A + PEER_B = 3
+            // (== quorum threshold), a persistent deficit of 2.
+            removePeers(PEER_C, PEER_D);
+            triggerAndFireReconcile();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+
+            var intent = listener.events().getLast();
+            assertThat(intent.clusterMembershipCount()).isEqualTo(3);
+            assertThat(intent.provisionCount()).isEqualTo(2);
+            assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+        }
+
+        /// Observability — the two gate windows are derived from `nttDepartureTimeout`
+        /// (× 1.5 for grace, × 1 for debounce) and exposed for operators/metrics.
+        @Test
+        void gateWindows_derivedFromDepartureTimeout() {
+            assertThat(reconciler.provisioningGraceWindow()).isEqualTo(EXPECTED_GRACE_WINDOW);
+            assertThat(reconciler.deficitDebounceWindow()).isEqualTo(EXPECTED_DEBOUNCE_WINDOW);
         }
     }
 
@@ -561,22 +726,29 @@ class LeaderReconcilerTest {
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
             assertThat(reconciler.isArmedForProvisioning()).isTrue();
 
-            // Drop one peer → one provision dispatched; a sweep future is armed.
+            // Drop one peer → one suppressed pass anchors the deficit; advance past the gates so
+            // the sustained deficit provisions and arms a sweep future.
             removePeers(PEER_D);
-            reconciler.onTopologyUnhealthy();
-            fireDebouncedReconcile();
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
             assertThat(ctm.provisionReplacementCalls()).hasSize(1);
             assertThat(scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY)).hasSize(1);
             listener.clear();
 
             // The replacement boots then dies (never re-joins NTT). No further events arrive.
-            // Advance past the expiry window and fire the armed sweep runnable directly.
+            // Advance past the expiry window and fire the armed sweep runnable directly. The purge
+            // drops effective to 4 (< 5), re-opening the deficit — but the new deficit run must
+            // re-age past the debounce window before the re-provision fires.
             timeSource.advanceTimeMillis(EXPECTED_INFLIGHT_EXPIRY.millis() + 1);
             scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY).getFirst().runIfLive();
-
-            // Sweep re-triggered reconcile (NTT_FIRE) on the debounce delay — fire it.
+            // Sweep re-triggered reconcile (NTT_FIRE) on the debounce delay — fire it (anchors the
+            // re-opened deficit, still suppressed), then advance past debounce and reconcile again.
             fireDebouncedReconcile();
+            assertThat(reconciler.inFlightProvisioningCount()).isZero();
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
 
             // Placeholder purged and a SECOND provision dispatched (deficit re-evaluated).
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
@@ -594,8 +766,9 @@ class LeaderReconcilerTest {
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
             removePeers(PEER_D);
-            reconciler.onTopologyUnhealthy();
-            fireDebouncedReconcile();
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
             assertThat(ctm.provisionReplacementCalls()).hasSize(1);
             listener.clear();
@@ -621,8 +794,9 @@ class LeaderReconcilerTest {
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
             removePeers(PEER_D);
-            reconciler.onTopologyUnhealthy();
-            fireDebouncedReconcile();
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
             var armedSweeps = scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY).size();
 
@@ -646,8 +820,9 @@ class LeaderReconcilerTest {
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
             removePeers(PEER_D);
-            reconciler.onTopologyUnhealthy();
-            fireDebouncedReconcile();
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
             var sweep = scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY).getFirst();
 
             reconciler.deactivate();
@@ -674,10 +849,11 @@ class LeaderReconcilerTest {
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
             assertThat(reconciler.isArmedForProvisioning()).isTrue();
 
-            // Drop one peer → provisions one in-flight placeholder.
+            // Drop one peer → provisions one in-flight placeholder (after the gates elapse).
             removePeers(PEER_D);
-            reconciler.onTopologyUnhealthy();
-            fireDebouncedReconcile();
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
             ctm.clear();
             listener.clear();
@@ -709,10 +885,11 @@ class LeaderReconcilerTest {
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
-            // Drop one → provision one placeholder that will never join.
+            // Drop one → provision one placeholder that will never join (after the gates elapse).
             removePeers(PEER_D);
-            reconciler.onTopologyUnhealthy();
-            fireDebouncedReconcile();
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
             ctm.clear();
             listener.clear();
@@ -770,6 +947,98 @@ class LeaderReconcilerTest {
             assertThat(intent.configuredCoreCount()).isEqualTo(3);
             assertThat(intent.drainCount()).isEqualTo(2);
             assertThat(ctm.drainNodeCalls()).hasSize(2);
+        }
+    }
+
+    /// Regression: "boot under the leader-supplied id" contract. The minted in-flight id IS the
+    /// id passed to `provisionReplacement` AND the id the replacement boots under, so membership
+    /// presence of that exact id is the authoritative fulfillment signal — it clears the in-flight
+    /// entry, counts exactly once in `effective`, and never triggers a spurious drain.
+    @Nested
+    class BootUnderMintedIdentity {
+        /// (a) The dispatch passes the SAME minted id it tracks in-flight to `provisionReplacement`
+        /// — the id stored in the in-flight map equals the id handed to the CTM.
+        @Test
+        void provisionDispatch_passesMintedInFlightId_toProvisionReplacement() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            listener.clear();
+
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+            var mintedId = ctm.provisionReplacementCalls().getFirst();
+            assertThat(reconciler.inFlightProvisioningSnapshot()).containsKey(mintedId);
+            assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
+        }
+
+        /// (b) Once the exact minted id appears in NTT `currentMembers`, the next reconcile clears
+        /// it from in-flight and `effective` counts it exactly once (no double count): membership
+        /// returns to configured, so the snapshot shows no in-flight and no further provision.
+        @Test
+        void mintedIdJoinsMembership_nextReconcileClearsInFlight_andCountsOnce() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+            var mintedId = ctm.provisionReplacementCalls().getFirst();
+            assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
+            listener.clear();
+
+            // The replacement boots under its minted id and joins membership (back to 5).
+            seedClusterWithPeers(mintedId);
+            reconciler.onSwimMemberHealthy(mintedId);
+            fireDebouncedReconcile();
+
+            assertThat(reconciler.inFlightProvisioningSnapshot()).doesNotContainKey(mintedId);
+            assertThat(reconciler.inFlightProvisioningCount()).isZero();
+            var intent = listener.events().getFirst();
+            // effective counts the joined replacement exactly once: 5 confirmed, 0 in-flight.
+            assertThat(intent.clusterMembershipCount()).isEqualTo(5);
+            assertThat(intent.inFlightProvisioningCount()).isZero();
+            assertThat(intent.provisionCount()).isZero();
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
+        /// (c) No spurious drain when a replacement joins under its minted id. Members are back at
+        /// target (5 == configured), the in-flight entry is cleared by identity match, so the
+        /// drain set is empty — no healthy core is drained.
+        @Test
+        void replacementJoinsUnderMintedId_membersAtTarget_drainCountZero() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            var mintedId = ctm.provisionReplacementCalls().getFirst();
+            ctm.clear();
+            listener.clear();
+
+            seedClusterWithPeers(mintedId);
+            reconciler.onSwimMemberHealthy(mintedId);
+            fireDebouncedReconcile();
+
+            var intent = listener.events().getFirst();
+            assertThat(intent.clusterMembershipCount()).isEqualTo(5);
+            assertThat(intent.configuredCoreCount()).isEqualTo(5);
+            assertThat(intent.drainCount()).isZero();
+            assertThat(ctm.drainNodeCalls()).isEmpty();
+            assertThat(reconciler.inFlightProvisioningCount()).isZero();
         }
     }
 
@@ -837,7 +1106,7 @@ class LeaderReconcilerTest {
     /// `provisionReplacement` / `drainNode` / `reconcile` v2 calls.
     private static final class RecordingCtm implements ClusterTopologyManager {
         private final List<NodeId> drainNodeCalls = new CopyOnWriteArrayList<>();
-        private final List<Option<NodeId>> provisionReplacementCalls = new CopyOnWriteArrayList<>();
+        private final List<NodeId> provisionReplacementCalls = new CopyOnWriteArrayList<>();
         private final List<DrainReason> drainReasons = new CopyOnWriteArrayList<>();
         private final AtomicInteger reconcileCount = new AtomicInteger(0);
 
@@ -852,7 +1121,7 @@ class LeaderReconcilerTest {
             drainReasons.clear();
         }
 
-        List<Option<NodeId>> provisionReplacementCalls() {
+        List<NodeId> provisionReplacementCalls() {
             return List.copyOf(provisionReplacementCalls);
         }
 
@@ -865,8 +1134,8 @@ class LeaderReconcilerTest {
         }
 
         @Override
-        public Promise<Unit> provisionReplacement(Option<NodeId> failedPeer, Set<NodeId> clusterMembers) {
-            provisionReplacementCalls.add(failedPeer);
+        public Promise<Unit> provisionReplacement(NodeId newNodeId, Option<NodeId> failedPeer, Set<NodeId> clusterMembers) {
+            provisionReplacementCalls.add(newNodeId);
             return Promise.success(unit());
         }
 

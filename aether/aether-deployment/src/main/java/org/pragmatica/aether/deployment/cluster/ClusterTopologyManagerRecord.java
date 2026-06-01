@@ -421,9 +421,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// Membership v2 / E2 — provision a replacement, PURE ACTUATOR.
     ///
     /// The `LeaderReconciler` (spec §7) owns shortage derivation and calls this per missing
-    /// slot. CTM no longer runs its own slot machinery here: it builds a `ProvisionSpec`
-    /// whose PEERS are seeded from the LIVE member set `clusterMembers` passed in by the
-    /// reconciler (the freshest "who is in the cluster right now" signal from
+    /// slot with the placeholder identity `newNodeId` it minted and tracks in-flight. The
+    /// provisioned node boots under exactly that id: `newNodeId.id()` is threaded into the
+    /// `ProvisionContext.nodeId()` (via `buildProvisionContext`) so the provider boundary
+    /// injects it as `AETHER_NODE_ID` / the Docker container name, and the node adopts it as
+    /// `self`. This is what lets the reconciler treat the id's appearance in membership as the
+    /// authoritative fulfillment signal. CTM no longer runs its own slot machinery here: it
+    /// builds a `ProvisionSpec` whose PEERS are seeded from the LIVE member set `clusterMembers`
+    /// passed in by the reconciler (the freshest "who is in the cluster right now" signal from
     /// `NodeTopologyTracker.currentMembers`). Each member id is resolved to its
     /// `nodeId:host:port` entry via the same `observer.get(id)` → `formatPeerEntry` mechanism
     /// `buildProvisionContext` uses; ids that do not resolve are dropped, and `self` is always
@@ -433,12 +438,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// QUIC NPE). If `clusterMembers` is empty (cold paths), the seed falls back to
     /// `buildProvisionContext`'s topology-derived peers. `failedPeer` is observability-only.
     @Override
-    public Promise<Unit> provisionReplacement(Option<NodeId> failedPeer, Set<NodeId> clusterMembers) {
-        log.info("CTM v2: provisionReplacement requested (failedPeer={}, clusterMembers.size={})",
+    public Promise<Unit> provisionReplacement(NodeId newNodeId, Option<NodeId> failedPeer, Set<NodeId> clusterMembers) {
+        log.info("CTM v2: provisionReplacement requested (newNodeId={}, failedPeer={}, clusterMembers.size={})",
+                 newNodeId,
                  failedPeer,
                  clusterMembers.size());
 
-        var contextBase = buildProvisionContext();
+        var contextBase = buildProvisionContext(newNodeId);
         var memberPeers = liveMemberPeers(clusterMembers);
         var contextSeeded = memberPeers.isEmpty()
                             ? contextBase
@@ -708,7 +714,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         inFlightSlotIndices.clear();
     }
 
-    private ProvisionContext buildProvisionContext() {
+    private ProvisionContext buildProvisionContext(NodeId newNodeId) {
         // Always include self as a fallback bootstrap target — the CTM runs on the leader, which
         // is alive by definition. Without this fallback, transient "no healthy remote peers"
         // windows during chaos (e.g., a leader has just decommissioned several SWIM-faulty peers
@@ -722,10 +728,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var peers = Stream.concat(Stream.of(selfEntry), remoteEntries).collect(Collectors.joining(","));
         var clusterName = clusterConfigReader.get().map(ClusterConfigValue::clusterName).or("");
 
+        // Thread the leader-minted identity through so the provisioned node boots under exactly
+        // this id (provider injects it as AETHER_NODE_ID / Docker container name; the node adopts
+        // it as `self`). NodeId.id() is `node-<lowercase-ULID>` — alphanumeric + hyphen, a valid
+        // Docker container name and cluster boot identity.
         return ProvisionContext.provisionContext(clusterName,
                                                  "core",
                                                  "default",
-                                                 Option.empty(),
+                                                 Option.some(newNodeId.id()),
                                                  Option.some(peers),
                                                  snapshotDesiredCoreSize(),
                                                  ProvisionContext.PROVISIONED_BY_CTM,

@@ -108,7 +108,7 @@ class ClusterTopologyManagerActuatorTest {
     @Test
     void provisionReplacement_invokesProvisionNodeOnce_withThreePartPeers() {
         ctm.activate();
-        var result = ctm.provisionReplacement(Option.some(PEER_C), Set.of(SELF, PEER_A, PEER_B)).await();
+        var result = ctm.provisionReplacement(NodeId.randomNodeId(), Option.some(PEER_C), Set.of(SELF, PEER_A, PEER_B)).await();
         assertThat(result.isSuccess()).isTrue();
         assertThat(lifecycleManager.provisionCount.get())
                 .as("non-empty topology yields a single provisionNode call")

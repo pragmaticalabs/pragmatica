@@ -50,20 +50,26 @@ public interface ClusterTopologyManager extends TopologyManager {
     boolean isAutoHealEnabled();
     boolean setAutoHealEnabled(boolean enabled, String reason);
 
-    /// Membership v2 / E2 — provision a replacement for a departed peer.
+    /// Membership v2 / E2 — provision a replacement for a departed peer under the
+    /// leader-supplied identity `newNodeId`.
     ///
-    /// Idempotent: if `failedPeer` (when present) is already in the in-flight provisioning
-    /// set, OR a replacement is observable via the current slot/membership state, the call
-    /// is a no-op success. The new peer is provisioned ULID-named with `clusterMembers`
-    /// seeded as PEERS by the provider boundary. Returns a `Promise<Unit>` that resolves on
-    /// the provision-request acceptance (consensus commit of the FILLING reservation), NOT
-    /// on the new node becoming present.
+    /// `newNodeId` is the placeholder identity the `LeaderReconciler` minted for this missing
+    /// slot and tracks in its in-flight provisioning map. The provisioned node MUST boot under
+    /// exactly this id: it is threaded into the `ProvisionContext.nodeId()` so the provider
+    /// boundary injects it as the node's `AETHER_NODE_ID` (and, for Docker, the container name),
+    /// and the node adopts it as `self`. Making the minted id the node's real identity is what
+    /// lets membership presence (`newNodeId` appearing in `currentMembers()`) act as the
+    /// authoritative provision-fulfillment signal back at the reconciler.
+    ///
+    /// Idempotent: if a replacement is observable via the current slot/membership state, the
+    /// call is a no-op success. The new peer is provisioned with `clusterMembers` seeded as
+    /// PEERS by the provider boundary. Returns a `Promise<Unit>` that resolves on the
+    /// provision-request acceptance, NOT on the new node becoming present.
     ///
     /// At Phase 1 this delegates to the existing slot-reconcile path
-    /// (`NodeLifecycleManager.provisionNode(ProvisionSpec)` chained from a FILLING slot
-    /// reservation). The `failedPeer` argument is observability-only at this layer; the
-    /// slot-reconciler picks the EMPTY/DEAD slot to fill independently.
-    Promise<Unit> provisionReplacement(Option<NodeId> failedPeer, Set<NodeId> clusterMembers);
+    /// (`NodeLifecycleManager.provisionNode(ProvisionSpec)`). The `failedPeer` argument is
+    /// observability-only at this layer.
+    Promise<Unit> provisionReplacement(NodeId newNodeId, Option<NodeId> failedPeer, Set<NodeId> clusterMembers);
 
     /// Membership v2 / E2 — drain a specific node. Targets either the operator/scale-down
     /// flow or the overprovision-drain path. `reason` is observability-only at this layer.

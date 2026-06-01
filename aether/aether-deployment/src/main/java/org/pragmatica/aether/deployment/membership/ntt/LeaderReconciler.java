@@ -13,6 +13,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Comparator;
 import java.util.LinkedHashSet;
@@ -93,11 +95,18 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// `inFlightProvisioning` is a [`ConcurrentHashMap`]. The listener reference is
 /// `volatile`. `activate` and `deactivate` are guarded by CAS on `isLeader`.
 public final class LeaderReconciler {
+    private static final Logger log = LoggerFactory.getLogger(LeaderReconciler.class);
     private static final Consumer<ReconcileIntent> NOOP_LISTENER = intent -> {};
     private static final TimeSpan DEBOUNCE_DELAY = timeSpan(100L).millis();
+    /// Sentinel for "not yet recorded" on the two single-shot/edge-triggered nanosecond
+    /// timestamps below. `Long.MIN_VALUE` is unreachable by any real `timeSource.nanoTime()`
+    /// observation, so a sentinel comparison can never alias a legitimate time.
+    private static final long UNSET_NANOS = Long.MIN_VALUE;
 
     private final MembershipConfig membershipConfig;
     private final TimeSpan leaderActivationDelay;
+    private final TimeSpan provisioningGraceWindow;
+    private final TimeSpan deficitDebounceWindow;
     private final TimeSpan inFlightExpiry;
     private final NodeTopologyTracker ntt;
     private final IntSupplier configuredCoreCountSupplier;
@@ -109,6 +118,18 @@ public final class LeaderReconciler {
     private final AtomicBoolean reconcileInFlight = new AtomicBoolean(false);
     private final AtomicBoolean rescheduleRequested = new AtomicBoolean(false);
     private final AtomicBoolean armedForProvisioning = new AtomicBoolean(false);
+    /// Nanosecond timestamp captured exactly once when `armedForProvisioning` first
+    /// transitions false→true (cold-start grace anchor). `UNSET_NANOS` until armed; never
+    /// rewritten thereafter, so the grace window is a one-time cold-start suppression and a
+    /// leader elected long after formation has `armedAtNanos` far in the past — grace never
+    /// re-suppresses legitimate later auto-heal.
+    private volatile long armedAtNanos = UNSET_NANOS;
+    /// Nanosecond timestamp of the leading edge of the current deficit run (deficit debounce
+    /// anchor). Set when a deficit (`effective < configuredCoreCount`) is first observed after a
+    /// non-deficit pass; reset to `UNSET_NANOS` whenever `effective >= configuredCoreCount`. A
+    /// transient reconnect dip resets it; a genuine departure lets it age past the debounce
+    /// window so auto-heal fires.
+    private volatile long deficitSinceNanos = UNSET_NANOS;
     private final AtomicReference<ScheduledFuture<?>> activationFutureRef = new AtomicReference<>();
     private final AtomicReference<ScheduledFuture<?>> inFlightSweepFutureRef = new AtomicReference<>();
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
@@ -134,6 +155,17 @@ public final class LeaderReconciler {
                              NttTimerScheduler scheduler) {
         this.membershipConfig = membershipConfig;
         this.leaderActivationDelay = computeQuiesceDelay(membershipConfig.nttDepartureTimeout());
+        // Cold-start grace = nttDepartureTimeout × 1.5 (== leaderActivationDelay): the class doc
+        // (arm-after-first-quorum latch) names this exact window as the bound by which formation
+        // has completed. Reuse the already-computed quiesce delay so the two stay identical.
+        this.provisioningGraceWindow = this.leaderActivationDelay;
+        // Deficit debounce = nttDepartureTimeout (1×). A genuine departure's deficit persists well
+        // beyond it (the dead peer never returns under restart:"no"), so auto-heal fires within
+        // ~one departure-timeout; a cold-start reconnect dip resolves within it (QUIC view-change
+        // reconnect is seconds, far below the 15s default), so the transient deficit is debounced
+        // away. Reusing nttDepartureTimeout keeps the debounce consistent with the single
+        // membership-timing constant rather than introducing a new literal.
+        this.deficitDebounceWindow = membershipConfig.nttDepartureTimeout();
         this.inFlightExpiry = computeInFlightExpiry(membershipConfig.nttDepartureTimeout());
         this.ntt = ntt;
         this.configuredCoreCountSupplier = configuredCoreCountSupplier;
@@ -198,6 +230,7 @@ public final class LeaderReconciler {
         cancelPendingActivation();
         cancelInFlightSweep();
         inFlightProvisioning.clear();
+        deficitSinceNanos = UNSET_NANOS;
         swimFaulty.clear();
         livenessGone.clear();
     }
@@ -340,6 +373,18 @@ public final class LeaderReconciler {
         return leaderActivationDelay;
     }
 
+    /// Observability — the cold-start provisioning grace window (`nttDepartureTimeout × 1.5`).
+    /// Provisioning is suppressed until this long after the arm-latch first armed.
+    public TimeSpan provisioningGraceWindow() {
+        return provisioningGraceWindow;
+    }
+
+    /// Observability — the deficit debounce window (`nttDepartureTimeout`). A deficit must persist
+    /// at least this long (past the grace window) before provisioning fires.
+    public TimeSpan deficitDebounceWindow() {
+        return deficitDebounceWindow;
+    }
+
     /// Observability — read-only snapshot of the in-flight provisioning map. Stage 6
     /// will surface this through metrics.
     public Map<NodeId, Long> inFlightProvisioningSnapshot() {
@@ -396,17 +441,28 @@ public final class LeaderReconciler {
         evictExpiredInFlightEntries(now);
 
         var currentMembers = ntt.currentMembers();
+        // Identity-match clear (provision-fulfillment signal). With the completed
+        // "boot under the leader-supplied id" contract, the in-flight provisioning key is the
+        // EXACT id the replacement boots under, so once that id appears in `currentMembers` the
+        // provision is fulfilled — the node joined under its minted identity and is now a
+        // confirmed member. Removing it here keeps the in-flight map promptly accurate (it no
+        // longer lingers in the union until TTL), so membership presence is the authoritative
+        // fulfillment signal; the `× 3` TTL eviction above remains a pure backstop for provisions
+        // that never arrive (failed boot). This runs BEFORE computing `effective`/effectiveCapacity
+        // so a fulfilled id is never double-counted in the union.
+        currentMembers.forEach(inFlightProvisioning::remove);
+
         var clusterMembershipCount = currentMembers.size();
         var configuredCoreCount = configuredCoreCountSupplier.getAsInt();
         // Effective capacity is the SIZE OF THE UNION of confirmed members and in-flight
-        // provisioning placeholders — NOT their sum (safety-critical). A just-provisioned
-        // node can appear in BOTH buckets simultaneously: present in the SWIM-gossiped
-        // membership view AND still tracked in `inFlightProvisioning` until it expires or is
-        // explicitly removed. Summing the two sizes double-counts that node, inflating
-        // `effective` above the configured core count and tricking the drain path into
-        // believing there is a surplus — which then drains a healthy core node, drops the
-        // cluster below quorum, and dissolves it. Deduplicating by NodeId counts each node
-        // exactly once.
+        // provisioning placeholders — NOT their sum (safety-critical). The identity-match clear
+        // above already removes any in-flight key that has become a confirmed member, so a
+        // just-booted replacement no longer lingers in both buckets; the union-dedup remains as
+        // belt-and-suspenders for the brief window between the membership view and this clear.
+        // Summing the two sizes would double-count, inflating `effective` above the configured
+        // core count and tricking the drain path into believing there is a surplus — which then
+        // drains a healthy core node, drops the cluster below quorum, and dissolves it.
+        // Deduplicating by NodeId counts each node exactly once.
         var effective = effectiveCapacity(currentMembers);
 
         // Arm-after-first-quorum latch (Bug C; membership-unification-spec P5 — identity-aware
@@ -421,7 +477,9 @@ public final class LeaderReconciler {
         // (nttDepartureTimeout × 1.5), by which time formation has completed. configuredCoreCount
         // must be >= 1 to be armable.
         if (configuredCoreCount >= 1 && clusterMembershipCount >= quorumThreshold(configuredCoreCount)) {
-            armedForProvisioning.set(true);
+            if (armedForProvisioning.compareAndSet(false, true)) {
+                armedAtNanos = now;
+            }
         }
 
         // Quorum-safety guard (spec §7.2, §I5; sub-quorum-must-dissolve). A sub-quorum
@@ -436,12 +494,30 @@ public final class LeaderReconciler {
         //   into the watcher (currently dormant — configuredCoreCount unset). The SWIM
         //   membership count used here has a brief stale window post-partition (spec §11
         //   residual edge, self-corrected by self-drain).
+        // Deficit-edge tracking (debounce anchor). Update BEFORE the provisioning decision so the
+        // gate sees the freshest run-length: set the leading-edge timestamp when a deficit first
+        // appears, clear it the moment the deficit resolves. A transient reconnect dip clears the
+        // anchor; a genuine departure lets it age.
+        updateDeficitAnchor(now, effective, configuredCoreCount);
+
         var quorumSafe = clusterMembershipCount >= quorumThreshold(configuredCoreCount);
-        var peersToProvision = (quorumSafe && armedForProvisioning.get()) ? computePeersToProvision(configuredCoreCount, effective) : Set.<NodeId>of();
+        var provisioningPermitted = quorumSafe && provisioningAllowed(now, effective, configuredCoreCount);
+        logProvisioningSuppression(now, effective, configuredCoreCount, quorumSafe, provisioningPermitted);
+        var peersToProvision = provisioningPermitted ? computePeersToProvision(configuredCoreCount, effective) : Set.<NodeId>of();
         var peersToDrain = quorumSafe ? computePeersToDrain(currentMembers, configuredCoreCount, effective) : Set.<NodeId>of();
 
         dispatchProvisionActions(now, peersToProvision, currentMembers);
         dispatchDrainActions(peersToDrain);
+
+        // Restart the debounce clock once we ACT on a deficit. The just-dispatched in-flight
+        // placeholder makes `effective` meet target on the next pass (anchor would reset anyway),
+        // but if the placeholder dies and the raw deficit re-opens with NO intervening at-target
+        // pass to reset the anchor, a stale anchor would let the re-opened deficit provision
+        // instantly — re-introducing the storm the debounce guards against. Resetting here forces
+        // every fresh deficit run to re-age past the debounce window before the next provision.
+        if (!peersToProvision.isEmpty()) {
+            deficitSinceNanos = UNSET_NANOS;
+        }
 
         var intent = ReconcileIntent.reconcileIntent(now,
                                                      trigger,
@@ -452,6 +528,70 @@ public final class LeaderReconciler {
                                                      inFlightProvisioning.size());
 
         reconcileListener.accept(intent);
+    }
+
+    /// Maintain the deficit-run leading-edge timestamp ([`#deficitSinceNanos`]). On the
+    /// non-deficit→deficit edge, record `now` (start of a candidate deficit run). Whenever the
+    /// deficit is absent (`effective >= configuredCoreCount`), reset to [`#UNSET_NANOS`] so a
+    /// transient dip never accumulates debounce age across an intervening recovery.
+    @Contract
+    private void updateDeficitAnchor(long now, int effective, int configuredCoreCount) {
+        if (effective < configuredCoreCount) {
+            if (deficitSinceNanos == UNSET_NANOS) {
+                deficitSinceNanos = now;
+            }
+        } else {
+            deficitSinceNanos = UNSET_NANOS;
+        }
+    }
+
+    /// Provisioning gate (three AND-ed conditions; provisioning fires only when ALL hold):
+    /// (1) the arm-after-first-quorum latch has armed (Bug C — never provision for a configured
+    /// peer still joining during formation); (2) the cold-start grace window has elapsed since the
+    /// latch armed (`now - armedAtNanos >= provisioningGraceWindow`, == nttDepartureTimeout × 1.5)
+    /// — suppresses the transient sub-count seen while QUIC peers reconnect through the
+    /// election view-change immediately after a freshly-elected leader arms; (3) the deficit has
+    /// persisted past the debounce window (`now - deficitSinceNanos >= deficitDebounceWindow`, ==
+    /// nttDepartureTimeout) — a single transient pass below configured never provisions, only a
+    /// sustained deficit (a real departure) does. Grace is one-time (anchored to the never-reset
+    /// arm time); debounce is per-deficit-run (reset on recovery), so genuine later auto-heal is
+    /// never permanently suppressed.
+    private boolean provisioningAllowed(long now, int effective, int configuredCoreCount) {
+        return armedForProvisioning.get()
+               && pastGraceWindow(now)
+               && deficitDebounced(now, effective, configuredCoreCount);
+    }
+
+    private boolean pastGraceWindow(long now) {
+        return armedAtNanos != UNSET_NANOS && now - armedAtNanos >= provisioningGraceWindow.nanos();
+    }
+
+    private boolean deficitDebounced(long now, int effective, int configuredCoreCount) {
+        return effective < configuredCoreCount
+               && deficitSinceNanos != UNSET_NANOS
+               && now - deficitSinceNanos >= deficitDebounceWindow.nanos();
+    }
+
+    /// Operator-facing debug trace: when a genuine deficit exists and is quorum-safe but
+    /// provisioning was nonetheless suppressed, record which gate blocked it so the cold-start
+    /// "grace" suppression is distinguishable from the "deficit debounce pending" suppression in
+    /// node logs. No-op when there is no deficit or provisioning was permitted.
+    @Contract
+    private void logProvisioningSuppression(long now,
+                                            int effective,
+                                            int configuredCoreCount,
+                                            boolean quorumSafe,
+                                            boolean provisioningPermitted) {
+        if (!quorumSafe || provisioningPermitted || effective >= configuredCoreCount || !armedForProvisioning.get()) {
+            return;
+        }
+        if (!pastGraceWindow(now)) {
+            log.debug("Provisioning suppressed: cold-start grace (effective={} configured={} armedAtNanos={} now={})",
+                      effective, configuredCoreCount, armedAtNanos, now);
+        } else {
+            log.debug("Provisioning suppressed: deficit debounce pending (effective={} configured={} deficitSinceNanos={} now={})",
+                      effective, configuredCoreCount, deficitSinceNanos, now);
+        }
     }
 
     /// Effective cluster capacity = the size of the UNION of confirmed members and in-flight
@@ -530,7 +670,11 @@ public final class LeaderReconciler {
     private void dispatchSingleProvision(long nowNanos, NodeId placeholder, Set<NodeId> currentMembers) {
         inFlightProvisioning.put(placeholder, nowNanos);
         armInFlightSweep();
-        ctm.provisionReplacement(Option.none(), currentMembers).onFailure(cause -> inFlightProvisioning.remove(placeholder));
+        // Pass the SAME minted placeholder as the new node's intended identity: the provisioned
+        // node boots under exactly this id (CTM threads it into ProvisionContext.nodeId()), so the
+        // in-flight key equals the booted node's id and membership presence is the authoritative
+        // fulfillment signal (cleared in runReconcileBody when the id appears in currentMembers).
+        ctm.provisionReplacement(placeholder, none(), currentMembers).onFailure(cause -> inFlightProvisioning.remove(placeholder));
     }
 
     @Contract
