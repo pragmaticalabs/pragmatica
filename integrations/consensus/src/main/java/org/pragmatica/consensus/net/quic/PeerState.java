@@ -99,41 +99,15 @@ public final class PeerState {
         /// `nodeAdded` view-change. Closes the flap-loop where eviction-then-handshake fires
         /// `processViewChange(ADD)` against a peer that never left the topology.
         RECONNECTED,
-        /// Duplicate-resolution swap: a live CONNECTED link existed but the NEW connection's
-        /// initiator wins the deterministic tiebreak (lower initiator id, see
-        /// [ConnectionDirection#prefersInitiator]). The PeerState connection reference was swapped
-        /// to the new connection; the displaced (losing) connection is returned in
-        /// [AttachOutcome#displaced] for the caller to close in isolation (NO REMOVE, NO
-        /// view-change). The peer is already known upstream — caller drains the offline buffer
-        /// onto the survivor but MUST NOT emit a duplicate ADD.
-        REPLACED,
-        /// Peer already has a live CONNECTED link whose initiator wins (or ties) the tiebreak.
-        /// Caller should close the new connection.
+        /// Peer already has a live CONNECTED link. Caller should close the new connection.
         DUPLICATE,
         /// Peer is REMOVED. Caller should close the new connection.
         REJECTED
     }
 
-    /// Outcome of [attach]. `displaced` is present only for [AttachResult#REPLACED] and carries
-    /// the losing connection the caller must close in isolation (no REMOVE / no view-change).
-    public record AttachOutcome(AttachResult result, Option<QuicPeerConnection> displaced) {
-        static AttachOutcome of(AttachResult result) {
-            return new AttachOutcome(result, Option.empty());
-        }
-
-        static AttachOutcome replaced(QuicPeerConnection displaced) {
-            return new AttachOutcome(AttachResult.REPLACED, option(displaced));
-        }
-    }
-
     private final NodeId peerId;
     private Phase phase = Phase.INIT;
     private QuicPeerConnection connection;
-    /// Initiator id of the currently-held [connection]: the local node's id when WE dialed
-    /// (client path) or the peer's id when WE accepted (server path). Used to resolve a
-    /// concurrent dual-dial duplicate deterministically and symmetrically on both ends
-    /// (lower initiator id wins — see [ConnectionDirection#prefersInitiator]).
-    private NodeId connectionInitiatorId;
     private long phaseChangedAtNanos;
     private boolean passive;
     private final Deque<byte[]> offlineBuffer = new ArrayDeque<>();
@@ -201,65 +175,34 @@ public final class PeerState {
     }
 
     /// Transitions CONNECTING (or INIT/EVICTED — accepted inbound before explicit connect) → CONNECTED.
-    /// `initiatorId` identifies who dialed this connection: the local node's id for a self-initiated
-    /// (client) connection, the peer's id for an accepted (server) connection. It feeds the
-    /// deterministic duplicate-resolution tiebreak when a live link already exists.
-    ///
-    /// Returns an [AttachOutcome] whose `result` is:
-    ///   - ACCEPTED on first-time success (no prior CONNECTED link);
-    ///   - RECONNECTED when transitioning from EVICTED, or replacing a stale (already-inactive)
-    ///     CONNECTED link — the peer was already known upstream;
-    ///   - REPLACED when a live CONNECTED link existed but the NEW connection's initiator wins the
-    ///     tiebreak — the connection reference is swapped and the displaced link is returned in
-    ///     `displaced` for the caller to close in isolation;
-    ///   - DUPLICATE when a live CONNECTED link existed and the EXISTING initiator wins (or ties);
-    ///   - REJECTED when REMOVED.
-    public synchronized AttachOutcome attach(QuicPeerConnection newConnection, NodeId initiatorId, long nowNanos) {
+    /// Returns ACCEPTED on first-time success, RECONNECTED when transitioning from EVICTED or
+    /// replacing a stale CONNECTED link (peer was already known to upstream consumers),
+    /// DUPLICATE if a live link already exists, REJECTED if REMOVED.
+    public synchronized AttachResult attach(QuicPeerConnection newConnection, long nowNanos) {
         return switch (phase) {
-            case REMOVED -> AttachOutcome.of(AttachResult.REJECTED);
-            case CONNECTED -> resolveDuplicate(newConnection, initiatorId, nowNanos);
+            case REMOVED -> AttachResult.REJECTED;
+            case CONNECTED -> {
+                if (connection != null && connection.isActive()) {
+                    yield AttachResult.DUPLICATE;
+                }
+                // Stale CONNECTED link replaced — peer is already known upstream.
+                this.connection = newConnection;
+                this.phaseChangedAtNanos = nowNanos;
+                yield AttachResult.RECONNECTED;
+            }
             case EVICTED -> {
                 // Reconnect after eviction — peer never left topology, suppress duplicate ADD.
-                adopt(newConnection, initiatorId);
+                this.connection = newConnection;
                 changePhase(Phase.CONNECTED, nowNanos);
-                yield AttachOutcome.of(AttachResult.RECONNECTED);
+                yield AttachResult.RECONNECTED;
             }
             case INIT, CONNECTING -> {
                 // First-time accept (no prior CONNECTED link).
-                adopt(newConnection, initiatorId);
+                this.connection = newConnection;
                 changePhase(Phase.CONNECTED, nowNanos);
-                yield AttachOutcome.of(AttachResult.ACCEPTED);
+                yield AttachResult.ACCEPTED;
             }
         };
-    }
-
-    /// Resolve an attach against an existing CONNECTED peer. When the held link is inactive it is
-    /// a stale-link replacement (RECONNECTED). When the held link is live, the deterministic
-    /// initiator tiebreak decides: a strictly-preferred NEW initiator REPLACES the incumbent
-    /// (displaced link returned for isolated close); otherwise the new connection is a DUPLICATE.
-    private AttachOutcome resolveDuplicate(QuicPeerConnection newConnection, NodeId initiatorId, long nowNanos) {
-        if (connection == null || !connection.isActive()) {
-            // Stale CONNECTED link replaced — peer is already known upstream.
-            adopt(newConnection, initiatorId);
-            this.phaseChangedAtNanos = nowNanos;
-            return AttachOutcome.of(AttachResult.RECONNECTED);
-        }
-        if (initiatorId.equals(connectionInitiatorId)
-            || !ConnectionDirection.prefersInitiator(initiatorId, connectionInitiatorId)) {
-            // Same initiator (genuine re-dial of the live link) or incumbent wins the tiebreak.
-            return AttachOutcome.of(AttachResult.DUPLICATE);
-        }
-        // New initiator wins the deterministic tiebreak — swap the connection reference and
-        // hand the displaced (losing) link back to the caller for isolated close.
-        var displaced = connection;
-        adopt(newConnection, initiatorId);
-        this.phaseChangedAtNanos = nowNanos;
-        return AttachOutcome.replaced(displaced);
-    }
-
-    private void adopt(QuicPeerConnection newConnection, NodeId initiatorId) {
-        this.connection = newConnection;
-        this.connectionInitiatorId = initiatorId;
     }
 
     /// Transitions CONNECTED → EVICTED. Preserves offline buffer for reconnect drain.
@@ -270,7 +213,6 @@ public final class PeerState {
         }
         var evicted = connection;
         this.connection = null;
-        this.connectionInitiatorId = null;
         changePhase(Phase.EVICTED, nowNanos);
         return option(evicted);
     }
@@ -282,7 +224,6 @@ public final class PeerState {
     public synchronized Option<QuicPeerConnection> authoritativeRemove(long nowNanos) {
         var dropped = connection;
         this.connection = null;
-        this.connectionInitiatorId = null;
         offlineBuffer.clear();
         changePhase(Phase.REMOVED, nowNanos);
         return option(dropped);

@@ -18,25 +18,18 @@ package org.pragmatica.consensus.net.quic;
 
 import org.pragmatica.consensus.NodeId;
 
-/// Deterministic duplicate-resolution tiebreak for QUIC peer connections.
+/// Determines QUIC connection direction based on NodeId ordering.
 ///
-/// This is NO LONGER a dial precondition: any node dials any peer it is missing
-/// (natural establishment). When both ends dial concurrently and two live
-/// connections exist for one pair, this comparator decides — symmetrically on
-/// both ends — which connection's *initiator* wins, so the cluster converges on
-/// a single survivor regardless of NodeId order (multi-cloud safe). The loser is
-/// closed in isolation (no view-change, no REMOVE).
-///
-/// The winning initiator is the lower NodeId (`min` over the two initiator ids).
-/// A connection's initiator is the local node when WE dialed it (client path) or
-/// the peer when WE accepted it (server path).
+/// Lower NodeId always initiates (QUIC client role), higher NodeId
+/// always accepts (QUIC server role). This eliminates duplicate
+/// connection detection entirely — each pair has exactly one
+/// connection with a deterministic initiator.
 public sealed interface ConnectionDirection {
 
-    /// Returns true when `candidate` is the preferred surviving initiator over
-    /// `incumbent` for a duplicate connection pair (lower NodeId wins). Total and
-    /// symmetric: both ends, fed the same pair of initiator ids, agree on the winner.
-    static boolean prefersInitiator(NodeId candidate, NodeId incumbent) {
-        return candidate.compareTo(incumbent) < 0;
+    /// Lower NodeId initiates the QUIC connection.
+    /// Returns true if self should act as the QUIC client for this peer.
+    static boolean shouldInitiate(NodeId self, NodeId peer) {
+        return self.compareTo(peer) < 0;
     }
 
     record Unused() implements ConnectionDirection {}
