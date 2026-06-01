@@ -107,6 +107,20 @@ class DockerComputeProviderTest {
             assertThat(secondName).startsWith("aether-default-node-");
             assertThat(firstName).isNotEqualTo(secondName);
         }
+
+        @Test
+        void buildRunCommand_always_setsExplicitRestartNo() {
+            testRunner.queuedResponses.add(Promise.success("container-id-0"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+
+            provider.provision(InstanceType.ON_DEMAND)
+                    .await()
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            // Explicit `--restart no` guards against a daemon-level default-restart-policy
+            // resurrecting a terminally-removed NodeId.
+            assertThat(testRunner.allCommands.getFirst()).containsSequence("--restart", "no");
+        }
     }
 
     @Nested

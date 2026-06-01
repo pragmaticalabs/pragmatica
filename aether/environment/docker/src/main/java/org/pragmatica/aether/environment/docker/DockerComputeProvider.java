@@ -206,6 +206,12 @@ import static org.pragmatica.lang.Result.success;
         var command = new ArrayList<>(List.of("docker",
                                               "run",
                                               "-d",
+                                              // Explicit `--restart no` so a host running with a daemon-level
+                                              // `--default-restart-policy` (Docker 28+) cannot silently auto-restart a
+                                              // CTM-launched replacement — that would resurrect a terminally-removed
+                                              // NodeId and violate the terminal-removal invariant.
+                                              "--restart",
+                                              "no",
                                               "--name",
                                               containerName,
                                               "--hostname",
