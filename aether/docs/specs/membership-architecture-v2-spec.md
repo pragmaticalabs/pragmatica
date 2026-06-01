@@ -84,7 +84,7 @@ The flow is essentially what works today, with one structural change: **`PEERS` 
 8. `LeaderManager` runs as a Rabia proposal; leader committed.
 9. Leader-pinned components activate via existing `toggle*OnLeaderChange` wiring.
 
-**Gains:** a single discovery → dial path. Cold boot, auto-heal of a fresh KSUID replacement, container restart with same NodeId, operator scale-up — all flow through the *same* mechanism (SWIM discovers → QUIC dials). The cold-boot-vs-auto-heal asymmetry that today makes auto-heal a special case is eliminated.
+**Gains:** a single discovery → dial path. Cold boot, auto-heal of a fresh ULID replacement, transient reconnect of a live node, operator scale-up — all flow through the *same* mechanism (SWIM discovers → QUIC dials). The cold-boot-vs-auto-heal asymmetry that today makes auto-heal a special case is eliminated.
 
 **Costs:** cold-boot quorum-establishment delayed by ~one SWIM round (≤1s with current `ANNOUNCE` cadence). SWIM is critical-path for bootstrap (acceptable given its reliability; SWIM uses its own UDP transport, not QUIC, so no circular dependency).
 
@@ -139,7 +139,7 @@ CTM today is a ~1700-line slot state machine with `HEALTHY/FILLING/DEAD/EMPTY` c
 - Leader-issued `DRAIN` commands for specific nodes (heartbeat ping — §7.5.4, §8).
 
 ### 7.2 Behavior (leader only)
-- **Underprovisioned** (`clusterMembershipCount < configured`): on `TopologyUnhealthy` (or directly on observing the shortfall after a configured-size increase), if quorum-safety holds → provision the difference, KSUID-named, with PEERS seeded from current cluster members.
+- **Underprovisioned** (`clusterMembershipCount < configured`): on `TopologyUnhealthy` (or directly on observing the shortfall after a configured-size increase), if quorum-safety holds → provision the difference, ULID-named, with PEERS seeded from current cluster members.
 - **Overprovisioned** (`clusterMembershipCount > configured` — e.g., a previously-departed node returns after a replacement is online, or the operator scaled down): initiate graceful drain of the excess by commanding the target via the heartbeat (§7.5.4). Selection heuristic: **newest-joined-first** by default; operator-configurable. Sequenced (not parallel) to maintain quorum throughout the shrink.
 - **Drain target acknowledgement:** the target's `DRAINING` pong is the acknowledgement (§7.5.4); CTM otherwise just waits for `clusterMembershipCount` to converge.
 
@@ -310,7 +310,7 @@ Per §5. SWIM-discovery + QUIC-dial + Rabia-quorum + leader-election. No FSM, no
 1. Node X dies. SWIM probes fail; gossip propagates; SWIM converges on `Departed(X)` cluster-wide.
 2. On each node, NTT receives the converged `Departed(X)` → starts a local timer.
 3. If X does not QUIC-reconnect within `nttDepartureTimeout` (§14) → every node's NTT emits `TopologyUnhealthy(X)`.
-4. The leader's CTM observes the event, checks quorum-safety, and if safe, provisions a replacement container R (KSUID-named, PEERS-seeded).
+4. The leader's CTM observes the event, checks quorum-safety, and if safe, provisions a replacement container R (ULID-named, PEERS-seeded).
 5. R boots, SWIM-announces, peers SWIM-discover R, QUIC dials R, R joins consensus via the formation flow.
 6. `clusterMembershipCount` returns to `configured`; CTM is satisfied.
 
@@ -328,7 +328,7 @@ Per §4. A node C that cannot reach peer X (while A, B can):
 Two cases, **distinguished entirely by the configured-size change**, not by a flag or separate FSM state:
 
 - **Case A — scale-down:** operator writes `coreCount = N-1` (R2 quorum-safety pre-checked). The leader's CTM observes overprovision → commands the selected excess node to drain via the heartbeat (§7.5.4). Node X drains → exits. SWIM converges on departure; CTM sees `clusterMembershipCount = configured` → no-op.
-- **Case B — specific replacement (size unchanged):** operator issues a drain for X via the management API → leader sends the `DRAIN` command (§7.5.4). Node X drains → exits. CTM sees `clusterMembershipCount < configured` → provisions a fresh KSUID replacement (§7.2 underprovisioned path).
+- **Case B — specific replacement (size unchanged):** operator issues a drain for X via the management API → leader sends the `DRAIN` command (§7.5.4). Node X drains → exits. CTM sees `clusterMembershipCount < configured` → provisions a fresh ULID replacement (§7.2 underprovisioned path).
 
 The membership layer is unaware of the distinction; the configured-size at the moment of CTM's reaction determines whether a replacement is provisioned. The `Draining` lifecycle state and `awaitDrainAck` FSM transition are deleted (§10).
 
@@ -337,43 +337,30 @@ A node's `LocalQuorumWatcher` observes `localQuorumCount < N/2+1` continuously f
 
 **Whole-cluster cascade is the correct safety behavior:** if the cluster has wholly lost quorum, every node observes its own local quorum failing → each self-drains → cluster goes down. Better dead than split-brain.
 
-**Recovery:** containers exit; restart per Docker policy; on restart, normal cold-boot formation flow (§12.1). Operator chooses restart policy.
+**Recovery:** the self-drained containers exit and are **not** auto-restarted (runtime restart is disabled — terminal-removal invariant, §12.7). The drained identities are terminally removed and never return. Recovery is a fresh cold-boot formation (§12.1) of *new* nodes (new ULID identities) — operator-launched, or auto-heal-provisioned once quorum is re-established.
 
 ### 12.6 Partition heal
-After a partition with self-drained minority: minority containers exited per §12.5; majority continued (possibly with NTT-driven KSUID replacements bringing `clusterMembershipCount` back to `configured`).
+After a partition with self-drained minority: the minority containers exited per §12.5 and are **not** auto-restarted (terminal-removal invariant, §12.7) — those identities are gone for good. The majority retained quorum and, if quorum-safe, brought `clusterMembershipCount` back to `configured` via NTT-driven ULID replacements (new identities, never the departed ones).
 
-When the partition heals and minority containers restart (per their restart policy):
-1. Each minority container does cold-boot formation, SWIM-discovers the running majority + each other, QUIC dials.
-2. If majority had provisioned replacements: returning originals push `clusterMembershipCount > configured` → CTM drains excess per §7.2 (newest-joined-first by default).
-3. If majority had NOT provisioned (e.g., sub-quorum prevented provisioning): returning originals fill the gap; CTM reaches `clusterMembershipCount = configured`.
+When the partition heals there are **no "returning originals"** to reconcile — the minority NodeIds were terminally removed. Two cases:
+1. **Majority had provisioned replacements:** the cluster is already at `configured` (majority survivors + ULID replacements). Nothing rejoins; the healed network simply restores connectivity. No over-provision occurs, because the departed identities cannot come back.
+2. **Majority could NOT provision (sub-quorum blocked it):** the cluster stayed short. On heal, restored connectivity may re-establish quorum, after which CTM provisions fresh ULID replacements up to `configured` (§7.2 underprovisioned path).
 
-No special "partition heal" code path; it composes from §12.7 + §7.2's overprovision drain.
+Lost capacity is always recovered via fresh-ULID provisioning, never via departed identities returning. No special "partition heal" code path; it composes from §12.7 + §7.2's provisioning drive.
 
-### 12.7 Container restart with same NodeId
+### 12.7 Node death → terminal removal + fresh-ULID recovery
 
-> **Invariant update — terminal removal (supersedes this subsection's "same NodeId returning"
-> framing).** The terminal-removal rework that this spec's successor
-> (`membership-placement-split-spec.md`) builds on establishes that **a dead NodeId NEVER
-> returns under the same identity**: once a node leaves the presence-derived view it is
-> terminally removed, and recovery is *always* a brand-new node with a new ULID NodeId minted by
-> auto-heal (KSUID replacement naming below is likewise superseded by ULID). Consequently
-> **runtime auto-restart of aether-node must be disabled** (`--restart no` / `restart: "no"` /
-> systemd `Restart=no`); a runtime that revives a crashed container under the same NodeId
-> resurrects a terminally-removed identity and corrupts membership. The "same NodeId restart is
-> mildly convenient / operator chooses restart policy" analysis below describes the pre-rework
-> transitional behavior and is retained for migration context only. See
-> [`../operator/deployment-recovery.md`](../operator/deployment-recovery.md) for the operator-facing rule.
+**Terminal-removal invariant:** a dead NodeId NEVER returns under the same identity. Once a node leaves the presence-derived view (SWIM-converged departure / sustained QUIC loss past `nttDepartureTimeout`), NTT terminally removes it; recovery is *always* a brand-new node with a new ULID NodeId minted by auto-heal. Consequently **runtime auto-restart of aether-node must be disabled** (`--restart no` / `restart: "no"` / systemd `Restart=no`): a runtime that revives a crashed container under the same NodeId resurrects a terminally-removed identity and corrupts membership. See [`../operator/deployment-recovery.md`](../operator/deployment-recovery.md) for the operator-facing rule.
 
-A node's container restarts (any cause — crash, kill, operator restart, `halt(2)` followed by Docker auto-restart):
+The cluster distinguishes two cases by **duration, not identity**:
 
-- **Within NTT window:** QUIC reconnect cancels the timer (I7). No replacement provisioned. The restart is invisible to membership beyond the brief QUIC disconnect/reconnect.
-- **After NTT fired + CTM provisioned a replacement:** returning original brings `clusterMembershipCount > configured` → over-provision drain of excess.
-- **After NTT fired but quorum-safety blocked the provision:** returning original helps restore quorum; CTM may now safely provision if still short, or `clusterMembershipCount = configured` is reached.
+- **Transient QUIC blip (node process stays alive):** a brief disconnect/reconnect within the NTT window. QUIC reconnects before `nttDepartureTimeout` fires → no departure converges, no terminal removal, no replacement. Invisible to membership beyond the brief reconnect (I7).
+- **Node death (crash / kill / `halt(2)`):** the process is gone and — restart being disabled — does not come back. SWIM converges on departure → NTT terminally removes the NodeId → if quorum-safe, CTM provisions a fresh ULID replacement (§7.2 underprovisioned path). The replacement is a new identity flowing through the same SWIM-discovery → QUIC-dial path as any other join (§12.1/§12.2).
 
-The "same NodeId" property is mildly convenient (existing SWIM gossip entries are confirmed by QUIC reconnect) but does not drive special behavior. v2 does not distinguish "same NodeId returning" from "fresh NodeId joining" — both flow through SWIM-discovery → QUIC-dial.
+v2 has **no "same NodeId returning" path** — there is nothing to distinguish from a fresh join because a terminally-removed identity is never reused.
 
 ### 12.8 Operator scale up/down
-- **Scale up:** operator writes `coreCount = N + k`. CTM observes `clusterMembershipCount < configured` → provisions `k` new KSUID-named containers (§7.2 underprovisioned path). Quorum-safe by definition.
+- **Scale up:** operator writes `coreCount = N + k`. CTM observes `clusterMembershipCount < configured` → provisions `k` new ULID-named containers (§7.2 underprovisioned path). Quorum-safe by definition.
 - **Scale down:** operator writes `coreCount = N - k` (R2 quorum-safety pre-checked). CTM observes overprovision → commands `k` selected nodes (default newest-joined-first; operator-overridable) to drain via the heartbeat (§7.5.4), R3 sequenced. Each drained node follows §12.4 Case A. CTM observes convergence.
 
 ## 13. Migration plan
@@ -437,3 +424,4 @@ Explicitly delimited so the boundary is clear:
 | 2026-05-28 | session author | E2 Phase 2b — drain coordinators deleted. `SelfDrainCoordinator`, `ConsensusDrainCoordinator`, `OrphanSelfDrainChecker` (+ their `SelfDrainConfig` / `SelfDrainEventPublisher` helpers and unit tests) removed. Execution surface extracted to new `DrainProcedure` (membership.ntt package) — a §8.2 unified procedure: tracker-gate-close → `onAllDrained`-or-grace → SWIM `LEAVE` (Phase 6 wiring; no-op runnable for now) → `jvmExit`. Triggers separated from execution: `LocalQuorumWatcher` quorum-loss listener now drives `DrainProcedure.initiate(QUORUM_LOSS)` directly; the `QuorumStateNotification.DISAPPEARED` MessageRouter route was rewired to the same procedure. `DrainReason` enum gained `QUORUM_LOSS` variant. `AetherNode` drops the 1Hz `onConnectivityChange` tick and the 5s `OrphanSelfDrainChecker::check` tick. FSM-routed `DrainCoordinator` interface remains structurally (used by `MembershipFsm.InvokeDrain` and `CTM.drainNode`) but is now backed by `NoOpDrainCoordinator` — Phase 2c removes the interface entirely when the FSM goes. §10 deletion list updated. |
 | 2026-05-28 | session author | E2 Phase 2a — peripheral deletions executed. Removed: φ-accrual stack (`PhiAccrualDetector`/`PhiAccrualConfig`/`PhiObserver`/`PhiWarmth` + tests + chaos spike), divergence-logger (`DivergenceLogger`/`FsmDecisionEvent`/`FsmDecisionType` + test), `NttObservationFlag` migration-ramp gate + `nttObservation` field on `MembershipConfig`/`MembershipConfigBinding` + Main lift helper. NTT/LocalQuorumWatcher/LeaderReconciler now wire unconditionally on every node. `ClusterMembershipReducer.apply(state, event)` drops the `PhiWarmth` parameter; `(ON_DUTY, SwimFaulty)` cell now decommissions unconditionally (SWIM trusted directly). `MembershipFsm` drops the `phiWarmth` field + `addDecisionListener` + decisionListeners machinery. `AetherNode.buildMembershipFsm` signature drops the `PhiWarmth` arg; `attachQuicConnectivityReporter` takes raw `Consumer<NodeId>` taps instead of `Option<NttQuicTaps>`; `NttQuicTaps` record + `emitForceDecommission` helper deleted. Spec §10 entries marked DELETED. |
 | 2026-05-29 | session author | **NEW §7.5 — node readiness & the leader↔node control heartbeat.** Readiness derived from a node-authoritative `SYNCING/READY/DRAINING` state carried on the existing metrics pong (repurposing `lifecycleState`, adding SWIM-incarnation epoch); leader keeps an in-memory `(NodeId,incarnation)→state` view (never KV, self-cleaning via QUIC-disconnect / missed-pong eviction, rebuilt from pongs on handoff). Drain delivered as a `DRAIN` **command on the ping** (per-peer), best-effort with operator-retry / CTM-re-derive; in-progress drains survive handoff. φ-accrual stays deleted (missed-pong subsumes black-hole detection). Stuck-`SYNCING` reaper (countdown → terminate → auto-heal). QUIC connect/disconnect promoted to `Message.Local` routed events (epoch-matched eviction). CDM allocatable-gate rewired from KV `ON_DUTY` to the leader readiness view. **`DrainRequestKey` removed from the design entirely** (§8.5 rewritten, §7.1/§7.2/§7.4/§12.4/§12.8/§13-E6 aligned, §10 deletion list adds `NodeLifecycleKey`/`NodeReadinessTracker`/`readyCandidate`/`ForceOnDuty` chain). New I13 (readiness node-authoritative, never KV) + I14 (epoch-fenced control channel, best-effort drain command). |
+| 2026-06-01 | session author | **§12.5–12.8 reconciled to the terminal-removal model** (the flag-note at §12.7 is now the section's content). A dead NodeId never returns under the same identity; runtime auto-restart must be disabled; recovery is always a fresh ULID node. §12.7 retitled "Node death → terminal removal + fresh-ULID recovery" and rewritten (transient-blip vs node-death by duration; no "same NodeId returning" path). §12.5 recovery paragraph corrected (no Docker-policy restart; fresh-ULID recovery). §12.6 partition-heal rewritten (no "returning originals" — minority terminally removed, capacity recovered only via ULID replacements). KSUID → ULID throughout (§3, §7.2, §12.2, §12.4, §12.6, §12.8). Aligns the spec with the shipped restart-disabled invariant (systemd `Restart=no`, compose `restart: "no"`, `--restart no`) and `[[membership-placement-split-spec]]`. |
