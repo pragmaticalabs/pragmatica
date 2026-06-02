@@ -88,6 +88,16 @@ class SwimProtocolTombstoneTest {
         protocol.addObservationListener(observations);
     }
 
+    /// Build a COLD_BOOT-phase protocol (`isBooting=() -> true`) and wire the recording
+    /// observation sink. Used by the cold-boot-scoped never-HEALTHY tests, where a slow
+    /// seed that goes FAULTY must NOT be tombstoned so formation can still re-add it.
+    private SwimProtocol coldBootProtocol() {
+        var coldBoot = SwimProtocol.swimProtocol(tightConfig(), transport, listener, SELF_ID, SELF_ADDR, () -> true)
+                                   .unwrap();
+        coldBoot.addObservationListener(observations);
+        return coldBoot;
+    }
+
     /// Drive NODE_A: ALIVE gossip (sets everSeenHealthy) -> FAULTY gossip -> cleanup.
     /// After cleanup the proven-healthy id must be tombstoned.
     private void driveProvenHealthyToTombstone() {
@@ -186,7 +196,44 @@ class SwimProtocolTombstoneTest {
     }
 
     @Test
-    void neverHealthyId_cleanedUp_isNotTombstoned_gossipReAddAllowed() {
+    void neverHealthyId_cleanedUp_inColdBoot_isNotTombstoned_gossipReAddAllowed() {
+        var coldBoot = coldBootProtocol();
+        try {
+            coldBoot.start();
+
+            // NODE_A enters as SUSPECT via gossip and is NEVER observed HEALTHY.
+            var suspectA = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            coldBoot.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectA)));
+            assertThat(coldBoot.everSeenHealthyForTest(NODE_A)).isFalse();
+
+            // Suspect-window expiry drives FAULTY, then cleanup removes it.
+            await().atMost(Duration.ofSeconds(3))
+                   .until(() -> !coldBoot.members().containsKey(NODE_A));
+
+            // COLD_BOOT invariant: a never-HEALTHY id must NOT be tombstoned in cold-boot,
+            // so a slow seed can still be re-added and formation can proceed.
+            assertThat(coldBoot.tombstonedForTest(NODE_A))
+                .as("COLD_BOOT: never-HEALTHY (cold-boot seed) id must NOT be tombstoned — formation path intact")
+                .isFalse();
+
+            // A subsequent gossip re-add IS allowed (formation can still proceed).
+            var reAddSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            coldBoot.onMessage(ADDR_B, new Ping(NODE_B, 5L, List.of(reAddSuspect)));
+            assertThat(coldBoot.members().containsKey(NODE_A))
+                .as("COLD_BOOT: never-tombstoned id must be re-addable via gossip (cold-boot formation)")
+                .isTrue();
+        } finally {
+            coldBoot.stop();
+        }
+    }
+
+    @Test
+    void neverHealthyId_faultyInNormalPhase_isTombstoned_reAddRefused() {
+        // 02-chaos S01: a replacement node killed while NEVER-HEALTHY (JOINING/SYNCING
+        // window). In NORMAL phase its FAULTY edge MUST tombstone it so the stale-Hello
+        // re-seed / gossip re-add is refused — ending the ~1 Hz SUSPECT<->FAULTY
+        // oscillation that otherwise republishes a generation snapshot every second and
+        // keeps cluster quiescence DEGRADED forever.
         try {
             protocol.start();
 
@@ -195,21 +242,32 @@ class SwimProtocolTombstoneTest {
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectA)));
             assertThat(protocol.everSeenHealthyForTest(NODE_A)).isFalse();
 
-            // Suspect-window expiry drives FAULTY, then cleanup removes it.
+            // Suspect-window expiry drives FAULTY; the FAULTY edge tombstones it (NORMAL),
+            // and cleanup then removes it from membership.
             await().atMost(Duration.ofSeconds(3))
-                   .until(() -> !protocol.members().containsKey(NODE_A));
+                   .until(() -> protocol.tombstonedForTest(NODE_A) && !protocol.members().containsKey(NODE_A));
 
-            // Cold-boot invariant: a never-HEALTHY id must NOT be tombstoned.
             assertThat(protocol.tombstonedForTest(NODE_A))
-                .as("Never-HEALTHY (cold-boot seed) id must NOT be tombstoned — formation path intact")
+                .as("NORMAL phase: a never-HEALTHY id reaching FAULTY MUST be tombstoned (S01)")
+                .isTrue();
+
+            // (a) bare channel re-seed (stale Hello re-completes, no incarnation => 0): refused.
+            protocol.addSeedMember(NODE_A, ADDR_A);
+            assertThat(protocol.members().containsKey(NODE_A))
+                .as("Tombstoned never-HEALTHY id must NOT be re-created by bare re-seed")
                 .isFalse();
 
-            // A subsequent gossip re-add IS allowed (formation can still proceed).
-            var reAddSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
-            protocol.onMessage(ADDR_B, new Ping(NODE_B, 5L, List.of(reAddSuspect)));
+            // (b) third-party gossip re-add at the tombstoned incarnation (0): refused.
+            var gossipSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 5L, List.of(gossipSuspect)));
             assertThat(protocol.members().containsKey(NODE_A))
-                .as("Never-tombstoned id must be re-addable via gossip (cold-boot formation)")
-                .isTrue();
+                .as("Tombstoned never-HEALTHY id must NOT be re-created by gossip")
+                .isFalse();
+
+            // Several ticks later it must still be gone — no SUSPECT re-entry, no oscillation.
+            await().pollDelay(Duration.ofMillis(300))
+                   .atMost(Duration.ofSeconds(1))
+                   .until(() -> !protocol.members().containsKey(NODE_A) && protocol.tombstonedForTest(NODE_A));
         } finally {
             protocol.stop();
         }
@@ -350,18 +408,20 @@ class SwimProtocolTombstoneTest {
 
     @Test
     void neverHealthy_faulty_notTombstoned_coldBootReAddAllowed() {
-        // Cold-boot S04 seed: a never-HEALTHY id goes FAULTY via gossip. It must NOT be
-        // tombstoned (everSeenHealthy gate), so a subsequent gossip re-add is allowed —
-        // preserving formation.
+        // Cold-boot S04 seed: a never-HEALTHY id goes FAULTY via gossip in COLD_BOOT phase.
+        // It must NOT be tombstoned (cold-boot gate), so a subsequent gossip re-add is
+        // allowed — preserving formation. (In NORMAL phase it WOULD be tombstoned; see
+        // neverHealthyId_faultyInNormalPhase_isTombstoned_reAddRefused.)
+        var coldBoot = coldBootProtocol();
         var suspectA = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
-        protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectA)));
-        assertThat(protocol.everSeenHealthyForTest(NODE_A)).isFalse();
+        coldBoot.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectA)));
+        assertThat(coldBoot.everSeenHealthyForTest(NODE_A)).isFalse();
 
         var faultyA = new MembershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
-        protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
+        coldBoot.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
 
-        assertThat(protocol.tombstonedForTest(NODE_A))
-            .as("Never-HEALTHY id reaching FAULTY must NOT be tombstoned (cold-boot)")
+        assertThat(coldBoot.tombstonedForTest(NODE_A))
+            .as("COLD_BOOT: never-HEALTHY id reaching FAULTY must NOT be tombstoned")
             .isFalse();
 
         // Gossip re-add toward ALIVE at a higher incarnation is allowed (no tombstone
@@ -369,9 +429,9 @@ class SwimProtocolTombstoneTest {
         // same-incarnation ALIVE override FAULTY — the point here is the ABSENCE of a
         // tombstone refusal, which a proven-healthy id would suffer at incarnation <= 1.
         var reAliveA = new MembershipUpdate(NODE_A, MemberState.ALIVE, 2, ADDR_A);
-        protocol.onMessage(ADDR_B, new Ping(NODE_B, 3L, List.of(reAliveA)));
-        assertThat(protocol.members().get(NODE_A).state())
-            .as("Never-tombstoned cold-boot id must be re-addable to ALIVE")
+        coldBoot.onMessage(ADDR_B, new Ping(NODE_B, 3L, List.of(reAliveA)));
+        assertThat(coldBoot.members().get(NODE_A).state())
+            .as("COLD_BOOT: never-tombstoned cold-boot id must be re-addable to ALIVE")
             .isEqualTo(MemberState.ALIVE);
     }
 

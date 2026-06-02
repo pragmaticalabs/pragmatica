@@ -136,14 +136,16 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// because the quorum predicate is satisfied at join time. Volatile: written on
     /// the message thread, read on the scheduler thread.
     private volatile boolean inboundProbeReceived = false;
-    /// Incarnation-aware, TTL-bounded tombstones for ids that were PROVEN HEALTHY
-    /// and then died and got cleaned up. Refuses third-party re-introduction of a
-    /// dead id (gossip dissemination + bare channel re-seed) that would otherwise
-    /// re-create it as SUSPECT and restart the SUSPECT<->FAULTY oscillation (#231).
-    /// Crucially, a never-HEALTHY id is NEVER tombstoned: it may be a cold-boot seed
-    /// that is simply slow to form, and tombstoning it would break cluster formation
-    /// (the reason an earlier non-gated tombstone attempt was reverted). The
-    /// tombstone is cleared by an authoritative self-ANNOUNCE (partition-heal) and
+    /// Incarnation-aware, TTL-bounded tombstones for ids that died and got cleaned up.
+    /// Refuses third-party re-introduction of a dead id (gossip dissemination + bare
+    /// channel re-seed) that would otherwise re-create it as SUSPECT and restart the
+    /// SUSPECT<->FAULTY oscillation (#231).
+    /// Phase-aware (02-chaos S01, 2026-06): in NORMAL/RECOVERING any FAULTY id is
+    /// tombstoned, including a never-HEALTHY replacement killed in its JOINING window;
+    /// in COLD_BOOT only PROVEN-HEALTHY ids are tombstoned, because a never-HEALTHY id may
+    /// be a cold-boot seed that is simply slow to form and tombstoning it would break
+    /// cluster formation (the reason an earlier non-gated tombstone attempt was reverted).
+    /// The tombstone is cleared by an authoritative self-ANNOUNCE (partition-heal) and
     /// superseded by a strictly higher incarnation (genuine restart/refutation).
     private final Map<NodeId, Tombstone> tombstones = new ConcurrentHashMap<>();
     /// Per-peer "ever observed HEALTHY at least once" flag. Cold-boot suppression:
@@ -492,22 +494,22 @@ public final class SwimProtocol implements SwimMessageHandler {
         sweepExpiredTombstones(now);
     }
 
-    /// Tombstone a removed FAULTY id ONLY if it was PROVEN HEALTHY at some point.
-    /// MUST be called BEFORE `clearDeathMemory` (which erases `everSeenHealthy`). A
-    /// never-HEALTHY id is a cold-boot seed that may simply be slow to form, so it is
-    /// NOT tombstoned — tombstoning it would break formation (the prior tombstone
-    /// attempt was reverted for exactly this). Only a node that actually lived and
-    /// then died is tombstoned, blocking its third-party resurrection (#231).
-    ///
-    /// Sweep-time backstop: the PRIMARY tombstone is now set at the FAULTY edge
-    /// ([#tombstoneIfProvenHealthy]) so a re-admit during the FAULTY->sweep window is
-    /// refused. This sweep-time set is retained as a backstop for the rare path where
-    /// a member reaches the sweep still FAULTY without having traversed an instrumented
+    /// Sweep-time tombstone backstop. The PRIMARY tombstone is set at the FAULTY edge
+    /// ([#tombstoneOnFaultyEdge]) so a re-admit during the FAULTY->sweep window is
+    /// refused. This sweep-time set is retained as a backstop for the rare path where a
+    /// member reaches the sweep still FAULTY without having traversed an instrumented
     /// FAULTY edge (idempotent: re-stamping at the same incarnation is harmless).
+    ///
+    /// Same phase-aware gate as the FAULTY edge: tombstone when `(!isBooting) OR
+    /// everSeenHealthy.contains(peer)`. In NORMAL/RECOVERING a swept never-HEALTHY FAULTY
+    /// id is also tombstoned (02-chaos S01 backstop); in COLD_BOOT only proven-healthy
+    /// ids are tombstoned so a slow cold-boot seed is not refused (formation safety).
+    /// MUST be called BEFORE `clearDeathMemory` (which erases `everSeenHealthy`).
     private void tombstoneIfWasHealthy(NodeId peer, long incarnation, long now) {
-        if (everSeenHealthy.contains(peer)) {
-            tombstones.put(peer, new Tombstone(incarnation, now));
+        if (isBooting.getAsBoolean() && !everSeenHealthy.contains(peer)) {
+            return;
         }
+        tombstones.put(peer, new Tombstone(incarnation, now));
     }
 
     /// PRIMARY tombstone set: stamp the death-record at the FAULTY EDGE (the moment a
@@ -517,16 +519,31 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// `applyExistingMember` / `markAliveIfNeeded`, re-firing `HealthyObserved` and
     /// restarting the SUSPECT<->FAULTY oscillation (#231).
     ///
-    /// Set ONLY on the FAULTY edge and ONLY for a PROVEN-HEALTHY id (`everSeenHealthy`).
-    /// A SUSPECT flap that later recovers to ALIVE (S04/S13 transient) is never
-    /// tombstoned because this is never invoked on the SUSPECT edge. A never-HEALTHY
-    /// cold-boot seed is never tombstoned because of the `everSeenHealthy` gate.
-    private void tombstoneIfProvenHealthy(NodeId peer, long incarnation) {
-        if (everSeenHealthy.contains(peer)) {
-            tombstones.put(peer, new Tombstone(incarnation, System.currentTimeMillis()));
-            LOG.debug("SWIM tombstone set at FAULTY edge for proven-healthy id {} (incarnation {})",
-                      peer.id(), incarnation);
+    /// Phase-aware gate (02-chaos S01 never-HEALTHY oscillation, 2026-06): a FAULTY id
+    /// is tombstoned when `(!isBooting) OR everSeenHealthy.contains(peer)`. Concretely:
+    /// - In `NORMAL`/`RECOVERING` (`isBooting=false`): ALWAYS tombstone the FAULTY id,
+    ///   even one that was NEVER observed HEALTHY. This is the fix for a replacement node
+    ///   killed inside its JOINING/SYNCING window: its stale Hello re-completes, the bare
+    ///   re-seed re-adds it SUSPECT, it expires to FAULTY, gets swept, re-adds again — a
+    ///   ~1 Hz SUSPECT<->FAULTY oscillation that republishes a generation snapshot on
+    ///   every FAULTY edge so cluster `quiescence` never clears. Tombstoning the FAULTY
+    ///   id in NORMAL phase makes every re-add gate refuse it, ending the oscillation.
+    /// - In `COLD_BOOT` (`isBooting=true`): preserve the legacy `everSeenHealthy` gate —
+    ///   a never-HEALTHY id is NOT tombstoned. A slow cold-boot seed is never-HEALTHY by
+    ///   definition; tombstoning it would refuse its legitimate re-add and break cluster
+    ///   formation (the invariant a prior non-gated tombstone attempt violated).
+    ///
+    /// Set ONLY on the FAULTY edge. A SUSPECT flap that later recovers to ALIVE (S04/S13
+    /// transient) is never tombstoned because this is never invoked on the SUSPECT edge.
+    /// Incarnation/TTL semantics are unchanged; the tombstone-CLEAR paths (self-ANNOUNCE,
+    /// higher-incarnation supersede) are untouched, so legitimate rejoin still works.
+    private void tombstoneOnFaultyEdge(NodeId peer, long incarnation) {
+        if (isBooting.getAsBoolean() && !everSeenHealthy.contains(peer)) {
+            return;
         }
+        tombstones.put(peer, new Tombstone(incarnation, System.currentTimeMillis()));
+        LOG.debug("SWIM tombstone set at FAULTY edge for id {} (incarnation {}, everSeenHealthy={})",
+                  peer.id(), incarnation, everSeenHealthy.contains(peer));
     }
 
     /// Bound tombstone-map growth: drop tombstones older than the TTL. Legitimate
@@ -620,7 +637,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         var faulty = member.withState(MemberState.FAULTY);
         members.put(member.nodeId(), faulty);
         suspectTimestamps.put(member.nodeId(), System.currentTimeMillis());
-        tombstoneIfProvenHealthy(member.nodeId(), faulty.incarnation());
+        tombstoneOnFaultyEdge(member.nodeId(), faulty.incarnation());
         listener.onMemberFaulty(faulty);
         addMemberUpdate(faulty);
         emitFaultyOrUnknown(member.nodeId(), faulty.incarnation());
@@ -1140,7 +1157,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     private void notifyFaulty(SwimMember updated) {
         suspectTimestamps.remove(updated.nodeId());
-        tombstoneIfProvenHealthy(updated.nodeId(), updated.incarnation());
+        tombstoneOnFaultyEdge(updated.nodeId(), updated.incarnation());
         listener.onMemberFaulty(updated);
         emitFaultyOrUnknown(updated.nodeId(), updated.incarnation());
     }
