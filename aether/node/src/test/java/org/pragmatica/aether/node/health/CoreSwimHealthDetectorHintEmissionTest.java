@@ -178,14 +178,21 @@ class CoreSwimHealthDetectorHintEmissionTest {
         }
 
         @Test
-        void onNodeConnected_emitsHealthyHint() {
+        void onNodeConnected_promotesMembershipWithoutSinkHint() {
+            // Two-plane liveness (commit e69f57a4b): in Running, a real QUIC connection no
+            // longer routes HEALTHY through the detector sink. PeerConnected promotes membership
+            // inside SwimProtocol (markAliveFromTransport / addSeedMember, tombstone-gated) and
+            // HEALTHY flows via SwimProtocol.recordHealthyAndEmit → the SwimObservation stream,
+            // NOT ctx.reportHint. The detector sink therefore stays empty on connect; the
+            // observable contract is that the peer becomes a tracked SWIM member.
             detector.onNodeConnected(PEER_A);
 
-            assertThat(emittedSignals).singleElement()
-                                      .isInstanceOfSatisfying(HealthSignal.SwimHint.class, hint -> {
-                                          assertThat(hint.nodeId()).isEqualTo(PEER_A);
-                                          assertThat(hint.state()).isEqualTo(HealthHint.HEALTHY);
-                                      });
+            assertThat(emittedSignals)
+                .as("PeerConnected in Running must not push a HEALTHY hint through the detector sink")
+                .isEmpty();
+            assertThat(detector.currentHealth().map(snapshot -> snapshot.peerHealth().containsKey(PEER_A)).or(false))
+                .as("connected peer is now tracked in SWIM membership")
+                .isTrue();
         }
 
         /// Regression: CTM-provisioned replacements join the cluster via QUIC Hello with
@@ -196,19 +203,22 @@ class CoreSwimHealthDetectorHintEmissionTest {
         /// the phantom stayed in `coreNodes` indefinitely, making `coreCount > coreMax`.
         ///
         /// The `onNodeConnected(NodeInfo)` overload carries the address learned at QUIC
-        /// Hello time so SWIM can seed the dynamic peer regardless of static config.
+        /// Hello time so SWIM can seed the dynamic peer regardless of static config. HEALTHY
+        /// flows via the SwimProtocol observation stream (two-plane liveness, e69f57a4b), not
+        /// the detector sink — so the observable contract is membership acquisition.
         @Test
-        void onNodeConnected_withDynamicallyLearnedPeer_emitsHealthyHint() {
+        void onNodeConnected_withDynamicallyLearnedPeer_promotesMembershipWithoutSinkHint() {
             var dynamic = new NodeId("aether-core-node-0-deadbeef");
             var info = NodeInfo.nodeInfo(dynamic, NodeAddress.nodeAddress("aether-core-node-0-deadbeef", 9001).unwrap());
 
             detector.onNodeConnected(info);
 
-            assertThat(emittedSignals).singleElement()
-                                      .isInstanceOfSatisfying(HealthSignal.SwimHint.class, hint -> {
-                                          assertThat(hint.nodeId()).isEqualTo(dynamic);
-                                          assertThat(hint.state()).isEqualTo(HealthHint.HEALTHY);
-                                      });
+            assertThat(emittedSignals)
+                .as("dynamic PeerConnected in Running must not push a HEALTHY hint through the detector sink")
+                .isEmpty();
+            assertThat(detector.currentHealth().map(snapshot -> snapshot.peerHealth().containsKey(dynamic)).or(false))
+                .as("dynamically-learned connected peer is now tracked in SWIM membership")
+                .isTrue();
         }
     }
 

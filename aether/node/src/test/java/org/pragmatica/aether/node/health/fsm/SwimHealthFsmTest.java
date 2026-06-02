@@ -24,6 +24,7 @@ import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmTestHarness;
 import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.swim.SwimConfig;
+import org.pragmatica.swim.SwimHealth;
 import org.pragmatica.swim.SwimMember;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage;
@@ -317,20 +318,30 @@ class SwimHealthFsmTest {
         }
 
         @Test
-        void peerConnected_inRunning_emitsHealthyHint() {
-            // Formation safety: a REAL connection (PeerConnected) DOES produce HEALTHY.
+        void peerConnected_inRunning_promotesMembershipToHealthy() {
+            // Formation safety, two-plane liveness (commit e69f57a4b): a REAL connection
+            // (PeerConnected) for a KNOWN member promotes it ALIVE via
+            // SwimProtocol.markAliveFromTransport (tombstone-gated). HEALTHY is recorded inside
+            // SwimProtocol (recordHealthyAndEmit → SwimObservation stream), NOT pushed through
+            // the detector's HealthSignalSink. The observable contract is therefore membership
+            // promotion: the seeded SUSPECT peer becomes HEALTHY in SwimProtocol.healthOf, and
+            // no HEALTHY hint is routed to the sink in Running.
             buildHarness(false);
             harness.dispatch(new SwimHealthEvents.StartRequested());
-            harness.dispatch(new SwimHealthEvents.ProtocolReady(swimWithSeeds(PEER_A),
+            var swim = swimWithSeeds(PEER_A);
+            harness.dispatch(new SwimHealthEvents.ProtocolReady(swim,
                                                                  new StubTransport(),
                                                                  GossipEncryptor.none()));
             assertThat(harness.state()).isInstanceOf(SwimHealthState.Running.class);
 
             harness.dispatch(new SwimHealthEvents.PeerConnected(PEER_A, Option.none()));
 
+            assertThat(swim.healthOf(PEER_A))
+                .as("PeerConnected (real reachability) promotes a known member to HEALTHY in SWIM membership — formation depends on it")
+                .isEqualTo(SwimHealth.HEALTHY);
             assertThat(hintsFor(PEER_A))
-                .as("PeerConnected (real reachability) must assert HEALTHY — formation depends on it")
-                .contains(org.pragmatica.aether.slice.generation.HealthHint.HEALTHY);
+                .as("HEALTHY flows via the SwimObservation stream, not the detector sink in Running")
+                .doesNotContain(org.pragmatica.aether.slice.generation.HealthHint.HEALTHY);
         }
 
         @Test
