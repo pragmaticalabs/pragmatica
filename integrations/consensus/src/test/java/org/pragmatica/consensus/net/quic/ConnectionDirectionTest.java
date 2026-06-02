@@ -22,42 +22,52 @@ import org.pragmatica.consensus.NodeId;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/// `ConnectionDirection` is no longer a dial precondition — it is a deterministic
+/// duplicate-resolution tiebreak. `prefersInitiator(a, b)` decides which initiator id
+/// wins a concurrent dual-dial: the lower NodeId. The tiebreak must be total and
+/// antisymmetric so both ends converge on the same survivor.
 class ConnectionDirectionTest {
 
     @Nested
-    class ShouldInitiate {
+    class PrefersInitiator {
         @Test
-        void shouldInitiate_lowerIdReturnsTrue() {
+        void prefersInitiator_lowerInitiatorWins_returnsTrue() {
             var lower = new NodeId("node-aaa");
             var higher = new NodeId("node-zzz");
 
-            assertThat(ConnectionDirection.shouldInitiate(lower, higher)).isTrue();
+            assertThat(ConnectionDirection.prefersInitiator(lower, higher))
+                .as("lower initiator id wins the duplicate tiebreak")
+                .isTrue();
         }
 
         @Test
-        void shouldInitiate_higherIdReturnsFalse() {
+        void prefersInitiator_higherInitiatorLoses_returnsFalse() {
             var lower = new NodeId("node-aaa");
             var higher = new NodeId("node-zzz");
 
-            assertThat(ConnectionDirection.shouldInitiate(higher, lower)).isFalse();
+            assertThat(ConnectionDirection.prefersInitiator(higher, lower))
+                .as("higher initiator id loses the duplicate tiebreak")
+                .isFalse();
         }
 
         @Test
-        void shouldInitiate_equalIdsReturnsFalse() {
+        void prefersInitiator_equalInitiators_returnsFalse() {
             var node = new NodeId("node-same");
 
-            assertThat(ConnectionDirection.shouldInitiate(node, node)).isFalse();
+            assertThat(ConnectionDirection.prefersInitiator(node, node))
+                .as("a tie is not a strict preference — incumbent is kept")
+                .isFalse();
         }
 
         @Test
-        void shouldInitiate_isAntisymmetric() {
+        void prefersInitiator_isAntisymmetric_bothEndsAgreeOnWinner() {
             var nodeA = new NodeId("node-alpha");
             var nodeB = new NodeId("node-beta");
 
-            var aInitiates = ConnectionDirection.shouldInitiate(nodeA, nodeB);
-            var bInitiates = ConnectionDirection.shouldInitiate(nodeB, nodeA);
+            var aWins = ConnectionDirection.prefersInitiator(nodeA, nodeB);
+            var bWins = ConnectionDirection.prefersInitiator(nodeB, nodeA);
 
-            assertThat(aInitiates).isNotEqualTo(bInitiates);
+            assertThat(aWins).isNotEqualTo(bWins);
         }
     }
 }

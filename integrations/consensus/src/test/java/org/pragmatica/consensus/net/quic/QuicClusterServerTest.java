@@ -90,7 +90,7 @@ class QuicClusterServerTest {
                 _ -> fail("unreachable"),
                 ssl -> QuicClusterServer.quicClusterServer(
                     SERVER_NODE, NodeRole.ACTIVE, SERVER_ADDRESS, Map.of(), codec, codec, ssl, Option.empty(),
-                    (conn, _, _, _) -> {
+                    (conn, _, _, _, _) -> {
                         connections.add(conn);
                         latch.countDown();
                     },
@@ -141,7 +141,7 @@ class QuicClusterServerTest {
                 _ -> fail("unreachable"),
                 ssl -> QuicClusterServer.quicClusterServer(
                     SERVER_NODE, NodeRole.ACTIVE, SERVER_ADDRESS, Map.of(), codec, codec, ssl, Option.empty(),
-                    (_, _, _, _) -> {}, (_, _) -> {}
+                    (_, _, _, _, _) -> {}, (_, _) -> {}
                 )
             );
 
@@ -161,7 +161,7 @@ class QuicClusterServerTest {
                 _ -> fail("unreachable"),
                 ssl -> QuicClusterServer.quicClusterServer(
                     SERVER_NODE, NodeRole.ACTIVE, SERVER_ADDRESS, Map.of(), codec, codec, ssl, Option.empty(),
-                    (_, _, _, _) -> {}, (_, _) -> {}
+                    (_, _, _, _, _) -> {}, (_, _) -> {}
                 )
             );
 

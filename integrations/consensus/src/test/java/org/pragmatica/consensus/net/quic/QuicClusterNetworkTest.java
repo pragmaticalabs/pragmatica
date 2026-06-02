@@ -120,27 +120,27 @@ class QuicClusterNetworkTest {
     }
 
     @Nested
-    class NodeIdOrdering {
+    class NodeIdTiebreak {
 
         @Test
-        void shouldInitiate_lowerIdInitiates_higherIdWaits() {
+        void prefersInitiator_lowerInitiatorWins_higherLoses() {
             var lower = new NodeId("aaa");
             var higher = new NodeId("zzz");
 
-            assertThat(ConnectionDirection.shouldInitiate(lower, higher))
-                .as("Lower NodeId should initiate")
+            assertThat(ConnectionDirection.prefersInitiator(lower, higher))
+                .as("Lower initiator id wins the duplicate tiebreak (no dial-gate; id is resolution-only)")
                 .isTrue();
-            assertThat(ConnectionDirection.shouldInitiate(higher, lower))
-                .as("Higher NodeId should not initiate")
+            assertThat(ConnectionDirection.prefersInitiator(higher, lower))
+                .as("Higher initiator id loses the duplicate tiebreak")
                 .isFalse();
         }
 
         @Test
-        void shouldInitiate_equalIds_doesNotInitiate() {
+        void prefersInitiator_equalIds_noStrictPreference() {
             var id = new NodeId("same");
 
-            assertThat(ConnectionDirection.shouldInitiate(id, id))
-                .as("Equal NodeIds should not initiate")
+            assertThat(ConnectionDirection.prefersInitiator(id, id))
+                .as("Equal initiator ids are not a strict preference — incumbent is kept")
                 .isFalse();
         }
     }

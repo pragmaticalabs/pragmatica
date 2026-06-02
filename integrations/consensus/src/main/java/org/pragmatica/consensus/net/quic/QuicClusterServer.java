@@ -73,9 +73,14 @@ public sealed interface QuicClusterServer {
     Option<Integer> boundPort();
 
     /// Callback for new peer connections after Hello handshake completes.
+    ///
+    /// `clientInitiated` distinguishes connection origin for deterministic duplicate
+    /// resolution: `true` when THIS node dialed the peer (client path), `false` when
+    /// THIS node accepted the peer's dial (server path). It is the sole input that lets
+    /// both ends derive the same initiator id and converge on one survivor.
     @FunctionalInterface
     interface PeerConnectionHandler {
-        void onPeerConnected(QuicPeerConnection connection, NodeRole peerRole, NodeAddress peerAddress, Map<String, String> peerLabels);
+        void onPeerConnected(QuicPeerConnection connection, NodeRole peerRole, NodeAddress peerAddress, Map<String, String> peerLabels, boolean clientInitiated);
     }
 
     /// Callback for incoming messages after Hello handshake completes.
@@ -383,7 +388,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             ctx.pipeline().replace(this, "data-handler", new DataHandler(hello.sender()));
 
             log.info("QUIC Hello handshake complete with peer {} (role={}, address={})", hello.sender(), hello.role(), hello.address());
-            connectionHandler.onPeerConnected(peerConnection, hello.role(), hello.address(), hello.labels());
+            connectionHandler.onPeerConnected(peerConnection, hello.role(), hello.address(), hello.labels(), false);
         }
     }
 
