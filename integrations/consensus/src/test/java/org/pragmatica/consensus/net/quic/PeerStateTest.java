@@ -25,8 +25,6 @@ import static org.mockito.Mockito.when;
 /// Pure unit tests — no QUIC, no networking.
 class PeerStateTest {
     private static final NodeId PEER = new NodeId("peer-1");
-    private static final NodeId LOWER_INITIATOR = new NodeId("aaa-initiator");
-    private static final NodeId HIGHER_INITIATOR = new NodeId("zzz-initiator");
     private static final long T0 = 1_000_000_000L;
 
     private PeerState state() {
@@ -62,73 +60,26 @@ class PeerStateTest {
     void attach_fromCONNECTING_transitions_to_CONNECTED_and_returns_ACCEPTED() {
         var s = state();
         s.beginConnecting(T0 + 1);
-        assertThat(s.attach(liveConnection(), PEER, T0 + 2).result()).isEqualTo(AttachResult.ACCEPTED);
+        assertThat(s.attach(liveConnection(), T0 + 2)).isEqualTo(AttachResult.ACCEPTED);
         assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
         assertThat(s.activeConnection().isPresent()).isTrue();
     }
 
     @Test
-    void resolveDuplicate_sameInitiatorReHandshake_adoptsNew_returnsReplaced() {
-        // A same-initiator re-handshake supersedes a possibly-zombie incumbent. The peer only
-        // re-dials after abandoning its side, and isActive() can't be trusted (idle-timeout
-        // disabled → a dead inbound link reads "active"). So the fresh link is adopted and the
-        // displaced incumbent is handed back for isolated close. (Previously this was DUPLICATE,
-        // which kept the zombie and closed the peer's fresh stream → 5s redial storm.)
+    void attach_duplicate_on_active_CONNECTED_returns_DUPLICATE() {
         var s = state();
         s.beginConnecting(T0 + 1);
-        var incumbent = liveConnection();
-        s.attach(incumbent, PEER, T0 + 2);
-        var fresh = liveConnection();
-        var outcome = s.attach(fresh, PEER, T0 + 3);
-        assertThat(outcome.result()).isEqualTo(AttachResult.REPLACED);
-        assertThat(outcome.displaced().or((QuicPeerConnection) null))
-            .as("the zombie incumbent is returned for isolated close").isSameAs(incumbent);
+        s.attach(liveConnection(), T0 + 2);
+        assertThat(s.attach(liveConnection(), T0 + 3)).isEqualTo(AttachResult.DUPLICATE);
         assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
-        assertThat(s.activeConnection().or((QuicPeerConnection) null))
-            .as("the fresh re-handshake is now the held connection").isSameAs(fresh);
     }
 
     @Test
     void attach_on_REMOVED_returns_REJECTED() {
         var s = state();
         s.authoritativeRemove(T0 + 1);
-        assertThat(s.attach(liveConnection(), PEER, T0 + 2).result()).isEqualTo(AttachResult.REJECTED);
+        assertThat(s.attach(liveConnection(), T0 + 2)).isEqualTo(AttachResult.REJECTED);
         assertThat(s.phase()).isEqualTo(Phase.REMOVED);
-    }
-
-    @Test
-    void attach_duplicate_incumbentInitiatorWins_returns_DUPLICATE_keepingExisting() {
-        // Dual-dial: incumbent has the LOWER initiator id. A new connection with a HIGHER
-        // initiator loses the tiebreak — the incumbent live link is kept, new is rejected.
-        var s = state();
-        s.beginConnecting(T0 + 1);
-        var incumbent = liveConnection();
-        s.attach(incumbent, LOWER_INITIATOR, T0 + 2);
-        var outcome = s.attach(liveConnection(), HIGHER_INITIATOR, T0 + 3);
-        assertThat(outcome.result()).isEqualTo(AttachResult.DUPLICATE);
-        assertThat(outcome.displaced().isEmpty()).as("DUPLICATE displaces nothing").isTrue();
-        assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
-        assertThat(s.activeConnection().or((QuicPeerConnection) null))
-            .as("incumbent (lower initiator) is retained").isSameAs(incumbent);
-    }
-
-    @Test
-    void attach_replace_newInitiatorWins_swapsConnection_and_returns_REPLACED_with_displaced() {
-        // Dual-dial: incumbent has the HIGHER initiator id. A new connection with a LOWER
-        // initiator WINS the deterministic tiebreak — connection ref swaps to new, the
-        // displaced (losing) incumbent is surfaced for isolated close.
-        var s = state();
-        s.beginConnecting(T0 + 1);
-        var incumbent = liveConnection();
-        s.attach(incumbent, HIGHER_INITIATOR, T0 + 2);
-        var winner = liveConnection();
-        var outcome = s.attach(winner, LOWER_INITIATOR, T0 + 3);
-        assertThat(outcome.result()).isEqualTo(AttachResult.REPLACED);
-        assertThat(outcome.displaced().or((QuicPeerConnection) null))
-            .as("the losing incumbent is returned for isolated close").isSameAs(incumbent);
-        assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
-        assertThat(s.activeConnection().or((QuicPeerConnection) null))
-            .as("winner (lower initiator) is now the held connection").isSameAs(winner);
     }
 
     @Test
@@ -138,11 +89,11 @@ class PeerStateTest {
         // duplicate processViewChange(ADD) emission — peer never left the topology.
         var s = state();
         s.beginConnecting(T0 + 1);
-        s.attach(liveConnection(), PEER, T0 + 2);
+        s.attach(liveConnection(), T0 + 2);
         s.evict(T0 + 3);
         assertThat(s.phase()).isEqualTo(Phase.EVICTED);
 
-        var result = s.attach(liveConnection(), PEER, T0 + 4).result();
+        var result = s.attach(liveConnection(), T0 + 4);
         assertThat(result).as("attach from EVICTED is a reconnect, not a fresh accept")
                           .isEqualTo(AttachResult.RECONNECTED);
         assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
@@ -152,18 +103,16 @@ class PeerStateTest {
     void attach_replacingStaleConnectedLink_returns_RECONNECTED() {
         // The other reconnect path: a CONNECTED peer whose live connection became inactive
         // (without an explicit evict). The replacement is also a transparent reconnect from
-        // upstream's perspective — peer was already known. Note: the tiebreak is bypassed
-        // for an inactive incumbent — a stale link is always replaced regardless of initiator.
+        // upstream's perspective — peer was already known.
         var s = state();
         s.beginConnecting(T0 + 1);
         var stale = mock(QuicChannel.class);
         when(stale.isActive()).thenReturn(false);
         var staleConn = QuicPeerConnection.quicPeerConnection(PEER, stale);
-        s.attach(staleConn, LOWER_INITIATOR, T0 + 2);
+        s.attach(staleConn, T0 + 2);
         // Now the peer is CONNECTED but the held connection reports !isActive — replacing
-        // it must return RECONNECTED even though the new initiator is HIGHER (stale wins
-        // nothing). Proves tiebreak does not strand a dead incumbent.
-        var result = s.attach(liveConnection(), HIGHER_INITIATOR, T0 + 3).result();
+        // it must return RECONNECTED, not a duplicate-rejection or fresh ACCEPTED.
+        var result = s.attach(liveConnection(), T0 + 3);
         assertThat(result).isEqualTo(AttachResult.RECONNECTED);
         assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
     }
@@ -173,7 +122,7 @@ class PeerStateTest {
         var s = state();
         s.beginConnecting(T0 + 1);
         var conn = liveConnection();
-        s.attach(conn, PEER, T0 + 2);
+        s.attach(conn, T0 + 2);
         var evicted = s.evict(T0 + 3);
         assertThat(evicted.isPresent()).isTrue();
         assertThat(evicted.or((QuicPeerConnection) null)).isSameAs(conn);
@@ -185,7 +134,7 @@ class PeerStateTest {
     void evict_from_EVICTED_is_noop() {
         var s = state();
         s.beginConnecting(T0 + 1);
-        s.attach(liveConnection(), PEER, T0 + 2);
+        s.attach(liveConnection(), T0 + 2);
         s.evict(T0 + 3);
         assertThat(s.evict(T0 + 4).isEmpty()).isTrue();
     }
@@ -198,7 +147,7 @@ class PeerStateTest {
         s.offerOutbound(new byte[]{2});
         assertThat(s.offlineBufferSize()).isEqualTo(2);
         var conn = liveConnection();
-        s.attach(conn, PEER, T0 + 2);
+        s.attach(conn, T0 + 2);
         var removed = s.authoritativeRemove(T0 + 3);
         assertThat(removed.isPresent()).isTrue();
         assertThat(removed.or((QuicPeerConnection) null)).isSameAs(conn);
@@ -227,7 +176,7 @@ class PeerStateTest {
     void offerOutbound_EVICTED_queues_preserving_buffer() {
         var s = state();
         s.beginConnecting(T0 + 1);
-        s.attach(liveConnection(), PEER, T0 + 2);
+        s.attach(liveConnection(), T0 + 2);
         s.offerOutbound(new byte[]{1}); // SEND_NOW (no queue)
         s.evict(T0 + 3);
         s.offerOutbound(new byte[]{2}); // queued
@@ -239,7 +188,7 @@ class PeerStateTest {
         var s = state();
         s.beginConnecting(T0 + 1);
         var conn = liveConnection();
-        s.attach(conn, PEER, T0 + 2);
+        s.attach(conn, T0 + 2);
         var outcome = s.offerOutbound(new byte[]{1});
         assertThat(outcome).isInstanceOf(OfferOutcome.SendNow.class);
         assertThat(((OfferOutcome.SendNow) outcome).connection()).isSameAs(conn);
@@ -287,12 +236,12 @@ class PeerStateTest {
     void reconnect_flow_preserves_offline_buffer_across_evict_reattach() {
         var s = state();
         s.beginConnecting(T0 + 1);
-        s.attach(liveConnection(), PEER, T0 + 2);
+        s.attach(liveConnection(), T0 + 2);
         s.evict(T0 + 3);               // CONNECTED → EVICTED
         s.offerOutbound(new byte[]{7}); // queued during EVICTED
         s.beginConnecting(T0 + 4);      // EVICTED → CONNECTING
         assertThat(s.offlineBufferSize()).isEqualTo(1);
-        s.attach(liveConnection(), PEER, T0 + 5); // CONNECTING → CONNECTED
+        s.attach(liveConnection(), T0 + 5); // CONNECTING → CONNECTED
         assertThat(s.drainOfflineBuffer()).hasSize(1);
     }
 
@@ -303,7 +252,7 @@ class PeerStateTest {
         s.markPassive();
         assertThat(s.isPassive()).isTrue();
         s.beginConnecting(T0 + 1);
-        s.attach(liveConnection(), PEER, T0 + 2);
+        s.attach(liveConnection(), T0 + 2);
         assertThat(s.isPassive()).isTrue();
     }
 

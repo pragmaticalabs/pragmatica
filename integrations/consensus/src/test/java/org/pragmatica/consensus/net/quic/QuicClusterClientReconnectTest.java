@@ -133,7 +133,7 @@ class QuicClusterClientReconnectTest {
                                        .fold(_ -> fail("server SSL failed"), ssl -> ssl);
         server = QuicClusterServer.quicClusterServer(
             SERVER_NODE, NodeRole.ACTIVE, SERVER_ADDRESS, Map.of(), codec, codec, serverSsl, Option.empty(),
-            (_, _, _, _, _) -> {}, (_, _) -> {}
+            (_, _, _, _) -> {}, (_, _) -> {}
         );
         server.start(0).await(AWAIT_TIMEOUT)
               .onFailure(cause -> fail("server start failed: " + cause.message()));
