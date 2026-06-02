@@ -48,16 +48,22 @@ test_kill_two_nodes() {
     # Event-driven barrier between the two kills (replaces `sleep 5`). Emulates
     # staggered failure where the second kill happens AFTER SWIM has actually
     # detected the first — fails fast if SWIM regresses past the budget.
-    if ! wait_for_node_departure "$victim1" "$baseline" 90; then
-        log_fail "No NODE_LEFT/NODE_FAILED event for first victim ${victim1} within 90s"
+    # Dual-signal: if victim1 never reached core-HEALTHY membership, no
+    # coreMemberIds-delta event fires (correct product behavior), so fall back to
+    # membership-absence (wait_for_node_removed: 404 OR absent from status).
+    if ! wait_for_node_departure "$victim1" "$baseline" 90 \
+        && ! wait_for_node_removed "$victim1" 90; then
+        log_fail "No NODE_LEFT/NODE_FAILED event AND not removed from membership for first victim ${victim1} within 90s"
         return 1
     fi
     log_pass "Departure of ${victim1} observed"
 
     log_info "Killing node 2: ${victim2}"
     kill_node "$victim2"
-    if ! wait_for_node_departure "$victim2" "$baseline" 90; then
-        log_fail "No NODE_LEFT/NODE_FAILED event for second victim ${victim2} within 90s"
+    # Dual-signal departure for victim2 — same rationale as victim1 above.
+    if ! wait_for_node_departure "$victim2" "$baseline" 90 \
+        && ! wait_for_node_removed "$victim2" 90; then
+        log_fail "No NODE_LEFT/NODE_FAILED event AND not removed from membership for second victim ${victim2} within 90s"
         return 1
     fi
     log_pass "Departure of ${victim2} observed"

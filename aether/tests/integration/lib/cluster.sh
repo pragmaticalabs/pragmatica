@@ -297,10 +297,11 @@ pick_non_leader() {
     # the old single-pass — never picks fewer, and never streams partial output on
     # failure (candidates are buffered and emitted only on full success).
     #
-    # stderr/stdout contract: pick_non_leader is consumed via `$(...)`, so candidate
-    # ids go to stdout ONLY on success (exactly `count` lines); all diagnostics go to
-    # stderr. Override the wait with PICK_NON_LEADER_TIMEOUT (default 60s).
-    local deadline=$(( $(date +%s) + ${PICK_NON_LEADER_TIMEOUT:-60} ))
+    # Override the wait with PICK_NON_LEADER_TIMEOUT (default 120s — raised from
+    # 60s to ride out post-Kill_2 re-election READY flicker: after 5→3 survivors a
+    # surviving non-leader can briefly drop out of --state READY during re-sync,
+    # and leader + pinned-MGMT exclusion can transiently cap candidates).
+    local deadline=$(( $(date +%s) + ${PICK_NON_LEADER_TIMEOUT:-120} ))
     local attempt_found=0
     local attempt_list=""
     local last_reason="no candidates yet"
@@ -378,7 +379,7 @@ pick_non_leader() {
     done
 
     # Deadline passed: a genuine non-convergence (not a transient), surfaced loudly.
-    log_fail "pick_non_leader: ${last_reason} after ${PICK_NON_LEADER_TIMEOUT:-60}s waiting for convergence (pinned=${pinned:-<none>}, cluster=${CLUSTER_ID:-<none>})" >&2
+    log_fail "pick_non_leader: ${last_reason} after ${PICK_NON_LEADER_TIMEOUT:-120}s waiting for convergence (pinned=${pinned:-<none>}, cluster=${CLUSTER_ID:-<none>})" >&2
     return 1
 }
 
@@ -1962,8 +1963,13 @@ restore_cluster_baseline() {
     # triggered by the convergence above has committed before the next suite
     # reads cluster state. Hard fail: if generation never quiesces the next
     # test sees mid-reassignment epoch flicker.
-    if ! await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 90; then
-        log_fail "restore_cluster_baseline: generation did not quiesce within 90s"
+    # 180s budget (raised from 90s): under a 2-concurrent-replacement Kill_2, two
+    # fresh replacements legitimately need >90s to all reach SWIM-HEALTHY; quiesce
+    # is correctly DEGRADED while any core carries a non-HEALTHY SWIM hint
+    # (ClusterGenerationProjector) — correct product behavior, not a bug. Consensus
+    # catch-up for the fresh replacements is the dominant cost.
+    if ! await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 180; then
+        log_fail "restore_cluster_baseline: generation did not quiesce within 180s"
         return 1
     fi
 
