@@ -18,6 +18,7 @@ package org.pragmatica.consensus.rabia;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.Command;
+import org.pragmatica.consensus.StateMachine.Batch;
 
 import java.util.List;
 
@@ -27,11 +28,14 @@ class BatchTest {
 
     record TestCommand(String value) implements Command {}
 
+    private static final org.pragmatica.serialization.SliceCodec SERIALIZER =
+        TestSerializers.stringCommandSerializer(TestCommand.class, TestCommand::value, TestCommand::new);
+
     @Test
     void batch_creates_batch_with_commands() {
         var commands = List.of(new TestCommand("a"), new TestCommand("b"));
 
-        var batch = Batch.batch(commands);
+        var batch = Batch.create(SERIALIZER, commands);
 
         assertThat(batch.commands()).hasSize(2);
         assertThat(batch.id().id()).startsWith("batch-");
@@ -50,8 +54,8 @@ class BatchTest {
 
     @Test
     void batches_are_comparable_by_timestamp() {
-        var batch1 = Batch.batch(List.of(new TestCommand("a")));
-        var batch2 = Batch.batch(List.of(new TestCommand("b")));
+        var batch1 = Batch.create(SERIALIZER, List.of(new TestCommand("a")));
+        var batch2 = Batch.create(SERIALIZER, List.of(new TestCommand("b")));
 
         // batch2 created after batch1, so batch1 < batch2
         assertThat(batch1.compareTo(batch2)).isLessThanOrEqualTo(0);
@@ -60,8 +64,36 @@ class BatchTest {
     @Test
     void batch_hashCode_uses_id() {
         var commands = List.of(new TestCommand("a"));
-        var batch = Batch.batch(commands);
+        var batch = Batch.create(SERIALIZER, commands);
 
         assertThat(batch.hashCode()).isEqualTo(batch.id().hashCode());
+    }
+
+    @Test
+    void create_producesSha256ContentId() {
+        var batch = Batch.create(SERIALIZER, List.of(new TestCommand("a")));
+
+        // "batch-" + 64 lowercase hex chars (SHA-256)
+        assertThat(batch.id().id()).matches("batch-[0-9a-f]{64}");
+    }
+
+    @Test
+    void create_sameCommands_yieldsSameId_acrossIndependentSerializers() {
+        var serializerA = TestSerializers.stringCommandSerializer(TestCommand.class, TestCommand::value, TestCommand::new);
+        var serializerB = TestSerializers.stringCommandSerializer(TestCommand.class, TestCommand::value, TestCommand::new);
+        var commands = List.of(new TestCommand("a"), new TestCommand("b"));
+
+        var idA = Batch.create(serializerA, commands).id();
+        var idB = Batch.create(serializerB, commands).id();
+
+        assertThat(idA).isEqualTo(idB);
+    }
+
+    @Test
+    void create_differentCommands_yieldDifferentIds() {
+        var idA = Batch.create(SERIALIZER, List.of(new TestCommand("a"))).id();
+        var idB = Batch.create(SERIALIZER, List.of(new TestCommand("b"))).id();
+
+        assertThat(idA).isNotEqualTo(idB);
     }
 }

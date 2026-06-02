@@ -22,6 +22,7 @@ import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -103,7 +104,7 @@ class BlueprintServiceTest {
 
             var key = AppBlueprintKey.appBlueprintKey(blueprintId);
             var value = new AppBlueprintValue(expanded);
-            store.process(new KVCommand.Put<>(key, value));
+            store.processCommand(new KVCommand.Put<>(key, value));
 
             var result = service.get(blueprintId);
 
@@ -138,8 +139,8 @@ class BlueprintServiceTest {
                     List.of(ResolvedSlice.resolvedSlice(artifact, 2, false).unwrap())
                                                                );
 
-            store.process(new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(id1), new AppBlueprintValue(expanded1)));
-            store.process(new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(id2), new AppBlueprintValue(expanded2)));
+            store.processCommand(new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(id1), new AppBlueprintValue(expanded1)));
+            store.processCommand(new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(id2), new AppBlueprintValue(expanded2)));
 
             var result = service.list();
 
@@ -160,7 +161,7 @@ class BlueprintServiceTest {
                                                               );
 
             var key = AppBlueprintKey.appBlueprintKey(blueprintId);
-            store.process(new KVCommand.Put<>(key, new AppBlueprintValue(expanded)));
+            store.processCommand(new KVCommand.Put<>(key, new AppBlueprintValue(expanded)));
 
             service.delete(blueprintId)
                    .await()
@@ -275,7 +276,7 @@ class BlueprintServiceTest {
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             // Process commands through the store
             return Promise.success(commands.stream()
-                                           .map(cmd -> (R) store.process(cmd))
+                                           .map(cmd -> (R) store.processCommand(cmd))
                                            .toList());
         }
     }
@@ -308,8 +309,18 @@ class BlueprintServiceTest {
             });
         }
 
-        // Override the StateMachine process method
-        public Option<AetherValue> process(KVCommand command) {
+        @Override
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        public <R> List<R> process(Batch<KVCommand<AetherKey>> batch) {
+            return batch.commands()
+                        .stream()
+                        .map(command -> (R) processCommand(command))
+                        .toList();
+        }
+
+        // Per-command application used directly by tests and by the batch override above.
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        public Option<AetherValue> processCommand(KVCommand command) {
             return switch (command) {
                 case KVCommand.Put<?, ?> put -> {
                     storage.put((AetherKey) put.key(), (AetherValue) put.value());

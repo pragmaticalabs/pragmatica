@@ -5,10 +5,12 @@
 package org.pragmatica.aether.stream.consensus;
 
 import org.pragmatica.consensus.Command;
+import org.pragmatica.serialization.Codec;
 
 import java.util.Arrays;
 
 
+@Codec
 public record StreamConsensusCommand(String streamName, int partition, byte[] payload, long timestamp) implements Command {
     public StreamConsensusCommand {
         payload = payload.clone();

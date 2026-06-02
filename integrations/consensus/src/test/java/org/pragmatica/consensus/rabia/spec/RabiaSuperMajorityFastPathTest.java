@@ -22,7 +22,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.pragmatica.consensus.Command;
-import org.pragmatica.consensus.rabia.Batch;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.consensus.rabia.StateValue;
 import org.pragmatica.consensus.rabia.helper.ClusterConfiguration;
@@ -46,6 +46,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RabiaSuperMajorityFastPathTest {
 
     record TestCommand(String value) implements Command {}
+
+    private static final org.pragmatica.serialization.SliceCodec SERIALIZER =
+        org.pragmatica.consensus.rabia.TestSerializers.stringCommandSerializer(TestCommand.class, TestCommand::value, TestCommand::new);
 
     static Stream<Arguments> clusterSizes() {
         return Stream.of(
@@ -504,7 +507,7 @@ class RabiaSuperMajorityFastPathTest {
         void fast_path_preserves_protocol_invariants(int size) {
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             // All propose same batch
             for (var node : config.nodeIds()) {

@@ -203,8 +203,8 @@ class LeaderStuckEpochRegressionTest {
 
         @SuppressWarnings({"unchecked", "rawtypes"})
         @Override public synchronized <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+            kvStore.process(kvStore.createBatch(commands));
             for (var cmd : commands) {
-                kvStore.process(cmd);
                 mirrorToShadow(cmd);
             }
             return (Promise) Promise.success(List.of());

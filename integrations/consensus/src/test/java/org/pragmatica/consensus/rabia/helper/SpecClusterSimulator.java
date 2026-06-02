@@ -18,7 +18,7 @@ package org.pragmatica.consensus.rabia.helper;
 
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.rabia.Batch;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.consensus.rabia.StateValue;
 import org.pragmatica.lang.Cause;

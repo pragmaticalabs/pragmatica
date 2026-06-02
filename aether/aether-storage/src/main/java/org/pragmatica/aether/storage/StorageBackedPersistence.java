@@ -6,7 +6,7 @@ package org.pragmatica.aether.storage;
 
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.StateMachine;
-import org.pragmatica.consensus.rabia.Batch;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.consensus.rabia.RabiaPersistence;
 import org.pragmatica.lang.Option;

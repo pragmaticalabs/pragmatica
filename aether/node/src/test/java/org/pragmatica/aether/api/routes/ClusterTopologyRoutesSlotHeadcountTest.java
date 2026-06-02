@@ -22,6 +22,7 @@ import org.pragmatica.swim.SwimHealth;
 
 import java.lang.reflect.Proxy;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -46,7 +47,16 @@ class ClusterTopologyRoutesSlotHeadcountTest {
     void setUp() {
         var router = MessageRouter.DelegateRouter.delegate();
         router.quiesce();
-        kvStore = new KVStore<>(router, null, null);
+        kvStore = new KVStore<>(router, noopSerializer(), null);
+    }
+
+    /// No-op serializer: this test seeds the KV store directly (not via consensus dedup), so
+    /// the content-based batch id is irrelevant — an empty encoding satisfies `createBatch`.
+    private static org.pragmatica.serialization.Serializer noopSerializer() {
+        return new org.pragmatica.serialization.Serializer() {
+            @Override
+            public <T> void write(io.netty.buffer.ByteBuf byteBuf, T object) {}
+        };
     }
 
     private ManageableNode nodeProxy() {
@@ -60,8 +70,8 @@ class ClusterTopologyRoutesSlotHeadcountTest {
     }
 
     private void seedSlot(String slotId, NodeId occupant, long epoch, Option<NodeId> superseded) {
-        kvStore.process(new KVCommand.Put<>(ProvisioningSlotKey.provisioningSlotKey(slotId),
-                                            new ProvisioningSlotValue(1L, 2L, Option.some(occupant), epoch, superseded)));
+        kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<>(ProvisioningSlotKey.provisioningSlotKey(slotId),
+                                            new ProvisioningSlotValue(1L, 2L, Option.some(occupant), epoch, superseded)))));
     }
 
     @Test

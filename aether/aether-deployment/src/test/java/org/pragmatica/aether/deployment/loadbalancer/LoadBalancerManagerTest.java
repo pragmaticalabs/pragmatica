@@ -63,7 +63,7 @@ class LoadBalancerManagerTest {
         topologyManager = new RecordingTopologyManager();
         var router = MessageRouter.DelegateRouter.delegate();
         router.quiesce();
-        kvStore = new KVStore<>(router, null, null);
+        kvStore = new KVStore<>(router, noopSerializer(), null);
         manager = LoadBalancerManager.loadBalancerManager(selfNode, kvStore, topologyManager, provider, 8080);
     }
 
@@ -100,7 +100,7 @@ class LoadBalancerManagerTest {
             var routeKey = NodeRoutesKey.nodeRoutesKey(node1, TEST_ARTIFACT);
             var routeValue = NodeRoutesValue.nodeRoutesValue(List.of(
                 RouteEntry.activeRoute("GET", "/api/users/", "list")));
-            kvStore.process(new KVCommand.Put<>(routeKey, routeValue));
+            kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<>(routeKey, routeValue))));
 
             // Register node1 in topology so IP resolution works
             topologyManager.register(node1, "10.0.0.1", 8080);
@@ -212,7 +212,7 @@ class LoadBalancerManagerTest {
             var routeKey1 = NodeRoutesKey.nodeRoutesKey(node1, TEST_ARTIFACT);
             var routeValue1 = NodeRoutesValue.nodeRoutesValue(List.of(
                 RouteEntry.activeRoute("GET", "/api/v1/", "list")));
-            kvStore.process(new KVCommand.Put<>(routeKey1, routeValue1));
+            kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<>(routeKey1, routeValue1))));
 
             var midDrainKvStore = new MidDrainKvStore(kvStore);
             var midDrainManager = LoadBalancerManager.loadBalancerManager(selfNode,
@@ -277,6 +277,16 @@ class LoadBalancerManagerTest {
     }
 
     // === Helpers ===
+
+    /// No-op serializer: these tests apply commands to the KV store directly (not via the
+    /// consensus dedup path), so the content-based batch id is irrelevant — an empty encoding
+    /// is sufficient to satisfy `StateMachine.createBatch`.
+    private static org.pragmatica.serialization.Serializer noopSerializer() {
+        return new org.pragmatica.serialization.Serializer() {
+            @Override
+            public <T> void write(io.netty.buffer.ByteBuf byteBuf, T object) {}
+        };
+    }
 
     private void activateAsLeader() {
         manager.activate().await();

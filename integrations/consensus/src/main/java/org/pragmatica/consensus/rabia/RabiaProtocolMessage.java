@@ -19,6 +19,7 @@ package org.pragmatica.consensus.rabia;
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.rabia.RabiaPersistence.SavedState;
 import org.pragmatica.serialization.Codec;
 

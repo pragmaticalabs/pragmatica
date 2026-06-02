@@ -25,6 +25,7 @@ import org.pragmatica.consensus.ConsensusError;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.StateMachine;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -53,6 +54,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class RabiaEngineTest {
 
     record TestCommand(String value) implements Command {}
+
+    private static final org.pragmatica.serialization.SliceCodec SERIALIZER =
+        TestSerializers.stringCommandSerializer(TestCommand.class, TestCommand::value, TestCommand::new);
 
     private static final NodeId NODE_1 = nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = nodeId("node-2").unwrap();
@@ -222,7 +226,7 @@ class RabiaEngineTest {
 
         @Test
         void ignores_proposals_when_inactive() {
-            var batch = Batch.batch(List.of(new TestCommand("test")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("test")));
             var propose = new Propose<>(NODE_2, new Phase(1), batch);
 
             engine.processPropose(propose);
@@ -254,7 +258,7 @@ class RabiaEngineTest {
             activateEngine();
             network.clearMessages();
 
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             // Complete phase 0 with V1 decision
             engine.processPropose(new Propose<>(NODE_1, Phase.ZERO, batch));
@@ -324,7 +328,7 @@ class RabiaEngineTest {
             network.clearMessages();
 
             var command = new TestCommand("cmd");
-            var batch = Batch.batch(List.of(command));
+            var batch = Batch.create(SERIALIZER, List.of(command));
 
             // Simulate a complete V1 decision flow with a non-empty batch
             engine.processPropose(new Propose<>(NODE_1, Phase.ZERO, batch));
@@ -355,7 +359,7 @@ class RabiaEngineTest {
             activateEngine();
 
             // Complete phase 0
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
             engine.processPropose(new Propose<>(NODE_1, Phase.ZERO, batch));
             engine.processPropose(new Propose<>(NODE_2, Phase.ZERO, batch));
             Thread.sleep(50);
@@ -395,7 +399,7 @@ class RabiaEngineTest {
             for (int phase = 0; phase < 3; phase++) {
                 network.clearMessages();
                 var p = new Phase(phase);
-                var batch = Batch.batch(List.of(new TestCommand("cmd-" + phase)));
+                var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd-" + phase)));
 
                 engine.processPropose(new Propose<>(NODE_1, p, batch));
                 engine.processPropose(new Propose<>(NODE_2, p, batch));
@@ -423,7 +427,7 @@ class RabiaEngineTest {
             // Complete multiple phases to accumulate phase data
             for (int phase = 0; phase < 5; phase++) {
                 var p = new Phase(phase);
-                var batch = Batch.batch(List.of(new TestCommand("cmd-" + phase)));
+                var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd-" + phase)));
 
                 engine.processPropose(new Propose<>(NODE_1, p, batch));
                 engine.processPropose(new Propose<>(NODE_2, p, batch));
@@ -461,7 +465,7 @@ class RabiaEngineTest {
             // Verify engine accepts commands after sync restoration (doesn't fail immediately)
             // The apply returns a Promise that won't complete without full protocol execution,
             // so we verify the engine state is correct rather than waiting for the result
-            var batch = Batch.batch(List.of(new TestCommand("test-after-sync")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("test-after-sync")));
             engine.processPropose(new Propose<>(NODE_1, Phase.ZERO, batch));
             Thread.sleep(50);
 
@@ -476,7 +480,7 @@ class RabiaEngineTest {
             activateEngine();
             network.clearMessages();
 
-            var batch = Batch.batch(List.of(new TestCommand("test")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("test")));
 
             // Simulate receiving proposals from all nodes
             engine.processPropose(new Propose<>(NODE_1, Phase.ZERO, batch));
@@ -500,7 +504,7 @@ class RabiaEngineTest {
             activateEngine();
             network.clearMessages();
 
-            var batch = Batch.batch(List.of(new TestCommand("test-cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("test-cmd")));
 
             // Simulate receiving proposals from all nodes (same batch)
             engine.processPropose(new Propose<>(NODE_1, Phase.ZERO, batch));
@@ -533,8 +537,8 @@ class RabiaEngineTest {
             activateEngine();
             network.clearMessages();
 
-            var batch1 = Batch.batch(List.of(new TestCommand("cmd1")));
-            var batch2 = Batch.batch(List.of(new TestCommand("cmd2")));
+            var batch1 = Batch.create(SERIALIZER, List.of(new TestCommand("cmd1")));
+            var batch2 = Batch.create(SERIALIZER, List.of(new TestCommand("cmd2")));
 
             // Simulate conflicting proposals
             engine.processPropose(new Propose<>(NODE_1, Phase.ZERO, batch1));
@@ -556,7 +560,7 @@ class RabiaEngineTest {
             activateEngine();
             network.clearMessages();
 
-            var batch = Batch.batch(List.of(new TestCommand("fast-path-cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("fast-path-cmd")));
 
             // Simulate receiving proposals from all nodes (same batch)
             engine.processPropose(new Propose<>(NODE_1, Phase.ZERO, batch));
@@ -778,9 +782,21 @@ class RabiaEngineTest {
 
         @Override
         @SuppressWarnings("unchecked")
-        public <R> R process(TestCommand command) {
+        public <R> List<R> process(Batch<TestCommand> batch) {
+            return batch.commands()
+                        .stream()
+                        .map(command -> (R) processOne(command))
+                        .toList();
+        }
+
+        private String processOne(TestCommand command) {
             processedCommands.add(command);
-            return (R) ("result:" + command.value());
+            return "result:" + command.value();
+        }
+
+        @Override
+        public org.pragmatica.serialization.Serializer serializer() {
+            return SERIALIZER;
         }
 
         @Override

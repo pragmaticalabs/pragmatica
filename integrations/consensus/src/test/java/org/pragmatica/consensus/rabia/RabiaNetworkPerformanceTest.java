@@ -385,12 +385,26 @@ class RabiaNetworkPerformanceTest {
 
         static class SimpleStateMachine implements StateMachine<TestCommand> {
             private final List<TestCommand> processed = new CopyOnWriteArrayList<>();
+            private final SliceCodec serializer =
+                TestSerializers.intCommandSerializer(TestCommand.class, TestCommand::id, TestCommand::new);
 
             @Override
             @SuppressWarnings("unchecked")
-            public <R> R process(TestCommand command) {
+            public <R> List<R> process(Batch<TestCommand> batch) {
+                return batch.commands()
+                            .stream()
+                            .map(command -> (R) processOne(command))
+                            .toList();
+            }
+
+            private String processOne(TestCommand command) {
                 processed.add(command);
-                return (R) ("result:" + command.id());
+                return "result:" + command.id();
+            }
+
+            @Override
+            public org.pragmatica.serialization.Serializer serializer() {
+                return serializer;
             }
 
             @Override

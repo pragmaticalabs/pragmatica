@@ -25,6 +25,7 @@ import org.pragmatica.consensus.ConsensusError;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.StateMachine;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -64,6 +65,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class RabiaEnginePauseResumeTest {
 
     record TestCommand(String value) implements Command {}
+
+    private static final org.pragmatica.serialization.SliceCodec SERIALIZER =
+        TestSerializers.stringCommandSerializer(TestCommand.class, TestCommand::value, TestCommand::new);
 
     private static final NodeId NODE_1 = nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = nodeId("node-2").unwrap();
@@ -107,7 +111,7 @@ class RabiaEnginePauseResumeTest {
             // Drive state forward: apply a Decision so currentPhase advances past ZERO.
             // We deliver the Decision as if it came from another node — engine commits it
             // and advancePhase moves currentPhase from 0 → 1.
-            var batch = Batch.<TestCommand>batch(List.of(new TestCommand("paused-state")));
+            var batch = Batch.<TestCommand>create(SERIALIZER, List.of(new TestCommand("paused-state")));
             var decision = new Decision<>(NODE_2, Phase.ZERO, StateValue.V1, batch);
             engine.processDecision(decision);
             Thread.sleep(100);
@@ -175,7 +179,7 @@ class RabiaEnginePauseResumeTest {
 
             // Advance state.
             var decision = new Decision<>(NODE_2, Phase.ZERO, StateValue.V1,
-                                          Batch.<TestCommand>batch(List.of(new TestCommand("pre-reconfigure"))));
+                                          Batch.<TestCommand>create(SERIALIZER, List.of(new TestCommand("pre-reconfigure"))));
             engine.processDecision(decision);
             Thread.sleep(80);
             assertThat(engine.currentPhaseForTesting()).isNotEqualTo(Phase.ZERO);
@@ -216,7 +220,7 @@ class RabiaEnginePauseResumeTest {
 
             // Advance state under same config.
             var decision = new Decision<>(NODE_2, Phase.ZERO, StateValue.V1,
-                                          Batch.<TestCommand>batch(List.of(new TestCommand("under-same-config"))));
+                                          Batch.<TestCommand>create(SERIALIZER, List.of(new TestCommand("under-same-config"))));
             engine.processDecision(decision);
             Thread.sleep(80);
             var phaseAfterDecision = engine.currentPhaseForTesting();
@@ -392,10 +396,19 @@ class RabiaEnginePauseResumeTest {
 
         @Override
         @SuppressWarnings("unchecked")
-        public <R> R process(TestCommand command) {
-            processedCommands.add(command);
-            return (R) ("result:" + command.value());
+        public <R> List<R> process(Batch<TestCommand> batch) {
+            return batch.commands()
+                        .stream()
+                        .map(command -> (R) processOne(command))
+                        .toList();
         }
+
+        private String processOne(TestCommand command) {
+            processedCommands.add(command);
+            return "result:" + command.value();
+        }
+
+        @Override public org.pragmatica.serialization.Serializer serializer() { return SERIALIZER; }
 
         @Override public Result<byte[]> makeSnapshot() { return Result.success(new byte[0]); }
 

@@ -18,6 +18,7 @@ package org.pragmatica.consensus.rabia;
 
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.StateMachine;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;

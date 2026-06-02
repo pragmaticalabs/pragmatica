@@ -24,6 +24,7 @@ import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.StateMachine;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -57,6 +58,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class RabiaPerformanceTest {
 
     record TestCommand(int id) implements Command {}
+
+    private static final org.pragmatica.serialization.SliceCodec SERIALIZER =
+        TestSerializers.intCommandSerializer(TestCommand.class, TestCommand::id, TestCommand::new);
 
     private static final int CLUSTER_SIZE = 5;
     private static final int WARMUP_ROUNDS = 100;
@@ -143,7 +147,7 @@ class RabiaPerformanceTest {
     }
 
     private void runConsensusRound(NodeId proposer, int commandId) {
-        var batch = Batch.batch(List.of(new TestCommand(commandId)));
+        var batch = Batch.create(SERIALIZER, List.of(new TestCommand(commandId)));
         var phase = new Phase(commandId);
 
         // All nodes propose the same batch (simulating leader replication)
@@ -164,7 +168,7 @@ class RabiaPerformanceTest {
         // All nodes propose different batches
         for (int i = 0; i < nodeIds.size(); i++) {
             var proposer = nodeIds.get(i);
-            var batch = Batch.batch(List.of(new TestCommand(commandId * 100 + i)));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand(commandId * 100 + i)));
             var propose = new Propose<>(proposer, phase, batch);
             cluster.broadcastToAll(propose);
         }

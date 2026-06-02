@@ -1,6 +1,7 @@
 package org.pragmatica.cluster.state.kvstore;
 
 import org.pragmatica.consensus.StateMachine;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Get;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Remove;
@@ -38,7 +39,15 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     @Override
-    public Option<V> process(KVCommand command) {
+    public <R> List<R> process(Batch<KVCommand<K>> batch) {
+        return batch.commands()
+                    .stream()
+                    .map(command -> (R) processCommand(command))
+                    .toList();
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private Option<V> processCommand(KVCommand command) {
         return switch (command) {
             case Get<?> get -> handleGet((Get<K>) get);
             case Put<?, ?> put -> handlePut((Put<K, V>) put);
@@ -67,6 +76,13 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @Override
     public Result<byte[]> makeSnapshot() {
         return Result.lift(Causes::fromThrowable, () -> serializer.encode(new HashMap<>(storage)));
+    }
+
+    /// The serializer used for snapshot serialization. [StateMachine#createBatch] reuses it to
+    /// derive a deterministic content-based batch id.
+    @Override
+    public Serializer serializer() {
+        return serializer;
     }
 
     @SuppressWarnings("unchecked")

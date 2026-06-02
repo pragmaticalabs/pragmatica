@@ -43,9 +43,18 @@ class NodeLifecycleRoutesPromoteTest {
     void setUp() {
         var router = MessageRouter.DelegateRouter.delegate();
         router.quiesce();
-        kvStore = new KVStore<>(router, null, null);
+        kvStore = new KVStore<>(router, noopSerializer(), null);
         capturedCommands = new ArrayList<>();
         routes = NodeLifecycleRoutes.nodeLifecycleRoutes(this::nodeProxy);
+    }
+
+    /// No-op serializer: this test seeds the KV store directly (not via consensus dedup), so
+    /// the content-based batch id is irrelevant — an empty encoding satisfies `createBatch`.
+    private static org.pragmatica.serialization.Serializer noopSerializer() {
+        return new org.pragmatica.serialization.Serializer() {
+            @Override
+            public <T> void write(io.netty.buffer.ByteBuf byteBuf, T object) {}
+        };
     }
 
     private ManageableNode nodeProxy() {
@@ -134,8 +143,8 @@ class NodeLifecycleRoutesPromoteTest {
 
         @Test
         void promote_workerToCore_writesActivationDirective() {
-            kvStore.process(new KVCommand.Put<>(ActivationDirectiveKey.activationDirectiveKey(TARGET),
-                                                 ActivationDirectiveValue.worker()));
+            kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<>(ActivationDirectiveKey.activationDirectiveKey(TARGET),
+                                                 ActivationDirectiveValue.worker()))));
 
             var response = routes.promoteNode(TARGET.id(), new PromoteNodeRequest("CORE"))
                                   .onFailure(cause -> fail("Promote must succeed: " + cause.message()))
@@ -165,8 +174,8 @@ class NodeLifecycleRoutesPromoteTest {
 
         @Test
         void promote_alreadyAtTargetRole_skipsConsensusWrite() {
-            kvStore.process(new KVCommand.Put<>(ActivationDirectiveKey.activationDirectiveKey(TARGET),
-                                                 ActivationDirectiveValue.worker()));
+            kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<>(ActivationDirectiveKey.activationDirectiveKey(TARGET),
+                                                 ActivationDirectiveValue.worker()))));
 
             var response = routes.promoteNode(TARGET.id(), new PromoteNodeRequest("WORKER"))
                                   .onFailure(cause -> fail("Idempotent promote must succeed: " + cause.message()))

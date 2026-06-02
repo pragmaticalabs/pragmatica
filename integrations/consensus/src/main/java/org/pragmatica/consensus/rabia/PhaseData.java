@@ -18,6 +18,8 @@ package org.pragmatica.consensus.rabia;
 
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.StateMachine.Batch;
+import org.pragmatica.consensus.StateMachine.Batch.Id;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound1;
 import org.pragmatica.lang.Option;
@@ -29,7 +31,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
-import static org.pragmatica.consensus.rabia.Batch.emptyBatch;
+import static org.pragmatica.consensus.StateMachine.Batch.emptyBatch;
 
 /// Represents the outcome of Round 2 completion per Rabia specification.
 /// Three possible outcomes:
@@ -166,7 +168,7 @@ final class PhaseData<C extends Command> {
         // Use BatchId as tiebreaker for determinism across nodes
         return batchesById.entrySet()
                           .stream()
-                          .max(Comparator.<Map.Entry<BatchId, List<Batch<C>>>> comparingInt(e -> e.getValue()
+                          .max(Comparator.<Map.Entry<Id, List<Batch<C>>>> comparingInt(e -> e.getValue()
                                                                                                   .size())
                                          .thenComparing(e -> e.getKey()
                                                               .id()))

@@ -20,6 +20,8 @@ import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.ConsensusError;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine;
+import org.pragmatica.consensus.StateMachine.Batch;
+import org.pragmatica.consensus.StateMachine.Batch.Id;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.rabia.RabiaEngineIO.SubmitCommands;
 import org.pragmatica.consensus.rabia.RabiaPersistence.SavedState;
@@ -59,8 +61,6 @@ import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.consensus.rabia.Batch.batch;
-import static org.pragmatica.consensus.rabia.Batch.emptyBatch;
 import static org.pragmatica.consensus.rabia.RabiaPersistence.SavedState.savedState;
 import static org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest;
 
@@ -112,7 +112,7 @@ public class RabiaEngine<C extends Command> {
                                                                     TimeUnit.MILLISECONDS,
                                                                     new LinkedBlockingQueue<>(),
                                                                     new ThreadPoolExecutor.DiscardPolicy());
-    private final ConcurrentNavigableMap<BatchId, Batch<C>> pendingBatches = new ConcurrentSkipListMap<>();
+    private final ConcurrentNavigableMap<Id, Batch<C>> pendingBatches = new ConcurrentSkipListMap<>();
     private final Map<NodeId, SavedState<C>> syncResponses = new ConcurrentHashMap<>();
     private final RabiaPersistence<C> persistence;
     @SuppressWarnings("rawtypes")
@@ -618,7 +618,7 @@ public class RabiaEngine<C extends Command> {
     }
 
     private Batch<C> prepareBatch(List<C> commands) {
-        var batch = batch(commands);
+        var batch = stateMachine.createBatch(commands);
         log.trace("Node {}: client submitted {} command(s). Prepared batch: {}", self, commands.size(), batch);
         return batch;
     }
@@ -698,26 +698,18 @@ public class RabiaEngine<C extends Command> {
         // Use compute() for atomic merge to avoid race conditions. The compute
         // lambda routes through `Option.option(existing)` so the absent case is
         // expressed via `fold` rather than a raw `existing == null` sentinel.
+        // Same id ⟹ same commands (content-derived id), so we merge correlationIds
+        // directly via the state machine.
         pendingBatches.compute(incoming.id(),
                                (_, existing) -> Option.option(existing)
                                                       .fold(() -> incoming,
-                                                            current -> mergeOrKeep(current, incoming)));
+                                                            current -> stateMachine.merge(current, incoming)));
         if (engineState.get().isInPhase()) {
             // Already in phase - broadcast our proposal for this batch if not already proposed
             broadcastOwnProposalIfNeeded();
         } else {
             triggerPhaseIfNeeded();
         }
-    }
-
-    private Batch<C> mergeOrKeep(Batch<C> existing, Batch<C> incoming) {
-        if (existing.commands().equals(incoming.commands())) {
-            // Same content — merge correlationIds.
-            return existing.mergeWith(incoming);
-        }
-        // Hash collision (should never happen) — log and keep existing.
-        log.error("BatchId collision: {} has different content", incoming.id());
-        return existing;
     }
 
     /// Broadcasts own proposal for pending batch if not already proposed in current phase.
@@ -1228,7 +1220,7 @@ public class RabiaEngine<C extends Command> {
     private Decision<C> buildDecision(PhaseData<C> phaseData, StateValue agreedValue, int quorumSize) {
         var batch = agreedValue == StateValue.V1
                     ? phaseData.findAgreedProposal(quorumSize)
-                    : Batch.<C>emptyBatch();
+                    : StateMachine.Batch.<C>emptyBatch();
         return new Decision<>(self, phaseData.phase(), agreedValue, batch);
     }
 
@@ -1304,8 +1296,7 @@ public class RabiaEngine<C extends Command> {
     @SuppressWarnings("unchecked")
     private void commitChanges(PhaseData<C> phaseData, Decision<C> decision) {
         log.trace("Node {} applies decision {}", self, decision);
-        var results = stateMachine.process(decision.value()
-                                                   .commands());
+        var results = stateMachine.process(decision.value());
         // Get the batch from pendingBatches BEFORE removing - this has all merged correlationIds.
         // The decision.value() may have partial IDs if the proposer hadn't received all batches yet.
         var localBatch = Option.option(pendingBatches.remove(decision.value().id()));

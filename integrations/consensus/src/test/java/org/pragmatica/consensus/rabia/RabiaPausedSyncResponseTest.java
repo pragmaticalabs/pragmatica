@@ -23,6 +23,7 @@ import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.StateMachine;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -64,6 +65,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class RabiaPausedSyncResponseTest {
 
     record TestCommand(String value) implements Command {}
+
+    private static final org.pragmatica.serialization.SliceCodec SERIALIZER =
+        TestSerializers.stringCommandSerializer(TestCommand.class, TestCommand::value, TestCommand::new);
 
     private static final NodeId NODE_1 = nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = nodeId("node-2").unwrap();
@@ -127,7 +131,7 @@ class RabiaPausedSyncResponseTest {
 
         // Advance currentPhase past ZERO via a committed Decision (same mechanism as the
         // pause/resume suite) so we can also assert the retained phase travels in the response.
-        var decisionBatch = Batch.<TestCommand>batch(List.of(new TestCommand("committed")));
+        var decisionBatch = Batch.<TestCommand>create(SERIALIZER, List.of(new TestCommand("committed")));
         engine.processDecision(new Decision<>(NODE_2, Phase.ZERO, StateValue.V1, decisionBatch));
         Thread.sleep(80);
         var phaseBeforePause = engine.currentPhaseForTesting();
@@ -142,7 +146,7 @@ class RabiaPausedSyncResponseTest {
         // Seed an in-flight batch AFTER the pause via the supported NewBatch receiver. This batch
         // enters LIVE pendingBatches but is NOT in the pause-time persisted snapshot — it is the
         // discriminator between the live-state and persisted-fallback branches.
-        var postPauseBatch = Batch.<TestCommand>batch(List.of(new TestCommand("arrived-while-paused")));
+        var postPauseBatch = Batch.<TestCommand>create(SERIALIZER, List.of(new TestCommand("arrived-while-paused")));
         engine.handleNewBatch(new NewBatch<>(NODE_2, postPauseBatch));
         Thread.sleep(50);
         assertThat(engine.pendingBatchCountForTesting())
@@ -267,10 +271,19 @@ class RabiaPausedSyncResponseTest {
 
         @Override
         @SuppressWarnings("unchecked")
-        public <R> R process(TestCommand command) {
-            processedCommands.add(command);
-            return (R) ("result:" + command.value());
+        public <R> List<R> process(Batch<TestCommand> batch) {
+            return batch.commands()
+                        .stream()
+                        .map(command -> (R) processOne(command))
+                        .toList();
         }
+
+        private String processOne(TestCommand command) {
+            processedCommands.add(command);
+            return "result:" + command.value();
+        }
+
+        @Override public org.pragmatica.serialization.Serializer serializer() { return SERIALIZER; }
 
         @Override public Result<byte[]> makeSnapshot() { return Result.success(new byte[0]); }
 

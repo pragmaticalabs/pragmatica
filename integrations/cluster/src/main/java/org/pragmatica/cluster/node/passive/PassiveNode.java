@@ -4,6 +4,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoverNodes;
@@ -193,8 +194,6 @@ public interface PassiveNode<K extends StructuredKey, V> {
     @SuppressWarnings({"unchecked", "JBCT-RET-01"}) // void required by Consumer<Decision> contract
     private static <K extends StructuredKey, V> void applyDecision(KVStore<K, V> kvStore,
                                                                     Decision<?> decision) {
-        for (var command : decision.value().commands()) {
-            kvStore.process((KVCommand) command);
-        }
+        kvStore.process((Batch<KVCommand<K>>) (Batch<?>) decision.value());
     }
 }

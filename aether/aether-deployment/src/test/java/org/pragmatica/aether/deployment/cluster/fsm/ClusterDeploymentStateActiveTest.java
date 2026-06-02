@@ -343,7 +343,7 @@ class ClusterDeploymentStateActiveTest {
         }
 
         void put(AetherKey key, AetherValue value) {
-            process(new KVCommand.Put<>(key, value));
+            process(createBatch(List.of(new KVCommand.Put<>(key, value))));
         }
     }
 

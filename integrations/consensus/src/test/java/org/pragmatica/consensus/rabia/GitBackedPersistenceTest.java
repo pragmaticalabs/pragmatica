@@ -171,6 +171,9 @@ class GitBackedPersistenceTest {
 
     record TestCommand(String value) implements Command {}
 
+    private static final org.pragmatica.serialization.SliceCodec SERIALIZER =
+        TestSerializers.stringCommandSerializer(TestCommand.class, TestCommand::value, TestCommand::new);
+
     static class TestStateMachine implements StateMachine<TestCommand> {
         private byte[] currentSnapshot = new byte[0];
 
@@ -179,8 +182,13 @@ class GitBackedPersistenceTest {
         }
 
         @Override
-        public <R> R process(TestCommand command) {
-            return null;
+        public <R> List<R> process(Batch<TestCommand> batch) {
+            return List.of();
+        }
+
+        @Override
+        public org.pragmatica.serialization.Serializer serializer() {
+            return SERIALIZER;
         }
 
         @Override
