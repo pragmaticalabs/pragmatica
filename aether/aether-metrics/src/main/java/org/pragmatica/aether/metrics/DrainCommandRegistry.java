@@ -14,9 +14,9 @@ import java.util.concurrent.ConcurrentHashMap;
 /// Membership v2 (B5a) — leader-local registry of nodes the leader wants to command DRAIN.
 ///
 /// Owned by the leader. The set of registered targets is snapshotted by the ping dispatch path
-/// (`ClusterSyncContext.sendOnePing`) so each outbound `ClusterSyncPing` carries
-/// `NodePingCommand.DRAIN` for any peer present in this registry, else `NONE`. A node is cleared
-/// once its drain is acknowledged / observed complete by the leader-side reconciler.
+/// (`ClusterSyncContext.broadcastPing`) and stamped as the GLOBAL `ClusterSyncPing.drainNodes` set
+/// on the single uniform broadcast ping; each receiver self-checks `drainNodes.contains(self)`. A
+/// node is cleared once its drain is acknowledged / observed complete by the leader-side reconciler.
 ///
 /// Thread-safe: backed by `ConcurrentHashMap.newKeySet()` so the periodic ping tick (read via
 /// [`#isDrainRequested`] / [`#drainTargets`]) and the operator/CTM trigger (write via

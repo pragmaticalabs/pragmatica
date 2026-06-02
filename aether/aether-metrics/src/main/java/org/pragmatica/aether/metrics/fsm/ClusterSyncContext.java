@@ -11,7 +11,6 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
-import org.pragmatica.cluster.metrics.NodePingCommand;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.consensus.NodeId;
@@ -32,7 +31,6 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
-import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import org.slf4j.Logger;
@@ -63,14 +61,15 @@ public final class ClusterSyncContext {
     /// supply it (single-pinger tests / standalone use), preserving prior behavior.
     private final BooleanSupplier isLeader;
 
-    /// Membership v2 (B5a/B5b) — leader-local predicate "should this peer be commanded to DRAIN?".
-    /// When it returns true for the ping target, `sendOnePing` stamps `NodePingCommand.DRAIN`
-    /// onto the outbound ping; otherwise `NONE`. Sourced from `DrainCommandRegistry::isDrainRequested`
-    /// in production. Defaults to `peer -> false` (no drain ever) so existing construction / tests
-    /// keep working with no behavior change. Mutable holder so `AetherNode` can inject the real
-    /// predicate AFTER scheduler construction (`ClusterSyncScheduler.setDrainRequested`) once the
+    /// Membership v2 (B5a/B5b) — leader-local supplier of the GLOBAL set of nodes to command DRAIN.
+    /// `broadcastPing` snapshots it via `drainTargets.get()` and stamps the set into the single
+    /// uniform `ClusterSyncPing.drainNodes` BROADCAST to every QUIC-connected peer; each receiver
+    /// self-checks membership. Sourced from `DrainCommandRegistry::drainTargets` in production.
+    /// Defaults to `() -> Set.of()` (no drain ever) so existing construction / tests keep working
+    /// with no behavior change. Mutable holder so `AetherNode` can inject the real supplier AFTER
+    /// scheduler construction (`ClusterSyncScheduler.setDrainTargets`) once the
     /// `DrainCommandRegistry` exists, without a constructor-signature change to the wiring path.
-    private final AtomicReference<Predicate<NodeId>> drainRequested = new AtomicReference<>(peer -> false);
+    private final AtomicReference<Supplier<Set<NodeId>>> drainTargets = new AtomicReference<>(Set::of);
 
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
 
@@ -164,7 +163,7 @@ public final class ClusterSyncContext {
              observationStore,
              periodicConfig,
              isLeader,
-             peer -> false);
+             Set::of);
     }
 
     public ClusterSyncContext(Fsm<ClusterSyncState, ClusterFsmEvent> fsm,
@@ -179,7 +178,7 @@ public final class ClusterSyncContext {
                               PeerObservationStore observationStore,
                               PeriodicObservationConfig periodicConfig,
                               BooleanSupplier isLeader,
-                              Predicate<NodeId> drainRequested) {
+                              Supplier<Set<NodeId>> drainTargets) {
         this.fsm = fsm;
         this.self = self;
         this.network = network;
@@ -193,9 +192,9 @@ public final class ClusterSyncContext {
         this.isLeader = isLeader == null
                         ? () -> true
                         : isLeader;
-        this.drainRequested.set(drainRequested == null
-                                ? peer -> false
-                                : drainRequested);
+        this.drainTargets.set(drainTargets == null
+                              ? Set::of
+                              : drainTargets);
         this.periodicConfig = periodicConfig == null
                               ? PeriodicObservationConfig.defaultConfig()
                               : periodicConfig;
@@ -314,39 +313,33 @@ public final class ClusterSyncContext {
         return observationStore;
     }
 
-    public Epoch sendOnePing(NodeId peer, Epoch currentEpoch, long rabiaTerm) {
+    /// Build and BROADCAST one uniform `ClusterSyncPing` to every QUIC-connected peer. The single
+    /// ping carries the leader's metrics, fencing terms, the global `evictionHints` snapshot, and the
+    /// global `drainNodes` snapshot (`drainTargets.get()`); each receiver self-checks both sets.
+    /// `network.broadcast` skips self, so no per-peer dispatch or self-exclusion is needed here.
+    @Contract public void broadcastPing(Epoch currentEpoch, long rabiaTerm) {
         var ping = new ClusterSyncPing(self,
                                        collector.allMetrics(),
                                        rabiaTerm,
                                        currentEpoch.rabiaTerm(),
                                        currentEpoch.localCounter(),
                                        currentEvictionHints(),
-                                       commandFor(peer));
-        log.debug("ClusterSync: sending PING to {} (rabiaTerm={}, epoch={}:{})",
-                  peer,
+                                       drainTargets.get().get());
+        log.debug("ClusterSync: broadcasting PING (rabiaTerm={}, epoch={}:{})",
                   rabiaTerm,
                   currentEpoch.rabiaTerm(),
                   currentEpoch.localCounter());
-        network.send(peer, ping);
-        return currentEpoch;
+        var _ = network.broadcast(ping);
     }
 
-    /// Membership v2 (B5a) — the leader→node command stamped onto the outbound ping for `peer`.
-    /// `DRAIN` when the wired `drainRequested` predicate selects the peer, else `NONE`.
-    private NodePingCommand commandFor(NodeId peer) {
-        return drainRequested.get().test(peer)
-              ? NodePingCommand.DRAIN
-              : NodePingCommand.NONE;
-    }
-
-    /// Membership v2 (B5b) — inject the leader-local DRAIN predicate after construction.
-    /// `AetherNode` calls this (via `ClusterSyncScheduler.setDrainRequested`) once the
-    /// `DrainCommandRegistry` exists, wiring `DrainCommandRegistry::isDrainRequested`. `null`
-    /// resets to the no-drain default.
-    @Contract public void setDrainRequested(Predicate<NodeId> predicate) {
-        drainRequested.set(predicate == null
-                           ? peer -> false
-                           : predicate);
+    /// Membership v2 (B5b) — inject the leader-local DRAIN target supplier after construction.
+    /// `AetherNode` calls this (via `ClusterSyncScheduler.setDrainTargets`) once the
+    /// `DrainCommandRegistry` exists, wiring `DrainCommandRegistry::drainTargets`. `null`
+    /// resets to the empty-set default.
+    @Contract public void setDrainTargets(Supplier<Set<NodeId>> supplier) {
+        drainTargets.set(supplier == null
+                         ? Set::of
+                         : supplier);
     }
 
     /// RC1 (S01 fix) — snapshot of peers this node has locally evicted via

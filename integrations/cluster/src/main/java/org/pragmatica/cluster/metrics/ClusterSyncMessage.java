@@ -35,30 +35,33 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
     /// @param rabiaTerm              current Rabia consensus term — receivers reject stale
     /// @param epochTerm              epoch's `rabiaTerm` part (duplicated for fencing)
     /// @param epochCounter           epoch's `localCounter` part
-    /// @param command                leader→node lifecycle command piggybacked on the ping
-    ///                               (membership-architecture-v2-spec B5a). `NONE` in steady
-    ///                               state; `DRAIN` directs the receiver to begin a local
-    ///                               drain. `null`/legacy pings default to `NONE`.
+    /// @param drainNodes             GLOBAL set of nodes the leader is commanding to DRAIN. One
+    ///                               uniform ping is BROADCAST to every QUIC-connected peer; each
+    ///                               receiver self-checks membership (`drainNodes.contains(self)`)
+    ///                               and triggers its local (CAS-guarded, idempotent)
+    ///                               `DrainProcedure` when present. Mirrors `evictionHints`: a
+    ///                               global advisory set rather than a per-peer command. `null`/legacy
+    ///                               pings default to the empty set.
     record ClusterSyncPing(NodeId sender,
                            Map<NodeId, Map<String, Double>> allMetrics,
                            long rabiaTerm,
                            long epochTerm,
                            long epochCounter,
                            Set<NodeId> evictionHints,
-                           NodePingCommand command) implements ClusterSyncMessage {
+                           Set<NodeId> drainNodes) implements ClusterSyncMessage {
         public ClusterSyncPing {
             evictionHints = evictionHints == null
                            ? Set.of()
                            : Set.copyOf(evictionHints);
-            command = command == null
-                     ? NodePingCommand.NONE
-                     : command;
+            drainNodes = drainNodes == null
+                        ? Set.of()
+                        : Set.copyOf(drainNodes);
         }
 
         /// Backward-compatible factory for legacy call sites that have no epoch info.
         /// Produces a term/epoch of zero — receivers treat it as a pre-migration heartbeat.
         public static ClusterSyncPing clusterSyncPing(NodeId sender, Map<NodeId, Map<String, Double>> allMetrics) {
-            return new ClusterSyncPing(sender, allMetrics, 0L, 0L, 0L, Set.of(), NodePingCommand.NONE);
+            return new ClusterSyncPing(sender, allMetrics, 0L, 0L, 0L, Set.of(), Set.of());
         }
     }
 

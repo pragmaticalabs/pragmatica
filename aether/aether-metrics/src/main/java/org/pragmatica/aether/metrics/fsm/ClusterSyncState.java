@@ -18,7 +18,6 @@ import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
 
 import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ScheduledFuture;
@@ -138,12 +137,10 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
                 tx.ignore();
                 return;
             }
-            // Effective ping-target set: prefer the membership-seeded topology (unchanged
-            // behavior), but when it is still empty fall back to the live transport peers
-            // (same source the periodic emission reads). Spike-1 finding: entering Pinging on
-            // QuorumEstablished while topology() is unseeded left ping/pong silently dormant.
-            var targets = effectiveTargets();
-            if (targets.isEmpty()) {
+            // Broadcast recipients: every QUIC-connected peer (network.broadcast skips self).
+            // The miss-tracking maps follow the same recipient set, excluding self.
+            var recipients = List.copyOf(ctx.connectedPeers());
+            if (recipients.isEmpty()) {
                 tx.ignore();
                 return;
             }
@@ -151,32 +148,24 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
             var rabiaTerm = ctx.currentRabiaTerm();
             var nextLastSent = new HashMap<>(lastSentEpoch);
             var nextMissed = new HashMap<>(missedPings);
-            for (var peer : targets) {
+            for (var peer : recipients) {
                 if (peer.equals(ctx.self())) {continue;}
                 nextLastSent.put(peer, currentEpoch);
                 nextMissed.put(peer, nextMissed.getOrDefault(peer, 0) + 1);
             }
             tx.transitionToOrDrop(with(ctx, Map.copyOf(nextLastSent), Map.copyOf(nextMissed)),
-                                  () -> dispatchPings(targets, currentEpoch, rabiaTerm, nextMissed));
+                                  () -> dispatchPing(recipients, currentEpoch, rabiaTerm, nextMissed));
         }
 
-        private List<NodeId> effectiveTargets() {
-            // Union (dedup, order-stable) of the delta-fed topology cache and the live
-            // transport peers: a node present on the transport but missing from the lossy
-            // topology cache (e.g. its NodeJoined edge was lost during a quorum flap) must
-            // still be pinged. ctx.self() exclusion happens downstream in dispatchPings.
-            var union = new LinkedHashSet<>(ctx.topology());
-            union.addAll(ctx.connectedPeers());
-            return List.copyOf(union);
-        }
-
-        private void dispatchPings(List<NodeId> topology,
-                                   Epoch currentEpoch,
-                                   long rabiaTerm,
-                                   Map<NodeId, Integer> nextMissed) {
-            for (var peer : topology) {
+        private void dispatchPing(List<NodeId> recipients,
+                                  Epoch currentEpoch,
+                                  long rabiaTerm,
+                                  Map<NodeId, Integer> nextMissed) {
+            // One uniform BROADCAST ping to every connected peer (drainNodes carried globally),
+            // then the per-peer miss-tracking the broadcast does not itself surface.
+            ctx.broadcastPing(currentEpoch, rabiaTerm);
+            for (var peer : recipients) {
                 if (peer.equals(ctx.self())) {continue;}
-                ctx.sendOnePing(peer, currentEpoch, rabiaTerm);
                 ctx.emitPingTimeoutIfExceeded(peer, nextMissed.get(peer));
             }
         }

@@ -14,6 +14,7 @@ import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -23,6 +24,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// per-target miss counter after K consecutive ticks without a pong, and that
 /// `onPongReceived` resets the counter so the signal stops firing — per spec
 /// §8.1 (leader-side PingTimeout emission source).
+///
+/// Recipients are sourced from `connectedPeers()` (broadcast model), so each test uses a
+/// network whose connected set fixes the broadcast/miss-tracking recipients.
 class ClusterSyncSchedulerPingTimeoutTest {
     private static final NodeId SELF = NodeId.nodeId("self").unwrap();
     private static final NodeId PEER_A = NodeId.nodeId("peer-a").unwrap();
@@ -33,7 +37,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
         var captured = new CopyOnWriteArrayList<HealthSignal>();
         HealthSignalSink sink = captured::add;
         var scheduler = ClusterSyncScheduler.clusterSyncScheduler(SELF,
-                                                           new NoopNetwork(),
+                                                           new ConnectedPeersNetwork(Set.of(PEER_A)),
                                                            new NoopClusterSyncCollector(),
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
@@ -62,7 +66,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
         var captured = new CopyOnWriteArrayList<HealthSignal>();
         HealthSignalSink sink = captured::add;
         var scheduler = ClusterSyncScheduler.clusterSyncScheduler(SELF,
-                                                           new NoopNetwork(),
+                                                           new ConnectedPeersNetwork(Set.of(PEER_A)),
                                                            new NoopClusterSyncCollector(),
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
@@ -83,7 +87,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
         var captured = new CopyOnWriteArrayList<HealthSignal>();
         HealthSignalSink sink = captured::add;
         var scheduler = ClusterSyncScheduler.clusterSyncScheduler(SELF,
-                                                           new NoopNetwork(),
+                                                           new ConnectedPeersNetwork(Set.of(PEER_A)),
                                                            new NoopClusterSyncCollector(),
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
@@ -107,7 +111,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
         var captured = new CopyOnWriteArrayList<HealthSignal>();
         HealthSignalSink sink = captured::add;
         var scheduler = ClusterSyncScheduler.clusterSyncScheduler(SELF,
-                                                           new NoopNetwork(),
+                                                           new ConnectedPeersNetwork(Set.of(PEER_A, PEER_B)),
                                                            new NoopClusterSyncCollector(),
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
@@ -135,5 +139,17 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                     .filter(t -> t.nodeId().equals(PEER_B))
                                     .toList();
         assertThat(peerBTimeouts).isEmpty();
+    }
+
+    /// `NoopNetwork` variant with a fixed `connectedPeers()` set — the broadcast/miss-tracking
+    /// recipient source in the broadcast ping model.
+    private static final class ConnectedPeersNetwork extends NoopNetwork {
+        private final Set<NodeId> connected;
+
+        ConnectedPeersNetwork(Set<NodeId> connected) {
+            this.connected = Set.copyOf(connected);
+        }
+
+        @Override public Set<NodeId> connectedPeers() { return connected; }
     }
 }

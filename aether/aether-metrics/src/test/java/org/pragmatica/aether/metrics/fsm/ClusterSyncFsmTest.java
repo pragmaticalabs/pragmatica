@@ -128,22 +128,24 @@ class ClusterSyncFsmTest {
     }
 
     @Nested
-    class UnseededTopologyFallback {
+    class BroadcastDispatch {
         @Test
-        void pingTick_emptyTopologyButConnectedPeers_dispatchesToConnectedPeers() {
+        void pingTick_connectedPeers_issuesSingleBroadcast() {
             var network = new ConfigurableConnectedNetwork(Set.of(PEER_A, PEER_B));
             var harness = buildFsmHarness(network, HealthSignalSink.noop());
-            // Topology is never seeded (no MembershipDecision/NodeJoined deltas) — Spike-1 scenario.
+            // Topology is never seeded (no MembershipDecision/NodeJoined deltas) — recipients
+            // are the live transport peers; the leader BROADCASTS one uniform ping to all of them.
             harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
 
             harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
 
             assertThat(harness.fsm().current()).isInstanceOf(ClusterSyncState.Pinging.class);
-            assertThat(network.sent()).containsExactlyInAnyOrder(PEER_A, PEER_B);
+            assertThat(network.broadcasts()).as("exactly one broadcast ping per tick").hasSize(1);
+            assertThat(network.sent()).as("no per-peer unicast in the broadcast model").isEmpty();
         }
 
         @Test
-        void pingTick_emptyTopologyAndNoConnectedPeers_isIgnored() {
+        void pingTick_noConnectedPeers_isIgnored_noBroadcast() {
             var network = new ConfigurableConnectedNetwork(Set.of());
             var harness = buildFsmHarness(network, HealthSignalSink.noop());
             harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
@@ -151,14 +153,14 @@ class ClusterSyncFsmTest {
             harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
 
             assertThat(harness.fsm().current()).isInstanceOf(ClusterSyncState.Pinging.class);
-            assertThat(network.sent()).isEmpty();
+            assertThat(network.broadcasts()).isEmpty();
         }
 
         @Test
-        void pingTick_connectedPeerAbsentFromTopology_isStillPinged() {
-            // #34: a node present on the transport (connectedPeers) but missing from the
-            // lossy delta-fed topology cache (its NodeJoined edge lost during a quorum flap)
-            // must still be pinged — effectiveTargets() unions topology with connectedPeers.
+        void pingTick_connectedPeerAbsentFromTopology_isStillMissTracked() {
+            // A node present on the transport (connectedPeers) but missing from the lossy
+            // delta-fed topology cache must still be a broadcast recipient and be miss-tracked,
+            // since recipients are sourced from connectedPeers() (not topology).
             var network = new ConfigurableConnectedNetwork(Set.of(PEER_A, PEER_B));
             var harness = buildFsmHarness(network, HealthSignalSink.noop());
             // Topology knows SELF and PEER_A only — PEER_B is transport-connected but absent.
@@ -167,9 +169,10 @@ class ClusterSyncFsmTest {
 
             harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
 
-            assertThat(network.sent())
-                .as("union of topology and connectedPeers — PEER_B pinged despite missing topology edge")
-                .containsExactlyInAnyOrder(PEER_A, PEER_B);
+            assertThat(network.broadcasts()).as("single broadcast ping").hasSize(1);
+            assertThat(counterForPeer(harness, PEER_B))
+                .as("PEER_B miss-tracked despite missing topology edge — recipients are connectedPeers")
+                .isEqualTo(1);
         }
     }
 
@@ -179,8 +182,7 @@ class ClusterSyncFsmTest {
         void twoPingTicks_withoutPong_incrementCounterPastThreshold_emitsTimeout() {
             var captured = new CopyOnWriteArrayList<HealthSignal>();
             HealthSignalSink sink = captured::add;
-            var harness = buildFsmHarness(new CountingClusterNetwork(), sink, 2);
-            harness.context().setTopology(List.of(SELF, PEER_A));
+            var harness = buildFsmHarness(new ConfigurableConnectedNetwork(Set.of(PEER_A)), sink, 2);
             harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
 
             harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
@@ -200,8 +202,7 @@ class ClusterSyncFsmTest {
         void pongReceived_resetsCounterForThatPeerToZero() {
             var captured = new CopyOnWriteArrayList<HealthSignal>();
             HealthSignalSink sink = captured::add;
-            var harness = buildFsmHarness(new CountingClusterNetwork(), sink, 3);
-            harness.context().setTopology(List.of(SELF, PEER_A, PEER_B));
+            var harness = buildFsmHarness(new ConfigurableConnectedNetwork(Set.of(PEER_A, PEER_B)), sink, 3);
             harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
 
             harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
@@ -238,7 +239,7 @@ class ClusterSyncFsmTest {
                 .as("SWIM-ALIVE peer must not be disconnected by owner-side ping timeout")
                 .isEmpty();
             // The next outbound ping must NOT carry an eviction hint for the SWIM-ALIVE peer.
-            harness.context().sendOnePing(PEER_A, Epoch.epoch(7L, 0L), 7L);
+            harness.context().broadcastPing(Epoch.epoch(7L, 0L), 7L);
             var pings = network.sent().stream()
                                .filter(m -> m instanceof org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing)
                                .map(m -> (org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing) m)
@@ -332,11 +333,12 @@ class ClusterSyncFsmTest {
         fsm.dispatch(ev);
     }
 
-    /// `ClusterNetwork` stub that records per-target sends without doing any wire I/O. Only the
-    /// methods the scheduler uses (`send`) are meaningful; the rest inherit the Noop contract via
-    /// explicit overrides to satisfy the interface.
+    /// `ClusterNetwork` stub that records per-target sends and broadcast pings without doing any
+    /// wire I/O. Only the methods the scheduler uses (`send`, `broadcast`) are meaningful; the rest
+    /// inherit the Noop contract via explicit overrides to satisfy the interface.
     private static class CountingClusterNetwork extends NoopNetwork {
         private final CopyOnWriteArrayList<NodeId> sent = new CopyOnWriteArrayList<>();
+        private final CopyOnWriteArrayList<ProtocolMessage> broadcasts = new CopyOnWriteArrayList<>();
 
         @Override
         public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
@@ -344,7 +346,15 @@ class ClusterSyncFsmTest {
             return super.send(nodeId, message);
         }
 
+        @Override
+        public <M extends ProtocolMessage> Unit broadcast(M message) {
+            broadcasts.add(message);
+            return super.broadcast(message);
+        }
+
         List<NodeId> sent() { return List.copyOf(sent); }
+
+        List<ProtocolMessage> broadcasts() { return List.copyOf(broadcasts); }
     }
 
     /// `CountingClusterNetwork` variant with a fixed `connectedPeers()` set. Exercises the
@@ -377,6 +387,12 @@ class ClusterSyncFsmTest {
         public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
             sent.add(message);
             return super.send(nodeId, message);
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Unit broadcast(M message) {
+            sent.add(message);
+            return super.broadcast(message);
         }
 
         List<NodeId> disconnected() { return List.copyOf(disconnected); }

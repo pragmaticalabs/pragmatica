@@ -50,7 +50,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     /// Membership v2 (B5b) — leader-local DRAIN command sink. Operator `drain` / `shutdown` routes
     /// enqueue the target here (wired to `DrainCommandRegistry::requestDrain` in `AetherNode`) so
-    /// the leader's cluster-sync ping carries `NodePingCommand.DRAIN` to the target, which
+    /// the leader's cluster-sync ping carries the target in its global `drainNodes` set, which
     /// self-drains via its `DrainProcedure` (the v2 mechanism — no `LifecycleWriter` write).
     /// Defaults to no-op via the single-arg factory for legacy callers / test fixtures.
     private final Consumer<NodeId> drainCommandSink;
@@ -146,7 +146,8 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     /// Membership v2 (B5b) — operator drain. After the disruption-budget guard and the presence
     /// guard, the target is enqueued into the leader's `DrainCommandRegistry` via
-    /// `drainCommandSink`; the leader's cluster-sync ping then carries `NodePingCommand.DRAIN` and
+    /// `drainCommandSink`; the leader's cluster-sync ping then carries the target in its global
+    /// `drainNodes` set and
     /// the target self-drains via its `DrainProcedure`. The CTM grace-terminate backstop reaps the
     /// container if it never self-exits. No `LifecycleWriter` write happens here.
     private Promise<TransitionResult> drainNode(String nodeIdStr) {

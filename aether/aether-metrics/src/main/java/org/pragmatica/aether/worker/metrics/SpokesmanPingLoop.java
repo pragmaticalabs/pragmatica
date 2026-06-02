@@ -14,7 +14,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
 import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
-import org.pragmatica.cluster.metrics.NodePingCommand;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -275,7 +274,7 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
                                        epoch.rabiaTerm(),
                                        epoch.localCounter(),
                                        Set.of(),
-                                       NodePingCommand.NONE);
+                                       Set.of());
         network.send(governor, ping);
     }
 

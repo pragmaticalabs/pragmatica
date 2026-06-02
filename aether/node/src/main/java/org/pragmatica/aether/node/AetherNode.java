@@ -1155,7 +1155,7 @@ public interface AetherNode extends ManageableNode {
         peerObservationStore.setCapSupplier(() -> Math.max(periodicConfig.capFloor().getAsInt(),
                                                            clusterNode.topologyManager().topology().size() * 4));
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
-        metricsScheduler.setDrainRequested(drainCommandRegistry::isDrainRequested);
+        metricsScheduler.setDrainTargets(drainCommandRegistry::drainTargets);
         // E2 Phase 2a (2026-05-28): leader-side φ-accrual (#231) is removed. SWIM owns the
         // liveness decision directly; the v2 NTT path is the replacement debounce.
         // P3 (membership unification): the leader/spokesman-gated ReachabilityAggregator

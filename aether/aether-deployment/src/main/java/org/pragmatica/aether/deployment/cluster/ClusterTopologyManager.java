@@ -137,7 +137,7 @@ public interface ClusterTopologyManager extends TopologyManager {
 
     /// Membership v2 / B5b production factory. Wires the leader's DRAIN command channel:
     /// `drainCommandSink` enqueues a drain target into the `DrainCommandRegistry` (so the leader's
-    /// cluster-sync ping carries `NodePingCommand.DRAIN` to the target, which self-drains via its
+    /// cluster-sync ping carries the target in its global `drainNodes` set, and the target self-drains via its
     /// `DrainProcedure`); `drainCommandClear` removes the target after the CTM grace-terminate
     /// backstop reaps the container. `AetherNode` wires these to
     /// `DrainCommandRegistry::requestDrain` / `::clearDrain`.

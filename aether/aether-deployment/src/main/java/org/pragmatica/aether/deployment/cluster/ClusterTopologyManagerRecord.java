@@ -120,7 +120,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     /// Membership v2 / B5b — production factory wiring the leader's DRAIN command channel.
     /// `drainCommandSink` enqueues the target into the `DrainCommandRegistry` (so the leader's
-    /// outbound ping carries `NodePingCommand.DRAIN` and the target self-drains via its
+    /// outbound ping carries the target in its global `drainNodes` set and the target self-drains via its
     /// `DrainProcedure`); `drainCommandClear` removes the target after the grace-terminate
     /// backstop reaps the container. Both default to no-op via the overload above for tests and
     /// legacy callers.
@@ -483,7 +483,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// Membership v2 / B5b — drain a specific node via the graceful v2 DRAIN-command path.
     ///
     /// Enqueues `targetNodeId` into the leader's `DrainCommandRegistry` (`drainCommandSink`) so
-    /// the leader's outbound cluster-sync ping carries `NodePingCommand.DRAIN` to the target,
+    /// the leader's outbound cluster-sync ping carries the target in its global `drainNodes` set,
     /// which self-drains (finishes in-flight requests) via its `DrainProcedure`. A grace-terminate
     /// backstop is scheduled after `autoHealConfig.provisioningTimeout()`: it calls
     /// `lifecycleManager.terminateNode(target)` to reap the container (prevents Docker

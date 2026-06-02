@@ -11,7 +11,6 @@ import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
 import org.pragmatica.cluster.metrics.ConnectivityState;
-import org.pragmatica.cluster.metrics.NodePingCommand;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.net.ClusterNetwork;
@@ -134,10 +133,10 @@ public interface ClusterSyncCollector {
     @Contract default void setIncarnationSupplier(java.util.function.LongSupplier supplier) {}
 
     /// Membership v2 (B5a) — wire the handler invoked whenever an inbound `ClusterSyncPing`
-    /// carries `NodePingCommand.DRAIN` (the command targets THIS node). Invoked AFTER the
-    /// existing fencing/metrics/eviction-hint handling. Production wires it in `AetherNode` to
+    /// carries THIS node in its global `drainNodes` set. Invoked AFTER the existing
+    /// fencing/metrics/eviction-hint handling. Production wires it in `AetherNode` to
     /// `DrainProcedure.initiate(DrainReason.COMMANDED)` + `holder.onDrainStarted()`. The handler
-    /// MUST be idempotent — it is invoked on every DRAIN ping (DrainProcedure is CAS-guarded).
+    /// MUST be idempotent — it is invoked on every drain-targeted ping (DrainProcedure is CAS-guarded).
     /// Default no-op leaves pre-B5a behavior unchanged (test doubles inherit).
     @Contract default void setDrainCommandHandler(Runnable handler) {}
 
@@ -312,17 +311,20 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
                   pong.observedEpochTerm(),
                   pong.observedEpochCounter());
         network.send(ping.sender(), pong);
-        // Membership v2 (B5a) — leader→node DRAIN command piggybacked on the ping. Acted on
-        // AFTER fencing/metrics/eviction handling and after the pong is sent so the leader
-        // still observes this incarnation's response. Idempotent: the wired handler guards
-        // against repeated DRAIN pings (DrainProcedure is CAS-guarded). NONE is a no-op.
+        // Membership v2 (B5a) — leader→node DRAIN carried as the GLOBAL `drainNodes` set on the
+        // broadcast ping. Acted on AFTER fencing/metrics/eviction handling and after the pong is
+        // sent so the leader still observes this incarnation's response. Idempotent: the wired
+        // handler guards against repeated drain-targeted pings (DrainProcedure is CAS-guarded).
+        // A ping whose drainNodes does not contain self is a no-op.
         handleDrainCommand(ping);
     }
 
-    /// Membership v2 (B5a) — invoke the wired drain handler when the inbound ping commands DRAIN.
+    /// Membership v2 (B5a) — invoke the wired drain handler when the inbound ping's GLOBAL
+    /// `drainNodes` set targets THIS node. The leader broadcasts one uniform ping carrying the
+    /// global drain set; each receiver self-checks `drainNodes.contains(self)`.
     private void handleDrainCommand(ClusterSyncPing ping) {
-        if (ping.command() != NodePingCommand.DRAIN) {return;}
-        log.info("ClusterSync: received DRAIN command from {} — invoking local drain handler", ping.sender());
+        if (!ping.drainNodes().contains(self)) {return;}
+        log.info("ClusterSync: drainNodes from {} includes self — invoking local drain handler", ping.sender());
         drainCommandHandler.get().run();
     }
 

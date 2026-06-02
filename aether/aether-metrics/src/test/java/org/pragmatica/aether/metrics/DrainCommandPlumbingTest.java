@@ -12,7 +12,6 @@ import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
-import org.pragmatica.cluster.metrics.NodePingCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
@@ -35,15 +34,15 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
-import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// Membership v2 (B5a) — leader→node DRAIN command plumbing on the metrics ping.
-/// Three concerns: the leader-local `DrainCommandRegistry`, the dispatch-side stamping in
-/// `ClusterSyncContext.sendOnePing`, and the receive-side handler invocation in
-/// `ClusterSyncCollector.onClusterSyncPing`.
+/// Membership v2 (B5a, broadcast model) — leader→core DRAIN carried as the GLOBAL `drainNodes`
+/// set on a single uniform broadcast ping. Three concerns: the leader-local `DrainCommandRegistry`,
+/// the dispatch-side stamping in `ClusterSyncContext.broadcastPing`, and the receive-side handler
+/// invocation in `ClusterSyncCollector.onClusterSyncPing` (self-check `drainNodes.contains(self)`).
 class DrainCommandPlumbingTest {
     private static final NodeId SELF = NodeId.nodeId("self").unwrap();
     private static final NodeId PEER_A = NodeId.nodeId("peer-a").unwrap();
@@ -85,42 +84,44 @@ class DrainCommandPlumbingTest {
     @Nested
     class Dispatch {
         @Test
-        void sendOnePing_predicateTrue_pingCarriesDrain() {
+        void broadcastPing_supplierHasTargets_pingCarriesDrainNodes() {
             var network = new RecordingNetwork();
-            var ctx = buildContext(network, peer -> true);
+            var ctx = buildContext(network, () -> Set.of(PEER_A));
 
-            ctx.sendOnePing(PEER_A, Epoch.epoch(1L, 0L), 1L);
+            ctx.broadcastPing(Epoch.epoch(1L, 0L), 1L);
 
-            assertThat(network.sentPings).hasSize(1);
-            assertThat(network.sentPings.get(0).command()).isEqualTo(NodePingCommand.DRAIN);
+            assertThat(network.broadcastPings).hasSize(1);
+            assertThat(network.broadcastPings.get(0).drainNodes()).containsExactly(PEER_A);
+            assertThat(network.sentPings).as("single broadcast — no per-peer unicast").isEmpty();
         }
 
         @Test
-        void sendOnePing_predicateFalse_pingCarriesNone() {
+        void broadcastPing_supplierEmpty_pingCarriesEmptyDrainNodes() {
             var network = new RecordingNetwork();
-            var ctx = buildContext(network, peer -> false);
+            var ctx = buildContext(network, Set::of);
 
-            ctx.sendOnePing(PEER_A, Epoch.epoch(1L, 0L), 1L);
+            ctx.broadcastPing(Epoch.epoch(1L, 0L), 1L);
 
-            assertThat(network.sentPings).hasSize(1);
-            assertThat(network.sentPings.get(0).command()).isEqualTo(NodePingCommand.NONE);
+            assertThat(network.broadcastPings).hasSize(1);
+            assertThat(network.broadcastPings.get(0).drainNodes()).isEmpty();
         }
 
         @Test
-        void sendOnePing_defaultConstruction_pingCarriesNone() {
+        void broadcastPing_defaultConstruction_pingCarriesEmptyDrainNodes() {
             var network = new RecordingNetwork();
             var ctx = buildContextDefault(network);
 
-            ctx.sendOnePing(PEER_A, Epoch.epoch(1L, 0L), 1L);
+            ctx.broadcastPing(Epoch.epoch(1L, 0L), 1L);
 
-            assertThat(network.sentPings.get(0).command()).isEqualTo(NodePingCommand.NONE);
+            assertThat(network.broadcastPings).hasSize(1);
+            assertThat(network.broadcastPings.get(0).drainNodes()).isEmpty();
         }
     }
 
     @Nested
     class Receive {
         @Test
-        void onClusterSyncPing_drainCommand_invokesHandler() {
+        void onClusterSyncPing_drainNodesContainsSelf_invokesHandler() {
             var network = new RecordingNetwork();
             var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
             var calls = new AtomicInteger();
@@ -132,7 +133,19 @@ class DrainCommandPlumbingTest {
         }
 
         @Test
-        void onClusterSyncPing_noneCommand_doesNotInvokeHandler() {
+        void onClusterSyncPing_drainNodesAbsentSelf_doesNotInvokeHandler() {
+            var network = new RecordingNetwork();
+            var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            var calls = new AtomicInteger();
+            collector.setDrainCommandHandler(calls::incrementAndGet);
+
+            collector.onClusterSyncPing(otherDrainPing());
+
+            assertThat(calls.get()).isZero();
+        }
+
+        @Test
+        void onClusterSyncPing_emptyDrainNodes_doesNotInvokeHandler() {
             var network = new RecordingNetwork();
             var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
             var calls = new AtomicInteger();
@@ -158,14 +171,18 @@ class DrainCommandPlumbingTest {
     }
 
     private static ClusterSyncPing drainPing() {
-        return new ClusterSyncPing(LEADER, Map.of(), 0L, 0L, 0L, Set.of(), NodePingCommand.DRAIN);
+        return new ClusterSyncPing(LEADER, Map.of(), 0L, 0L, 0L, Set.of(), Set.of(SELF));
+    }
+
+    private static ClusterSyncPing otherDrainPing() {
+        return new ClusterSyncPing(LEADER, Map.of(), 0L, 0L, 0L, Set.of(), Set.of(PEER_A));
     }
 
     private static ClusterSyncPing nonePing() {
-        return new ClusterSyncPing(LEADER, Map.of(), 0L, 0L, 0L, Set.of(), NodePingCommand.NONE);
+        return new ClusterSyncPing(LEADER, Map.of(), 0L, 0L, 0L, Set.of(), Set.of());
     }
 
-    private static ClusterSyncContext buildContext(ClusterNetwork network, Predicate<NodeId> drainRequested) {
+    private static ClusterSyncContext buildContext(ClusterNetwork network, Supplier<Set<NodeId>> drainTargets) {
         var ctxRef = new AtomicReference<ClusterSyncContext>();
         Function<Fsm<ClusterSyncState, ClusterFsmEvent>, ClusterSyncState> factory =
             fsm -> {
@@ -181,7 +198,7 @@ class DrainCommandPlumbingTest {
                                                  PeerObservationStore.peerObservationStore(),
                                                  PeriodicObservationConfig.defaultConfig(),
                                                  () -> true,
-                                                 drainRequested);
+                                                 drainTargets);
                 ctxRef.set(ctx);
                 return ctx.dormant();
             };
@@ -210,16 +227,21 @@ class DrainCommandPlumbingTest {
         return ctxRef.get();
     }
 
-    /// `ClusterNetwork` stub that records every outbound `ClusterSyncPing`.
+    /// `ClusterNetwork` stub that records every outbound `ClusterSyncPing` — broadcast and unicast
+    /// separately so the broadcast model can be asserted (one broadcast, zero per-peer sends).
     private static final class RecordingNetwork implements ClusterNetwork {
         private final CopyOnWriteArrayList<ClusterSyncPing> sentPings = new CopyOnWriteArrayList<>();
+        private final CopyOnWriteArrayList<ClusterSyncPing> broadcastPings = new CopyOnWriteArrayList<>();
 
         @Override public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
             if (message instanceof ClusterSyncPing ping) {sentPings.add(ping);}
             return Unit.unit();
         }
 
-        @Override public <M extends ProtocolMessage> Unit broadcast(M message) {return Unit.unit();}
+        @Override public <M extends ProtocolMessage> Unit broadcast(M message) {
+            if (message instanceof ClusterSyncPing ping) {broadcastPings.add(ping);}
+            return Unit.unit();
+        }
         @Override public void connect(ConnectNode connectNode) {}
         @Override public void disconnect(DisconnectNode disconnectNode) {}
         @Override public void listNodes(ListConnectedNodes listConnectedNodes) {}

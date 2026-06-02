@@ -32,10 +32,10 @@ import org.pragmatica.statemachine.Fsm;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
-import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 
@@ -53,11 +53,11 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
     @Contract void onPongReceived(NodeId nodeId);
     @Contract void sendPingsNow();
 
-    /// Membership v2 (B5b) — inject the leader-local DRAIN predicate. `AetherNode` wires this to
-    /// `DrainCommandRegistry::isDrainRequested` after constructing the scheduler so leader pings
-    /// stamp `NodePingCommand.DRAIN` for registered targets. Forwarded into the `ClusterSyncContext`.
+    /// Membership v2 (B5b) — inject the leader-local DRAIN target supplier. `AetherNode` wires this
+    /// to `DrainCommandRegistry::drainTargets` after constructing the scheduler so leader pings
+    /// carry the global `drainNodes` set for registered targets. Forwarded into the `ClusterSyncContext`.
     /// Default no-op for test doubles that don't drive drains.
-    @Contract default void setDrainRequested(Predicate<NodeId> predicate) {}
+    @Contract default void setDrainTargets(Supplier<Set<NodeId>> supplier) {}
     /// Drive one periodic `PeerConnectivityObservation` emission synchronously.
     /// Wired by the scheduled task at `PeriodicObservationConfig.period()` cadence
     /// and exposed for deterministic testing. NOT leader-gated.
@@ -315,8 +315,8 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
         context.dispatch(new ClusterSyncEvents.PingTick(context.epochSupplier().get()));
     }
 
-    @Override@Contract public void setDrainRequested(Predicate<NodeId> predicate) {
-        context.setDrainRequested(predicate);
+    @Override@Contract public void setDrainTargets(Supplier<Set<NodeId>> supplier) {
+        context.setDrainTargets(supplier);
     }
 
     @Override@Contract public void emitPeriodicConnectivityNow() {
