@@ -151,6 +151,15 @@ public final class PeerState {
     /// successful attach.
     private long reconcileCurrentDelayMs;
 
+    /// Per-link keep-alive sequence bookkeeping. `keepAliveNextSeq` is the last Ping seq
+    /// minted for this connection (monotonic, starts at 0 → first Ping is 1).
+    /// `keepAliveLastAckedSeq` is the highest Pong seq observed. Their difference is the
+    /// outstanding-ping (miss) count: when it crosses the threshold the loop evicts the
+    /// half-open link. Both reset to 0 on every fresh connection (`adopt`) and on
+    /// eviction/removal so a reconnected peer starts clean. Guarded by the per-peer monitor.
+    private long keepAliveNextSeq = 0;
+    private long keepAliveLastAckedSeq = 0;
+
     private PeerState(NodeId peerId, long nowNanos) {
         this.peerId = peerId;
         this.phaseChangedAtNanos = nowNanos;
@@ -180,6 +189,30 @@ public final class PeerState {
     /// Returns the live connection if the peer is CONNECTED. Empty otherwise.
     public synchronized Option<QuicPeerConnection> activeConnection() {
         return phase == Phase.CONNECTED ? option(connection) : Option.empty();
+    }
+
+    /// Returns the held connection iff the peer is CONNECTED and a connection is present.
+    /// Used by the keep-alive loop to ping the live link without racing a phase transition.
+    public synchronized Option<QuicPeerConnection> connectedConnection() {
+        return phase == Phase.CONNECTED && connection != null ? option(connection) : Option.empty();
+    }
+
+    /// Mint the next monotonic keep-alive Ping sequence for this link (first call returns 1).
+    synchronized long nextKeepAliveSeq() {
+        return ++keepAliveNextSeq;
+    }
+
+    /// Number of keep-alive pings sent but not yet acked by a Pong. Crossing the configured
+    /// threshold marks the link half-open and triggers eviction.
+    synchronized long keepAliveMissCount() {
+        return keepAliveNextSeq - keepAliveLastAckedSeq;
+    }
+
+    /// Record a keep-alive Pong ack. Monotonic — a stale (lower-or-equal) seq is ignored.
+    synchronized void recordKeepAliveAck(long seq) {
+        if (seq > keepAliveLastAckedSeq) {
+            keepAliveLastAckedSeq = seq;
+        }
     }
 
     /// Returns nanoseconds since the most recent phase transition.
@@ -272,6 +305,9 @@ public final class PeerState {
     private void adopt(QuicPeerConnection newConnection, NodeId initiatorId) {
         this.connection = newConnection;
         this.connectionInitiatorId = initiatorId;
+        // Fresh connection starts the keep-alive sequence clean.
+        this.keepAliveNextSeq = 0;
+        this.keepAliveLastAckedSeq = 0;
     }
 
     /// Transitions CONNECTED → EVICTED. Preserves offline buffer for reconnect drain.
@@ -283,6 +319,8 @@ public final class PeerState {
         var evicted = connection;
         this.connection = null;
         this.connectionInitiatorId = null;
+        this.keepAliveNextSeq = 0;
+        this.keepAliveLastAckedSeq = 0;
         changePhase(Phase.EVICTED, nowNanos);
         return option(evicted);
     }
@@ -295,6 +333,8 @@ public final class PeerState {
         var dropped = connection;
         this.connection = null;
         this.connectionInitiatorId = null;
+        this.keepAliveNextSeq = 0;
+        this.keepAliveLastAckedSeq = 0;
         offlineBuffer.clear();
         changePhase(Phase.REMOVED, nowNanos);
         return option(dropped);

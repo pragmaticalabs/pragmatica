@@ -44,6 +44,11 @@ class StreamTypeTest {
         void dhtRelay_hasIndex3() {
             assertThat(StreamType.DHT_RELAY.streamIndex()).isEqualTo(3);
         }
+
+        @Test
+        void keepAlive_hasIndex4() {
+            assertThat(StreamType.KEEPALIVE.streamIndex()).isEqualTo(4);
+        }
     }
 
     @Nested
@@ -67,6 +72,11 @@ class StreamTypeTest {
         void dhtRelay_isShortLived() {
             assertThat(StreamType.DHT_RELAY.longLived()).isFalse();
         }
+
+        @Test
+        void keepAlive_isLongLived() {
+            assertThat(StreamType.KEEPALIVE.longLived()).isTrue();
+        }
     }
 
     @Nested
@@ -77,6 +87,7 @@ class StreamTypeTest {
             assertThat(StreamType.fromIndex(1).or(StreamType.DHT_RELAY)).isEqualTo(StreamType.KV_STORE);
             assertThat(StreamType.fromIndex(2).or(StreamType.DHT_RELAY)).isEqualTo(StreamType.HTTP_FORWARD);
             assertThat(StreamType.fromIndex(3).or(StreamType.CONSENSUS)).isEqualTo(StreamType.DHT_RELAY);
+            assertThat(StreamType.fromIndex(4).or(StreamType.CONSENSUS)).isEqualTo(StreamType.KEEPALIVE);
         }
 
         @Test
@@ -86,7 +97,7 @@ class StreamTypeTest {
 
         @Test
         void fromIndex_outOfRange_returnsEmpty() {
-            assertThat(StreamType.fromIndex(4).isEmpty()).isTrue();
+            assertThat(StreamType.fromIndex(5).isEmpty()).isTrue();
             assertThat(StreamType.fromIndex(100).isEmpty()).isTrue();
         }
     }
