@@ -461,43 +461,6 @@ final class QuicClusterClientInstance implements QuicClusterClient {
 
             log.info("QUIC Hello handshake complete with peer {} (role={})", hello.sender(), hello.role());
             promise.succeed(peerConnection);
-
-            // Open the dedicated keep-alive stream AFTER the handshake completed and the
-            // connection promise resolved. Best-effort: the CONSENSUS link is already up, so a
-            // failure here never fails the connection — the periodic keep-alive loop and the
-            // reconciler recover. The initial Ping(1) lets the server identify the stream by its
-            // first-frame type (see ServerHelloHandler keep-alive branch).
-            openKeepAliveStream(peerConnection, hello.sender());
-        }
-
-        @SuppressWarnings({"JBCT-PAT-01", "unchecked"}) // Netty stream creation for the keep-alive channel
-        private void openKeepAliveStream(QuicPeerConnection peerConnection, NodeId resolvedPeerId) {
-            var keepAliveInitializer = new ChannelInitializer<QuicStreamChannel>() {
-                @Override
-                protected void initChannel(QuicStreamChannel ch) {
-                    ch.pipeline()
-                      .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
-                      .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
-                      .addLast(new DataHandler(resolvedPeerId));
-                }
-            };
-            quicChannel.createStream(QuicStreamType.BIDIRECTIONAL, keepAliveInitializer)
-                       .addListener(future -> handleKeepAliveStreamCreated(peerConnection, resolvedPeerId, future));
-        }
-
-        @SuppressWarnings({"JBCT-PAT-01", "unchecked"}) // Netty future callback
-        private void handleKeepAliveStreamCreated(QuicPeerConnection peerConnection,
-                                                  NodeId resolvedPeerId,
-                                                  io.netty.util.concurrent.Future<?> future) {
-            if (!future.isSuccess()) {
-                log.debug("Keep-alive stream creation failed for peer {} — relying on periodic loop + reconnect",
-                          resolvedPeerId, future.cause());
-                return;
-            }
-            var streamChannel = (QuicStreamChannel) future.getNow();
-            peerConnection.registerStream(StreamType.KEEPALIVE, streamChannel);
-            streamChannel.writeAndFlush(Unpooled.wrappedBuffer(serializer.encode(new KeepAliveMessage.Ping(KeepAliveMessage.IDENTIFICATION_SEQ))));
-            log.debug("Keep-alive stream opened to peer {} (initial Ping sent)", resolvedPeerId);
         }
     }
 

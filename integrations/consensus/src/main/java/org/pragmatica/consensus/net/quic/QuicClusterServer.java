@@ -37,7 +37,6 @@ import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicServerCodecBuilder;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
-import io.netty.util.AttributeKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NodeRole;
@@ -143,14 +142,6 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     private static final long INITIAL_MAX_STREAM_DATA = 32_000_000;
     private static final long INITIAL_MAX_STREAMS = 64;
     private static final int MAX_FRAME_LENGTH = 32 * 1024 * 1024;
-
-    /// Netty channel attribute carrying the [QuicPeerConnection] on the parent QUIC channel.
-    /// Stashed when the Hello handshake registers the connection so a later stream arriving on
-    /// the SAME connection (the dedicated keep-alive stream) can find it WITHOUT any external
-    /// map. The attribute is garbage-collected together with the channel — there is nothing to
-    /// clean up and no leak (deliberately NOT a Map).
-    private static final AttributeKey<QuicPeerConnection> PEER_CONNECTION =
-        AttributeKey.valueOf("aether.quic.peerConnection");
 
     private final NodeId selfId;
     private final NodeRole selfRole;
@@ -358,61 +349,23 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             }
         }
 
-        /// Processes the first frame on a freshly-accepted stream and identifies the stream by
-        /// its type: a Hello opens the CONSENSUS stream (handshake + onPeerConnected); an initial
-        /// keep-alive Ping identifies the dedicated KEEPALIVE stream on an already-established
-        /// connection (located via the parent channel's [#PEER_CONNECTION] attribute).
         @SuppressWarnings("JBCT-PAT-01") // Adapter boundary: catch deserialization errors from external input
         private void processHello(ChannelHandlerContext ctx, ByteBuf buf) {
             Object message;
             try {
                 message = decodeMessage(buf);
             } catch (Exception e) {
-                log.error("Failed to deserialize first frame from {}", ctx.channel().remoteAddress(), e);
+                log.error("Failed to deserialize Hello message from {}", ctx.channel().remoteAddress(), e);
                 ctx.close();
                 return;
             }
-            switch (message) {
-                case NetworkMessage.Hello hello -> {
-                    sendHelloResponse(ctx);
-                    registerPeerConnection(ctx, hello);
-                }
-                case KeepAliveMessage keepAlive -> identifyKeepAliveStream(ctx, keepAlive);
-                case null, default -> {
-                    log.warn("Expected Hello or keep-alive first frame but received: {}",
-                             option(message).map(Object::getClass).map(Class::getSimpleName));
-                    ctx.close();
-                }
+            if (message instanceof NetworkMessage.Hello hello) {
+                sendHelloResponse(ctx);
+                registerPeerConnection(ctx, hello);
+            } else {
+                log.warn("Expected Hello message but received: {}", option(message).map(Object::getClass).map(Class::getSimpleName));
+                ctx.close();
             }
-        }
-
-        /// Bind a newly-arrived keep-alive stream to the connection established by the prior
-        /// Hello on the same QUIC channel. Installs a DataHandler so subsequent frames route
-        /// normally, then hands the identifying first Ping to the message receiver so the
-        /// network replies with a Pong. If the connection attribute is absent (race/edge), the
-        /// stream is closed defensively — the client's reconnect path recovers.
-        @SuppressWarnings("JBCT-PAT-01") // Attribute lookup + pipeline install + first-frame handoff
-        private void identifyKeepAliveStream(ChannelHandlerContext ctx, KeepAliveMessage firstFrame) {
-            var quicChannel = (QuicChannel) ctx.channel().parent();
-            option(quicChannel.attr(PEER_CONNECTION).get())
-                .onPresent(peerConnection -> attachKeepAliveStream(ctx, peerConnection, firstFrame))
-                .onEmpty(() -> closeUnboundKeepAliveStream(ctx));
-        }
-
-        private void attachKeepAliveStream(ChannelHandlerContext ctx,
-                                           QuicPeerConnection peerConnection,
-                                           KeepAliveMessage firstFrame) {
-            peerConnection.registerStream(StreamType.KEEPALIVE, (QuicStreamChannel) ctx.channel());
-            ctx.pipeline().replace(this, "data-handler", new DataHandler(peerConnection.peerId()));
-            log.debug("Keep-alive stream identified for peer {}", peerConnection.peerId());
-            // Route the identifying first Ping onward exactly as DataHandler would, so the
-            // network replies Pong on this stream. MUST NOT call onPeerConnected again.
-            messageReceiver.onMessage(peerConnection.peerId(), firstFrame);
-        }
-
-        private void closeUnboundKeepAliveStream(ChannelHandlerContext ctx) {
-            log.debug("Keep-alive stream arrived before peer connection registered — closing (client reconnect recovers)");
-            ctx.close();
         }
 
         private Object decodeMessage(ByteBuf buf) {
@@ -430,10 +383,6 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             var quicChannel = (QuicChannel) ctx.channel().parent();
             var peerConnection = quicPeerConnection(hello.sender(), quicChannel);
             peerConnection.registerStream(StreamType.CONSENSUS, (QuicStreamChannel) ctx.channel());
-            // Stash the connection on the parent QUIC channel so the dedicated keep-alive stream
-            // (a later stream on the SAME connection) can locate it without an external map. The
-            // attribute is GC'd with the channel — no cleanup, no leak.
-            quicChannel.attr(PEER_CONNECTION).set(peerConnection);
 
             // Replace Hello handler with data handler for ongoing messages
             ctx.pipeline().replace(this, "data-handler", new DataHandler(hello.sender()));

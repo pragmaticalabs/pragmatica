@@ -42,12 +42,7 @@ public enum StreamType {
     CONSENSUS(0, true),
     KV_STORE(1, true),
     HTTP_FORWARD(2, false),
-    DHT_RELAY(3, false),
-    /// Dedicated long-lived keep-alive stream. Opened once per connection (after the Hello
-    /// handshake), carries only [KeepAliveMessage] ping-pong, and has its own flow control so
-    /// it stays drainable even when the CONSENSUS stream is backpressured. This is the
-    /// half-open-link detector with `MAX_IDLE_TIMEOUT` disabled.
-    KEEPALIVE(4, true);
+    DHT_RELAY(3, false);
 
     private static final StreamType[] BY_INDEX = new StreamType[values().length];
     private static final Map<Class<?>, StreamType> ROUTING = new ConcurrentHashMap<>();
@@ -59,7 +54,6 @@ public enum StreamType {
         // Pre-register consensus module types
         register(RabiaProtocolMessage.class, CONSENSUS);
         register(NetworkMessage.class, CONSENSUS);
-        register(KeepAliveMessage.class, KEEPALIVE);
     }
 
     private final int streamIndex;

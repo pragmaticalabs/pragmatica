@@ -23,7 +23,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
@@ -158,17 +157,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private static final long RECONCILE_BACKOFF_INITIAL_MS = 5_000L;
     private static final long RECONCILE_BACKOFF_CAP_MS = 60_000L;
     private final CancellableTask reconcilerTask = CancellableTask.cancellableTask();
-
-    /// Application-layer QUIC keep-alive. With `MAX_IDLE_TIMEOUT` disabled, a half-open link
-    /// (one side's read path dead while the transport still reads "active") is invisible to the
-    /// QUIC stack. Every `KEEPALIVE_TICK` this node pings every connected peer on the dedicated
-    /// KEEPALIVE stream; the peer replies Pong. Pings sent but not acked accumulate a per-link
-    /// miss count — at `KEEPALIVE_MISS_THRESHOLD` the link is evicted and reconnected. The loop
-    /// runs on EVERY node over EVERY connected peer regardless of who dialed, so the leader
-    /// detects a half-open link to a replacement even when its own read path is the dead one.
-    private static final TimeSpan KEEPALIVE_TICK = TimeSpan.timeSpan(1500L).millis();
-    private static final long KEEPALIVE_MISS_THRESHOLD = 3L;
-    private volatile ScheduledFuture<?> keepAliveFuture;
 
     /// Retained for API compatibility with existing callers. All hysteresis/grace-window
     /// buffering was removed in favour of authoritative single-writer semantics (spec §8) —
@@ -424,12 +412,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
         log.debug("Stopping QuicClusterNetwork: notifying view change");
         reconcilerTask.cancel();
-        // Cancel the keep-alive loop on stop — otherwise it leaks and keeps firing against a
-        // torn-down transport. mayInterruptIfRunning=false: let an in-flight tick finish.
-        var keepAlive = keepAliveFuture;
-        if (keepAlive != null) {
-            keepAlive.cancel(false);
-        }
         processViewChange(SHUTDOWN, self.id());
         return closePeerConnections()
             .flatMap(this::stopServerAndClient);
@@ -441,10 +423,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @Contract private void startMissingPeerReconciler() {
         var future = SharedScheduler.scheduleAtFixedRate(this::reconcileMissingPeersTick, RECONCILE_TICK, RECONCILE_TICK);
         reconcilerTask.set(future);
-        keepAliveFuture = SharedScheduler.scheduleAtFixedRate(this::keepAliveTick, KEEPALIVE_TICK, KEEPALIVE_TICK);
-        log.debug("Missing-peer reconciler scheduled (tick={}ms, backoff initial={}ms, cap={}ms); keep-alive scheduled (tick={}ms, missThreshold={})",
-                  RECONCILE_TICK.millis(), RECONCILE_BACKOFF_INITIAL_MS, RECONCILE_BACKOFF_CAP_MS,
-                  KEEPALIVE_TICK.millis(), KEEPALIVE_MISS_THRESHOLD);
+        log.debug("Missing-peer reconciler scheduled (tick={}ms, backoff initial={}ms, cap={}ms)",
+                  RECONCILE_TICK.millis(), RECONCILE_BACKOFF_INITIAL_MS, RECONCILE_BACKOFF_CAP_MS);
     }
 
     @Override
@@ -709,32 +689,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return;
         }
         quicMetrics.onMessageReceived();
-        // Keep-alive interception runs BEFORE consensus routing. A blackholed node has already
-        // returned above, so it never replies a Pong — peers correctly detect it as dead.
-        switch (message) {
-            case KeepAliveMessage.Ping(var seq) -> replyKeepAlivePong(sender, seq);
-            case KeepAliveMessage.Pong(var seq) -> recordKeepAlivePong(sender, seq);
-            case Message.Wired wired -> router.route(wired);
-            case null, default ->
-                log.trace("Non-routable message from {}: {}", sender, option(message).map(Object::getClass).map(Class::getSimpleName));
+        if (message instanceof Message.Wired wired) {
+            router.route(wired);
+        } else {
+            log.trace("Non-routable message from {}: {}", sender, option(message).map(Object::getClass).map(Class::getSimpleName));
         }
-    }
-
-    /// Reply to an inbound keep-alive Ping with a matching Pong on the sender's KEEPALIVE stream.
-    private void replyKeepAlivePong(NodeId sender, long seq) {
-        option(peers.get(sender))
-            .flatMap(PeerState::connectedConnection)
-            .flatMap(conn -> conn.stream(StreamType.KEEPALIVE))
-            .onPresent(streamChannel -> writeKeepAlivePong(streamChannel, seq, sender));
-    }
-
-    private void writeKeepAlivePong(QuicStreamChannel streamChannel, long seq, NodeId sender) {
-        var _ = writeIfWritable(streamChannel, serializer.encode(new KeepAliveMessage.Pong(seq)), sender, StreamType.KEEPALIVE);
-    }
-
-    /// Record an inbound keep-alive Pong ack so the peer's miss count resets.
-    private void recordKeepAlivePong(NodeId sender, long seq) {
-        option(peers.get(sender)).onPresent(state -> state.recordKeepAliveAck(seq));
     }
 
     // --- Internal: peer state lookup ---
@@ -1155,75 +1114,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (connection != null && connection.isActive()) {
             connection.close();
         }
-    }
-
-    /// Periodic keep-alive tick. Walks every peer; for each CONNECTED peer it pings the live
-    /// link on the dedicated KEEPALIVE stream and evicts the link once unacked pings cross the
-    /// miss threshold (half-open detection). Runs on EVERY node over EVERY connected peer
-    /// regardless of dial direction, so the leader detects a half-open link to a replacement
-    /// even when its own read path is dead. Package-private so tests can drive it deterministically.
-    @SuppressWarnings("JBCT-PAT-01") // Iterate connected peers, ping + miss-threshold evict
-    void keepAliveTick() {
-        for (var state : peers.values()) {
-            state.connectedConnection().onPresent(conn -> pingPeer(state, conn));
-        }
-    }
-
-    /// Ping a single connected peer and apply the half-open eviction decision. An already-dead
-    /// channel is evicted immediately. The sequence is advanced and the miss count evaluated
-    /// ONLY when the dedicated KEEPALIVE stream is open: a connection whose keep-alive stream has
-    /// not opened yet (or whose best-effort open failed) must never accumulate misses, or a
-    /// healthy CONSENSUS link would be evicted purely because keep-alive never engaged. Half-open
-    /// detection needs the stream present (opened at Hello), so this loses no coverage.
-    @SuppressWarnings("JBCT-PAT-01") // Inactive-fast-path + ping only when the keep-alive stream exists
-    private void pingPeer(PeerState state, QuicPeerConnection conn) {
-        if (!conn.isActive()) {
-            evictStaleConnection(state.peerId(), conn);
-            return;
-        }
-        conn.stream(StreamType.KEEPALIVE)
-            .onPresent(streamChannel -> pingOverKeepAliveStream(state, conn, streamChannel));
-    }
-
-    /// Send one monotonic Ping on the live KEEPALIVE stream (direct write, never queued through
-    /// the offline buffer), then evict the link if unacked pings have crossed the miss threshold.
-    private void pingOverKeepAliveStream(PeerState state, QuicPeerConnection conn, QuicStreamChannel streamChannel) {
-        var seq = state.nextKeepAliveSeq();
-        var _ = writeIfWritable(streamChannel, serializer.encode(new KeepAliveMessage.Ping(seq)), state.peerId(), StreamType.KEEPALIVE);
-        if (state.keepAliveMissCount() >= KEEPALIVE_MISS_THRESHOLD) {
-            log.warn("Node {} keep-alive miss count reached {} — evicting half-open link",
-                     state.peerId(), state.keepAliveMissCount());
-            evictStaleConnection(state.peerId(), conn);
-        }
-    }
-
-    /// Package-private test seam — drives a single keep-alive ping+evict decision against a
-    /// seeded peer without standing up the scheduler.
-    @Contract
-    void keepAliveTickForTest() {
-        keepAliveTick();
-    }
-
-    /// Package-private test seam — routes an inbound message exactly as the QUIC transport would
-    /// on receipt, so keep-alive Ping→Pong reply and Pong→ack interception can be exercised
-    /// without a live datagram channel.
-    @Contract
-    void onMessageReceivedForTest(NodeId sender, Object message) {
-        onMessageReceived(sender, message);
-    }
-
-    /// Package-private test seam — current phase of a seeded peer (or REMOVED-sentinel-free
-    /// empty handling via INIT default). Used to assert keep-alive eviction transitions.
-    PeerState.Phase peerPhaseForTest(NodeId peerId) {
-        return option(peers.get(peerId)).map(PeerState::phase).or(PeerState.Phase.INIT);
-    }
-
-    /// Package-private test seam — true iff the keep-alive loop is currently scheduled (future
-    /// present and not cancelled). Used to assert the loop is started on start and cancelled on
-    /// stop (no leak).
-    boolean keepAliveScheduledForTest() {
-        var f = keepAliveFuture;
-        return f != null && !f.isCancelled();
     }
 
     /// Per-peer reconnect backoff state. Mutable, guarded by the enclosing
