@@ -23,7 +23,12 @@ public record AutoHealSpec(boolean enabled,
 
     public static final String DEFAULT_DECOMMISSIONED_RETENTION = "24h";
 
-    public static final String DEFAULT_SWIM_HINTS_TTL = "60s";
+    // Aligned with the SWIM/NTT detection window: SwimConfig.suspectTimeout (10s) and
+    // MembershipConfig.nttDepartureTimeout (15s). Set to 15s so the hint is a short-lived
+    // backstop, not a 60s stall: a still-degraded node is re-stamped by SWIM probe rounds
+    // (period = 1s) well before expiry, while a recovered node's hint is cleared promptly
+    // (now also actively cleared on PeerConnected — see SwimHealthState.promoteKnownMember).
+    public static final String DEFAULT_SWIM_HINTS_TTL = "15s";
 
     public static AutoHealSpec autoHealSpec(boolean enabled, String retryInterval, String startupCooldown) {
         return new AutoHealSpec(enabled,

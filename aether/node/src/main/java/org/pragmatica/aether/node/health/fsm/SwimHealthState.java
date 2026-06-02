@@ -162,8 +162,18 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         }
 
         private void promoteKnownMember(NodeId peer) {
+            // Transport-plane liveness proof for a CURRENT SWIM member (this branch is reached
+            // only when `swim.members().containsKey(peer)` — a tombstoned/removed dead node
+            // cannot reach here; it falls to the addSeedAndLog/readdUnknownFromTopology branch,
+            // which is tombstone-gated). markAliveFromTransport promotes membership ALIVE.
+            // We ALSO emit a HEALTHY hint to clear any stale SUSPECTED/FAULTY entry the leader's
+            // SwimHintsRegistry still holds for this recovered peer (restoring symmetry with the
+            // Stopped/Starting states, which both report HEALTHY on PeerConnected). Without this,
+            // a transient SWIM-SUSPECT during kill turbulence would keep the generation projector
+            // DEGRADED until the hint's TTL expires, even after the peer demonstrably recovered.
             swim.markAliveFromTransport(peer);
-            LOG.debug("PeerConnected for known SWIM member {} — transport liveness proof, markAliveFromTransport (tombstone-gated)", peer.id());
+            ctx.reportHint(peer, HealthHint.HEALTHY);
+            LOG.debug("PeerConnected for known SWIM member {} — transport liveness proof, markAliveFromTransport (tombstone-gated) + HEALTHY hint clears stale suspicion", peer.id());
         }
 
         private void readdUnknownFromTopology(NodeId peer) {

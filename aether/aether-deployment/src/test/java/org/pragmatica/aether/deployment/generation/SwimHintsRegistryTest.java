@@ -118,6 +118,26 @@ class SwimHintsRegistryTest {
         }
 
         @Test
+        void healthyObservation_clearsPriorSuspectedBeforeTtlExpiry() {
+            // 02-chaos readiness root: a HEALTHY observation (emitted when a briefly-suspected
+            // node recovers via PeerConnected) must clear the SUSPECTED entry immediately,
+            // without waiting for the TTL to lapse.
+            var clock = new AtomicLong(1_000_000L);
+            var changes = new AtomicInteger(0);
+            var registry = SwimHintsRegistry.swimHintsRegistry(TTL, clock::get, changes::incrementAndGet);
+            registry.putHint(NODE_A, HealthHint.SUSPECTED, clock.get());
+            assertThat(registry.currentTtlFiltered()).containsEntry(NODE_A, HealthHint.SUSPECTED);
+
+            // Recovery lands well within the TTL window.
+            clock.set(1_000_000L + 1_000L);
+            var healthy = new PeerHealthObservation(NODE_A, HealthHintWire.HEALTHY, 1L, 0L, clock.get());
+            registry.onPeerHealth(healthy);
+
+            assertThat(registry.isEmpty()).isTrue();
+            assertThat(registry.currentTtlFiltered()).doesNotContainKey(NODE_A);
+        }
+
+        @Test
         void faultyObservation_putsFaultyHint() {
             var clock = new AtomicLong(1_000_000L);
             var changes = new AtomicInteger(0);

@@ -321,11 +321,9 @@ class SwimHealthFsmTest {
         void peerConnected_inRunning_promotesMembershipToHealthy() {
             // Formation safety, two-plane liveness (commit e69f57a4b): a REAL connection
             // (PeerConnected) for a KNOWN member promotes it ALIVE via
-            // SwimProtocol.markAliveFromTransport (tombstone-gated). HEALTHY is recorded inside
-            // SwimProtocol (recordHealthyAndEmit → SwimObservation stream), NOT pushed through
-            // the detector's HealthSignalSink. The observable contract is therefore membership
-            // promotion: the seeded SUSPECT peer becomes HEALTHY in SwimProtocol.healthOf, and
-            // no HEALTHY hint is routed to the sink in Running.
+            // SwimProtocol.markAliveFromTransport (tombstone-gated). It ALSO emits a HEALTHY hint
+            // to the detector sink, clearing any stale SUSPECTED/FAULTY entry the leader's
+            // SwimHintsRegistry still holds for the recovered peer (symmetry with Stopped/Starting).
             buildHarness(false);
             harness.dispatch(new SwimHealthEvents.StartRequested());
             var swim = swimWithSeeds(PEER_A);
@@ -340,8 +338,37 @@ class SwimHealthFsmTest {
                 .as("PeerConnected (real reachability) promotes a known member to HEALTHY in SWIM membership — formation depends on it")
                 .isEqualTo(SwimHealth.HEALTHY);
             assertThat(hintsFor(PEER_A))
-                .as("HEALTHY flows via the SwimObservation stream, not the detector sink in Running")
-                .doesNotContain(org.pragmatica.aether.slice.generation.HealthHint.HEALTHY);
+                .as("PeerConnected for a known member also emits a HEALTHY hint to clear stale suspicion")
+                .contains(org.pragmatica.aether.slice.generation.HealthHint.HEALTHY);
+        }
+
+        @Test
+        void runningPeerConnected_knownSuspectMember_emitsHealthyHintClearingSuspicion() {
+            // 02-chaos readiness-latency root: a node briefly SWIM-SUSPECTED during kill
+            // turbulence gets a SUSPECTED hint in the leader's SwimHintsRegistry. When the node
+            // recovers, a real QUIC PeerConnected for that KNOWN member must emit a HEALTHY hint
+            // that clears the stale SUSPECTED entry — otherwise the generation projector stays
+            // DEGRADED until the hint's TTL expires.
+            buildHarness(true);
+            harness.dispatch(new SwimHealthEvents.StartRequested());
+            var swim = swimWithSeeds(PEER_A);
+            harness.dispatch(new SwimHealthEvents.ProtocolReady(swim,
+                                                                 new StubTransport(),
+                                                                 GossipEncryptor.none()));
+            assertThat(harness.state()).isInstanceOf(SwimHealthState.Running.class);
+
+            // The peer is briefly suspected — a SUSPECTED hint is stamped.
+            harness.dispatch(new SwimHealthEvents.PeerSuspect(faulty(PEER_A)));
+            assertThat(hintsFor(PEER_A))
+                .as("PeerSuspect stamps a SUSPECTED hint")
+                .contains(org.pragmatica.aether.slice.generation.HealthHint.SUSPECTED);
+
+            // The peer recovers — a real QUIC connection lands.
+            harness.dispatch(new SwimHealthEvents.PeerConnected(PEER_A, Option.none()));
+
+            assertThat(hintsFor(PEER_A).getLast())
+                .as("PeerConnected for the recovered known member emits HEALTHY, clearing the stale SUSPECTED")
+                .isEqualTo(org.pragmatica.aether.slice.generation.HealthHint.HEALTHY);
         }
 
         @Test

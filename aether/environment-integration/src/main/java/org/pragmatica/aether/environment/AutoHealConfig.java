@@ -29,7 +29,11 @@ public record AutoHealConfig(TimeSpan retryInterval,
 
     public static final TimeSpan DEFAULT_DECOMMISSIONED_RETENTION = timeSpan(60).seconds();
 
-    public static final TimeSpan DEFAULT_SWIM_HINTS_TTL = timeSpan(60).seconds();
+    // Aligned with the SWIM/NTT detection window: SwimConfig.suspectTimeout (10s) and
+    // MembershipConfig.nttDepartureTimeout (15s). This is the value that actually reaches the
+    // running SwimHintsRegistry (AetherNode wires config.autoHeal().swimHintsTtl()); lowered
+    // from 60s so the hint backstop is short-lived. Kept in sync with AutoHealSpec.
+    public static final TimeSpan DEFAULT_SWIM_HINTS_TTL = timeSpan(15).seconds();
 
     public static final AutoHealConfig DEFAULT = autoHealConfig(timeSpan(10).seconds(),
                                                                 timeSpan(15).seconds(),
