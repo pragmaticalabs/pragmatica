@@ -5,6 +5,20 @@ Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 
 # Session Handover — 2026-06-02 — ROOT CAUSE of membership-convergence churn found + fixed: SHA-256 BatchId (consensus divergence) + WriteTimeout removal (stream churn); batch-oriented StateMachine refactor
 
+## ⚡⚡⚡ LATEST (06-02 session-3) — QUIC ACCEPTOR RECEIVE-WEDGE root-caused + FIXED (committed `b90ac4728`)
+
+The dominant RC1 blocker behind the residual readiness/erosion was a **QUIC acceptor receive-wedge**: under churn an acceptor keeps a stale "zombie" connection (its `isActive()` stays true — `maxIdleTimeout` disabled, no acceptor close-listener) and `PeerState.resolveDuplicate` returned **DUPLICATE for a same-initiator re-dial**, closing the peer's fresh live stream and never draining it → writer backpressures (4776×) → `evictStaleConnection` → 5s redial → ∞. The wedged replacement never reached the leader's `reportedStates` → 600s READY timeout → cluster erosion. Root-caused via live Docker forensics (acceptor re-accepts every 5s, 0 inbound consensus drained, evict-stale only on that pair).
+
+**FIX (committed `b90ac4728`, 11 files, all 586 consensus unit tests green):** restored natural establishment (`0b7f39905`: drop dial-gate + grace-dial, `prefersInitiator` tiebreak, `AttachOutcome.REPLACED`, `connectionInitiatorId`, `clientInitiated` plumbing) **+ THE FIX** — `PeerState.resolveDuplicate` now ADOPTS the new connection on a same-initiator re-handshake (REPLACED, isolated `closeDroppedConnection`, no REMOVE cascade) instead of trusting the zombie incumbent's `isActive()`.
+
+**Docker-validated (00-smoke + 02-chaos):** evict-stale **764→0**, 600s READY timeouts **multiple→0**, formation intact, generation quiesce 9/3, **no connection churn**. Natural establishment alone was REFUTED first (churned identically) — the adopt-on-re-handshake was the missing piece; both committed together.
+
+**REMAINING (separate, smaller — task #34):** 02-chaos still **4p/2f** from replacement READINESS-LATENCY vs the 60s/90s test windows (`pick_non_leader 1/2`, `generation-not-quiesce` ×3 under concurrent Kill_2) + `No-NODE_LEFT` for a never-HEALTHY victim (test-side victim-selection). NOT the connection wedge (fixed). Next: measure a replacement's JOIN→READY timeline (churn-free now) and decide test-window tuning vs consensus-catch-up speedup; verify `swim_hints_ttl=15s` actually reaches the node (AutoHealSpec↔AutoHealConfig disconnect).
+
+**Commits this session (all on `release-1.0.0-rc1`, unpushed):** `cd5193f3c` naming · `d3cbed9f8` swim-resurrection-tombstone · `435ce8e07` clear-on-recovery+TTL15s · `5d259b15d` handover · `b90ac4728` QUIC natural-establishment+adopt-on-re-handshake.
+
+---
+
 ## ⚡⚡ SESSION-2 UPDATE (06-02 continued) — A-cascade root-caused + largely fixed
 
 Continued from the TL;DR below. This session **root-caused and fixed the (A) cascade**, validated on Docker (two suite-02 runs). **Net: 02-chaos went 3p/3f → 4p/2f, runtime halved (1875s→946s), BatchId collisions 0, error-rate-under-load 80.87%→0.00%.** All remaining failures trace to ONE residual root (replacement readiness-latency).
