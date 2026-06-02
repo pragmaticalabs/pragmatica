@@ -102,6 +102,7 @@ class LeaderReconcilerTest {
                                       configuredCoreCount,
                                       leaderTerm,
                                       ctm,
+                                      () -> "test-cluster",
                                       timeSource,
                                       scheduler);
         reconciler.setReconcileListener(listener);
@@ -1292,6 +1293,26 @@ class LeaderReconcilerTest {
             var mintedId = ctm.provisionReplacementCalls().getFirst();
             assertThat(reconciler.inFlightProvisioningSnapshot()).containsKey(mintedId);
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
+        }
+
+        /// (a2) The minted replacement id carries the cluster-scoped `aether-<cluster>-node-`
+        /// prefix (NodeId == container name), so a replacement is shape-identical to its
+        /// compose-seeded siblings. The setup supplier returns `test-cluster`.
+        @Test
+        void computePeersToProvision_clusterNameKnown_idCarriesClusterPrefix() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+            var mintedId = ctm.provisionReplacementCalls().getFirst();
+            assertThat(mintedId.id()).startsWith("aether-test-cluster-node-");
         }
 
         /// (b) Once the exact minted id appears in NTT `currentMembers`, the next reconcile clears

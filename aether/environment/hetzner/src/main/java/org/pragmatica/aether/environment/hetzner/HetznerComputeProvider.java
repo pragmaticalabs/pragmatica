@@ -50,7 +50,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
         var cluster = config.clusterName().or("unknown");
         var defaultLabels = buildLabels(cluster, "core", "");
-        defaultLabels.put(NODE_ID_LABEL, IdGenerator.generate("aether-" + cluster + "-node"));
+        defaultLabels.put(NODE_ID_LABEL, IdGenerator.generate(ProvisionContext.coreNodeNamePrefix(cluster)));
         return client.createServer(buildCreateRequest(config.region(),
                                                       defaultLabels,
                                                       config.userData())).map(HetznerComputeProvider::toInstanceInfo)

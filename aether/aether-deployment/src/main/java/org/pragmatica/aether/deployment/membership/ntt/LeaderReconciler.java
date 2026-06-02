@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.membership.ntt;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
+import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -136,6 +137,10 @@ public final class LeaderReconciler {
     /// on activation to avoid wedging in cold-start suppression on an already-formed cluster.
     private final Supplier<Long> leaderTermSupplier;
     private final ClusterTopologyManager ctm;
+    /// Cluster-name supplier (config-derived; empty string when not yet readable pre-formation).
+    /// Used only to scope auto-heal replacement node ids to the cluster (`aether-<cluster>-node-<ulid>`)
+    /// so a replacement is shape-identical to its compose-seeded siblings (NodeId == container name).
+    private final Supplier<String> clusterNameSupplier;
     private final TimeSource timeSource;
     private final NttTimerScheduler scheduler;
 
@@ -194,6 +199,7 @@ public final class LeaderReconciler {
                              IntSupplier configuredCoreCountSupplier,
                              Supplier<Long> leaderTermSupplier,
                              ClusterTopologyManager ctm,
+                             Supplier<String> clusterNameSupplier,
                              TimeSource timeSource,
                              NttTimerScheduler scheduler) {
         this.membershipConfig = membershipConfig;
@@ -214,6 +220,7 @@ public final class LeaderReconciler {
         this.configuredCoreCountSupplier = configuredCoreCountSupplier;
         this.leaderTermSupplier = leaderTermSupplier;
         this.ctm = ctm;
+        this.clusterNameSupplier = clusterNameSupplier;
         this.timeSource = timeSource;
         this.scheduler = scheduler;
     }
@@ -223,12 +230,14 @@ public final class LeaderReconciler {
                                                     NodeTopologyTracker ntt,
                                                     IntSupplier configuredCoreCountSupplier,
                                                     Supplier<Long> leaderTermSupplier,
-                                                    ClusterTopologyManager ctm) {
+                                                    ClusterTopologyManager ctm,
+                                                    Supplier<String> clusterNameSupplier) {
         return new LeaderReconciler(membershipConfig,
                                     ntt,
                                     configuredCoreCountSupplier,
                                     leaderTermSupplier,
                                     ctm,
+                                    clusterNameSupplier,
                                     TimeSource.system(),
                                     SharedScheduler::schedule);
     }
@@ -240,6 +249,7 @@ public final class LeaderReconciler {
                                                     IntSupplier configuredCoreCountSupplier,
                                                     Supplier<Long> leaderTermSupplier,
                                                     ClusterTopologyManager ctm,
+                                                    Supplier<String> clusterNameSupplier,
                                                     TimeSource timeSource,
                                                     NttTimerScheduler scheduler) {
         return new LeaderReconciler(membershipConfig,
@@ -247,6 +257,7 @@ public final class LeaderReconciler {
                                     configuredCoreCountSupplier,
                                     leaderTermSupplier,
                                     ctm,
+                                    clusterNameSupplier,
                                     timeSource,
                                     scheduler);
     }
@@ -780,9 +791,18 @@ public final class LeaderReconciler {
         var placeholders = new LinkedHashSet<NodeId>();
 
         for (var i = 0; i < gap; i++) {
-            placeholders.add(NodeId.randomNodeId());
+            placeholders.add(NodeId.randomNodeId(replacementNodeIdPrefix()));
         }
         return Set.copyOf(placeholders);
+    }
+
+    /// Cluster-scoped prefix for auto-heal replacement ids so a replacement carries the
+    /// same `aether-<cluster>-node-` form as its compose-seeded siblings (NodeId ==
+    /// container name). Falls back to the bare `node` prefix when the cluster name is not
+    /// yet readable from config (pre-formation), preserving prior behavior.
+    private String replacementNodeIdPrefix() {
+        var clusterName = clusterNameSupplier.get();
+        return clusterName.isBlank() ? "node" : ProvisionContext.coreNodeNamePrefix(clusterName);
     }
 
     /// Pick drain victims from the observed member set using a stable iteration-order

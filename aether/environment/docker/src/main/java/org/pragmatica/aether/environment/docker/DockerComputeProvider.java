@@ -76,7 +76,7 @@ import static org.pragmatica.lang.Result.success;
     /// and `docker kill` prefix-matching keep working.
     private String resolveIdentity(ProvisionSpec spec) {
         var cluster = clusterOrDefault(spec.context());
-        return spec.context().nodeId().or(() -> IdGenerator.generate("aether-" + cluster + "-node"));
+        return spec.context().nodeId().or(() -> IdGenerator.generate(ProvisionContext.coreNodeNamePrefix(cluster)));
     }
 
     private Promise<InstanceInfo> provisionWithIdentity(ProvisionSpec spec, String containerName) {

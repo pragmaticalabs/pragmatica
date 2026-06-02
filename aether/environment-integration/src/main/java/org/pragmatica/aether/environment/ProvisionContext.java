@@ -67,7 +67,15 @@ public record ProvisionContext(String clusterName,
     /// id. Providers call this so identity is owned provider-side and echoed back via
     /// [InstanceInfo#nodeId], rather than only tagging when the caller supplied one.
     public String resolveNodeId() {
-        return nodeId.or(() -> IdGenerator.generate("aether-" + clusterName() + "-node"));
+        return nodeId.or(() -> IdGenerator.generate(coreNodeNamePrefix(clusterName())));
+    }
+
+    /// Canonical core-node name prefix for a cluster: `aether-<cluster>-node`. Compose
+    /// seeds are `<prefix>-<ordinal>` and auto-heal/bootstrap ids are `<prefix>-<ulid>`,
+    /// so every core container of a cluster shares the `aether-<cluster>-` substring and
+    /// a replacement is shape-identical to a seed.
+    public static String coreNodeNamePrefix(String clusterName) {
+        return "aether-" + clusterName + "-node";
     }
 
     public static ProvisionContext provisionContext(String clusterName,

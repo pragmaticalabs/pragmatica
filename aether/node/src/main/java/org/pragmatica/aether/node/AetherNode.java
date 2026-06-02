@@ -1584,11 +1584,16 @@ public interface AetherNode extends ManageableNode {
         // below once drainProcedure/leaderReconciler exist.
         var quorumLossDetector = QuorumLossDetector.quorumLossDetector(membershipConfig, configuredCoreCountSupplier);
         quorumLossDetectorRef.set(quorumLossDetector);
+        Supplier<String> clusterNameSupplier = () ->
+            clusterConfigReader.get()
+                               .map(AetherValue.ClusterConfigValue::clusterName)
+                               .or("");
         var leaderReconciler = LeaderReconciler.leaderReconciler(membershipConfig,
                                                                  ntt,
                                                                  configuredCoreCountSupplier,
                                                                  leaderTerm::get,
                                                                  clusterTopologyManager,
+                                                                 clusterNameSupplier,
                                                                  TimeSource.system(),
                                                                  SharedScheduler::schedule);
         leaderReconcilerRef.set(leaderReconciler);
