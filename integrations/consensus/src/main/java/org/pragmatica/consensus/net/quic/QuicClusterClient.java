@@ -142,14 +142,15 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     private static final long INITIAL_MAX_STREAM_DATA = 32_000_000;
     private static final long INITIAL_MAX_STREAMS = 64;
     /// Data-lane streams the dialer opens after the CONTROL handshake stream, in this fixed
-    /// order. Excludes CONTROL (already established by the handshake). Six lanes.
+    /// order. Excludes CONTROL (already established by the handshake). Seven lanes.
     private static final StreamType[] DATA_LANES = {
         StreamType.CONSENSUS,
         StreamType.KV,
         StreamType.METRICS,
         StreamType.INVOKE,
         StreamType.FORWARD,
-        StreamType.DHT
+        StreamType.DHT,
+        StreamType.SYNC
     };
 
     private final NodeId selfId;
@@ -525,7 +526,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             streamChannel.writeAndFlush(Unpooled.wrappedBuffer(new byte[]{(byte) lane.streamIndex()}));
             peerConnection.registerStream(lane, streamChannel);
             if (pending.decrementAndGet() == 0) {
-                log.info("All 7 lanes registered for peer {} — connection ready", peerNodeId);
+                log.info("All 8 lanes registered for peer {} — connection ready", peerNodeId);
                 promise.succeed(peerConnection);
             }
         }

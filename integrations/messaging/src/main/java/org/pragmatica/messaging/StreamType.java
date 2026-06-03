@@ -38,7 +38,12 @@ public enum StreamType {
     INVOKE(3),
     FORWARD(4),
     DHT(5),
-    CONTROL(6);
+    CONTROL(6),
+    /// Rabia state-synchronization handshake (SyncRequest/SyncResponse). Kept off CONSENSUS so a
+    /// far-behind joiner's catch-up is not head-of-line-blocked by — and does not flood — the
+    /// consensus round traffic. Request (outbound) and response (inbound) use independent QUIC
+    /// stream directions, so they do not block each other on this lane.
+    SYNC(7);
 
     private static final StreamType[] BY_INDEX = new StreamType[values().length];
 

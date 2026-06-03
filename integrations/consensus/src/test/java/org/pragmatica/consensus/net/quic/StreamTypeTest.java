@@ -60,6 +60,11 @@ class StreamTypeTest {
         void control_hasIndex6() {
             assertThat(StreamType.CONTROL.streamIndex()).isEqualTo(6);
         }
+
+        @Test
+        void sync_hasIndex7() {
+            assertThat(StreamType.SYNC.streamIndex()).isEqualTo(7);
+        }
     }
 
     @Nested
@@ -73,6 +78,7 @@ class StreamTypeTest {
             assertThat(StreamType.fromIndex(4).or(StreamType.CONTROL)).isEqualTo(StreamType.FORWARD);
             assertThat(StreamType.fromIndex(5).or(StreamType.CONTROL)).isEqualTo(StreamType.DHT);
             assertThat(StreamType.fromIndex(6).or(StreamType.CONSENSUS)).isEqualTo(StreamType.CONTROL);
+            assertThat(StreamType.fromIndex(7).or(StreamType.CONSENSUS)).isEqualTo(StreamType.SYNC);
         }
 
         @Test
@@ -82,7 +88,7 @@ class StreamTypeTest {
 
         @Test
         void fromIndex_outOfRange_returnsEmpty() {
-            assertThat(StreamType.fromIndex(7).isEmpty()).isTrue();
+            assertThat(StreamType.fromIndex(8).isEmpty()).isTrue();
             assertThat(StreamType.fromIndex(100).isEmpty()).isTrue();
         }
     }

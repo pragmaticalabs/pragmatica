@@ -58,14 +58,26 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
             }
         }
 
-        /// State synchronization response.
-        record SyncResponse<C extends Command>(NodeId sender, SavedState<C> state) implements Synchronous {}
+        /// State synchronization response. Travels on the dedicated SYNC lane (not CONSENSUS) so
+        /// it is not head-of-line-blocked by consensus round traffic during a joiner's catch-up.
+        record SyncResponse<C extends Command>(NodeId sender, SavedState<C> state) implements Synchronous {
+            @Override
+            public StreamType streamType() {
+                return StreamType.SYNC;
+            }
+        }
     }
 
     /// Asynchronous protocol messages (outside consensus rounds).
     sealed interface Asynchronous extends RabiaProtocolMessage {
-        /// State synchronization request.
-        record SyncRequest(NodeId sender) implements Asynchronous {}
+        /// State synchronization request. Travels on the dedicated SYNC lane (not CONSENSUS) so a
+        /// far-behind joiner's SyncRequest retries do not flood the consensus round traffic.
+        record SyncRequest(NodeId sender) implements Asynchronous {
+            @Override
+            public StreamType streamType() {
+                return StreamType.SYNC;
+            }
+        }
 
         /// Distribute a new batch to all nodes.
         record NewBatch<C extends Command>(NodeId sender, Batch<C> batch) implements Asynchronous {}
