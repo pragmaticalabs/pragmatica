@@ -36,6 +36,15 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///                        `port + swimPortOffset`. When ANNOUNCE/Ping/Ack carry the sender's `NodeInfo`
 ///                        the receiver applies this offset to compute the authoritative SWIM address.
 ///                        Defaults to `0` for backwards compatibility (when the same port is used).
+/// @param joinGrace       per-member NORMAL-phase JOIN-GRACE window. A member first introduced in
+///                        `NORMAL`/`RECOVERING` phase that has never yet been observed HEALTHY is treated,
+///                        for the duration of this window after its first sighting, EXACTLY like a
+///                        cold-boot never-HEALTHY peer: its FAULTY edge emits `UnknownObserved` (not
+///                        `FaultyObserved`) and is NOT tombstoned, giving the leader's round-robin probe
+///                        cycle time to confirm a freshly-joined CTM replacement before it is FAULTY-evicted.
+///                        Once the window elapses, a still-never-HEALTHY FAULTY member IS tombstoned and
+///                        emitted FAULTY exactly as today (the 06-02 anti-oscillation contract). A value of
+///                        zero disables the window — behavior is then identical to the pre-grace logic.
 @Codec
 @CodecFor({TimeSpan.class, java.net.InetSocketAddress.class})
 public record SwimConfig(TimeSpan period,
@@ -45,7 +54,8 @@ public record SwimConfig(TimeSpan period,
                          int maxPiggyback,
                          TimeSpan startupDelay,
                          String clusterName,
-                         int swimPortOffset) {
+                         int swimPortOffset,
+                         TimeSpan joinGrace) {
 
     /// Default configuration — suitable for Docker and containerized environments.
     /// `suspectTimeout` is the dominant hop in the SWIM detection chain; lowered
@@ -53,6 +63,14 @@ public record SwimConfig(TimeSpan period,
     /// SLO without inviting false-positive FAULTY transitions under transient
     /// packet loss (the chain still requires a successful indirect-probe round
     /// to fail before SUSPECT is entered).
+    /// Default join-grace window. `period`=1s, the leader's round-robin probe cycle reaches
+    /// a freshly-joined member within a few periods; the observed premature FAULTY-eviction
+    /// of an unconfirmed CTM replacement fires at ~3.7s. 5s comfortably exceeds that ~3.7s
+    /// AND covers ~5 probe periods so the leader can reach + confirm the new member, while
+    /// keeping a genuinely-dead just-joined node detected only `joinGrace` later (its FAULTY
+    /// + tombstone is merely deferred by this window, not skipped).
+    public static final TimeSpan DEFAULT_JOIN_GRACE = timeSpan(5).seconds();
+
     public static final SwimConfig DEFAULT = swimConfig(
         timeSpan(1).seconds(),
         timeSpan(800).millis(),
@@ -61,10 +79,25 @@ public record SwimConfig(TimeSpan period,
         8,
         timeSpan(10).seconds(),
         "",
-        0
+        0,
+        DEFAULT_JOIN_GRACE
     );
 
-    /// Factory with all parameters including cluster name and swim port offset.
+    /// Factory with all parameters including cluster name, swim port offset, and join grace.
+    public static SwimConfig swimConfig(TimeSpan period,
+                                        TimeSpan probeTimeout,
+                                        int indirectProbes,
+                                        TimeSpan suspectTimeout,
+                                        int maxPiggyback,
+                                        TimeSpan startupDelay,
+                                        String clusterName,
+                                        int swimPortOffset,
+                                        TimeSpan joinGrace) {
+        return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
+                              maxPiggyback, startupDelay, clusterName, swimPortOffset, joinGrace);
+    }
+
+    /// Factory with all parameters including cluster name and swim port offset; join grace defaults.
     public static SwimConfig swimConfig(TimeSpan period,
                                         TimeSpan probeTimeout,
                                         int indirectProbes,
@@ -74,7 +107,7 @@ public record SwimConfig(TimeSpan period,
                                         String clusterName,
                                         int swimPortOffset) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, startupDelay, clusterName, swimPortOffset);
+                              maxPiggyback, startupDelay, clusterName, swimPortOffset, DEFAULT_JOIN_GRACE);
     }
 
     /// Factory with all parameters including cluster name; swimPortOffset defaults to 0.
@@ -86,7 +119,7 @@ public record SwimConfig(TimeSpan period,
                                         TimeSpan startupDelay,
                                         String clusterName) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, startupDelay, clusterName, 0);
+                              maxPiggyback, startupDelay, clusterName, 0, DEFAULT_JOIN_GRACE);
     }
 
     /// Factory with all timing/probe parameters — clusterName defaults to empty (no gating).
@@ -97,7 +130,7 @@ public record SwimConfig(TimeSpan period,
                                         int maxPiggyback,
                                         TimeSpan startupDelay) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, startupDelay, "", 0);
+                              maxPiggyback, startupDelay, "", 0, DEFAULT_JOIN_GRACE);
     }
 
     /// Factory with defaults for startupDelay.
@@ -107,7 +140,7 @@ public record SwimConfig(TimeSpan period,
                                         TimeSpan suspectTimeout,
                                         int maxPiggyback) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, timeSpan(10).seconds(), "", 0);
+                              maxPiggyback, timeSpan(10).seconds(), "", 0, DEFAULT_JOIN_GRACE);
     }
 
     /// Factory with defaults.
@@ -132,13 +165,14 @@ public record SwimConfig(TimeSpan period,
                               DEFAULT.maxPiggyback(),
                               DEFAULT.startupDelay(),
                               DEFAULT.clusterName(),
-                              DEFAULT.swimPortOffset());
+                              DEFAULT.swimPortOffset(),
+                              DEFAULT.joinGrace());
     }
 
     /// Derive a new config with the given cluster name.
     public SwimConfig withClusterName(String name) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, startupDelay, name, swimPortOffset);
+                              maxPiggyback, startupDelay, name, swimPortOffset, joinGrace);
     }
 
     /// Derive a new config with the given SWIM port offset. The offset is added to
@@ -146,6 +180,12 @@ public record SwimConfig(TimeSpan period,
     /// [`#swimPortOffset()`].
     public SwimConfig withSwimPortOffset(int offset) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, startupDelay, clusterName, offset);
+                              maxPiggyback, startupDelay, clusterName, offset, joinGrace);
+    }
+
+    /// Derive a new config with the given per-member join-grace window. See [`#joinGrace()`].
+    public SwimConfig withJoinGrace(TimeSpan grace) {
+        return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
+                              maxPiggyback, startupDelay, clusterName, swimPortOffset, grace);
     }
 }

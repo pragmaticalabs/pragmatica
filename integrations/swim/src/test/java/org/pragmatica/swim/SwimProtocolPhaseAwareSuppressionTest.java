@@ -63,12 +63,40 @@ class SwimProtocolPhaseAwareSuppressionTest {
     private static SwimConfig tightConfig() {
         // startupDelay 50ms, period 20ms, suspectTimeout 150ms — keeps the suspect-window
         // expiry within the test budget while preserving the SWIM ordering invariants.
+        // joinGrace 0 — these phase tests assert the immediate (post-grace) NORMAL-phase
+        // FAULTY behavior; the JOIN-GRACE window is exercised by graceConfig() below.
         return swimConfig(timeSpan(50).millis(),
                           timeSpan(20).millis(),
                           3,
                           timeSpan(150).millis(),
                           8,
-                          timeSpan(50).millis());
+                          timeSpan(50).millis()).withJoinGrace(timeSpan(0).millis());
+    }
+
+    /// Like [#tightConfig] but with a NORMAL-phase JOIN-GRACE window LONGER than the whole
+    /// FAULTY-resident lifetime (suspect-window 150ms, sweep at suspectTimeout*3=450ms).
+    /// 600ms keeps a never-HEALTHY member continuously within grace from its first FAULTY
+    /// edge through sweep, so the within-grace suppression (UNKNOWN, no tombstone) is
+    /// observed without racing the sweep-time tombstone backstop.
+    private static SwimConfig graceConfig() {
+        return swimConfig(timeSpan(50).millis(),
+                          timeSpan(20).millis(),
+                          3,
+                          timeSpan(150).millis(),
+                          8,
+                          timeSpan(50).millis()).withJoinGrace(timeSpan(600).millis());
+    }
+
+    /// Like [#graceConfig] but with a join-grace (80ms) SHORTER than the suspect-window
+    /// (150ms), so the natural SUSPECT→FAULTY transition lands AFTER grace expiry. Used to
+    /// observe the post-grace FaultyObserved emission on the natural failure-detection edge.
+    private static SwimConfig shortGraceConfig() {
+        return swimConfig(timeSpan(50).millis(),
+                          timeSpan(20).millis(),
+                          3,
+                          timeSpan(150).millis(),
+                          8,
+                          timeSpan(50).millis()).withJoinGrace(timeSpan(80).millis());
     }
 
     @Nested
@@ -343,6 +371,214 @@ class SwimProtocolPhaseAwareSuppressionTest {
                 assertThat(observations.byType(SwimObservation.FaultyObserved.class)
                                        .getFirst()
                                        .peer()).isEqualTo(NODE_B);
+            } finally {
+                protocol.stop();
+            }
+        }
+    }
+
+    @Nested
+    class JoinGracePhase {
+        @Test
+        void normalPhase_neverHealthyMember_withinGrace_emitsUnknown_notFaulty_notTombstoned() {
+            // A freshly-joined NORMAL-phase replacement that has not yet been confirmed
+            // HEALTHY by the leader: its FAULTY edge fires WHILE within the join-grace
+            // window, so it is suppressed to UnknownObserved and NOT tombstoned — the
+            // leader's probe cycle still has time to confirm it (the bug fix).
+            var transport = new RecordingTransport();
+            var listener = new RecordingListener();
+            var observations = new RecordingObservationSink();
+            var protocol = SwimProtocol.swimProtocol(graceConfig(),
+                                                     transport,
+                                                     listener,
+                                                     SELF_ID,
+                                                     SELF_ADDR,
+                                                     () -> false) // NORMAL
+                                       .unwrap();
+            protocol.addObservationListener(observations);
+
+            // First sighting (stamps firstSeen) as SUSPECT — never observed HEALTHY.
+            var suspectUpdate = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectUpdate)));
+
+            protocol.start();
+            try {
+                // Within grace: a FAULTY edge produces UnknownObserved, never FaultyObserved.
+                await().atMost(Duration.ofSeconds(2))
+                       .until(() -> !observations.byType(SwimObservation.UnknownObserved.class).isEmpty());
+
+                assertThat(observations.byType(SwimObservation.FaultyObserved.class))
+                    .as("Within join-grace: never-HEALTHY member must NOT emit FaultyObserved")
+                    .isEmpty();
+                assertThat(observations.byType(SwimObservation.UnknownObserved.class))
+                    .as("Within join-grace: FAULTY edge is suppressed to UnknownObserved")
+                    .isNotEmpty();
+                assertThat(protocol.tombstonedForTest(NODE_A))
+                    .as("Within join-grace: a never-HEALTHY member must NOT be tombstoned")
+                    .isFalse();
+            } finally {
+                protocol.stop();
+            }
+        }
+
+        @Test
+        void normalPhase_neverHealthyMember_afterGraceExpiry_emitsFaulty_andTombstoned() {
+            // Join-grace (80ms) SHORTER than the suspect-window (150ms): the natural
+            // SUSPECT→FAULTY failure-detection edge fires AFTER grace expires, so the member
+            // behaves EXACTLY as today — FaultyObserved is emitted (no UNKNOWN suppression)
+            // and it is tombstoned. The 06-02 anti-oscillation contract is preserved; grace
+            // only DEFERS the FAULTY, it never skips it.
+            var transport = new RecordingTransport();
+            var listener = new RecordingListener();
+            var observations = new RecordingObservationSink();
+            var protocol = SwimProtocol.swimProtocol(shortGraceConfig(),
+                                                     transport,
+                                                     listener,
+                                                     SELF_ID,
+                                                     SELF_ADDR,
+                                                     () -> false) // NORMAL
+                                       .unwrap();
+            protocol.addObservationListener(observations);
+
+            // First sighting (stamps firstSeen) as SUSPECT — never observed HEALTHY. The
+            // suspect-window (150ms) outlasts the 80ms grace, so the FAULTY edge fires past
+            // grace.
+            var suspectUpdate = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectUpdate)));
+
+            protocol.start();
+            try {
+                await().atMost(Duration.ofSeconds(3))
+                       .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty()
+                                    && protocol.tombstonedForTest(NODE_A));
+
+                assertThat(observations.byType(SwimObservation.FaultyObserved.class))
+                    .as("After join-grace expiry: never-HEALTHY member MUST emit FaultyObserved")
+                    .isNotEmpty();
+                assertThat(observations.byType(SwimObservation.UnknownObserved.class))
+                    .as("Grace shorter than suspect-window: FAULTY edge lands post-grace, no UNKNOWN")
+                    .isEmpty();
+                assertThat(protocol.tombstonedForTest(NODE_A))
+                    .as("After join-grace expiry: never-HEALTHY FAULTY member MUST be tombstoned (06-02)")
+                    .isTrue();
+            } finally {
+                protocol.stop();
+            }
+        }
+
+        @Test
+        void normalPhase_memberBecomesHealthyDuringGrace_isNotSuppressed_emitsHealthy() {
+            // A replacement confirmed HEALTHY during its grace window exits grace-relevance
+            // (everSeenHealthy short-circuits the suppression term): a later FAULTY emits
+            // FaultyObserved immediately, not Unknown.
+            var transport = new RecordingTransport();
+            var listener = new RecordingListener();
+            var observations = new RecordingObservationSink();
+            var protocol = SwimProtocol.swimProtocol(graceConfig(),
+                                                     transport,
+                                                     listener,
+                                                     SELF_ID,
+                                                     SELF_ADDR,
+                                                     () -> false) // NORMAL
+                                       .unwrap();
+            protocol.addObservationListener(observations);
+
+            protocol.start();
+            try {
+                // ALIVE gossip during grace → everSeenHealthy + HealthyObserved.
+                var aliveA = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
+                protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveA)));
+                await().atMost(Duration.ofSeconds(2))
+                       .until(() -> !observations.byType(SwimObservation.HealthyObserved.class).isEmpty());
+                assertThat(protocol.everSeenHealthyForTest(NODE_A)).isTrue();
+
+                // FAULTY while STILL within grace: everSeenHealthy short-circuits suppression
+                // → FaultyObserved, not Unknown.
+                var faultyA = new MembershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
+                protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
+                await().atMost(Duration.ofSeconds(2))
+                       .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
+
+                assertThat(observations.byType(SwimObservation.FaultyObserved.class))
+                    .as("Member proven HEALTHY during grace is NOT suppressed on a later FAULTY")
+                    .isNotEmpty();
+            } finally {
+                protocol.stop();
+            }
+        }
+
+        @Test
+        void zeroGrace_neverHealthyMember_emitsFaultyImmediately() {
+            // Grace boundary — just OUTSIDE: joinGrace=0 disables the window entirely, so a
+            // never-HEALTHY NORMAL-phase member emits FaultyObserved at once (identical to
+            // the pre-grace behavior; proves grace=0 is a clean no-op).
+            var transport = new RecordingTransport();
+            var listener = new RecordingListener();
+            var observations = new RecordingObservationSink();
+            var protocol = SwimProtocol.swimProtocol(tightConfig(), // joinGrace 0
+                                                     transport,
+                                                     listener,
+                                                     SELF_ID,
+                                                     SELF_ADDR,
+                                                     () -> false) // NORMAL
+                                       .unwrap();
+            protocol.addObservationListener(observations);
+
+            var suspectUpdate = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectUpdate)));
+
+            protocol.start();
+            try {
+                await().atMost(Duration.ofSeconds(3))
+                       .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty()
+                                    || !observations.byType(SwimObservation.UnknownObserved.class).isEmpty());
+
+                assertThat(observations.byType(SwimObservation.FaultyObserved.class))
+                    .as("joinGrace=0: never-HEALTHY NORMAL-phase member emits FaultyObserved immediately")
+                    .hasSize(1);
+                assertThat(observations.byType(SwimObservation.UnknownObserved.class))
+                    .as("joinGrace=0: no UnknownObserved suppression")
+                    .isEmpty();
+            } finally {
+                protocol.stop();
+            }
+        }
+
+        @Test
+        void coldBootPhase_withGraceConfigured_stillSuppresses_behaviorUnchanged() {
+            // COLD_BOOT formation path is UNCHANGED by the join-grace addition: the booting
+            // branch fires identically (it ORs with the grace term, so a configured grace
+            // cannot make a booting never-HEALTHY peer emit FAULTY).
+            var transport = new RecordingTransport();
+            var listener = new RecordingListener();
+            var observations = new RecordingObservationSink();
+            var protocol = SwimProtocol.swimProtocol(graceConfig(),
+                                                     transport,
+                                                     listener,
+                                                     SELF_ID,
+                                                     SELF_ADDR,
+                                                     () -> true) // COLD_BOOT
+                                       .unwrap();
+            protocol.addObservationListener(observations);
+
+            var suspectUpdate = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectUpdate)));
+
+            protocol.start();
+            try {
+                // Even well past the 250ms grace, COLD_BOOT keeps suppressing (booting=true).
+                await().atMost(Duration.ofSeconds(2))
+                       .until(() -> !observations.byType(SwimObservation.UnknownObserved.class).isEmpty());
+                await().pollDelay(Duration.ofMillis(400))
+                       .atMost(Duration.ofSeconds(1))
+                       .until(() -> observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
+
+                assertThat(observations.byType(SwimObservation.FaultyObserved.class))
+                    .as("COLD_BOOT: never-HEALTHY peer must never emit FaultyObserved even past grace")
+                    .isEmpty();
+                assertThat(protocol.tombstonedForTest(NODE_A))
+                    .as("COLD_BOOT: never-HEALTHY peer must NOT be tombstoned (formation safety)")
+                    .isFalse();
             } finally {
                 protocol.stop();
             }

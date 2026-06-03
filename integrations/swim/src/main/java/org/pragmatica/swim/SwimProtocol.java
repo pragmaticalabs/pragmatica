@@ -109,6 +109,17 @@ public final class SwimProtocol implements SwimMessageHandler {
     private final Map<Long, PendingProbe> pendingProbes = new ConcurrentHashMap<>();
     private final Map<Long, RelayInfo> pendingRelays = new ConcurrentHashMap<>();
     private final Map<NodeId, Long> suspectTimestamps = new ConcurrentHashMap<>();
+    /// Per-member first-sighting timestamp (epoch millis), stamped `putIfAbsent` when a
+    /// member is first introduced ([#addSeedMember] / [#applyNewMember]). Drives the
+    /// NORMAL-phase JOIN-GRACE window ([#withinJoinGrace]): a never-HEALTHY member still
+    /// within `config.joinGrace()` of its first sighting is treated like a cold-boot
+    /// never-HEALTHY peer (FAULTY edge → `UnknownObserved`, not tombstoned), giving the
+    /// leader's round-robin probe cycle time to confirm a freshly-joined CTM replacement
+    /// before it is FAULTY-evicted. `putIfAbsent` so a re-add during the window keeps the
+    /// original first-sighting (first add wins) — the window is not arbitrarily extended.
+    /// Cleared in [#clearDeathMemory] so a genuinely-re-joining swept member gets a fresh
+    /// grace window. Parallel map (does NOT touch the `SwimMember` record/codec).
+    private final Map<NodeId, Long> memberFirstSeenAt = new ConcurrentHashMap<>();
     private final PiggybackBuffer piggybackBuffer;
     private final AtomicLong sequenceCounter = new AtomicLong(0);
     /// Durable, monotonic self-incarnation — the SWIM liveness epoch this node
@@ -308,6 +319,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         var member = SwimMember.swimMember(nodeId, MemberState.SUSPECT, 0, address);
         members.put(nodeId, member);
         suspectTimestamps.put(nodeId, System.currentTimeMillis());
+        memberFirstSeenAt.putIfAbsent(nodeId, System.currentTimeMillis());
         notifyMemberJoined(member);
         addMemberUpdate(member);
     }
@@ -500,13 +512,17 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// member reaches the sweep still FAULTY without having traversed an instrumented
     /// FAULTY edge (idempotent: re-stamping at the same incarnation is harmless).
     ///
-    /// Same phase-aware gate as the FAULTY edge: tombstone when `(!isBooting) OR
-    /// everSeenHealthy.contains(peer)`. In NORMAL/RECOVERING a swept never-HEALTHY FAULTY
-    /// id is also tombstoned (02-chaos S01 backstop); in COLD_BOOT only proven-healthy
-    /// ids are tombstoned so a slow cold-boot seed is not refused (formation safety).
-    /// MUST be called BEFORE `clearDeathMemory` (which erases `everSeenHealthy`).
+    /// Same phase-aware gate as the FAULTY edge: tombstone when
+    /// `(!isBooting AND !withinJoinGrace) OR everSeenHealthy.contains(peer)`. In
+    /// NORMAL/RECOVERING a swept never-HEALTHY FAULTY id is tombstoned ONCE its join-grace
+    /// has expired (02-chaos S01 backstop); within the grace window (a freshly-joined
+    /// replacement not yet confirmed HEALTHY) it is NOT tombstoned so the leader's probe
+    /// cycle can still confirm it. In COLD_BOOT only proven-healthy ids are tombstoned so a
+    /// slow cold-boot seed is not refused (formation safety).
+    /// MUST be called BEFORE `clearDeathMemory` (which erases `everSeenHealthy` and the
+    /// first-sighting entry the grace check reads).
     private void tombstoneIfWasHealthy(NodeId peer, long incarnation, long now) {
-        if (isBooting.getAsBoolean() && !everSeenHealthy.contains(peer)) {
+        if ((isBooting.getAsBoolean() || withinJoinGrace(peer)) && !everSeenHealthy.contains(peer)) {
             return;
         }
         tombstones.put(peer, new Tombstone(incarnation, now));
@@ -519,15 +535,20 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// `applyExistingMember` / `markAliveIfNeeded`, re-firing `HealthyObserved` and
     /// restarting the SUSPECT<->FAULTY oscillation (#231).
     ///
-    /// Phase-aware gate (02-chaos S01 never-HEALTHY oscillation, 2026-06): a FAULTY id
-    /// is tombstoned when `(!isBooting) OR everSeenHealthy.contains(peer)`. Concretely:
-    /// - In `NORMAL`/`RECOVERING` (`isBooting=false`): ALWAYS tombstone the FAULTY id,
-    ///   even one that was NEVER observed HEALTHY. This is the fix for a replacement node
-    ///   killed inside its JOINING/SYNCING window: its stale Hello re-completes, the bare
-    ///   re-seed re-adds it SUSPECT, it expires to FAULTY, gets swept, re-adds again — a
-    ///   ~1 Hz SUSPECT<->FAULTY oscillation that republishes a generation snapshot on
-    ///   every FAULTY edge so cluster `quiescence` never clears. Tombstoning the FAULTY
-    ///   id in NORMAL phase makes every re-add gate refuse it, ending the oscillation.
+    /// Phase-aware gate (02-chaos S01 never-HEALTHY oscillation, 2026-06; NORMAL-phase
+    /// join-grace, 2026-06): a FAULTY id is tombstoned when
+    /// `(!isBooting AND !withinJoinGrace) OR everSeenHealthy.contains(peer)`. Concretely:
+    /// - In `NORMAL`/`RECOVERING` (`isBooting=false`) once the per-member join-grace has
+    ///   expired: ALWAYS tombstone the FAULTY id, even one NEVER observed HEALTHY. This is
+    ///   the fix for a replacement node killed inside its JOINING/SYNCING window: its stale
+    ///   Hello re-completes, the bare re-seed re-adds it SUSPECT, it expires to FAULTY, gets
+    ///   swept, re-adds again — a ~1 Hz SUSPECT<->FAULTY oscillation that republishes a
+    ///   generation snapshot on every FAULTY edge so cluster `quiescence` never clears.
+    ///   Tombstoning the FAULTY id in NORMAL phase makes every re-add gate refuse it.
+    /// - WITHIN the NORMAL-phase join-grace window (a freshly-joined CTM replacement not yet
+    ///   confirmed HEALTHY by the leader's round-robin probe): NOT tombstoned, so a premature
+    ///   FAULTY before the leader can confirm it does not evict a live replacement. The
+    ///   tombstone (and FAULTY emission) is merely DEFERRED to grace expiry.
     /// - In `COLD_BOOT` (`isBooting=true`): preserve the legacy `everSeenHealthy` gate —
     ///   a never-HEALTHY id is NOT tombstoned. A slow cold-boot seed is never-HEALTHY by
     ///   definition; tombstoning it would refuse its legitimate re-add and break cluster
@@ -538,7 +559,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Incarnation/TTL semantics are unchanged; the tombstone-CLEAR paths (self-ANNOUNCE,
     /// higher-incarnation supersede) are untouched, so legitimate rejoin still works.
     private void tombstoneOnFaultyEdge(NodeId peer, long incarnation) {
-        if (isBooting.getAsBoolean() && !everSeenHealthy.contains(peer)) {
+        if ((isBooting.getAsBoolean() || withinJoinGrace(peer)) && !everSeenHealthy.contains(peer)) {
             return;
         }
         tombstones.put(peer, new Tombstone(incarnation, System.currentTimeMillis()));
@@ -607,6 +628,20 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void clearDeathMemory(NodeId peer) {
         everSeenHealthy.remove(peer);
         suspectTimestamps.remove(peer);
+        memberFirstSeenAt.remove(peer);
+    }
+
+    /// Whether `peer` is still within its per-member NORMAL-phase JOIN-GRACE window:
+    /// it has a recorded first-sighting AND less than `config.joinGrace()` has elapsed
+    /// since. A member with no first-sighting entry (should not happen) is NOT within
+    /// grace — fail-safe to the pre-grace behavior. Used (together with
+    /// `!everSeenHealthy.contains(peer)`) to extend the existing cold-boot FAULTY/tombstone
+    /// suppression to a freshly-joined never-HEALTHY member in `NORMAL`/`RECOVERING` phase.
+    private boolean withinJoinGrace(NodeId peer) {
+        var graceMs = config.joinGrace().millis();
+        return option(memberFirstSeenAt.get(peer))
+            .map(firstSeen -> System.currentTimeMillis() - firstSeen < graceMs)
+            .or(false);
     }
 
     private void expireSuspectIfOverdue(NodeId nodeId, long timestamp, long now, long suspectTimeoutMillis) {
@@ -1052,6 +1087,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void applyNewMember(MembershipUpdate update) {
         var member = SwimMember.swimMember(update.nodeId(), update.state(), update.incarnation(), update.address());
         members.put(update.nodeId(), member);
+        memberFirstSeenAt.putIfAbsent(update.nodeId(), System.currentTimeMillis());
         if (update.state() != MemberState.FAULTY) {
             addMemberUpdate(update);
         }
@@ -1213,18 +1249,37 @@ public final class SwimProtocol implements SwimMessageHandler {
     ///   event that integration tests depend on.
     private void emitFaultyOrUnknown(NodeId peer, long incarnation) {
         var booting = isBooting.getAsBoolean();
-        if (booting && !everSeenHealthy.contains(peer)) {
-            LOG.info("SWIM cold-boot suppression (COLD_BOOT phase): peer {} never observed HEALTHY — emitting UNKNOWN instead of FAULTY",
-                     peer.id());
+        if ((booting || withinJoinGrace(peer)) && !everSeenHealthy.contains(peer)) {
+            logFaultySuppression(peer, booting);
             emitObservationOnEdge(peer, SwimHealth.UNKNOWN, () -> new SwimObservation.UnknownObserved(peer, incarnation));
             return;
         }
         if (!booting && !everSeenHealthy.contains(peer)) {
-            LOG.warn("SWIM phase=NORMAL_OR_RECOVERING: emitting FaultyObserved for never-HEALTHY peer {} (cold-boot suppression bypassed)",
+            LOG.warn("SWIM phase=NORMAL_OR_RECOVERING: emitting FaultyObserved for never-HEALTHY peer {} (join-grace expired, cold-boot suppression bypassed)",
                      peer.id());
         }
         emitObservationOnEdge(peer, SwimHealth.FAULTY, () -> new SwimObservation.FaultyObserved(peer, incarnation));
         emitClusterFaulty(peer);
+    }
+
+    /// Distinguish the two suppression triggers in the log so cold-boot formation and
+    /// NORMAL-phase join-grace are diagnosable separately.
+    private void logFaultySuppression(NodeId peer, boolean booting) {
+        if (booting) {
+            LOG.info("SWIM cold-boot suppression (COLD_BOOT phase): peer {} never observed HEALTHY — emitting UNKNOWN instead of FAULTY",
+                     peer.id());
+            return;
+        }
+        LOG.info("SWIM join-grace suppression (NORMAL phase, age={}ms < graceMs={}): never-HEALTHY peer {} — emitting UNKNOWN instead of FAULTY",
+                 memberAgeMs(peer), config.joinGrace().millis(), peer.id());
+    }
+
+    /// Age (epoch millis since first sighting) of `peer`, or `-1` when no first-sighting
+    /// is recorded. Diagnostic only.
+    private long memberAgeMs(NodeId peer) {
+        return option(memberFirstSeenAt.get(peer))
+            .map(firstSeen -> System.currentTimeMillis() - firstSeen)
+            .or(-1L);
     }
 
     /// Forward SWIM's FAULTY edge to the cluster-wide `TransportObservation` stream

@@ -69,13 +69,16 @@ class SwimProtocolTombstoneTest {
     /// Tight timings: suspectTimeout 100ms => cleanup threshold 300ms, tombstone TTL
     /// 1000ms (10x). Period 20ms keeps cleanup ticks frequent. Phase NORMAL (false)
     /// so a once-HEALTHY-then-FAULTY peer produces the real FAULTY/Departed path.
+    /// joinGrace 0 — these tombstone-edge tests assert the immediate (post-grace) NORMAL
+    /// behavior; the NORMAL-phase JOIN-GRACE deferral is covered in
+    /// SwimProtocolPhaseAwareSuppressionTest and joinGraceConfig() below.
     private static SwimConfig tightConfig() {
         return swimConfig(timeSpan(20).millis(),
                           timeSpan(20).millis(),
                           3,
                           timeSpan(100).millis(),
                           8,
-                          timeSpan(20).millis());
+                          timeSpan(20).millis()).withJoinGrace(timeSpan(0).millis());
     }
 
     @BeforeEach
@@ -88,14 +91,46 @@ class SwimProtocolTombstoneTest {
         protocol.addObservationListener(observations);
     }
 
-    /// Build a COLD_BOOT-phase protocol (`isBooting=() -> true`) and wire the recording
-    /// observation sink. Used by the cold-boot-scoped never-HEALTHY tests, where a slow
-    /// seed that goes FAULTY must NOT be tombstoned so formation can still re-add it.
+    /// COLD_BOOT-phase protocol with a configured join-grace, used to confirm the
+    /// booting branch still suppresses regardless of the grace term.
     private SwimProtocol coldBootProtocol() {
         var coldBoot = SwimProtocol.swimProtocol(tightConfig(), transport, listener, SELF_ID, SELF_ADDR, () -> true)
                                    .unwrap();
         coldBoot.addObservationListener(observations);
         return coldBoot;
+    }
+
+    /// NORMAL-phase protocol with a join-grace (600ms) LONGER than the whole FAULTY-resident
+    /// lifetime (suspectTimeout 100ms, sweep at suspectTimeout*3=300ms), so a never-HEALTHY
+    /// member stays within grace from its first FAULTY edge through sweep — proving the
+    /// within-grace member is NEVER tombstoned without racing the sweep backstop.
+    private SwimProtocol longGraceProtocol() {
+        var cfg = swimConfig(timeSpan(20).millis(),
+                             timeSpan(20).millis(),
+                             3,
+                             timeSpan(100).millis(),
+                             8,
+                             timeSpan(20).millis()).withJoinGrace(timeSpan(600).millis());
+        var graced = SwimProtocol.swimProtocol(cfg, transport, listener, SELF_ID, SELF_ADDR, () -> false)
+                                 .unwrap();
+        graced.addObservationListener(observations);
+        return graced;
+    }
+
+    /// NORMAL-phase protocol with a join-grace (40ms) SHORTER than the suspect-window
+    /// (100ms), so the natural SUSPECT→FAULTY edge fires AFTER grace and the member IS
+    /// tombstoned (06-02 anti-oscillation preserved, only deferred by grace).
+    private SwimProtocol shortGraceProtocol() {
+        var cfg = swimConfig(timeSpan(20).millis(),
+                             timeSpan(20).millis(),
+                             3,
+                             timeSpan(100).millis(),
+                             8,
+                             timeSpan(20).millis()).withJoinGrace(timeSpan(40).millis());
+        var graced = SwimProtocol.swimProtocol(cfg, transport, listener, SELF_ID, SELF_ADDR, () -> false)
+                                 .unwrap();
+        graced.addObservationListener(observations);
+        return graced;
     }
 
     /// Drive NODE_A: ALIVE gossip (sets everSeenHealthy) -> FAULTY gossip -> cleanup.
@@ -270,6 +305,72 @@ class SwimProtocolTombstoneTest {
                    .until(() -> !protocol.members().containsKey(NODE_A) && protocol.tombstonedForTest(NODE_A));
         } finally {
             protocol.stop();
+        }
+    }
+
+    @Test
+    void neverHealthyId_faultyWithinJoinGrace_isNotTombstoned() {
+        // NORMAL-phase JOIN-GRACE: a freshly-joined replacement that goes FAULTY WHILE within
+        // its join-grace window must NOT be tombstoned (the leader's probe cycle still has
+        // time to confirm it). Grace (600ms) outlasts the FAULTY-resident lifetime through
+        // sweep (300ms), so the sweep backstop is also suppressed — the member is swept WITHOUT
+        // a tombstone and remains re-addable.
+        var graced = longGraceProtocol();
+        try {
+            graced.start();
+
+            var suspectA = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            graced.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectA)));
+            assertThat(graced.everSeenHealthyForTest(NODE_A)).isFalse();
+
+            // FAULTY edge fires (~100ms) within grace → UnknownObserved, not tombstoned.
+            await().atMost(Duration.ofSeconds(1))
+                   .until(() -> !observations.byType(SwimObservation.UnknownObserved.class).isEmpty());
+            assertThat(graced.tombstonedForTest(NODE_A))
+                .as("Within join-grace: never-HEALTHY FAULTY member must NOT be tombstoned")
+                .isFalse();
+            assertThat(observations.byType(SwimObservation.FaultyObserved.class))
+                .as("Within join-grace: no FaultyObserved")
+                .isEmpty();
+
+            // Sweep (300ms) is also within grace → member removed WITHOUT a tombstone.
+            await().atMost(Duration.ofSeconds(2))
+                   .until(() -> !graced.members().containsKey(NODE_A));
+            assertThat(graced.tombstonedForTest(NODE_A))
+                .as("Within join-grace: sweep must NOT tombstone the never-HEALTHY member")
+                .isFalse();
+        } finally {
+            graced.stop();
+        }
+    }
+
+    @Test
+    void neverHealthyId_faultyAfterJoinGraceExpiry_isTombstoned_reAddRefused() {
+        // Join-grace (40ms) SHORTER than the suspect-window (100ms): the natural FAULTY edge
+        // lands AFTER grace, so the member IS tombstoned exactly as today — the 06-02
+        // anti-oscillation contract holds, grace only DEFERS the tombstone.
+        var graced = shortGraceProtocol();
+        try {
+            graced.start();
+
+            var suspectA = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            graced.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectA)));
+            assertThat(graced.everSeenHealthyForTest(NODE_A)).isFalse();
+
+            await().atMost(Duration.ofSeconds(3))
+                   .until(() -> graced.tombstonedForTest(NODE_A) && !graced.members().containsKey(NODE_A));
+
+            assertThat(graced.tombstonedForTest(NODE_A))
+                .as("After join-grace expiry: never-HEALTHY FAULTY member MUST be tombstoned (06-02)")
+                .isTrue();
+
+            // Bare re-seed refused — oscillation ends.
+            graced.addSeedMember(NODE_A, ADDR_A);
+            assertThat(graced.members().containsKey(NODE_A))
+                .as("After expiry+tombstone, bare re-seed must be refused")
+                .isFalse();
+        } finally {
+            graced.stop();
         }
     }
 
