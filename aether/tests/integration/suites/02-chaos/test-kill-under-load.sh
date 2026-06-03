@@ -99,8 +99,17 @@ test_cluster_survives() {
 
 test_auto_heal() {
     log_info "Waiting for CTM auto-heal to quiesce at the post-replacement generation..."
-    wait_for_node_count 5 180 || {
-        log_fail "Cluster did not quiesce after auto-heal"
+    # Two-stage barrier — see test-kill-node.sh:test_auto_heal for the rationale.
+    # Auto-heal-after-kill pays a provision→boot→QUIC→SWIM-HEALTHY→×2-NTT-tick
+    # latency that cold-restart (~1s) does not, so 180s was too tight: raised to
+    # 240s for the count barrier, then gate on true QUIESCED (every member HEALTHY,
+    # not merely admitted-but-SUSPECTED).
+    wait_for_node_count 5 240 || {
+        log_fail "Cluster did not reach 5 members after auto-heal (replacement never admitted)"
+        return 1
+    }
+    await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 120 || {
+        log_fail "Cluster reached 5 members but generation did not quiesce (replacement admitted but not HEALTHY)"
         return 1
     }
     local count

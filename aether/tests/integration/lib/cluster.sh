@@ -297,11 +297,18 @@ pick_non_leader() {
     # the old single-pass — never picks fewer, and never streams partial output on
     # failure (candidates are buffered and emitted only on full success).
     #
-    # Override the wait with PICK_NON_LEADER_TIMEOUT (default 120s — raised from
-    # 60s to ride out post-Kill_2 re-election READY flicker: after 5→3 survivors a
-    # surviving non-leader can briefly drop out of --state READY during re-sync,
-    # and leader + pinned-MGMT exclusion can transiently cap candidates).
-    local deadline=$(( $(date +%s) + ${PICK_NON_LEADER_TIMEOUT:-120} ))
+    # Override the wait with PICK_NON_LEADER_TIMEOUT. The default scales with
+    # `count`: a multi-victim pick needs N *simultaneously* live non-leaders, and a
+    # fresh-ULID replacement provisioned by a prior destructive block pays the full
+    # provision→boot→QUIC→SWIM-HEALTHY readiness latency before it re-enters
+    # --state READY. count=1 keeps 120s (single-kill is unaffected); count=2 rides
+    # at 240s — matching this suite's wait_for_node_count quiesce budget — so the
+    # picker waits out the same readiness window rather than undercounting (the
+    # post-Kill_2 re-election READY flicker: a surviving non-leader can briefly drop
+    # out of --state READY during re-sync, and leader + pinned-MGMT exclusion can
+    # transiently cap candidates). An explicit PICK_NON_LEADER_TIMEOUT wins outright.
+    local budget="${PICK_NON_LEADER_TIMEOUT:-$(( 120 * count ))}"
+    local deadline=$(( $(date +%s) + budget ))
     local attempt_found=0
     local attempt_list=""
     local last_reason="no candidates yet"
@@ -379,7 +386,7 @@ pick_non_leader() {
     done
 
     # Deadline passed: a genuine non-convergence (not a transient), surfaced loudly.
-    log_fail "pick_non_leader: ${last_reason} after ${PICK_NON_LEADER_TIMEOUT:-120}s waiting for convergence (pinned=${pinned:-<none>}, cluster=${CLUSTER_ID:-<none>})" >&2
+    log_fail "pick_non_leader: ${last_reason} after ${budget}s waiting for convergence (pinned=${pinned:-<none>}, cluster=${CLUSTER_ID:-<none>})" >&2
     return 1
 }
 
