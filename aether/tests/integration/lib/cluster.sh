@@ -305,9 +305,11 @@ pick_non_leader() {
     local attempt_found=0
     local attempt_list=""
     local last_reason="no candidates yet"
+    local last_diag="(no pass completed)"
     while :; do
         attempt_found=0
         attempt_list=""
+        local pass_diag="endpoint=${MGMT_ENTRY_POINT}"
 
         # Re-derive leader from /api/nodes/status each pass to close the
         # MGMT_ENTRY_POINT round-robin race: a fast re-election between the
@@ -318,6 +320,7 @@ pick_non_leader() {
         status_payload=$(api_get "/api/nodes/status" 2>/dev/null || true)
         if [ -z "$status_payload" ]; then
             last_reason="/api/nodes/status returned empty body"
+            last_diag="${pass_diag} status_payload=EMPTY"
         else
             local derived_leader
             derived_leader=$(printf '%s' "$status_payload" \
@@ -337,17 +340,29 @@ pick_non_leader() {
             lifecycle_payload=$(aether_failover nodes lifecycle --state READY --format json 2>/dev/null || true)
             if [ -z "$lifecycle_payload" ]; then
                 last_reason="'nodes lifecycle --state READY' returned empty body"
+                last_diag="${pass_diag} leader=${leader} lifecycle_payload=EMPTY"
             else
                 local current_members
                 current_members=$(printf '%s' "$lifecycle_payload" \
                     | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
                     | sed 's/"nodeId"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' || true)
 
+                # DIAG (pick_non_leader 1/N): raw READY set this endpoint returns, pre-filter.
+                local raw_ready
+                raw_ready=$(printf '%s' "$current_members" | grep -cve '^$' || true)
+                pass_diag="${pass_diag} leader=${leader} pinned=${pinned:-none} rawReady=${raw_ready} readyList=[$(printf '%s' "$current_members" | grep -v '^$' | tr '\n' ',')]"
+
                 local candidate
-                while IFS= read -r candidate; do
+                # Read candidates on FD 3, NOT stdin: the docker-ps liveness guard below
+                # calls remote_exec (ssh), and ssh reads/consumes stdin — on stdin this
+                # silently eats the rest of the here-string after the FIRST candidate, so
+                # the loop evaluated only 1 of N and pick_non_leader 2 always returned 1/2
+                # regardless of how many READY non-leaders existed. FD 3 isolates the loop
+                # input from ssh's stdin. (Confirmed via DIAG: rawReady=4 but 1 evaluated.)
+                while IFS= read -r candidate <&3; do
                     [ -z "$candidate" ] && continue
-                    if [ "$candidate" = "$leader" ]; then continue; fi
-                    if [ -n "$pinned" ] && [ "$candidate" = "$pinned" ]; then continue; fi
+                    if [ "$candidate" = "$leader" ]; then pass_diag="${pass_diag} ${candidate}=EXCL-leader"; continue; fi
+                    if [ -n "$pinned" ] && [ "$candidate" = "$pinned" ]; then pass_diag="${pass_diag} ${candidate}=EXCL-pinned"; continue; fi
                     # Docker-mode liveness guard: lifecycle may still report a
                     # just-killed node as READY before membership evicts it.
                     # NodeId == container_name (post-migration); `docker ps` (no -a)
@@ -356,19 +371,22 @@ pick_non_leader() {
                         local _alive_name
                         _alive_name=$(remote_exec "docker ps --filter 'name=^${candidate}\$' --format '{{.Names}}' | head -1" 2>/dev/null || true)
                         if [ -z "$_alive_name" ]; then
+                            pass_diag="${pass_diag} ${candidate}=DEAD-docker"
                             continue
                         fi
                     fi
+                    pass_diag="${pass_diag} ${candidate}=LIVE"
                     attempt_list="${attempt_list}${candidate}"$'\n'
                     attempt_found=$((attempt_found + 1))
                     if [ "$attempt_found" -ge "$count" ]; then break; fi
-                done <<< "$current_members"
+                done 3<<< "$current_members"
 
                 if [ "$attempt_found" -ge "$count" ]; then
                     printf '%s' "$attempt_list" | grep -v '^$' | head -n "$count"
                     return 0
                 fi
                 last_reason="only ${attempt_found}/${count} live non-leader candidates (leader=${leader})"
+                last_diag="$pass_diag"
             fi
         fi
 
@@ -380,6 +398,7 @@ pick_non_leader() {
 
     # Deadline passed: a genuine non-convergence (not a transient), surfaced loudly.
     log_fail "pick_non_leader: ${last_reason} after ${PICK_NON_LEADER_TIMEOUT:-120}s waiting for convergence (pinned=${pinned:-<none>}, cluster=${CLUSTER_ID:-<none>})" >&2
+    log_fail "pick_non_leader DIAG (last pass): ${last_diag}" >&2
     return 1
 }
 
@@ -1326,12 +1345,15 @@ cleanup_cluster_zombies() {
         return 0
     fi
     local zombie
-    while IFS= read -r zombie; do
+    # FD 3, not stdin: remote_exec (ssh) inside the loop consumes stdin — on a stdin
+    # here-string it would eat the remaining names after the first, removing only ONE
+    # zombie per call and leaving survivors that silently invalidate the next run.
+    while IFS= read -r zombie <&3; do
         [ -z "$zombie" ] && continue
         log_info "cleanup_cluster_zombies(${cluster_id}): removing zombie ${zombie}"
         remote_exec "docker rm -f ${zombie} >/dev/null 2>&1 || true" >/dev/null 2>&1 || \
             log_warn "cleanup_cluster_zombies(${cluster_id}): docker rm -f ${zombie} failed"
-    done <<< "$names_out"
+    done 3<<< "$names_out"
     # Post-state verification — any survivor under the label is reported but not
     # treated as fatal (next compose up will re-attempt).
     local remaining
