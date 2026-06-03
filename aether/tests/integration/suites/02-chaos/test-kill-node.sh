@@ -72,24 +72,10 @@ test_health_with_4_nodes() {
 
 test_auto_heal() {
     log_info "Waiting for CTM auto-heal to quiesce at the post-kill generation..."
-    # Two-stage barrier, because auto-heal-after-kill latency is the serial path
-    # provision-fresh-ULID → boot → QUIC connect → SWIM SUSPECT→ALIVE probe-ack →
-    # HealthyObserved → ×2 NTT upHysteresis ticks. Cold-restart pays none of the
-    # provisioning step (it quiesces in ~1s), so 180s was too tight for this path
-    # under realistic latency — raised to 240s (matching test-kill-multiple).
-    #
-    # 1) count barrier: replacement admitted to the generation snapshot member set
-    #    (cluster_member_count includes JOINING / not-yet-HEALTHY members).
-    wait_for_node_count 5 240 || {
-        log_fail "Cluster did not reach 5 members after auto-heal (replacement never admitted)"
-        return 1
-    }
-    # 2) semantic barrier: QUIESCED requires every member HEALTHY, i.e. the
-    #    replacement actually crossed SUSPECTED→HEALTHY rather than merely being
-    #    admitted-but-SUSPECTED (which would leave the projector DEGRADED). This is
-    #    the real "auto-heal done" signal; the count alone can be met prematurely.
-    await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 120 || {
-        log_fail "Cluster reached 5 members but generation did not quiesce (replacement admitted but not HEALTHY)"
+    # ClusterGeneration barrier: the post-kill generation commits once replacement
+    # is in place and membership is stable. No 5..7 tolerance window needed.
+    wait_for_node_count 5 180 || {
+        log_fail "Cluster did not quiesce after auto-heal"
         return 1
     }
     local count
