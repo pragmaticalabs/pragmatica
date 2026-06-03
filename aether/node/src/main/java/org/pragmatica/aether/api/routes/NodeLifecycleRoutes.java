@@ -30,6 +30,7 @@ import org.pragmatica.lang.utils.Causes;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -83,7 +84,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<List<LifecycleEntry>> route(ManagementRoute.NODE_LIFECYCLE_LIST)
                                          .withQuery(QueryParameter.aString("state"))
-                                         .toValue(this::getAllLifecycleStates)
+                                         .to(this::getAllLifecycleStates)
                                          .asJson(),
                          ManagementRoutes.<LifecycleEntry> route(ManagementRoute.NODE_LIFECYCLE_GET)
                                          .withPath(aString())
@@ -112,20 +113,51 @@ public final class NodeLifecycleRoutes implements RouteSource {
         return new InFlightResponse(nodeSupplier.get().inFlightRequestTracker().count());
     }
 
-    /// Membership-v2 finale: LIST and GET both read the real node-authoritative
-    /// `NodeReportedState` (SYNCING / READY / DRAINING) from the metrics-pong readiness view —
-    /// the synthetic per-node lifecycle KV atom and snapshot enum were removed. `updatedAt` is 0
-    /// (the pong carries no per-transition consensus timestamp). The optional `state` filter is
-    /// applied against the state name. Empty list when no pong has been observed yet.
-    private List<LifecycleEntry> getAllLifecycleStates(Option<String> stateFilter) {
+    /// Membership-v2 finale: LIST reads the real node-authoritative `NodeReportedState`
+    /// (SYNCING / READY / DRAINING) from the metrics-pong readiness view. Readiness-broadcast
+    /// (failover-readability): the view is authoritative on the leader and a cached leader view on a
+    /// follower. When this node is neither leader nor holding a fresh cached view it has NO
+    /// authoritative-or-cached readiness — it responds 503 + leader hint (rather than a misleading
+    /// `200 []`) so round-robin clients retry / redirect to the leader. A genuinely-empty
+    /// authoritative view still returns `200 []`. `updatedAt` is 0 (the pong carries no
+    /// per-transition consensus timestamp). The optional `state` filter is applied against the state
+    /// name.
+    private Promise<List<LifecycleEntry>> getAllLifecycleStates(Option<String> stateFilter) {
+        var collector = nodeSupplier.get().metricsCollector();
+        if (!collector.hasAuthoritativeReadiness()) {
+            return readinessUnavailableError().promise();
+        }
+        return Promise.success(collectLifecycleEntries(stateFilter, collector.reportedStates()));
+    }
+
+    private static List<LifecycleEntry> collectLifecycleEntries(Option<String> stateFilter,
+                                                                Map<NodeId, NodeReportedState> states) {
         var normalizedFilter = stateFilter.map(RouteFilters::parseStateFilter);
         var entries = new ArrayList<LifecycleEntry>();
-        nodeSupplier.get()
-                    .metricsCollector()
-                    .reportedStates()
-                    .forEach((nodeId, state) -> appendIfMatches(entries, nodeId, state, normalizedFilter));
+        states.forEach((nodeId, state) -> appendIfMatches(entries, nodeId, state, normalizedFilter));
 
         return entries;
+    }
+
+    /// Readiness-broadcast (failover-readability): 503 carrying the current leader id + best-effort
+    /// `host:port` so a client that hit a cold follower can retry against the leader. Surfaced as the
+    /// canonical management-plane ProblemDetail (status from `HttpError.status()`), matching the
+    /// `HttpError.httpError(...)` style the drain/budget guards in this file already use.
+    private Cause readinessUnavailableError() {
+        var leader = nodeSupplier.get().leader();
+        var leaderId = leader.map(NodeId::id).or("none");
+        var leaderAddress = leader.flatMap(this::resolveLeaderAddress).or("");
+        var detail = "readiness view not available on this node"
+                   + " (leaderId=" + leaderId + ", leaderAddress=" + leaderAddress + ")";
+
+        return HttpError.httpError(HttpStatus.SERVICE_UNAVAILABLE, Causes.cause(detail));
+    }
+
+    private Option<String> resolveLeaderAddress(NodeId leaderId) {
+        return nodeSupplier.get()
+                           .topologyManager()
+                           .get(leaderId)
+                           .map(info -> info.address().host() + ":" + info.address().port());
     }
 
     private static void appendIfMatches(List<LifecycleEntry> entries,

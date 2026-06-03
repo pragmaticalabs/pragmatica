@@ -224,11 +224,7 @@ import org.slf4j.LoggerFactory;
         }
 
         private static NodeReportedState parseState(String wire) {
-            return switch (wire) {
-                case "READY" -> NodeReportedState.READY;
-                case "DRAINING" -> NodeReportedState.DRAINING;
-                default -> NodeReportedState.SYNCING;
-            };
+            return NodeReportedState.fromWire(wire);
         }
 
         private static void emitHealth(ClusterSyncPong pong, PeerHealthObservation observation, HealthSignalSink sink) {

@@ -1114,6 +1114,13 @@ public interface AetherNode extends ManageableNode {
                                                                               clusterNode.leaderManager(),
                                                                               readyCandidateSink);
         metricsCollector.setPongSignalFan(pongSignalFan);
+        // Readiness-broadcast (failover-readability): wire the leader manager + clock + ping interval
+        // so the collector serves the authoritative fan view on the leader and the cached leader view
+        // on followers (and so `/api/nodes/lifecycle` returns 503 + leader hint on a cold follower
+        // instead of a misleading `200 []`).
+        metricsCollector.setReadinessViewContext(clusterNode.leaderManager(),
+                                                 System::nanoTime,
+                                                 config.timeouts().cluster().pingInterval());
         // B3 (membership v2 §7.5.5): the leader readiness view self-cleans via a periodic stale-sweep
         // (catches the QUIC-open-but-silent black-hole case, where no disconnect event fires). Clean
         // departures are evicted faster by the routed TransportObservation.PeerDisconnected route below.

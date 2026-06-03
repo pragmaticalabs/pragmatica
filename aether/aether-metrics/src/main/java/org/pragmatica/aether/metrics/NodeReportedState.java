@@ -23,5 +23,18 @@ package org.pragmatica.aether.metrics;
 public enum NodeReportedState {
     SYNCING,
     READY,
-    DRAINING
+    DRAINING;
+
+    /// Parse the on-wire lifecycle-state name (as carried on `ClusterSyncPong.lifecycleState` and
+    /// `ClusterSyncPing.readinessView` values) back into the enum. Unknown / empty / pre-migration
+    /// values fold to [SYNCING] (a node whose state we cannot read is treated as not-yet-ready).
+    /// Single source of truth shared by `ClusterSyncPongSignalFan` (pong ingest) and
+    /// `ClusterSyncCollector` (follower readiness-view cache).
+    public static NodeReportedState fromWire(String wire) {
+        return switch (wire) {
+            case "READY" -> READY;
+            case "DRAINING" -> DRAINING;
+            default -> SYNCING;
+        };
+    }
 }

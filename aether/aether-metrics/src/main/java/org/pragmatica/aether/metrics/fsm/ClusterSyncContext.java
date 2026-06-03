@@ -314,9 +314,11 @@ public final class ClusterSyncContext {
     }
 
     /// Build and BROADCAST one uniform `ClusterSyncPing` to every QUIC-connected peer. The single
-    /// ping carries the leader's metrics, fencing terms, the global `evictionHints` snapshot, and the
-    /// global `drainNodes` snapshot (`drainTargets.get()`); each receiver self-checks both sets.
-    /// `network.broadcast` skips self, so no per-peer dispatch or self-exclusion is needed here.
+    /// ping carries the leader's metrics, fencing terms, the global `evictionHints` snapshot, the
+    /// global `drainNodes` snapshot (`drainTargets.get()`), and the leader's authoritative
+    /// `readinessView` (so followers cache it and serve per-node readiness without a leader
+    /// round-trip). `network.broadcast` skips self, so no per-peer dispatch or self-exclusion is
+    /// needed here.
     @Contract public void broadcastPing(Epoch currentEpoch, long rabiaTerm) {
         var ping = new ClusterSyncPing(self,
                                        collector.allMetrics(),
@@ -324,7 +326,8 @@ public final class ClusterSyncContext {
                                        currentEpoch.rabiaTerm(),
                                        currentEpoch.localCounter(),
                                        currentEvictionHints(),
-                                       drainTargets.get().get());
+                                       drainTargets.get().get(),
+                                       collector.authoritativeReadinessView());
         log.debug("ClusterSync: broadcasting PING (rabiaTerm={}, epoch={}:{})",
                   rabiaTerm,
                   currentEpoch.rabiaTerm(),

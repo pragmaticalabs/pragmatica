@@ -16,6 +16,7 @@ import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -37,7 +38,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.DoubleAdder;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -67,6 +70,34 @@ public interface ClusterSyncCollector {
     default Map<NodeId, NodeReportedState> reportedStates() {
         return Map.of();
     }
+
+    /// Readiness-broadcast (failover-readability): the LEADER's authoritative `NodeId →
+    /// lifecycle-state-name` view, read straight from the pong-signal-fan snapshot (NOT through
+    /// the follower-cache fallback in [reportedStates], so there is no feedback loop). Stamped
+    /// onto the outgoing `ClusterSyncPing.readinessView` by the leader's `broadcastPing`. Empty on
+    /// followers (their fan holds no readiness) and for test doubles. The values are the plain
+    /// `NodeReportedState` names, matching the pong's `lifecycleState` wire encoding.
+    default Map<NodeId, String> authoritativeReadinessView() {
+        return Map.of();
+    }
+
+    /// Readiness-broadcast (failover-readability): TRUE when this node can serve an
+    /// authoritative-or-fresh readiness view — i.e. it is the leader (authoritative fan view) or a
+    /// follower whose cached leader view is still fresh (cached-leader matches the current leader
+    /// and the entry is within TTL). The read routes turn FALSE into HTTP 503 + leader hint rather
+    /// than a misleading `200 []`. Default FALSE for test doubles that wire no leader manager.
+    default boolean hasAuthoritativeReadiness() {
+        return false;
+    }
+
+    /// Readiness-broadcast (failover-readability): wire the leader manager, monotonic clock, and
+    /// ping interval used by the follower readiness cache. After this is wired, [reportedStates]
+    /// falls back to the cached leader view on followers and [hasAuthoritativeReadiness] reflects
+    /// leader-or-fresh-cache. Default no-op so the many test doubles that implement this interface
+    /// need no override. Production wires it in `AetherNode`.
+    @Contract default void setReadinessViewContext(LeaderManager leaderManager,
+                                                   LongSupplier nowNanos,
+                                                   TimeSpan pingInterval) {}
 
     record MetricsSnapshot(long timestamp, Map<String, Double> metrics){}
 
@@ -209,6 +240,17 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     private final AtomicReference<Runnable> drainCommandHandler =
         new AtomicReference<>(() -> {});
 
+    /// Readiness-broadcast (failover-readability) — the current leader signal, used both to decide
+    /// whether `reportedStates()` serves the authoritative fan view (leader) or the follower cache
+    /// (non-leader), and by the follower cache's freshness check. Default `Option.none()` (no leader
+    /// manager wired) means "not leader" — test doubles fall back to the empty cache.
+    private final AtomicReference<Option<LeaderManager>> leaderManager = new AtomicReference<>(Option.none());
+
+    /// Readiness-broadcast (failover-readability) — the follower-side cache of the leader's
+    /// broadcast readiness view. `Option.none()` until `setReadinessViewContext(...)` is wired;
+    /// while absent the follower fallback yields the empty map (cold follower → 503 at the route).
+    private final AtomicReference<Option<FollowerReadinessCache>> readinessCache = new AtomicReference<>(Option.none());
+
     ClusterSyncCollectorImpl(NodeId self, ClusterNetwork network, long slidingWindowMs) {
         this.self = self;
         this.network = network;
@@ -228,15 +270,15 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         return metrics;
     }
 
-    @Override@Contract public void recordCall(MethodName method, long durationMs) {
+    @Override @Contract public void recordCall(MethodName method, long durationMs) {
         callStats.computeIfAbsent(method, _ -> CallStats.callStats()).record(durationMs);
     }
 
-    @Override@Contract public void recordCustom(String name, double value) {
+    @Override @Contract public void recordCustom(String name, double value) {
         customMetrics.put(name, value);
     }
 
-    @Override@Contract public void setInvocationMetricsProvider(InvocationMetricsCollector provider) {
+    @Override @Contract public void setInvocationMetricsProvider(InvocationMetricsCollector provider) {
         this.invocationMetricsProvider = provider;
     }
 
@@ -260,7 +302,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         return result;
     }
 
-    @Override@Contract public void removeNode(NodeId nodeId) {
+    @Override @Contract public void removeNode(NodeId nodeId) {
         remoteMetrics.remove(nodeId);
         historicalMetricsMap.remove(nodeId);
     }
@@ -272,7 +314,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         ringBuffer.add(snapshot);
     }
 
-    @Override@Contract public void onMembershipDecision(MembershipDecision decision) {
+    @Override @Contract public void onMembershipDecision(MembershipDecision decision) {
         switch (decision){
             case MembershipDecision.NodeRemoved(var removedNode, _, _, _) -> removeNode(removedNode);
             case MembershipDecision.NodeDecommissioned(var decommissioned, _, _, _) -> removeNode(decommissioned);
@@ -280,7 +322,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         }
     }
 
-    @Override@Contract public void onClusterSyncPing(ClusterSyncPing ping) {
+    @Override @Contract public void onClusterSyncPing(ClusterSyncPing ping) {
         log.debug("ClusterSync: received PING from {} (rabiaTerm={}, epoch={}:{})",
                   ping.sender(),
                   ping.rabiaTerm(),
@@ -305,6 +347,10 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         // converge faster. Preserves the "independent observers" property by adding
         // a LOCAL veto on the owner's suggestion.
         processEvictionHints(ping);
+        // Readiness-broadcast (failover-readability): cache the leader's authoritative readiness
+        // view so this follower can serve `/api/nodes/lifecycle` without round-tripping the leader.
+        // The cache itself is leader+TTL gated and ignores empty / non-leader views.
+        cacheReadinessView(ping);
         var pong = buildPong();
         log.debug("ClusterSync: sending PONG to {} (epoch={}:{})",
                   ping.sender(),
@@ -351,7 +397,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         }
     }
 
-    @Override@Contract public void onClusterSyncPong(ClusterSyncPong pong) {
+    @Override @Contract public void onClusterSyncPong(ClusterSyncPong pong) {
         log.debug("ClusterSync: received PONG from {} (epoch={}:{})",
                   pong.sender(),
                   pong.observedEpochTerm(),
@@ -364,21 +410,68 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         pongListeners.forEach(listener -> listener.accept(pong));
     }
 
-    @Override@Contract public void setPongSignalFan(ClusterSyncPongSignalFan fan) {
+    @Override @Contract public void setPongSignalFan(ClusterSyncPongSignalFan fan) {
         pongSignalFan.set(fan);
     }
 
     @Override public Map<NodeId, NodeReportedState> reportedStates() {
-        return pongSignalFan.get().readinessSnapshot();
+        return isLeader()
+               ? pongSignalFan.get().readinessSnapshot()
+               : readinessCache.get().map(FollowerReadinessCache::freshView).or(Map.of());
     }
 
-    @Override@Contract public void setPeerObservationBuffer(PeerObservationBuffer buffer) {
+    @Override public Map<NodeId, String> authoritativeReadinessView() {
+        return stringifyView(pongSignalFan.get().readinessSnapshot());
+    }
+
+    @Override public boolean hasAuthoritativeReadiness() {
+        return isLeader() || readinessCache.get().map(FollowerReadinessCache::isFresh).or(false);
+    }
+
+    @Override @Contract public void setReadinessViewContext(LeaderManager leaderManager,
+                                                            LongSupplier nowNanos,
+                                                            TimeSpan pingInterval) {
+        this.leaderManager.set(Option.option(leaderManager));
+        this.readinessCache.set(buildReadinessCache(leaderManager, nowNanos, pingInterval));
+    }
+
+    private static Option<FollowerReadinessCache> buildReadinessCache(LeaderManager leaderManager,
+                                                                      LongSupplier nowNanos,
+                                                                      TimeSpan pingInterval) {
+        return Option.all(Option.option(leaderManager), Option.option(nowNanos), Option.option(pingInterval))
+                     .map(ClusterSyncCollectorImpl::newReadinessCache);
+    }
+
+    private static FollowerReadinessCache newReadinessCache(LeaderManager leaderManager,
+                                                            LongSupplier nowNanos,
+                                                            TimeSpan pingInterval) {
+        return new FollowerReadinessCache(leaderManager,
+                                          nowNanos,
+                                          pingInterval.nanos() * FollowerReadinessCache.TTL_PING_INTERVALS);
+    }
+
+    private boolean isLeader() {
+        return leaderManager.get().map(LeaderManager::isLeader).or(false);
+    }
+
+    private void cacheReadinessView(ClusterSyncPing ping) {
+        readinessCache.get().onPresent(cache -> cache.maybeStore(ping.sender(), ping.rabiaTerm(), ping.readinessView()));
+    }
+
+    private static Map<NodeId, String> stringifyView(Map<NodeId, NodeReportedState> view) {
+        return view.entrySet()
+                   .stream()
+                   .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                                                         e -> e.getValue().name()));
+    }
+
+    @Override @Contract public void setPeerObservationBuffer(PeerObservationBuffer buffer) {
         peerObservationBuffer.set(buffer == null
                                   ? PeerObservationBuffer.NOOP
                                   : buffer);
     }
 
-    @Override@Contract public void setPeerLocallyAlive(java.util.function.Predicate<NodeId> predicate) {
+    @Override @Contract public void setPeerLocallyAlive(java.util.function.Predicate<NodeId> predicate) {
         peerLocallyAlive.set(predicate == null
                              ? _ -> true
                              : predicate);
@@ -388,23 +481,23 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         return peerLocallyAlive.get().test(peer);
     }
 
-    @Override@Contract public void setNodeReportedStateSupplier(Supplier<NodeReportedState> supplier) {
+    @Override @Contract public void setNodeReportedStateSupplier(Supplier<NodeReportedState> supplier) {
         nodeReportedStateSupplier.set(Option.option(supplier));
     }
 
-    @Override@Contract public void setIncarnationSupplier(java.util.function.LongSupplier supplier) {
+    @Override @Contract public void setIncarnationSupplier(java.util.function.LongSupplier supplier) {
         incarnationSupplier.set(supplier == null
                                 ? () -> 0L
                                 : supplier);
     }
 
-    @Override@Contract public void setDrainCommandHandler(Runnable handler) {
+    @Override @Contract public void setDrainCommandHandler(Runnable handler) {
         drainCommandHandler.set(handler == null
                                 ? () -> {}
                                 : handler);
     }
 
-    @Override@Contract public void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs) {
+    @Override @Contract public void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs) {
         var buffer = peerObservationBuffer.get();
         var epoch = observedEpoch.get();
         var epochTerm = epoch.rabiaTerm();
@@ -433,11 +526,11 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         return communityReportSupplier.get().get();
     }
 
-    @Override@Contract public void setCommunityReportSupplier(Supplier<List<CommunityReport>> supplier) {
+    @Override @Contract public void setCommunityReportSupplier(Supplier<List<CommunityReport>> supplier) {
         communityReportSupplier.set(supplier);
     }
 
-    @Override@Contract public void addPongListener(Consumer<ClusterSyncPong> listener) {
+    @Override @Contract public void addPongListener(Consumer<ClusterSyncPong> listener) {
         pongListeners.add(listener);
     }
 
