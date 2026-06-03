@@ -974,6 +974,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         //    quorum path (sendOutcome → dispatchPayloadWithOutcome) RELIES on BackpressureRefused
         //    to fail-fast against unreachable replicas instead of stalling on its per-op timeout.
         //    See aether/docs/specs/dht-resilience-spec.md.
+        // Backpressure entry: name the lane so a stalled stream is identifiable in the logs.
+        // One concise line per backpressure entry (per-retry logging stays at debug below).
+        log.warn("Backpressure on peer {} lane {} (isWritable={})", peerId, streamType, ch.isWritable());
         return streamType == StreamType.CONSENSUS
                ? retryConsensusWrite(ch, bytes, peerId)
                : refuseBackpressured(peerId, streamType);

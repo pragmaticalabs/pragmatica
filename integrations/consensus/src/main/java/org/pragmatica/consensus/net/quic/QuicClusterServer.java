@@ -37,6 +37,7 @@ import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicServerCodecBuilder;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
+import io.netty.util.AttributeKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NodeRole;
@@ -132,6 +133,10 @@ public sealed interface QuicClusterServer {
 
 final class QuicClusterServerInstance implements QuicClusterServer {
     private static final Logger log = LoggerFactory.getLogger(QuicClusterServerInstance.class);
+    /// Parent-QuicChannel attribute carrying the per-peer connection, stamped by the CONTROL
+    /// (Hello) stream and read by each subsequently-accepted data-lane stream so it can attach
+    /// itself to the right [QuicPeerConnection]. Package-visible: stamped + read here.
+    static final AttributeKey<QuicPeerConnection> PEER_CONNECTION = AttributeKey.valueOf("aether.quic.peerConnection");
     private static final long HELLO_TIMEOUT_MS = 15_000;
     private static final long MAX_IDLE_TIMEOUT_MS = 0; // Disabled per QUIC RFC 9000 §10.1 — cluster connections are persistent
     private static final long INITIAL_MAX_DATA = 64_000_000;
@@ -289,7 +294,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         }
     }
 
-    /// Per-stream initializer: installs framing + Hello handshake handler on each new stream.
+    /// Per-stream initializer: installs framing + preamble/Hello handler on each new stream.
     /// QUIC streams are byte-oriented (like TCP) — LengthFieldBasedFrameDecoder is needed
     /// to delimit individual messages within the stream.
     private class ServerStreamInitializer extends ChannelInitializer<QuicStreamChannel> {
@@ -298,24 +303,33 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             ch.pipeline()
               .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
               .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
-              .addLast(new ServerHelloHandler());
+              .addLast(new ServerStreamHandler());
         }
     }
 
-    /// Handles the Hello handshake on the server side.
+    /// Reads each accepted stream's 1-byte lane preamble and routes by lane.
     ///
-    /// Reads the first message on a new stream, validates it as a Hello,
-    /// sends Hello response, then notifies the connection handler.
-    private class ServerHelloHandler extends SimpleChannelInboundHandler<ByteBuf> {
-        private volatile boolean helloReceived;
+    /// Phase machine:
+    ///   - AWAITING_PREAMBLE: first framed message is the 1-byte lane index.
+    ///       * CONTROL → transition to AWAITING_HELLO (the handshake rides CONTROL).
+    ///       * any data lane → resolve the per-peer connection from the parent QuicChannel
+    ///         attribute, register this stream under the lane, swap to the shared data handler.
+    ///   - AWAITING_HELLO: decode the Hello, send the Hello response, build + register the
+    ///       peer connection, stamp the parent-channel attribute, swap to the shared data
+    ///       handler (CONTROL lane), then notify the connection handler.
+    ///
+    /// Installed at stream init so it receives `channelActive` for the handshake/preamble timeout.
+    private class ServerStreamHandler extends SimpleChannelInboundHandler<ByteBuf> {
+        private Phase phase = Phase.AWAITING_PREAMBLE;
+
+        private enum Phase {AWAITING_PREAMBLE, AWAITING_HELLO}
 
         @Override
         protected void channelRead0(ChannelHandlerContext ctx, ByteBuf buf) {
-            if (helloReceived) {
-                return;
+            switch (phase) {
+                case AWAITING_PREAMBLE -> handlePreamble(ctx, buf);
+                case AWAITING_HELLO -> handleHello(ctx, buf);
             }
-            helloReceived = true;
-            processHello(ctx, buf);
         }
 
         @Override
@@ -326,7 +340,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            log.error("Error in QUIC server Hello handler", cause);
+            log.error("Error in QUIC server stream handler", cause);
             ctx.close();
         }
 
@@ -339,14 +353,58 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         }
 
         private void onHelloTimeout(ChannelHandlerContext ctx) {
-            if (!helloReceived && ctx.channel().isActive()) {
-                log.warn("Hello timeout for connection {}", ctx.channel().remoteAddress());
+            // Timeout only matters while we are still awaiting the preamble or Hello; once the
+            // handler is swapped to the data handler the pipeline no longer contains this handler.
+            if (ctx.channel().isActive() && ctx.pipeline().context(this) != null) {
+                log.warn("Stream preamble/Hello timeout for connection {}", ctx.channel().remoteAddress());
                 ctx.close();
             }
         }
 
+        private void handlePreamble(ChannelHandlerContext ctx, ByteBuf buf) {
+            if (buf.readableBytes() < 1) {
+                log.warn("Empty stream preamble from {} — closing", ctx.channel().remoteAddress());
+                ctx.close();
+                return;
+            }
+            var idx = buf.readByte();
+            StreamType.fromIndex(idx)
+                      .fold(() -> onInvalidPreamble(ctx, idx),
+                            lane -> routePreamble(ctx, lane));
+        }
+
+        private Unit onInvalidPreamble(ChannelHandlerContext ctx, byte idx) {
+            log.warn("Invalid stream preamble index {} from {} — closing", idx, ctx.channel().remoteAddress());
+            ctx.close();
+            return unit();
+        }
+
+        private Unit routePreamble(ChannelHandlerContext ctx, StreamType lane) {
+            if (lane == StreamType.CONTROL) {
+                phase = Phase.AWAITING_HELLO;
+                return unit();
+            }
+            return attachDataLane(ctx, lane);
+        }
+
+        private Unit attachDataLane(ChannelHandlerContext ctx, StreamType lane) {
+            var parentQuicChannel = (QuicChannel) ctx.channel().parent();
+            var peerConnection = parentQuicChannel.attr(PEER_CONNECTION).get();
+            if (peerConnection == null) {
+                log.warn("No peer connection on parent channel for {} lane from {} — closing (handshake-first ordering violated)",
+                         lane, ctx.channel().remoteAddress());
+                ctx.close();
+                return unit();
+            }
+            peerConnection.registerStream(lane, (QuicStreamChannel) ctx.channel());
+            ctx.pipeline().replace(this, "data-handler",
+                                   new QuicLaneDataHandler(peerConnection.peerId(), lane, deserializer, messageReceiver, log));
+            log.debug("Attached {} lane stream from peer {}", lane, peerConnection.peerId());
+            return unit();
+        }
+
         @SuppressWarnings("JBCT-PAT-01") // Adapter boundary: catch deserialization errors from external input
-        private void processHello(ChannelHandlerContext ctx, ByteBuf buf) {
+        private void handleHello(ChannelHandlerContext ctx, ByteBuf buf) {
             Object message;
             try {
                 message = decodeMessage(buf);
@@ -371,6 +429,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         }
 
         private void sendHelloResponse(ChannelHandlerContext ctx) {
+            // Responses flowing back from the acceptor carry NO preamble.
             var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfRole, selfAddress, selfLabels));
             ctx.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
         }
@@ -378,58 +437,18 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         private void registerPeerConnection(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
             var quicChannel = (QuicChannel) ctx.channel().parent();
             var peerConnection = quicPeerConnection(hello.sender(), quicChannel);
-            peerConnection.registerStream(StreamType.CONSENSUS, (QuicStreamChannel) ctx.channel());
+            // The handshake stream is the CONTROL lane.
+            peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());
+            // Stamp the parent QuicChannel so subsequently-accepted data-lane streams can find
+            // the peer connection by reading this attribute.
+            quicChannel.attr(PEER_CONNECTION).set(peerConnection);
 
-            // Replace Hello handler with data handler for ongoing messages
-            ctx.pipeline().replace(this, "data-handler", new DataHandler(hello.sender()));
+            // Replace the preamble/Hello handler with the shared data handler (CONTROL lane).
+            ctx.pipeline().replace(this, "data-handler",
+                                   new QuicLaneDataHandler(hello.sender(), StreamType.CONTROL, deserializer, messageReceiver, log));
 
             log.info("QUIC Hello handshake complete with peer {} (role={}, address={})", hello.sender(), hello.role(), hello.address());
             connectionHandler.onPeerConnected(peerConnection, hello.role(), hello.address(), hello.labels());
-        }
-    }
-
-    /// Handles ongoing data messages after Hello handshake completes.
-    /// Deserializes incoming bytes and routes them via the message receiver callback.
-    /// Also monitors channel writability to drain backpressure queues.
-    private class DataHandler extends SimpleChannelInboundHandler<ByteBuf> {
-        private final NodeId peerId;
-        private final Runnable onWritable;
-
-        DataHandler(NodeId peerId) {
-            this(peerId, () -> {});
-        }
-
-        DataHandler(NodeId peerId, Runnable onWritable) {
-            this.peerId = peerId;
-            this.onWritable = onWritable;
-        }
-
-        @Override
-        @SuppressWarnings("JBCT-PAT-01") // Adapter boundary: catch deserialization errors from external input
-        protected void channelRead0(ChannelHandlerContext ctx, ByteBuf buf) {
-            var bytes = new byte[buf.readableBytes()];
-            buf.readBytes(bytes);
-
-            try {
-                var message = deserializer.decode(bytes);
-                messageReceiver.onMessage(peerId, message);
-            } catch (Exception e) {
-                log.error("Failed to deserialize message from peer {}", peerId, e);
-            }
-        }
-
-        @Override
-        public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
-            if (ctx.channel().isWritable()) {
-                onWritable.run();
-            }
-            super.channelWritabilityChanged(ctx);
-        }
-
-        @Override
-        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            log.error("Error processing message from peer {}", peerId, cause);
-            ctx.close();
         }
     }
 }

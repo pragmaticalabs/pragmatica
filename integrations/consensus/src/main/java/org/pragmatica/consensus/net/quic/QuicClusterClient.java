@@ -141,6 +141,16 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     private static final int MAX_FRAME_LENGTH = 32 * 1024 * 1024;
     private static final long INITIAL_MAX_STREAM_DATA = 32_000_000;
     private static final long INITIAL_MAX_STREAMS = 64;
+    /// Data-lane streams the dialer opens after the CONTROL handshake stream, in this fixed
+    /// order. Excludes CONTROL (already established by the handshake). Six lanes.
+    private static final StreamType[] DATA_LANES = {
+        StreamType.CONSENSUS,
+        StreamType.KV,
+        StreamType.METRICS,
+        StreamType.INVOKE,
+        StreamType.FORWARD,
+        StreamType.DHT
+    };
 
     private final NodeId selfId;
     private final NodeRole selfRole;
@@ -300,9 +310,13 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     }
 
     private void sendHello(QuicStreamChannel streamChannel, NodeId peerId) {
+        // The handshake stream is now the CONTROL lane. Write the 1-byte lane preamble first
+        // (its own framed message), then the Hello frame, so the acceptor attributes this
+        // stream to CONTROL before reading the Hello.
+        streamChannel.writeAndFlush(Unpooled.wrappedBuffer(new byte[]{(byte) StreamType.CONTROL.streamIndex()}));
         var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfRole, selfAddress, selfLabels));
         streamChannel.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
-        log.debug("Sent Hello to peer {} on stream", peerId);
+        log.debug("Sent CONTROL preamble + Hello to peer {} on stream", peerId);
     }
 
     private io.netty.channel.ChannelHandler buildQuicCodec() {
@@ -452,61 +466,68 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             buf.readBytes(bytes);
             return deserializer.decode(bytes);
         }
-
         private void completePeerConnection(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
             var peerConnection = quicPeerConnection(hello.sender(), quicChannel);
-            peerConnection.registerStream(StreamType.CONSENSUS, (QuicStreamChannel) ctx.channel());
+            // The handshake stream is the CONTROL lane.
+            peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());
 
-            // Replace Hello handler with data handler for ongoing messages
-            ctx.pipeline().replace(this, "data-handler", new DataHandler(hello.sender()));
+            // Swap the CONTROL stream's Hello handler for the shared data handler (CONTROL lane).
+            ctx.pipeline().replace(this, "data-handler",
+                                   new QuicLaneDataHandler(hello.sender(), StreamType.CONTROL, deserializer, messageReceiver, log));
 
-            log.info("QUIC Hello handshake complete with peer {} (role={})", hello.sender(), hello.role());
-            promise.succeed(peerConnection);
-        }
-    }
-
-    /// Handles ongoing data messages after Hello handshake completes.
-    /// Deserializes incoming bytes and routes them via the message receiver callback.
-    /// Also monitors channel writability to drain backpressure queues.
-    private class DataHandler extends SimpleChannelInboundHandler<ByteBuf> {
-        private final NodeId peerId;
-        private final Runnable onWritable;
-
-        DataHandler(NodeId peerId) {
-            this(peerId, () -> {});
+            log.info("QUIC Hello handshake complete with peer {} (role={}) — opening data lanes", hello.sender(), hello.role());
+            openDataLanes(peerConnection, hello.sender());
         }
 
-        DataHandler(NodeId peerId, Runnable onWritable) {
-            this.peerId = peerId;
-            this.onWritable = onWritable;
-        }
-
-        @Override
-        @SuppressWarnings("JBCT-PAT-01") // Adapter boundary: catch deserialization errors from external input
-        protected void channelRead0(ChannelHandlerContext ctx, ByteBuf buf) {
-            var bytes = new byte[buf.readableBytes()];
-            buf.readBytes(bytes);
-
-            try {
-                var message = deserializer.decode(bytes);
-                messageReceiver.onMessage(peerId, message);
-            } catch (Exception e) {
-                log.error("Failed to deserialize message from peer {}", peerId, e);
+        /// Open the 6 data-lane streams (CONSENSUS, KV, METRICS, INVOKE, FORWARD, DHT) and only
+        /// succeed the connect promise once ALL of them are created + registered. This guarantees
+        /// the dialer attaches (onPeerConnected via promise success) with all 7 lanes present.
+        private void openDataLanes(QuicPeerConnection peerConnection, NodeId peerNodeId) {
+            var pending = new AtomicInteger(DATA_LANES.length);
+            for (var lane : DATA_LANES) {
+                openDataLane(peerConnection, peerNodeId, lane, pending);
             }
         }
 
-        @Override
-        public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
-            if (ctx.channel().isWritable()) {
-                onWritable.run();
-            }
-            super.channelWritabilityChanged(ctx);
+        @SuppressWarnings({"JBCT-PAT-01", "unchecked"}) // Netty stream creation
+        private void openDataLane(QuicPeerConnection peerConnection,
+                                  NodeId peerNodeId,
+                                  StreamType lane,
+                                  AtomicInteger pending) {
+            var initializer = new ChannelInitializer<QuicStreamChannel>() {
+                @Override
+                protected void initChannel(QuicStreamChannel ch) {
+                    ch.pipeline()
+                      .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
+                      .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
+                      .addLast(new QuicLaneDataHandler(peerNodeId, lane, deserializer, messageReceiver, log));
+                }
+            };
+            quicChannel.createStream(QuicStreamType.BIDIRECTIONAL, initializer)
+                       .addListener(future -> handleDataLaneCreated(peerConnection, peerNodeId, lane, pending, future));
         }
 
-        @Override
-        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            log.error("Error processing message from peer {}", peerId, cause);
-            ctx.close();
+        @SuppressWarnings({"JBCT-PAT-01", "unchecked"}) // Netty future callback
+        private void handleDataLaneCreated(QuicPeerConnection peerConnection,
+                                           NodeId peerNodeId,
+                                           StreamType lane,
+                                           AtomicInteger pending,
+                                           io.netty.util.concurrent.Future<?> future) {
+            if (!future.isSuccess()) {
+                log.warn("Failed to open {} lane stream to peer {} — failing connect", lane, peerNodeId, future.cause());
+                promise.fail(new QuicTransportError.StreamCreationFailed(future.cause()));
+                quicChannel.close();
+                return;
+            }
+            var streamChannel = (QuicStreamChannel) future.getNow();
+            // Write this lane's 1-byte preamble (opener→acceptor, once) so the acceptor
+            // attributes the inbound stream to its lane.
+            streamChannel.writeAndFlush(Unpooled.wrappedBuffer(new byte[]{(byte) lane.streamIndex()}));
+            peerConnection.registerStream(lane, streamChannel);
+            if (pending.decrementAndGet() == 0) {
+                log.info("All 7 lanes registered for peer {} — connection ready", peerNodeId);
+                promise.succeed(peerConnection);
+            }
         }
     }
 }
