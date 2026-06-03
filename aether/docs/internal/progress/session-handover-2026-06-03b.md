@@ -47,3 +47,10 @@ Shipped **per-lane QUIC streams** (the original transport design intent), which 
 - ALWAYS clean-slate (`docker rm -f aether-a/b-node`) + `pgrep run-tests.sh` orphan-check before a run — survivors silently invalidate it.
 - `--skip-build` skips `build.sh`; image-push (NOT `--skip-image-push`) copies `aether/node/target/aether-node.jar` to remote + `docker build --no-cache` → containers run the fresh jar.
 - Plan file: `~/.claude/plans/sharded-tumbling-forest.md` (per-lane plan; Phase 1+2 done).
+
+## UPDATE — SYNC lane DOCKER-VALIDATED (same session)
+Ran `02-chaos --skip-build --skip-teardown` with `8019627db`. **The SYNC lane works — keep it.**
+- **Flood ELIMINATED (not relocated):** per-node CONSENSUS backpressure peak **725 → 36**; SYNC lane = **0** everywhere. Mechanism confirmed: dedicated SYNC lane removes the HOL → `SyncResponse` arrives → catch-up completes → joiner stops re-broadcasting `SyncRequest` → flood evaporates.
+- **02-chaos 4p/2f → 5p/1f**: fixed **kill-under-load error rate 39.95% → 0.00%**. No 600s READY, no 5× churn (the backoff's regression). Lone FAIL = harness `pick_non_leader` (kill-multiple).
+- **Still open (separate, present in baseline too — NOT the consensus flood):** (1) `pick_non_leader 1/2` harness classification (ULID replacements + stale UNKNOWN ghost); (2) `generation did not quiesce within 180s` on auto-heal-after-kill restores — now isolated to **SWIM-readiness/CTM-churn** (consensus catch-up is fixed), the next #43-adjacent target.
+
