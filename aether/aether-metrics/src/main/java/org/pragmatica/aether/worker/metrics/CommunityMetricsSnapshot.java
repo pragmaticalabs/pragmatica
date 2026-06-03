@@ -6,6 +6,7 @@ package org.pragmatica.aether.worker.metrics;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 import java.util.List;
@@ -18,6 +19,11 @@ import java.util.List;
                                               List<PerSliceMetrics> sliceMetrics,
                                               List<WindowSample> slidingWindow,
                                               long timestampMs) implements Message.Wired {
+    @Override
+    public StreamType streamType() {
+        return StreamType.METRICS;
+    }
+
     public static CommunityMetricsSnapshot communityMetricsSnapshot(String communityId,
                                                                     NodeId governorId,
                                                                     long requestId,

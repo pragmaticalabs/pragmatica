@@ -63,6 +63,7 @@ import org.pragmatica.messaging.Message;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.Server;
 import org.pragmatica.serialization.Deserializer;
@@ -161,13 +162,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private static final long RECONCILE_BACKOFF_CAP_MS = 60_000L;
     private final CancellableTask reconcilerTask = CancellableTask.cancellableTask();
 
-    /// Retained for API compatibility with existing callers. All hysteresis/grace-window
-    /// buffering was removed in favour of authoritative single-writer semantics (spec §8) —
-    /// `HealthReconciler` decides whether membership atoms change; the QUIC view is purely
-    /// informational. Field is kept so constructors continue to accept the configuration
-    /// record without forcing a callsite rewrite.
-    @SuppressWarnings("unused")
-    private final ClusterFormationConfig formationConfig;
     private volatile QuicDisconnectListener disconnectListener;
 
     /// QUIC consensus-stream resilience tunables (retry attempts/backoff + CONSENSUS stream
@@ -303,7 +297,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
         this.router = router;
         this.serverSslContext = serverSslContext;
         this.clientSslContext = clientSslContext;
-        this.formationConfig = formationConfig;
         this.disconnectListener = disconnectListener;
         this.isLeaderSupplier = isLeaderSupplier == null ? () -> true : isLeaderSupplier;
         this.connectivityReporter = connectivityReporter == null ? PeerConnectivityReporter.noop() : connectivityReporter;
@@ -860,15 +853,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (drained.isEmpty()) {
             return;
         }
-        var stream = connection.stream(StreamType.CONSENSUS);
-        if (stream.isEmpty()) {
-            log.warn("Cannot drain {} offline messages for peer {} — no CONSENSUS stream",
-                     drained.size(), state.peerId());
-            return;
-        }
-        var ch = stream.unwrap();
-        for (var bytes : drained) {
-            var _ = writeIfWritable(ch, bytes, state.peerId(), StreamType.CONSENSUS);
+        for (var message : drained) {
+            var _ = writeToStream(state.peerId(), message, connection);
         }
         log.debug("Drained {} offline messages to newly-connected peer {}", drained.size(), state.peerId());
     }
@@ -877,57 +863,55 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     /// Dispatch a typed message to a single peer — runs through the PeerState machine:
     /// SendNow → write to captured connection; Queued → buffered for reconnect; Dropped → REMOVED.
-    private void dispatchPayload(NodeId peerId, Object message) {
+    /// The lane is resolved once here (from the message's `streamType()`); the message object is
+    /// never threaded past this point.
+    private void dispatchPayload(NodeId peerId, Message.Wired message) {
         var state = peers.get(peerId);
         if (state == null) {
             log.debug("No peer state for {} — dropping message", peerId);
             return;
         }
-        var bytes = serializer.encode(message);
-        var _ = dispatchSerialized(state, message, bytes);
+        var _ = dispatchToPeer(state, message);
     }
 
     /// Outcome-tracking variant used by `sendOutcome` callers (DHT quorum path). Same
     /// dispatch flow as `dispatchPayload` but surfaces the synchronous local-transport
     /// verdict so the caller can fail-fast against unreachable replicas.
-    private WriteOutcome dispatchPayloadWithOutcome(NodeId peerId, Object message) {
+    private WriteOutcome dispatchPayloadWithOutcome(NodeId peerId, Message.Wired message) {
         var state = peers.get(peerId);
         if (state == null) {
             log.debug("No peer state for {} — refusing tracked send", peerId);
             return new WriteOutcome.NoPeerState(peerId);
         }
-        var bytes = serializer.encode(message);
-        return dispatchSerialized(state, message, bytes);
+        return dispatchToPeer(state, message);
     }
 
     /// Broadcast a typed message to all known peers. When `skipPassive` is true, peers whose
     /// role is PASSIVE are filtered (used by `broadcast(ProtocolMessage)` when the message
     /// opts out of passive delivery via `deliverToPassive() == false`).
     ///
-    /// Serialization is lazy — performed at most once, and only when at least one eligible peer
-    /// is about to receive the message. This keeps `broadcast` a true no-op when `peers` is
-    /// empty or all peers are filtered, preserving test fixtures that broadcast unregistered
-    /// codec types in isolation.
-    @SuppressWarnings("JBCT-PAT-01") // Iterate, lazy-serialize on first eligible, dispatch
-    private void broadcastPayload(Object message, boolean skipPassive) {
-        byte[] bytes = null;
+    /// Serialization happens at the single write site, and only for peers that are actually
+    /// CONNECTED (SendNow) — so `broadcast` stays a true no-op when `peers` is empty or all
+    /// peers are filtered/offline, preserving test fixtures that broadcast unregistered codec
+    /// types in isolation. Each connected peer encodes independently (the message rides a
+    /// per-peer stream); the prior serialize-once-across-peers reuse is intentionally dropped
+    /// in favour of one serialization site and a message-typed offline buffer.
+    @SuppressWarnings("JBCT-PAT-01") // Iterate eligible peers, dispatch
+    private void broadcastPayload(Message.Wired message, boolean skipPassive) {
         for (var state : peers.values()) {
             if (skipPassive && state.isPassive()) {
                 continue;
             }
-            if (bytes == null) {
-                bytes = serializer.encode(message);
-            }
-            var _ = dispatchSerialized(state, message, bytes);
+            var _ = dispatchToPeer(state, message);
         }
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Outcome dispatch with metrics + write
-    private WriteOutcome dispatchSerialized(PeerState state, Object message, byte[] bytes) {
-        var outcome = state.offerOutbound(bytes);
+    private WriteOutcome dispatchToPeer(PeerState state, Message.Wired message) {
+        var outcome = state.offerOutbound(message);
         return switch (outcome) {
             case PeerState.OfferOutcome.SendNow(QuicPeerConnection connection) ->
-                writeToStream(state.peerId(), message, bytes, connection);
+                writeToStream(state.peerId(), message, connection);
             case PeerState.OfferOutcome.Queued(boolean oldestEvicted) -> {
                 quicMetrics.onBackpressureQueued();
                 if (oldestEvicted) {
@@ -947,26 +931,27 @@ public class QuicClusterNetwork implements ClusterNetwork {
         };
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Stream selection and write
-    private WriteOutcome writeToStream(NodeId peerId, Object message, byte[] bytes, QuicPeerConnection connection) {
+    @SuppressWarnings("JBCT-PAT-01") // Stream selection, lazy serialize, write
+    private WriteOutcome writeToStream(NodeId peerId, Message.Wired message, QuicPeerConnection connection) {
         if (!connection.isActive()) {
             // Connection went dead between offerOutbound capture and write. Evict and re-dispatch
-            // so the bytes land in the offline buffer for the next attach.
+            // so the message lands in the offline buffer for the next attach.
             evictStaleConnection(peerId, connection);
             var state = peers.get(peerId);
             if (state != null) {
-                var _ = dispatchSerialized(state, message, bytes);
+                var _ = dispatchToPeer(state, message);
             }
             return new WriteOutcome.ConnectionDead(peerId);
         }
-        var streamType = StreamType.forMessage(message);
-        var stream = connection.stream(streamType)
+        var lane = message.streamType();
+        var stream = connection.stream(lane)
                                .fold(() -> connection.stream(StreamType.CONSENSUS), Option::some);
         if (stream.isEmpty()) {
             log.warn("No stream available for peer {}", peerId);
             return new WriteOutcome.ConnectionDead(peerId);
         }
-        return writeIfWritable(stream.unwrap(), bytes, peerId, streamType);
+        // Sole serialization site: encode only once a writable lane stream is confirmed.
+        return writeIfWritable(stream.unwrap(), serializer.encode(message), peerId, lane);
     }
 
     private WriteOutcome writeIfWritable(QuicStreamChannel ch, byte[] bytes, NodeId peerId, StreamType streamType) {

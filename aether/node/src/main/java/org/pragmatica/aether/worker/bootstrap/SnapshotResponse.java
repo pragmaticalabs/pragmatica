@@ -5,6 +5,7 @@
 package org.pragmatica.aether.worker.bootstrap;
 
 import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 import java.util.Arrays;
@@ -12,6 +13,11 @@ import java.util.Arrays;
 
 @Codec
 public record SnapshotResponse(byte[] kvState, long sequenceNumber) implements Message.Wired {
+    @Override
+    public StreamType streamType() {
+        return StreamType.KV;
+    }
+
     public SnapshotResponse {
         kvState = kvState.clone();
     }

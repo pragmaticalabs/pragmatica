@@ -8,6 +8,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
 
@@ -15,6 +16,11 @@ import org.pragmatica.serialization.CodecFor;
 @Codec
 @CodecFor(KVCommand.class)
 public record WorkerMutation(NodeId sourceWorker, String correlationId, KVCommand<AetherKey> command) implements Message.Wired {
+    @Override
+    public StreamType streamType() {
+        return StreamType.KV;
+    }
+
     public static WorkerMutation workerMutation(NodeId sourceWorker,
                                                 String correlationId,
                                                 KVCommand<AetherKey> command) {

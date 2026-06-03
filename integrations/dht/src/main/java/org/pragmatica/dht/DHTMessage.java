@@ -19,6 +19,7 @@ package org.pragmatica.dht;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.lang.Option;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 import java.util.List;
@@ -26,6 +27,11 @@ import java.util.List;
 /// Messages for DHT operations between nodes.
 @Codec
 public sealed interface DHTMessage extends ProtocolMessage {
+    @Override
+    default StreamType streamType() {
+        return StreamType.DHT;
+    }
+
     /// Request to get a value.
     record GetRequest(String requestId, NodeId sender, byte[] key) implements DHTMessage {
         public GetRequest {

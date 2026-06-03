@@ -43,6 +43,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Retry;
 import org.pragmatica.lang.utils.Retry.BackoffStrategy;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.FrameworkCodecs;
@@ -155,7 +156,7 @@ class QuicConsensusBackpressureTest {
             verify(ch, times(1)).writeAndFlush(any());
         }
 
-        /// A non-CONSENSUS (DHT_RELAY) backpressured write must return BackpressureRefused
+        /// A non-CONSENSUS (DHT) backpressured write must return BackpressureRefused
         /// IMMEDIATELY and NEVER call writeAndFlush — the DHT quorum fast-fail path depends on
         /// this. Proves the fix did not weaken non-consensus backpressure handling.
         @Test
@@ -165,7 +166,7 @@ class QuicConsensusBackpressureTest {
 
             var network = network();
 
-            var outcome = network.writeIfWritableForTest(ch, payload(), PEER, StreamType.DHT_RELAY);
+            var outcome = network.writeIfWritableForTest(ch, payload(), PEER, StreamType.DHT);
 
             assertThat(outcome)
                 .as("DHT_RELAY backpressure must fast-fail")

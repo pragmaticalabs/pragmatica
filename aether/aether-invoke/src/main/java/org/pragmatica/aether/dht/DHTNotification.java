@@ -6,10 +6,15 @@ package org.pragmatica.aether.dht;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 
 @Codec public sealed interface DHTNotification extends ProtocolMessage {
+    @Override default StreamType streamType() {
+        return StreamType.DHT;
+    }
+
     @Override default boolean deliverToPassive() {
         return true;
     }

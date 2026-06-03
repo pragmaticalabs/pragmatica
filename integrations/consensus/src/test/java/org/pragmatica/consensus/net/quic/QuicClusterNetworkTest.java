@@ -45,6 +45,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.FrameworkCodecs;
@@ -310,7 +311,12 @@ class QuicClusterNetworkTest {
         return new StubProtocolMessage(sender);
     }
 
-    private record StubProtocolMessage(NodeId sender) implements org.pragmatica.consensus.ProtocolMessage {}
+    private record StubProtocolMessage(NodeId sender) implements org.pragmatica.consensus.ProtocolMessage {
+        @Override
+        public StreamType streamType() {
+            return StreamType.CONSENSUS;
+        }
+    }
 
     private TopologyObserver stubTopologyManager(NodeInfo self, List<NodeInfo> peers) {
         return new TopologyObserver() {

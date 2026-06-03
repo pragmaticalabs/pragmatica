@@ -25,6 +25,7 @@ import java.util.function.LongUnaryOperator;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.messaging.Message;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
@@ -80,12 +81,12 @@ public final class PeerState {
     /// Outcome of [offerOutbound]. Captured atomically inside the per-peer monitor so the
     /// connection reference in [SendNow] is the same one the phase check saw.
     public sealed interface OfferOutcome {
-        /// Peer is CONNECTED — caller should write the bytes to `connection()`.
+        /// Peer is CONNECTED — caller should serialize and write the message to `connection()`.
         record SendNow(QuicPeerConnection connection) implements OfferOutcome {}
-        /// Bytes were queued into the offline buffer. `oldestEvicted=true` means the buffer
+        /// Message was queued into the offline buffer. `oldestEvicted=true` means the buffer
         /// was at capacity and the oldest entry was dropped to make room.
         record Queued(boolean oldestEvicted) implements OfferOutcome {}
-        /// Peer is REMOVED — bytes dropped.
+        /// Peer is REMOVED — message dropped.
         record Dropped() implements OfferOutcome {}
     }
 
@@ -110,7 +111,7 @@ public final class PeerState {
     private QuicPeerConnection connection;
     private long phaseChangedAtNanos;
     private boolean passive;
-    private final Deque<byte[]> offlineBuffer = new ArrayDeque<>();
+    private final Deque<Message.Wired> offlineBuffer = new ArrayDeque<>();
 
     /// Wall-clock instant (ms) at which the missing-peer reconciler is next allowed to
     /// attempt a re-dial of this peer. Zero means no reconciler attempt has been made yet
@@ -229,10 +230,11 @@ public final class PeerState {
         return option(dropped);
     }
 
-    /// Offer a serialized outbound message. Returns `SendNow(conn)` when the caller must write
-    /// it to the captured live connection; `Queued` when the message was buffered; `Dropped`
+    /// Offer an outbound message. Returns `SendNow(conn)` when the caller must serialize and
+    /// write it to the captured live connection; `Queued` when the message was buffered (held
+    /// as-is, serialized lazily at the single write/drain site, retaining its lane); `Dropped`
     /// when the peer is REMOVED.
-    public synchronized OfferOutcome offerOutbound(byte[] bytes) {
+    public synchronized OfferOutcome offerOutbound(Message.Wired message) {
         return switch (phase) {
             case CONNECTED -> new OfferOutcome.SendNow(connection);
             case REMOVED -> new OfferOutcome.Dropped();
@@ -241,19 +243,20 @@ public final class PeerState {
                 if (wasFull) {
                     offlineBuffer.pollFirst();
                 }
-                offlineBuffer.offerLast(bytes);
+                offlineBuffer.offerLast(message);
                 yield new OfferOutcome.Queued(wasFull);
             }
         };
     }
 
     /// Drain the offline buffer. Intended to be called right after `attach` returns ACCEPTED.
-    /// The returned list is a snapshot of what was buffered; internal deque is left empty.
-    public synchronized List<byte[]> drainOfflineBuffer() {
+    /// The returned list is a snapshot of the buffered messages (each re-sent on its own lane
+    /// at drain time); internal deque is left empty.
+    public synchronized List<Message.Wired> drainOfflineBuffer() {
         if (offlineBuffer.isEmpty()) {
             return List.of();
         }
-        var drained = new ArrayList<byte[]>(offlineBuffer.size());
+        var drained = new ArrayList<Message.Wired>(offlineBuffer.size());
         drained.addAll(offlineBuffer);
         offlineBuffer.clear();
         return drained;

@@ -41,6 +41,11 @@ class MessageRouterTest {
     }
 
     sealed interface WiredMessages extends Message.Wired {
+        @Override
+        default StreamType streamType() {
+            return StreamType.CONTROL;
+        }
+
         record WiredMessage1() implements WiredMessages {}
         record WiredMessage2() implements WiredMessages {}
         record WiredMessage3() implements WiredMessages {}

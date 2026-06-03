@@ -8,11 +8,17 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
 
 
 @Codec@CodecFor(MethodName.class) public sealed interface InvocationMessage extends ProtocolMessage {
+    @Override
+    default StreamType streamType() {
+        return StreamType.INVOKE;
+    }
+
     record InvokeRequest(NodeId sender,
                          String correlationId,
                          String requestId,

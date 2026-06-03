@@ -6,10 +6,16 @@ package org.pragmatica.aether.http.forward;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 
 @Codec public sealed interface HttpForwardMessage extends ProtocolMessage {
+    @Override
+    default StreamType streamType() {
+        return StreamType.FORWARD;
+    }
+
     @Codec enum Pipeline {
         APP,
         MANAGEMENT

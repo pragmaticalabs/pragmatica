@@ -19,6 +19,7 @@ package org.pragmatica.consensus.net;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Codec;
 
@@ -26,6 +27,13 @@ import java.util.Map;
 
 @Codec
 public sealed interface NetworkMessage extends Message.Wired {
+    /// Discovery/handshake traffic travels on the CONTROL lane by default; KV-sync
+    /// records override to the KV lane.
+    @Override
+    default StreamType streamType() {
+        return StreamType.CONTROL;
+    }
+
     /// Hello - connection handshake, sent by both sides on channel activation.
     /// Carries the sender's role, cluster address, and metadata labels so receiving
     /// nodes can identify passive peers and add dynamically provisioned nodes to
@@ -39,8 +47,18 @@ public sealed interface NetworkMessage extends Message.Wired {
     record DiscoveredNodes(NodeId target, java.util.List<NodeInfo> nodes) implements NetworkMessage {}
 
     /// KV-Store snapshot request — sent by passive nodes to get current state.
-    record KVSyncRequest(NodeId sender) implements NetworkMessage {}
+    record KVSyncRequest(NodeId sender) implements NetworkMessage {
+        @Override
+        public StreamType streamType() {
+            return StreamType.KV;
+        }
+    }
 
     /// KV-Store snapshot response — carries serialized KV-Store state.
-    record KVSyncResponse(NodeId target, byte[] snapshot) implements NetworkMessage {}
+    record KVSyncResponse(NodeId target, byte[] snapshot) implements NetworkMessage {
+        @Override
+        public StreamType streamType() {
+            return StreamType.KV;
+        }
+    }
 }

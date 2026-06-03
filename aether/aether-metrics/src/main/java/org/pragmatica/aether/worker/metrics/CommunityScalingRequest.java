@@ -7,6 +7,7 @@ package org.pragmatica.aether.worker.metrics;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 
@@ -17,6 +18,11 @@ import org.pragmatica.serialization.Codec;
                                              int currentInstances,
                                              int requestedInstances,
                                              ScalingEvidence evidence) implements Message.Wired {
+    @Override
+    public StreamType streamType() {
+        return StreamType.METRICS;
+    }
+
     public static CommunityScalingRequest communityScalingRequest(String communityId,
                                                                   NodeId governorId,
                                                                   Artifact artifact,

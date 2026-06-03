@@ -9,6 +9,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 
@@ -18,6 +19,11 @@ import org.pragmatica.serialization.Codec;
                                        Epoch communityEpoch,
                                        Epoch observedCoreEpoch,
                                        Option<CommunityGenerationSnapshot> snapshot) implements Message.Wired {
+    @Override
+    public StreamType streamType() {
+        return StreamType.METRICS;
+    }
+
     public WorkerMetricsPing {
         if (communityEpoch == null) {communityEpoch = Epoch.ZERO;}
         if (observedCoreEpoch == null) {observedCoreEpoch = Epoch.ZERO;}

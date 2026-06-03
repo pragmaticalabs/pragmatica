@@ -6,10 +6,16 @@ package org.pragmatica.aether.worker.metrics;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 
 @Codec public record CommunityMetricsSnapshotRequest(NodeId sender, String communityId, long requestId) implements Message.Wired {
+    @Override
+    public StreamType streamType() {
+        return StreamType.METRICS;
+    }
+
     public static CommunityMetricsSnapshotRequest communityMetricsSnapshotRequest(NodeId sender,
                                                                                   String communityId,
                                                                                   long requestId) {

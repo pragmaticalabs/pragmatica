@@ -29,5 +29,11 @@ public sealed interface Message {
 
     /// Wired messages that can be serialized and sent over the network.
     /// Implementations should be serializable by the chosen serialization framework.
-    non-sealed interface Wired extends Message {}
+    ///
+    /// Each wired family declares the logical transport lane it travels on via
+    /// [#streamType()]. The compiler forces every family to choose a lane.
+    non-sealed interface Wired extends Message {
+        /// The logical transport lane this message travels on.
+        StreamType streamType();
+    }
 }

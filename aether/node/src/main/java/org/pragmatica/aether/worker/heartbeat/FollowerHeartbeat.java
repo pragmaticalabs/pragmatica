@@ -6,11 +6,17 @@ package org.pragmatica.aether.worker.heartbeat;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 
 @Codec
 public record FollowerHeartbeat(NodeId nodeId, long lastDecisionSequence, long timestampMs) implements Message.Wired {
+    @Override
+    public StreamType streamType() {
+        return StreamType.CONSENSUS;
+    }
+
     public static FollowerHeartbeat followerHeartbeat(NodeId nodeId, long lastDecisionSequence, long timestampMs) {
         return new FollowerHeartbeat(nodeId, lastDecisionSequence, timestampMs);
     }

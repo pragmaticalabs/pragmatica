@@ -6,6 +6,7 @@ package org.pragmatica.aether.worker.network;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 import java.util.Arrays;
@@ -13,6 +14,11 @@ import java.util.Arrays;
 
 @Codec
 public record DHTRelayMessage(NodeId actualTarget, byte[] serializedPayload) implements Message.Wired {
+    @Override
+    public StreamType streamType() {
+        return StreamType.DHT;
+    }
+
     public DHTRelayMessage {
         serializedPayload = serializedPayload.clone();
     }

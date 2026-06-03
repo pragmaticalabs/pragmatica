@@ -16,6 +16,8 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.quic.PeerState.AttachResult;
 import org.pragmatica.consensus.net.quic.PeerState.OfferOutcome;
 import org.pragmatica.consensus.net.quic.PeerState.Phase;
+import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.StreamType;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -29,6 +31,17 @@ class PeerStateTest {
 
     private PeerState state() {
         return PeerState.peerState(PEER, T0);
+    }
+
+    private static Message.Wired out(byte tag) {
+        return new TestMsg(tag);
+    }
+
+    private record TestMsg(byte tag) implements Message.Wired {
+        @Override
+        public StreamType streamType() {
+            return StreamType.CONSENSUS;
+        }
     }
 
     private QuicPeerConnection liveConnection() {
@@ -143,8 +156,8 @@ class PeerStateTest {
     void authoritativeRemove_drops_connection_and_clears_buffer() {
         var s = state();
         s.beginConnecting(T0 + 1);
-        s.offerOutbound(new byte[]{1});
-        s.offerOutbound(new byte[]{2});
+        s.offerOutbound(out((byte) 1));
+        s.offerOutbound(out((byte) 2));
         assertThat(s.offlineBufferSize()).isEqualTo(2);
         var conn = liveConnection();
         s.attach(conn, T0 + 2);
@@ -158,7 +171,7 @@ class PeerStateTest {
     @Test
     void offerOutbound_INIT_queues() {
         var s = state();
-        var outcome = s.offerOutbound(new byte[]{42});
+        var outcome = s.offerOutbound(out((byte) 42));
         assertThat(outcome).isInstanceOf(OfferOutcome.Queued.class);
         assertThat(((OfferOutcome.Queued) outcome).oldestEvicted()).isFalse();
         assertThat(s.offlineBufferSize()).isEqualTo(1);
@@ -168,7 +181,7 @@ class PeerStateTest {
     void offerOutbound_CONNECTING_queues() {
         var s = state();
         s.beginConnecting(T0 + 1);
-        assertThat(s.offerOutbound(new byte[]{1})).isInstanceOf(OfferOutcome.Queued.class);
+        assertThat(s.offerOutbound(out((byte) 1))).isInstanceOf(OfferOutcome.Queued.class);
         assertThat(s.offlineBufferSize()).isEqualTo(1);
     }
 
@@ -177,9 +190,9 @@ class PeerStateTest {
         var s = state();
         s.beginConnecting(T0 + 1);
         s.attach(liveConnection(), T0 + 2);
-        s.offerOutbound(new byte[]{1}); // SEND_NOW (no queue)
+        s.offerOutbound(out((byte) 1)); // SEND_NOW (no queue)
         s.evict(T0 + 3);
-        s.offerOutbound(new byte[]{2}); // queued
+        s.offerOutbound(out((byte) 2)); // queued
         assertThat(s.offlineBufferSize()).isEqualTo(1);
     }
 
@@ -189,7 +202,7 @@ class PeerStateTest {
         s.beginConnecting(T0 + 1);
         var conn = liveConnection();
         s.attach(conn, T0 + 2);
-        var outcome = s.offerOutbound(new byte[]{1});
+        var outcome = s.offerOutbound(out((byte) 1));
         assertThat(outcome).isInstanceOf(OfferOutcome.SendNow.class);
         assertThat(((OfferOutcome.SendNow) outcome).connection()).isSameAs(conn);
         assertThat(s.offlineBufferSize()).isZero();
@@ -199,7 +212,7 @@ class PeerStateTest {
     void offerOutbound_REMOVED_returns_Dropped() {
         var s = state();
         s.authoritativeRemove(T0 + 1);
-        assertThat(s.offerOutbound(new byte[]{1})).isInstanceOf(OfferOutcome.Dropped.class);
+        assertThat(s.offerOutbound(out((byte) 1))).isInstanceOf(OfferOutcome.Dropped.class);
         assertThat(s.offlineBufferSize()).isZero();
     }
 
@@ -208,27 +221,27 @@ class PeerStateTest {
         var s = state();
         s.beginConnecting(T0 + 1);
         for (var i = 0; i < PeerState.OFFLINE_BUFFER_MAX; i++) {
-            s.offerOutbound(new byte[]{(byte) (i & 0xff)});
+            s.offerOutbound(out((byte) (i & 0xff)));
         }
         assertThat(s.offlineBufferSize()).isEqualTo(PeerState.OFFLINE_BUFFER_MAX);
-        var overflow = s.offerOutbound(new byte[]{(byte) 0xAA});
+        var overflow = s.offerOutbound(out((byte) 0xAA));
         assertThat(overflow).isInstanceOf(OfferOutcome.Queued.class);
         assertThat(((OfferOutcome.Queued) overflow).oldestEvicted()).isTrue();
         assertThat(s.offlineBufferSize()).isEqualTo(PeerState.OFFLINE_BUFFER_MAX);
     }
 
     @Test
-    void drainOfflineBuffer_returns_queued_bytes_in_fifo_order_and_empties() {
+    void drainOfflineBuffer_returns_queued_messages_in_fifo_order_and_empties() {
         var s = state();
         s.beginConnecting(T0 + 1);
-        s.offerOutbound(new byte[]{1});
-        s.offerOutbound(new byte[]{2});
-        s.offerOutbound(new byte[]{3});
+        s.offerOutbound(out((byte) 1));
+        s.offerOutbound(out((byte) 2));
+        s.offerOutbound(out((byte) 3));
         var drained = s.drainOfflineBuffer();
         assertThat(drained).hasSize(3);
-        assertThat(drained.get(0)).containsExactly((byte) 1);
-        assertThat(drained.get(1)).containsExactly((byte) 2);
-        assertThat(drained.get(2)).containsExactly((byte) 3);
+        assertThat(((TestMsg) drained.get(0)).tag()).isEqualTo((byte) 1);
+        assertThat(((TestMsg) drained.get(1)).tag()).isEqualTo((byte) 2);
+        assertThat(((TestMsg) drained.get(2)).tag()).isEqualTo((byte) 3);
         assertThat(s.offlineBufferSize()).isZero();
     }
 
@@ -238,7 +251,7 @@ class PeerStateTest {
         s.beginConnecting(T0 + 1);
         s.attach(liveConnection(), T0 + 2);
         s.evict(T0 + 3);               // CONNECTED → EVICTED
-        s.offerOutbound(new byte[]{7}); // queued during EVICTED
+        s.offerOutbound(out((byte) 7)); // queued during EVICTED
         s.beginConnecting(T0 + 4);      // EVICTED → CONNECTING
         assertThat(s.offlineBufferSize()).isEqualTo(1);
         s.attach(liveConnection(), T0 + 5); // CONNECTING → CONNECTED

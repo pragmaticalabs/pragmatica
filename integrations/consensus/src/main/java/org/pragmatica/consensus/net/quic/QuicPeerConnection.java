@@ -23,6 +23,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.messaging.StreamType;
 
 import static org.pragmatica.lang.Option.option;
 

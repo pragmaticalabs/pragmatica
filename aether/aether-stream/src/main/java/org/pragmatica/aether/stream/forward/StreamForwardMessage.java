@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream.forward;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 import java.util.Arrays;
@@ -13,6 +14,11 @@ import java.util.List;
 
 
 @Codec public sealed interface StreamForwardMessage extends ProtocolMessage {
+    @Override
+    default StreamType streamType() {
+        return StreamType.FORWARD;
+    }
+
     record PublishForward(NodeId sender,
                           String correlationId,
                           String streamName,

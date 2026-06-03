@@ -7,6 +7,7 @@ package org.pragmatica.cluster.metrics;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 import java.util.List;
@@ -27,6 +28,11 @@ import java.util.Set;
 /// See `aether/docs/specs/cluster-generation-spec.md` §7.
 @Codec
 public sealed interface ClusterSyncMessage extends ProtocolMessage {
+    @Override
+    default StreamType streamType() {
+        return StreamType.METRICS;
+    }
+
     /// Cluster-sync ping sent by the Rabia leader to core members (Tier 1) or
     /// by a Spokesman core node to its assigned community governors (Tier 2).
     ///

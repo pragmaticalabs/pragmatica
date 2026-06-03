@@ -6,11 +6,17 @@ package org.pragmatica.aether.worker.bootstrap;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 
 @Codec
 public record SnapshotRequest(NodeId requester) implements Message.Wired {
+    @Override
+    public StreamType streamType() {
+        return StreamType.KV;
+    }
+
     public static SnapshotRequest snapshotRequest(NodeId requester) {
         return new SnapshotRequest(requester);
     }
