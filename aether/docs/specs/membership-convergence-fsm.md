@@ -121,22 +121,15 @@ That every bug maps to a single cell is the evidence that the abstraction is the
 
 ## 5. Open design decisions (the spec forces these to be answered)
 
-### 5.1 The `(DEAD, live-event-for-same-id)` cell — same-id restart
+### 5.1 The `(DEAD, live-event-for-same-id)` cell — RESOLVED (see §9)
 
-Does Aether support a node returning with the **same NodeId** (k8s StatefulSet, node reboot,
-operator restart, or a false-positive recovery after a long GC/partition), or is the model strictly
-`restart:"no"` + new-ULID replacements?
-
-- **Re-admit** (support same-id restart): `(DEAD, PeerConnected)` → new `OBSERVED`. Requires a
-  *live* proof to avoid resurrection-by-stale-signal. Candidate proofs, strongest first:
-  fresh QUIC handshake (new connection identity, unreplayable) > local probe-ack HEALTHY > a
-  **strictly higher incarnation**. ⚠ SWIM incarnation currently starts at **0** on a fresh process,
-  so incarnation-gating alone would not fire on restart — a fresh-QUIC-handshake proof is the viable
-  signal.
-- **Strict new-ULID:** `(DEAD, *)` is a no-op; a genuine return is always a new ULID → new
-  `OBSERVED`. Then the 02-chaos S20 "restart" test is unfaithful and should re-provision new ids.
-
-This is the *only* place the architectural fork lives — one cell, not a cross-cutting concern.
+This was framed as a fork (support same-id return vs strict new-ULID). The prior-art survey (§9)
+**resolves it: allow same-id, under level-triggered reconciliation.** Under that model the cell
+*dissolves* — there is no "should we resurrect?" decision, only "observed vs desired." A returning
+node is observed; if desired wants the count it is admitted as a **fresh incarnation** (old fenced,
+Akka-style); if a replacement already filled the slot it is **surplus → drained**. Identity becomes
+`(NodeId, incarnation)`; the prerequisites are in §9.4. (Retained here only as the pointer; the
+decision and its grounding live in §9.)
 
 ### 5.2 Authority & handoff
 Leader-authoritative (matches LeaderReconciler) with state **reconstructible from KV** so a new leader
@@ -163,6 +156,10 @@ events/states; it does not re-implement them.
 - **I5** Every `(state, event)` pair has a defined transition (exhaustive; enforced by the sealed
   `FsmState` switch, compiler-checked).
 - **I6** A `DEAD` edge is the sole source of an observable departure event (NODE_FAILED/NODE_LEFT).
+- **I7** (split-brain) No two *live* members ever share an identity. A returning `NodeId` carries a
+  strictly higher incarnation; admitting it **fences (downs) the prior incarnation** (Akka rule).
+- **I8** A member counts toward quorum/`effective` only while **ACTIVE** (synced). A joining/rejoining
+  member is **PASSIVE** (non-voting, single-snapshot syncing) and never counts until promoted (§9.3).
 
 These become property tests / a small model-checker: enumerate states, feed event sequences, assert
 I1–I6. This session's intermittent failures become *deterministic* FSM tests.
@@ -193,7 +190,82 @@ globally synchronous; fixing transient SWIM probe loss during reformation (an in
 
 ## 8. Recommendation
 
-Proceed with **Phase 0 → Phase 1**. Phase 0 is cheap, cannot regress anything, and would itself have
-pre-empted this session's whack-a-mole by forcing §5.1 and the §4 cells to have written answers.
-Decide Phase-2 cutover scope (and RC1-vs-RC2 placement) after the shadow run reveals the true state
-space and divergence rate. Foundational by the RC1/RC2 rule — argues for RC1, against rushing.
+Proceed with **Phase 0 → Phase 1**, building toward the **allow-same-id, level-triggered** model
+adopted in §9. Phase 0 is cheap, cannot regress anything, and would itself have pre-empted this
+session's whack-a-mole by forcing the §4 cells to have written answers. Decide Phase-2 cutover scope
+(and RC1-vs-RC2 placement) after the shadow run reveals the true state space and divergence rate.
+Foundational by the RC1/RC2 rule — argues for RC1, against rushing.
+
+## 9. Prior art and adopted model — allow same-id, level-triggered reconciliation
+
+A survey of leading cluster-management systems converges on one pattern, and it resolves §5.1.
+
+### 9.1 The convergent industry pattern
+- **Reconcile to a declarative desired state, level-triggered, idempotent** — the Kubernetes
+  controller model. The workqueue holds *keys, not events*, deliberately forcing the reconciler to
+  act on *state*, not state-*changes*. Joe Beda (k8s co-founder): *"if you are edge triggered you run
+  risk of compromising your state and never being able to re-create the state; if you are level
+  triggered the pattern is very forgiving."* Writing logic per event-type is an explicit anti-pattern.
+- **Identity = stable logical id + monotonic incarnation/UID** — Akka `address+UID`, Serf
+  `name+incarnation`, Cassandra `host_id`. Reusing a label is normal; the incarnation distinguishes
+  lives.
+- **A new incarnation fences the old** — Akka: a same-address rejoin with a new UID is *evidence the
+  old incarnation is dead* → old auto-downed, new joins, no manual step.
+- **Failed ≠ terminally dead** — Serf/SWIM does *not* purge on death; it keeps failed nodes,
+  reconnects, and reaps only after a grace, distinguishing "left" (graceful) from "failed" (may
+  return after a partition). **Aether's terminal-eviction is more aggressive than the SWIM-native
+  behavior it is built on** — it is the outlier that fights same-id rejoin.
+- **Rejoin = re-earn via a non-voting catch-up, not restored authority** — etcd adds a returning
+  member as a **non-voting learner**, caught up, then promoted; stale data is wiped; membership
+  changes are **serialized (one at a time)**.
+
+### 9.2 Decision: CTM is a level-triggered reconciler; same-id is allowed
+- **Desired core set is a declarative, consensus-held spec.** CTM reconciles observed → desired:
+  idempotent, **environment-agnostic**, a **no-op when the environment already converged** (orchestrator
+  or operator provisioned the nodes), and acts only on the gap. This is the project's stated goal of
+  "zero dependency on environment behavior": auto-provisioning environments and fully-manual operators
+  use the *same* mechanism. It also relaxes the `restart:"no"` constraint — a crashed node may simply
+  restart and rejoin.
+- **Identity = `(NodeId, incarnation)`; a new incarnation fences the old** (I7). The edge-triggered
+  co-confirmation gate + `terminallyEvicted` set are replaced by this.
+
+### 9.3 "Learner" ≡ Aether's existing `NodeRole.PASSIVE` + single-snapshot sync
+Aether already has `NodeRole { ACTIVE, PASSIVE }`; **PASSIVE** ("load balancer, observer") is filtered
+out of quorum and core-membership everywhere (`TopologyObserver` `role() != PASSIVE`). **That is etcd's
+non-voting learner, already built** — reuse it, do not invent a learner.
+- **Refinement vs etcd:** Aether syncs via a **single snapshot (instant)**, not incremental log
+  catch-up. So the `PASSIVE → ACTIVE` promotion gate is **binary** (snapshot applied = caught up) —
+  no "log-delta < threshold" tuning and no "one learner at a time" workload cap.
+- **Join/rejoin funnel:** a joining *or* returning node enters as **PASSIVE** (non-voting, single-
+  snapshot sync), and the **leader promotes** PASSIVE→ACTIVE once synced **and** desired-role==CORE.
+  Maps onto FSM `OBSERVED`/`JOINING` (= PASSIVE) → `MEMBER` (= ACTIVE). Never self-promotion (etcd rule).
+- **Permanent vs transient passive** is disambiguated by **desired role**: desired CORE → promote when
+  synced; desired PASSIVE (LB/observer) → stays PASSIVE. No new role; the FSM tracks intended role.
+
+### 9.4 Prerequisites (concrete, bounded)
+1. **Monotonic incarnation across restarts** — the gap found this session: SWIM incarnation starts at
+   **0** on a fresh process, so a restart cannot refute its own stale FAULTY. Persist+increment, or
+   derive from boot time. (Akka UID / Serf incarnation.) This is the linchpin.
+2. **New-incarnation-fences-old** — replace `terminallyEvicted` + the co-confirmation gate with an
+   Akka-style auto-down of the prior incarnation on observing a higher one.
+3. **Rejoin via PASSIVE + single-snapshot sync, promote on synced** — reuse `NodeRole.PASSIVE` (§9.3).
+4. **Serialize concurrent membership changes** — one change at a time (etcd joint-consensus safety);
+   directly targets the multi-kill instability (§9.5).
+
+### 9.5 The multi-kill churn is a known field problem
+Akka explicitly documents that when **multiple nodes are unreachable simultaneously**, new-incarnation
+auto-downing **stalls** until the others are downed/reachable. The generation-churn we observed during
+the 02-chaos multi-kill is the *same class* of problem. The field's answer is exactly §9.4:
+incarnation-fenced identity + serialized changes + (later) a split-brain-resolver strategy — not a
+local patch.
+
+### 9.6 Sources
+- Kubernetes level-triggered reconciliation: Chainguard "The Principle of Reconciliation"; "Level
+  Triggering and Reconciliation in Kubernetes" (J. Bowes); the Kubebuilder Book "Good Practices".
+- Akka Cluster `address+UID`, new-incarnation auto-down, multi-unreachable stall: Akka "Cluster
+  Membership Service"; akkadotnet/akka.net #3252.
+- etcd learner (non-voting → promote), remove-then-add, one-change-at-a-time: etcd "learner design".
+- Cassandra `host_id` + explicit `replace_address_first_boot`: Apache Cassandra "Adding, replacing,
+  moving and removing nodes".
+- Serf/SWIM failed≠dead, reconnect/reap, FlapTimeout, suspect-before-dead: B. Storti "SWIM";
+  hashicorp/serf config.
