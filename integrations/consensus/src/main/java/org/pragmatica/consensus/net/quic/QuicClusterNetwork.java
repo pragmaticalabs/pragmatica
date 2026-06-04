@@ -961,7 +961,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
               .addListener(future -> handleWriteResult(future, peerId, streamType));
             return new WriteOutcome.Sent(peerId);
         }
-        // Backpressure: channel is at netty's high-watermark. Two divergent policies by stream:
+        // Backpressure: channel is at netty's high-watermark. Three divergent policies by stream:
         //
         //  - CONSENSUS: NEVER silently drop. A burst of consensus commands (deploy → ACTIVATE)
         //    backpressures the consensus stream; the old silent-drop relied on "Rabia/SWIM will
@@ -970,16 +970,26 @@ public class QuicClusterNetwork implements ClusterNetwork {
         //    non-blocking Retry (delays scheduled via SharedScheduler — never blocks the event
         //    loop or submit thread) and report Sent optimistically (mirrors the offline-buffer
         //    Queued→Sent pattern; consensus callers send/broadcast are fire-and-forget).
-        //  - Everything else (KV_STORE / HTTP_FORWARD / DHT_RELAY): UNCHANGED fast-fail. The DHT
-        //    quorum path (sendOutcome → dispatchPayloadWithOutcome) RELIES on BackpressureRefused
-        //    to fail-fast against unreachable replicas instead of stalling on its per-op timeout.
-        //    See aether/docs/specs/dht-resilience-spec.md.
+        //  - DHT: gated by channel liveness. A DHT GetResponse (64KB block) to a LIVE-but-
+        //    momentarily-backpressured reader was being fast-failed, dropping a good response so
+        //    blocks never reached read-quorum → 30s operationTimeout. When the channel is ACTIVE
+        //    the peer is alive and just transiently backpressured: route through the same async
+        //    retry so the response is delivered when writability returns (the QuorumCollector
+        //    waits on the real response). When the channel is INACTIVE the replica is genuinely
+        //    dead: STILL refuse so the DHT QuorumCollector fast-fails (no 30s stall on a dead
+        //    replica). See aether/docs/specs/dht-resilience-spec.md.
+        //  - Everything else (KV / METRICS / INVOKE / FORWARD / CONTROL / SYNC): UNCHANGED
+        //    fast-fail BackpressureRefused.
         // Backpressure entry: name the lane so a stalled stream is identifiable in the logs.
         // One concise line per backpressure entry (per-retry logging stays at debug below).
         log.warn("Backpressure on peer {} lane {} (isWritable={})", peerId, streamType, ch.isWritable());
-        return streamType == StreamType.CONSENSUS
-               ? retryConsensusWrite(ch, bytes, peerId)
-               : refuseBackpressured(peerId, streamType);
+        return switch (streamType) {
+            case CONSENSUS -> retryBackpressuredWrite(ch, bytes, peerId, streamType);
+            case DHT -> ch.isActive()
+                        ? retryBackpressuredWrite(ch, bytes, peerId, streamType)
+                        : refuseBackpressured(peerId, streamType);
+            default -> refuseBackpressured(peerId, streamType);
+        };
     }
 
     /// Package-private test seam — drives `writeIfWritable` directly so regression tests can
@@ -990,9 +1000,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// Package-private test seam — exposes the single async-write attempt so tests can assert
-    /// it fails cleanly (a `Cause`, never a throw) on a backpressured/inactive channel.
+    /// it fails cleanly (a `Cause`, never a throw) on a backpressured/inactive channel. Defaults
+    /// to the CONSENSUS lane so existing regression tests are unchanged; drives the generalized
+    /// `rawBackpressuredWrite`.
     Promise<Unit> rawConsensusWriteForTest(QuicStreamChannel ch, byte[] bytes, NodeId peerId) {
-        return rawConsensusWrite(ch, bytes, peerId);
+        return rawBackpressuredWrite(ch, bytes, peerId, StreamType.CONSENSUS);
     }
 
     private WriteOutcome refuseBackpressured(NodeId peerId, StreamType streamType) {
@@ -1001,21 +1013,22 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return new WriteOutcome.BackpressureRefused(peerId);
     }
 
-    /// Fire-and-forget async retry of a backpressured CONSENSUS send. The Retry re-invokes
-    /// `rawConsensusWrite` after a `SharedScheduler`-scheduled delay, so nothing blocks here.
-    /// Reports `Sent` optimistically — consensus callers ignore the synchronous outcome and
-    /// the retry (plus Rabia's own retransmit as ultimate backstop) owns eventual delivery.
-    private WriteOutcome retryConsensusWrite(QuicStreamChannel ch, byte[] bytes, NodeId peerId) {
+    /// Fire-and-forget async retry of a backpressured send on a LIVE peer. The Retry re-invokes
+    /// `rawBackpressuredWrite` after a `SharedScheduler`-scheduled delay, so nothing blocks here.
+    /// Reports `Sent` optimistically — CONSENSUS callers ignore the synchronous outcome (the retry
+    /// plus Rabia's own retransmit owns eventual delivery); for DHT the QuorumCollector waits on
+    /// the real response, which the retry delivers once writability returns.
+    private WriteOutcome retryBackpressuredWrite(QuicStreamChannel ch, byte[] bytes, NodeId peerId, StreamType streamType) {
         if (isPeerRemoved(peerId)) {
-            log.debug("CONSENSUS retry to {} dropped: peer is REMOVED (terminal) — not rescheduling", peerId);
+            log.debug("{} retry to {} dropped: peer is REMOVED (terminal) — not rescheduling", streamType, peerId);
             return new WriteOutcome.Sent(peerId);
         }
         quicMetrics.onBackpressureRetry();
-        log.debug("CONSENSUS channel to {} not writable — retrying via async backoff (not dropping)", peerId);
-        var _ = consensusRetry.execute(() -> rawConsensusWrite(ch, bytes, peerId))
+        log.debug("{} channel to {} not writable — retrying via async backoff (not dropping)", streamType, peerId);
+        var _ = consensusRetry.execute(() -> rawBackpressuredWrite(ch, bytes, peerId, streamType))
                               .onFailure(cause -> log.debug(
-                                  "CONSENSUS send to {} gave up after retries — relying on Rabia retransmit: {}",
-                                  peerId, cause.message()));
+                                  "{} send to {} gave up after retries — relying on retransmit: {}",
+                                  streamType, peerId, cause.message()));
         return new WriteOutcome.Sent(peerId);
     }
 
@@ -1028,22 +1041,22 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return state != null && state.phase() == PeerState.Phase.REMOVED;
     }
 
-    /// One write attempt against the captured CONSENSUS stream. Re-validated every attempt:
+    /// One write attempt against the captured lane stream. Re-validated every attempt:
     /// if the channel went inactive or is still backpressured this fails (a `Cause`, never a
     /// throw) and the enclosing Retry either reschedules or gives up. A peer disconnecting
     /// mid-retry therefore fails cleanly — the offline buffer handles reconnect delivery.
     /// This is the atomic unit the Retry re-invokes, so it performs NO retry itself.
-    private Promise<Unit> rawConsensusWrite(QuicStreamChannel ch, byte[] bytes, NodeId peerId) {
+    private Promise<Unit> rawBackpressuredWrite(QuicStreamChannel ch, byte[] bytes, NodeId peerId, StreamType streamType) {
         if (isPeerRemoved(peerId)) {
-            return Causes.cause("CONSENSUS stream dropped: peer " + peerId + " is REMOVED (terminal)").promise();
+            return Causes.cause(streamType + " stream dropped: peer " + peerId + " is REMOVED (terminal)").promise();
         }
         if (ch.isActive() && ch.isWritable()) {
             quicMetrics.onMessageSent();
             ch.writeAndFlush(Unpooled.wrappedBuffer(bytes))
-              .addListener(future -> handleWriteResult(future, peerId, StreamType.CONSENSUS));
+              .addListener(future -> handleWriteResult(future, peerId, streamType));
             return Promise.success(unit());
         }
-        return Causes.cause("CONSENSUS stream backpressured or inactive for " + peerId).promise();
+        return Causes.cause(streamType + " stream backpressured or inactive for " + peerId).promise();
     }
 
     private void handleWriteResult(Future<? super Void> future, NodeId peerId, StreamType streamType) {

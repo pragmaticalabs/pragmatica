@@ -190,6 +190,71 @@ class QuicConsensusBackpressureTest {
             assertThat(outcome).isInstanceOf(WriteOutcome.Sent.class);
             verify(ch, times(1)).writeAndFlush(any());
         }
+
+        /// A DHT write to a LIVE-but-backpressured channel (isActive==true, isWritable==false)
+        /// must be routed through the async retry and report Sent OPTIMISTICALLY — NOT refused.
+        /// This is the exact defect: a 64KB GetResponse to a momentarily-backpressured live reader
+        /// was fast-failed and dropped, denying read-quorum until the 30s operationTimeout.
+        @Test
+        void writeIfWritable_dhtLiveButBackpressured_routesToRetry_reportsSent() {
+            var ch = mock(QuicStreamChannel.class);
+            var future = mock(ChannelFuture.class);
+            when(future.addListener(any())).thenReturn(future);
+            when(ch.writeAndFlush(any())).thenReturn(future);
+            when(ch.isActive()).thenReturn(true);
+            // Backpressured at the writeIfWritable probe, clears on the first retry attempt.
+            when(ch.isWritable()).thenReturn(false, false, true);
+
+            var network = network();
+
+            var outcome = network.writeIfWritableForTest(ch, payload(), PEER, StreamType.DHT);
+
+            assertThat(outcome)
+                .as("live-but-backpressured DHT write must report Sent (routed to retry)")
+                .isInstanceOf(WriteOutcome.Sent.class);
+
+            // The async retry lands the delivery once writability returns.
+            awaitWriteFlush(ch, 1);
+            verify(ch, times(1)).writeAndFlush(any());
+        }
+
+        /// A DHT write to a DEAD channel (isActive==false, isWritable==false) must return
+        /// BackpressureRefused IMMEDIATELY and NEVER call writeAndFlush — preserving the DHT
+        /// QuorumCollector fast-fail against genuinely-dead replicas (no 30s stall).
+        @Test
+        void writeIfWritable_dhtInactiveChannel_refusesImmediately_noWrite() {
+            var ch = mock(QuicStreamChannel.class);
+            when(ch.isActive()).thenReturn(false);
+            when(ch.isWritable()).thenReturn(false);
+
+            var network = network();
+
+            var outcome = network.writeIfWritableForTest(ch, payload(), PEER, StreamType.DHT);
+
+            assertThat(outcome)
+                .as("dead DHT replica must fast-fail so the quorum collector does not stall")
+                .isInstanceOf(WriteOutcome.BackpressureRefused.class);
+            verify(ch, never()).writeAndFlush(any());
+        }
+
+        /// A non-DHT/non-CONSENSUS lane (KV) that is backpressured must STILL fast-fail with
+        /// BackpressureRefused regardless of channel liveness — the DHT live-peer relaxation does
+        /// not leak into other lanes.
+        @Test
+        void writeIfWritable_kvBackpressured_refusesImmediately_evenWhenActive() {
+            var ch = mock(QuicStreamChannel.class);
+            when(ch.isActive()).thenReturn(true);
+            when(ch.isWritable()).thenReturn(false);
+
+            var network = network();
+
+            var outcome = network.writeIfWritableForTest(ch, payload(), PEER, StreamType.KV);
+
+            assertThat(outcome)
+                .as("non-DHT/non-CONSENSUS lanes keep unconditional fast-fail")
+                .isInstanceOf(WriteOutcome.BackpressureRefused.class);
+            verify(ch, never()).writeAndFlush(any());
+        }
     }
 
     @Nested
