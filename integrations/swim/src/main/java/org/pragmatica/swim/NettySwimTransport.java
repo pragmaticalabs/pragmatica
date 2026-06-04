@@ -34,6 +34,7 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.DatagramChannel;
 import io.netty.channel.socket.DatagramPacket;
 import io.netty.channel.socket.nio.NioDatagramChannel;
+import io.netty.resolver.DefaultHostsFileEntriesResolver;
 import io.netty.resolver.dns.DnsNameResolver;
 import io.netty.resolver.dns.DnsNameResolverBuilder;
 import io.netty.util.concurrent.Future;
@@ -224,6 +225,9 @@ public final class NettySwimTransport implements SwimTransport {
 
         var dnsResolver = new DnsNameResolverBuilder(eventLoopGroup.next())
             .channelType(NioDatagramChannel.class)
+            .negativeTtl(0)
+            .ndots(1)
+            .hostsFileEntriesResolver(new DefaultHostsFileEntriesResolver())
             .build();
         nettyResolver.set(option(dnsResolver));
 
