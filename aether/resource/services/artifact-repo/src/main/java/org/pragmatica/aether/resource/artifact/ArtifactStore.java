@@ -32,6 +32,7 @@ import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
@@ -167,6 +168,18 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     private static final int CHUNK_SIZE = 64 * 1024;
 
+    /// Upper bound on the number of chunk puts/gets kept in flight at once during the
+    /// deploy and resolve fan-outs. 8 × 64KB `CHUNK_SIZE` = 512KB of in-flight payload on
+    /// the per-peer dedicated DHT QUIC lane — comfortably under that lane's 1MB write-buffer
+    /// high-watermark, so neither the outbound request writes (deploy puts) nor the inbound
+    /// response writes (resolve gets) drive the peer channel to `isWritable=false`. Empirically,
+    /// an unbounded fan-out of a ≥1MB artifact (16-80 chunks) bursts the lane past the
+    /// watermark → backpressure → fast-fail/drop → cross-node resolve hangs to the 30s
+    /// `operationTimeout`. Bounding the in-flight count keeps the buffer under the watermark so
+    /// reads/writes complete. Intentionally a constant (not configurable): a derived 1MB/2 budget
+    /// over a fixed 64KB chunk size; no speculative config surface.
+    private static final int MAX_CONCURRENT_CHUNKS = 8;
+
     /// Aggregate timeout for `deploy()` chunk fan-out. `DistributedDHTClient.put` has its
     /// own 10s per-chunk timeout; this caps the worst-case dominator chunk of `Promise.allOf`
     /// plus the downstream metadata/versions writes so the HTTP request returns rather than
@@ -222,8 +235,6 @@ class ArtifactStoreImpl implements ArtifactStore {
         var md5 = computeHash(content, "MD5");
         var sha1 = computeHash(content, "SHA-1");
         var chunks = splitIntoChunks(content);
-        var blockIdPromises = chunks.stream().map(this::storagePutWithRetry)
-                                           .toList();
         // Aggregate timeout on the FULL deploy pipeline (chunk fan-out + metadata + versions
         // list writes — the latter two each issue their own DHT puts). The previous timeout
         // placement only bound the local `storage::put` fan-out, which is fast and never
@@ -232,8 +243,10 @@ class ArtifactStoreImpl implements ArtifactStore {
         // due to backpressure and `writeIfWritable` silently drops) blocks the chain
         // indefinitely. The 30s bound at the outer level guarantees the HTTP handler
         // resolves with success or failure before the test harness's curl times out.
-        return Promise.allOf(blockIdPromises)
-                            .flatMap(results -> Result.firstFailureOf(results).async())
+        // CORRECTNESS: boundedFanOut preserves chunk order — blockIds are recorded into
+        // metadata in chunk order and reassembled in that order on resolve; reordering
+        // corrupts the artifact.
+        return boundedFanOut(chunks, MAX_CONCURRENT_CHUNKS, this::storagePutWithRetry)
                             .flatMap(blockIds -> storeMetadataAndVersions(artifact,
                                                                           blockIds,
                                                                           chunks.size(),
@@ -292,13 +305,61 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     private Promise<ResolvedArtifact> resolveChunksFromStorage(Artifact artifact, ArtifactMetadata meta) {
         var corruptedError = new ArtifactStoreError.CorruptedArtifact(artifact);
-        var fetchPromises = meta.blockIds().stream()
-                                         .map(hex -> fetchSingleBlock(hex, corruptedError))
-                                         .toList();
-        return Promise.allOf(fetchPromises)
-                            .flatMap(results -> Result.firstFailureOf(results).async())
+        // CORRECTNESS: boundedFanOut preserves blockId order — chunks are reassembled in
+        // metadata order; reordering corrupts the artifact.
+        return boundedFanOut(meta.blockIds(),
+                             MAX_CONCURRENT_CHUNKS,
+                             hex -> fetchSingleBlock(hex, corruptedError))
                             .map(blocks -> reassembleChunks(blocks, (int) meta.size()))
                             .flatMap(content -> verifyIntegrity(artifact, content, meta));
+    }
+
+    /// Order-preserving, bounded, first-failure fan-out. Processes `items` through the async
+    /// `op` with at most `maxInFlight` operations in flight at once by running consecutive
+    /// sublists (batches) of size `maxInFlight` one after another: each batch fans out
+    /// concurrently via `Promise.allOf` + `Result.firstFailureOf` (mirroring the original
+    /// per-batch aggregation), and the next batch starts only after the current one resolves.
+    ///
+    /// CORRECTNESS: results are returned in input order — batches are consecutive sublists and
+    /// their per-batch results (themselves in input order via `firstFailureOf`) are concatenated
+    /// in batch order. Callers depend on this: deploy records blockIds in chunk order into
+    /// metadata, and resolve reassembles chunks in metadata order; reordering corrupts the
+    /// artifact.
+    ///
+    /// First-failure: on any batch failure the aggregate fails with that cause and no further
+    /// batch is started (the recursion short-circuits through `flatMap`).
+    private <I, R> Promise<List<R>> boundedFanOut(List<I> items,
+                                                  int maxInFlight,
+                                                  Function<I, Promise<R>> op) {
+        return runBatchFrom(items, maxInFlight, op, 0, new ArrayList<>());
+    }
+
+    private <I, R> Promise<List<R>> runBatchFrom(List<I> items,
+                                                 int maxInFlight,
+                                                 Function<I, Promise<R>> op,
+                                                 int start,
+                                                 List<R> accumulated) {
+        if (start >= items.size()) {
+            return Promise.success(List.copyOf(accumulated));
+        }
+        var end = Math.min(start + maxInFlight, items.size());
+        var batchPromises = items.subList(start, end).stream()
+                                       .map(op)
+                                       .toList();
+        return Promise.allOf(batchPromises)
+                            .flatMap(results -> Result.firstFailureOf(results).async())
+                            .flatMap(batchResults -> runBatchFrom(items,
+                                                                  maxInFlight,
+                                                                  op,
+                                                                  end,
+                                                                  concat(accumulated, batchResults)));
+    }
+
+    private static <R> List<R> concat(List<R> head, List<R> tail) {
+        var combined = new ArrayList<R>(head.size() + tail.size());
+        combined.addAll(head);
+        combined.addAll(tail);
+        return combined;
     }
 
     private Promise<byte[]> fetchSingleBlock(String hex, ArtifactStoreError.CorruptedArtifact error) {

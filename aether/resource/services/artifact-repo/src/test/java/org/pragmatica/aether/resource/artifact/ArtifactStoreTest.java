@@ -24,6 +24,8 @@ import org.pragmatica.dht.Partition;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -244,6 +246,79 @@ class ArtifactStoreTest {
     }
 
     @Nested
+    class BoundedFanOutTests {
+        private static final int MAX_CONCURRENT_CHUNKS = 8;
+
+        /// Round-trip proof that order is preserved across batch boundaries: 21 distinct
+        /// chunks (> MAX_CONCURRENT_CHUNKS=8 → 3 batches of 8/8/5) deployed and resolved must
+        /// reassemble byte-exactly. Distinct per-chunk content guarantees 21 distinct BlockIds,
+        /// so any cross-batch reordering of blockIds (deploy metadata) or block fetches
+        /// (resolve) corrupts the result and fails equality.
+        @Test
+        void deployResolve_multiChunkAcrossBatchBoundaries_roundTripsByteExact() {
+            var artifact = Artifact.artifact("org.example:bounded-roundtrip:1.0.0").unwrap();
+            var content = new byte[CHUNK_SIZE * 20 + 100];  // 21 chunks
+            fillWithDistinctChunks(content);
+
+            store.deploy(artifact, content)
+                 .await()
+                 .onFailureRun(Assertions::fail);
+
+            store.resolveWithMetadata(artifact)
+                 .await()
+                 .onFailureRun(Assertions::fail)
+                 .onSuccess(resolved -> {
+                     assertThat(resolved.metadata().chunkCount()).isEqualTo(21);
+                     assertThat(resolved.content()).isEqualTo(content);
+                 });
+        }
+
+        /// Concurrency-cap proof for the DEPLOY fan-out. A gating storage releases each `put`
+        /// only once a full batch (MAX_CONCURRENT_CHUNKS, or the remainder) is concurrently
+        /// in-flight, recording the peak. With 21 chunks the peak must equal exactly 8 (a full
+        /// batch fills) and NEVER exceed it (the next batch starts only after the current one
+        /// resolves).
+        @Test
+        void deploy_multiChunk_capsConcurrentPutsAtMax() {
+            var gating = new GatingStorage();
+            var gatedStore = ArtifactStore.artifactStore(testDht(), gating);
+            var artifact = Artifact.artifact("org.example:bounded-put-cap:1.0.0").unwrap();
+            var content = new byte[CHUNK_SIZE * 20 + 100];  // 21 chunks
+            fillWithDistinctChunks(content);
+
+            gatedStore.deploy(artifact, content)
+                      .await(timeSpan(30).seconds())
+                      .onFailureRun(Assertions::fail);
+
+            assertThat(gating.peakConcurrentPuts()).isEqualTo(MAX_CONCURRENT_CHUNKS);
+        }
+
+        /// Concurrency-cap proof for the RESOLVE fan-out. Same gating mechanism applied to
+        /// `get`: the peak concurrent block fetch must equal exactly 8 and never exceed it.
+        @Test
+        void resolve_multiChunk_capsConcurrentGetsAtMax() {
+            var gating = new GatingStorage();
+            var gatedStore = ArtifactStore.artifactStore(testDht(), gating);
+            var artifact = Artifact.artifact("org.example:bounded-get-cap:1.0.0").unwrap();
+            var content = new byte[CHUNK_SIZE * 20 + 100];  // 21 chunks
+            fillWithDistinctChunks(content);
+
+            gatedStore.deploy(artifact, content)
+                      .await(timeSpan(30).seconds())
+                      .onFailureRun(Assertions::fail);
+
+            gating.resetPeak();
+
+            gatedStore.resolveWithMetadata(artifact)
+                      .await(timeSpan(30).seconds())
+                      .onFailureRun(Assertions::fail)
+                      .onSuccess(resolved -> assertThat(resolved.content()).isEqualTo(content));
+
+            assertThat(gating.peakConcurrentGets()).isEqualTo(MAX_CONCURRENT_CHUNKS);
+        }
+    }
+
+    @Nested
     class ChunkRetryTests {
         /// Regression: 1MB+ artifact pushes returned HTTP 500 because the chunk fan-out
         /// in `ArtifactStoreImpl.deploy` invoked `storage.put` directly with no retry,
@@ -368,6 +443,18 @@ class ArtifactStoreTest {
     private static void fillWithPattern(byte[] content) {
         for (int i = 0; i < content.length; i++) {
             content[i] = (byte) (i % 256);
+        }
+    }
+
+    /// Fills `content` so that each 64KB chunk is byte-distinct from every other chunk.
+    /// `fillWithPattern` repeats every 256 bytes, making all full chunks identical → identical
+    /// content-addressed BlockIds → dedup collapses them, defeating a multi-chunk order test.
+    /// Mixing in the chunk index per byte guarantees N distinct chunks (hence N distinct
+    /// BlockIds) so reordering across batches is observable.
+    private static void fillWithDistinctChunks(byte[] content) {
+        for (int i = 0; i < content.length; i++) {
+            int chunkIndex = i / CHUNK_SIZE;
+            content[i] = (byte) ((i + chunkIndex * 31 + 1) % 256);
         }
     }
 
@@ -557,6 +644,113 @@ class ArtifactStoreTest {
         @Override
         public Partition partitionFor(byte[] key) {
             return Partition.partition(Math.abs(new String(key, StandardCharsets.UTF_8).hashCode()) % 1024).unwrap();
+        }
+    }
+
+    /// Instrumented `StorageInstance` that proves the deploy/resolve fan-out keeps at most
+    /// `expectedBatch` operations in flight at once. Each `put`/`get` increments an in-flight
+    /// counter, records the running peak, then defers completion by a short delay via
+    /// `SharedScheduler`. Because `boundedFanOut` dispatches a whole batch synchronously
+    /// through `Promise.allOf` before any deferred completion fires — and only starts the next
+    /// batch after the current one resolves — the peak observed equals the batch size and never
+    /// exceeds it. The deferral (not an instantaneous return) is what lets a full batch's
+    /// operations genuinely overlap so the peak is observable.
+    private static final class GatingStorage implements StorageInstance {
+        private static final TimeSpan COMPLETION_DELAY = timeSpan(40).millis();
+
+        private final ConcurrentHashMap<BlockId, byte[]> blocks = new ConcurrentHashMap<>();
+        private final AtomicInteger inFlightPuts = new AtomicInteger(0);
+        private final AtomicInteger inFlightGets = new AtomicInteger(0);
+        private final AtomicInteger peakPuts = new AtomicInteger(0);
+        private final AtomicInteger peakGets = new AtomicInteger(0);
+
+        int peakConcurrentPuts() {
+            return peakPuts.get();
+        }
+
+        int peakConcurrentGets() {
+            return peakGets.get();
+        }
+
+        void resetPeak() {
+            peakPuts.set(0);
+            peakGets.set(0);
+        }
+
+        private static void recordPeak(AtomicInteger current, AtomicInteger peak) {
+            int now = current.incrementAndGet();
+            peak.updateAndGet(prev -> Math.max(prev, now));
+        }
+
+        @Override
+        public Promise<BlockId> put(byte[] content) {
+            return put(content, BlockMetadata.blockMetadata(content.length));
+        }
+
+        @Override
+        public Promise<BlockId> put(byte[] content, BlockMetadata metadata) {
+            recordPeak(inFlightPuts, peakPuts);
+            var result = Promise.<BlockId>promise();
+            SharedScheduler.schedule(() -> completePut(content, result), COMPLETION_DELAY);
+            return result;
+        }
+
+        private void completePut(byte[] content, Promise<BlockId> result) {
+            inFlightPuts.decrementAndGet();
+            BlockId.blockId(content).onSuccess(id -> blocks.put(id, content)).onResult(result::resolve);
+        }
+
+        @Override
+        public Promise<Option<byte[]>> get(BlockId id) {
+            recordPeak(inFlightGets, peakGets);
+            var result = Promise.<Option<byte[]>>promise();
+            SharedScheduler.schedule(() -> completeGet(id, result), COMPLETION_DELAY);
+            return result;
+        }
+
+        private void completeGet(BlockId id, Promise<Option<byte[]>> result) {
+            inFlightGets.decrementAndGet();
+            result.succeed(Option.option(blocks.get(id)));
+        }
+
+        @Override
+        public Promise<Boolean> exists(BlockId id) {
+            return Promise.success(blocks.containsKey(id));
+        }
+
+        @Override
+        public Promise<Unit> createRef(String name, BlockId id) {
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public Option<BlockId> resolveRef(String name) {
+            return Option.none();
+        }
+
+        @Override
+        public Promise<Unit> deleteRef(String name) {
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public Promise<Unit> delete(BlockId id) {
+            blocks.remove(id);
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public String name() {
+            return "gating-storage";
+        }
+
+        @Override
+        public List<TierInfo> tierInfo() {
+            return List.of();
+        }
+
+        @Override
+        public void shutdown() {
         }
     }
 }
