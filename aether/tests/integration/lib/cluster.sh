@@ -1777,18 +1777,64 @@ force_decommission_node() {
 
 # Seed cluster config into KV-Store if not already present.
 # Required before scale operations — the scale API reads ClusterConfigValue from KV-Store.
+# Seed cluster config into KV-Store if not already present, OR reconcile coreMax
+# when a config already exists but its stored coreMax is below the TOML's.
+#
+# Background: the cluster bootstraps with coreMax = coreCount (= 5) when no operator
+# config has been planted, so a plain "already present → return 0" no-op left coreMax
+# pinned at 5. Scale-up to 7 then returns HTTP 400 InvalidCoreMax(5,7) and 03-scaling
+# never provisions. This reconciles idempotently: if the stored coreMax is below the
+# TOML max, re-apply the config (PUT) with expectedVersion = stored configVersion so a
+# concurrent change on the shared cluster surfaces as VersionConflict rather than a
+# silent clobber. Immutable fields (cluster.name) must match the stored config — the
+# config_file is the same TOML the cluster was seeded from, so coreMax is the only diff.
 seed_cluster_config() {
     local config_file="${1:-${LIB_DIR}/../cluster-config.toml}"
-    local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/config" \
-        -H "X-API-Key: ${API_KEY}")
+    local toml_content
+    toml_content=$(cat "$config_file")
+    # Desired coreMax from the TOML's [cluster.core] max (the operator intent).
+    local toml_max
+    toml_max=$(printf '%s' "$toml_content" \
+        | grep -E '^[[:space:]]*max[[:space:]]*=' \
+        | head -1 \
+        | grep -oE '[0-9]+' | head -1)
+
+    local body status
+    body=$(curl -sk -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/api/cluster/config" \
+        -w $'\n__STATUS__:%{http_code}' 2>/dev/null || true)
+    status="${body##*__STATUS__:}"
+    body="${body%$'\n'__STATUS__:*}"
+
     if [ "$status" = "200" ]; then
-        log_info "Cluster config already present"
+        local stored_max stored_version
+        stored_max=$(printf '%s' "$body" \
+            | grep -oE '"coreMax"[[:space:]]*:[[:space:]]*[0-9]+' \
+            | head -1 | grep -oE '[0-9]+$')
+        stored_version=$(printf '%s' "$body" \
+            | grep -oE '"configVersion"[[:space:]]*:[[:space:]]*[0-9]+' \
+            | head -1 | grep -oE '[0-9]+$')
+        # Reconcile only when we can compare and the stored max is genuinely below TOML.
+        if [ -n "$toml_max" ] && [ -n "$stored_max" ] \
+           && [ "$stored_max" -lt "$toml_max" ] 2>/dev/null; then
+            log_info "Reconciling cluster config: stored coreMax=${stored_max} < TOML max=${toml_max} (configVersion=${stored_version:-?})"
+            local escaped_toml json_body
+            escaped_toml=$(escape_json "$toml_content")
+            json_body="{\"tomlContent\":\"${escaped_toml}\",\"expectedVersion\":${stored_version:-0}}"
+            local apply_out
+            apply_out=$(leader_api_post "/api/cluster/config" "$json_body" 2>&1) || true
+            # Surface VersionConflict / ImmutableFieldChange rather than masking them:
+            # a failed reconcile means scale-up will still 400, so the caller must know.
+            if printf '%s' "$apply_out" | grep -qiE 'VersionConflict|Immutable|error|"title"'; then
+                log_warn "Cluster config reconcile may have failed: $(printf '%s' "$apply_out" | head -c 300)"
+            else
+                log_info "Cluster config reconciled (coreMax -> ${toml_max})"
+            fi
+            return 0
+        fi
+        log_info "Cluster config already present (coreMax=${stored_max:-?} >= TOML max=${toml_max:-?})"
         return 0
     fi
     log_info "Seeding cluster config from ${config_file}"
-    local toml_content
-    toml_content=$(cat "$config_file")
     local json_body
     local escaped_toml
     escaped_toml=$(escape_json "$toml_content")
