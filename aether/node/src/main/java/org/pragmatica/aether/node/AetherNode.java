@@ -1989,7 +1989,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                          Option.some(clusterNode.network()),
                                                                                                                                          Option.some(serializer),
                                                                                                                                          Option.some(deserializer),
-                                                                                                                                         drainCommandRegistry::requestDrain);
+                                                                                                                                         drainCommandRegistry::requestDrain,
+                                                                                                                                         drainCommandRegistry::drainTargets);
                                                                                 managementServerRef.set(Option.some(managementServer));
                                                                                 return new aetherNode(config,
                                                                                                       delegateRouter,

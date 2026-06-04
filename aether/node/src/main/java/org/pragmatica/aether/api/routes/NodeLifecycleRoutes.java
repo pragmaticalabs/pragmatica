@@ -56,22 +56,39 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// Defaults to no-op via the single-arg factory for legacy callers / test fixtures.
     private final Consumer<NodeId> drainCommandSink;
 
-    private NodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier, Consumer<NodeId> drainCommandSink) {
+    /// Membership v2 (B5b) — read counterpart to [#drainCommandSink]: the leader's set of
+    /// commanded-but-not-yet-departed DRAIN targets (wired to `DrainCommandRegistry::drainTargets`
+    /// in `AetherNode`). The disruption-budget guard counts these in-flight drains so sequential
+    /// drains cannot be admitted in lockstep into a quorum-losing cascade. Because a drain does NO
+    /// lifecycle/KV write, the target stays SWIM-present until it physically halts, so live
+    /// `presentMembers()` alone cannot see a previously-commanded drain. Defaults to an empty set
+    /// via the single-arg factory for legacy callers / test fixtures. The registry is leader-owned
+    /// and drains are leader-routed, so this read reflects the authoritative pending set.
+    private final Supplier<Set<NodeId>> pendingDrainsSupplier;
+
+    private NodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier,
+                                Consumer<NodeId> drainCommandSink,
+                                Supplier<Set<NodeId>> pendingDrainsSupplier) {
         this.nodeSupplier = nodeSupplier;
         this.drainCommandSink = drainCommandSink == null
                                 ? _ -> {}
                                 : drainCommandSink;
+        this.pendingDrainsSupplier = pendingDrainsSupplier == null
+                                     ? Set::of
+                                     : pendingDrainsSupplier;
     }
 
     public static NodeLifecycleRoutes nodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier) {
-        return new NodeLifecycleRoutes(nodeSupplier, _ -> {});
+        return new NodeLifecycleRoutes(nodeSupplier, _ -> {}, Set::of);
     }
 
-    /// Membership v2 (B5b) — production factory wiring the leader's DRAIN command sink. `AetherNode`
-    /// passes `DrainCommandRegistry::requestDrain`.
+    /// Membership v2 (B5b) — production factory wiring the leader's DRAIN command sink + the
+    /// pending-drains read accessor. `AetherNode` passes `DrainCommandRegistry::requestDrain` and
+    /// `DrainCommandRegistry::drainTargets`.
     public static NodeLifecycleRoutes nodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier,
-                                                          Consumer<NodeId> drainCommandSink) {
-        return new NodeLifecycleRoutes(nodeSupplier, drainCommandSink);
+                                                          Consumer<NodeId> drainCommandSink,
+                                                          Supplier<Set<NodeId>> pendingDrainsSupplier) {
+        return new NodeLifecycleRoutes(nodeSupplier, drainCommandSink, pendingDrainsSupplier);
     }
 
     record LifecycleEntry(String nodeId, String state, long updatedAt) {}
@@ -79,6 +96,13 @@ public final class NodeLifecycleRoutes implements RouteSource {
     record TransitionResult(boolean success, String nodeId, String state, String message) {}
 
     record InFlightResponse(int count) {}
+
+    /// Package-private accessor for unit tests that exercise the drain admission path (notably the
+    /// disruption-budget guard) without standing up the HTTP routing layer. Production callers go
+    /// through the `routes()` stream.
+    Promise<TransitionResult> drainNodeForTest(String nodeIdStr) {
+        return drainNode(nodeIdStr);
+    }
 
     @Override
     public Stream<Route<?>> routes() {
@@ -218,27 +242,61 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                     "Drain command enqueued; target will self-drain via heartbeat DRAIN command");
     }
 
+    /// Disruption-budget guard. The pre-fix version computed BOTH sides of the budget inequality
+    /// from the same live SWIM presence set and counted in-flight drains as still-operational:
+    /// a drain does NO lifecycle/KV write and DRAINING is not part of `presentMembers()`, so a
+    /// previously-commanded-but-not-yet-departed drain was invisible — `intendedSize` and the
+    /// post-drain operational count shrank in lockstep and the guard could NEVER reject sequential
+    /// in-flight drains, admitting a quorum-losing cascade.
+    ///
+    /// Fix: threshold against a STABLE intended size (the configured/peak core count, not the live
+    /// present count), and subtract the leader's commanded-but-not-departed drains plus this drain
+    /// from the present set. The current target is removed from the pending set before counting so
+    /// it is charged exactly once even if a prior call already registered it.
     private Promise<TransitionResult> checkDisruptionBudget(String nodeIdStr) {
-        // Use live present-member count; initialTopology() can accumulate stale entries across restarts.
-        var intendedSize = Math.max(nodeSupplier.get().membershipView().presentMembers().size(),
-                                    1);
+        var intendedSize = stableIntendedSize();
         var minAvailable = (intendedSize / 2) + 1;
-        var operationalAfterDrain = countOnDuty() - 1;
+        var availableAfterThisDrain = availableAfterDrain(nodeIdStr);
 
-        if (operationalAfterDrain >= minAvailable) {
+        if (availableAfterThisDrain >= minAvailable) {
             return Promise.success(new TransitionResult(true, nodeIdStr, "", "Budget check passed"));
         }
 
-        return budgetExceededError(nodeIdStr, operationalAfterDrain, minAvailable).promise();
+        return budgetExceededError(nodeIdStr, availableAfterThisDrain, minAvailable).promise();
     }
 
-    private int countOnDuty() {
-        return nodeSupplier.get().membershipView().presentMembers().size();
+    /// Stable size basis for the budget threshold: the configured core count (`initialTopology`),
+    /// widened to the live present count if that is larger (peak membership), so the threshold
+    /// does not shrink in lockstep with sequential drains. Never below 1.
+    private int stableIntendedSize() {
+        var configured = nodeSupplier.get().initialTopology().size();
+        var present = nodeSupplier.get().membershipView().presentMembers().size();
+
+        return Math.max(Math.max(configured, present), 1);
     }
 
-    private static Cause budgetExceededError(String nodeIdStr, int operationalAfterDrain, int minAvailable) {
+    /// Present cores minus the leader's already-commanded-but-not-departed drains minus this drain.
+    /// The current target is excluded from the pending set first so it is charged exactly once.
+    private int availableAfterDrain(String nodeIdStr) {
+        var present = nodeSupplier.get().membershipView().presentMembers();
+        var pendingExcludingTarget = pendingDrainsExcluding(nodeIdStr);
+        var available = present.size() - pendingExcludingTarget - 1;
+
+        return Math.max(available, 0);
+    }
+
+    /// Count of leader-commanded pending drains, excluding the current target so it is not
+    /// double-counted (it may already be in the pending set from a retried call).
+    private int pendingDrainsExcluding(String nodeIdStr) {
+        return (int) pendingDrainsSupplier.get()
+                                          .stream()
+                                          .filter(node -> !node.id().equals(nodeIdStr))
+                                          .count();
+    }
+
+    private static Cause budgetExceededError(String nodeIdStr, int availableAfterDrain, int minAvailable) {
         var message = "Disruption budget exceeded: draining " + nodeIdStr
-                    + " would leave " + operationalAfterDrain
+                    + " would leave " + availableAfterDrain
                     + " operational nodes, minimum is " + minAvailable;
 
         return HttpError.httpError(HttpStatus.CONFLICT, Causes.cause(message));
