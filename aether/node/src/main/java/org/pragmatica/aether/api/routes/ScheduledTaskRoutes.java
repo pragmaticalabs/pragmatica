@@ -30,6 +30,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
@@ -98,6 +99,17 @@ public final class ScheduledTaskRoutes implements RouteSource {
     /// `routes()` stream registered with the management server.
     Promise<ScheduledTaskInjectResponse> handleInjectForTest(ScheduledTaskInjectRequest req) {
         return handleInject(req);
+    }
+
+    /// Package-private read-only accessors mirroring `handleInjectForTest`: let unit tests
+    /// assert the deterministic ordering of the list / by-section responses without standing
+    /// up the HTTP routing layer. No write path is touched.
+    ScheduledTasksResponse buildTasksResponseForTest() {
+        return buildTasksResponse();
+    }
+
+    Promise<FilteredTasksResponse> buildFilteredResponseForTest(String configSection) {
+        return buildFilteredResponse(configSection);
     }
 
     record TaskSummary(String configSection,
@@ -257,14 +269,26 @@ public final class ScheduledTaskRoutes implements RouteSource {
         nodeSupplier.get().apply(List.of(command));
     }
 
+    /// Stable total-order over scheduled tasks so positional access into the response
+    /// (`tasks.0`) is deterministic. `registry.allTasks()` is a `ConcurrentHashMap`-backed
+    /// `List.copyOf(values())` whose iteration order is unspecified and shifts across calls;
+    /// two tasks differing only by artifact (e.g. same `scheduling.heartbeat/heartbeat`
+    /// section+method) flipped between a pause-write and a readback, producing a false
+    /// `paused=false`. Ordering by `(configSection, artifact, method)` removes that flake.
+    private static final Comparator<ScheduledTask> TASK_ORDER =
+        Comparator.comparing(ScheduledTask::configSection)
+                  .thenComparing(task -> task.artifact().asString())
+                  .thenComparing(task -> task.methodName().name());
+
     private ScheduledTasksResponse buildTasksResponse() {
-        var tasks = registry.allTasks().stream().map(this::toSummary).toList();
+        var tasks = registry.allTasks().stream().sorted(TASK_ORDER).map(this::toSummary).toList();
         return new ScheduledTasksResponse(tasks, manager.activeTimerCount());
     }
 
     private Promise<FilteredTasksResponse> buildFilteredResponse(String configSection) {
         var tasks = registry.allTasks().stream().filter(task -> task.configSection()
-                                                                    .equals(configSection)).map(this::toSummary).toList();
+                                                                    .equals(configSection))
+                            .sorted(TASK_ORDER).map(this::toSummary).toList();
         return Promise.success(new FilteredTasksResponse(tasks, configSection));
     }
 
