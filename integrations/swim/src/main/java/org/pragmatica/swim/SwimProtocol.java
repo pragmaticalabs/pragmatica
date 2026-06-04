@@ -650,6 +650,19 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
+        // A never-HEALTHY member still inside its join-grace window is a freshly-joined peer whose
+        // round-robin probe has not yet had a chance to confirm it ALIVE. Expiring it to FAULTY here
+        // flips the member state (join-grace only suppresses the FAULTY *emission*, not the transition),
+        // and the NTT promotion streak samples member health authoritatively — so the reset would stop
+        // the peer ever accruing the consecutive HEALTHY samples it needs to promote, ending in CTM
+        // reaping and re-provisioning it in a loop. Defer the transition: keep it SUSPECT (still
+        // probe-eligible) so a probe-ack can confirm it ALIVE. Normal expiry resumes once grace ends
+        // or once it has ever been healthy.
+        if (withinJoinGrace(nodeId) && !everSeenHealthy.contains(nodeId)) {
+            LOG.debug("Deferring SUSPECT->FAULTY for never-HEALTHY peer {} still within join-grace — keeping it probe-eligible", nodeId.id());
+            return;
+        }
+
         option(members.get(nodeId))
             .filter(member -> member.state() == MemberState.SUSPECT)
             .onPresent(this::transitionToFaulty);
