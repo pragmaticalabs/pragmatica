@@ -973,6 +973,47 @@ slice_owner_for() {
         '
 }
 
+# Resolve the TARGET_HOST host port that maps to a given in-container port for a
+# named container. NodeId == container_name post-migration, so this works for both
+# compose seeds (fixed host ports) and CTM-provisioned ULID replacements (ephemeral
+# host ports) — a ULID name ends in a letter and has no numeric slot, so the old
+# `base + numeric-suffix` arithmetic produced an empty/garbage port for replacements.
+#
+# Mirrors _discover_endpoint_by_label (lib/common.sh): `docker port <name> <p>/tcp`
+# prints `0.0.0.0:NNNNN` / `[::]:NNNNN` / `127.0.0.1:NNNNN` (port identical across
+# address families — take the first line); fall back to inspect-based HostPort lookup
+# when `docker port` emits nothing. Prints the host port on stdout, empty when the
+# container has no host-published mapping for that in-container port (e.g. a ULID
+# replacement publishes only mgmt 8080, never app 8070).
+#
+# Args: $1 — container name (NodeId); $2 — in-container port (e.g. 8070 app, 8080 mgmt)
+host_port_for_container() {
+    local name="$1" inport="$2"
+    [ -z "$name" ] && return 1
+    [ "${CLOUD_MODE:-false}" = "true" ] && return 1
+    remote_exec "hp=\$(docker port \"${name}\" ${inport}/tcp 2>/dev/null | sed -n '1s/.*:\\([0-9][0-9]*\\)\$/\\1/p'); [ -z \"\$hp\" ] && hp=\$(docker inspect -f '{{range \$p := index .NetworkSettings.Ports \"${inport}/tcp\"}}{{\$p.HostPort}} {{end}}' \"${name}\" 2>/dev/null | tr ' ' '\\n' | grep -m1 '[0-9]'); printf '%s' \"\$hp\"" 2>/dev/null || true
+}
+
+# First (lowest-numbered) live compose-seed's host port that maps to in-container
+# <inport>. Used as a retarget fallback when the slice owner is a ULID replacement
+# with no host-published app port: at ACTIVE state the route has propagated cluster-
+# wide, so any surviving seed serves it. Seeds are named aether-<cluster>-node-{1..N}
+# (CLUSTER_NAME prefix, default `aether-b-node-`); returns the first with a mapping.
+first_seed_host_app_port() {
+    local inport="$1"
+    [ "${CLOUD_MODE:-false}" = "true" ] && return 1
+    local prefix="${CLUSTER_NAME:-aether-${CLUSTER_ID:-b}-node-}"
+    local n hp
+    for n in $(seq 1 "${NODE_COUNT:-5}"); do
+        hp=$(host_port_for_container "${prefix}${n}" "$inport")
+        if [ -n "$hp" ]; then
+            printf '%s' "$hp"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Retarget APP_ENDPOINT to a node that hosts an ACTIVE slice belonging to <coords>.
 # After SliceState.ROUTING was introduced, ACTIVE means routes have propagated
 # cluster-wide — but tests pinning APP_ENDPOINT to node-1 still 404 when the slice
@@ -1019,21 +1060,29 @@ retarget_app_endpoint_to_active_slice() {
         fi
         APP_ENDPOINT="http://${owner_ip}:${port}"
     else
-        # Docker/remote: TARGET_HOST host-maps each node's app port consecutively
-        # (cluster A: 8070..8074; cluster B: 8080..8084). The `port` parameter is
-        # the base (node-1's host port); derive the owner's port from the node-id's
-        # numeric suffix. Without this retarget, the test always probes node-1, and
-        # if the slice ACTIVATED on a different node node-1's NodeRoutesKey snapshot
-        # may not yet contain the route — PUTs land as 404 from sendNoRouteFound
-        # rather than reaching the slice handler.
-        local owner_idx
-        owner_idx=$(echo "$owner" | grep -oE '[0-9]+$')
-        if [ -z "$owner_idx" ]; then
-            log_warn "retarget: could not parse node-index from owner '${owner}'; APP_ENDPOINT unchanged"
-            return 1
+        # Docker/remote: resolve the owner's host-mapped app port by CONTAINER-NAME
+        # lookup (NodeId == container_name post-migration). `docker port <name> 8070/tcp`
+        # works uniformly for compose seeds (host-mapped 8070..8074 / 8080..8084) AND
+        # CTM-provisioned ULID replacements — the old `port + numeric-suffix` derivation
+        # returned EMPTY for a ULID-named owner (id ends in a letter), leaving APP_ENDPOINT
+        # at the dead LB default and the load probing a dead port (false 100% error rate).
+        # In-container app port is 8070 for every node (DockerConfig DEFAULT_APP_PORT_BASE;
+        # compose maps `<host>:8070`). The `port` parameter is retained for the cloud branch.
+        local owner_app_port
+        owner_app_port=$(host_port_for_container "$owner" 8070)
+        if [ -z "$owner_app_port" ]; then
+            # ULID replacements publish only the mgmt port (8080), not 8070 — they carry
+            # no host-mapped app port at all. At ACTIVE state the slice route has propagated
+            # cluster-wide, so any surviving seed with a host-mapped app port serves it. Fall
+            # back to the lowest-numbered live seed's host app port rather than guessing.
+            owner_app_port=$(first_seed_host_app_port 8070)
+            if [ -z "$owner_app_port" ]; then
+                log_warn "retarget: owner '${owner}' has no host-mapped app port (8070) and no seed app port resolvable; APP_ENDPOINT unchanged"
+                return 1
+            fi
+            log_info "retarget: owner ${owner} has no host app port (ULID replacement); routing via seed app port ${owner_app_port}"
         fi
-        local owner_port=$((port + owner_idx - 1))
-        APP_ENDPOINT="http://${TARGET_HOST}:${owner_port}"
+        APP_ENDPOINT="http://${TARGET_HOST}:${owner_app_port}"
     fi
     log_info "retarget: APP_ENDPOINT -> ${APP_ENDPOINT} (slice owner ${owner})"
     # Probe the path until the slice route is wired (positive readiness).
@@ -2249,13 +2298,19 @@ container_running() {
     fi
     rm -f "$err_file"
     printf '%s' "$docker_out" | grep -q . || return 1
-    local offset port
-    offset=$(printf '%s' "$name" | grep -oE '[0-9]+$' | head -1)
-    if [ -z "$offset" ]; then
-        # Cannot derive port from name — fall back to docker-only check (already passed).
+    # Resolve the mgmt host port by CONTAINER-NAME lookup (NodeId == container_name).
+    # `docker port <name> 8080/tcp` is ULID-safe: the old `MGMT_PORT + numeric-suffix`
+    # derivation produced an empty/garbage offset for a CTM-minted ULID name (ends in a
+    # letter), so the /health/live probe targeted a wrong port. In-container mgmt port is
+    # 8080 for every node (MANAGEMENT_PORT=8080). Seeds map a fixed host port; replacements
+    # map an ephemeral one — both resolvable via docker port / inspect HostPort.
+    local port
+    port=$(host_port_for_container "$name" 8080)
+    if [ -z "$port" ]; then
+        # No host-published mgmt mapping (or name not resolvable) — fall back to the
+        # docker-only check, which already passed above.
         return 0
     fi
-    port=$((MGMT_PORT + offset - 1))
     curl -sfk -m 2 -H "X-API-Key: ${API_KEY:-}" "http://${TARGET_HOST}:${port}/health/live" >/dev/null 2>&1
 }
 
