@@ -99,7 +99,7 @@ Comprehensive inventory of all Aether Unified Application Runtime capabilities.
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 32 | Artifact repository | Battle-tested | Maven-compatible, chunked storage, checksum verification (MD5/SHA1), 64MB upload limit, metadata XML generation |
+| 32 | Artifact repository | Battle-tested | Maven-compatible, chunked storage, checksum verification (MD5/SHA1), 64MB upload limit, metadata XML generation. Cross-node resolve of multi-MB artifacts (≥1MB) works: bounded chunk fan-out keeps the DHT QUIC lane under its backpressure watermark, storage releases block claims on failed write-through so retried chunk writes re-write, and the DHT lane retries backpressure to live peers rather than fast-fail-dropping (5MB cross-node resolve completes in <1s) |
 | 33 | Distributed hash table | Battle-tested | Consistent hash ring (150 vnodes, 1024 partitions), quorum R/W, anti-entropy repair (CRC32 digest exchange, migration on mismatch), re-replication on node departure (DHTRebalancer), per-use-case config via `scoped()` |
 | 34 | Configuration service | Complete | TOML-based config with runtime overrides via KV-Store, environment variable interpolation, system property fallback |
 | 105 | Hybrid Logical Clock | Complete | `integrations/hlc/` module. HlcTimestamp (48-bit microseconds + 16-bit counter packed into long), HlcClock (thread-safe, ReentrantLock), drift detection, counter overflow protection. Foundation for causal ordering |
