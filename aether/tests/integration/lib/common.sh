@@ -419,7 +419,12 @@ http_status_with_body() {
         *)
             local body
             body=$(head -c 500 "$body_file" 2>/dev/null | tr -d '\n')
-            log_warn "http ${status} ${url} :: body=${body:-<empty>}"
+            # Diagnostic WARN must go to stderr: this helper's contract is "stdout = status
+            # code only" (callers do status=$(http_status_with_body ...)). Echoing the WARN to
+            # stdout pollutes the captured status with the warn text, so a correct non-2xx
+            # (e.g. an expected 409) false-fails numeric comparisons. Keep it visible in the
+            # run log (which captures stderr) without leaking into the command substitution.
+            log_warn "http ${status} ${url} :: body=${body:-<empty>}" >&2
             ;;
     esac
     rm -f "$body_file"
