@@ -170,8 +170,10 @@ final class DefaultStorageInstance implements StorageInstance {
     // --- Write flow ---
 
     private Promise<BlockId> handlePut(BlockId id, byte[] content) {
-        return metadataStore.claimBlock(id, sentinelFor(id))
-               ? writeThroughTiers(id, content)
+        var sentinel = sentinelFor(id);
+
+        return metadataStore.claimBlock(id, sentinel)
+               ? writeThroughTiers(id, content).onFailure(_ -> metadataStore.releaseClaim(id, sentinel))
                : deduplicateBlock(id);
     }
 

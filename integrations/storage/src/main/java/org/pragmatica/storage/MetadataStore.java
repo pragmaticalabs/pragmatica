@@ -25,6 +25,13 @@ public interface MetadataStore {
     /// Returns true if this call won the race (no prior entry existed).
     boolean claimBlock(BlockId blockId, BlockLifecycle sentinel);
 
+    /// Conditionally release a previously made claim. Removes the lifecycle entry
+    /// for the block only if it is still mapped to exactly the given sentinel
+    /// (i.e. the write never progressed past the claim). If a concurrent caller
+    /// advanced the lifecycle past the sentinel, the entry is preserved.
+    /// Returns true if the claim was released.
+    boolean releaseClaim(BlockId blockId, BlockLifecycle sentinel);
+
     /// Atomically update lifecycle metadata using the provided function.
     /// Returns the updated lifecycle, or none if the block does not exist.
     Option<BlockLifecycle> computeLifecycle(BlockId blockId, UnaryOperator<BlockLifecycle> updater);

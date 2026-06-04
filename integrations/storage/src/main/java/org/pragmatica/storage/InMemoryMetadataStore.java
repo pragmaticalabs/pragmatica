@@ -49,6 +49,17 @@ final class InMemoryMetadataStore implements MetadataStore {
     }
 
     @Override
+    public boolean releaseClaim(BlockId blockId, BlockLifecycle sentinel) {
+        var released = lifecycle.remove(blockId, sentinel);
+
+        if (released) {
+            epoch.incrementAndGet();
+        }
+
+        return released;
+    }
+
+    @Override
     public Option<BlockLifecycle> computeLifecycle(BlockId blockId, UnaryOperator<BlockLifecycle> updater) {
         var result = option(lifecycle.computeIfPresent(blockId, (_, lc) -> updater.apply(lc)));
         result.onPresent(_ -> epoch.incrementAndGet());
