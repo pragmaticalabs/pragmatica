@@ -32,10 +32,13 @@
 [R2] aether/tests/integration/suites/06-deployment/test-schema-migration.sh:111 — body=$(api_post "/api/schema/retry/${DATASOURCE}" "{}" 2>/dev/null || true)
 [R2] aether/tests/integration/suites/07-cluster-mgmt/test-destroy.sh:35 — # Don't `2>/dev/null || true` — that hides stderr AND ignores rc, so a
 [R2] aether/tests/integration/suites/11-observability/test-events-cluster-ordering.sh:59 — "http://${TARGET_HOST}:${port}/api/events" 2>/dev/null || true)
-[R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:104 — body=$(api_get "/api/nodes/lifecycle/${target}" 2>/dev/null || true)
-[R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:124 — remote_exec "docker ps --filter 'label=aether.node-id=${nid}' ${cluster_filter} --format '{{.Names}}' | head -1" 2>/dev/null || true
-[R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:288 — m1=$(sed -n '1p' "$MINORITY_FILE" 2>/dev/null || true)
-[R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:289 — m2=$(sed -n '2p' "$MINORITY_FILE" 2>/dev/null || true)
+[R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:113 — body=$(api_get "/api/nodes/lifecycle/${target}" 2>/dev/null || true)
+[R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:133 — remote_exec "docker ps --filter 'label=aether.node-id=${nid}' ${cluster_filter} --format '{{.Names}}' | head -1" 2>/dev/null || true
+[R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:226 — leader=$(cat "$LEADER_FILE" 2>/dev/null || true)
+[R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:258 — quorate=$(cluster_quorate 2>/dev/null || true)
+[R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:263 — cur_leader=$(cluster_leader 2>/dev/null || true)
+[R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:300 — m1=$(sed -n '1p' "$MINORITY_FILE" 2>/dev/null || true)
+[R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:301 — m2=$(sed -n '2p' "$MINORITY_FILE" 2>/dev/null || true)
 [R2] aether/tests/integration/suites/13-edge-cases/test-concurrent-deploys.sh:77 — kill "$pid_a" 2>/dev/null; wait "$pid_a" 2>/dev/null || true
 [R2] aether/tests/integration/suites/13-edge-cases/test-concurrent-deploys.sh:78 — kill "$pid_b" 2>/dev/null; wait "$pid_b" 2>/dev/null || true
 [R3] aether/tests/integration/suites/04-streaming/test-stream-replication.sh:126 — tautological assert_ne on raw response (var $result from line 117)
