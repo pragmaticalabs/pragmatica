@@ -125,8 +125,12 @@ import org.pragmatica.aether.stream.replication.ForwardCatchupTransport;
 import org.pragmatica.aether.stream.replication.PartitionBackfill;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
+import org.pragmatica.aether.stream.replication.ReplicationManager;
+import org.pragmatica.aether.stream.replication.ReplicationMessage;
+import org.pragmatica.aether.stream.replication.ReplicationReceiveHandler;
 import org.pragmatica.aether.stream.replication.StreamPartitionRecovery;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
+import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentReader;
@@ -1898,7 +1902,21 @@ public interface AetherNode extends ManageableNode {
         allEntries.addAll(spokesmanKvRouter.asRouteEntries());
         metricsCollector.addPongListener(spokesmanPingLoop::onClusterSyncPong);
         var streamMaxMemoryBytes = resolveStreamMaxMemoryBytes();
-        var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes, clusterNode);
+        // A6: activate replication. The replica registry (populated by the A2 ReplicaSetController from
+        // HRW placement) and a network-backed ReplicationTransport are constructed here — ahead of the
+        // StreamPartitionManager — so SPM can be given a REAL DefaultReplicationManager instead of
+        // ReplicationManager.NONE. On every publishLocal the owner now replicates the event to its
+        // registered replica set; the receive/apply side (streamReplicationReceiveHandler, wired below)
+        // lands replicated events offset-preserving WITHOUT re-replicating (appendRecovered).
+        var streamReplicaRegistry = ReplicaRegistry.replicaRegistry();
+        org.pragmatica.aether.stream.replication.ReplicationTransport streamReplicationTransport = clusterNode.network()::send;
+        var streamReplicationManager = ReplicationManager.replicationManager(config.self(),
+                                                                             streamReplicaRegistry,
+                                                                             streamReplicationTransport);
+        var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
+                                                                                   EvictionListener.NOOP,
+                                                                                   streamReplicationManager,
+                                                                                   clusterNode);
         var streamConfigKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.StreamConfigKey.class,
                                                                                                                 streamPartitionManager::onStreamConfigPut).onRemove(AetherKey.StreamConfigKey.class,
                                                                                                                                                                     streamPartitionManager::onStreamConfigRemove).build();
@@ -1966,7 +1984,9 @@ public interface AetherNode extends ManageableNode {
         var streamRetentionEnforcer = RetentionEnforcer.retentionEnforcer(streamStorage,
                                                                           streamSegmentIndex,
                                                                           DEFAULT_STREAM_RETENTION_MS);
-        var streamReplicaRegistry = ReplicaRegistry.replicaRegistry();
+        // A6: streamReplicaRegistry is created earlier (above StreamPartitionManager) so it can be
+        // shared with the now-active DefaultReplicationManager. The same registry instance is the one
+        // the A2 ReplicaSetController populates from HRW placement.
         // A4: lands backfilled/recovered events into the local ring offset-preserving WITHOUT
         // re-replicating (the receiver is not an owner), replacing the StreamPartitionRecovery NOOP
         // for both governor-failover recovery and the A4 backfill path below.
@@ -2054,12 +2074,26 @@ public interface AetherNode extends ManageableNode {
                                                  streamForwardHandler::onReadForward));
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.ReadForwardResponse.class,
                                                  streamForwardClient::onReadForwardResponse));
+        // A6: replica-side receive/apply. ReplicateEvents from an owner are landed into the local
+        // partition ring offset-preserving via appendRecovered (NON-replicating — a replicated event is
+        // never re-emitted, so there is no replicate→apply→replicate loop), then the highest applied
+        // offset is acked back. ReplicateAck flows into the active DefaultReplicationManager so it can
+        // advance the watermark and resolve any awaitReplication(minAcks) promise. Routed on the same
+        // partition message transport as the forward handler.
+        var streamReplicationReceiveHandler = ReplicationReceiveHandler.replicationReceiveHandler(config.self(),
+                                                                                                  streamPartitionManager::appendRecovered,
+                                                                                                  streamReplicationTransport);
+        allEntries.add(MessageRouter.Entry.route(ReplicationMessage.ReplicateEvents.class,
+                                                 streamReplicationReceiveHandler::onReplicateEvents));
+        allEntries.add(MessageRouter.Entry.route(ReplicationMessage.ReplicateAck.class,
+                                                 streamReplicationManager::handleAck));
         registerStreamForwardExtensions(resourceProviderSetup,
                                         streamForwardClient,
                                         taskGroupOwnerResolver,
                                         streamPartitionManager,
                                         serializer,
-                                        deserializer);
+                                        deserializer,
+                                        config.self());
         var certRenewalScheduler = createCertRenewalScheduler(config,
                                                               clusterNode,
                                                               appHttpServer,
@@ -3429,13 +3463,15 @@ public interface AetherNode extends ManageableNode {
                                                         Fn1<Result<NodeId>, TaskGroup> ownerResolver,
                                                         StreamPartitionManager streamPartitionManager,
                                                         Serializer serializer,
-                                                        Deserializer deserializer) {
+                                                        Deserializer deserializer,
+                                                        NodeId self) {
         resourceProviderSetup.spiProvider().onPresent(spi -> registerForwardExtensionsOnSpi(spi,
                                                                                             forwardClient,
                                                                                             ownerResolver,
                                                                                             streamPartitionManager,
                                                                                             serializer,
-                                                                                            deserializer));
+                                                                                            deserializer,
+                                                                                            self));
     }
 
     private static void registerForwardExtensionsOnSpi(SpiResourceProvider spi,
@@ -3443,11 +3479,15 @@ public interface AetherNode extends ManageableNode {
                                                        Fn1<Result<NodeId>, TaskGroup> ownerResolver,
                                                        StreamPartitionManager streamPartitionManager,
                                                        Serializer serializer,
-                                                       Deserializer deserializer) {
+                                                       Deserializer deserializer,
+                                                       NodeId self) {
         spi.registerExtension(StreamForwardClient.class, forwardClient);
         spi.registerExtension(StreamPartitionManager.class, streamPartitionManager);
         spi.registerExtension(Serializer.class, serializer);
         spi.registerExtension(Deserializer.class, deserializer);
+        // A6: self identity so the app StreamAccessFactory can wire owner-routed publish (compare the
+        // resolved HRW owner against this node).
+        spi.registerExtension(NodeId.class, self);
         spi.registerExtension(StreamPublisherFactory.GovernorResolver.class,
                               new StreamPublisherFactory.GovernorResolver(() -> ownerResolver.apply(TaskGroup.STREAMING)
                                                                                         .option()));

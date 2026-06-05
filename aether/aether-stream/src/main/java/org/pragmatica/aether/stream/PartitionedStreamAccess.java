@@ -17,6 +17,7 @@ import org.pragmatica.aether.stream.segment.CursorStore;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -63,6 +64,7 @@ import static org.pragmatica.lang.Result.allOf;
     private final Option<ReplicaRegistry> replicaRegistry;
     private final Option<StreamForwardClient> forwardClient;
     private final NodeId selfNodeId;
+    private final Option<Fn0<Option<NodeId>>> ownerResolver;
     private final StreamReadForwardMetrics metrics;
     private final AtomicLong roundRobinCounter;
     private final ConcurrentHashMap<ConsumerPartitionKey, Long> committedOffsets;
@@ -80,6 +82,7 @@ import static org.pragmatica.lang.Result.allOf;
                                     Option<ReplicaRegistry> replicaRegistry,
                                     Option<StreamForwardClient> forwardClient,
                                     NodeId selfNodeId,
+                                    Option<Fn0<Option<NodeId>>> ownerResolver,
                                     StreamReadForwardMetrics metrics) {
         this.partitionManager = partitionManager;
         this.serializer = serializer;
@@ -94,6 +97,7 @@ import static org.pragmatica.lang.Result.allOf;
         this.replicaRegistry = replicaRegistry;
         this.forwardClient = forwardClient;
         this.selfNodeId = selfNodeId;
+        this.ownerResolver = ownerResolver;
         this.metrics = metrics;
         this.roundRobinCounter = new AtomicLong(0);
         this.committedOffsets = new ConcurrentHashMap<>();
@@ -118,6 +122,36 @@ import static org.pragmatica.lang.Result.allOf;
                                              Option.none(),
                                              Option.none(),
                                              EMPTY_SELF,
+                                             Option.none(),
+                                             StreamReadForwardMetrics.NOOP);
+    }
+
+    /// A6: app-stream overload that wires owner-routed {@link #publish} (forward client + self +
+    /// owner-resolver) while keeping the default local read path (no tiered/cursor/registry). Used by
+    /// the app `StreamAccessFactory` so a non-owner producer write-forwards to the partition owner.
+    public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              String streamName,
+                                                              int partitionCount,
+                                                              Option<Function<T, Object>> partitionKeyExtractor,
+                                                              Option<StreamForwardClient> forwardClient,
+                                                              NodeId selfNodeId,
+                                                              Option<Fn0<Option<NodeId>>> ownerResolver) {
+        return new PartitionedStreamAccess<>(partitionManager,
+                                             serializer,
+                                             deserializer,
+                                             streamName,
+                                             partitionCount,
+                                             partitionKeyExtractor,
+                                             NOOP_WRITER,
+                                             Option.none(),
+                                             Option.none(),
+                                             ReadPreference.GOVERNOR,
+                                             Option.none(),
+                                             forwardClient,
+                                             selfNodeId,
+                                             ownerResolver,
                                              StreamReadForwardMetrics.NOOP);
     }
 
@@ -141,6 +175,7 @@ import static org.pragmatica.lang.Result.allOf;
                                              Option.none(),
                                              Option.none(),
                                              EMPTY_SELF,
+                                             Option.none(),
                                              StreamReadForwardMetrics.NOOP);
     }
 
@@ -165,6 +200,7 @@ import static org.pragmatica.lang.Result.allOf;
                                              Option.none(),
                                              Option.none(),
                                              EMPTY_SELF,
+                                             Option.none(),
                                              StreamReadForwardMetrics.NOOP);
     }
 
@@ -190,6 +226,7 @@ import static org.pragmatica.lang.Result.allOf;
                                              Option.none(),
                                              Option.none(),
                                              EMPTY_SELF,
+                                             Option.none(),
                                              StreamReadForwardMetrics.NOOP);
     }
 
@@ -217,6 +254,7 @@ import static org.pragmatica.lang.Result.allOf;
                                              Option.some(replicaRegistry),
                                              Option.none(),
                                              EMPTY_SELF,
+                                             Option.none(),
                                              StreamReadForwardMetrics.NOOP);
     }
 
@@ -247,13 +285,84 @@ import static org.pragmatica.lang.Result.allOf;
                                              Option.some(replicaRegistry),
                                              forwardClient,
                                              selfNodeId,
+                                             Option.none(),
                                              metrics);
     }
 
+    /// A6: full overload that also wires an owner-resolver so {@link #publish} routes writes to the
+    /// HRW owner of `(stream, partition)`. When `self == owner` the publish lands locally (and the
+    /// owner's {@link StreamPartitionManager} replicates it); otherwise the publish is write-forwarded
+    /// to the owner via `forwardClient`. The resolver returns {@link Option#none()} during the
+    /// bootstrap window (no quorum / placement not yet known); see {@link #publish} for the fail-soft
+    /// local-write behaviour in that case.
+    public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              String streamName,
+                                                              int partitionCount,
+                                                              Option<Function<T, Object>> partitionKeyExtractor,
+                                                              CursorCheckpointWriter cursorWriter,
+                                                              TieredStreamReader tieredReader,
+                                                              CursorStore cursorStore,
+                                                              ReadPreference readPreference,
+                                                              ReplicaRegistry replicaRegistry,
+                                                              Option<StreamForwardClient> forwardClient,
+                                                              NodeId selfNodeId,
+                                                              Option<Fn0<Option<NodeId>>> ownerResolver,
+                                                              StreamReadForwardMetrics metrics) {
+        return new PartitionedStreamAccess<>(partitionManager,
+                                             serializer,
+                                             deserializer,
+                                             streamName,
+                                             partitionCount,
+                                             partitionKeyExtractor,
+                                             cursorWriter,
+                                             Option.some(tieredReader),
+                                             Option.some(cursorStore),
+                                             readPreference,
+                                             Option.some(replicaRegistry),
+                                             forwardClient,
+                                             selfNodeId,
+                                             ownerResolver,
+                                             metrics);
+    }
+
+    /// A6 owner-routed publish. Resolves the HRW owner of `(stream, partition)` via the injected
+    /// owner-resolver and routes accordingly:
+    ///   - **self is owner** (or no resolver / no forward client wired): publish locally. The owner's
+    ///     {@link StreamPartitionManager#publishLocal} replicates the event to the registered replica
+    ///     set, so one authoritative log per partition is produced.
+    ///   - **a remote node is owner**: write-forward the publish to that owner via
+    ///     `forwardClient.publishRemote`; the owner then performs the local publish + replicate. The
+    ///     returned offset is the owner-assigned partition offset.
+    ///
+    /// **Bootstrap / no-owner (fail-soft):** when the resolver returns {@link Option#none()} (no quorum
+    /// yet, placement not computed, stream not created) we publish locally rather than fail. Rationale:
+    /// a steady-state single-node cluster is always its own owner, and dropping the write would be
+    /// worse than landing it on the only node that can serve it; once placement is known, subsequent
+    /// publishes route correctly. This mirrors the B3 owner-gate's bootstrap-window tolerance.
     @Override public Promise<Long> publish(T event) {
         var bytes = serializer.encode(event);
         var partition = resolvePartition(event);
-        return partitionManager.publishLocal(streamName, partition, bytes, System.currentTimeMillis()).async();
+        var timestamp = System.currentTimeMillis();
+        return resolveOwner().map(owner -> routeToOwner(owner, partition, bytes, timestamp))
+                             .or(() -> publishLocal(partition, bytes, timestamp));
+    }
+
+    private Option<NodeId> resolveOwner() {
+        return ownerResolver.flatMap(Fn0::apply);
+    }
+
+    private Promise<Long> routeToOwner(NodeId owner, int partition, byte[] bytes, long timestamp) {
+        if (owner.equals(selfNodeId)) {
+            return publishLocal(partition, bytes, timestamp);
+        }
+        return forwardClient.map(client -> client.publishRemote(owner, streamName, partition, bytes, timestamp))
+                            .or(() -> publishLocal(partition, bytes, timestamp));
+    }
+
+    private Promise<Long> publishLocal(int partition, byte[] bytes, long timestamp) {
+        return partitionManager.publishLocal(streamName, partition, bytes, timestamp).async();
     }
 
     @Override public Promise<List<StreamEvent<T>>> fetch(long fromOffset, int maxEvents) {

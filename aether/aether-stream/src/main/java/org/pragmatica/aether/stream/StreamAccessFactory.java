@@ -8,6 +8,9 @@ import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.StreamAccess;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.stream.StreamPublisherFactory.GovernorResolver;
+import org.pragmatica.aether.stream.forward.StreamForwardClient;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -51,6 +54,40 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
                                                                            ProvisioningContext context) {
         ensureStreamExists(manager, config);
         var keyExtractor = extractPartitionKeyFunction(context);
+        var self = context.extension(NodeId.class).option();
+        // A6: when the runtime supplies a forward client + owner-resolver + self identity, wire
+        // owner-routed publish (non-owner producers write-forward to the partition owner). Otherwise
+        // fall back to the plain local-publish access (tests / minimal runtimes).
+        return self.map(selfNodeId -> ownerRoutedAccess(manager, serializer, deserializer, config, context, keyExtractor, selfNodeId))
+                   .or(() -> plainAccess(manager, serializer, deserializer, config, keyExtractor));
+    }
+
+    @SuppressWarnings("unchecked") private static <T> StreamAccess ownerRoutedAccess(StreamPartitionManager manager,
+                                                                                     Serializer serializer,
+                                                                                     Deserializer deserializer,
+                                                                                     StreamConfig config,
+                                                                                     ProvisioningContext context,
+                                                                                     Option<Function<T, Object>> keyExtractor,
+                                                                                     NodeId self) {
+        var forwardClient = context.extension(StreamForwardClient.class).option();
+        var ownerResolver = context.extension(GovernorResolver.class).option()
+                                   .map(GovernorResolver::resolver);
+        return PartitionedStreamAccess.streamAccess(manager,
+                                                    serializer,
+                                                    deserializer,
+                                                    config.name(),
+                                                    config.partitions(),
+                                                    keyExtractor,
+                                                    forwardClient,
+                                                    self,
+                                                    ownerResolver);
+    }
+
+    @SuppressWarnings("unchecked") private static <T> StreamAccess plainAccess(StreamPartitionManager manager,
+                                                                               Serializer serializer,
+                                                                               Deserializer deserializer,
+                                                                               StreamConfig config,
+                                                                               Option<Function<T, Object>> keyExtractor) {
         return PartitionedStreamAccess.streamAccess(manager,
                                                     serializer,
                                                     deserializer,
