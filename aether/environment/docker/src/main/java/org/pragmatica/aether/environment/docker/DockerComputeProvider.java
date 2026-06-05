@@ -233,6 +233,19 @@ import static org.pragmatica.lang.Result.success;
                                               "-e",
                                               "AETHER_NODE_ID=" + nodeId,
                                               "-e",
+                                              // Authoritative cluster name: emitted from the SAME source as the
+                                              // `aether.cluster` label above (clusterOrDefault(ctx) →
+                                              // ProvisionContext.clusterName, the KV-bootstrapped name) — NOT
+                                              // forwarded verbatim from the leader's process env. The leader's
+                                              // AETHER_CLUSTER_NAME can legitimately differ from the bootstrapped
+                                              // cluster.name (e.g. compose label `b` vs bootstrap `integration-test`);
+                                              // forwarding it verbatim made the replacement's env disagree with its
+                                              // own label, and the boot guard (Main.verifyClusterLabelConsistency)
+                                              // exited(1) → CTM retried forever → auto-heal storm. Mirrors
+                                              // AETHER_NODE_ID above; the IDENTITY_VARS loop below dedupes via
+                                              // alreadyEmitted().
+                                              "AETHER_CLUSTER_NAME=" + cluster,
+                                              "-e",
                                               "CLUSTER_PORT=" + config.clusterPort(),
                                               "-e",
                                               "MANAGEMENT_PORT=8080",
@@ -250,10 +263,12 @@ import static org.pragmatica.lang.Result.success;
         // (AETHER_CLUSTER_NAME/SECRET/PROVISIONED_BY/API_KEY) then the Docker-infra
         // allow-list (AETHER_DOCKER_NETWORK/DOCKER_GID). A provider-minted replacement
         // has no compose env, so without this its identity goes dark one generation deep
-        // (clusterOrDefault falls back to ""/"default"; --group-add sees an unresolved
-        // ${env:DOCKER_GID}; the next replacement it mints loses the aether.cluster label).
-        // Dedupe against vars already emitted above (AETHER_PROVISIONED_BY from
-        // ctx.provisionedBy(), AETHER_API_KEY from config.apiKey()).
+        // (--group-add sees an unresolved ${env:DOCKER_GID}; the next replacement it mints
+        // loses identity vars). Dedupe (alreadyEmitted) against vars already emitted above:
+        // AETHER_CLUSTER_NAME (from clusterOrDefault(ctx) — authoritative, equals the label),
+        // AETHER_PROVISIONED_BY (from ctx.provisionedBy()), AETHER_API_KEY (from config.apiKey()).
+        // AETHER_CLUSTER_SECRET still rides the loop verbatim (a cluster-wide constant with no
+        // per-provision authoritative source, unlike the name).
         ClusterIdentityEnv.IDENTITY_VARS.forEach(name -> propagateEnvVar(command, name));
         ClusterIdentityEnv.DOCKER_INFRA_VARS.forEach(name -> propagateEnvVar(command, name));
         // --- Dev-mode (ISOLATED — never part of IDENTITY_VARS) ---

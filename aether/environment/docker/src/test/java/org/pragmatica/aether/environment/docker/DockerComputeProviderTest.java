@@ -305,10 +305,36 @@ class DockerComputeProviderTest {
         }
 
         @Test
+        void buildRunCommand_emitsClusterNameFromContext_equalsLabel_notHostEnv() {
+            // Regression: the aether.cluster LABEL derived from ProvisionContext.clusterName
+            // while AETHER_CLUSTER_NAME rode the verbatim IDENTITY_VARS allow-list (the leader's
+            // host env). When the two disagreed (compose label `b` vs bootstrap `integration-test`)
+            // the node's boot guard (Main.verifyClusterLabelConsistency) exited(1) and CTM retried
+            // forever → auto-heal storm. The env must come from the SAME ctx source as the label,
+            // so it equals the label regardless of host env, and is emitted exactly once (dedupe).
+            testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+            var ctx = ProvisionContext.provisionContext("integration-test", "core", "default",
+                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "worker-pool", ctx).unwrap();
+
+            provider.provision(spec).await()
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            var command = testRunner.allCommands.getFirst();
+            assertThat(command).contains("AETHER_CLUSTER_NAME=integration-test");
+            assertThat(command).contains("aether.cluster=integration-test");
+            var clusterNameCount = command.stream().filter(arg -> arg.startsWith("AETHER_CLUSTER_NAME=")).count();
+            assertThat(clusterNameCount).isEqualTo(1);
+        }
+
+        @Test
         void buildRunCommand_emptyCluster_noLongerYieldsDefault() {
             // ctx with an empty cluster name + bootstrap origin (passes preflight). The old
-            // clusterOrDefault returned literal "default"; now it returns "" so the minted
-            // name carries no "default" segment and the aether.cluster label is empty.
+            // clusterOrDefault returned literal "default"; now it returns "" so the minted name
+            // carries no "default" segment and the aether.cluster label is empty. coreNodeNamePrefix
+            // is blank-defensive: an empty cluster collapses to the canonical "aether-node-" (single
+            // dash) rather than the malformed "aether--node-" (empty segment between dashes).
             testRunner.queuedResponses.add(Promise.success("id-0"));
             testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
             var ctx = ProvisionContext.provisionContext("", "core", "default",
@@ -323,7 +349,8 @@ class DockerComputeProviderTest {
             assertThat(command).contains("aether.cluster=");
             assertThat(command).doesNotContain("aether.cluster=default");
             var nameIdx = command.indexOf("--name");
-            assertThat(command.get(nameIdx + 1)).startsWith("aether--node-");
+            assertThat(command.get(nameIdx + 1)).startsWith("aether-node-");
+            assertThat(command.get(nameIdx + 1)).doesNotStartWith("aether--node-");
         }
 
         @Test
