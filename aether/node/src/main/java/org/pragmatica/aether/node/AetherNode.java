@@ -1666,7 +1666,7 @@ public interface AetherNode extends ManageableNode {
             nttDisconnectTap = nttDisconnectTap.andThen(shadowFsm::onLivenessGone);
             leaderReconciler.setReconcileListener(intent -> reportMembershipFsmDivergence(divergenceReporter, intent, ntt.currentMembers()));
             allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                                     change -> toggleMembershipFsmShadowOnLeaderChange(change, shadowFsm)));
+                                                     change -> toggleMembershipFsmShadowOnLeaderChange(change, shadowFsm, ntt)));
         }
         // P5: the NTT-reconciler leader-toggle (auto-heal activation) is now wired into the
         // live router. Safe because LeaderReconciler is identity-aware — it arms provisioning
@@ -2369,13 +2369,18 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    /// Phase 1 SHADOW leader-gate: arm the shadow FSM on leader gain, disarm (and clear its model) on
-    /// leader loss — mirroring `toggleNttReconcilerOnLeaderChange`. Both `activate`/`deactivate` are
-    /// `@Contract` void on the shadow, so no return value is abandoned and no suppression is needed.
+    /// Phase 1 SHADOW leader-gate: on leader gain arm the shadow FSM AND seed its model from the live
+    /// membership snapshot ([`NodeTopologyTracker#currentMembers`]) — the one-time formation bootstrap
+    /// that catches the already-formed cluster the late-arming shadow missed (its members' SWIM
+    /// HealthyObserved edges fired once, at formation, before the leader-gated shadow armed). On leader
+    /// loss disarm and clear its model. Mirrors `toggleNttReconcilerOnLeaderChange`. Still read-only and
+    /// flag-gated: `activate`/`seedMembers`/`deactivate` are `@Contract` void on the shadow, the shadow
+    /// acts on NOTHING, so no return value is abandoned and no suppression is needed.
     private static void toggleMembershipFsmShadowOnLeaderChange(LeaderNotification.LeaderChange change,
-                                                                ShadowMembershipFsm shadowFsm) {
+                                                                ShadowMembershipFsm shadowFsm,
+                                                                NodeTopologyTracker ntt) {
         if (change.localNodeIsLeader()) {
-            shadowFsm.activate();
+            shadowFsm.activate(ntt.currentMembers());
         } else {
             shadowFsm.deactivate();
         }

@@ -30,7 +30,7 @@ class MembershipFsmDivergenceReporterTest {
 
     private static ShadowMembershipFsm activeManager() {
         var manager = ShadowMembershipFsm.shadowMembershipFsm();
-        manager.activate();
+        manager.activate(Set.of());
         return manager;
     }
 

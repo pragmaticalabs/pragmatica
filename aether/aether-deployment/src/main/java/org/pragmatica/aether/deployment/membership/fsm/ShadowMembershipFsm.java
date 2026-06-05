@@ -25,6 +25,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -37,12 +38,23 @@ import java.util.function.Function;
 /// decision. This component performs NO provisioning, NO draining, NO eviction — it is a passive
 /// model that lets us compare the FSM's verdict against the live path before any cut-over.
 ///
-/// **Promotion mirrors NTT (up-hysteresis = `K_UP_DEFAULT` = 2).** A member is promoted
-/// OBSERVED→MEMBER after [`#UP_HYSTERESIS`] consecutive `onSwimHealthy` observations — the same fast
-/// admit threshold [`org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker#K_UP_DEFAULT`]
-/// uses. The healthy streak is per-member; any doubt event resets it, so a flap never accumulates
-/// toward promotion across directions. On reaching the threshold the manager dispatches
+/// **Promotion is edge-driven (up-hysteresis = `UP_HYSTERESIS` = 1).** A member is promoted
+/// OBSERVED→MEMBER on the FIRST `onSwimHealthy` observation. This shadow consumes SWIM *edges* —
+/// SWIM emits `HealthyObserved` exactly once, on the transition into ALIVE, not as a periodic sample —
+/// so a single HealthyObserved IS the promotion signal: it means the node is healthy now. NTT's
+/// 2-sample consecutive hysteresis ([`org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker#K_UP_DEFAULT`])
+/// models periodic samples and does NOT apply to an edge consumer; a 2-sample requirement here would
+/// never be met because the edge never fires twice. The healthy streak is still tracked (any doubt
+/// event resets it) but the promotion threshold is 1. On reaching the threshold the manager dispatches
 /// [`UpHysteresisMet`] to the member's FSM (OBSERVED→MEMBER).
+///
+/// **One-time seed on activation.** Because the shadow is leader-gated and arms AFTER cluster
+/// formation, it MISSES the formation-time `HealthyObserved` edges (each fires once, on the edge).
+/// [`#seedMembers`] bootstraps the already-formed cluster from the live membership snapshot at
+/// activation: each untracked or still-OBSERVED id is promoted straight to MEMBER. It NEVER touches an
+/// id already in MEMBER/SUSPECT/DEPARTING/DEAD — death stays the shadow's own SWIM/liveness decision and
+/// is never resurrected from the live snapshot. After the seed, NEW joiners promote independently via
+/// their first `HealthyObserved` edge.
 ///
 /// **Eviction mirrors the LeaderReconciler co-confirmation gate (`swimFaulty ∧ livenessGone`).** A
 /// member is driven Suspect→Departing→Dead only when BOTH planes confirm death: SWIM has declared it
@@ -60,8 +72,9 @@ import java.util.function.Function;
 /// live path; no try/catch isolation is needed.
 ///
 /// **Leader-gating.** Like the live reconciler, the manager only tracks while it holds the leader
-/// lease. [`#activate`] arms it; [`#deactivate`] clears the FSM map and all bookkeeping (a new leader
-/// term starts fresh). All ingress methods no-op while inactive.
+/// lease. [`#activate`] arms it and seeds the model from the supplied live snapshot (the one-time
+/// formation bootstrap); [`#deactivate`] clears the FSM map and all bookkeeping (a new leader term
+/// starts fresh). All ingress methods no-op while inactive.
 ///
 /// **DEAD retention + rejoin.** DEAD FSM entries are KEPT in the map (never removed on death) so a
 /// higher-incarnation [`SwimHealthy`] re-arms the same identity (DEAD→OBSERVED, fenced by the
@@ -77,10 +90,13 @@ public final class ShadowMembershipFsm {
     /// FSM kind tag — groups all per-member shadow FSMs under one name for observer dashboards.
     private static final String FSM_KIND = "shadow-membership";
 
-    /// Up-hysteresis promotion threshold, mirroring
-    /// [`org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker#K_UP_DEFAULT`] (= 2):
-    /// the consecutive-healthy-sample streak at which OBSERVED is promoted to MEMBER.
-    public static final int UP_HYSTERESIS = 2;
+    /// Up-hysteresis promotion threshold for this **edge-driven** shadow (= 1). SWIM emits
+    /// `HealthyObserved` once, on the edge into ALIVE — not as a periodic sample — so the first
+    /// observation is the promotion signal. NTT's 2-sample
+    /// [`org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker#K_UP_DEFAULT`] models
+    /// periodic sampling and does NOT apply here: a 2-sample requirement would never be met because the
+    /// edge never fires twice for the same transition.
+    public static final int UP_HYSTERESIS = 1;
 
     private final FsmObserver<MembershipState, MembershipEvent> observer;
     private final AtomicBoolean active = new AtomicBoolean(false);
@@ -102,10 +118,27 @@ public final class ShadowMembershipFsm {
 
     // --- Leader gating ---
 
-    /// Arm the shadow manager on leader gain. Idempotent.
+    /// Arm the shadow manager on leader gain and seed the model from the supplied live membership
+    /// snapshot (the one-time formation bootstrap — see [`#seedMembers`]). Idempotent.
     @Contract
-    public void activate() {
+    public void activate(Set<NodeId> currentMembers) {
         active.set(true);
+        seedMembers(currentMembers);
+    }
+
+    /// One-time formation bootstrap: promote each id in the live membership snapshot that the shadow
+    /// missed by arming late. For every id that is UNTRACKED or currently OBSERVED, promote it straight
+    /// to MEMBER (creating its FSM if needed and dispatching [`UpHysteresisMet`]). Ids already in
+    /// MEMBER/SUSPECT/DEPARTING/DEAD are left untouched — a dead/suspect node is NEVER resurrected from
+    /// the live snapshot; death stays the shadow's own SWIM/liveness decision. A no-op while inactive,
+    /// and idempotent (re-seeding a MEMBER touches nothing). After the seed, NEW joiners promote
+    /// independently via their first `HealthyObserved` edge.
+    @Contract
+    public void seedMembers(Set<NodeId> currentMembers) {
+        if (!active.get()) {
+            return;
+        }
+        currentMembers.forEach(this::seedMember);
     }
 
     /// Disarm the shadow manager on leader loss. Idempotent. Clears the per-member FSM map and all
@@ -253,6 +286,15 @@ public final class ShadowMembershipFsm {
         maybeConfirmDeparture(tracking);
     }
 
+    /// Seed-promote a single id (the one-time formation bootstrap). The (lazily-created) tracking is
+    /// promoted OBSERVED→MEMBER only while it is still OBSERVED; an id already past OBSERVED (MEMBER /
+    /// SUSPECT / DEPARTING / DEAD) is left untouched, so a dead/suspect node is never resurrected by the
+    /// live snapshot. `promoteIfObserved` performs the OBSERVED guard and the [`UpHysteresisMet`]
+    /// dispatch atomically under the per-member monitor.
+    private void seedMember(NodeId id) {
+        trackingFor(id).promoteIfObserved();
+    }
+
     /// Co-confirmation gate mirroring [`LeaderReconciler#evictIfConfirmedDead`]: only when BOTH planes
     /// confirm death (SWIM-FAULTY ∧ liveness-gone) drive the shadow's confirmed-eviction edge
     /// Suspect→Departing→Dead via [`DownHysteresisMet`] then [`Stopped`]. A single-plane signal leaves
@@ -312,6 +354,16 @@ public final class ShadowMembershipFsm {
 
         synchronized void dispatch(MembershipEvent event) {
             fsm.dispatch(event);
+        }
+
+        /// Seed-promotion guard: dispatch [`UpHysteresisMet`] (OBSERVED→MEMBER) only when the FSM is
+        /// still in OBSERVED. An id already past OBSERVED (MEMBER / SUSPECT / DEPARTING / DEAD) is left
+        /// untouched, so the live-snapshot seed never resurrects a dead/suspect node. Guard + dispatch
+        /// are atomic under the per-member monitor.
+        synchronized void promoteIfObserved() {
+            if (fsm.current() instanceof MembershipState.Observed) {
+                fsm.dispatch(new UpHysteresisMet());
+            }
         }
 
         synchronized boolean bumpHealthyStreakReachedThreshold() {

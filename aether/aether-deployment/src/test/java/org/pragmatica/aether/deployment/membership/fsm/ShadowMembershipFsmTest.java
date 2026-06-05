@@ -8,31 +8,31 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 
+import java.util.Set;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// Verifies the shadow membership manager ([`ShadowMembershipFsm`]) drives the per-member FSM
 /// faithfully from tapped events and computes the cluster aggregate (spec §3.4 effective / would-
-/// provision / would-drain). Mirrors the live promotion (NTT up-hysteresis = 2) and confirmed-
-/// eviction (LeaderReconciler co-confirmation: SWIM-FAULTY ∧ liveness-gone) drivers.
+/// provision / would-drain). Promotion is edge-driven (a single SWIM HealthyObserved edge promotes
+/// OBSERVED→MEMBER, up-hysteresis = 1) with a one-time formation seed; confirmed eviction mirrors the
+/// LeaderReconciler co-confirmation (SWIM-FAULTY ∧ liveness-gone) and is never undone by a later seed.
 class ShadowMembershipFsmTest {
     private static final NodeId A = new NodeId("node-a");
     private static final NodeId B = new NodeId("node-b");
+    private static final NodeId C = new NodeId("node-c");
 
     private static ShadowMembershipFsm activeManager() {
         var manager = ShadowMembershipFsm.shadowMembershipFsm();
-        manager.activate();
+        manager.activate(Set.of());
         return manager;
     }
 
     @Nested
     class Promotion {
         @Test
-        void onSwimHealthy_consecutiveSamplesReachUpHysteresis_promotesToMember() {
+        void onSwimHealthy_firstEdge_promotesToMember() {
             var manager = activeManager();
-
-            manager.onSwimHealthy(A, 1L);
-            assertThat(manager.effective()).isZero();
-            assertThat(manager.memberStates()).containsEntry(A, "Observed");
 
             manager.onSwimHealthy(A, 1L);
             assertThat(manager.memberStates()).containsEntry(A, "Member");
@@ -104,14 +104,11 @@ class ShadowMembershipFsmTest {
     @Nested
     class Rejoin {
         @Test
-        void onSwimHealthy_higherIncarnationAfterDead_reArmsToObserved() {
+        void onSwimHealthy_higherIncarnationAfterDead_reArmsAndPromotes() {
             var manager = activeManager();
 
             driveToDead(manager, A, 4L);
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
-
-            manager.onSwimHealthy(A, 9L);
-            assertThat(manager.memberStates()).containsEntry(A, "Observed");
 
             manager.onSwimHealthy(A, 9L);
             assertThat(manager.memberStates()).containsEntry(A, "Member");
@@ -172,6 +169,90 @@ class ShadowMembershipFsmTest {
             assertThat(manager.effective()).isEqualTo(6);
             assertThat(manager.wouldDrain(5)).isEqualTo(1);
             assertThat(manager.wouldProvision(5)).isZero();
+        }
+    }
+
+    @Nested
+    class Seeding {
+        @Test
+        void seedMembers_onActiveManager_promotesAllUntrackedToMember() {
+            var manager = activeManager();
+
+            manager.seedMembers(Set.of(A, B, C));
+
+            assertThat(manager.memberStates()).containsEntry(A, "Member")
+                                              .containsEntry(B, "Member")
+                                              .containsEntry(C, "Member");
+            assertThat(manager.effective()).isEqualTo(3);
+        }
+
+        @Test
+        void seedMembers_calledTwice_isIdempotent() {
+            var manager = activeManager();
+
+            manager.seedMembers(Set.of(A, B, C));
+            manager.seedMembers(Set.of(A, B, C));
+
+            assertThat(manager.effective()).isEqualTo(3);
+            assertThat(manager.memberStates()).containsEntry(A, "Member")
+                                              .containsEntry(B, "Member")
+                                              .containsEntry(C, "Member");
+        }
+
+        @Test
+        void seedMembers_promotesObservedButNotDead() {
+            var manager = activeManager();
+
+            manager.onPeerDisconnected(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Observed");
+            driveToDead(manager, B, 4L);
+            assertThat(manager.memberStates()).containsEntry(B, "Dead");
+
+            manager.seedMembers(Set.of(A, B));
+
+            assertThat(manager.memberStates()).containsEntry(A, "Member")
+                                              .containsEntry(B, "Dead");
+            assertThat(manager.effective()).isEqualTo(1);
+        }
+
+        @Test
+        void activate_seedsFromSnapshot() {
+            var manager = ShadowMembershipFsm.shadowMembershipFsm();
+
+            manager.activate(Set.of(A, B));
+
+            assertThat(manager.effective()).isEqualTo(2);
+            assertThat(manager.memberStates()).containsEntry(A, "Member")
+                                              .containsEntry(B, "Member");
+        }
+
+        @Test
+        void seedMembers_beforeActivate_isNoOp() {
+            var manager = ShadowMembershipFsm.shadowMembershipFsm();
+
+            manager.seedMembers(Set.of(A, B));
+
+            assertThat(manager.isActive()).isFalse();
+            assertThat(manager.effective()).isZero();
+            assertThat(manager.memberStates()).isEmpty();
+        }
+
+        @Test
+        void seedMembers_afterDeath_doesNotResurrect() {
+            var manager = activeManager();
+
+            manager.seedMembers(Set.of(A, B));
+            assertThat(manager.effective()).isEqualTo(2);
+
+            manager.onSwimFaulty(A, 4L);
+            manager.onLivenessGone(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+            assertThat(manager.effective()).isEqualTo(1);
+
+            manager.seedMembers(Set.of(A, B));
+            assertThat(manager.memberStates()).containsEntry(A, "Dead")
+                                              .containsEntry(B, "Member");
+            assertThat(manager.effective()).isEqualTo(1);
         }
     }
 
@@ -237,7 +318,6 @@ class ShadowMembershipFsmTest {
     // --- helpers ---
 
     private static void promoteToMember(ShadowMembershipFsm manager, NodeId id) {
-        manager.onSwimHealthy(id, 1L);
         manager.onSwimHealthy(id, 1L);
     }
 
