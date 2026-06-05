@@ -243,11 +243,26 @@ non-voting learner, already built** — reuse it, do not invent a learner.
   synced; desired PASSIVE (LB/observer) → stays PASSIVE. No new role; the FSM tracks intended role.
 
 ### 9.4 Prerequisites (concrete, bounded)
-1. **Monotonic incarnation across restarts** — the gap found this session: SWIM incarnation starts at
-   **0** on a fresh process, so a restart cannot refute its own stale FAULTY. Persist+increment, or
-   derive from boot time. (Akka UID / Serf incarnation.) This is the linchpin.
+1. **Monotonic incarnation across restarts — DONE (G1+G2, 2026-06-05).** On inspection the original
+   premise was obsolete: SWIM self-incarnation does *not* stay 0 — `announceJoin` already seeds it from
+   `System.currentTimeMillis()` (the "derive from boot time" option), and tombstone superseding already
+   uses it to detect a genuine restart. The real defect was a **dual incarnation authority**: the metrics
+   readiness epoch was fed by `BootEpoch = System.nanoTime()`, whose origin is arbitrary per-JVM and is
+   **not** monotonic/comparable across restarts (a latent epoch-fencing bug) — and it disagreed with
+   SWIM's `currentTimeMillis` incarnation, so `(NodeId, incarnation)` was not single-valued. **Fix:** made
+   `SwimProtocol.selfIncarnation()` the single authority; the metrics collector now reads
+   `max(bootIncarnation, swim.selfIncarnation())` off the *same* `bootIncarnation` that seeds the SWIM
+   announce; `BootEpoch` deleted. Membership and readiness now agree on one value.
+   - **HLC evaluated and rejected as the source:** the repo's `HlcClock` packed value overflows `long`
+     (physical micros need 51 bits, the field is 48; `<<16` → 67 bits — a *separate* latent bug affecting
+     DHT versioning + topology stamping), and an incarnation must be a stable captured-once-per-life value
+     that gains nothing from a live-advancing clock.
+   - **Residual (optional hardening, "G3"):** boot-millis is still vulnerable to wall-clock *regression*
+     (NTP step-back / VM migration). Strict monotonicity would need a persisted counter
+     (`max(persisted+1, bootMillis)`) or a regression guard; SWIM has no durable store today. Deferred —
+     not required for fencing under a sane clock. (Akka UID / Serf incarnation.)
 2. **New-incarnation-fences-old** — replace `terminallyEvicted` + the co-confirmation gate with an
-   Akka-style auto-down of the prior incarnation on observing a higher one.
+   Akka-style auto-down of the prior incarnation on observing a higher one. (Next: now unblocked by #1.)
 3. **Rejoin via PASSIVE + single-snapshot sync, promote on synced** — reuse `NodeRole.PASSIVE` (§9.3).
 4. **Serialize concurrent membership changes** — one change at a time (etcd joint-consensus safety);
    directly targets the multi-kill instability (§9.5).
