@@ -93,7 +93,13 @@ public final class ClusterEventAggregator {
 
     private static final IntSupplier UNKNOWN_CLUSTER_SIZE = () -> -1;
 
-    private static final int FETCH_BATCH = 1024;
+    /// Bounded retention for the node-local `system:cluster-events` ring AND the read window.
+    /// Single source of truth: [AetherNode] sizes the backing buffer's [RetentionPolicy] from this,
+    /// and `events()` fetches exactly this many so a single fetch always covers the full retained
+    /// window (no newest-event truncation). Keep the two in lock-step by referencing this constant.
+    public static final int MAX_RETAINED_EVENTS = 10_000;
+
+    private static final int FETCH_BATCH = MAX_RETAINED_EVENTS;
 
     private final Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier;
     private final Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier;

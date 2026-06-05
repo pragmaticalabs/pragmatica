@@ -63,6 +63,9 @@ final class ClusterEventStreamBuffer implements StreamAccess<ClusterEvent> {
     }
 
     @Override public synchronized Promise<List<StreamEvent<ClusterEvent>>> fetch(long fromOffset, int maxEvents) {
+        if (maxEvents <= 0) {
+            return Promise.success(List.of());
+        }
         var out = new ArrayList<StreamEvent<ClusterEvent>>(Math.min(maxEvents, ring.size()));
         for (var event : ring) {
             if (event.offset() < fromOffset) {continue;}

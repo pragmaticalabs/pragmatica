@@ -254,8 +254,9 @@ public interface AetherNode extends ManageableNode {
     Logger LOG = LoggerFactory.getLogger(AetherNode.class);
     /// Bounded retention for the in-heap `system:cluster-events:1.0.0` object ring
     /// (stream-namespaces rebuild, Stage 4). Drop-oldest beyond this many events — the structural
-    /// replacement for the deleted ClusterEventLogSweeper.
-    long CLUSTER_EVENTS_MAX_RETAINED = 10_000L;
+    /// replacement for the deleted ClusterEventLogSweeper. Sourced from the aggregator so the
+    /// buffer cap and the read window stay in lock-step (see ClusterEventAggregator.MAX_RETAINED_EVENTS).
+    long CLUSTER_EVENTS_MAX_RETAINED = org.pragmatica.aether.api.ClusterEventAggregator.MAX_RETAINED_EVENTS;
     String VERSION = BuildInfo.version();
     NodeId self();
     Promise<Unit> start();
