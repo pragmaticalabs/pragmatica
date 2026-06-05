@@ -198,6 +198,19 @@ public final class StreamPartitionManager implements AutoCloseable {
         return replicationManager.awaitReplication(streamName, partition, offset, minAcks);
     }
 
+    /// Append a backfilled event into the local partition ring WITHOUT re-triggering replication.
+    /// Used by the A4 catch-up path: a freshly-assigned replica receiving events from an up-to-date
+    /// source must land them locally but must NOT re-emit them onto the replication stream (it is the
+    /// receiver, not an owner). Offsets are preserved because the ring assigns sequential offsets and
+    /// catch-up replays the source's events in order into an empty partition.
+    public Result<Long> appendRecovered(String streamName, int partition, byte[] payload, long timestamp) {
+        return resolveStreamEntry(streamName).flatMap(entry -> appendToPartition(entry,
+                                                                                 streamName,
+                                                                                 partition,
+                                                                                 payload,
+                                                                                 timestamp));
+    }
+
     private Result<Long> appendToPartition(StreamEntry entry,
                                            String streamName,
                                            int partition,

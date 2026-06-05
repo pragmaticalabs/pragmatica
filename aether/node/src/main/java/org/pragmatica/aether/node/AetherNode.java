@@ -121,6 +121,8 @@ import org.pragmatica.aether.stream.forward.StreamForwardMessage;
 import org.pragmatica.aether.stream.forward.StreamForwardTransport;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.GovernorFailoverHandler;
+import org.pragmatica.aether.stream.replication.ForwardCatchupTransport;
+import org.pragmatica.aether.stream.replication.PartitionBackfill;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.StreamPartitionRecovery;
@@ -509,6 +511,8 @@ public interface AetherNode extends ManageableNode {
 
     long DEFAULT_STREAM_RETENTION_MS = 24 * 60 * 60 * 1000L;
     long DEFAULT_STREAM_MEMORY_BYTES = 16 * 1024 * 1024L;
+    /// A4 catch-up: number of events pulled per forward-read page during partition backfill.
+    int STREAM_CATCHUP_BATCH_SIZE = 256;
 
     private static StorageInstance createStreamStorage(Option<DHTClient> dhtClient) {
         var memoryTier = MemoryTier.memoryTier(DEFAULT_STREAM_MEMORY_BYTES);
@@ -1928,18 +1932,49 @@ public interface AetherNode extends ManageableNode {
                                                                           streamSegmentIndex,
                                                                           DEFAULT_STREAM_RETENTION_MS);
         var streamReplicaRegistry = ReplicaRegistry.replicaRegistry();
+        // A4: lands backfilled/recovered events into the local ring offset-preserving WITHOUT
+        // re-replicating (the receiver is not an owner), replacing the StreamPartitionRecovery NOOP
+        // for both governor-failover recovery and the A4 backfill path below.
+        StreamPartitionRecovery streamPartitionRecovery = streamPartitionManager::appendRecovered;
         var streamFailoverHandler = GovernorFailoverHandler.governorFailoverHandler(streamReplicaRegistry,
-                                                                                    StreamPartitionRecovery.NOOP);
+                                                                                    streamPartitionRecovery);
+        // A4: production catch-up wiring. The forward transport/client are constructed here (ahead of
+        // the A6 read-forwarding wiring further below, which reuses the same instances) so the
+        // ReplicaSetController can be given a real onBecameReplica backfill callback instead of the
+        // A2 no-op seam.
+        //   - catch-up transport: pages StreamForwardClient.readRemote until the source is drained.
+        //   - PartitionBackfill: picks the best caught-up peer, applies events, flips self CAUGHT_UP.
+        var streamForwardTransport = createStreamForwardTransport(clusterNode.network());
+        var streamingConfig = config.streaming();
+        var streamReadForwardMetrics = StreamReadForwardMetrics.inMemory();
+        var streamForwardClient = StreamForwardClient.streamForwardClient(config.self(),
+                                                                          streamForwardTransport,
+                                                                          streamingConfig.publishForwardTimeout(),
+                                                                          streamingConfig.readForwardTimeout(),
+                                                                          streamReadForwardMetrics);
+        var streamCatchupTransport = ForwardCatchupTransport.forwardCatchupTransport(streamForwardClient,
+                                                                                     STREAM_CATCHUP_BATCH_SIZE);
+        var streamPartitionBackfill = PartitionBackfill.partitionBackfill(streamReplicaRegistry,
+                                                                          streamPartitionRecovery,
+                                                                          streamCatchupTransport,
+                                                                          config.self());
+        var streamBackfillExecutor = java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> {
+            var thread = new Thread(runnable, "stream-partition-backfill");
+            thread.setDaemon(true);
+            return thread;
+        });
         // A2: per-node controller that reconciles the (previously never-populated) ReplicaRegistry
         // against the HRW-derived desired replica set on every membership change. Members + cluster
         // size come from the consensus topology observer; the stream catalog (name/partitions/
         // minSyncReplicas + partition-has-data) is adapted from the partition manager. The A4
-        // catch-up seam is left as the default no-op here.
+        // catch-up seam now runs backfill off the reconcile thread on a dedicated executor.
         var streamReplicaSetController = ReplicaSetController.replicaSetController(streamReplicaRegistry,
                                                                                   config.self(),
                                                                                   () -> List.copyOf(clusterTopologyManager.observer().coreNodes()),
                                                                                   clusterTopologyManager.observer()::clusterSize,
-                                                                                  streamPartitionManager.replicaCatalog());
+                                                                                  streamPartitionManager.replicaCatalog(),
+                                                                                  (streamName, partition) -> streamBackfillExecutor.execute(() -> streamPartitionBackfill.backfill(streamName,
+                                                                                                                                                                                  partition)));
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).
         wireMembershipDecisionTail(allEntries, streamReplicaSetController::onMembershipDecision);
@@ -1961,14 +1996,6 @@ public interface AetherNode extends ManageableNode {
                                                  change -> toggleStreamingOnLeaderChange(change, streamingCoordinator)));
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> toggleStorageOnLeaderChange(change, delegatedStorageAdapter)));
-        var streamForwardTransport = createStreamForwardTransport(clusterNode.network());
-        var streamingConfig = config.streaming();
-        var streamReadForwardMetrics = StreamReadForwardMetrics.inMemory();
-        var streamForwardClient = StreamForwardClient.streamForwardClient(config.self(),
-                                                                          streamForwardTransport,
-                                                                          streamingConfig.publishForwardTimeout(),
-                                                                          streamingConfig.readForwardTimeout(),
-                                                                          streamReadForwardMetrics);
         var streamForwardHandler = StreamForwardHandler.streamForwardHandler(config.self(),
                                                                              streamPartitionManager,
                                                                              streamForwardTransport,
