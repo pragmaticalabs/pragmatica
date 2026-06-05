@@ -31,7 +31,9 @@ import org.pragmatica.aether.api.ClusterEvent.SliceFailure;
 import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
+import org.pragmatica.aether.slice.StreamAccess.PartitionInfo;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
+import org.pragmatica.aether.slice.StreamAccess.StreamMetadata;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
@@ -56,6 +58,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
@@ -64,14 +67,28 @@ import java.util.function.Supplier;
 /// Aggregates cluster lifecycle events and publishes them into the
 /// `system:cluster-events:1.0.0` system stream (spec §6.2).
 ///
-/// **Architecture (stream-namespaces rebuild, Stage 4).** Replaces the prior rc1 transitional
-/// stack — `ClusterEventLogPublisher` (rate-capped KV writer) + `ClusterEventLogSweeper` (GC) +
-/// the in-process `RingBuffer<ClusterEvent>` materialised view fed by a
-/// `(ClusterEventLogKey, ClusterEventValue)` KV subscriber. Producer handlers now build a sealed
-/// {@link ClusterEvent} record and {@link #emit(ClusterEvent)} it into the framework events
-/// stream. Reads (`events()`, `eventsSince(Instant)`) go through a {@link FrameworkStreamConsumer}
-/// backed by the same stream; retention is governed by the stream's bounded retention policy, not
-/// by an aggregator-local capacity, so the sweeper is gone.
+/// **Architecture (stream-namespaces rebuild, B5b — replicated partition transport).** The events
+/// stream is now a REAL single-partition stream managed by the `StreamPartitionManager`: created at
+/// node boot via `SystemStreamFactories`, replicated at `systemReplicationFactor(N)`, and bounded by
+/// the stream's production [org.pragmatica.aether.slice.RetentionPolicy] (count + byte + age caps).
+/// The prior in-heap `ClusterEventStreamBuffer`/`ClusterEventStreamWiring` object-ring is gone — its
+/// publisher/consumer suppliers now resolve to the `PartitionedStreamAccess`-backed framework SPIs
+/// (`FrameworkStreamPublisher`/`FrameworkStreamConsumer`) wired from `SystemStreamFactories`. Producer
+/// handlers build a sealed {@link ClusterEvent} and {@link #emit(ClusterEvent)} it; reads
+/// (`events()`, `eventsSince(Instant)`) go through the same partition transport — a replica reads
+/// locally, a non-replica read-forwards (automatic via `PartitionedStreamAccess` once the replica
+/// registry is populated by the `ReplicaSetController`).
+///
+/// **Owner-gated emit (folds B3).** The owner observes the same consensus-derived facts on every
+/// node, so an un-gated `emit` would write the same event once per node → duplicated, racy log. The
+/// aggregator therefore publishes ONLY when this node is the OWNER of
+/// (`system:cluster-events:1.0.0`, partition 0) under the current HRW placement — injected as a
+/// `BooleanSupplier`. The single authoritative log is then replicated to all replicas. **Bootstrap
+/// window:** before ownership can be determined (no quorum / topology observer reports no members /
+/// the stream isn't created yet) the owner-check returns false and the event is dropped with a log
+/// line — consistent with the existing publisher-not-bound bootstrap drop (spec §13.3). A
+/// steady-state single-node cluster IS the owner (`systemReplicationFactor(1)=1`, `place` ranks the
+/// lone node first) and DOES emit.
 ///
 /// Publisher/consumer are provided as suppliers because in the AetherNode bootstrap the aggregator
 /// is constructed before the local stream stack exists. During the construction window (before the
@@ -93,16 +110,22 @@ public final class ClusterEventAggregator {
 
     private static final IntSupplier UNKNOWN_CLUSTER_SIZE = () -> -1;
 
-    /// Bounded retention for the node-local `system:cluster-events` ring AND the read window.
-    /// Single source of truth: [AetherNode] sizes the backing buffer's [RetentionPolicy] from this,
-    /// and `events()` fetches exactly this many so a single fetch always covers the full retained
-    /// window (no newest-event truncation). Keep the two in lock-step by referencing this constant.
+    /// Default owner-check used by the legacy factory overloads (tests / call sites that don't gate):
+    /// always-owner, preserving prior unconditional-emit behaviour for those callers.
+    private static final BooleanSupplier ALWAYS_OWNER = () -> true;
+
+    /// Read window for `events()`. Must stay >= the stream's retention `maxCount` so a single fetch
+    /// always covers the full retained window (no newest-event truncation) — the B5a/#239 fix. The
+    /// stream's retention is now config-driven in [org.pragmatica.aether.node.AetherNode]; this is the
+    /// upper bound the read path requests. Kept at the historical 10_000 default (the default
+    /// retention maxCount); a larger configured maxCount would need this raised in lock-step.
     public static final int MAX_RETAINED_EVENTS = 10_000;
 
     private static final int FETCH_BATCH = MAX_RETAINED_EVENTS;
 
     private final Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier;
     private final Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier;
+    private final BooleanSupplier ownerCheck;
     private final HlcClock hlcClock;
     private final NodeId selfNode;
 
@@ -116,11 +139,13 @@ public final class ClusterEventAggregator {
 
     private ClusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
                                    Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
+                                   BooleanSupplier ownerCheck,
                                    NodeId selfNode,
                                    HlcClock hlcClock,
                                    IntSupplier clusterSizeSupplier) {
         this.publisherSupplier = publisherSupplier;
         this.consumerSupplier = consumerSupplier;
+        this.ownerCheck = ownerCheck;
         this.selfNode = selfNode;
         this.hlcClock = hlcClock;
         this.clusterSizeSupplier = clusterSizeSupplier;
@@ -130,7 +155,7 @@ public final class ClusterEventAggregator {
                                                                 Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
                                                                 NodeId selfNode,
                                                                 HlcClock hlcClock) {
-        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, selfNode, hlcClock, UNKNOWN_CLUSTER_SIZE);
+        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ALWAYS_OWNER, selfNode, hlcClock, UNKNOWN_CLUSTER_SIZE);
     }
 
     public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
@@ -138,14 +163,47 @@ public final class ClusterEventAggregator {
                                                                 NodeId selfNode,
                                                                 HlcClock hlcClock,
                                                                 IntSupplier clusterSizeSupplier) {
-        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, selfNode, hlcClock, clusterSizeSupplier);
+        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ALWAYS_OWNER, selfNode, hlcClock, clusterSizeSupplier);
     }
 
-    /// Read all events currently buffered in the system stream's local partition. Every invocation
-    /// re-fetches from offset `0` up to `FETCH_BATCH` — intentional for RC1: the events route is a
-    /// low-frequency operator surface and the partition is bounded by the stream's retention policy.
+    /// Production factory (B5b): emit is gated by `ownerCheck` — only the owner of
+    /// (`system:cluster-events:1.0.0`, partition 0) publishes; non-owners suppress. See class doc for
+    /// the owner-gating rationale and bootstrap-window behaviour.
+    public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
+                                                                Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
+                                                                BooleanSupplier ownerCheck,
+                                                                NodeId selfNode,
+                                                                HlcClock hlcClock,
+                                                                IntSupplier clusterSizeSupplier) {
+        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ownerCheck, selfNode, hlcClock, clusterSizeSupplier);
+    }
+
+    /// Read all events currently retained in the system stream's partition.
+    ///
+    /// **Read from the retained tail, not a fixed `0` (B5b).** The partition transport is now a
+    /// bounded ring whose retention evicts the oldest events; once eviction advances the tail past
+    /// offset 0, a `fetch(0, ...)` would hit `CursorExpired` (the cursor points before the oldest
+    /// retained event) and yield nothing. So `events()` first resolves the partition's current
+    /// `tailOffset` (the oldest still-retained offset) from metadata and fetches `FETCH_BATCH` from
+    /// there. `FETCH_BATCH` >= the retention `maxCount`, so a single fetch always covers the full
+    /// retained window (the B5a/#239 fix). An empty partition (`tailOffset < 0`) reads from 0 and
+    /// returns nothing. On any node: a replica reads locally; a non-replica read-forwards
+    /// automatically (PartitionedStreamAccess routing) once the replica registry is populated.
     public Promise<List<ClusterEvent>> events() {
-        return consume(consumer -> consumer.fetch(0L, FETCH_BATCH).map(ClusterEventAggregator::extractPayloads));
+        return consume(consumer -> consumer.metadata()
+                                           .map(ClusterEventAggregator::retainedTailOffset)
+                                           .flatMap(fromOffset -> consumer.fetch(fromOffset, FETCH_BATCH))
+                                           .map(ClusterEventAggregator::extractPayloads));
+    }
+
+    /// Oldest still-retained offset for partition 0. Empty/absent partition → 0 (fetch from start).
+    private static long retainedTailOffset(StreamMetadata metadata) {
+        return metadata.partitions().stream()
+                       .filter(p -> p.partition() == 0)
+                       .mapToLong(PartitionInfo::tailOffset)
+                       .filter(tail -> tail >= 0)
+                       .findFirst()
+                       .orElse(0L);
     }
 
     /// Read events whose timestamp is strictly after `since`.
@@ -171,9 +229,17 @@ public final class ClusterEventAggregator {
         return fn.apply(consumer);
     }
 
-    /// Fire-and-forget publish into the system stream. If the publisher is not yet bound (bootstrap
-    /// window), the event is logged rather than dropped silently — spec §13.3.
+    /// Fire-and-forget publish into the system stream. Owner-gated (B5b): only the OWNER of
+    /// (`system:cluster-events:1.0.0`, partition 0) publishes — non-owners suppress so the
+    /// consensus-derived event is logged exactly once and replicated to all replicas. If ownership
+    /// cannot yet be determined (bootstrap window) the owner-check returns false and the event is
+    /// dropped+logged. If the publisher is not yet bound (bootstrap window) the event is likewise
+    /// logged rather than dropped silently — spec §13.3.
     @Contract public void emit(ClusterEvent event) {
+        if (!ownerCheck.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: not owner of cluster-events partition — suppressing emit of {}", event);
+            return;
+        }
         var publisher = publisherSupplier.get();
         if (publisher == null) {
             LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)", event);

@@ -255,10 +255,11 @@ import org.slf4j.LoggerFactory;
 
 public interface AetherNode extends ManageableNode {
     Logger LOG = LoggerFactory.getLogger(AetherNode.class);
-    /// Bounded retention for the in-heap `system:cluster-events:1.0.0` object ring
-    /// (stream-namespaces rebuild, Stage 4). Drop-oldest beyond this many events — the structural
-    /// replacement for the deleted ClusterEventLogSweeper. Sourced from the aggregator so the
-    /// buffer cap and the read window stay in lock-step (see ClusterEventAggregator.MAX_RETAINED_EVENTS).
+    /// Read-window upper bound for `events()` on the `system:cluster-events:1.0.0` stream
+    /// (B5b — replicated partition transport). The stream's actual retention `maxCount` is now
+    /// config-overridable (see [#resolveClusterEventsMaxCount]); this constant is the read window the
+    /// aggregator requests and must stay >= that maxCount so a single fetch covers the full retained
+    /// window (the B5a/#239 fix). The default retention maxCount equals this value.
     long CLUSTER_EVENTS_MAX_RETAINED = org.pragmatica.aether.api.ClusterEventAggregator.MAX_RETAINED_EVENTS;
     String VERSION = BuildInfo.version();
     NodeId self();
@@ -1262,14 +1263,14 @@ public interface AetherNode extends ManageableNode {
                                                                                               invocationMetrics,
                                                                                               minuteAggregator);
         var artifactMetricsCollector = ArtifactMetricsCollector.artifactMetricsCollector(artifactStore);
-        // Stream-namespaces rebuild (Stage 4) — cluster events over system:cluster-events:1.0.0.
+        // Stream-namespaces rebuild (B5b) — cluster events over system:cluster-events:1.0.0.
         //
         // Producer handlers build a sealed `ClusterEvent` record and `emit(...)` it into the
         // framework events stream; reads go through the stream consumer. This replaces the rc1
         // transitional stack (ClusterEventLogPublisher rate-capped KV writer + ClusterEventLogSweeper
-        // GC + in-process RingBuffer materialised view). Retention is enforced by the stream's
-        // bounded backing buffer (see ClusterEventStreamBuffer / SystemStreams.CLUSTER_EVENTS),
-        // so the sweeper is gone.
+        // GC + in-process RingBuffer materialised view). The events stream is now a real
+        // partition-managed, replicated stream (provisioned via SystemStreamFactories below);
+        // retention is enforced by the stream's production RetentionPolicy (count/byte/age caps).
         //
         // Publisher + consumer are bound deferred via AtomicReferences: the stream stack is
         // constructed further down (after streamPartitionManager), so during the bootstrap window
@@ -1281,8 +1282,23 @@ public interface AetherNode extends ManageableNode {
                 new java.util.concurrent.atomic.AtomicReference<org.pragmatica.aether.slice.stream.FrameworkStreamPublisher<ClusterEvent>>();
         var clusterEventsConsumerRef =
                 new java.util.concurrent.atomic.AtomicReference<org.pragmatica.aether.slice.stream.FrameworkStreamConsumer<ClusterEvent>>();
+        // B5b owner-gate: emit only when THIS node owns (system:cluster-events:1.0.0, partition 0).
+        // The ReplicaSetController is constructed further down (after the stream stack), so the
+        // owner-check derefs it lazily through this ref. Until the controller is bound — and until the
+        // topology observer reports members — the check returns false and emits are dropped+logged
+        // (bootstrap window). Once members are visible, isOwner is computed directly from the live HRW
+        // placement (no registry/reconcile dependency), so a steady-state single-node cluster is the
+        // owner and emits.
+        var clusterEventsControllerRef =
+                new java.util.concurrent.atomic.AtomicReference<ReplicaSetController>();
+        var clusterEventsStreamName = org.pragmatica.aether.slice.stream.SystemStreams.CLUSTER_EVENTS.asString();
+        java.util.function.BooleanSupplier clusterEventsOwnerCheck =
+                () -> Option.option(clusterEventsControllerRef.get())
+                            .map(replicaController -> replicaController.isOwner(clusterEventsStreamName, 0))
+                            .or(false);
         var eventAggregator = ClusterEventAggregator.clusterEventAggregator(clusterEventsPublisherRef::get,
                                                                             clusterEventsConsumerRef::get,
+                                                                            clusterEventsOwnerCheck,
                                                                             config.self(),
                                                                             clusterEventsHlcClock,
                                                                             clusterTopologyManager.observer()::clusterSize);
@@ -1887,27 +1903,46 @@ public interface AetherNode extends ManageableNode {
                                                                                                                 streamPartitionManager::onStreamConfigPut).onRemove(AetherKey.StreamConfigKey.class,
                                                                                                                                                                     streamPartitionManager::onStreamConfigRemove).build();
         allEntries.addAll(streamConfigKvRouter.asRouteEntries());
-        // Stream-namespaces rebuild (Stage 4) — provision system:cluster-events:1.0.0.
+        // B5b — provision system:cluster-events:1.0.0 as a REAL partition-managed stream.
         //
-        // Bind the deferred publisher/consumer refs the ClusterEventAggregator was constructed with.
-        // The backing buffer is a bounded, retention-enforcing in-heap object ring
-        // (ClusterEventStreamBuffer) — this both honours the GOAL (sealed ClusterEvent delivered over
-        // the system stream via the framework SPIs) and closes the item-6 retention gap left by the
-        // deleted sweeper: the ring physically cannot exceed `maxCount` (drop-oldest at append).
+        // The events stream is now created in the StreamPartitionManager (single partition) via
+        // SystemStreamFactories, exactly like app/system streams: createStream publishes the
+        // StreamConfigKey into cluster KV, so the stream appears in replicaCatalog() → the
+        // ReplicaSetController computes its HRW placement → the replica registry is populated →
+        // replication (RF = systemReplicationFactor(N)) and PartitionedStreamAccess read-forwarding
+        // both go live. The in-heap ClusterEventStreamBuffer/ClusterEventStreamWiring are gone.
         //
-        // The StreamRegistry registration that SystemStreamBootstrap would perform is deferred to
-        // Stage 5 (the stream-listing HTTP surface that consumes the registry). Nothing in Stage 4
-        // reads the registry; the functional publish/consume path is the buffer wired here.
-        var clusterEventsRetention = org.pragmatica.aether.slice.RetentionPolicy.retentionPolicy(CLUSTER_EVENTS_MAX_RETAINED,
-                                                                                                 Long.MAX_VALUE,
-                                                                                                 Long.MAX_VALUE);
-        org.pragmatica.aether.api.ClusterEventStreamWiring.clusterEventStreamWiring(org.pragmatica.aether.slice.stream.SystemStreams.CLUSTER_EVENTS,
-                                                                                    clusterEventsRetention)
-                .onSuccess(wiring -> {
-                    clusterEventsPublisherRef.set(wiring.publisher());
-                    clusterEventsConsumerRef.set(wiring.consumer());
-                })
-                .onFailure(cause -> LOG.warn("cluster-events stream wiring failed: {} — events fall back to log-only", cause.message()));
+        // Serializer = the node SliceCodec (Serializer+Deserializer), which includes the generated
+        // ApiCodecsNode.CODECS (B5a) → ClusterEvent encodes/decodes over the byte[] transport. This is
+        // the same codec app streams are wired with.
+        //
+        // Retention is production-grade and config-overridable (item 4 / OOM guard): bounded on count,
+        // bytes (off-heap hard cap), and age, mode ANY. The publisher/consumer refs the aggregator was
+        // constructed with are bound here; until then emits fall back to log-only (bootstrap window).
+        var clusterEventsRetention = org.pragmatica.aether.slice.RetentionPolicy.retentionPolicy(resolveClusterEventsMaxCount(),
+                                                                                                 resolveClusterEventsMaxBytes(),
+                                                                                                 resolveClusterEventsMaxAgeMs(),
+                                                                                                 org.pragmatica.aether.slice.RetentionMode.ANY);
+        var clusterEventsStreamConfig = org.pragmatica.aether.slice.StreamConfig.streamConfig(clusterEventsStreamName,
+                                                                                              1,
+                                                                                              clusterEventsRetention,
+                                                                                              "earliest",
+                                                                                              resolveClusterEventsMaxEventSizeBytes(),
+                                                                                              org.pragmatica.aether.slice.ConsistencyMode.EVENTUAL,
+                                                                                              1);
+        org.pragmatica.aether.stream.SystemStreamFactories.<ClusterEvent>systemStreamPublisher(org.pragmatica.aether.slice.stream.SystemStreams.CLUSTER_EVENTS,
+                                                                                               streamPartitionManager,
+                                                                                               serializer,
+                                                                                               clusterEventsStreamConfig)
+                .onSuccess(clusterEventsPublisherRef::set)
+                .onFailure(cause -> LOG.warn("cluster-events stream publisher wiring failed: {} — events fall back to log-only", cause.message()));
+        org.pragmatica.aether.stream.SystemStreamFactories.<ClusterEvent>systemStreamConsumer(org.pragmatica.aether.slice.stream.SystemStreams.CLUSTER_EVENTS,
+                                                                                              streamPartitionManager,
+                                                                                              serializer,
+                                                                                              deserializer,
+                                                                                              clusterEventsStreamConfig)
+                .onSuccess(clusterEventsConsumerRef::set)
+                .onFailure(cause -> LOG.warn("cluster-events stream consumer wiring failed: {} — events reads return empty", cause.message()));
         // Stage 5: stream-namespaces registry + service.
         //
         // Stage 4 deferred the StreamRegistry registration to here, where the namespace-listing
@@ -1975,6 +2010,11 @@ public interface AetherNode extends ManageableNode {
                                                                                   streamPartitionManager.replicaCatalog(),
                                                                                   (streamName, partition) -> streamBackfillExecutor.execute(() -> streamPartitionBackfill.backfill(streamName,
                                                                                                                                                                                   partition)));
+        // B5b: bind the owner-gate ref so ClusterEventAggregator.emit can consult isOwner(...) for
+        // (system:cluster-events:1.0.0, partition 0). isOwner is computed from the live HRW placement
+        // against the current topology, independent of reconcile, so it is correct as soon as members
+        // are visible (and true for a steady-state single-node cluster).
+        clusterEventsControllerRef.set(streamReplicaSetController);
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).
         wireMembershipDecisionTail(allEntries, streamReplicaSetController::onMembershipDecision);
@@ -2857,6 +2897,41 @@ public interface AetherNode extends ManageableNode {
                      .filter(s -> !s.isBlank())
                      .flatMap(s -> Result.lift(() -> Long.parseLong(s)).option())
                      .or(128 * 1024 * 1024L);
+    }
+
+    /// Resolve a long-valued config knob from an environment variable, falling back to `defaultValue`
+    /// when unset, blank, or unparseable. Mirrors the [#resolveStreamMaxMemoryBytes] env-var pattern —
+    /// the established node-boot config surface for stream/system operational settings.
+    private static long resolveLongEnv(String name, long defaultValue) {
+        return Option.option(System.getenv(name))
+                     .filter(s -> !s.isBlank())
+                     .flatMap(s -> Result.lift(() -> Long.parseLong(s.trim())).option())
+                     .or(defaultValue);
+    }
+
+    /// `system:cluster-events:1.0.0` retention `maxCount` (OOM guard, count dimension).
+    /// Default 10_000 — matches [#CLUSTER_EVENTS_MAX_RETAINED], the aggregator read window.
+    /// Override: `CLUSTER_EVENTS_MAX_COUNT`.
+    private static long resolveClusterEventsMaxCount() {
+        return resolveLongEnv("CLUSTER_EVENTS_MAX_COUNT", CLUSTER_EVENTS_MAX_RETAINED);
+    }
+
+    /// `system:cluster-events:1.0.0` retention `maxBytes` — the byte hard-cap OOM guard for the
+    /// off-heap partition store. Default ~64MB. Override: `CLUSTER_EVENTS_MAX_BYTES`.
+    private static long resolveClusterEventsMaxBytes() {
+        return resolveLongEnv("CLUSTER_EVENTS_MAX_BYTES", 64L * 1024 * 1024);
+    }
+
+    /// `system:cluster-events:1.0.0` retention `maxAgeMs`. Default ~24h.
+    /// Override: `CLUSTER_EVENTS_MAX_AGE_MS`.
+    private static long resolveClusterEventsMaxAgeMs() {
+        return resolveLongEnv("CLUSTER_EVENTS_MAX_AGE_MS", 24L * 60 * 60 * 1000);
+    }
+
+    /// `system:cluster-events:1.0.0` per-event size cap. Default ~64KB.
+    /// Override: `CLUSTER_EVENTS_MAX_EVENT_SIZE_BYTES`.
+    private static long resolveClusterEventsMaxEventSizeBytes() {
+        return resolveLongEnv("CLUSTER_EVENTS_MAX_EVENT_SIZE_BYTES", 64L * 1024);
     }
 
     private static String resolveHostname(AetherNodeConfig config) {

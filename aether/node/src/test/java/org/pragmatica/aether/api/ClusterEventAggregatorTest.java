@@ -5,45 +5,88 @@
 package org.pragmatica.aether.api;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.node.NodeCodecs;
+import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
 import org.pragmatica.aether.slice.stream.SystemStreams;
+import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.SystemStreamFactories;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.serialization.SliceCodec;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// Stream-namespaces rebuild (Stage 4) — port of the former KV-ring/sweeper aggregator test to
-/// the `system:cluster-events:1.0.0` stream model. The old test exercised
-/// `onClusterEventLogPut` + a `RingBuffer` projection + `(epoch, seq)` cursor — all deleted. This
-/// rewrite drives the same observable surface (`events()`, `eventsSince(Instant)`, producer
-/// handlers, MembershipDecision mapping, bounded retention) against a real
-/// `ClusterEventStreamBuffer` wired through the framework SPIs.
+/// B5b — cluster-events migrated onto the replicated partition transport. The aggregator now
+/// publishes/consumes through a REAL single-partition `system:cluster-events:1.0.0` stream managed
+/// by a {@link StreamPartitionManager}, encoded with the node {@link SliceCodec} (which carries the
+/// generated `ApiCodecsNode.CODECS`, B5a), and wired via {@link SystemStreamFactories}. This drives
+/// the full create -> publish -> codec -> store -> fetch path, plus the owner-gated emit (folds B3)
+/// and the production count/byte/age retention.
 class ClusterEventAggregatorTest {
 
     private static final NodeId SELF = new NodeId("self-node");
 
-    private record Harness(ClusterEventAggregator aggregator, HlcClock hlc) {
-        static Harness create(RetentionPolicy retention) {
-            var wiring = ClusterEventStreamWiring.clusterEventStreamWiring(SystemStreams.CLUSTER_EVENTS, retention).unwrap();
-            var pubRef = new AtomicReference<FrameworkStreamPublisher<ClusterEvent>>(wiring.publisher());
-            var conRef = new AtomicReference<FrameworkStreamConsumer<ClusterEvent>>(wiring.consumer());
+    /// Node runtime codec, built exactly as production builds it. Includes the generated
+    /// ClusterEvent codecs, so it can encode/decode the sealed hierarchy over the byte[] transport.
+    private static final SliceCodec CODEC = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
+
+    private static final BooleanSupplier OWNER = () -> true;
+    private static final BooleanSupplier NOT_OWNER = () -> false;
+
+    private record Harness(ClusterEventAggregator aggregator, HlcClock hlc, StreamPartitionManager manager) {
+        static Harness create(RetentionPolicy retention, BooleanSupplier ownerCheck) {
+            // Generous memory budget so calculateStreamBytes (64 + 24*maxCount + maxBytes) fits.
+            var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
+            var config = StreamConfig.streamConfig(SystemStreams.CLUSTER_EVENTS.asString(),
+                                                   1,
+                                                   retention,
+                                                   "earliest",
+                                                   64L * 1024,
+                                                   ConsistencyMode.EVENTUAL,
+                                                   1);
+            var publisher = SystemStreamFactories.<ClusterEvent>systemStreamPublisher(SystemStreams.CLUSTER_EVENTS,
+                                                                                      manager,
+                                                                                      CODEC,
+                                                                                      config).unwrap();
+            var consumer = SystemStreamFactories.<ClusterEvent>systemStreamConsumer(SystemStreams.CLUSTER_EVENTS,
+                                                                                    manager,
+                                                                                    CODEC,
+                                                                                    CODEC,
+                                                                                    config).unwrap();
+            var pubRef = new AtomicReference<FrameworkStreamPublisher<ClusterEvent>>(publisher);
+            var conRef = new AtomicReference<FrameworkStreamConsumer<ClusterEvent>>(consumer);
             var hlc = HlcClock.hlcClock(SELF);
-            var aggregator = ClusterEventAggregator.clusterEventAggregator(pubRef::get, conRef::get, SELF, hlc);
-            return new Harness(aggregator, hlc);
+            var aggregator = ClusterEventAggregator.clusterEventAggregator(pubRef::get,
+                                                                           conRef::get,
+                                                                           ownerCheck,
+                                                                           SELF,
+                                                                           hlc,
+                                                                           () -> 1);
+            return new Harness(aggregator, hlc, manager);
         }
 
         static Harness create() {
-            return create(RetentionPolicy.retentionPolicy(10_000, Long.MAX_VALUE, Long.MAX_VALUE));
+            return create(defaultRetention(), OWNER);
+        }
+
+        static RetentionPolicy defaultRetention() {
+            return RetentionPolicy.retentionPolicy(10_000, 64L * 1024 * 1024, Long.MAX_VALUE, RetentionMode.ANY);
         }
 
         List<ClusterEvent> events() {
@@ -54,6 +97,8 @@ class ClusterEventAggregatorTest {
     private static TransportObservation.PeerJoined peerJoined(String id, List<NodeId> view) {
         return TransportObservation.peerJoined(new NodeId(id), view, ObservationSource.QUIC);
     }
+
+    // --- round-trip through the partition transport ---------------------------------------------
 
     @Test
     void emittedEvent_surfacesInEvents() {
@@ -97,16 +142,66 @@ class ClusterEventAggregatorTest {
         assertThat(since.getFirst().details()).containsEntry("nodeId", "late");
     }
 
+    /// Codec-through-transport: a populated `details` map must survive encode -> store -> decode via
+    /// the partition stream (not an in-heap object ring). Proves the byte[] codec path is live.
+    @Test
+    void populatedDetailsMap_survivesPartitionTransportRoundTrip() {
+        var h = Harness.create();
+        h.aggregator().onConfigChanged(OperationalEvent.ConfigChanged.configChanged("retention", "node", "update", "operator-x"));
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        var decoded = events.getFirst();
+        assertThat(decoded).isInstanceOf(ClusterEvent.ConfigChanged.class);
+        assertThat(decoded.details()).containsEntry("key", "retention")
+                                     .containsEntry("scope", "node")
+                                     .containsEntry("action", "update")
+                                     .containsEntry("requestedBy", "operator-x");
+    }
+
+    // --- owner-gated emit (folds B3) ------------------------------------------------------------
+
+    @Test
+    void owner_emits() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER);
+        h.aggregator().onPeerJoined(peerJoined("peer-owner", List.of(SELF)));
+        assertThat(h.events()).hasSize(1);
+    }
+
+    @Test
+    void nonOwner_suppressesEmit() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER);
+        h.aggregator().onPeerJoined(peerJoined("peer-x", List.of(SELF)));
+        h.aggregator().onMembershipDecision(MembershipDecision.nodeRemoved(new NodeId("dead"), List.of(SELF)));
+        // Non-owner publishes nothing — the partition stays empty.
+        assertThat(h.events()).isEmpty();
+    }
+
+    // --- production retention -------------------------------------------------------------------
+
+    /// Count bound: with maxCount=3 the partition evicts oldest-on-append; only the newest 3 remain.
     @Test
     void retention_dropsOldestBeyondMaxCount() {
-        var h = Harness.create(RetentionPolicy.retentionPolicy(3, Long.MAX_VALUE, Long.MAX_VALUE));
+        var retention = RetentionPolicy.retentionPolicy(3, 64L * 1024 * 1024, Long.MAX_VALUE, RetentionMode.ANY);
+        var h = Harness.create(retention, OWNER);
         for (int i = 0; i < 6; i++) {
             h.aggregator().onPeerJoined(peerJoined("peer-" + i, List.of(SELF)));
         }
         var events = h.events();
         assertThat(events).hasSize(3);
-        // Oldest three (peer-0..2) dropped; newest three retained.
         assertThat(events.stream().map(e -> e.details().get("nodeId")).toList())
                 .containsExactly("peer-3", "peer-4", "peer-5");
+    }
+
+    /// The production retention carries all three OOM-guard dimensions (count + byte cap + age) in
+    /// ANY mode — a unit assertion that the policy the node wires is genuinely bounded on bytes/age,
+    /// not just count.
+    @Test
+    void retentionPolicy_carriesByteAndAgeCaps() {
+        var retention = RetentionPolicy.retentionPolicy(10_000, 64L * 1024 * 1024, 24L * 60 * 60 * 1000, RetentionMode.ANY);
+        assertThat(retention.maxCount()).isEqualTo(10_000);
+        assertThat(retention.maxBytes()).isEqualTo(64L * 1024 * 1024);
+        assertThat(retention.maxAgeMs()).isEqualTo(24L * 60 * 60 * 1000);
+        assertThat(retention.mode()).isEqualTo(RetentionMode.ANY);
     }
 }

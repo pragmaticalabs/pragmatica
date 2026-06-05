@@ -43,6 +43,43 @@ public final class SystemStreamFactories {
     private SystemStreamFactories() {}
 
     /// Construct a {@link FrameworkStreamPublisher} for a system address backed by a local
+    /// partition materialized from `config`. Use this overload when the stream needs the full set of
+    /// production knobs — `maxEventSizeBytes`, `consistencyMode`, `minSyncReplicas` — carried on the
+    /// {@link StreamConfig} (e.g. `system:cluster-events`, B5b). The config's `name` must equal
+    /// `address.asString()`.
+    public static <T> Result<FrameworkStreamPublisher<T>> systemStreamPublisher(StreamAddress address,
+                                                                                StreamPartitionManager partitionManager,
+                                                                                Serializer serializer,
+                                                                                StreamConfig config) {
+        ensureLocalPartition(partitionManager, config);
+        var transport = DefaultStreamPublisher.<T>streamPublisher(partitionManager,
+                                                                  serializer,
+                                                                  config.name(),
+                                                                  config.partitions(),
+                                                                  Option.none());
+        return FrameworkStreamPublishers.systemStreamPublisher(address, transport);
+    }
+
+    /// Construct a {@link FrameworkStreamConsumer} for a system address backed by the same local
+    /// partition materialized from `config`. Read path uses {@link PartitionedStreamAccess}: once the
+    /// `ReplicaSetController` has populated the replica registry, a replica reads locally and a
+    /// non-replica read-forwards automatically. The config's `name` must equal `address.asString()`.
+    public static <T> Result<FrameworkStreamConsumer<T>> systemStreamConsumer(StreamAddress address,
+                                                                              StreamPartitionManager partitionManager,
+                                                                              Serializer serializer,
+                                                                              Deserializer deserializer,
+                                                                              StreamConfig config) {
+        ensureLocalPartition(partitionManager, config);
+        var transport = PartitionedStreamAccess.<T>streamAccess(partitionManager,
+                                                                serializer,
+                                                                deserializer,
+                                                                config.name(),
+                                                                config.partitions(),
+                                                                Option.none());
+        return FrameworkStreamConsumers.systemStreamConsumer(address, transport);
+    }
+
+    /// Construct a {@link FrameworkStreamPublisher} for a system address backed by a local
     /// partition managed by `partitionManager`.
     ///
     /// `partitions` controls the partition count of the underlying ring buffer. For low-volume
@@ -79,6 +116,16 @@ public final class SystemStreamFactories {
                                                                 partitions,
                                                                 Option.none());
         return FrameworkStreamConsumers.systemStreamConsumer(address, transport);
+    }
+
+    /// Idempotent partition creation from a fully-specified {@link StreamConfig}. `createStream`
+    /// returns `Result<Unit>` — fresh-creation success or "already exists" failure; both are
+    /// acceptable (the stream is usable in either case). Because `createStream` also publishes the
+    /// `StreamConfigKey` into the cluster KV-store, the stream appears in
+    /// {@link StreamPartitionManager#replicaCatalog()}, which is what the `ReplicaSetController`
+    /// reconciles against — so a system stream created here becomes replicated.
+    private static void ensureLocalPartition(StreamPartitionManager partitionManager, StreamConfig config) {
+        Result<Unit> ignored = partitionManager.createStream(config);
     }
 
     /// Idempotent partition creation. `createStream` returns `Result<Unit>` — either fresh creation
