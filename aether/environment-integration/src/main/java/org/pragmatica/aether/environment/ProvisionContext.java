@@ -73,9 +73,15 @@ public record ProvisionContext(String clusterName,
     /// Canonical core-node name prefix for a cluster: `aether-<cluster>-node`. Compose
     /// seeds are `<prefix>-<ordinal>` and auto-heal/bootstrap ids are `<prefix>-<ulid>`,
     /// so every core container of a cluster shares the `aether-<cluster>-` substring and
-    /// a replacement is shape-identical to a seed.
+    /// a replacement is shape-identical to a seed. Blank-defensive: a null/blank cluster
+    /// name collapses to the canonical `aether-node` (single dash, no empty cluster
+    /// segment) instead of the malformed `aether--node`.
     public static String coreNodeNamePrefix(String clusterName) {
-        return "aether-" + clusterName + "-node";
+        return Option.option(clusterName)
+                     .map(String::trim)
+                     .filter(name -> !name.isEmpty())
+                     .map(name -> "aether-" + name + "-node")
+                     .or("aether-node");
     }
 
     public static ProvisionContext provisionContext(String clusterName,

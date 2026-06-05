@@ -8,10 +8,57 @@ package org.pragmatica.aether;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.TlsConfig;
+import org.pragmatica.lang.Option;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.fail;
 
 class MainGuardTest {
+
+    @Nested
+    class NodeIdGate {
+
+        @Test
+        void resolveNodeId_succeeds_fromArg() {
+            Main.resolveNodeId(Option.some("node-arg"), "", "")
+                .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                .onSuccess(id -> assertEquals("node-arg", id.id()));
+        }
+
+        @Test
+        void resolveNodeId_succeeds_fromAetherNodeIdEnv() {
+            Main.resolveNodeId(Option.none(), "node-aether", "")
+                .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                .onSuccess(id -> assertEquals("node-aether", id.id()));
+        }
+
+        @Test
+        void resolveNodeId_succeeds_fromNodeIdEnv() {
+            Main.resolveNodeId(Option.none(), "", "node-env")
+                .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                .onSuccess(id -> assertEquals("node-env", id.id()));
+        }
+
+        @Test
+        void resolveNodeId_prefersArg_overEnv() {
+            Main.resolveNodeId(Option.some("node-arg"), "node-aether", "node-env")
+                .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                .onSuccess(id -> assertEquals("node-arg", id.id()));
+        }
+
+        @Test
+        void resolveNodeId_prefersAetherEnv_overNodeIdEnv() {
+            Main.resolveNodeId(Option.none(), "node-aether", "node-env")
+                .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                .onSuccess(id -> assertEquals("node-aether", id.id()));
+        }
+
+        @Test
+        void resolveNodeId_fails_whenNoneProvided() {
+            Main.resolveNodeId(Option.none(), "", "")
+                .onSuccess(_ -> fail("Expected failure when no explicit node id is provided — no random fallback"));
+        }
+    }
 
     @Nested
     class ClusterNameGate {

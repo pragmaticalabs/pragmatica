@@ -798,11 +798,12 @@ public final class LeaderReconciler {
 
     /// Cluster-scoped prefix for auto-heal replacement ids so a replacement carries the
     /// same `aether-<cluster>-node-` form as its compose-seeded siblings (NodeId ==
-    /// container name). Falls back to the bare `node` prefix when the cluster name is not
-    /// yet readable from config (pre-formation), preserving prior behavior.
+    /// container name). Delegates unconditionally to the blank-defensive
+    /// [`ProvisionContext#coreNodeNamePrefix`], which collapses a blank cluster name to the
+    /// canonical `aether-node` prefix — never the bare `node` prefix, which would drop the
+    /// replacement out of the `aether-<cluster>-node-` family the harness filters key on.
     private String replacementNodeIdPrefix() {
-        var clusterName = clusterNameSupplier.get();
-        return clusterName.isBlank() ? "node" : ProvisionContext.coreNodeNamePrefix(clusterName);
+        return ProvisionContext.coreNodeNamePrefix(clusterNameSupplier.get());
     }
 
     /// Pick drain victims from the observed member set using a stable iteration-order

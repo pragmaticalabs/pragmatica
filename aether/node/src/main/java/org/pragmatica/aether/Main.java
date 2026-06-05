@@ -364,12 +364,33 @@ public record Main(String[] args) {
         }
     }
 
+    private static final Cause MISSING_NODE_ID =
+        Causes.cause("No node id: set --node-id=<id>, or env AETHER_NODE_ID / NODE_ID. "
+                     + "A clustered node requires a stable, explicit identity.");
+
+    /// Boot gate: a clustered node MUST have an explicit, externally-assigned, stable id.
+    /// Threads the explicit sources (`--node-id=`, env `AETHER_NODE_ID`, env `NODE_ID`) via
+    /// the existing arg/env helpers into the pure [#resolveNodeId] guard, aborting boot when
+    /// none is present or valid. No `HOSTNAME` / random fallback — a self-minted id changes
+    /// across restarts and won't match how peers address this node in PEERS (SWIM/consensus
+    /// split identity).
     private NodeId parseNodeId(Option<AetherConfig> aetherConfig) {
-        return findArg("--node-id=").flatMap(id -> NodeId.nodeId(id).option())
-                      .orElse(findEnv("AETHER_NODE_ID").flatMap(id -> NodeId.nodeId(id).option()))
-                      .orElse(findEnv("NODE_ID").flatMap(id -> NodeId.nodeId(id).option()))
-                      .orElse(findEnv("HOSTNAME").flatMap(id -> NodeId.nodeId(id).option()))
-                      .or(NodeId::randomNodeId);
+        return resolveNodeId(findArg("--node-id="),
+                             findEnv("AETHER_NODE_ID").or(""),
+                             findEnv("NODE_ID").or(""))
+              .onFailure(this::abortBoot)
+              .expect("Failed to resolve node id at startup");
+    }
+
+    /// Pure, unit-testable guard: resolves the node id from the explicit chain
+    /// (`--node-id=` arg → `AETHER_NODE_ID` env → `NODE_ID` env), first present-and-valid
+    /// wins. Absence/invalidity of all three → failure. No side effects (no exit, no env read).
+    static Result<NodeId> resolveNodeId(Option<String> argId, String aetherNodeIdEnv, String nodeIdEnv) {
+        return argId.toResult(MISSING_NODE_ID)
+                    .flatMap(NodeId::nodeId)
+                    .orElse(() -> NodeId.nodeId(aetherNodeIdEnv))
+                    .orElse(() -> NodeId.nodeId(nodeIdEnv))
+                    .mapError(_ -> MISSING_NODE_ID);
     }
 
     private int parsePort(Option<AetherConfig> aetherConfig) {
