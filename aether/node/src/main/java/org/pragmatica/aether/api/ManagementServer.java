@@ -298,6 +298,11 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(StreamRoutes.streamRoutes(nodeSupplier,
                                                    nodeSupplier.get().consumerGroupCoordinator(),
                                                    nodeSupplier.get().consumerGroupRegistry()));
+        routeSources.add(org.pragmatica.aether.api.routes.StreamApiRoutes.streamApiRoutes(nodeSupplier,
+                                                                                          nodeSupplier.get().streamNamespacesService(),
+                                                                                          nodeSupplier.get().consumerGroupCoordinator(),
+                                                                                          nodeSupplier.get().consumerGroupRegistry()));
+        routeSources.add(org.pragmatica.aether.api.routes.StreamNamespacesRoutes.streamNamespacesRoutes(nodeSupplier.get().streamNamespacesService()));
         routeSources.add(StorageRoutes.storageRoutes(nodeSupplier));
         routeSources.add(ApiKeyRoutes.apiKeyRoutes(nodeSupplier));
         routeSources.add(DhtRoutes.dhtRoutes(nodeSupplier));
@@ -669,6 +674,11 @@ class ManagementServerImpl implements ManagementServer {
         }
         if (isDashboardPath(path)) {
             staticFileHandler.handle(ctx, instrumented);
+            recordRequestMetrics(methodName, path, instrumented, startTime);
+
+            return;
+        }
+        if (rejectSystemStreamWrite(ctx, instrumented, path, methodName)) {
             recordRequestMetrics(methodName, path, instrumented, startTime);
 
             return;
@@ -1062,6 +1072,70 @@ class ManagementServerImpl implements ManagementServer {
                                                                                                                                                     "/health",
                                                                                                                                                     ""));
     }
+
+    /// Spec event-stream-namespaces §6.1/§12.2: writes to `system:*` streams are forbidden over the
+    /// HTTP surface regardless of caller role — the framework holds the only producer reference to
+    /// system streams. The compile-time SPI split already blocks app code; this is the HTTP-path
+    /// guard. It runs ahead of (and independent of) the role/auth pipeline so a `system:*` publish
+    /// returns 405 Method Not Allowed even when management security is disabled.
+    ///
+    /// Returns `true` (and writes the 405) when the request is a mutating verb targeting a
+    /// `system`-namespace stream, in either the path-based shape
+    /// (`/api/streams/{publish,publish-batch,delete}/system/...`,
+    /// `/api/streams/groups/{create,delete}/system/...`) or the legacy colon-form
+    /// (`/api/streams/...` with a `system:<stream>:<version>` name segment).
+    private boolean rejectSystemStreamWrite(RequestContext ctx, ResponseWriter response, String path, String methodName) {
+        if (!isSystemStreamWriteOverHttp(methodName, path)) {return false;}
+
+        ProblemResponses.writeProblem(response,
+                                      org.pragmatica.http.routing.HttpStatus.METHOD_NOT_ALLOWED,
+                                      "Writes to system:* streams are not permitted over HTTP",
+                                      path,
+                                      ctx.requestId());
+
+        return true;
+    }
+
+    /// Pure decision used by [#rejectSystemStreamWrite] — package-visible so the 405 gate can be
+    /// unit-tested without standing up the HTTP pipeline. A request is a system-stream write iff it
+    /// uses a mutating verb, targets the `/api/streams` surface, and names the `system` namespace
+    /// in either route shape.
+    static boolean isSystemStreamWriteOverHttp(String methodName, String path) {
+        return isMutatingMethod(methodName)
+               && path.startsWith(STREAM_WRITE_PATH_PREFIX)
+               && targetsSystemNamespace(path);
+    }
+
+    private static boolean isMutatingMethod(String methodName) {
+        return "POST".equalsIgnoreCase(methodName)
+               || "PUT".equalsIgnoreCase(methodName)
+               || "DELETE".equalsIgnoreCase(methodName)
+               || "PATCH".equalsIgnoreCase(methodName);
+    }
+
+    /// Detect the `system` namespace in either route shape. Path-based routes carry the namespace
+    /// as a dedicated segment (`.../publish/system/...`); the legacy flat routes carry it inside a
+    /// single colon-delimited name segment (`system:audit:1.0.0`, possibly URL-encoded as
+    /// `system%3Aaudit%3A1.0.0`). Matching any decoded segment that equals `system` or begins with
+    /// `system:` covers both without parsing the full address.
+    private static boolean targetsSystemNamespace(String path) {
+        var withoutQuery = path.indexOf('?') >= 0 ? path.substring(0, path.indexOf('?')) : path;
+        for (var raw : withoutQuery.split("/")) {
+            if (raw.isEmpty()) {continue;}
+            var seg = java.net.URLDecoder.decode(raw, java.nio.charset.StandardCharsets.UTF_8);
+            if (org.pragmatica.aether.slice.stream.StreamAddress.SYSTEM_NAMESPACE.equalsIgnoreCase(seg)
+                || seg.regionMatches(true, 0, SYSTEM_NAMESPACE_COLON, 0, SYSTEM_NAMESPACE_COLON.length())) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static final String STREAM_WRITE_PATH_PREFIX = "/api/streams";
+
+    private static final String SYSTEM_NAMESPACE_COLON =
+            org.pragmatica.aether.slice.stream.StreamAddress.SYSTEM_NAMESPACE + ":";
 
     @SuppressWarnings("JBCT-PAT-01")
     private boolean validateManagementSecurity(RequestContext ctx,

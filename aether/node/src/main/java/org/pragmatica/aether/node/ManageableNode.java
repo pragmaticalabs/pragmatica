@@ -82,6 +82,7 @@ public interface ManageableNode {
     StreamReadRouter streamReadRouter();
     ConsumerGroupCoordinator consumerGroupCoordinator();
     ConsumerGroupRegistry consumerGroupRegistry();
+    org.pragmatica.aether.slice.stream.StreamNamespacesService streamNamespacesService();
     Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver();
     Map<String, StorageFactory.StorageSetup> storageSetups();
     Option<ClusterTopologyManager> clusterTopologyManager();

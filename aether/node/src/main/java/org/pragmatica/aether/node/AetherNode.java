@@ -108,6 +108,7 @@ import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.DefaultStreamPublisher;
 import org.pragmatica.aether.stream.StreamError;
+import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
@@ -293,6 +294,7 @@ public interface AetherNode extends ManageableNode {
     StreamReadRouter streamReadRouter();
     ConsumerGroupCoordinator consumerGroupCoordinator();
     ConsumerGroupRegistry consumerGroupRegistry();
+    StreamNamespacesService streamNamespacesService();
     Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver();
     Map<String, StorageFactory.StorageSetup> storageSetups();
     Option<CertificateRenewalScheduler> certRenewalScheduler();
@@ -636,6 +638,7 @@ public interface AetherNode extends ManageableNode {
                           StreamReadRouter streamReadRouter,
                           ConsumerGroupCoordinator consumerGroupCoordinator,
                           ConsumerGroupRegistry consumerGroupRegistry,
+                          StreamNamespacesService streamNamespacesService,
                           Map<String, StorageFactory.StorageSetup> storageSetups,
                           ClusterTopologyManager clusterTopologyManagerInstance,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
@@ -1899,6 +1902,21 @@ public interface AetherNode extends ManageableNode {
                     clusterEventsConsumerRef.set(wiring.consumer());
                 })
                 .onFailure(cause -> LOG.warn("cluster-events stream wiring failed: {} — events fall back to log-only", cause.message()));
+        // Stage 5: stream-namespaces registry + service.
+        //
+        // Stage 4 deferred the StreamRegistry registration to here, where the namespace-listing
+        // HTTP surface (StreamApiRoutes / StreamNamespacesRoutes) consumes it. The registry is
+        // backed by the cluster KV-store (KvBackedStreamRegistry) so it shares the same state the
+        // Stage-3 refcount-on-ACTIVE path writes to — one source of truth for stream lifecycle.
+        // bootstrap() idempotently registers the system:* streams; failure is tolerated (log-only)
+        // so a node still boots when consensus isn't yet quorate at this point.
+        var streamRegistry = org.pragmatica.aether.slice.stream.KvBackedStreamRegistry.kvBackedStreamRegistry(clusterNode,
+                                                                                                              kvStore);
+        var streamNamespacesService = new StreamNamespacesService(streamRegistry,
+                                                                  new org.pragmatica.aether.slice.stream.SystemStreamBootstrap(streamRegistry));
+        streamNamespacesService.bootstrap()
+                .onFailure(cause -> LOG.warn("system-stream bootstrap registration failed: {} — namespace listing may omit system streams until re-registered",
+                                             cause.message()));
         // deleted alongside the audit publisher and RecentCommandsBuffer.
         var streamSegmentIndex = new SegmentIndex();
         var streamWatermarkTracker = WatermarkTracker.watermarkTracker();
@@ -2004,6 +2022,7 @@ public interface AetherNode extends ManageableNode {
                                   streamReadRouter,
                                   consumerGroupCoordinator,
                                   consumerGroupRegistry,
+                                  streamNamespacesService,
                                   storageSetups,
                                   clusterTopologyManager,
                                   eventLoopMetricsCollector,
@@ -2105,6 +2124,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                       streamReadRouter,
                                                                                                       consumerGroupCoordinator,
                                                                                                       consumerGroupRegistry,
+                                                                                                      streamNamespacesService,
                                                                                                       storageSetups,
                                                                                                       clusterTopologyManager,
                                                                                                       eventLoopMetricsCollector,
