@@ -1109,7 +1109,8 @@ public interface AetherNode extends ManageableNode {
         var nodeReportedStateHolder = NodeReportedStateHolder.nodeReportedStateHolder(clusterNode::isActive);
         var drainCommandRegistry = org.pragmatica.aether.metrics.DrainCommandRegistry.drainCommandRegistry();
         metricsCollector.setNodeReportedStateSupplier(nodeReportedStateHolder::current);
-        metricsCollector.setIncarnationSupplier(org.pragmatica.aether.metrics.BootEpoch::bootEpoch);
+        // Incarnation supplier is wired to the SWIM self-incarnation below, once
+        // `swimHealthDetector` is constructed (single `(NodeId, incarnation)` authority).
         var pongSignalFan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(stableHealthSink,
                                                                               clusterNode.leaderManager(),
                                                                               readyCandidateSink);
@@ -1535,6 +1536,12 @@ public interface AetherNode extends ManageableNode {
                                                                                swimConfig,
                                                                                swimIsBootingSupplier,
                                                                                faultyLeaderEvictor);
+        // Single `(NodeId, incarnation)` authority: the metrics readiness epoch is sourced from
+        // the SWIM self-incarnation, floored at a captured boot value so it never reports below
+        // boot-millis during the pre-announce window (before `announceJoin` seeds the SWIM counter).
+        // The SAME `bootIncarnation` seeds `announceJoin` below, so SWIM's seed == the metrics floor.
+        var bootIncarnation = System.currentTimeMillis();
+        metricsCollector.setIncarnationSupplier(() -> Math.max(bootIncarnation, swimHealthDetector.selfIncarnation()));
         // RC1 (S01 fix) — wire the SWIM-backed liveness check for owner-broadcast eviction
         // hints. Followers REFUSE to act on the owner's `ClusterSyncPing.evictionHints` for
         // peers SWIM observes as HEALTHY; the owner's hint is a SUGGESTION, not authority.
@@ -1555,7 +1562,7 @@ public interface AetherNode extends ManageableNode {
                                        ? () -> {}
                                        : () -> swimHealthDetector.announceJoin(selfNodeInfo,
                                                                                swimConfig.clusterName(),
-                                                                               System.currentTimeMillis(),
+                                                                               bootIncarnation,
                                                                                swimSeeds);
         // SWIM start is deferred to transport-ready (invoked from the boot chain after
         // `startClusterAsync()`), NOT gated on quorum — see `startSwim` doc. This trigger

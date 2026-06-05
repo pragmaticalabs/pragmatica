@@ -343,6 +343,15 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                        .or(SwimHealth.UNKNOWN);
     }
 
+    /// This node's current durable SWIM self-incarnation — the single `(NodeId, incarnation)`
+    /// authority fed to both SWIM membership and the metrics readiness epoch. Returns 0 before
+    /// the underlying [`SwimProtocol`] is running / `announceJoin` has seeded it (pre-announce
+    /// sentinel); the metrics supplier floors this at the captured boot value.
+    public long selfIncarnation() {
+        return protocol().map(SwimProtocol::selfIncarnation)
+                       .or(0L);
+    }
+
     /// Test-only: toggle silent-death fault injection on the SWIM UDP transport plane.
     /// Forwards to the running [`SwimTransport`] so a black-holed node goes silent on the
     /// SWIM plane in addition to QUIC, reproducing genuine silent death across both planes.

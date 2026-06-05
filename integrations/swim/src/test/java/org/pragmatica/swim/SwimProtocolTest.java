@@ -594,19 +594,19 @@ class SwimProtocolTest {
             var selfSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, 5L, SELF_ADDR);
 
             protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(selfSuspect)));
-            var afterFirst = protocol.selfIncarnationForTest();
+            var afterFirst = protocol.selfIncarnation();
             assertThat(afterFirst)
                 .as("first refutation must strictly exceed the suspicion incarnation (5)")
                 .isGreaterThan(5L);
 
             protocol.onMessage(ADDR_A, new Ping(NODE_A, 2L, List.of(selfSuspect)));
-            var afterSecond = protocol.selfIncarnationForTest();
+            var afterSecond = protocol.selfIncarnation();
             assertThat(afterSecond)
                 .as("durable: each refutation strictly advances the stored incarnation")
                 .isGreaterThan(afterFirst);
 
             protocol.onMessage(ADDR_A, new Ping(NODE_A, 3L, List.of(selfSuspect)));
-            assertThat(protocol.selfIncarnationForTest())
+            assertThat(protocol.selfIncarnation())
                 .as("monotonic advance persists across repeated suspicions")
                 .isGreaterThan(afterSecond);
         }
@@ -618,7 +618,7 @@ class SwimProtocolTest {
 
             protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(highSuspect)));
 
-            assertThat(protocol.selfIncarnationForTest())
+            assertThat(protocol.selfIncarnation())
                 .as("refutation must strictly exceed the (higher) suspicion incarnation 42")
                 .isGreaterThan(42L);
         }
@@ -632,7 +632,7 @@ class SwimProtocolTest {
 
             var selfSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, 7L, SELF_ADDR);
             protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(selfSuspect)));
-            var advanced = protocol.selfIncarnationForTest();
+            var advanced = protocol.selfIncarnation();
             assertThat(advanced).isGreaterThan(7L);
 
             // Start the protocol so a tick fires refreshSelfAlive(), seeding the

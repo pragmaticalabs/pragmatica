@@ -159,8 +159,8 @@ public interface ClusterSyncCollector {
 
     /// Membership v2 (§7.5.3) — wire the per-incarnation discriminator stamped onto
     /// `ClusterSyncPong.incarnation`. Default no-op leaves the field at `0L`
-    /// (pre-migration). Production wires in `AetherNode`, defaulting to
-    /// `BootEpoch::bootEpoch`. See [BootEpoch].
+    /// (pre-migration). `AetherNode` wires this to the SWIM self-incarnation — the single
+    /// `(NodeId, incarnation)` authority shared with SWIM membership.
     @Contract default void setIncarnationSupplier(java.util.function.LongSupplier supplier) {}
 
     /// Membership v2 (B5a) — wire the handler invoked whenever an inbound `ClusterSyncPing`
@@ -229,8 +229,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     /// Membership v2 (§7.5.3) — per-incarnation discriminator supplier. `buildPong()`
     /// stamps the value onto `ClusterSyncPong.incarnation`. Default `0L` (pre-migration)
-    /// until `setIncarnationSupplier(...)` wires `BootEpoch::bootEpoch` or the SWIM
-    /// incarnation in `AetherNode`.
+    /// until `setIncarnationSupplier(...)` wires the SWIM self-incarnation (the single
+    /// `(NodeId, incarnation)` authority) in `AetherNode`.
     private final AtomicReference<java.util.function.LongSupplier> incarnationSupplier =
         new AtomicReference<>(() -> 0L);
 

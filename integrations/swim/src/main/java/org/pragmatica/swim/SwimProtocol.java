@@ -1407,10 +1407,11 @@ public final class SwimProtocol implements SwimMessageHandler {
         return tombstones.containsKey(peer);
     }
 
-    /// Test-only accessor for the durable self-incarnation. Used by the
-    /// self-refutation regression test to assert the refutation incarnation
-    /// strictly advances and is durably stored.
-    long selfIncarnationForTest() {
+    /// This node's current durable self-incarnation (boot-seeded monotonic generation;
+    /// advanced on self-refutation). Single authority for `(NodeId, incarnation)` identity —
+    /// consumed by SWIM membership AND the metrics readiness epoch. Returns 0 before
+    /// `announceJoin` seeds it (pre-announce sentinel).
+    public long selfIncarnation() {
         return selfIncarnation.get();
     }
 }
