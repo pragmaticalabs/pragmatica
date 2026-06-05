@@ -6,26 +6,49 @@ package org.pragmatica.aether.deployment.membership.fsm;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.swim.HealthSnapshot;
+import org.pragmatica.swim.SwimHealth;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker.nodeTopologyTracker;
 
-/// Verifies the shadow membership manager ([`ShadowMembershipFsm`]) drives the per-member FSM
-/// faithfully from tapped events and computes the cluster aggregate (spec §3.4 effective / would-
-/// provision / would-drain). Promotion is edge-driven (a single SWIM HealthyObserved edge promotes
-/// OBSERVED→MEMBER, up-hysteresis = 1) with a one-time formation seed; confirmed eviction mirrors the
-/// LeaderReconciler co-confirmation (SWIM-FAULTY ∧ liveness-gone) and is never undone by a later seed.
-class ShadowMembershipFsmTest {
+/// Verifies the LIVE membership manager ([`MembershipFsm`]) drives the per-member FSM faithfully from
+/// tapped events, computes the cluster aggregate (spec §3.4 effective / would-provision / would-drain),
+/// AND — as the authoritative death decision-maker — hard-evicts a co-confirmed-dead member from the
+/// [`NodeTopologyTracker`] on every transition into DEAD. Promotion is edge-driven (a single SWIM
+/// HealthyObserved edge promotes OBSERVED→MEMBER, up-hysteresis = 1) with a one-time formation seed;
+/// confirmed eviction requires co-confirmation (SWIM-FAULTY ∧ liveness-gone) and is never undone by a
+/// later seed.
+class MembershipFsmTest {
     private static final NodeId A = new NodeId("node-a");
     private static final NodeId B = new NodeId("node-b");
     private static final NodeId C = new NodeId("node-c");
 
-    private static ShadowMembershipFsm activeManager() {
-        var manager = ShadowMembershipFsm.shadowMembershipFsm();
+    private static final NodeId NTT_SELF = new NodeId("ntt-self");
+    private static final TimeSpan INTERVAL = TimeSpan.timeSpan(100).millis();
+    private static final int K_UP = 2;
+    private static final int K_DOWN = 3;
+
+    private static MembershipFsm activeManager() {
+        var manager = MembershipFsm.membershipFsm(emptyNtt());
         manager.activate(Set.of());
         return manager;
+    }
+
+    /// A real [`NodeTopologyTracker`] with no live members — eviction of an absent id is a harmless
+    /// no-op, so the FSM's DEAD→evict hook never affects these behavioral assertions.
+    private static NodeTopologyTracker emptyNtt() {
+        Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.of());
+        return nodeTopologyTracker(NTT_SELF, health, INTERVAL, K_UP, K_DOWN, () -> 0L);
     }
 
     @Nested
@@ -98,6 +121,80 @@ class ShadowMembershipFsmTest {
 
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
             assertThat(manager.effective()).isEqualTo(1);
+        }
+    }
+
+    @Nested
+    class NttEviction {
+        /// The cardinal Phase-2 contract: a co-confirmed-dead member (SWIM-FAULTY ∧ liveness-gone)
+        /// must be hard-evicted from the live [`NodeTopologyTracker`] on the transition into DEAD.
+        /// Drive a real member into NTT's stable set via samples, promote + co-confirm it dead in the
+        /// FSM, and assert NTT's presence view no longer contains it (the observable effect that the
+        /// presence-derived TopologyObserver path then emits NODE_FAILED from).
+        @Test
+        void enteringDead_coConfirmed_evictsFromNtt() {
+            var liveness = new HashMap<NodeId, SwimHealth>();
+            var clock = new AtomicLong(0L);
+            Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.copyOf(liveness));
+            var ntt = nodeTopologyTracker(NTT_SELF, health, INTERVAL, K_UP, K_DOWN, clock::get);
+
+            liveness.put(A, SwimHealth.HEALTHY);
+            sampleTimes(ntt, K_UP);
+            assertThat(ntt.currentMembers()).contains(A);
+
+            var manager = MembershipFsm.membershipFsm(ntt);
+            manager.activate(Set.of(A));
+            manager.onSwimFaulty(A, 4L);
+            manager.onLivenessGone(A);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+            assertThat(ntt.currentMembers()).doesNotContain(A);
+        }
+
+        /// Graceful departure also reaches DEAD (no co-confirmation needed) and must evict from NTT.
+        @Test
+        void enteringDead_graceful_evictsFromNtt() {
+            var liveness = new HashMap<NodeId, SwimHealth>();
+            var clock = new AtomicLong(0L);
+            Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.copyOf(liveness));
+            var ntt = nodeTopologyTracker(NTT_SELF, health, INTERVAL, K_UP, K_DOWN, clock::get);
+
+            liveness.put(A, SwimHealth.HEALTHY);
+            sampleTimes(ntt, K_UP);
+            assertThat(ntt.currentMembers()).contains(A);
+
+            var manager = MembershipFsm.membershipFsm(ntt);
+            manager.activate(Set.of(A));
+            manager.onSwimDeparted(A, 5L);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+            assertThat(ntt.currentMembers()).doesNotContain(A);
+        }
+
+        /// Single-plane death (bare SWIM-FAULTY) stays SUSPECT — it must NOT evict from NTT.
+        @Test
+        void singlePlaneFaulty_doesNotEvictFromNtt() {
+            var liveness = new HashMap<NodeId, SwimHealth>();
+            var clock = new AtomicLong(0L);
+            Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.copyOf(liveness));
+            var ntt = nodeTopologyTracker(NTT_SELF, health, INTERVAL, K_UP, K_DOWN, clock::get);
+
+            liveness.put(A, SwimHealth.HEALTHY);
+            sampleTimes(ntt, K_UP);
+            assertThat(ntt.currentMembers()).contains(A);
+
+            var manager = MembershipFsm.membershipFsm(ntt);
+            manager.activate(Set.of(A));
+            manager.onSwimFaulty(A, 4L);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Suspect");
+            assertThat(ntt.currentMembers()).contains(A);
+        }
+
+        private static void sampleTimes(NodeTopologyTracker ntt, int times) {
+            for (var i = 0; i < times; i++) {
+                ntt.sample();
+            }
         }
     }
 
@@ -217,7 +314,7 @@ class ShadowMembershipFsmTest {
 
         @Test
         void activate_seedsFromSnapshot() {
-            var manager = ShadowMembershipFsm.shadowMembershipFsm();
+            var manager = MembershipFsm.membershipFsm(emptyNtt());
 
             manager.activate(Set.of(A, B));
 
@@ -228,7 +325,7 @@ class ShadowMembershipFsmTest {
 
         @Test
         void seedMembers_beforeActivate_isNoOp() {
-            var manager = ShadowMembershipFsm.shadowMembershipFsm();
+            var manager = MembershipFsm.membershipFsm(emptyNtt());
 
             manager.seedMembers(Set.of(A, B));
 
@@ -260,7 +357,7 @@ class ShadowMembershipFsmTest {
     class LeaderGating {
         @Test
         void ingressBeforeActivate_isNoOp() {
-            var manager = ShadowMembershipFsm.shadowMembershipFsm();
+            var manager = MembershipFsm.membershipFsm(emptyNtt());
 
             manager.onSwimHealthy(A, 1L);
             manager.onSwimHealthy(A, 1L);
@@ -317,17 +414,17 @@ class ShadowMembershipFsmTest {
 
     // --- helpers ---
 
-    private static void promoteToMember(ShadowMembershipFsm manager, NodeId id) {
+    private static void promoteToMember(MembershipFsm manager, NodeId id) {
         manager.onSwimHealthy(id, 1L);
     }
 
-    private static void driveToDead(ShadowMembershipFsm manager, NodeId id, long incarnation) {
+    private static void driveToDead(MembershipFsm manager, NodeId id, long incarnation) {
         promoteToMember(manager, id);
         manager.onSwimFaulty(id, incarnation);
         manager.onLivenessGone(id);
     }
 
-    private static NodeId[] fivePromotedMembers(ShadowMembershipFsm manager) {
+    private static NodeId[] fivePromotedMembers(MembershipFsm manager) {
         var ids = new NodeId[]{
                 new NodeId("m0"), new NodeId("m1"), new NodeId("m2"), new NodeId("m3"), new NodeId("m4")
         };

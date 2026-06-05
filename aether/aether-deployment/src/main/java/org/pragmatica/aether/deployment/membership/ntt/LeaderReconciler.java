@@ -172,29 +172,6 @@ public final class LeaderReconciler {
     private final AtomicReference<ScheduledFuture<?>> debounceReEvalFutureRef = new AtomicReference<>();
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
     private final ConcurrentHashMap<NodeId, Long> inFlightProvisioning = new ConcurrentHashMap<>();
-    /// Leader-side confirmed-death co-confirmation tracker (NTT hard-evict fast path).
-    /// A peer is hard-evicted from membership ONLY when it is in BOTH sets simultaneously:
-    /// SWIM has declared it FAULTY (`swimFaulty`) AND it is liveness-confirmed-gone
-    /// (`livenessGone` — fed by 3-missed-pong ping-timeout OR QUIC disconnect). SWIM-FAULTY
-    /// alone, a bare ping-miss, or a bare QUIC disconnect is NOT sufficient — the co-confirmation
-    /// gate guards against a single-plane false positive draining a healthy core node. Both sets
-    /// are cleared for a node on recovery (SWIM-HEALTHY / QUIC reconnect) so a re-joined node is
-    /// not instantly re-evicted. Updated only on the leader (all ingress methods leader-gate on
-    /// [`#isLeader`]); only the leader evicts.
-    private final Map<NodeId, Long> swimFaulty = new ConcurrentHashMap<>();
-    private final Set<NodeId> livenessGone = ConcurrentHashMap.newKeySet();
-    /// Leader-local incarnation-FENCED terminal map. An id co-confirmed dead (`swimFaulty ∧
-    /// livenessGone`) and hard-evicted via [`#evictIfConfirmedDead`] is recorded here stamped with
-    /// the SWIM incarnation at which it was declared FAULTY. The verdict is NOT "never returns" —
-    /// it is FENCED until a STRICTLY HIGHER incarnation is observed (Akka-style
-    /// new-incarnation-fences-old), matching SWIM's tombstone supersede
-    /// (`SwimProtocol.supersedeOrRefuse`: a strictly-higher incarnation supersedes the tombstone
-    /// and re-admits). A same-or-lower-incarnation recovery signal (`onSwimHealthy`) stays fenced
-    /// (stale prior life); a strictly-higher incarnation un-fences and re-admits the same id. The
-    /// transport plane (`onPeerRecovered`) carries no incarnation, so it defers to SWIM authority:
-    /// it stays fenced until the SWIM higher-incarnation path removes the entry. Leader-local:
-    /// cleared on [`#deactivate`] so a new leader term starts fresh.
-    private final Map<NodeId, Long> terminalIncarnation = new ConcurrentHashMap<>();
     private volatile Consumer<ReconcileIntent> reconcileListener = NOOP_LISTENER;
 
     private LeaderReconciler(MembershipConfig membershipConfig,
@@ -303,9 +280,6 @@ public final class LeaderReconciler {
         inFlightProvisioning.clear();
         deficitSinceNanos = UNSET_NANOS;
         reachedFullMembership.set(false);
-        swimFaulty.clear();
-        livenessGone.clear();
-        terminalIncarnation.clear();
     }
 
     /// Live-event ingress for NTT timer-expiry. Stage 6 wires this from the NTT
@@ -352,89 +326,6 @@ public final class LeaderReconciler {
         triggerReconcile(ReconcileTrigger.CONFIG_CHANGE);
     }
 
-    /// Live-event ingress: SWIM declared `peerId` FAULTY at `incarnation`. Leader-side half of the
-    /// confirmed-death co-confirmation gate. Records SWIM-FAULTY stamped with the incarnation (so
-    /// eviction can fence at it) and hard-evicts iff the peer is ALSO liveness-confirmed-gone.
-    /// Non-leader nodes ignore.
-    @Contract
-    public void onSwimFaulty(NodeId peerId, long incarnation) {
-        if (!isLeader.get()) {
-            return;
-        }
-        swimFaulty.put(peerId, incarnation);
-        evictIfConfirmedDead(peerId);
-    }
-
-    /// Live-event ingress: SWIM declared `peerId` HEALTHY (recovery) at `incarnation`. Clears the
-    /// peer from BOTH co-confirmation sets so a re-joined node is not instantly re-evicted by a
-    /// stale FAULTY/liveness-gone record. If the id is FENCED (terminally evicted at some prior
-    /// incarnation): a STRICTLY HIGHER incarnation un-fences it (new-incarnation-fences-old — the
-    /// prior life is superseded, the same id is re-admitted); a same-or-lower incarnation is a
-    /// STALE prior-life signal and stays fenced. Non-leader nodes ignore.
-    @Contract
-    public void onSwimHealthy(NodeId peerId, long incarnation) {
-        if (!isLeader.get()) {
-            return;
-        }
-        var fencedAt = terminalIncarnation.get(peerId);
-        if (fencedAt != null) {
-            if (incarnation <= fencedAt) {
-                return;
-            }
-            terminalIncarnation.remove(peerId);
-        }
-        clearConfirmedDeath(peerId);
-    }
-
-    /// Live-event ingress: `peerId` is liveness-confirmed-gone (3 missed pongs via the
-    /// ClusterSync ping-timeout, OR a routed QUIC disconnect). Leader-side liveness half of
-    /// the confirmed-death co-confirmation gate. Records liveness-gone and hard-evicts iff
-    /// SWIM has ALSO declared the peer FAULTY. Non-leader nodes ignore.
-    @Contract
-    public void onLivenessGone(NodeId peerId) {
-        if (!isLeader.get()) {
-            return;
-        }
-        livenessGone.add(peerId);
-        evictIfConfirmedDead(peerId);
-    }
-
-    /// Live-event ingress: `peerId` reconnected at the transport layer (QUIC PeerConnected,
-    /// recovery). Clears the peer from BOTH co-confirmation sets so a re-joined node is not
-    /// instantly re-evicted. The transport plane carries NO incarnation, so a FENCED id (already
-    /// co-confirmed dead and hard-evicted) is NOT un-fenced here — transport defers to SWIM
-    /// authority: the id stays fenced until the SWIM higher-incarnation path
-    /// ([`#onSwimHealthy`]) removes the terminal entry. Non-leader nodes ignore.
-    @Contract
-    public void onPeerRecovered(NodeId peerId) {
-        if (!isLeader.get() || terminalIncarnation.containsKey(peerId)) {
-            return;
-        }
-        clearConfirmedDeath(peerId);
-    }
-
-    /// Hard-evict `peerId` from NTT membership iff it is co-confirmed dead — present in BOTH
-    /// the SWIM-FAULTY map and the liveness-gone set. Stamps the id as FENCED at the SWIM FAULTY
-    /// incarnation BEFORE clearing the co-confirmation records (clearConfirmedDeath removes the
-    /// swimFaulty entry), so a later same-or-lower-incarnation recovery for that exact id stays
-    /// fenced while a strictly-higher incarnation un-fences it (new-incarnation-fences-old). NTT's
-    /// `evict` is idempotent (no-op if already gone).
-    @Contract
-    private void evictIfConfirmedDead(NodeId peerId) {
-        var faultyIncarnation = swimFaulty.get(peerId);
-        if (faultyIncarnation != null && livenessGone.contains(peerId)) {
-            terminalIncarnation.put(peerId, faultyIncarnation);
-            clearConfirmedDeath(peerId);
-            ntt.evict(peerId);
-        }
-    }
-
-    @Contract
-    private void clearConfirmedDeath(NodeId peerId) {
-        swimFaulty.remove(peerId);
-        livenessGone.remove(peerId);
-    }
-
     /// Register the consumer that receives every emitted [`ReconcileIntent`]. At E1 the
     /// wiring layer's consumer just logs; Stage 6+ replaces it with the actual CTM
     /// provisioning / drain dispatcher.
@@ -469,15 +360,6 @@ public final class LeaderReconciler {
     /// Observability — number of in-flight provisioning records this leader is tracking.
     public int inFlightProvisioningCount() {
         return inFlightProvisioning.size();
-    }
-
-    /// Observability — whether `peerId` is currently FENCED by this leader (co-confirmed dead then
-    /// hard-evicted, and not yet superseded by a strictly-higher incarnation). A fenced id ignores
-    /// a same-or-lower-incarnation SWIM-HEALTHY and any incarnation-less QUIC reconnect; a
-    /// strictly-higher-incarnation SWIM-HEALTHY un-fences it. Cleared on [`#deactivate`] (new
-    /// leader term starts fresh).
-    public boolean isTerminallyEvicted(NodeId peerId) {
-        return terminalIncarnation.containsKey(peerId);
     }
 
     /// Observability — the one-shot leader-activation delay, computed once as

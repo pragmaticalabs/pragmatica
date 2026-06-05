@@ -36,14 +36,12 @@ import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmDivergenceReporter;
-import org.pragmatica.aether.deployment.membership.fsm.ShadowMembershipFsm;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossDetector;
 import org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossIntent;
-import org.pragmatica.aether.deployment.membership.ntt.ReconcileIntent;
 import org.pragmatica.aether.deployment.membership.phase.ClusterPhaseView;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
@@ -1614,21 +1612,28 @@ public interface AetherNode extends ManageableNode {
                                                                  TimeSource.system(),
                                                                  SharedScheduler::schedule);
         leaderReconcilerRef.set(leaderReconciler);
+        // Membership v2 Phase 2 LIVE — the per-member MembershipFsm is the authoritative membership-
+        // death decision-maker (leader-gated, consensus-independent, SWIM/liveness-driven). It runs
+        // ALWAYS (no shadow flag). On every transition into DEAD it hard-evicts the dead identity from
+        // NTT (ntt.evict); the presence-derived TopologyObserver → MembershipDecision →
+        // ClusterEventAggregator path then emits NODE_FAILED / NODE_LEFT from the resulting
+        // stableMembers delta. The FSM emits no event directly. It is injected with the SAME `ntt`
+        // instance the reconciler reads membership from.
+        var membershipFsm = MembershipFsm.membershipFsm(ntt);
         swimHealthDetector.addObservationListener(ntt::onSwimObservation);
         // E2 Phase 1.5 — symmetric "surplus appeared" trigger: a SWIM HealthyObserved
         // signals a peer became reachable; if the leader is in surplus the reconcile
         // will dispatch drains. NTT catches shortage (DepartedObserved), this catches
-        // surplus.
+        // surplus. KEPT — provisioning surplus trigger, NOT death.
         swimHealthDetector.addObservationListener(obs -> {
                                                      if (obs instanceof SwimObservation.HealthyObserved h) {
                                                          leaderReconciler.onSwimMemberHealthy(h.peer(), h.incarnation());
                                                      }
                                                  });
-        // Confirmed-death co-confirmation gate (NTT hard-evict fast path): feed the
-        // leader-side LeaderReconciler tracker both SWIM-plane edges. FAULTY arms the SWIM
-        // half (evict iff also liveness-gone); HEALTHY clears both halves so a re-joined node
-        // is not instantly re-evicted. All ingress is leader-gated inside LeaderReconciler.
-        swimHealthDetector.addObservationListener(obs -> routeSwimEdgeToConfirmedDeath(obs, leaderReconciler));
+        // Phase 2 LIVE: feed every SWIM-plane edge into the authoritative MembershipFsm. HEALTHY /
+        // SUSPECT / FAULTY / DEPARTED / UNKNOWN map to the matching onSwim* ingress; the FSM drives the
+        // per-member lifecycle and evicts on the DEAD edge. Leader-gating happens inside the FSM.
+        swimHealthDetector.addObservationListener(obs -> routeSwimEdgeToMembershipFsm(obs, membershipFsm));
         // P3 (membership unification): quorum-loss is detected by QuorumLossDetector from the
         // unified tracker's stable membership (armed after first quorum; grace =
         // quorumLossDrainThreshold) and drives the §8.2 unified `DrainProcedure` directly.
@@ -1640,34 +1645,21 @@ public interface AetherNode extends ManageableNode {
                 .andThen(intent -> nodeReportedStateHolder.onDrainStarted());
         quorumLossDetector.setQuorumLossListener(quorumLossChain);
         metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
-        Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(leaderReconciler::onPeerRecovered);
-        // QUIC disconnect feeds BOTH NTT's soft down-bias (unchanged) AND the liveness half
-        // of the confirmed-death gate. A routed QUIC disconnect fires on a bare transport drop
-        // AND on the 3-missed-pong ClusterSync ping-timeout (emitPingTimeoutIfExceeded calls
-        // network.disconnect → PeerDisconnected), so this single tap captures the spec's
-        // liveness-gone signal. Bare disconnect alone does NOT evict — LeaderReconciler gates
-        // it behind SWIM-FAULTY co-confirmation. Leader-gated inside LeaderReconciler.
-        Consumer<NodeId> nttDisconnectTap = ((Consumer<NodeId>) ntt::onQuicDisconnect).andThen(leaderReconciler::onLivenessGone);
-        // Membership v2 Phase 1 SHADOW — read-only taps behind a default-OFF env flag
-        // (AETHER_MEMBERSHIP_FSM_SHADOW). When enabled, a passive ShadowMembershipFsm observes the
-        // same SWIM / QUIC / liveness / leader-change / reconcile edges the live path consumes and a
-        // MembershipFsmDivergenceReporter logs shadow-vs-live divergence on each reconcile. The shadow
-        // and reporter act on NOTHING (no provisioning, drain, or eviction); every tap is additive
-        // read-only fan-out CHAINED behind the live consumer (or a fresh additional listener/route), so
-        // it cannot change live behavior. When the flag is off, no shadow component is instantiated
-        // (zero overhead). The reconcile listener is set fresh here — LeaderReconciler defaults to
-        // NOOP_LISTENER and nothing else sets it, so there is no existing listener to wrap.
-        if (membershipFsmShadowEnabled()) {
-            var shadowFsm = ShadowMembershipFsm.shadowMembershipFsm();
-            var divergenceReporter = MembershipFsmDivergenceReporter.membershipFsmDivergenceReporter(shadowFsm);
-
-            swimHealthDetector.addObservationListener(obs -> routeSwimToShadow(obs, shadowFsm));
-            nttConnectTap = nttConnectTap.andThen(shadowFsm::onPeerConnected);
-            nttDisconnectTap = nttDisconnectTap.andThen(shadowFsm::onLivenessGone);
-            leaderReconciler.setReconcileListener(intent -> reportMembershipFsmDivergence(divergenceReporter, intent, ntt.currentMembers()));
-            allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                                     change -> toggleMembershipFsmShadowOnLeaderChange(change, shadowFsm, ntt)));
-        }
+        // QUIC reconnect feeds NTT's soft up-bias (unchanged) AND the FSM's peer-connected tap.
+        Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(membershipFsm::onPeerConnected);
+        // QUIC disconnect feeds BOTH NTT's soft down-bias (unchanged) AND the liveness half of the
+        // confirmed-death gate in the authoritative MembershipFsm. A routed QUIC disconnect fires on a
+        // bare transport drop AND on the 3-missed-pong ClusterSync ping-timeout
+        // (emitPingTimeoutIfExceeded calls network.disconnect → PeerDisconnected), so this single tap
+        // captures the spec's liveness-gone signal. Bare disconnect alone does NOT evict — the FSM
+        // gates it behind SWIM-FAULTY co-confirmation. Leader-gated inside the FSM.
+        Consumer<NodeId> nttDisconnectTap = ((Consumer<NodeId>) ntt::onQuicDisconnect).andThen(membershipFsm::onLivenessGone);
+        // Phase 2 LIVE: leader-gate the authoritative MembershipFsm on leader change. On leader gain
+        // arm it AND seed its model from the live membership snapshot (NodeTopologyTracker#currentMembers)
+        // — the one-time formation bootstrap that catches the already-formed cluster the late-arming FSM
+        // missed. On leader loss disarm and clear its model. Mirrors toggleNttReconcilerOnLeaderChange.
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 change -> toggleMembershipFsmOnLeaderChange(change, membershipFsm, ntt)));
         // P5: the NTT-reconciler leader-toggle (auto-heal activation) is now wired into the
         // live router. Safe because LeaderReconciler is identity-aware — it arms provisioning
         // only after the cluster first reaches configuredCoreCount, so it never provisions a
@@ -2331,70 +2323,37 @@ public interface AetherNode extends ManageableNode {
         quicNetwork.setFollowerObservationWiring(isLeaderSupplier, reporter, epochAdapter);
     }
 
-    /// Route a SWIM observation edge into the LeaderReconciler confirmed-death co-confirmation
-    /// gate: FAULTY arms the SWIM half, HEALTHY clears both halves (recovery). Leader-gating
-    /// happens inside the reconciler; other observation kinds are ignored here.
-    private static void routeSwimEdgeToConfirmedDeath(SwimObservation observation, LeaderReconciler leaderReconciler) {
+    /// Route a SWIM observation edge into the authoritative [`MembershipFsm`]. HEALTHY / SUSPECT /
+    /// FAULTY / DEPARTED / UNKNOWN map to the matching `onSwim*` ingress; JoinAnnounced /
+    /// MemberDiscovered are ignored (the FSM tracks liveness transitions, not discovery). The FSM
+    /// drives the per-member lifecycle and, on the DEAD edge, hard-evicts from NTT — the membership-
+    /// death authority. Leader-gating happens inside the FSM.
+    private static void routeSwimEdgeToMembershipFsm(SwimObservation observation, MembershipFsm membershipFsm) {
         switch (observation) {
-            case SwimObservation.FaultyObserved faulty -> leaderReconciler.onSwimFaulty(faulty.peer(), faulty.incarnation());
-            case SwimObservation.HealthyObserved healthy -> leaderReconciler.onSwimHealthy(healthy.peer(), healthy.incarnation());
+            case SwimObservation.HealthyObserved healthy -> membershipFsm.onSwimHealthy(healthy.peer(), healthy.incarnation());
+            case SwimObservation.SuspectObserved suspect -> membershipFsm.onSwimSuspect(suspect.peer(), suspect.incarnation());
+            case SwimObservation.FaultyObserved faulty -> membershipFsm.onSwimFaulty(faulty.peer(), faulty.incarnation());
+            case SwimObservation.DepartedObserved departed -> membershipFsm.onSwimDeparted(departed.peer(), departed.incarnation());
+            case SwimObservation.UnknownObserved unknown -> membershipFsm.onSwimUnknown(unknown.peer(), unknown.incarnation());
             default -> {}
         }
     }
 
-    /// Membership v2 Phase 1 SHADOW flag. Read `AETHER_MEMBERSHIP_FSM_SHADOW` via `System.getenv`,
-    /// mirroring the `Option.option(System.getenv(...))` idiom used for `AETHER_PROVISIONED_BY`.
-    /// `"true"` (case-insensitive, trimmed) enables the read-only shadow taps; anything else
-    /// (including unset) leaves them off, so no shadow component is instantiated.
-    private static boolean membershipFsmShadowEnabled() {
-        return Option.option(System.getenv("AETHER_MEMBERSHIP_FSM_SHADOW"))
-                     .map(String::trim)
-                     .map(value -> value.equalsIgnoreCase("true"))
-                     .or(false);
-    }
-
-    /// Phase 1 SHADOW read-only tap: fan a SWIM observation edge into the per-member shadow FSM,
-    /// mirroring the live SWIM-plane ingress. HEALTHY/SUSPECT/FAULTY/DEPARTED/UNKNOWN map to the
-    /// matching `onSwim*` ingress; JoinAnnounced / MemberDiscovered are ignored (the shadow tracks
-    /// liveness transitions, not discovery). Leader-gating happens inside the shadow FSM. The shadow
-    /// acts on NOTHING — this is pure observation chained behind the live listeners.
-    private static void routeSwimToShadow(SwimObservation observation, ShadowMembershipFsm shadowFsm) {
-        switch (observation) {
-            case SwimObservation.HealthyObserved healthy -> shadowFsm.onSwimHealthy(healthy.peer(), healthy.incarnation());
-            case SwimObservation.SuspectObserved suspect -> shadowFsm.onSwimSuspect(suspect.peer(), suspect.incarnation());
-            case SwimObservation.FaultyObserved faulty -> shadowFsm.onSwimFaulty(faulty.peer(), faulty.incarnation());
-            case SwimObservation.DepartedObserved departed -> shadowFsm.onSwimDeparted(departed.peer(), departed.incarnation());
-            case SwimObservation.UnknownObserved unknown -> shadowFsm.onSwimUnknown(unknown.peer(), unknown.incarnation());
-            default -> {}
-        }
-    }
-
-    /// Phase 1 SHADOW leader-gate: on leader gain arm the shadow FSM AND seed its model from the live
-    /// membership snapshot ([`NodeTopologyTracker#currentMembers`]) — the one-time formation bootstrap
-    /// that catches the already-formed cluster the late-arming shadow missed (its members' SWIM
-    /// HealthyObserved edges fired once, at formation, before the leader-gated shadow armed). On leader
-    /// loss disarm and clear its model. Mirrors `toggleNttReconcilerOnLeaderChange`. Still read-only and
-    /// flag-gated: `activate`/`seedMembers`/`deactivate` are `@Contract` void on the shadow, the shadow
-    /// acts on NOTHING, so no return value is abandoned and no suppression is needed.
-    private static void toggleMembershipFsmShadowOnLeaderChange(LeaderNotification.LeaderChange change,
-                                                                ShadowMembershipFsm shadowFsm,
-                                                                NodeTopologyTracker ntt) {
+    /// Phase 2 LIVE leader-gate: on leader gain arm the authoritative [`MembershipFsm`] AND seed its
+    /// model from the live membership snapshot ([`NodeTopologyTracker#currentMembers`]) — the one-time
+    /// formation bootstrap that catches the already-formed cluster the late-arming FSM missed (its
+    /// members' SWIM HealthyObserved edges fired once, at formation, before the leader-gated FSM armed).
+    /// On leader loss disarm and clear its model. Mirrors `toggleNttReconcilerOnLeaderChange`.
+    /// `activate`/`seedMembers`/`deactivate` are `@Contract` void on the FSM, so no return value is
+    /// abandoned and no suppression is needed.
+    private static void toggleMembershipFsmOnLeaderChange(LeaderNotification.LeaderChange change,
+                                                          MembershipFsm membershipFsm,
+                                                          NodeTopologyTracker ntt) {
         if (change.localNodeIsLeader()) {
-            shadowFsm.activate(ntt.currentMembers());
+            membershipFsm.activate(ntt.currentMembers());
         } else {
-            shadowFsm.deactivate();
+            membershipFsm.deactivate();
         }
-    }
-
-    /// Phase 1 SHADOW reconcile tap: ask the divergence reporter to compare the shadow's verdict
-    /// against the live `ReconcileIntent` and log any divergence. The returned `Option` is the
-    /// unit-testable verdict; on this observational fire-and-forget path the structured log line is
-    /// the deliverable, so the Option is intentionally consumed-and-dropped here.
-    @Contract
-    private static void reportMembershipFsmDivergence(MembershipFsmDivergenceReporter reporter,
-                                                      ReconcileIntent intent,
-                                                      Set<NodeId> liveMembers) {
-        reporter.onReconcileIntent(intent, liveMembers);
     }
 
     private static Option<NodeId> lookupGovernor(KVStore<AetherKey, AetherValue> kvStore, String communityId) {
