@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -1466,6 +1467,21 @@ import static org.pragmatica.lang.Option.none;
 
         public SpokesmanValue withFailure(String reason) {
             return new SpokesmanValue(communities, assignedEpoch, assignedAt, version, SpokesmanStatus.FAILED, reason);
+        }
+    }
+
+    // Stage 1 (stream-namespaces) additive graft: stream-registry value. Added alongside the
+    // retained ClusterEventValue (cluster-events replacement is a later stage).
+
+    /// Consensus-replicated form of [StreamRegistryEntry].
+    ///
+    /// Single-key collapse of the spec's `stream-meta:{addr}` and `stream-refs:{addr}` (§7.1, §7.2)
+    /// — implementation choice for atomic refcount mutation in the same consensus round as the
+    /// SliceNodeValue update (§8.5). The conceptual separation in the spec is preserved at the
+    /// reader/writer API but the wire form is one record.
+    record StreamRegistryValue(StreamRegistryEntry entry) implements AetherValue {
+        public static StreamRegistryValue streamRegistryValue(StreamRegistryEntry entry) {
+            return new StreamRegistryValue(entry);
         }
     }
 }

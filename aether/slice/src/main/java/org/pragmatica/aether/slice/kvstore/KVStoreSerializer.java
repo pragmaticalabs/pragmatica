@@ -169,6 +169,7 @@ import static org.pragmatica.lang.Result.success;
             case GenerationSnapshotKey _ -> "generation-snapshot";
             case ClusterPhaseKey _ -> "cluster-phase";
             case ClusterEventLogKey _ -> "cluster-event-log";
+            case StreamRegistryKey _ -> "stream-registry";
         };
     }
 
@@ -237,7 +238,13 @@ import static org.pragmatica.lang.Result.success;
             case GenerationSnapshotValue _ -> "";
             case ClusterPhaseValue v -> v.phase().name();
             case ClusterEventValue _ -> "";
+            case StreamRegistryValue v -> serializeStreamRegistry(v);
         };
+    }
+
+    private static String serializeStreamRegistry(StreamRegistryValue v) {
+        var entry = v.entry();
+        return entry.address().asString() + "|" + entry.refCount() + "|" + entry.registeredAtEpochMillis() + "|" + entry.registeredBy().name();
     }
 
     static String serializeProvisioningSlot(ProvisioningSlotValue v) {

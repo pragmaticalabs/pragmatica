@@ -8,6 +8,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.stream.StreamAddress;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -1371,6 +1372,50 @@ import static org.pragmatica.lang.Result.success;
                               NodeId.nodeId(nodeIdPart),
                               Number.parseLong(seqPart))
             .map(ClusterEventLogKey::new);
+        }
+    }
+
+    // Stage 1 (stream-namespaces) additive graft: stream-registry key. The full PR replaced
+    // ClusterEventLogKey with this record (cluster-events is a later stage); here it is added
+    // alongside the retained ClusterEventLogKey so rc1's cluster-event-log path is untouched.
+    Fn1<Cause, String> STREAM_REGISTRY_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-registry key format: %s");
+
+    /// Per-stream registry entry persisted under `stream-registry/{namespace}/{stream}/{version}`.
+    ///
+    /// Carries the consensus-mediated reference count (§8.5) plus the metadata fields described
+    /// in spec §7.1. Folds `stream-meta:{addr}` and `stream-refs:{addr}` from the spec into a
+    /// single key/value pair so each refcount mutation is a single consensus command instead of
+    /// two — the spec separation is conceptual; the implementation collapses them for atomic
+    /// piggyback on the SliceNodeValue update.
+    record StreamRegistryKey(StreamAddress address) implements AetherKey {
+        private static final String PREFIX = "stream-registry/";
+
+        @Override public String asString() {
+            return PREFIX + address.namespace() + "/" + address.stream() + "/" + address.version().asString();
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        public static StreamRegistryKey streamRegistryKey(StreamAddress address) {
+            return new StreamRegistryKey(address);
+        }
+
+        public static Result<StreamRegistryKey> streamRegistryKey(String key) {
+            if (!key.startsWith(PREFIX)) {return STREAM_REGISTRY_KEY_FORMAT_ERROR.apply(key).result();}
+            var content = key.substring(PREFIX.length());
+            var firstSlash = content.indexOf('/');
+            if (firstSlash <= 0) {return STREAM_REGISTRY_KEY_FORMAT_ERROR.apply(key).result();}
+            var namespace = content.substring(0, firstSlash);
+            var rest = content.substring(firstSlash + 1);
+            var secondSlash = rest.indexOf('/');
+            if (secondSlash <= 0 || secondSlash == rest.length() - 1) {
+                return STREAM_REGISTRY_KEY_FORMAT_ERROR.apply(key).result();
+            }
+            var stream = rest.substring(0, secondSlash);
+            var version = rest.substring(secondSlash + 1);
+            return StreamAddress.streamAddress(namespace, stream, version).map(StreamRegistryKey::new);
         }
     }
 }
