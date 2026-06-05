@@ -8,14 +8,17 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Comparator;
 import java.util.List;
-import java.util.stream.IntStream;
 
+import static org.pragmatica.aether.stream.replication.BackfillError.General.INCOMPLETE_BACKFILL;
+import static org.pragmatica.aether.stream.replication.BackfillError.General.MALFORMED_RESPONSE;
+import static org.pragmatica.aether.stream.replication.BackfillError.General.NO_SOURCE_REPLICA;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupRequest.catchupRequest;
 
 /// A4 backfill orchestrator. When a node newly becomes a replica for a non-empty `(stream, partition)`
@@ -89,50 +92,69 @@ public final class PartitionBackfill {
                                           int partition,
                                           ReplicaDescriptor source,
                                           ReplicationMessage.CatchupResponse response) {
+        var fromOffset = response.fromOffset();
+        var watermark = Math.max(response.toOffset(), source.confirmedOffset());
         return applyEvents(streamName, partition, response)
                 .fold(cause -> failApply(streamName, partition, cause),
-                      applied -> promote(streamName, partition, source, response, applied));
+                      applied -> promote(streamName, partition, fromOffset, watermark, applied));
     }
 
+    /// Promote self to CAUGHT_UP only when the highest applied offset actually reaches the source
+    /// watermark. `fromOffset + applied - 1` is the highest offset landed locally; if that is below
+    /// the watermark a gap remains (short/truncated page, source still ahead) → fail and stay SYNCING
+    /// rather than declare a false-ready CAUGHT_UP with holes (B2).
     private Promise<Long> promote(String streamName,
                                   int partition,
-                                  ReplicaDescriptor source,
-                                  ReplicationMessage.CatchupResponse response,
+                                  long fromOffset,
+                                  long watermark,
                                   long applied) {
-        var watermark = Math.max(response.toOffset(), source.confirmedOffset());
+        var highestApplied = fromOffset + applied - 1;
+        if (highestApplied < watermark) {
+            log.warn("Backfill {}[{}] incomplete: applied {} events up to offset {} but watermark is {} — staying SYNCING",
+                     streamName, partition, applied, highestApplied, watermark);
+            return INCOMPLETE_BACKFILL.promise();
+        }
         registry.updateWatermark(streamName, partition, self, watermark);
         log.info("Backfill {}[{}] complete: applied {} events, self CAUGHT_UP at offset {}",
                  streamName, partition, applied, watermark);
         return Promise.success(applied);
     }
 
-    /// Apply every recovered event in order. Short-circuits to the first failure, so a local append
-    /// error aborts the backfill before promotion.
-    private org.pragmatica.lang.Result<Long> applyEvents(String streamName,
-                                                         int partition,
-                                                         ReplicationMessage.CatchupResponse response) {
+    /// Apply every recovered event in order via a sequential fail-fast fold. A truncated response
+    /// (`payloads.size() != timestamps.size()`) is treated as a parse failure so the replica stays
+    /// SYNCING instead of applying only the shorter prefix (B2). The fold is an explicit loop — never
+    /// parallelized — so it cannot silently drop events on a parallel reduce (M4). Returns the number
+    /// of events applied, short-circuiting to the first local append failure.
+    private Result<Long> applyEvents(String streamName,
+                                     int partition,
+                                     ReplicationMessage.CatchupResponse response) {
         var payloads = response.payloads();
         var timestamps = response.timestamps();
-        var count = Math.min(payloads.size(), timestamps.size());
-        return IntStream.range(0, count)
-                        .boxed()
-                        .reduce(org.pragmatica.lang.Result.success(0L),
-                                (acc, i) -> acc.flatMap(applied -> partitionRecovery.appendRecoveredEvent(streamName,
-                                                                                                          partition,
-                                                                                                          payloads.get(i),
-                                                                                                          timestamps.get(i))
-                                                                                    .map(_ -> applied + 1)),
-                                (a, _) -> a);
+        if (payloads.size() != timestamps.size()) {
+            log.warn("Backfill {}[{}]: malformed catch-up response — {} payloads vs {} timestamps",
+                     streamName, partition, payloads.size(), timestamps.size());
+            return MALFORMED_RESPONSE.result();
+        }
+        var applied = 0L;
+        for (var i = 0; i < payloads.size(); i++) {
+            var result = partitionRecovery.appendRecoveredEvent(streamName, partition, payloads.get(i), timestamps.get(i));
+            if (result.isFailure()) {
+                // Propagate the append failure cause; the value channel is empty on a failed Result.
+                return result;
+            }
+            applied++;
+        }
+        return Result.success(applied);
     }
 
     private Promise<Long> failApply(String streamName, int partition, Cause cause) {
         log.warn("Backfill {}[{}] failed applying events: {} — staying SYNCING", streamName, partition, cause.message());
-        return Promise.failure(cause);
+        return cause.promise();
     }
 
     private Promise<Long> noSource(String streamName, int partition) {
         log.warn("Backfill {}[{}]: no caught-up source available — staying SYNCING", streamName, partition);
-        return BackfillError.NO_SOURCE_REPLICA.promise();
+        return NO_SOURCE_REPLICA.promise();
     }
 
     private long selfConfirmedOffset(List<ReplicaDescriptor> replicas) {

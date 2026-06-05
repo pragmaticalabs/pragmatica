@@ -274,4 +274,58 @@ class ReplicaSetControllerTest {
         assertThat(actual).isEqualTo(expectedRf);
         assertThat(actual).isNotEqualTo(1);
     }
+
+    @Test
+    void steadyStateSingleNode_isOwner_afterReconcile() {
+        // B3: a steady-state single-node cluster IS the owner and emits.
+        var members = new AtomicReference<>(nodes("solo"));
+        var ctrl = controller(ReplicaRegistry.replicaRegistry(), node("solo"), members, appCatalog(1, Set.of()), (_, _) -> {});
+
+        ctrl.reconcile();
+
+        for (var p = 0; p < PARTITIONS; p++) {
+            assertThat(ctrl.isOwner(APP_STREAM, p)).isTrue();
+            assertThat(ctrl.roleFor(APP_STREAM, p)).isEqualTo(Role.OWNER);
+        }
+    }
+
+    @Test
+    void ownerGate_usesLastReconciledSnapshot_notFreshLiveRead() {
+        // B3: emit-ownership (isOwner/roleFor) must be computed from the SAME membership snapshot the
+        // controller last reconciled from — not an independent live read taken at a different instant.
+        // Otherwise, during a membership transition, two nodes reading their local topology at
+        // different moments could both-emit or both-drop an advisory event.
+        var members = new AtomicReference<>(nodes("n0", "n1", "n2", "n3", "n4"));
+        var rf = 3;
+
+        // Find a partition + a self node that is OWNER under the 5-node membership.
+        NodeId self = null;
+        int ownedPartition = -1;
+        for (var p = 0; p < PARTITIONS && self == null; p++) {
+            var owner = ReplicaPlacement.place(APP_STREAM, p, members.get(), rf).or(() -> {
+                throw new AssertionError("placement");
+            }).owner();
+            self = owner;
+            ownedPartition = p;
+        }
+        assertThat(self).isNotNull();
+
+        var ctrl = controller(ReplicaRegistry.replicaRegistry(), self, members, appCatalog(rf, Set.of()), (_, _) -> {});
+
+        // Reconcile against the 5-node view: self is OWNER of ownedPartition, snapshot now pinned.
+        ctrl.reconcile();
+        assertThat(ctrl.isOwner(APP_STREAM, ownedPartition)).isTrue();
+
+        // Now mutate the LIVE membership to a single foreign node WITHOUT reconciling. A fresh live
+        // read would recompute ownership against {foreign} (self not even a member → NONE). The pinned
+        // reconciled snapshot must keep self OWNER until the next reconcile.
+        members.set(nodes("foreign-only"));
+        assertThat(ctrl.isOwner(APP_STREAM, ownedPartition)).isTrue();
+        assertThat(ctrl.roleFor(APP_STREAM, ownedPartition)).isEqualTo(Role.OWNER);
+
+        // After reconciling against the new view, ownership follows the new snapshot (self gone → NONE).
+        ctrl.reconcile();
+        assertThat(ctrl.isOwner(APP_STREAM, ownedPartition)).isFalse();
+        assertThat(ctrl.roleFor(APP_STREAM, ownedPartition)).isEqualTo(Role.NONE);
+    }
 }

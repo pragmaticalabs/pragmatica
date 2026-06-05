@@ -139,8 +139,10 @@ public final class ReplicaPlacement {
         return Math.max(min, Math.min(max, value));
     }
 
-    /// FNV-1a 64-bit over the UTF-8 bytes of `value`. Deterministic across JVMs/nodes.
-    static long stableHash64(String value) {
+    /// FNV-1a 64-bit over the UTF-8 bytes of `value`. Deterministic across JVMs/nodes. Public so
+    /// other partition-placement call sites (e.g. partition routing in `PartitionedStreamAccess`) can
+    /// reuse the SAME stable hash instead of identity-unstable `Object#hashCode()` (m2).
+    public static long stableHash64(String value) {
         var bytes = value.getBytes(StandardCharsets.UTF_8);
         var hash = FNV_64_OFFSET_BASIS;
 

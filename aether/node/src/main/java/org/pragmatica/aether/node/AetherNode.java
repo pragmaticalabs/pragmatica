@@ -2084,7 +2084,9 @@ public interface AetherNode extends ManageableNode {
         // partition message transport as the forward handler.
         var streamReplicationReceiveHandler = ReplicationReceiveHandler.replicationReceiveHandler(config.self(),
                                                                                                   streamPartitionManager::appendRecovered,
-                                                                                                  streamReplicationTransport);
+                                                                                                  streamReplicationTransport,
+                                                                                                  (streamName, partition) -> streamBackfillExecutor.execute(() -> streamPartitionBackfill.backfill(streamName,
+                                                                                                                                                                                                  partition)));
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.ReplicateEvents.class,
                                                  streamReplicationReceiveHandler::onReplicateEvents));
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.ReplicateAck.class,

@@ -13,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
+import java.util.function.BiConsumer;
 
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateAck.replicateAck;
 
@@ -35,8 +36,16 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 /// ## Ack
 /// After applying a batch starting at `fromOffset` with `n` payloads, the highest applied offset is
 /// `fromOffset + n - 1`; that is acked back so {@link DefaultReplicationManager#handleAck} can advance
-/// the watermark and resolve any pending `awaitReplication(minAcks)` promise. A partial apply acks
-/// only what landed.
+/// the watermark and resolve any pending `awaitReplication(minAcks)` promise.
+///
+/// ## Partial-apply repair (M5)
+/// A mid-batch append failure applies only the contiguous prefix `[fromOffset, fromOffset+applied-1]`
+/// and leaves a gap for the tail of the batch. The handler acks ONLY that contiguous prefix (never the
+/// batch's nominal end), so the owner's watermark view never over-states what landed. A partial apply
+/// is NOT treated as success: the `onGap` repair seam is fired for `(streamName, partition)` so the
+/// replica re-enters SYNCING/backfill and pulls the missing tail from a caught-up source. The default
+/// seam is a no-op; production wires it to the partition-backfill executor (same seam the
+/// {@link ReplicaSetController} uses for newly-added replicas).
 public final class ReplicationReceiveHandler {
     private static final Logger log = LoggerFactory.getLogger(ReplicationReceiveHandler.class);
 
@@ -49,30 +58,50 @@ public final class ReplicationReceiveHandler {
     private final NodeId self;
     private final RecoveredAppender appender;
     private final ReplicationTransport transport;
+    private final BiConsumer<String, Integer> onGap;
 
-    private ReplicationReceiveHandler(NodeId self, RecoveredAppender appender, ReplicationTransport transport) {
+    private ReplicationReceiveHandler(NodeId self,
+                                      RecoveredAppender appender,
+                                      ReplicationTransport transport,
+                                      BiConsumer<String, Integer> onGap) {
         this.self = self;
         this.appender = appender;
         this.transport = transport;
+        this.onGap = onGap;
     }
 
     public static ReplicationReceiveHandler replicationReceiveHandler(NodeId self,
                                                                       RecoveredAppender appender,
                                                                       ReplicationTransport transport) {
-        return new ReplicationReceiveHandler(self, appender, transport);
+        return new ReplicationReceiveHandler(self, appender, transport, (_, _) -> {});
     }
 
-    @Contract @MessageReceiver @SuppressWarnings("JBCT-RET-01") public void onReplicateEvents(ReplicationMessage.ReplicateEvents message) {
+    /// Factory with an explicit `onGap` repair seam, fired `(streamName, partition)` whenever a batch
+    /// fails to apply in full so the replica re-enters SYNCING/backfill (M5).
+    public static ReplicationReceiveHandler replicationReceiveHandler(NodeId self,
+                                                                      RecoveredAppender appender,
+                                                                      ReplicationTransport transport,
+                                                                      BiConsumer<String, Integer> onGap) {
+        return new ReplicationReceiveHandler(self, appender, transport, onGap);
+    }
+
+    @Contract @MessageReceiver public void onReplicateEvents(ReplicationMessage.ReplicateEvents message) {
         var payloads = message.payloads();
         var timestamps = message.timestamps();
         var fromOffset = message.fromOffset();
         var applied = applyBatch(message.streamName(), message.partition(), fromOffset, payloads, timestamps);
-        if (applied <= 0) {
-            log.warn("ReplicationReceiveHandler: applied no events for {}[{}] from {} (batch size {})",
+        if (applied < payloads.size()) {
+            // Partial (or zero) apply: a gap remains. Surface it so the replica is repaired rather than
+            // left silently behind — re-enter SYNCING/backfill from the acked watermark.
+            log.warn("ReplicationReceiveHandler: applied {}/{} events for {}[{}] from {} — triggering backfill repair",
+                     applied,
+                     payloads.size(),
                      message.streamName(),
                      message.partition(),
-                     message.governorId(),
-                     payloads.size());
+                     message.governorId());
+            onGap.accept(message.streamName(), message.partition());
+        }
+        if (applied <= 0) {
             return;
         }
         var highestApplied = fromOffset + applied - 1;

@@ -11,6 +11,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamForwardClient.ReadForwardResult;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
+import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.aether.stream.segment.CursorStore;
@@ -615,10 +616,19 @@ import static org.pragmatica.lang.Result.allOf;
         return new StreamEvent<>(dto.offset(), dto.timestamp(), partition, payload);
     }
 
+    /// Resolve the target partition for `event`. When a partition-key extractor is configured the
+    /// partition is derived from a STABLE 64-bit hash of the key's string form
+    /// ({@link ReplicaPlacement#stableHash64}) — the same hash used for replica placement — rather
+    /// than `Object#hashCode()`, which is identity-unstable across JVMs for custom key types and would
+    /// scatter the same logical key to different partitions on different nodes (m2). Keyless streams
+    /// fall back to round-robin.
     private int resolvePartition(T event) {
-        return partitionKeyExtractor.map(extractor -> Math.floorMod(extractor.apply(event).hashCode(),
-                                                                    partitionCount))
-        .or(() -> (int)(roundRobinCounter.getAndIncrement() % partitionCount));
+        return partitionKeyExtractor.map(extractor -> stablePartition(extractor.apply(event)))
+                                    .or(() -> (int) (roundRobinCounter.getAndIncrement() % partitionCount));
+    }
+
+    private int stablePartition(Object key) {
+        return (int) Math.floorMod(ReplicaPlacement.stableHash64(String.valueOf(key)), (long) partitionCount);
     }
 
     private record ConsumerPartitionKey(String consumerGroup, int partition){}

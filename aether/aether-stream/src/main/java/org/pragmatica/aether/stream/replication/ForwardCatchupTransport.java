@@ -8,6 +8,7 @@ import org.pragmatica.aether.stream.forward.RawEventDto;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamForwardClient.ReadForwardResult;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 
 import java.util.ArrayList;
@@ -64,14 +65,33 @@ public final class ForwardCatchupTransport implements CatchupTransport {
                                                       List<RawEventDto> accumulated,
                                                       ReadForwardResult result) {
         var events = result.events();
+        if (!events.isEmpty() && events.getFirst().offset() != cursor) {
+            // Non-contiguous page: the source returned events that do not start at the requested
+            // cursor. Applying them would leave a hole in the replica (M3), so fail the whole
+            // catch-up rather than produce a holey replica — the caller stays SYNCING and retries.
+            return CatchupError.NON_CONTIGUOUS_PAGE.promise();
+        }
         accumulated.addAll(events);
 
-        var fullPage = events.size() >= batchSize && !events.isEmpty();
-        if (fullPage) {
+        if (events.size() >= batchSize) {
             var nextCursor = events.getLast().offset() + 1;
             return page(target, request, nextCursor, accumulated);
         }
         return Promise.success(toResponse(target, request, accumulated));
+    }
+
+    private enum CatchupError implements Cause {
+        NON_CONTIGUOUS_PAGE("Catch-up page does not start at the requested cursor — gap detected");
+
+        private final String message;
+
+        CatchupError(String message) {
+            this.message = message;
+        }
+
+        @Override public String message() {
+            return message;
+        }
     }
 
     private static CatchupResponse toResponse(NodeId target,

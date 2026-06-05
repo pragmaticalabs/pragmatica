@@ -88,6 +88,20 @@ class ForwardCatchupTransportTest {
         assertThat(result.isFailure()).isTrue();
     }
 
+    @Test
+    void requestCatchup_nonContiguousPage_doesNotStartAtCursor_failsCatchup() {
+        // Requested cursor is 0, but the source's first returned event is at offset 3 — a gap. Applying
+        // it would leave a holey replica, so the catch-up must FAIL rather than return a partial page
+        // (M3).
+        var source = new GappyForwardSource(eventsFrom(3, 4));
+        var transport = forwardCatchupTransport(source, 2);
+
+        var result = transport.requestCatchup(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 0L))
+                              .await();
+
+        assertThat(result.isFailure()).isTrue();
+    }
+
     private static List<RawEventDto> eventsFrom(long startOffset, int count) {
         var events = new ArrayList<RawEventDto>(count);
         for (var i = 0; i < count; i++) {
@@ -128,6 +142,37 @@ class ForwardCatchupTransportTest {
                              .filter(event -> event.offset() >= fromOffset)
                              .limit(maxEvents)
                              .toList();
+            return Promise.success(new ReadForwardResult(page, false));
+        }
+
+        @Override public void onPublishForwardResponse(PublishForwardResponse response) {}
+
+        @Override public void onReadForwardResponse(ReadForwardResponse response) {}
+    }
+
+    /// Source that always returns its events starting from their own first offset, ignoring the
+    /// requested `fromOffset` — models a source that hands back a page not aligned to the cursor (gap).
+    private static final class GappyForwardSource implements StreamForwardClient {
+        private final List<RawEventDto> events;
+
+        private GappyForwardSource(List<RawEventDto> events) {
+            this.events = List.copyOf(events);
+        }
+
+        @Override public Promise<Long> publishRemote(NodeId governorId,
+                                                     String streamName,
+                                                     int partition,
+                                                     byte[] payload,
+                                                     long timestamp) {
+            return Promise.success(0L);
+        }
+
+        @Override public Promise<ReadForwardResult> readRemote(NodeId replicaId,
+                                                               String streamName,
+                                                               int partition,
+                                                               long fromOffset,
+                                                               int maxEvents) {
+            var page = events.stream().limit(maxEvents).toList();
             return Promise.success(new ReadForwardResult(page, false));
         }
 

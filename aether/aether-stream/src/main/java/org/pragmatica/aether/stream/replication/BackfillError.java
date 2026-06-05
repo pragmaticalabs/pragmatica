@@ -9,15 +9,18 @@ import org.pragmatica.lang.Cause;
 
 public sealed interface BackfillError extends Cause {
     enum General implements BackfillError {
-        NO_SOURCE_REPLICA_CAUSE("No caught-up source replica available for backfill");
+        NO_SOURCE_REPLICA("No caught-up source replica available for backfill"),
+        MALFORMED_RESPONSE("Malformed catch-up response: payload/timestamp count mismatch"),
+        INCOMPLETE_BACKFILL("Catch-up applied fewer events than the source watermark — gap remains");
+
         private final String message;
+
         General(String message) {
             this.message = message;
         }
+
         @Override public String message() {
             return message;
         }
     }
-
-    BackfillError NO_SOURCE_REPLICA = General.NO_SOURCE_REPLICA_CAUSE;
 }

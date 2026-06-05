@@ -19,14 +19,18 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
 import static org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass.APP;
 import static org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass.SYSTEM;
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 /// Per-node controller that keeps the local {@link ReplicaRegistry} in agreement with the
 /// HRW-derived desired replica set ({@link ReplicaPlacement}) for every `(stream, partition)`,
@@ -88,6 +92,17 @@ public final class ReplicaSetController implements AutoCloseable {
     private final boolean ownsExecutor;
 
     private final AtomicBoolean passive = new AtomicBoolean(false);
+
+    /// Membership snapshot captured by the LAST completed reconcile. `roleFor` / `isOwner` (the B3
+    /// emit-gate) compute placement from THIS snapshot — the same generation the registry was
+    /// reconciled against — so emit-ownership and replica-ownership never read the live topology at
+    /// two different instants during a membership transition (which could make two nodes both-emit or
+    /// both-drop an advisory event). Until the first reconcile lands it is `none()` and the gate falls
+    /// back to a fresh supplier read (bootstrap window; a transient dup/drop of advisory,
+    /// retention-bounded cluster-events there is acceptable).
+    private final AtomicReference<Option<ReconciledView>> reconciledView = new AtomicReference<>(none());
+
+    private record ReconciledView(List<NodeId> members, int clusterSize) {}
 
     private ReplicaSetController(ReplicaRegistry registry,
                                  NodeId self,
@@ -183,6 +198,11 @@ public final class ReplicaSetController implements AutoCloseable {
 
         var clusterSize = clusterSizeSupplier.getAsInt();
 
+        // B3: publish the exact membership generation this reconcile is about to apply, so the
+        // emit-gate (roleFor/isOwner) computes ownership from the SAME snapshot the registry is
+        // reconciled against — not an independent live read taken at a different instant.
+        reconciledView.set(some(new ReconciledView(members, clusterSize)));
+
         for (var spec : catalog.streams()) {
             reconcileStream(spec, members, clusterSize);
         }
@@ -224,16 +244,33 @@ public final class ReplicaSetController implements AutoCloseable {
         }
     }
 
-    /// Self-role for `(stream, partition)` under the current membership snapshot. Computed from the
-    /// same placement the registry is reconciled against.
+    /// Self-role for `(stream, partition)` under the membership snapshot the controller last
+    /// reconciled from (B3). Computed from the same placement the registry is reconciled against, so
+    /// the emit-gate and the replica-set share one generation. Before the first reconcile the snapshot
+    /// is absent and we fall back to a fresh supplier read (bootstrap window).
     public Role roleFor(String streamName, int partition) {
-        var members = membersSupplier.get();
+        var members = currentMembers();
         var streamClass = classify(streamName);
         var rf = rfFor(streamName, streamClass);
 
         return ReplicaPlacement.place(streamName, partition, members, rf)
                                .map(placement -> roleFrom(placement))
                                .or(Role.NONE);
+    }
+
+    /// Members of the last-reconciled snapshot, or a fresh supplier read before the first reconcile.
+    private List<NodeId> currentMembers() {
+        return reconciledView.get()
+                             .map(ReconciledView::members)
+                             .or(membersSupplier::get);
+    }
+
+    /// Cluster size of the last-reconciled snapshot, or a fresh supplier read before the first
+    /// reconcile.
+    private int currentClusterSize() {
+        return reconciledView.get()
+                             .map(ReconciledView::clusterSize)
+                             .or(clusterSizeSupplier::getAsInt);
     }
 
     private Role roleFrom(Placement placement) {
@@ -250,7 +287,7 @@ public final class ReplicaSetController implements AutoCloseable {
     }
 
     private int rfFor(String streamName, StreamClass streamClass) {
-        var clusterSize = clusterSizeSupplier.getAsInt();
+        var clusterSize = currentClusterSize();
         var requested = catalog.streams()
                                .stream()
                                .filter(spec -> spec.name().equals(streamName))
@@ -265,7 +302,7 @@ public final class ReplicaSetController implements AutoCloseable {
     }
 
     @Override public void close() {
-        if (ownsExecutor && executor instanceof java.util.concurrent.ExecutorService service) {
+        if (ownsExecutor && executor instanceof ExecutorService service) {
             service.shutdownNow();
         }
     }

@@ -9,6 +9,7 @@ import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.consensus.ConsensusPublishPath;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamForwardError;
+import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
@@ -217,9 +218,16 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                   .mapToUnit();
     }
 
+    /// Resolve the target partition for `event`. A configured key extractor routes through the STABLE
+    /// 64-bit hash used for replica placement ({@link ReplicaPlacement#stableHash64}) rather than
+    /// identity-unstable `Object#hashCode()`, so the same logical key maps to the same partition on
+    /// every node/JVM (m2). Keyless publishes fall back to round-robin.
     private int resolvePartition(T event) {
-        return partitionKeyExtractor.map(extractor -> Math.floorMod(extractor.apply(event).hashCode(),
-                                                                    partitionCount))
-        .or(() -> (int)(roundRobinCounter.getAndIncrement() % partitionCount));
+        return partitionKeyExtractor.map(extractor -> stablePartition(extractor.apply(event)))
+                                    .or(() -> (int) (roundRobinCounter.getAndIncrement() % partitionCount));
+    }
+
+    private int stablePartition(Object key) {
+        return (int) Math.floorMod(ReplicaPlacement.stableHash64(String.valueOf(key)), (long) partitionCount);
     }
 }

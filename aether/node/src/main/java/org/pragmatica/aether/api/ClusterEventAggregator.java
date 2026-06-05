@@ -224,12 +224,12 @@ public final class ClusterEventAggregator {
     }
 
     private Promise<List<ClusterEvent>> consume(Function<FrameworkStreamConsumer<ClusterEvent>, Promise<List<ClusterEvent>>> fn) {
-        var consumer = consumerSupplier.get();
-        if (consumer == null) {
-            LOG.debug("ClusterEventAggregator consumer not yet bound — returning empty");
-            return Promise.success(List.of());
-        }
-        return fn.apply(consumer);
+        return Option.option(consumerSupplier.get())
+                     .fold(() -> {
+                               LOG.debug("ClusterEventAggregator consumer not yet bound — returning empty");
+                               return Promise.success(List.of());
+                           },
+                           fn::apply);
     }
 
     /// Fire-and-forget publish into the system stream. Owner-gated (B5b): only the OWNER of
@@ -243,12 +243,11 @@ public final class ClusterEventAggregator {
             LOG.debug("ClusterEventAggregator: not owner of cluster-events partition — suppressing emit of {}", event);
             return;
         }
-        var publisher = publisherSupplier.get();
-        if (publisher == null) {
-            LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)", event);
-            return;
-        }
-        Promise<?> ignored = publisher.publish(event);
+        Option.option(publisherSupplier.get())
+              .onPresent(publisher -> {
+                  Promise<?> ignored = publisher.publish(event);
+              })
+              .onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)", event));
     }
 
     /// NODE_JOINED represents transport-level visibility ("this node observed a peer connect").
@@ -505,12 +504,14 @@ public final class ClusterEventAggregator {
 
     private static Map<String, String> buildFailedMetadata(String artifact, String nodeId, String reason, Option<Long> durationMs) {
         var base = Map.of("artifact", artifact, "nodeId", nodeId, "reason", reason);
-        return durationMs.map(ms -> {
-                             var metadata = new java.util.HashMap<>(base);
-                             metadata.put("durationMs", String.valueOf(ms));
-                             return Map.copyOf(metadata);
-                         })
+        return durationMs.map(ms -> withDuration(base, ms))
                          .or(base);
+    }
+
+    private static Map<String, String> withDuration(Map<String, String> base, long durationMs) {
+        var metadata = new java.util.HashMap<>(base);
+        metadata.put("durationMs", String.valueOf(durationMs));
+        return Map.copyOf(metadata);
     }
 
     private static String formatDuration(long durationMs) {

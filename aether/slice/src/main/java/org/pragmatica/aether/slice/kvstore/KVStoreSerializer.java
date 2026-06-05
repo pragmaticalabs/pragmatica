@@ -1078,7 +1078,7 @@ import static org.pragmatica.lang.Result.success;
     /// `tierAwareRetention` is reconstructed as `none()` (not persisted in the snapshot form), matching
     /// the stream-config convention.
     private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamRegistryEntry(String identity, String raw) {
-        var parts = raw.split("\\|", -1);
+        var parts = raw.split("(?<!\\\\)\\|", -1);
         if (parts.length != 8) {return parseFailure("stream-registry value requires 8 fields, got " + parts.length);}
         return StreamRegistryKey.streamRegistryKey("stream-registry/" + identity)
                                 .flatMap(key -> buildStreamRegistryValue(parts).map(value -> entry(key, value)));

@@ -139,6 +139,59 @@ class PartitionBackfillTest {
         }
     }
 
+    @Nested
+    class DurabilityB2 {
+        @Test
+        void backfill_truncatedResponse_payloadTimestampMismatch_failsAndStaysSyncing() {
+            // Source is CAUGHT_UP at watermark 4; self fresh.
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+
+            // Malformed/truncated response: 3 payloads but only 2 timestamps. toOffset still claims the
+            // source watermark (4) — the false-ready trap. Must be treated as a parse failure.
+            CatchupTransport truncated = (target, request) -> {
+                var payloads = new ArrayList<byte[]>(List.of("a".getBytes(), "b".getBytes(), "c".getBytes()));
+                var timestamps = new ArrayList<Long>(List.of(1000L, 1001L));
+                return Promise.success(catchupResponse(target,
+                                                       request.streamName(),
+                                                       request.partition(),
+                                                       request.fromOffset(),
+                                                       4L,
+                                                       payloads,
+                                                       timestamps));
+            };
+            var backfill = partitionBackfill(registry, recovery, truncated, SELF);
+
+            var result = backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(result.isFailure()).isTrue();
+            // No promotion: self stays SYNCING, nothing partially applied.
+            assertThat(descriptorFor(SELF).state()).isEqualTo(ReplicationState.SYNCING);
+            assertThat(manager.readLocal(STREAM, PARTITION, 0, 100).or(List.of())).isEmpty();
+        }
+
+        @Test
+        void backfill_appliedBelowWatermark_failsAndStaysSyncing_noFalseReady() {
+            // Source watermark is 9 but the response only carries events 0..2 (a short/holey page that
+            // does not reach the watermark). Applying them must NOT promote to CAUGHT_UP@9.
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 9L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+
+            // Well-formed response (3 payloads, 3 timestamps) but toOffset=2 while source watermark=9.
+            var transport = fixedSource(eventsFrom(0, 3));
+            var backfill = partitionBackfill(registry, recovery, transport, SELF);
+
+            var result = backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(result.isFailure()).isTrue();
+            // Highest applied offset (2) < watermark (9) => no promotion; stays SYNCING for a re-run.
+            assertThat(descriptorFor(SELF).state()).isEqualTo(ReplicationState.SYNCING);
+            assertThat(descriptorFor(SELF).confirmedOffset()).isEqualTo(-1L);
+        }
+    }
+
     private ReplicaDescriptor descriptorFor(NodeId nodeId) {
         return registry.replicasFor(STREAM, PARTITION).stream()
                        .filter(d -> d.nodeId().equals(nodeId))

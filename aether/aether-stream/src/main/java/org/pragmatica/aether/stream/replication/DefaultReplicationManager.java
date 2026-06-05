@@ -107,9 +107,17 @@ final class DefaultReplicationManager implements ReplicationManager {
         return promise;
     }
 
+    /// Resolve every pending await whose awaited offset is at or below `confirmedOffset` for this
+    /// `(stream, partition)`. A replica that has caught up PAST the awaited offset acks a higher
+    /// watermark; an exact `(stream, partition, offset)` match would miss it and only the timeout would
+    /// fire (m1). Iterating the pending keys and matching `offset <= confirmedOffset` makes a higher
+    /// ack correctly satisfy a lower-offset await.
     private void resolvePendingAck(String streamName, int partition, long confirmedOffset) {
-        var key = new PendingAckKey(streamName, partition, confirmedOffset);
-        option(pendingAcks.get(key)).onPresent(pending -> decrementAndResolve(key, pending));
+        pendingAcks.forEach((key, pending) -> {
+            if (key.streamName().equals(streamName) && key.partition() == partition && key.offset() <= confirmedOffset) {
+                decrementAndResolve(key, pending);
+            }
+        });
     }
 
     private void decrementAndResolve(PendingAckKey key, PendingAck pending) {

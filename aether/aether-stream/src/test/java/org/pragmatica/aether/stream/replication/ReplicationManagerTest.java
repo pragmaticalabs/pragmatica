@@ -93,6 +93,22 @@ class ReplicationManagerTest {
             assertThat(replicas.getFirst().confirmedOffset()).isEqualTo(10L);
             assertThat(replicas.getFirst().state()).isEqualTo(ReplicationState.CAUGHT_UP);
         }
+
+        @Test
+        void awaitReplication_resolvedByHigherOffsetAck() {
+            // m1: a replica that has caught up PAST the awaited offset acks a HIGHER watermark.
+            // An exact (stream, partition, offset) match would miss it and only the timeout would
+            // resolve. The await for offset 5 must be satisfied by an ack at offset 10.
+            registry.registerReplica(STREAM, PARTITION, REPLICA_A);
+
+            var pending = manager.awaitReplication(STREAM, PARTITION, 5L, 1);
+            assertThat(pending.isResolved()).isFalse(); // not yet resolved
+
+            manager.handleAck(replicateAck(REPLICA_A, STREAM, PARTITION, 10L));
+
+            var result = pending.await();
+            assertThat(result.isSuccess()).isTrue();
+        }
     }
 
     @Nested
