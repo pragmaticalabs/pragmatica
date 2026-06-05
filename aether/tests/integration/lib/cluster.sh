@@ -1792,6 +1792,21 @@ seed_cluster_config() {
     local config_file="${1:-${LIB_DIR}/../cluster-config.toml}"
     local toml_content
     toml_content=$(cat "$config_file")
+    # Align the planted [cluster].name with THIS cluster's compose identity (CLUSTER_ID=a/b),
+    # the Docker equivalent of the cloud path's `aether cluster bootstrap --cluster <name>`
+    # (which overrides the TOML's [cluster].name). The shared cluster-config.toml hardcodes
+    # name="integration-test"; planting that verbatim makes KV cluster.name diverge from the
+    # compose env/label ("b"). CTM then mints replacements whose aether.cluster label + container
+    # name derive from the KV name ("integration-test") while their compose-fixed siblings and the
+    # harness name/label filters use "b" — so replacements miss cleanup/discovery filters and leak.
+    # (Before the provider fix, this divergence also tripped the boot label-consistency guard and
+    # crash-looped every replacement.) CLUSTER_ID unset → leave the TOML name untouched (ad-hoc use).
+    if [ -n "${CLUSTER_ID:-}" ]; then
+        toml_content=$(printf '%s' "$toml_content" \
+            | awk -v id="$CLUSTER_ID" '
+                !done && /^[[:space:]]*name[[:space:]]*=/ { print "name = \"" id "\""; done=1; next }
+                { print }')
+    fi
     # Desired coreMax from the TOML's [cluster.core] max (the operator intent).
     local toml_max
     toml_max=$(printf '%s' "$toml_content" \
