@@ -26,8 +26,7 @@ import java.util.Set;
                                                                  SpokesmanKey.class,
                                                                  ProvisioningSlotKey.class,
                                                                  GenerationSnapshotKey.class,
-                                                                 ClusterPhaseKey.class,
-                                                                 ClusterEventLogKey.class);
+                                                                 ClusterPhaseKey.class);
 
     Set<String> EPHEMERAL_SECTIONS = Set.of("node-artifact",
                                             "node-routes",
@@ -45,8 +44,7 @@ import java.util.Set;
                                             "spokesman",
                                             "provisioning-slot",
                                             "generation-snapshot",
-                                            "cluster-phase",
-                                            "cluster-event-log");
+                                            "cluster-phase");
 
     static boolean isEphemeral(AetherKey key) {
         return EPHEMERAL_KEY_TYPES.contains(key.getClass());

@@ -72,6 +72,37 @@ class DrainProcedureTest {
             assertThat(leaves.get()).isEqualTo(1);
             assertThat(procedure.state()).isEqualTo(DrainProcedure.DrainState.EXITED);
         }
+
+        @Test
+        void initiate_emitsDrainInitiatedOnce_atTransition() {
+            var tracker = InFlightRequestTracker.inFlightRequestTracker();
+            var emitted = new java.util.concurrent.CopyOnWriteArrayList<DrainReason>();
+            var procedure = DrainProcedure.drainProcedure(tracker,
+                                                          () -> {},
+                                                          emitted::add,
+                                                          () -> {});
+
+            procedure.initiate(TEST_REASON);
+            // Re-triggers must NOT emit again (single-shot CAS gate).
+            procedure.initiate(DrainReason.OVERPROVISION_SCALE_DOWN);
+
+            assertThat(emitted).containsExactly(TEST_REASON);
+        }
+
+        @Test
+        void initiate_throwingEmitter_doesNotBlockDrain() {
+            var tracker = InFlightRequestTracker.inFlightRequestTracker();
+            var exits = new AtomicInteger(0);
+            var procedure = DrainProcedure.drainProcedure(tracker,
+                                                          () -> {},
+                                                          reason -> {throw new RuntimeException("boom");},
+                                                          exits::incrementAndGet);
+
+            procedure.initiate(TEST_REASON);
+
+            await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> assertThat(exits.get()).isEqualTo(1));
+            assertThat(procedure.state()).isEqualTo(DrainProcedure.DrainState.EXITED);
+        }
     }
 
     @Nested

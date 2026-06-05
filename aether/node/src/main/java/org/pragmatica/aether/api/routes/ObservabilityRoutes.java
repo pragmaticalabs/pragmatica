@@ -79,7 +79,7 @@ public final class ObservabilityRoutes implements RouteSource {
                                                     QueryParameter.aString("status"),
                                                     QueryParameter.aString("minDepth"),
                                                     QueryParameter.aString("maxDepth"))
-                                         .toValue(this::handleQueryTraces)
+                                         .to(this::handleQueryTraces)
                                          .asJson(),
                          ManagementRoutes.<TraceStats> route(ManagementRoute.TRACES_STATS).toJson(this::handleTraceStats),
                          ManagementRoutes.<TraceInjectResponse> route(ManagementRoute.TRACES_INJECT)
@@ -120,21 +120,20 @@ public final class ObservabilityRoutes implements RouteSource {
                                        node.timestamp().toString());
     }
 
-    private List<TraceView> handleQueryTraces(Option<String> limitOpt,
+    private Promise<List<TraceView>> handleQueryTraces(Option<String> limitOpt,
                                               Option<String> methodOpt,
                                               Option<String> statusOpt,
                                               Option<String> minDepthOpt,
                                               Option<String> maxDepthOpt) {
         var limit = limitOpt.map(ObservabilityRoutes::parseIntOrDefault).or(DEFAULT_LIMIT);
-        var traces = traceStore.query(node -> matchesTraceFilters(node, methodOpt, statusOpt, minDepthOpt, maxDepthOpt),
-                                      limit);
-
-        return toTraceViews(traces);
+        return traceStore.query(node -> matchesTraceFilters(node, methodOpt, statusOpt, minDepthOpt, maxDepthOpt),
+                                limit)
+                         .map(ObservabilityRoutes::toTraceViews);
     }
 
     private Promise<List<TraceView>> handleTraceByRequestId(String requestId) {
         if (requestId.isEmpty()) {return ObservabilityError.REQUEST_ID_REQUIRED.promise();}
-        return Promise.success(toTraceViews(traceStore.forRequest(requestId)));
+        return traceStore.forRequest(requestId).map(ObservabilityRoutes::toTraceViews);
     }
 
     private TraceStats handleTraceStats() {

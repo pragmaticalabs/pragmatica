@@ -8,11 +8,11 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
 
 import java.util.List;
 import java.util.Map;
@@ -26,29 +26,24 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-/// Covers the synthetic alert injection endpoint surface on `AlertManager`:
+/// Covers the synthetic alert injection endpoint surface on `AlertManager`, ported to the
+/// stream-namespaces cluster-events model (Stage 4):
 ///   - inject + read-back via `activeAlertsAsJson` (correlation by `alertId`)
+///   - inject emits a sealed `ClusterEvent.AlertInjected` through the bound `EventSink`
+///     (was: an `EventLogPublisher.publish(EventType, ...)` call against the deleted KV log)
+///   - cross-node UNION read via the async `clusterEventsSource` (Supplier<Promise<List>>)
 ///   - validation (blank name / message / invalid severity)
-///   - inject also writes a history entry with status `INJECTED`
 ///
-/// Uses the `readOnly` constructor to bypass `RabiaNode` wiring — injection is
-/// node-local in-memory state, no cluster apply happens on the inject path, so
-/// the absence of a consensus node does not affect coverage.
+/// Uses the `readOnly` constructor to bypass `RabiaNode` wiring — injection is node-local
+/// in-memory state, no cluster apply happens on the inject path.
 class AlertManagerInjectTest {
+
+    private static final HlcClock HLC = HlcClock.hlcClock(new NodeId("test-node"));
 
     @SuppressWarnings("unchecked")
     private static AlertManager newManager() {
         var kvStore = (KVStore<AetherKey, AetherValue>) Mockito.mock(KVStore.class);
         return AlertManager.readOnly(kvStore);
-    }
-
-    private static AlertManager.EventLogPublisher capturingPublisher(List<Map<String, String>> capturedMetadata,
-                                                                       List<ClusterEventValue.EventType> capturedTypes) {
-        return (type, severity, message, metadata) -> {
-            capturedTypes.add(type);
-            capturedMetadata.add(metadata);
-            return Promise.success(Unit.unit());
-        };
     }
 
     @Nested
@@ -108,31 +103,30 @@ class AlertManagerInjectTest {
     class ClusterReplication {
 
         @Test
-        void inject_publishesAlertInjectedEvent_whenPublisherBound() {
+        void inject_emitsAlertInjectedEvent_whenSinkBound() {
             var manager = newManager();
-            var captured = new CopyOnWriteArrayList<Map<String, String>>();
-            var capturedTypes = new CopyOnWriteArrayList<ClusterEventValue.EventType>();
-            var publisher = capturingPublisher(captured, capturedTypes);
-            manager.bindEventLogPublisher(publisher);
+            var captured = new CopyOnWriteArrayList<ClusterEvent>();
+            manager.bindEventSink(captured::add, HLC);
 
             manager.inject("replicated-alert",
                            "WARNING",
-                           "must replicate via event log",
+                           "must replicate via event stream",
                            Option.option("test.metric"),
                            Option.option(99.0))
                    .onFailure(cause -> fail("Inject failed: " + cause.message()))
                    .await();
 
-            assertEquals(1, captured.size(), "inject must publish exactly one cluster event");
-            assertEquals(ClusterEventValue.EventType.ALERT_INJECTED, capturedTypes.get(0),
-                          "Published event type must be ALERT_INJECTED");
-            var metadata = captured.get(0);
+            assertEquals(1, captured.size(), "inject must emit exactly one cluster event");
+            var event = captured.get(0);
+            assertTrue(event instanceof ClusterEvent.AlertInjected,
+                       "Emitted event must be an AlertInjected variant: " + event.getClass().getSimpleName());
+            var metadata = event.details();
             assertNotNull(metadata.get("alertId"), "metadata must carry alertId");
             assertTrue(metadata.get("alertId").startsWith("injected-"),
                        "metadata alertId must use 'injected-' prefix: " + metadata.get("alertId"));
             assertEquals("replicated-alert", metadata.get("name"));
             assertEquals("WARNING", metadata.get("severity"));
-            assertEquals("must replicate via event log", metadata.get("message"));
+            assertEquals("must replicate via event stream", metadata.get("message"));
             assertEquals("test.metric", metadata.get("metric"));
             assertNotNull(metadata.get("timestamp"), "metadata must carry timestamp");
         }
@@ -150,26 +144,26 @@ class AlertManagerInjectTest {
                                           .or("");
             assertTrue(!injectedAlertId.isEmpty(), "Originator inject must produce an alertId");
 
-            var peerEvent = ClusterEvent.clusterEvent(ClusterEventValue.EventType.ALERT_INJECTED,
-                                                       ClusterEventValue.Severity.CRITICAL,
-                                                       "peer-injected message",
-                                                       Map.of("alertId", "injected-peer-1",
-                                                              "name", "peer-alert",
-                                                              "severity", "CRITICAL",
-                                                              "message", "peer-injected message",
-                                                              "timestamp", "1234567890"));
+            var peerEvent = new ClusterEvent.AlertInjected(HLC.now(),
+                                                           ClusterEvent.Severity.CRITICAL,
+                                                           "peer-injected message",
+                                                           Map.of("alertId", "injected-peer-1",
+                                                                  "name", "peer-alert",
+                                                                  "severity", "CRITICAL",
+                                                                  "message", "peer-injected message",
+                                                                  "timestamp", "1234567890"));
             // Echo back the originator's own alert too — verifies dedup by alertId.
-            var echoEvent = ClusterEvent.clusterEvent(ClusterEventValue.EventType.ALERT_INJECTED,
-                                                       ClusterEventValue.Severity.INFO,
-                                                       "originator local entry",
-                                                       Map.of("alertId", injectedAlertId,
-                                                              "name", "local-only",
-                                                              "severity", "INFO",
-                                                              "message", "originator local entry",
-                                                              "timestamp", "1234567891"));
-            manager.bindClusterEventsSource(() -> List.of(peerEvent, echoEvent));
+            var echoEvent = new ClusterEvent.AlertInjected(HLC.now(),
+                                                           ClusterEvent.Severity.INFO,
+                                                           "originator local entry",
+                                                           Map.of("alertId", injectedAlertId,
+                                                                  "name", "local-only",
+                                                                  "severity", "INFO",
+                                                                  "message", "originator local entry",
+                                                                  "timestamp", "1234567891"));
+            manager.bindClusterEventsSource(() -> Promise.success(List.of(peerEvent, echoEvent)));
 
-            var alerts = manager.activeAlertsAsList();
+            var alerts = manager.activeAlertsAsList().await().or(List.of());
             var alertIds = alerts.stream().map(AlertManager.AlertView::alertId).toList();
             assertTrue(alertIds.contains(injectedAlertId),
                        "Originator's local alertId must remain visible: " + alertIds);

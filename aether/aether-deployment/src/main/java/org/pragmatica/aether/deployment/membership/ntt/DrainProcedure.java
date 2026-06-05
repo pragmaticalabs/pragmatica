@@ -60,16 +60,19 @@ public final class DrainProcedure {
 
     private final InFlightRequestTracker tracker;
     private final Runnable swimLeaveEmitter;
+    private final java.util.function.Consumer<DrainReason> drainInitiatedEmitter;
     private final Runnable jvmExit;
     private final TimeSpan drainTimeout;
     private final AtomicReference<DrainState> state = new AtomicReference<>(DrainState.INACTIVE);
 
     private DrainProcedure(InFlightRequestTracker tracker,
                            Runnable swimLeaveEmitter,
+                           java.util.function.Consumer<DrainReason> drainInitiatedEmitter,
                            Runnable jvmExit,
                            TimeSpan drainTimeout) {
         this.tracker = tracker;
         this.swimLeaveEmitter = swimLeaveEmitter;
+        this.drainInitiatedEmitter = drainInitiatedEmitter;
         this.jvmExit = jvmExit;
         this.drainTimeout = drainTimeout;
     }
@@ -83,14 +86,26 @@ public final class DrainProcedure {
                                                 Runnable swimLeaveEmitter,
                                                 Runnable jvmExit,
                                                 TimeSpan drainTimeout) {
-        return new DrainProcedure(tracker, swimLeaveEmitter, jvmExit, drainTimeout);
+        return new DrainProcedure(tracker, swimLeaveEmitter, reason -> {}, jvmExit, drainTimeout);
     }
 
     /// Convenience factory using the spec §14 default drain timeout (30s).
     public static DrainProcedure drainProcedure(InFlightRequestTracker tracker,
                                                 Runnable swimLeaveEmitter,
                                                 Runnable jvmExit) {
-        return new DrainProcedure(tracker, swimLeaveEmitter, jvmExit, DEFAULT_DRAIN_TIMEOUT);
+        return new DrainProcedure(tracker, swimLeaveEmitter, reason -> {}, jvmExit, DEFAULT_DRAIN_TIMEOUT);
+    }
+
+    /// Factory variant that additionally takes a best-effort `drainInitiatedEmitter`, invoked once
+    /// at the INACTIVE→DRAINING transition (single-shot, preserved by the CAS gate). The node owns
+    /// the emit of a `SelfDrainInitiated` cluster event there; the deployment module stays free of
+    /// any `ClusterEvent` dependency by accepting only a `Consumer<DrainReason>`. A throwing emitter
+    /// does not interrupt the drain.
+    public static DrainProcedure drainProcedure(InFlightRequestTracker tracker,
+                                                Runnable swimLeaveEmitter,
+                                                java.util.function.Consumer<DrainReason> drainInitiatedEmitter,
+                                                Runnable jvmExit) {
+        return new DrainProcedure(tracker, swimLeaveEmitter, drainInitiatedEmitter, jvmExit, DEFAULT_DRAIN_TIMEOUT);
     }
 
     /// Kick off the §8.2 procedure. Single-shot: re-entries while `DRAINING` or `EXITED`
@@ -104,9 +119,21 @@ public final class DrainProcedure {
         log.warn("DrainProcedure: DRAINING (reason={}) — closing tracker gate, grace={}ms",
                  reason,
                  drainTimeout.millis());
+        emitDrainInitiatedSafely(reason);
         tracker.setAcceptingNewWork(false);
         tracker.onAllDrained(this::onTrackerDrained);
         SharedScheduler.schedule(this::onGraceExpired, drainTimeout);
+    }
+
+    /// Best-effort `SelfDrainInitiated` emit. A throwing emitter does not interrupt the drain — the
+    /// emit is purely observability, not a correctness requirement (same philosophy as the SWIM
+    /// LEAVE emit). Single-shot: only reached once, immediately after the CAS to DRAINING.
+    private void emitDrainInitiatedSafely(DrainReason reason) {
+        try {
+            drainInitiatedEmitter.accept(reason);
+        } catch (Throwable t) {
+            log.warn("DrainProcedure: SelfDrainInitiated emit failed: {} — drain proceeds", t.getMessage());
+        }
     }
 
     /// Current observability state. Exposed for `/api/status` projections and tests.

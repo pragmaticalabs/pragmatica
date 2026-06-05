@@ -5,61 +5,60 @@
 package org.pragmatica.aether.api;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
-import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01")
-public class EventWebSocketPublisher {
+@SuppressWarnings("JBCT-RET-01") public class EventWebSocketPublisher {
     private static final Logger log = LoggerFactory.getLogger(EventWebSocketPublisher.class);
 
     private final EventWebSocketHandler handler;
-    private final Supplier<List<ClusterEvent>> allEventsProvider;
+    private final Function<Instant, Promise<List<ClusterEvent>>> eventsSinceProvider;
     private final Function<List<ClusterEvent>, String> jsonSerializer;
     private final long intervalMs;
 
     private final AtomicReference<Option<ScheduledFuture<?>>> taskRef = new AtomicReference<>(Option.none());
 
     private final AtomicBoolean running = new AtomicBoolean(false);
-    private final AtomicInteger lastPublishedCount = new AtomicInteger(0);
+
+    private final AtomicReference<Instant> lastBroadcast = new AtomicReference<>(Instant.EPOCH);
 
     private EventWebSocketPublisher(EventWebSocketHandler handler,
-                                    Supplier<List<ClusterEvent>> allEventsProvider,
+                                    Function<Instant, Promise<List<ClusterEvent>>> eventsSinceProvider,
                                     Function<List<ClusterEvent>, String> jsonSerializer,
                                     long intervalMs) {
         this.handler = handler;
-        this.allEventsProvider = allEventsProvider;
+        this.eventsSinceProvider = eventsSinceProvider;
         this.jsonSerializer = jsonSerializer;
         this.intervalMs = intervalMs;
     }
 
     public static EventWebSocketPublisher eventWebSocketPublisher(EventWebSocketHandler handler,
-                                                                  Supplier<List<ClusterEvent>> allEventsProvider,
+                                                                  Function<Instant, Promise<List<ClusterEvent>>> eventsSinceProvider,
                                                                   Function<List<ClusterEvent>, String> jsonSerializer,
                                                                   long intervalMs) {
-        return new EventWebSocketPublisher(handler, allEventsProvider, jsonSerializer, intervalMs);
+        return new EventWebSocketPublisher(handler, eventsSinceProvider, jsonSerializer, intervalMs);
     }
 
     public static EventWebSocketPublisher eventWebSocketPublisher(EventWebSocketHandler handler,
-                                                                  Supplier<List<ClusterEvent>> allEventsProvider,
+                                                                  Function<Instant, Promise<List<ClusterEvent>>> eventsSinceProvider,
                                                                   Function<List<ClusterEvent>, String> jsonSerializer) {
-        return new EventWebSocketPublisher(handler, allEventsProvider, jsonSerializer, 1000);
+        return new EventWebSocketPublisher(handler, eventsSinceProvider, jsonSerializer, 1000);
     }
 
     public void start() {
         if (!running.compareAndSet(false, true)) {return;}
-
         taskRef.set(Option.some(SharedScheduler.scheduleAtFixedRate(this::publish,
                                                                     TimeSpan.timeSpan(intervalMs).millis())));
         log.info("Event WebSocket publisher started ({}ms interval)", intervalMs);
@@ -67,24 +66,24 @@ public class EventWebSocketPublisher {
 
     public void stop() {
         if (!running.compareAndSet(true, false)) {return;}
-
         taskRef.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
         log.info("Event WebSocket publisher stopped");
     }
 
     private void publish() {
         if (handler.connectedClients() == 0) {return;}
-        try {
-            var all = allEventsProvider.get();
-            var last = lastPublishedCount.get();
+        var since = lastBroadcast.get();
+        var now = Instant.now();
+        Promise<?> ignored = eventsSinceProvider.apply(since)
+                                                .onSuccess(events -> broadcastIfPresent(events, now))
+                                                .onFailure(cause -> log.error("Error publishing events via WebSocket: {}", cause.message()));
+    }
 
-            if (last <all.size()) {
-                var newEvents = all.subList(last, all.size());
-                handler.broadcast(jsonSerializer.apply(newEvents));
-                lastPublishedCount.set(all.size());
-            }
-        } catch (Exception e) {
-            log.error("Error publishing events via WebSocket", e);
+    private void broadcastIfPresent(List<ClusterEvent> newEvents, Instant now) {
+        if (!newEvents.isEmpty()) {
+            var json = jsonSerializer.apply(newEvents);
+            handler.broadcast(json);
         }
+        lastBroadcast.set(now);
     }
 }

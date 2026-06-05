@@ -7,9 +7,6 @@ package org.pragmatica.aether.node;
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ClusterEventAggregator;
-import org.pragmatica.aether.api.ClusterEventAggregatorConfig;
-import org.pragmatica.aether.api.ClusterEventLogPublisher;
-import org.pragmatica.aether.api.ClusterEventLogSweeper;
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.OperationalEvent;
@@ -254,6 +251,10 @@ import org.slf4j.LoggerFactory;
 
 public interface AetherNode extends ManageableNode {
     Logger LOG = LoggerFactory.getLogger(AetherNode.class);
+    /// Bounded retention for the in-heap `system:cluster-events:1.0.0` object ring
+    /// (stream-namespaces rebuild, Stage 4). Drop-oldest beyond this many events — the structural
+    /// replacement for the deleted ClusterEventLogSweeper.
+    long CLUSTER_EVENTS_MAX_RETAINED = 10_000L;
     String VERSION = BuildInfo.version();
     NodeId self();
     Promise<Unit> start();
@@ -1196,8 +1197,16 @@ public interface AetherNode extends ManageableNode {
         // (spec §8.2 step 3) lands in Phase 6 once the SwimHealthDetector exposes a
         // `voluntaryLeave` API. The drain still halts the node; LEAVE is purely an
         // acceleration of peer-side suspect aging, not a correctness requirement.
+        // Item-8 graft (stream-namespaces rebuild): forward-declared best-effort emitter resolved
+        // once the ClusterEventAggregator is constructed below. DrainProcedure invokes it once at
+        // the INACTIVE→DRAINING transition (single-shot via its CAS gate); the lambda no-ops until
+        // the aggregator is bound. Kept as a Consumer<DrainReason> so aether-deployment stays free
+        // of any ClusterEvent dependency.
+        var clusterEventDrainEmitterRef =
+                new java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<org.pragmatica.aether.deployment.cluster.DrainReason>>(reason -> {});
         var drainProcedure = DrainProcedure.drainProcedure(inFlightTrackerForDrain,
                                                             () -> {},
+                                                            reason -> clusterEventDrainEmitterRef.get().accept(reason),
                                                             jvmExit);
         Supplier<Option<NodeId>> healthLeaderSupplier = () -> clusterNode.leaderManager()
                                                                          .leader();
@@ -1244,40 +1253,52 @@ public interface AetherNode extends ManageableNode {
                                                                                               invocationMetrics,
                                                                                               minuteAggregator);
         var artifactMetricsCollector = ArtifactMetricsCollector.artifactMetricsCollector(artifactStore);
-        // RC1 Step 1 — cluster-scoped replicated event log wiring.
+        // Stream-namespaces rebuild (Stage 4) — cluster events over system:cluster-events:1.0.0.
         //
-        // `eventLogPublisher` writes each producer-emitted event into the replicated KV
-        // `(ClusterEventLogKey, ClusterEventValue)` family. Rabia commit order is the
-        // canonical total order. `eventLogSweeper` GCs old events on the leader, gated on
-        // `TopologyObserver.inQuorum()` so a minority-side leader cannot delete events the
-        // majority retains.
-        var eventLogPublisher = ClusterEventLogPublisher.clusterEventLogPublisher(config.self(),
-                                                                                  hlcClock,
-                                                                                  rabiaTermSupplier::get,
-                                                                                  clusterCommandApplier);
-        // E2 Phase 2b (2026-05-28): the SELF_DRAIN_INITIATED event-publish hop is gone with
-        // SelfDrainCoordinator. The Slice enum value `SELF_DRAIN_INITIATED` is preserved on
-        // the wire for compatibility; Phase 6 wires the DrainProcedure's `swimLeaveEmitter`
-        // and any observability surface (a publisher hop here is no longer required).
-        var eventAggregator = ClusterEventAggregator.clusterEventAggregator(ClusterEventAggregatorConfig.defaultConfig(),
-                                                                            clusterTopologyManager.observer()::clusterSize,
-                                                                            eventLogPublisher,
-                                                                            isLeaderSupplier);
-        // OB1 (investigator round 2): operator-driven inject endpoints must replicate via the
-        // cluster-scoped event log so peer nodes return injected items on cross-node reads.
-        // Bind publisher + cluster-event reader to both inject surfaces (AlertManager,
-        // InvocationTraceStore). Local node-local maps remain authoritative for the originator;
-        // peers UNION via the projected `ALERT_INJECTED` / `TRACE_INJECTED` events, dedup by id.
-        alertManager.bindEventLogPublisher(eventLogPublisher::publish);
+        // Producer handlers build a sealed `ClusterEvent` record and `emit(...)` it into the
+        // framework events stream; reads go through the stream consumer. This replaces the rc1
+        // transitional stack (ClusterEventLogPublisher rate-capped KV writer + ClusterEventLogSweeper
+        // GC + in-process RingBuffer materialised view). Retention is enforced by the stream's
+        // bounded backing buffer (see ClusterEventStreamBuffer / SystemStreams.CLUSTER_EVENTS),
+        // so the sweeper is gone.
+        //
+        // Publisher + consumer are bound deferred via AtomicReferences: the stream stack is
+        // constructed further down (after streamPartitionManager), so during the bootstrap window
+        // the aggregator falls back to log-only emit / empty reads (spec §13.3). The self-referential
+        // STREAM_REGISTERED loop for system:cluster-events itself is prevented by
+        // StreamLifecycleEventPolicy.shouldEmit.
+        var clusterEventsHlcClock = hlcClock;
+        var clusterEventsPublisherRef =
+                new java.util.concurrent.atomic.AtomicReference<org.pragmatica.aether.slice.stream.FrameworkStreamPublisher<ClusterEvent>>();
+        var clusterEventsConsumerRef =
+                new java.util.concurrent.atomic.AtomicReference<org.pragmatica.aether.slice.stream.FrameworkStreamConsumer<ClusterEvent>>();
+        var eventAggregator = ClusterEventAggregator.clusterEventAggregator(clusterEventsPublisherRef::get,
+                                                                            clusterEventsConsumerRef::get,
+                                                                            config.self(),
+                                                                            clusterEventsHlcClock,
+                                                                            clusterTopologyManager.observer()::clusterSize);
+        // Item-8 graft: best-effort SelfDrainInitiated emit on drain initiation. The aggregator is
+        // forward-declared to DrainProcedure (constructed earlier) via this ref; the emitter lambda
+        // resolves it lazily and no-ops until bound. NOT leader-gated — the draining node is the only
+        // authoritative source for "I am self-draining".
+        clusterEventDrainEmitterRef.set(reason -> eventAggregator.emit(new ClusterEvent.SelfDrainInitiated(
+                clusterEventsHlcClock.now(),
+                ClusterEvent.Severity.WARNING,
+                "Self-drain initiated on " + config.self().id() + " (reason=" + reason + ")",
+                Map.of("nodeId", config.self().id(), "reason", String.valueOf(reason)))));
+        // Operator-driven inject endpoints replicate via the events stream so peer nodes return
+        // injected items on cross-node reads. AlertManager emits AlertInjected; InvocationTraceStore
+        // emits TraceInjected through a thin sink that keeps the aether-invoke module free of any
+        // ClusterEvent dependency.
+        alertManager.bindEventSink(eventAggregator::emit, clusterEventsHlcClock);
         alertManager.bindClusterEventsSource(eventAggregator::events);
-        traceStore.bindEventLogPublisher(eventLogPublisher::publish);
-        traceStore.bindClusterEventsSource(() -> projectClusterTraceInjections(eventAggregator.events()));
-        var eventLogSweeper = ClusterEventLogSweeper.clusterEventLogSweeper(kvStore::snapshot,
-                                                                            isLeaderSupplier,
-                                                                            ((TopologyObserver) clusterNode.topologyManager()).inQuorum(),
-                                                                            rabiaTermSupplier::get,
-                                                                            clusterCommandApplier);
-        eventLogSweeper.start();
+        traceStore.bindTraceEventSink((operation, requestId, depth, durationMs, metadata) ->
+            eventAggregator.emit(new ClusterEvent.TraceInjected(
+                    clusterEventsHlcClock.now(),
+                    ClusterEvent.Severity.INFO,
+                    "Injected trace: " + operation,
+                    metadata)));
+        traceStore.bindClusterEventsSource(() -> eventAggregator.events().map(AetherNode::projectClusterTraceInjections));
         var ttmManager = TTMManager.ttmManager(config.ttm(), minuteAggregator, controller::configuration).or(TTMManager.noOp(config.ttm()));
         ClusterController effectiveController = ttmManager.isEnabled()
                                                 ? AdaptiveDecisionTree.adaptiveDecisionTree(controller, ttmManager)
@@ -1857,7 +1878,27 @@ public interface AetherNode extends ManageableNode {
                                                                                                                 streamPartitionManager::onStreamConfigPut).onRemove(AetherKey.StreamConfigKey.class,
                                                                                                                                                                     streamPartitionManager::onStreamConfigRemove).build();
         allEntries.addAll(streamConfigKvRouter.asRouteEntries());
-        // E2 Phase 2c-α.1a (2026-05-28): `audit.lifecycle.commands` stream provisioning
+        // Stream-namespaces rebuild (Stage 4) — provision system:cluster-events:1.0.0.
+        //
+        // Bind the deferred publisher/consumer refs the ClusterEventAggregator was constructed with.
+        // The backing buffer is a bounded, retention-enforcing in-heap object ring
+        // (ClusterEventStreamBuffer) — this both honours the GOAL (sealed ClusterEvent delivered over
+        // the system stream via the framework SPIs) and closes the item-6 retention gap left by the
+        // deleted sweeper: the ring physically cannot exceed `maxCount` (drop-oldest at append).
+        //
+        // The StreamRegistry registration that SystemStreamBootstrap would perform is deferred to
+        // Stage 5 (the stream-listing HTTP surface that consumes the registry). Nothing in Stage 4
+        // reads the registry; the functional publish/consume path is the buffer wired here.
+        var clusterEventsRetention = org.pragmatica.aether.slice.RetentionPolicy.retentionPolicy(CLUSTER_EVENTS_MAX_RETAINED,
+                                                                                                 Long.MAX_VALUE,
+                                                                                                 Long.MAX_VALUE);
+        org.pragmatica.aether.api.ClusterEventStreamWiring.clusterEventStreamWiring(org.pragmatica.aether.slice.stream.SystemStreams.CLUSTER_EVENTS,
+                                                                                    clusterEventsRetention)
+                .onSuccess(wiring -> {
+                    clusterEventsPublisherRef.set(wiring.publisher());
+                    clusterEventsConsumerRef.set(wiring.consumer());
+                })
+                .onFailure(cause -> LOG.warn("cluster-events stream wiring failed: {} — events fall back to log-only", cause.message()));
         // deleted alongside the audit publisher and RecentCommandsBuffer.
         var streamSegmentIndex = new SegmentIndex();
         var streamWatermarkTracker = WatermarkTracker.watermarkTracker();
@@ -2867,12 +2908,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            appHttpServer::onNodeRoutesPut).onRemove(AetherKey.NodeRoutesKey.class,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     httpRouteRegistry::onNodeRoutesRemove).onRemove(AetherKey.NodeRoutesKey.class,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     appHttpServer::onNodeRoutesRemove);
-        // RC1 Step 1 — materialised view subscriber. Every Rabia-committed `ClusterEventLogKey`
-        // put — whether it arrives via fresh consensus or cold-boot snapshot replay — flows
-        // through `onClusterEventLogPut` and into the local RingBuffer projection that
-        // `/api/events` reads. The `isReplay` flag inside the aggregator suppresses downstream
-        // sink fan-out during the snapshot-replay window.
-        kvRouterBuilder.onPut(AetherKey.ClusterEventLogKey.class, eventAggregator::onClusterEventLogPut);
+        // Stream-namespaces rebuild (Stage 4): the ClusterEventLogKey KV materialised-view
+        // subscription is gone — cluster events now flow through the system:cluster-events:1.0.0
+        // stream (publish via ClusterEventAggregator.emit, read via the stream consumer), not the
+        // replicated KV log. The old `eventAggregator::onClusterEventLogPut` hook was removed.
         loadBalancerManager.onPresent(lbm -> kvRouterBuilder.onPut(AetherKey.NodeRoutesKey.class, lbm::onNodeRoutesPut)
                                                             .onRemove(AetherKey.NodeRoutesKey.class,
                                                                       lbm::onNodeRoutesRemove));
@@ -3280,7 +3319,7 @@ public interface AetherNode extends ManageableNode {
         var list = new ArrayList<InvocationTraceStore.ClusterTraceEvent>();
 
         for (var event : events) {
-            if (event.type() != AetherValue.ClusterEventValue.EventType.TRACE_INJECTED) {continue;}
+            if (!(event instanceof ClusterEvent.TraceInjected)) {continue;}
 
             var details = event.details();
             var requestId = details.get("requestId");
@@ -3291,7 +3330,7 @@ public interface AetherNode extends ManageableNode {
             var durationMs = parseLongDetail(details.get("durationMs"), 0L);
             var depth = (int) parseLongDetail(details.get("depth"), 0L);
             var timestamp = parseLongDetail(details.get("timestamp"), 0L);
-            var nodeId = details.getOrDefault("originNodeId", "");
+            var nodeId = event.sourceNode().id();
             list.add(new InvocationTraceStore.ClusterTraceEvent(requestId,
                                                                 operation,
                                                                 durationMs,

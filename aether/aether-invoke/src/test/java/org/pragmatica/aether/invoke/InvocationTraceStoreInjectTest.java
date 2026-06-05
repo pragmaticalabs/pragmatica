@@ -7,10 +7,7 @@ package org.pragmatica.aether.invoke;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.invoke.InvocationTraceStore.ClusterTraceEvent;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
 
 import java.util.List;
 import java.util.Map;
@@ -64,11 +61,11 @@ class InvocationTraceStoreInjectTest {
                                  .or("");
             assertTrue(!requestId.isEmpty(), "Injection must produce a non-empty requestId");
 
-            var all = store.all();
+            var all = store.all().await().unwrap();
             assertEquals(1, all.size(), "GET /api/traces backing buffer must surface the injected entry");
             assertEquals(requestId, all.get(0).requestId(), "Entry in all() must match injected requestId");
 
-            var forReq = store.forRequest(requestId);
+            var forReq = store.forRequest(requestId).await().unwrap();
             assertEquals(1, forReq.size(), "forRequest must locate the injected entry by id");
             assertEquals("processPayment", forReq.get(0).callee());
         }
@@ -78,14 +75,13 @@ class InvocationTraceStoreInjectTest {
     class ClusterReplication {
 
         @Test
-        void inject_publishesTraceInjectedEvent_whenPublisherBound() {
+        void inject_publishesTraceInjectedEvent_whenSinkBound() {
             var store = InvocationTraceStore.invocationTraceStore();
-            var capturedTypes = new CopyOnWriteArrayList<ClusterEventValue.EventType>();
+            var capturedOperations = new CopyOnWriteArrayList<String>();
             var capturedMetadata = new CopyOnWriteArrayList<Map<String, String>>();
-            store.bindEventLogPublisher((type, severity, message, metadata) -> {
-                capturedTypes.add(type);
+            store.bindTraceEventSink((operation, requestId, depth, durationMs, metadata) -> {
+                capturedOperations.add(operation);
                 capturedMetadata.add(metadata);
-                return Promise.success(Unit.unit());
             });
 
             store.inject("processOrder",
@@ -95,9 +91,8 @@ class InvocationTraceStoreInjectTest {
                          Option.empty())
                  .onFailure(cause -> fail("Inject failed: " + cause.message()));
 
-            assertEquals(1, capturedTypes.size(), "inject must publish exactly one cluster event");
-            assertEquals(ClusterEventValue.EventType.TRACE_INJECTED, capturedTypes.get(0),
-                          "Published event type must be TRACE_INJECTED");
+            assertEquals(1, capturedOperations.size(), "inject must emit exactly one cluster event");
+            assertEquals("processOrder", capturedOperations.get(0));
             var metadata = capturedMetadata.get(0);
             assertEquals("req-replicated-001", metadata.get("requestId"));
             assertEquals("processOrder", metadata.get("operation"));
@@ -118,9 +113,9 @@ class InvocationTraceStoreInjectTest {
 
             var peerEvent = new ClusterTraceEvent("req-peer-001", "peerOp", 80L, 2, 1700000000000L, "peer-node");
             var echoEvent = new ClusterTraceEvent("req-local-001", "localOp", 20L, 0, 1700000000001L, "self-node");
-            store.bindClusterEventsSource(() -> List.of(peerEvent, echoEvent));
+            store.bindClusterEventsSource(() -> org.pragmatica.lang.Promise.success(List.of(peerEvent, echoEvent)));
 
-            var all = store.all();
+            var all = store.all().await().unwrap();
             var requestIds = all.stream().map(InvocationNode::requestId).toList();
             assertTrue(requestIds.contains("req-local-001"),
                        "Originator's local trace must remain visible: " + requestIds);

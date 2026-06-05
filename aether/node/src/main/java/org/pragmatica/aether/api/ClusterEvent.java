@@ -4,102 +4,154 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
-import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue;
+import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcTimestamp;
 
-import java.time.Instant;
-import java.util.HashMap;
 import java.util.Map;
 
 
-/// User-facing DTO surfaced via `/api/events`.
+/// Sealed cluster event hierarchy (spec §6.4.1).
 ///
-/// RC1 Step 1: the canonical persisted form is `ClusterEventValue` in `aether/slice`
-/// (replicated via Rabia). `ClusterEvent` is the dashboard-shaped projection: wall-clock
-/// `Instant timestamp` instead of HLC, originator nodeId folded into `details`.
+/// Every framework event variant is a record implementing this interface, plus an
+/// {@link ExtendedEvent} non-sealed extension hatch for framework plugins to introduce
+/// additional variants without modifying the sealed parent.
 ///
-/// `EventType` and `Severity` are aliases of the canonical enums on `ClusterEventValue`,
-/// re-exported here so existing callers (AlertEvent, tests, etc.) keep using
-/// `ClusterEvent.EventType.NODE_FAILED` / `ClusterEvent.Severity.CRITICAL` unchanged.
-public record ClusterEvent(Instant timestamp,
-                           ClusterEventValue.EventType type,
-                           ClusterEventValue.Severity severity,
-                           String summary,
-                           Map<String, String> details) {
-    /// Alias of `ClusterEventValue.EventType`.
-    public static final class EventType {
-        private EventType() {}
+/// Closed-set count is **30 variants** (25 prior framework events + STREAM_REGISTERED/DELETED +
+/// ALERT_INJECTED/TRACE_INJECTED/SELF_DRAIN_INITIATED).
+///
+/// Consumers exhaust the sealed parent via pattern-matching `switch`; the compiler enforces that
+/// every closed variant is handled and that an `ExtendedEvent` arm is present (typically a
+/// discriminator-keyed dispatch, structured log, or no-op).
+public sealed interface ClusterEvent permits
+        ClusterEvent.NodeJoined,
+        ClusterEvent.NodeLeft,
+        ClusterEvent.NodeFailed,
+        ClusterEvent.LeaderElected,
+        ClusterEvent.LeaderLost,
+        ClusterEvent.QuorumEstablished,
+        ClusterEvent.QuorumLost,
+        ClusterEvent.DeploymentStarted,
+        ClusterEvent.DeploymentCompleted,
+        ClusterEvent.DeploymentFailed,
+        ClusterEvent.ScaleUp,
+        ClusterEvent.ScaleDown,
+        ClusterEvent.SliceFailure,
+        ClusterEvent.ConnectionEstablished,
+        ClusterEvent.ConnectionFailed,
+        ClusterEvent.CommunityScaleRequest,
+        ClusterEvent.CommunityMetricsSnapshot,
+        ClusterEvent.AccessDenied,
+        ClusterEvent.NodeLifecycleChanged,
+        ClusterEvent.ConfigChanged,
+        ClusterEvent.BackupCreated,
+        ClusterEvent.BackupRestored,
+        ClusterEvent.BlueprintDeployed,
+        ClusterEvent.BlueprintDeleted,
+        ClusterEvent.GenerationChanged,
+        ClusterEvent.StreamRegistered,
+        ClusterEvent.StreamDeleted,
+        ClusterEvent.AlertInjected,
+        ClusterEvent.TraceInjected,
+        ClusterEvent.SelfDrainInitiated,
+        ExtendedEvent {
 
-        public static final ClusterEventValue.EventType NODE_JOINED = ClusterEventValue.EventType.NODE_JOINED;
-        public static final ClusterEventValue.EventType NODE_LEFT = ClusterEventValue.EventType.NODE_LEFT;
-        public static final ClusterEventValue.EventType NODE_FAILED = ClusterEventValue.EventType.NODE_FAILED;
-        public static final ClusterEventValue.EventType LEADER_ELECTED = ClusterEventValue.EventType.LEADER_ELECTED;
-        public static final ClusterEventValue.EventType LEADER_LOST = ClusterEventValue.EventType.LEADER_LOST;
+    /// Restart-safe identity + total cluster ordering: HLC physical micros + logical counter + origin nodeId.
+    HlcTimestamp at();
 
-        public static final ClusterEventValue.EventType QUORUM_ESTABLISHED = ClusterEventValue.EventType.QUORUM_ESTABLISHED;
-
-        public static final ClusterEventValue.EventType QUORUM_LOST = ClusterEventValue.EventType.QUORUM_LOST;
-
-        public static final ClusterEventValue.EventType DEPLOYMENT_STARTED = ClusterEventValue.EventType.DEPLOYMENT_STARTED;
-
-        public static final ClusterEventValue.EventType DEPLOYMENT_COMPLETED = ClusterEventValue.EventType.DEPLOYMENT_COMPLETED;
-
-        public static final ClusterEventValue.EventType DEPLOYMENT_FAILED = ClusterEventValue.EventType.DEPLOYMENT_FAILED;
-
-        public static final ClusterEventValue.EventType SCALE_UP = ClusterEventValue.EventType.SCALE_UP;
-        public static final ClusterEventValue.EventType SCALE_DOWN = ClusterEventValue.EventType.SCALE_DOWN;
-        public static final ClusterEventValue.EventType SLICE_FAILURE = ClusterEventValue.EventType.SLICE_FAILURE;
-
-        public static final ClusterEventValue.EventType CONNECTION_ESTABLISHED = ClusterEventValue.EventType.CONNECTION_ESTABLISHED;
-
-        public static final ClusterEventValue.EventType CONNECTION_FAILED = ClusterEventValue.EventType.CONNECTION_FAILED;
-
-        public static final ClusterEventValue.EventType COMMUNITY_SCALE_REQUEST = ClusterEventValue.EventType.COMMUNITY_SCALE_REQUEST;
-
-        public static final ClusterEventValue.EventType COMMUNITY_METRICS_SNAPSHOT = ClusterEventValue.EventType.COMMUNITY_METRICS_SNAPSHOT;
-
-        public static final ClusterEventValue.EventType ACCESS_DENIED = ClusterEventValue.EventType.ACCESS_DENIED;
-
-        public static final ClusterEventValue.EventType NODE_LIFECYCLE_CHANGED = ClusterEventValue.EventType.NODE_LIFECYCLE_CHANGED;
-
-        public static final ClusterEventValue.EventType CONFIG_CHANGED = ClusterEventValue.EventType.CONFIG_CHANGED;
-        public static final ClusterEventValue.EventType BACKUP_CREATED = ClusterEventValue.EventType.BACKUP_CREATED;
-        public static final ClusterEventValue.EventType BACKUP_RESTORED = ClusterEventValue.EventType.BACKUP_RESTORED;
-
-        public static final ClusterEventValue.EventType BLUEPRINT_DEPLOYED = ClusterEventValue.EventType.BLUEPRINT_DEPLOYED;
-
-        public static final ClusterEventValue.EventType BLUEPRINT_DELETED = ClusterEventValue.EventType.BLUEPRINT_DELETED;
-
-        public static final ClusterEventValue.EventType GENERATION_CHANGED = ClusterEventValue.EventType.GENERATION_CHANGED;
+    /// Origin node — derived from {@link #at()}, no separate wire field.
+    default NodeId sourceNode() {
+        return at().nodeId();
     }
 
-    /// Alias of `ClusterEventValue.Severity`.
-    public static final class Severity {
-        private Severity() {}
+    /// Severity bucket carried by every closed-set variant for management-API JSON.
+    Severity severity();
 
-        public static final ClusterEventValue.Severity INFO = ClusterEventValue.Severity.INFO;
-        public static final ClusterEventValue.Severity WARNING = ClusterEventValue.Severity.WARNING;
-        public static final ClusterEventValue.Severity CRITICAL = ClusterEventValue.Severity.CRITICAL;
+    /// Human-readable single-line summary carried by every closed-set variant.
+    String summary();
+
+    /// Free-form key/value payload carried by every closed-set variant.
+    Map<String, String> details();
+
+    enum Severity {
+        INFO,
+        WARNING,
+        CRITICAL
     }
 
-    public static ClusterEvent clusterEvent(ClusterEventValue.EventType type,
-                                            ClusterEventValue.Severity severity,
-                                            String summary,
-                                            Map<String, String> details) {
-        return new ClusterEvent(Instant.now(), type, severity, summary, details);
-    }
+    record NodeJoined(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
 
-    /// Project a replicated `ClusterEventValue` onto the dashboard-facing record. Wall-clock
-    /// `timestamp` is reconstructed from the HLC's physical-microseconds half — sufficient
-    /// for human-readable timeline display; total ordering is still established by the
-    /// `(epoch, seq)` key, not this `Instant`.
-    public static ClusterEvent fromValue(ClusterEventValue value) {
-        var details = new HashMap<>(value.metadata());
+    record NodeLeft(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
 
-        if (!value.nodeId().isEmpty()) {details.put("originNodeId", value.nodeId());}
-        // Wall-clock for human/legacy queries; HLC pair retained in details/metadata for total ordering.
-        details.put("origin_hlc",
-                    value.at().toString());
+    record NodeFailed(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
 
-        return new ClusterEvent(Instant.now(), value.type(), value.severity(), value.message(), Map.copyOf(details));
-    }
+    record LeaderElected(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record LeaderLost(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record QuorumEstablished(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record QuorumLost(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record DeploymentStarted(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record DeploymentCompleted(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record DeploymentFailed(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record ScaleUp(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record ScaleDown(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record SliceFailure(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record ConnectionEstablished(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record ConnectionFailed(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record CommunityScaleRequest(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record CommunityMetricsSnapshot(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record AccessDenied(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record NodeLifecycleChanged(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record ConfigChanged(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record BackupCreated(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record BackupRestored(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record BlueprintDeployed(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record BlueprintDeleted(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    record GenerationChanged(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    /// Stream lifecycle event: a stream was registered (spec §13.1).
+    record StreamRegistered(HlcTimestamp at, Severity severity, String summary, Map<String, String> details,
+                            StreamAddress address) implements ClusterEvent {}
+
+    /// Stream lifecycle event: a stream was deleted (spec §13.2).
+    record StreamDeleted(HlcTimestamp at, Severity severity, String summary, Map<String, String> details,
+                         StreamAddress address) implements ClusterEvent {}
+
+    /// Operator-injected synthetic alert. Replicated cluster-wide via the events stream so peers
+    /// surface it on /api/alerts read regardless of which node received the inject POST.
+    /// `details` carries `alertId` (monotonic per-node `injected-<ts>-<seq>`), plus optional
+    /// `metric` and `value`.
+    record AlertInjected(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    /// Operator-injected synthetic invocation trace. Replicated cluster-wide via the events stream
+    /// so peers surface it on /api/traces read regardless of which node received the inject POST.
+    /// `details` carries `requestId`, `traceId`, `operation`, `durationMs`, `depth`.
+    record TraceInjected(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    /// Emitted by the draining node itself when its `SelfDrainCoordinator` flips from `ACTIVE`
+    /// to `DRAINING` (membership-architecture-spec.md §16.1, S19/S20). The partition victim is
+    /// the only source of truth for "I am self-draining"; NOT leader-gated. Severity WARNING.
+    /// `details` carries `nodeId`, `reason` (one of `sustained-below-quorum`,
+    /// `quorum-disappeared`, `rabia-paused`), and `graceMs`.
+    record SelfDrainInitiated(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
 }
