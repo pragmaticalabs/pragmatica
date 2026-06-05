@@ -170,6 +170,7 @@ import static org.pragmatica.lang.Result.success;
             case ClusterPhaseKey _ -> "cluster-phase";
             case ClusterEventLogKey _ -> "cluster-event-log";
             case StreamRegistryKey _ -> "stream-registry";
+            case BlueprintStreamBindingsKey _ -> "blueprint-stream-bindings";
         };
     }
 
@@ -239,7 +240,19 @@ import static org.pragmatica.lang.Result.success;
             case ClusterPhaseValue v -> v.phase().name();
             case ClusterEventValue _ -> "";
             case StreamRegistryValue v -> serializeStreamRegistry(v);
+            case BlueprintStreamBindingsValue v -> serializeBlueprintStreamBindings(v);
         };
+    }
+
+    private static String serializeBlueprintStreamBindings(BlueprintStreamBindingsValue v) {
+        var sb = new StringBuilder();
+        var first = true;
+        for (var binding : v.bindings()) {
+            if (!first) {sb.append(',');}
+            sb.append(binding.alias()).append('=').append(binding.address().asString());
+            first = false;
+        }
+        return sb.toString();
     }
 
     private static String serializeStreamRegistry(StreamRegistryValue v) {

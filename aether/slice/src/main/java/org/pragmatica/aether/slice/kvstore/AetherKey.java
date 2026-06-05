@@ -1418,4 +1418,39 @@ import static org.pragmatica.lang.Result.success;
             return StreamAddress.streamAddress(namespace, stream, version).map(StreamRegistryKey::new);
         }
     }
+
+    // Stage 2 (stream-namespaces) additive graft: per-blueprint alias->StreamAddress bindings.
+    // Persistent/replicated deploy-time state (NOT ephemeral) — written by BlueprintService at
+    // deploy and read by the per-slice runtime FSM to resolve refcount targets (spec §8.5).
+    Fn1<Cause, String> BLUEPRINT_STREAM_BINDINGS_KEY_FORMAT_ERROR =
+        Causes.forOneValue("Invalid blueprint-stream-bindings key format: %s");
+
+    /// Per-blueprint alias→StreamAddress map persisted at deploy time so per-slice runtime FSM
+    /// transitions (ACTIVE entry / DEACTIVATING / UNLOADING exit) can resolve the slice manifest's
+    /// `stream.publisher.<i>.config` / `stream.access.<i>.config` aliases into fully-qualified
+    /// `StreamAddress` values without re-running blueprint validation.
+    ///
+    /// Spec reference: event-stream-namespaces §8.5 (consensus-mediated refcount accounting requires
+    /// the resolved address per slice declaration).
+    record BlueprintStreamBindingsKey(BlueprintId blueprintId) implements AetherKey {
+        private static final String PREFIX = "blueprint-stream-bindings/";
+
+        @Override public String asString() {
+            return PREFIX + blueprintId.asString();
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        public static BlueprintStreamBindingsKey blueprintStreamBindingsKey(BlueprintId blueprintId) {
+            return new BlueprintStreamBindingsKey(blueprintId);
+        }
+
+        public static Result<BlueprintStreamBindingsKey> blueprintStreamBindingsKey(String key) {
+            if (!key.startsWith(PREFIX)) {return BLUEPRINT_STREAM_BINDINGS_KEY_FORMAT_ERROR.apply(key).result();}
+            var idPart = key.substring(PREFIX.length());
+            return BlueprintId.blueprintId(idPart).map(BlueprintStreamBindingsKey::new);
+        }
+    }
 }

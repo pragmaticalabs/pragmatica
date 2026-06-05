@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.stream.StreamAddress;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
@@ -1482,6 +1483,41 @@ import static org.pragmatica.lang.Option.none;
     record StreamRegistryValue(StreamRegistryEntry entry) implements AetherValue {
         public static StreamRegistryValue streamRegistryValue(StreamRegistryEntry entry) {
             return new StreamRegistryValue(entry);
+        }
+    }
+
+    // Stage 2 (stream-namespaces) additive graft: per-blueprint resolved alias->StreamAddress map.
+
+    /// Per-blueprint resolved alias→`StreamAddress` map persisted at deploy time.
+    ///
+    /// Kept as `List<NamedAddress>` instead of `Map<String, StreamAddress>` so the compile-time
+    /// codec processor doesn't have to handle a `Map<K, V>` where `V` is a record-typed codec
+    /// element (only `Map<String, String>` is exercised by the processor today; List-of-record
+    /// is explicitly tested).
+    ///
+    /// Spec reference: event-stream-namespaces §8.5 (resolved address required for slice-time
+    /// refcount accounting).
+    record BlueprintStreamBindingsValue(List<NamedAddress> bindings) implements AetherValue {
+        public BlueprintStreamBindingsValue {
+            bindings = bindings == null ? List.of() : List.copyOf(bindings);
+        }
+
+        public static BlueprintStreamBindingsValue blueprintStreamBindingsValue(List<NamedAddress> bindings) {
+            return new BlueprintStreamBindingsValue(bindings);
+        }
+
+        public Option<StreamAddress> addressFor(String alias) {
+            return Option.option(bindings.stream()
+                                         .filter(b -> b.alias().equals(alias))
+                                         .findFirst()
+                                         .orElse(null))
+                         .map(NamedAddress::address);
+        }
+
+        public record NamedAddress(String alias, StreamAddress address) {
+            public static NamedAddress namedAddress(String alias, StreamAddress address) {
+                return new NamedAddress(alias, address);
+            }
         }
     }
 }

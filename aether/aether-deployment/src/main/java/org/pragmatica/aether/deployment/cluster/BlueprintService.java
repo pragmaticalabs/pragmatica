@@ -17,11 +17,20 @@ import org.pragmatica.aether.slice.blueprint.PubSubValidator;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.stream.StreamResource;
+import org.pragmatica.aether.slice.stream.StreamVersionSpec;
+import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
+import org.pragmatica.aether.deployment.validation.StreamResourceValidator;
+import org.pragmatica.aether.deployment.validation.ValidatedStreamResources;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.slice.topology.SliceTopology;
@@ -235,6 +244,7 @@ class BlueprintServiceInstance implements BlueprintService {
                                        .flatMap(this::validatePubSub)
                                        .flatMap(expanded -> storeAllInSingleBatch(expanded,
                                                                                   blueprintArtifact.resourcesConfig(),
+                                                                                  blueprintArtifact.roleHints(),
                                                                                   blueprintArtifact.schemaMigrations(),
                                                                                   artifactCoords,
                                                                                   registerOnly));
@@ -242,10 +252,11 @@ class BlueprintServiceInstance implements BlueprintService {
 
     private Promise<ExpandedBlueprint> storeAllInSingleBatch(ExpandedBlueprint expanded,
                                                              Option<String> resourcesConfig,
+                                                             Map<String, String> roleHints,
                                                              Map<String, List<MigrationEntry>> migrations,
                                                              String artifactCoords,
                                                              boolean registerOnly) {
-        var commands = buildAllCommands(expanded, resourcesConfig, migrations, artifactCoords, registerOnly);
+        var commands = buildAllCommands(expanded, resourcesConfig, roleHints, migrations, artifactCoords, registerOnly);
 
         return cluster.apply(commands)
                       .map(_ -> expanded);
@@ -253,6 +264,7 @@ class BlueprintServiceInstance implements BlueprintService {
 
     private List<KVCommand<AetherKey>> buildAllCommands(ExpandedBlueprint expanded,
                                                         Option<String> resourcesConfig,
+                                                        Map<String, String> roleHints,
                                                         Map<String, List<MigrationEntry>> migrations,
                                                         String artifactCoords,
                                                         boolean registerOnly) {
@@ -262,9 +274,54 @@ class BlueprintServiceInstance implements BlueprintService {
         // each node and applied via the per-slice intrinsic config layer at slice load
         // (see SliceStore.loadSlice). The resourcesConfig parameter is kept here because the
         // ExpandedBlueprint already embeds it for downstream consumers (e.g., schema gating).
+        //
+        // Stage-3 (stream-namespaces §8.5): the per-blueprint alias→StreamAddress bindings ARE
+        // published to KV (replicated), so the per-slice runtime FSM can resolve refcount targets.
+        // rc1's deploy chain has no stream-resource validation gate, so the resolved resource map is
+        // (re-)derived here from the embedded resources.toml + roleHints. Derivation is best-effort:
+        // on validation failure an empty bindings entry is still written, preserving rc1's deploy
+        // semantics (the gate that would HTTP-422 on bad stream config is a separate stage).
+        commands.add(buildStreamBindingsCommand(expanded, resourcesConfig, roleHints));
         if (!migrations.isEmpty()) {commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords));}
 
         return commands;
+    }
+
+    private static KVCommand<AetherKey> buildStreamBindingsCommand(ExpandedBlueprint expanded,
+                                                                   Option<String> resourcesConfig,
+                                                                   Map<String, String> roleHints) {
+        var bindings = StreamResourceValidator.validate(resourcesConfig, expanded.id().artifact(), roleHints)
+                                              .map(validated -> toNamedAddresses(expanded.id(), validated))
+                                              .or(List.<NamedAddress>of());
+        return new Put<>(BlueprintStreamBindingsKey.blueprintStreamBindingsKey(expanded.id()),
+                         BlueprintStreamBindingsValue.blueprintStreamBindingsValue(bindings));
+    }
+
+    private static List<NamedAddress> toNamedAddresses(BlueprintId blueprintId, ValidatedStreamResources validated) {
+        var namespace = BlueprintNamespace.deriveNamespace(blueprintId).or("");
+        var collected = new ArrayList<NamedAddress>();
+        validated.resources()
+                 .forEach((alias, resource) -> resolveBindingEntry(namespace, alias, resource).onPresent(collected::add));
+        return List.copyOf(collected);
+    }
+
+    private static Option<NamedAddress> resolveBindingEntry(String namespace, String alias, StreamResource resource) {
+        return switch (resource) {
+            case StreamResource.Owned owned -> resolveOwnedAddress(namespace, alias, owned).map(address -> NamedAddress.namedAddress(alias,
+                                                                                                                                      address));
+            case StreamResource.External external -> Option.some(NamedAddress.namedAddress(alias, external.target()));
+        };
+    }
+
+    /// Owned-resource address resolution. The blueprint's derived namespace + the local alias +
+    /// the explicit version produce the fully-qualified address. `Latest` version specs have no
+    /// concrete address at deploy time — the consumer resolves them at subscribe-time against the
+    /// live registry, so they're omitted from the bindings map.
+    private static Option<StreamAddress> resolveOwnedAddress(String namespace, String alias, StreamResource.Owned owned) {
+        return switch (owned.version()) {
+            case StreamVersionSpec.Exact exact -> StreamAddress.streamAddress(namespace, alias, exact.version()).option();
+            case StreamVersionSpec.Latest _ -> Option.none();
+        };
     }
 
     private static KVCommand<AetherKey> buildBlueprintPutCommand(ExpandedBlueprint expanded, boolean registerOnly) {
