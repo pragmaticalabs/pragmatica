@@ -6,6 +6,7 @@ package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.parse.Number;
 import org.pragmatica.serialization.Codec;
 
 import static org.pragmatica.lang.Result.success;
@@ -60,14 +61,15 @@ import static org.pragmatica.lang.Result.success;
         if (parts.length != 3) {
             return StreamVersionError.General.WRONG_FORMAT.result();
         }
-        try {
-            var major = Integer.parseInt(parts[0]);
-            var minor = Integer.parseInt(parts[1]);
-            var patch = Integer.parseInt(parts[2]);
-            return streamVersion(major, minor, patch);
-        } catch (NumberFormatException _) {
-            return StreamVersionError.General.NON_NUMERIC_COMPONENT.result();
-        }
+        return parseComponent(parts[0])
+                .flatMap(major -> parseComponent(parts[1])
+                        .flatMap(minor -> parseComponent(parts[2])
+                                .flatMap(patch -> streamVersion(major, minor, patch))));
+    }
+
+    private static Result<Integer> parseComponent(String component) {
+        return Number.parseInt(component)
+                     .mapError(_ -> StreamVersionError.General.NON_NUMERIC_COMPONENT);
     }
 
     @Override public int compareTo(StreamVersion other) {

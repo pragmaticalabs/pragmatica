@@ -1319,9 +1319,10 @@ import static org.pragmatica.lang.Result.success;
         }
     }
 
-    // Stage 1 (stream-namespaces) additive graft: stream-registry key. The full PR replaced
-    // ClusterEventLogKey with this record (cluster-events is a later stage); here it is added
-    // alongside the retained ClusterEventLogKey so rc1's cluster-event-log path is untouched.
+    // Stream-namespaces rebuild: stream-registry key. The earlier rc1 transitional
+    // `ClusterEventLogKey` (node-local cluster-event-log KV view) has since been removed —
+    // cluster events now flow through the replicated `system:cluster-events` partition stream,
+    // not a KV key. This record is the per-stream registry entry that replaced it.
     Fn1<Cause, String> STREAM_REGISTRY_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-registry key format: %s");
 
     /// Per-stream registry entry persisted under `stream-registry/{namespace}/{stream}/{version}`.

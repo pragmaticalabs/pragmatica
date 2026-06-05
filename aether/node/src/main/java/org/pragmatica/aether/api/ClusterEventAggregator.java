@@ -93,9 +93,12 @@ import java.util.function.Supplier;
 /// Publisher/consumer are provided as suppliers because in the AetherNode bootstrap the aggregator
 /// is constructed before the local stream stack exists. During the construction window (before the
 /// suppliers' targets are bound) any handler that fires falls back to a framework-level log line —
-/// best-effort, spec §13.3. The self-referential `STREAM_REGISTERED` loop for
-/// `system:cluster-events` itself is prevented by
-/// {@link org.pragmatica.aether.slice.stream.StreamLifecycleEventPolicy#shouldEmit}.
+/// best-effort, spec §13.3. Stream lifecycle events (`STREAM_REGISTERED` / `STREAM_DELETED`) are
+/// NOT emitted yet — lifecycle-event emission is deferred to RC2 (Wave-5B scope); no caller
+/// produces them today. When emission lands, the self-referential `STREAM_REGISTERED` loop for
+/// `system:cluster-events` itself must be gated by
+/// {@link org.pragmatica.aether.slice.stream.StreamLifecycleEventPolicy#shouldEmit}, which is the
+/// guard in place ahead of that work.
 ///
 /// **rc1 substrate divergence from the PR design.** rc1 deleted the node-lifecycle KV atom and the
 /// SWIM subscription; NODE_FAILED / NODE_LEFT are re-sourced from `MembershipDecision`

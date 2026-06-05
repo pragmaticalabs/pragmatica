@@ -14,6 +14,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.AlertsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ThresholdRemovedResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ThresholdSetResponse;
 import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.http.routing.Handler;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -45,8 +46,8 @@ public final class AlertRoutes implements RouteSource {
     @Override
     public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<List<ThresholdView>> route(ManagementRoute.THRESHOLDS_LIST).toJson(alertManager::thresholdsAsList),
-                         ManagementRoutes.<AlertsResponse> route(ManagementRoute.ALERTS).toJson((org.pragmatica.http.routing.Handler<AlertsResponse>) ctx -> buildAlertsResponse()),
-                         ManagementRoutes.<List<AlertView>> route(ManagementRoute.ALERTS_ACTIVE).toJson((org.pragmatica.http.routing.Handler<List<AlertView>>) ctx -> alertManager.activeAlertsAsList()),
+                         ManagementRoutes.<AlertsResponse> route(ManagementRoute.ALERTS).toJson((Handler<AlertsResponse>) ctx -> buildAlertsResponse()),
+                         ManagementRoutes.<List<AlertView>> route(ManagementRoute.ALERTS_ACTIVE).toJson((Handler<List<AlertView>>) ctx -> alertManager.activeAlertsAsList()),
                          ManagementRoutes.<List<AlertHistoryView>> route(ManagementRoute.ALERTS_HISTORY).toJson(alertManager::alertHistoryAsList),
                          ManagementRoutes.<ThresholdSetResponse> route(ManagementRoute.THRESHOLD_SET)
                                          .withBody(ThresholdRequest.class)
@@ -99,7 +100,7 @@ public final class AlertRoutes implements RouteSource {
                            .map(_ -> new ThresholdRemovedResponse("threshold_removed", metric));
     }
 
-    private org.pragmatica.lang.Promise<AlertsResponse> buildAlertsResponse() {
+    private Promise<AlertsResponse> buildAlertsResponse() {
         return alertManager.activeAlertsAsList()
                            .map(active -> new AlertsResponse(active, alertManager.alertHistoryAsList()));
     }

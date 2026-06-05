@@ -1438,6 +1438,82 @@ aether streams read user-events 0 --since 100 --limit 50
 
 ---
 
+## Stream Namespaces (`aether stream`)
+
+The `aether stream` command group (singular) operates on **namespaced** streams addressed by a
+fully-qualified `namespace:stream:version` triple (version is `MAJOR.MINOR.PATCH`). It wraps the
+namespaced `/api/streams/*` route surface. This is distinct from the legacy `aether streams`
+(plural) commands above, which use flat single-name addressing.
+
+Exit codes: `0` success, `1` error, `2` validation, `3` user-cancelled, `4` not-found,
+`5` conflict, `6` gone.
+
+### `aether stream list [--namespace <ns>]`
+
+List all registered stream versions, optionally filtered to a single namespace.
+
+```bash
+aether stream list
+aether stream list --namespace orders
+```
+
+### `aether stream show <namespace:stream:version>`
+
+Show registry metadata for a specific stream version.
+
+```bash
+aether stream show orders:order-events:1.0.0
+```
+
+### `aether stream tail <namespace:stream:version> [options]`
+
+Tail events from a stream version. Tailing is **polling-based** (paginated GETs against
+`/api/streams/events/...`); each event payload is printed on its own stdout line. Press Ctrl-C to
+stop. A streaming SSE/WebSocket subscription is **deferred to issue #212**.
+
+```bash
+aether stream tail orders:order-events:1.0.0
+aether stream tail orders:order-events:1.0.0 --from-offset 100 --max-events 200
+aether stream tail orders:order-events:1.0.0 --no-follow   # one-shot drain, then exit
+```
+
+| Option | Description |
+|--------|-------------|
+| `--interval` | Polling interval in milliseconds (default `500`) |
+| `--from-offset` | Initial offset to read from (default `0` — from beginning) |
+| `--max-events` | Max events per poll page (default `100`, server-capped at `1000`) |
+| `--follow` / `--no-follow` | Keep polling (default) vs. one-shot drain then exit |
+
+### `aether stream delete <namespace:stream:version> [--force]`
+
+Force-purge a specific stream version. Prompts for confirmation unless `--force` (`-f`) is given.
+Writes to `system:*` streams are rejected by the server with `405`.
+
+```bash
+aether stream delete orders:order-events:1.0.0
+aether stream delete orders:order-events:1.0.0 --force
+```
+
+### `aether stream group create <namespace:stream:version> <group> [--initial-position earliest|latest]`
+
+Create a durable consumer group on a stream version.
+
+```bash
+aether stream group create orders:order-events:1.0.0 fulfillment
+aether stream group create orders:order-events:1.0.0 fulfillment --initial-position earliest
+```
+
+### `aether stream group delete <namespace:stream:version> <group> [--force]`
+
+Delete a durable consumer group; releases its reference on the stream version. Prompts for
+confirmation unless `--force` (`-f`) is given.
+
+```bash
+aether stream group delete orders:order-events:1.0.0 fulfillment --force
+```
+
+---
+
 ## Cluster Management
 
 ### `aether cluster init`

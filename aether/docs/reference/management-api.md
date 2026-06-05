@@ -3439,6 +3439,13 @@ Baselines a datasource at the specified version (marks V001..V{N} as applied wit
 
 Endpoints for managing event streams. Streams must be created via stream configuration in blueprints.
 
+> **Two route families.** The endpoints in this first group use the legacy flat
+> `/api/streams/{name}` addressing (single stream name, no version). The
+> [Stream Namespaces](#stream-namespaces) group below uses the namespaced
+> `(namespace, stream, version)` addressing introduced with the event-stream-namespaces
+> feature and is the surface the `aether stream` CLI drives. New integrations should prefer the
+> namespaced routes.
+
 ### List Streams
 
 ```
@@ -3703,6 +3710,143 @@ aether streams consumer-group status <group> [<stream>]
   }
 }
 ```
+
+---
+
+## Stream Namespaces
+
+Namespaced stream routes address a stream by its fully-qualified `(namespace, stream, version)`
+triple. They back the `aether stream` CLI command group and the stream-namespaces registry. The
+namespace partitions the global stream key space; `system` is reserved for framework-internal
+streams (see the **`system:*` write gate** below).
+
+All routes below are members of the `STREAMING` task group and are forwarded to the owning node.
+Path parameters appear in route order as `{namespace}/{stream}/{version}` (version is the
+`MAJOR.MINOR.PATCH` schema version).
+
+### List Registered Streams (namespaced)
+
+```
+GET /api/streams/list[?namespace={ns}]
+```
+
+Snapshot of all registered stream versions across the namespace registry. The optional
+`namespace` query parameter filters to a single namespace.
+
+### List Versions
+
+```
+GET /api/streams/versions/{namespace}/{stream}
+```
+
+Lists all registered versions of a given `(namespace, stream)`.
+
+### Latest Version
+
+```
+GET /api/streams/latest/{namespace}/{stream}
+```
+
+Resolves the highest registered version for a `(namespace, stream)`.
+
+### Stream Metadata
+
+```
+GET /api/streams/metadata/{namespace}/{stream}/{version}
+```
+
+Returns the registry entry for an exact stream version (config, partitions, retention, reference
+count, `registeredBy`, `registeredAtEpochMs`).
+
+### Read Events (tail polling)
+
+```
+GET /api/streams/events/{namespace}/{stream}/{version}?fromOffset={n}&maxEvents={k}
+```
+
+Paginated event read used by `aether stream tail`. Returns a page of events plus `nextOffset`
+and `hasMore`. `maxEvents` is server-capped (1000). A streaming `tail` subscription
+(SSE/WebSocket) over `/api/streams/tail/...` is **deferred to issue #212**; polling `/events` is
+the supported tail mechanism today.
+
+### Tail (reserved)
+
+```
+GET /api/streams/tail/{namespace}/{stream}/{version}
+```
+
+Reserved for the deferred SSE/WebSocket subscription (#212). Operators tail via polling
+`/api/streams/events/...` in the interim.
+
+### Publish
+
+```
+POST /api/streams/publish/{namespace}/{stream}/{version}
+POST /api/streams/publish-batch/{namespace}/{stream}/{version}
+```
+
+**Auth:** OPERATOR_AND_ABOVE. Publishes one event (or a batch). **Writes to `system:*` streams
+are rejected with `405 Method Not Allowed`** — see below.
+
+### Delete Stream Version
+
+```
+DELETE /api/streams/delete/{namespace}/{stream}/{version}
+```
+
+**Auth:** OPERATOR_AND_ABOVE. Force-purges a specific stream version. Rejected for `system:*`.
+
+### Consumer Groups (namespaced)
+
+```
+GET    /api/streams/groups/{namespace}/{stream}/{version}            # list groups
+POST   /api/streams/groups/create/{namespace}/{stream}/{version}     # create a durable group
+DELETE /api/streams/groups/delete/{namespace}/{stream}/{version}/{group}   # delete a group
+```
+
+`create` and `delete` are **OPERATOR_AND_ABOVE** and are subject to the `system:*` write gate.
+Deleting a group releases its reference on the stream version.
+
+### Namespace Registry Lookup
+
+```
+GET /api/stream-namespaces/list
+GET /api/stream-namespaces/get/{namespace}/{stream}/{version}
+```
+
+Read-only views served **locally on every node** (target `LOCAL`) — non-governor nodes answer
+these from replicated registry state (see [Stream metadata registries](#stream-metadata-registries)).
+`list` returns all registry entries; `get` is an exact lookup returning `404` when the address is
+not registered. Each entry carries `namespace`, `stream`, `version`, `registeredBy`,
+`registeredAtEpochMs`, and `refCount`.
+
+### `system:*` write gate (405)
+
+Mutating HTTP requests (`POST`/`PUT`/`PATCH`/`DELETE`) that target a stream in the `system`
+namespace are rejected with **`405 Method Not Allowed`, regardless of role** — even when
+management security is disabled. The check runs ahead of the role/auth pipeline in
+`ManagementServer`, so it short-circuits before role evaluation. Both route shapes are covered:
+the path-segment form (`/api/streams/publish/system/...`,
+`/api/streams/groups/create/system/...`) and the legacy colon form where the name segment is
+`system:<stream>:<version>` (including URL-encoded `system%3A...`). Reads of `system:*` streams
+(e.g. `system:cluster-events`) are unaffected; only writes are gated. The compile-time SPI split
+already blocks application code from producing into system streams; this is the HTTP-path guard.
+
+### Stream metadata registries
+
+Stream metadata is held in **two complementary, consensus-replicated registries** (issue #215):
+
+- **`StreamConfigKey`** (`stream-config/{stream}`) — a flat per-stream record of config,
+  retention, and partition count. Each node hydrates it locally via `onStreamConfigPut` as the
+  consensus log is applied, so the live stream stack can read config without a registry round-trip.
+- **`StreamRegistryKey`** (`stream-registry/{namespace}/{stream}/{version}`) — the namespaced
+  registry entry carrying the consensus-mediated reference count and registration metadata, read
+  directly from the replicated KV store.
+
+Because both registries are replicated through consensus, **non-governor nodes serve stream
+metadata (and the `/api/stream-namespaces/*` views) from local replicated state** rather than
+forwarding to the governor — the #215 fix that gave every node a durable, consistent view of the
+stream registry.
 
 ---
 

@@ -39,6 +39,7 @@ import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -107,11 +108,14 @@ public final class StatusRoutes implements RouteSource {
         if (sinceEpochParam.isEmpty() && sinceSeqParam.isEmpty()) {
             return aggregator.events();
         }
-        // The `since` cursor is now an Instant in the namespace-stream events API; the legacy
-        // (sinceEpoch, sinceSeq) cursor is mapped by treating `sinceSeq` as epoch-milli (rc1
-        // callers rarely passed sinceEpoch alone). Operators should migrate to ISO-8601 timestamps.
+        // BEHAVIOR CHANGE (review C5): the `since` cursor is now an Instant in the namespace-stream
+        // events API. The legacy `?sinceSeq=` cursor (an opaque sequence number in rc1) is remapped
+        // here by reinterpreting its value as epoch-millis — so an existing caller passing a small
+        // sequence number now gets events since ~the Unix epoch instead of since that sequence
+        // position. rc1 callers rarely passed sinceEpoch alone; operators should migrate to ISO-8601
+        // timestamps. See CHANGELOG.
         var sinceMillis = sinceSeqParam.fold(() -> 0L, seq -> seq);
-        return aggregator.eventsSince(java.time.Instant.ofEpochMilli(sinceMillis));
+        return aggregator.eventsSince(Instant.ofEpochMilli(sinceMillis));
     }
 
     private StatusResponse buildStatusResponse() {

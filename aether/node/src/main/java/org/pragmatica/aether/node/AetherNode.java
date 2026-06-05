@@ -1278,9 +1278,11 @@ public interface AetherNode extends ManageableNode {
         //
         // Publisher + consumer are bound deferred via AtomicReferences: the stream stack is
         // constructed further down (after streamPartitionManager), so during the bootstrap window
-        // the aggregator falls back to log-only emit / empty reads (spec §13.3). The self-referential
-        // STREAM_REGISTERED loop for system:cluster-events itself is prevented by
-        // StreamLifecycleEventPolicy.shouldEmit.
+        // the aggregator falls back to log-only emit / empty reads (spec §13.3). Stream lifecycle
+        // events (STREAM_REGISTERED / STREAM_DELETED) are NOT emitted yet — lifecycle-event emission
+        // is deferred to RC2 (Wave-5B); nothing produces them today. When it lands, the
+        // self-referential STREAM_REGISTERED loop for system:cluster-events must be gated by
+        // StreamLifecycleEventPolicy.shouldEmit, the guard already in place for that work.
         var clusterEventsHlcClock = hlcClock;
         var clusterEventsPublisherRef =
                 new java.util.concurrent.atomic.AtomicReference<org.pragmatica.aether.slice.stream.FrameworkStreamPublisher<ClusterEvent>>();
