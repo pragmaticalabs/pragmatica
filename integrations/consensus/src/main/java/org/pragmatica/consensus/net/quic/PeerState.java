@@ -230,6 +230,21 @@ public final class PeerState {
         return option(dropped);
     }
 
+    /// Incarnation-gated resurrection: REMOVED -> INIT. Called ONLY when the SWIM-authoritative
+    /// membership has re-admitted this NodeId (back in `coreNodes()` — possible only after a
+    /// strictly-higher incarnation superseded the tombstone, per `SwimProtocol.supersedeOrRefuse`).
+    /// Restores the peer to a dial-eligible / attach-eligible state so a transient-partition
+    /// survivor reconnects; the SWIM probe-ack remains the sole ALIVE authority, so re-admission
+    /// here is NOT resurrection-to-ALIVE (preserves the anti-resurrection guarantee). No-op (returns
+    /// false) when the peer is not REMOVED. Offline buffer stays cleared (authoritativeRemove cleared it).
+    public synchronized boolean readmit(long nowNanos) {
+        if (phase != Phase.REMOVED) {
+            return false;
+        }
+        changePhase(Phase.INIT, nowNanos);
+        return true;
+    }
+
     /// Offer an outbound message. Returns `SendNow(conn)` when the caller must serialize and
     /// write it to the captured live connection; `Queued` when the message was buffered (held
     /// as-is, serialized lazily at the single write/drain site, retaining its lane); `Dropped`

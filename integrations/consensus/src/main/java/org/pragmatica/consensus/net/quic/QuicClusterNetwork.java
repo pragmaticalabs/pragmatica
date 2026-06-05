@@ -760,6 +760,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
             state.markPassive();
         }
 
+        if (state.phase() == PeerState.Phase.REMOVED && swimMembershipAllows(peerId)) {
+            // Inbound connection from a peer SWIM has re-admitted to the authoritative membership
+            // (incarnation supersede). Honour the re-admit: REMOVED->INIT so attach below accepts it
+            // rather than REJECTED. Absent-from-coreNodes REMOVED peers stay terminal (attach rejects).
+            if (state.readmit(System.nanoTime())) {
+                log.info("Accepting inbound from re-admitted peer {} — REMOVED->INIT (back in SWIM authoritative membership)", peerId);
+            }
+        }
+
         var outcome = state.attach(connection, System.nanoTime());
         boolean isReconnect;
         switch (outcome) {
@@ -1219,12 +1228,31 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private void considerPeerForReconcile(NodeId peerId, long nowMs) {
         var existing = peers.get(peerId);
-        // CONNECTING means a dial is already in flight; REMOVED means authoritatively
-        // departed. Either way the reconciler must NOT fire — see commit 2e7b85dd1 dedup.
+        // CONNECTING means a dial is already in flight — the reconciler must NOT fire (see commit
+        // 2e7b85dd1 dedup). REMOVED is normally terminal, but a REMOVED peer that SWIM has
+        // RE-ADMITTED to the authoritative membership is a transient-partition survivor (below).
         if (existing != null) {
             var phase = existing.phase();
-            if (phase == PeerState.Phase.CONNECTING || phase == PeerState.Phase.REMOVED) {
+            if (phase == PeerState.Phase.CONNECTING) {
                 return;
+            }
+            if (phase == PeerState.Phase.REMOVED) {
+                // Incarnation-gated resurrection: a REMOVED peer that SWIM has RE-ADMITTED to the
+                // authoritative membership (back in coreNodes() — only after a strictly-higher
+                // incarnation superseded the tombstone, SwimProtocol.supersedeOrRefuse) is a
+                // transient-partition survivor, not a permanent departure. Reset REMOVED->INIT so
+                // it becomes dial-eligible; a REMOVED peer still ABSENT from coreNodes() is a
+                // genuine departure and stays REMOVED (left for auto-heal). The SWIM probe-ack
+                // remains the sole ALIVE authority — this is not resurrection-to-ALIVE.
+                // Unit note: PeerState phase timestamps are System.nanoTime() (see attach/evict
+                // callers); nowMs here is wall-clock millis from wallClockMs — readmit takes nanos.
+                if (!swimMembershipAllows(peerId)) {
+                    return;
+                }
+                if (existing.readmit(System.nanoTime())) {
+                    resetReconnectBackoff(peerId);
+                    log.info("Missing-peer reconciler: re-admitting REMOVED peer {} — back in SWIM authoritative membership (incarnation supersede); REMOVED->INIT", peerId);
+                }
             }
         }
         var state = existing == null ? getOrCreatePeer(peerId) : existing;

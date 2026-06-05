@@ -270,6 +270,60 @@ class PeerStateTest {
     }
 
     @Test
+    void readmit_fromREMOVED_returnsTrue_andTransitions_to_INIT() {
+        // Incarnation-gated resurrection: SWIM re-admitted the NodeId (strictly-higher
+        // incarnation superseded the tombstone). REMOVED -> INIT makes the peer dial-eligible.
+        var s = state();
+        s.authoritativeRemove(T0 + 1);
+        assertThat(s.phase()).isEqualTo(Phase.REMOVED);
+
+        assertThat(s.readmit(T0 + 2)).as("readmit from REMOVED resets the peer").isTrue();
+        assertThat(s.phase()).isEqualTo(Phase.INIT);
+    }
+
+    @Test
+    void readmit_afterReset_allows_beginConnecting_to_succeed() {
+        // The whole point of readmit: a transient-partition survivor must be able to re-dial.
+        var s = state();
+        s.authoritativeRemove(T0 + 1);
+        s.readmit(T0 + 2);
+
+        assertThat(s.beginConnecting(T0 + 3))
+            .as("after readmit, INIT peer is dial-eligible again")
+            .isTrue();
+        assertThat(s.phase()).isEqualTo(Phase.CONNECTING);
+    }
+
+    @Test
+    void readmit_onINIT_isNoop_returnsFalse() {
+        var s = state();
+        assertThat(s.phase()).isEqualTo(Phase.INIT);
+        assertThat(s.readmit(T0 + 1)).isFalse();
+        assertThat(s.phase()).isEqualTo(Phase.INIT);
+    }
+
+    @Test
+    void readmit_onCONNECTED_isNoop_returnsFalse() {
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        s.attach(liveConnection(), T0 + 2);
+        assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
+        assertThat(s.readmit(T0 + 3)).isFalse();
+        assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
+    }
+
+    @Test
+    void readmit_onEVICTED_isNoop_returnsFalse() {
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        s.attach(liveConnection(), T0 + 2);
+        s.evict(T0 + 3);
+        assertThat(s.phase()).isEqualTo(Phase.EVICTED);
+        assertThat(s.readmit(T0 + 4)).isFalse();
+        assertThat(s.phase()).isEqualTo(Phase.EVICTED);
+    }
+
+    @Test
     void phaseAgeNanos_tracks_time_since_last_transition() {
         var s = state();
         assertThat(s.phaseAgeNanos(T0 + 500)).isEqualTo(500L);

@@ -273,6 +273,65 @@ class QuicClusterNetworkReconcilerTest {
             .isEqualTo(1L);
     }
 
+    @Test
+    void reconcileMissingPeersTick_removedPeerBackInCoreNodes_isReadmittedAndDialed() {
+        // Transient-partition survivor: a peer driven to REMOVED (departurePermanent) that SWIM
+        // has since RE-ADMITTED to the authoritative membership (incarnation supersede → back in
+        // coreNodes()) must be reset REMOVED->INIT and re-dialed. Membership-convergence FSM §9.4:
+        // only a strictly-higher incarnation is terminal; a same/refuted-incarnation peer rejoins.
+        var self = new NodeId("aaa-self");
+        var removedPeer = new NodeId("zzz-removed");
+        var peerInfo = NodeInfo.nodeInfo(removedPeer, addressOf("127.0.0.1", 1));
+        // coreNodes() INCLUDES the peer — SWIM re-admitted it after the tombstone was superseded.
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, removedPeer));
+        var clock = new AtomicLong(1_000_000L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+        network.overrideWallClockForTests(clock::get);
+
+        // Seed the peer in the terminal REMOVED phase, as departurePermanent would have left it.
+        var removedState = PeerState.peerState(removedPeer, 1L);
+        removedState.authoritativeRemove(2L);
+        network.seedPeerForTests(removedPeer, removedState);
+        assertThat(removedState.phase()).isEqualTo(PeerState.Phase.REMOVED);
+
+        network.reconcileMissingPeersTick();
+
+        assertThat(removedState.phase())
+            .as("REMOVED peer back in coreNodes() must be readmitted out of the terminal phase")
+            .isNotEqualTo(PeerState.Phase.REMOVED);
+        assertThat(stub.lookups.getOrDefault(removedPeer, 0L))
+            .as("re-admitted peer must be re-dialed by the reconciler")
+            .isEqualTo(1L);
+    }
+
+    @Test
+    void reconcileMissingPeersTick_removedPeerAbsentFromCoreNodes_staysRemovedAndIsNotDialed() {
+        // Genuine departure: a REMOVED peer that is NOT in coreNodes() (SWIM never re-admitted it,
+        // no higher incarnation) is a permanent corpse. It must stay REMOVED and not be re-dialed —
+        // left for the leader's auto-heal. This is the anti-resurrection guarantee at the dial side.
+        var self = new NodeId("aaa-self");
+        var departedPeer = new NodeId("zzz-departed");
+        var peerInfo = NodeInfo.nodeInfo(departedPeer, addressOf("127.0.0.1", 1));
+        // coreNodes() OMITS the departed peer (SWIM-departed, no incarnation supersede).
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self));
+        var clock = new AtomicLong(1_000_000L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+        network.overrideWallClockForTests(clock::get);
+
+        var removedState = PeerState.peerState(departedPeer, 1L);
+        removedState.authoritativeRemove(2L);
+        network.seedPeerForTests(departedPeer, removedState);
+
+        network.reconcileMissingPeersTick();
+
+        assertThat(removedState.phase())
+            .as("REMOVED peer absent from coreNodes() must remain terminal (no resurrection)")
+            .isEqualTo(PeerState.Phase.REMOVED);
+        assertThat(stub.lookups.getOrDefault(departedPeer, 0L))
+            .as("genuinely-departed REMOVED peer must not be re-dialed")
+            .isEqualTo(0L);
+    }
+
     private static NodeAddress addressOf(String host, int port) {
         return NodeAddress.nodeAddress(host, port).fold(_ -> fail("bad address"), a -> a);
     }
