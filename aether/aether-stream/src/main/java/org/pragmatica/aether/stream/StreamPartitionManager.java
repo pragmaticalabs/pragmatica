@@ -230,6 +230,27 @@ public final class StreamPartitionManager implements AutoCloseable {
                                .toList();
     }
 
+    /// Adapt this manager to the narrow {@link org.pragmatica.aether.stream.replication.StreamCatalog}
+    /// consumed by `ReplicaSetController`. Exposes `(name, partitions, minSyncReplicas)` per stream —
+    /// the per-stream `minSyncReplicas` is not carried by {@link StreamInfo}, so the controller cannot
+    /// be fed by `listStreams()` alone; this accessor reads it straight from each stream's config.
+    public org.pragmatica.aether.stream.replication.StreamCatalog replicaCatalog() {
+        return new org.pragmatica.aether.stream.replication.StreamCatalog() {
+            @Override public List<org.pragmatica.aether.stream.replication.StreamCatalog.StreamSpec> streams() {
+                return StreamPartitionManager.this.streams.values().stream()
+                                                          .map(entry -> entry.config())
+                                                          .map(config -> new StreamSpec(config.name(),
+                                                                                        config.partitions(),
+                                                                                        config.minSyncReplicas()))
+                                                          .toList();
+            }
+
+            @Override public boolean partitionHasData(String streamName, int partition) {
+                return resolvePartitionBuffer(streamName, partition).map(buffer -> buffer.eventCount() > 0).or(false);
+            }
+        };
+    }
+
     public int reapIdleStreams() {
         var now = System.currentTimeMillis();
         var reaped = new AtomicInteger(0);

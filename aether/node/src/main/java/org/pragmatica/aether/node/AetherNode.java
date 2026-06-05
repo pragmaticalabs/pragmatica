@@ -122,6 +122,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardTransport;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.GovernorFailoverHandler;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
+import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.StreamPartitionRecovery;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
@@ -1929,6 +1930,24 @@ public interface AetherNode extends ManageableNode {
         var streamReplicaRegistry = ReplicaRegistry.replicaRegistry();
         var streamFailoverHandler = GovernorFailoverHandler.governorFailoverHandler(streamReplicaRegistry,
                                                                                     StreamPartitionRecovery.NOOP);
+        // A2: per-node controller that reconciles the (previously never-populated) ReplicaRegistry
+        // against the HRW-derived desired replica set on every membership change. Members + cluster
+        // size come from the consensus topology observer; the stream catalog (name/partitions/
+        // minSyncReplicas + partition-has-data) is adapted from the partition manager. The A4
+        // catch-up seam is left as the default no-op here.
+        var streamReplicaSetController = ReplicaSetController.replicaSetController(streamReplicaRegistry,
+                                                                                  config.self(),
+                                                                                  () -> List.copyOf(clusterTopologyManager.observer().coreNodes()),
+                                                                                  clusterTopologyManager.observer()::clusterSize,
+                                                                                  streamPartitionManager.replicaCatalog());
+        // Reconcile on every membership decision (all variants via the tail helper) and on
+        // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).
+        wireMembershipDecisionTail(allEntries, streamReplicaSetController::onMembershipDecision);
+        allEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class,
+                                                 streamReplicaSetController::onQuorumStateChange));
+        // Initial reconcile once membership is available; serialized on the controller executor, so
+        // this is a safe no-op until the topology observer reports core members.
+        streamReplicaSetController.reconcile();
         var streamingCoordinator = StreamingCoordinator.streamingCoordinator(streamFailoverHandler,
                                                                              streamRetentionEnforcer,
                                                                              streamPartitionManager,
