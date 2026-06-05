@@ -10,8 +10,15 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.slice.RetentionMode;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
+import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
+import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
+import org.pragmatica.aether.slice.stream.StreamVersion;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.lang.Option;
@@ -593,6 +600,97 @@ class KVStoreSerializerTest {
             assertThat(EphemeralKeys.isEphemeralSection("topic-sub")).isFalse();
             assertThat(EphemeralKeys.isEphemeralSection("worker-directive")).isFalse();
             assertThat(EphemeralKeys.isEphemeralSection("app-blueprint")).isFalse();
+        }
+    }
+
+    @Nested
+    class StreamNamespaceRoundTrip {
+        private static StreamAddress addr(String namespace, String stream, int major, int minor, int patch) {
+            return StreamAddress.streamAddress(namespace, stream, StreamVersion.streamVersion(major, minor, patch).unwrap())
+                                .unwrap();
+        }
+
+        @Test
+        void roundTrip_streamRegistryAndBlueprintBindings_preservesAllFields() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+
+            var streamAddress = addr("com.example.app", "orders", 1, 2, 3);
+            var retention = new RetentionPolicy(7_777L, 555L, 99_000L, RetentionMode.ALL, Option.none());
+            var registryEntry = new StreamRegistryEntry(streamAddress,
+                                                        retention,
+                                                        1710072000000L,
+                                                        StreamRegistryEntry.RegisteredByKind.BLUEPRINT,
+                                                        4);
+            var registryKey = StreamRegistryKey.streamRegistryKey(streamAddress);
+            entries.put(registryKey, StreamRegistryValue.streamRegistryValue(registryEntry));
+
+            var blueprintId = BlueprintId.blueprintId("com.example:my-app-blueprint:2.0.0").unwrap();
+            var bindings = List.of(new NamedAddress("orders-out", addr("com.example.app", "orders", 1, 2, 3)),
+                                   new NamedAddress("events-in", addr("com.example.app", "events", 4, 0, 0)));
+            var bindingsKey = BlueprintStreamBindingsKey.blueprintStreamBindingsKey(blueprintId);
+            entries.put(bindingsKey, BlueprintStreamBindingsValue.blueprintStreamBindingsValue(bindings));
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).hasSize(2);
+                                 assertThat(restored.get(registryKey)).isEqualTo(StreamRegistryValue.streamRegistryValue(registryEntry));
+                                 assertThat(restored.get(bindingsKey)).isEqualTo(BlueprintStreamBindingsValue.blueprintStreamBindingsValue(bindings));
+
+                                 var rv = (StreamRegistryValue) restored.get(registryKey);
+                                 assertThat(rv.entry().address()).isEqualTo(streamAddress);
+                                 assertThat(rv.entry().refCount()).isEqualTo(4);
+                                 assertThat(rv.entry().registeredBy()).isEqualTo(StreamRegistryEntry.RegisteredByKind.BLUEPRINT);
+                                 assertThat(rv.entry().retention()).isEqualTo(retention);
+
+                                 var bv = (BlueprintStreamBindingsValue) restored.get(bindingsKey);
+                                 assertThat(bv.bindings()).hasSize(2);
+                                 assertThat(bv.addressFor("orders-out")).isEqualTo(Option.some(addr("com.example.app", "orders", 1, 2, 3)));
+                                 assertThat(bv.addressFor("events-in")).isEqualTo(Option.some(addr("com.example.app", "events", 4, 0, 0)));
+                             });
+        }
+
+        @Test
+        void roundTrip_blueprintBindingsEmpty_preservesEmptyList() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var blueprintId = BlueprintId.blueprintId("com.example:empty-app-blueprint:1.0.0").unwrap();
+            var bindingsKey = BlueprintStreamBindingsKey.blueprintStreamBindingsKey(blueprintId);
+            entries.put(bindingsKey, BlueprintStreamBindingsValue.blueprintStreamBindingsValue(List.of()));
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).hasSize(1);
+                                 var bv = (BlueprintStreamBindingsValue) restored.get(bindingsKey);
+                                 assertThat(bv.bindings()).isEmpty();
+                                 assertThat(restored.get(bindingsKey)).isEqualTo(BlueprintStreamBindingsValue.blueprintStreamBindingsValue(List.of()));
+                             });
+        }
+
+        @Test
+        void roundTrip_streamRegistryRefCountOne_frameworkRegistered() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var streamAddress = addr("system", "audit", 1, 0, 0);
+            var entry = new StreamRegistryEntry(streamAddress,
+                                                RetentionPolicy.retentionPolicy(),
+                                                42L,
+                                                StreamRegistryEntry.RegisteredByKind.FRAMEWORK,
+                                                1);
+            var key = StreamRegistryKey.streamRegistryKey(streamAddress);
+            entries.put(key, StreamRegistryValue.streamRegistryValue(entry));
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).hasSize(1);
+                                 assertThat(restored.get(key)).isEqualTo(StreamRegistryValue.streamRegistryValue(entry));
+                                 var rv = (StreamRegistryValue) restored.get(key);
+                                 assertThat(rv.entry().refCount()).isEqualTo(1);
+                                 assertThat(rv.entry().registeredBy()).isEqualTo(StreamRegistryEntry.RegisteredByKind.FRAMEWORK);
+                             });
         }
     }
 

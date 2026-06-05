@@ -18,6 +18,9 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
+import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
+import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.lang.Cause;
@@ -255,7 +258,20 @@ import static org.pragmatica.lang.Result.success;
 
     private static String serializeStreamRegistry(StreamRegistryValue v) {
         var entry = v.entry();
-        return entry.address().asString() + "|" + entry.refCount() + "|" + entry.registeredAtEpochMillis() + "|" + entry.registeredBy().name();
+        var retention = entry.retention();
+        // C1: retention appended (maxCount|maxBytes|maxAgeMs|mode) so the snapshot is reversible.
+        // Mirrors the stream-config retention encoding; tierAwareRetention is intentionally dropped
+        // (reconstructed as none() on parse), matching the stream-config convention. This TOML form
+        // is the snapshot/backup wire form only — consensus uses the @Codec binary form — and it had
+        // no parser before, so there is no prior snapshot form to keep compatible with.
+        return entry.address().asString() + PIPE
+               + entry.refCount() + PIPE
+               + entry.registeredAtEpochMillis() + PIPE
+               + entry.registeredBy().name() + PIPE
+               + retention.maxCount() + PIPE
+               + retention.maxBytes() + PIPE
+               + retention.maxAgeMs() + PIPE
+               + retention.mode().name();
     }
 
     static String serializeProvisioningSlot(ProvisioningSlotValue v) {
@@ -428,6 +444,8 @@ import static org.pragmatica.lang.Result.success;
             case "storage-block" -> parseStorageBlockEntry(identity, rawValue);
             case "storage-ref" -> parseStorageRefEntry(identity, rawValue);
             case "stream-config" -> parseStreamConfigEntry(identity, rawValue);
+            case "stream-registry" -> parseStreamRegistryEntry(identity, rawValue);
+            case "blueprint-stream-bindings" -> parseBlueprintStreamBindingsEntry(identity, rawValue);
             case "cloud-credentials" -> parseCloudCredentialsEntry(identity, rawValue);
             case "consumer-group" -> parseConsumerGroupEntry(identity, rawValue);
             case "api-key" -> parseApiKeyEntry(identity, rawValue);
@@ -1055,8 +1073,62 @@ import static org.pragmatica.lang.Result.success;
         return new StreamConfigValue(config, createdAt);
     }
 
-    private static String serializeCloudCredentials(CloudCredentialsValue v) {
-        return java.util.Base64.getUrlEncoder().withoutPadding()
+    /// Inverse of [#serializeStreamRegistry]. Wire form (8 fields, pipe-delimited):
+    /// `address|refCount|registeredAtEpochMillis|registeredBy|maxCount|maxBytes|maxAgeMs|retentionMode`.
+    /// `tierAwareRetention` is reconstructed as `none()` (not persisted in the snapshot form), matching
+    /// the stream-config convention.
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamRegistryEntry(String identity, String raw) {
+        var parts = raw.split("\\|", -1);
+        if (parts.length != 8) {return parseFailure("stream-registry value requires 8 fields, got " + parts.length);}
+        return StreamRegistryKey.streamRegistryKey("stream-registry/" + identity)
+                                .flatMap(key -> buildStreamRegistryValue(parts).map(value -> entry(key, value)));
+    }
+
+    private static Result<AetherValue> buildStreamRegistryValue(String[] parts) {
+        return StreamAddress.streamAddress(parts[0])
+                            .flatMap(address -> Result.lift(() -> assembleStreamRegistryValue(address, parts)));
+    }
+
+    private static AetherValue assembleStreamRegistryValue(StreamAddress address, String[] parts) {
+        var refCount = Integer.parseInt(parts[1]);
+        var registeredAtEpochMillis = Long.parseLong(parts[2]);
+        var registeredBy = StreamRegistryEntry.RegisteredByKind.valueOf(parts[3]);
+        var retention = new RetentionPolicy(Long.parseLong(parts[4]),
+                                            Long.parseLong(parts[5]),
+                                            Long.parseLong(parts[6]),
+                                            RetentionMode.valueOf(parts[7]),
+                                            Option.none());
+        var streamEntry = new StreamRegistryEntry(address, retention, registeredAtEpochMillis, registeredBy, refCount);
+        return new StreamRegistryValue(streamEntry);
+    }
+
+    /// Inverse of [#serializeBlueprintStreamBindings]. Wire form: comma-joined `alias=address`
+    /// pairs, where `address` is the colon-delimited `namespace:stream:version` form. An empty
+    /// value string yields an empty bindings list.
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseBlueprintStreamBindingsEntry(String identity,
+                                                                                               String raw) {
+        return BlueprintStreamBindingsKey.blueprintStreamBindingsKey("blueprint-stream-bindings/" + identity)
+                                         .flatMap(key -> parseNamedAddresses(raw).map(bindings -> entry(key,
+                                                                                                        new BlueprintStreamBindingsValue(bindings))));
+    }
+
+    private static Result<List<NamedAddress>> parseNamedAddresses(String raw) {
+        if (raw.isEmpty()) {return success(List.of());}
+        var results = Arrays.stream(raw.split(","))
+                            .map(KVStoreSerializer::parseNamedAddress)
+                            .toList();
+        return Result.allOf(results);
+    }
+
+    private static Result<NamedAddress> parseNamedAddress(String token) {
+        var eq = token.indexOf('=');
+        if (eq <= 0 || eq == token.length() - 1) {return parseFailure("blueprint-stream-bindings entry requires alias=address, got: " + token);}
+        var alias = token.substring(0, eq);
+        var addressPart = token.substring(eq + 1);
+        return StreamAddress.streamAddress(addressPart).map(address -> new NamedAddress(alias, address));
+    }
+
+    private static String serializeCloudCredentials(CloudCredentialsValue v) {        return java.util.Base64.getUrlEncoder().withoutPadding()
                                              .encodeToString(v.encryptedToken()) + PIPE + v.provider() + PIPE + v.storedAt();
     }
 
