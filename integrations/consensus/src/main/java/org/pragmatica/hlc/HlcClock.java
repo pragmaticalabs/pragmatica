@@ -31,38 +31,38 @@ import static org.pragmatica.hlc.HlcTimestamp.pack;
 /// The clock combines physical time with a logical counter to guarantee monotonically
 /// increasing timestamps even when the physical clock does not advance.
 public final class HlcClock {
-    private static final long DEFAULT_MAX_DRIFT_MICROS = 500_000L;
+    private static final long DEFAULT_MAX_DRIFT_MILLIS = 500L;
     private static final int COUNTER_BITS = 16;
     private static final long COUNTER_MASK = 0xFFFFL;
     private static final int MAX_COUNTER = 0xFFFF;
 
     private volatile long latestPacked;
     private final NodeId nodeId;
-    private final long maxDriftMicros;
+    private final long maxDriftMillis;
     private final LongSupplier physicalClock;
     private final ReentrantLock lock = new ReentrantLock();
 
-    private HlcClock(NodeId nodeId, LongSupplier physicalClock, long maxDriftMicros) {
+    private HlcClock(NodeId nodeId, LongSupplier physicalClock, long maxDriftMillis) {
         this.nodeId = nodeId;
         this.physicalClock = physicalClock;
-        this.maxDriftMicros = maxDriftMicros;
+        this.maxDriftMillis = maxDriftMillis;
         this.latestPacked = 0L;
     }
 
     /// Creates an HLC clock with the given node ID, physical clock source, and maximum allowed drift.
     ///
     /// @param nodeId          unique identifier for this node
-    /// @param physicalClock   supplier returning current physical time in microseconds
-    /// @param maxDriftMicros  maximum allowed drift between remote and local clocks in microseconds
-    public static HlcClock hlcClock(NodeId nodeId, LongSupplier physicalClock, long maxDriftMicros) {
-        return new HlcClock(nodeId, physicalClock, maxDriftMicros);
+    /// @param physicalClock   supplier returning current physical time in milliseconds
+    /// @param maxDriftMillis  maximum allowed drift between remote and local clocks in milliseconds
+    public static HlcClock hlcClock(NodeId nodeId, LongSupplier physicalClock, long maxDriftMillis) {
+        return new HlcClock(nodeId, physicalClock, maxDriftMillis);
     }
 
-    /// Creates an HLC clock with default physical clock (system time in microseconds) and default max drift (500ms).
+    /// Creates an HLC clock with default physical clock (system time in milliseconds) and default max drift (500ms).
     ///
     /// @param nodeId unique identifier for this node
     public static HlcClock hlcClock(NodeId nodeId) {
-        return hlcClock(nodeId, HlcClock::systemMicros, DEFAULT_MAX_DRIFT_MICROS);
+        return hlcClock(nodeId, HlcClock::systemMillis, DEFAULT_MAX_DRIFT_MILLIS);
     }
 
     /// Generates a new timestamp for a local event.
@@ -106,7 +106,7 @@ public final class HlcClock {
 
     private HlcTimestamp advanceForLocalEvent() {
         var physicalNow = physicalClock.getAsLong();
-        var latestPhysical = physicalMicros(latestPacked);
+        var latestPhysical = physicalMillis(latestPacked);
 
         if (physicalNow > latestPhysical) {
             latestPacked = pack(physicalNow, 0);
@@ -121,13 +121,13 @@ public final class HlcClock {
 
     private Result<HlcTimestamp> mergeRemoteTimestamp(HlcTimestamp remote) {
         var physicalNow = physicalClock.getAsLong();
-        var remotePhysical = remote.physicalMicros();
+        var remotePhysical = remote.physicalMillis();
 
-        if (remotePhysical - physicalNow > maxDriftMicros) {
-            return new HlcError.ClockDriftExceeded(remotePhysical, physicalNow, maxDriftMicros).result();
+        if (remotePhysical - physicalNow > maxDriftMillis) {
+            return new HlcError.ClockDriftExceeded(remotePhysical, physicalNow, maxDriftMillis).result();
         }
 
-        var latestPhysical = physicalMicros(latestPacked);
+        var latestPhysical = physicalMillis(latestPacked);
         var maxPhysical = Math.max(physicalNow, Math.max(remotePhysical, latestPhysical));
 
         var counter = computeMergedCounter(maxPhysical, latestPhysical, remotePhysical, remote);
@@ -159,7 +159,7 @@ public final class HlcClock {
         }
     }
 
-    private static long physicalMicros(long packed) {
+    private static long physicalMillis(long packed) {
         return packed >>> COUNTER_BITS;
     }
 
@@ -167,7 +167,7 @@ public final class HlcClock {
         return (int) (packed & COUNTER_MASK);
     }
 
-    private static long systemMicros() {
-        return Instant.now().toEpochMilli() * 1000;
+    private static long systemMillis() {
+        return Instant.now().toEpochMilli();
     }
 }

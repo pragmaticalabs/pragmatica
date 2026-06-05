@@ -28,12 +28,12 @@ class HlcTimestampTest {
 
     @Test
     void pack_roundtrip_preservesBits() {
-        var micros = 1_700_000_000_000L;
+        var millis = 1_700_000_000_000L;
         var counter = 42;
-        var packed = pack(micros, counter);
+        var packed = pack(millis, counter);
         var ts = new HlcTimestamp(packed, new NodeId("node-1"));
 
-        assertThat(ts.physicalMicros()).isEqualTo(micros);
+        assertThat(ts.physicalMillis()).isEqualTo(millis);
         assertThat(ts.counter()).isEqualTo(counter);
     }
 
@@ -78,7 +78,7 @@ class HlcTimestampTest {
         var nonZero = new HlcTimestamp(pack(1L, 0), new NodeId("a"));
 
         assertThat(HlcTimestamp.ZERO).isLessThan(nonZero);
-        assertThat(HlcTimestamp.ZERO.physicalMicros()).isZero();
+        assertThat(HlcTimestamp.ZERO.physicalMillis()).isZero();
         assertThat(HlcTimestamp.ZERO.counter()).isZero();
         assertThat(HlcTimestamp.ZERO.nodeId().id()).isEmpty();
     }

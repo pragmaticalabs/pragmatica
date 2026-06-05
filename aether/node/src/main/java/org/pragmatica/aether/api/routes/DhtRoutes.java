@@ -133,7 +133,7 @@ public final class DhtRoutes implements RouteSource {
 
     private static DhtInjectResponse toInjectResponse(String key, HlcTimestamp committed, boolean written) {
         return new DhtInjectResponse(key,
-                                     new HlcShape(committed.physicalMicros(), committed.counter()),
+                                     new HlcShape(committed.physicalMillis(), committed.counter()),
                                      written);
     }
 

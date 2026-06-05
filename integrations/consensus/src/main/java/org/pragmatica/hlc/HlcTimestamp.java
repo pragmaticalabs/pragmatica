@@ -19,10 +19,11 @@ package org.pragmatica.hlc;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.serialization.Codec;
 
-/// Hybrid Logical Clock timestamp combining physical time (microseconds) and a logical counter
+/// Hybrid Logical Clock timestamp combining physical time (epoch milliseconds) and a logical counter
 /// into a single packed long, paired with a node identifier for total ordering.
 ///
-/// Packing layout: upper 48 bits = microseconds since epoch, lower 16 bits = logical counter.
+/// Packing layout: upper 48 bits = milliseconds since epoch (valid past year 6000),
+/// lower 16 bits = logical counter.
 @Codec
 public record HlcTimestamp(long packed, NodeId nodeId) implements Comparable<HlcTimestamp> {
     public static final HlcTimestamp ZERO = new HlcTimestamp(0L, new NodeId(""));
@@ -31,13 +32,13 @@ public record HlcTimestamp(long packed, NodeId nodeId) implements Comparable<Hlc
     private static final int COUNTER_BITS = 16;
     private static final long COUNTER_MASK = 0xFFFFL;
 
-    /// Packs physical microseconds and logical counter into a single long.
-    public static long pack(long physicalMicros, int counter) {
-        return (physicalMicros << COUNTER_BITS) | (counter & COUNTER_MASK);
+    /// Packs physical milliseconds and logical counter into a single long.
+    public static long pack(long physicalMillis, int counter) {
+        return (physicalMillis << COUNTER_BITS) | (counter & COUNTER_MASK);
     }
 
-    /// Extracts the physical microseconds component from the packed value.
-    public long physicalMicros() {
+    /// Extracts the physical milliseconds component from the packed value.
+    public long physicalMillis() {
         return packed >>> COUNTER_BITS;
     }
 
@@ -60,6 +61,6 @@ public record HlcTimestamp(long packed, NodeId nodeId) implements Comparable<Hlc
 
     @Override
     public String toString() {
-        return physicalMicros() + "/" + counter() + "@" + nodeId.id();
+        return physicalMillis() + "/" + counter() + "@" + nodeId.id();
     }
 }

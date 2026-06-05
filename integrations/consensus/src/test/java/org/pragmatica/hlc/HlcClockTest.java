@@ -32,6 +32,27 @@ import static org.pragmatica.hlc.HlcTimestamp.pack;
 class HlcClockTest {
 
     @Test
+    void defaultClock_now_isStrictlyMonotonicAcrossBurst() {
+        var clock = HlcClock.hlcClock(new NodeId("n"));
+        var prev = clock.now();
+        for (var i = 0; i < 20_000; i++) {
+            var cur = clock.now();
+            assertThat(cur.compareTo(prev)).isGreaterThan(0); // strictly increasing — counter must disambiguate same-ms events
+            prev = cur;
+        }
+    }
+
+    @Test
+    void defaultClock_physicalComponent_tracksWallClockMillis() {
+        var clock = HlcClock.hlcClock(new NodeId("n"));
+        var before = System.currentTimeMillis();
+        var ts = clock.now();
+        var after = System.currentTimeMillis();
+        var physical = ts.packed() >>> 16; // raw extraction, no overflow corruption allowed
+        assertThat(physical).isBetween(before, after);
+    }
+
+    @Test
     void now_sequential_strictlyIncreasing() {
         var time = new AtomicLong(1_000_000L);
         var clock = HlcClock.hlcClock(new NodeId("node-1"), time::incrementAndGet, 500_000L);
@@ -54,11 +75,11 @@ class HlcClockTest {
         var second = clock.now();
         var third = clock.now();
 
-        assertThat(first.physicalMicros()).isEqualTo(5_000_000L);
+        assertThat(first.physicalMillis()).isEqualTo(5_000_000L);
         assertThat(first.counter()).isZero();
         assertThat(second.counter()).isEqualTo(1);
         assertThat(third.counter()).isEqualTo(2);
-        assertThat(second.physicalMicros()).isEqualTo(first.physicalMicros());
+        assertThat(second.physicalMillis()).isEqualTo(first.physicalMillis());
     }
 
     @Test
@@ -74,7 +95,7 @@ class HlcClockTest {
         time.set(2_000_000L);
         var afterAdvance = clock.now();
 
-        assertThat(afterAdvance.physicalMicros()).isEqualTo(2_000_000L);
+        assertThat(afterAdvance.physicalMillis()).isEqualTo(2_000_000L);
         assertThat(afterAdvance.counter()).isZero();
         assertThat(afterAdvance.packed()).isGreaterThan(beforeAdvance.packed());
     }
@@ -130,7 +151,7 @@ class HlcClockTest {
         time.set(3_000_000L);
         var reset = clock.forceReset();
 
-        assertThat(reset.physicalMicros()).isEqualTo(3_000_000L);
+        assertThat(reset.physicalMillis()).isEqualTo(3_000_000L);
         assertThat(reset.counter()).isZero();
         assertThat(reset.nodeId()).isEqualTo(new NodeId("node-1"));
     }
