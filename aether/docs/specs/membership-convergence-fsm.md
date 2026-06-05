@@ -158,8 +158,10 @@ events/states; it does not re-implement them.
 - **I6** A `DEAD` edge is the sole source of an observable departure event (NODE_FAILED/NODE_LEFT).
 - **I7** (split-brain) No two *live* members ever share an identity. A returning `NodeId` carries a
   strictly higher incarnation; admitting it **fences (downs) the prior incarnation** (Akka rule).
-- **I8** A member counts toward quorum/`effective` only while **ACTIVE** (synced). A joining/rejoining
-  member is **PASSIVE** (non-voting, single-snapshot syncing) and never counts until promoted (§9.3).
+- **I8** `NodeRole.PASSIVE` (worker/observer) never counts toward quorum/`effective`; ACTIVE (core)
+  members do. **PASSIVE is a distinct node construction, not a transient join state** — there is no
+  ACTIVE↔PASSIVE transition, by design (§9.3). A rejoining core node returns directly as ACTIVE via
+  incarnation fencing (§9.4 #2); it does not pass through a PASSIVE/"learner" phase.
 
 These become property tests / a small model-checker: enumerate states, feed event sequences, assert
 I1–I6. This session's intermittent failures become *deterministic* FSM tests.
@@ -229,18 +231,16 @@ A survey of leading cluster-management systems converges on one pattern, and it 
 - **Identity = `(NodeId, incarnation)`; a new incarnation fences the old** (I7). The edge-triggered
   co-confirmation gate + `terminallyEvicted` set are replaced by this.
 
-### 9.3 "Learner" ≡ Aether's existing `NodeRole.PASSIVE` + single-snapshot sync
-Aether already has `NodeRole { ACTIVE, PASSIVE }`; **PASSIVE** ("load balancer, observer") is filtered
-out of quorum and core-membership everywhere (`TopologyObserver` `role() != PASSIVE`). **That is etcd's
-non-voting learner, already built** — reuse it, do not invent a learner.
-- **Refinement vs etcd:** Aether syncs via a **single snapshot (instant)**, not incremental log
-  catch-up. So the `PASSIVE → ACTIVE` promotion gate is **binary** (snapshot applied = caught up) —
-  no "log-delta < threshold" tuning and no "one learner at a time" workload cap.
-- **Join/rejoin funnel:** a joining *or* returning node enters as **PASSIVE** (non-voting, single-
-  snapshot sync), and the **leader promotes** PASSIVE→ACTIVE once synced **and** desired-role==CORE.
-  Maps onto FSM `OBSERVED`/`JOINING` (= PASSIVE) → `MEMBER` (= ACTIVE). Never self-promotion (etcd rule).
-- **Permanent vs transient passive** is disambiguated by **desired role**: desired CORE → promote when
-  synced; desired PASSIVE (LB/observer) → stays PASSIVE. No new role; the FSM tracks intended role.
+### 9.3 No "learner" phase — PASSIVE is a worker construction, not a join funnel (CORRECTED 2026-06-05)
+The prior framing in this section (PASSIVE ≡ etcd non-voting learner; a join/rejoin enters PASSIVE then
+gets promoted to ACTIVE) is **rejected as a Raft-/etcd-ism foreign to Aether.** `NodeRole.PASSIVE`
+denotes a **worker/observer** node — *constructed differently* from a core node — and is filtered out of
+quorum/core-membership everywhere. **There is no ACTIVE↔PASSIVE transition, by design**; the two are not
+points on a promotion ladder, and there is deliberately no simple way to move between them. Rabia is
+leaderless and needs no learner: a joining or rejoining **core** node comes up as ACTIVE and catches up
+via the existing **single-snapshot sync**; a rejoining same-id node is admitted by **incarnation
+fencing** (§9.4 #2, Docker-validated). The learner/promote machinery is therefore *not* built — §9.4 #3
+is struck. (etcd's learner is retained in §9.1/§9.6 only as surveyed prior art, not an adopted model.)
 
 ### 9.4 Prerequisites (concrete, bounded)
 1. **Monotonic incarnation across restarts — DONE (G1+G2, 2026-06-05).** On inspection the original
@@ -270,9 +270,21 @@ non-voting learner, already built** — reuse it, do not invent a learner.
    (`onPeerRecovered`, no transport-plane incarnation) defers to SWIM authority via map presence. This
    aligns the reconciler with `SwimProtocol.supersedeOrRefuse`; surplus from a rejoin is drained by the
    existing `computePeersToDrain` path. Pinned by the rewritten `TerminalEviction` tests (53/53).
-3. **Rejoin via PASSIVE + single-snapshot sync, promote on synced** — reuse `NodeRole.PASSIVE` (§9.3).
-4. **Serialize concurrent membership changes** — one change at a time (etcd joint-consensus safety);
-   directly targets the multi-kill instability (§9.5).
+   **VALIDATED on Docker (2026-06-05):** a non-leader node killed → co-confirmed-dead → evicted
+   (lifecycle record gone), then `docker start` under the **same NodeId**, rejoined as READY in **16s**
+   (the higher boot incarnation un-fenced it; the old terminal-evict Set would have blocked it forever).
+   Surplus-drain-to-5 lagged (a new-ULID replacement joined → cluster held at 6, node-5 UNKNOWN) — the
+   separate **#68** post-multikill quiesce churn, not a rejoin regression.
+3. **REJECTED (2026-06-05).** "Rejoin via PASSIVE" is a Raft artifact (§9.3): PASSIVE is a worker
+   construction with no mode transition by design. Rejoin is fully covered by incarnation fencing
+   (#2, validated) + the existing single-snapshot sync — no learner phase, nothing to build.
+4. **DEFERRED (2026-06-05).** The reconciler does fire every provision/drain in one pass with no
+   single-flight gate (a real concurrency), but the validation evidence for the post-multikill churn
+   points at **health/quiesce** (a node going UNKNOWN — possibly the deferred consensus-stream wedge),
+   **not** concurrent dispatch — so serialization might be correct hygiene yet not the churn fix. The
+   etcd "one-change-at-a-time joint-consensus" framing is itself a Raft import (cf. §9.3). Deferred
+   until the churn root (#68) is understood; the churn is its own investigation, not a spec-driven
+   serialization change.
 
 ### 9.5 The multi-kill churn is a known field problem
 Akka explicitly documents that when **multiple nodes are unreachable simultaneously**, new-incarnation
