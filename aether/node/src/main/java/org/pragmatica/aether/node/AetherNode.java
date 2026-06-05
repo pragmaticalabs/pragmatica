@@ -1618,7 +1618,7 @@ public interface AetherNode extends ManageableNode {
         // surplus.
         swimHealthDetector.addObservationListener(obs -> {
                                                      if (obs instanceof SwimObservation.HealthyObserved h) {
-                                                         leaderReconciler.onSwimMemberHealthy(h.peer());
+                                                         leaderReconciler.onSwimMemberHealthy(h.peer(), h.incarnation());
                                                      }
                                                  });
         // Confirmed-death co-confirmation gate (NTT hard-evict fast path): feed the
@@ -2313,8 +2313,8 @@ public interface AetherNode extends ManageableNode {
     /// happens inside the reconciler; other observation kinds are ignored here.
     private static void routeSwimEdgeToConfirmedDeath(SwimObservation observation, LeaderReconciler leaderReconciler) {
         switch (observation) {
-            case SwimObservation.FaultyObserved faulty -> leaderReconciler.onSwimFaulty(faulty.peer());
-            case SwimObservation.HealthyObserved healthy -> leaderReconciler.onSwimHealthy(healthy.peer());
+            case SwimObservation.FaultyObserved faulty -> leaderReconciler.onSwimFaulty(faulty.peer(), faulty.incarnation());
+            case SwimObservation.HealthyObserved healthy -> leaderReconciler.onSwimHealthy(healthy.peer(), healthy.incarnation());
             default -> {}
         }
     }

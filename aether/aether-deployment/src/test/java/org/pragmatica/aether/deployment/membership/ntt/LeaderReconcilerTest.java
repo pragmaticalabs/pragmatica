@@ -307,7 +307,7 @@ class LeaderReconcilerTest {
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().cancel(false);
             listener.clear();
 
-            reconciler.onSwimMemberHealthy(PEER_A);
+            reconciler.onSwimMemberHealthy(PEER_A, 1L);
             scheduler.tasksByDelay(DEBOUNCE_DELAY).getFirst().runIfLive();
 
             assertThat(listener.events()).hasSize(1);
@@ -319,7 +319,7 @@ class LeaderReconcilerTest {
 
         @Test
         void onSwimMemberHealthy_whileNotLeader_emitsNothing() {
-            reconciler.onSwimMemberHealthy(PEER_A);
+            reconciler.onSwimMemberHealthy(PEER_A, 1L);
 
             assertThat(scheduler.tasksByDelay(DEBOUNCE_DELAY)).isEmpty();
             assertThat(listener.events()).isEmpty();
@@ -570,7 +570,7 @@ class LeaderReconcilerTest {
             // recovery pass clears the deficit anchor (effective >= configured).
             seedClusterWithPeers(PEER_D);
             timeSource.advanceTimeMillis(EXPECTED_INFLIGHT_EXPIRY.millis() + 1);
-            reconciler.onSwimMemberHealthy(PEER_D);
+            reconciler.onSwimMemberHealthy(PEER_D, 1L);
             fireDebouncedReconcile();
             assertThat(reconciler.inFlightProvisioningCount()).isZero();
 
@@ -643,7 +643,7 @@ class LeaderReconcilerTest {
             assertThat(listener.events().getLast().provisionCount()).isZero();
             timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() / 2);
             seedClusterWithPeers(PEER_D);
-            reconciler.onSwimMemberHealthy(PEER_D);
+            reconciler.onSwimMemberHealthy(PEER_D, 1L);
             fireDebouncedReconcile();
 
             assertThat(ctm.provisionReplacementCalls()).isEmpty();
@@ -1068,10 +1068,10 @@ class LeaderReconcilerTest {
 
     @Nested
     class TerminalEviction {
-        /// Co-confirm an id dead (SWIM-FAULTY ∧ liveness-gone) so it is hard-evicted and recorded
-        /// TERMINAL; then deliver a STALE SWIM-HEALTHY for that SAME id. Under restart-disabled the
-        /// id never legitimately returns (a genuine return is a NEW ULID), so the stale signal must
-        /// be a no-op — the id stays terminally evicted and is not re-admitted.
+        /// Co-confirm an id dead (SWIM-FAULTY ∧ liveness-gone) at incarnation 100 so it is
+        /// hard-evicted and FENCED at 100; then deliver a STALE SWIM-HEALTHY at a same-or-lower
+        /// incarnation for that SAME id. A stale prior-life signal must not un-fence — the id stays
+        /// fenced (new-incarnation-fences-old: only a strictly-higher incarnation supersedes).
         @Test
         void coConfirmedDead_thenStaleSwimHealthy_doesNotUnEvict() {
             configuredCoreCount.set(5);
@@ -1079,18 +1079,41 @@ class LeaderReconcilerTest {
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
-            reconciler.onSwimFaulty(PEER_D);
+            reconciler.onSwimFaulty(PEER_D, 100L);
             reconciler.onLivenessGone(PEER_D);
             assertThat(reconciler.isTerminallyEvicted(PEER_D)).isTrue();
 
-            // Stale recovery for the SAME id arrives AFTER the verdict — must not un-evict.
-            reconciler.onSwimHealthy(PEER_D);
+            // Stale recovery (same-or-lower incarnation) for the SAME id arrives AFTER the verdict
+            // — must not un-fence.
+            reconciler.onSwimHealthy(PEER_D, 100L);
+            assertThat(reconciler.isTerminallyEvicted(PEER_D)).isTrue();
 
+            reconciler.onSwimHealthy(PEER_D, 50L);
             assertThat(reconciler.isTerminallyEvicted(PEER_D)).isTrue();
         }
 
-        /// Same terminal-verdict guard via the transport-recovery ingress: a stale QUIC reconnect
-        /// (`onPeerRecovered`) for a terminally-evicted id must not un-evict it.
+        /// New-incarnation-fences-old: co-confirm an id dead at incarnation 100 so it is FENCED at
+        /// 100; then a SWIM-HEALTHY at a STRICTLY HIGHER incarnation (101) supersedes the fence and
+        /// re-admits the SAME id — aligned with SWIM's tombstone supersede.
+        @Test
+        void coConfirmedDead_thenHigherIncarnationSwimHealthy_unEvicts() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            reconciler.onSwimFaulty(PEER_D, 100L);
+            reconciler.onLivenessGone(PEER_D);
+            assertThat(reconciler.isTerminallyEvicted(PEER_D)).isTrue();
+
+            // Strictly-higher incarnation supersedes the fence → re-admit the same id.
+            reconciler.onSwimHealthy(PEER_D, 101L);
+            assertThat(reconciler.isTerminallyEvicted(PEER_D)).isFalse();
+        }
+
+        /// Same fence guard via the transport-recovery ingress: a QUIC reconnect (`onPeerRecovered`,
+        /// no incarnation) for a fenced id must not un-fence it — the transport plane defers to SWIM
+        /// authority, which alone carries the incarnation needed to supersede.
         @Test
         void coConfirmedDead_thenStalePeerRecovered_doesNotUnEvict() {
             configuredCoreCount.set(5);
@@ -1098,7 +1121,7 @@ class LeaderReconcilerTest {
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
-            reconciler.onSwimFaulty(PEER_D);
+            reconciler.onSwimFaulty(PEER_D, 100L);
             reconciler.onLivenessGone(PEER_D);
             assertThat(reconciler.isTerminallyEvicted(PEER_D)).isTrue();
 
@@ -1107,7 +1130,7 @@ class LeaderReconcilerTest {
             assertThat(reconciler.isTerminallyEvicted(PEER_D)).isTrue();
         }
 
-        /// Leader-local lifecycle: deactivation (leader-term end) clears the terminal set so a new
+        /// Leader-local lifecycle: deactivation (leader-term end) clears the terminal map so a new
         /// leader term starts fresh — consistent with the existing `swimFaulty`/`livenessGone`
         /// reset on deactivate.
         @Test
@@ -1116,7 +1139,7 @@ class LeaderReconcilerTest {
             seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
-            reconciler.onSwimFaulty(PEER_D);
+            reconciler.onSwimFaulty(PEER_D, 100L);
             reconciler.onLivenessGone(PEER_D);
             assertThat(reconciler.isTerminallyEvicted(PEER_D)).isTrue();
 
@@ -1126,10 +1149,10 @@ class LeaderReconcilerTest {
         }
 
         /// Non-terminal path intact: an id that is only SWIM-FAULTY (NOT co-confirmed dead — no
-        /// liveness-gone) is never hard-evicted, so it is never in the terminal set, and a
-        /// subsequent SWIM-HEALTHY clears it normally. Proven by: after the un-confirmed FAULTY +
-        /// HEALTHY, a fresh liveness-gone ALONE does not evict (the FAULTY record was cleared), so
-        /// the id never becomes terminally evicted.
+        /// liveness-gone) is never hard-evicted, so it is never fenced, and a subsequent
+        /// SWIM-HEALTHY clears it normally. Proven by: after the un-confirmed FAULTY + HEALTHY, a
+        /// fresh liveness-gone ALONE does not evict (the FAULTY record was cleared), so the id never
+        /// becomes fenced.
         @Test
         void unconfirmedFaulty_notTerminal_andSwimHealthyClearsNormally() {
             configuredCoreCount.set(5);
@@ -1137,14 +1160,14 @@ class LeaderReconcilerTest {
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
-            reconciler.onSwimFaulty(PEER_D);
+            reconciler.onSwimFaulty(PEER_D, 100L);
             assertThat(reconciler.isTerminallyEvicted(PEER_D)).isFalse();
 
             // Non-terminal recovery clears the bare FAULTY record (id was never co-confirmed).
-            reconciler.onSwimHealthy(PEER_D);
+            reconciler.onSwimHealthy(PEER_D, 100L);
 
             // A later liveness-gone ALONE cannot evict (swimFaulty was cleared), so the id never
-            // becomes co-confirmed-dead and never enters the terminal set.
+            // becomes co-confirmed-dead and never enters the terminal map.
             reconciler.onLivenessGone(PEER_D);
             assertThat(reconciler.isTerminallyEvicted(PEER_D)).isFalse();
         }
@@ -1180,7 +1203,7 @@ class LeaderReconcilerTest {
             // STILL tracked (within the ×3 expiry window). effective = 5 confirmed + 1 stale
             // placeholder. A naive sum would think there is a surplus of 1 and drain a core.
             seedClusterWithPeers(PEER_D);
-            reconciler.onSwimMemberHealthy(PEER_D);
+            reconciler.onSwimMemberHealthy(PEER_D, 1L);
             fireDebouncedReconcile();
 
             var intent = listener.events().getFirst();
@@ -1215,7 +1238,7 @@ class LeaderReconcilerTest {
             // Membership recovers to full (a DIFFERENT node joins) but the original stuck
             // placeholder is still tracked. confirmed=5, in-flight=1, effective=6.
             seedClusterWithPeers(PEER_D);
-            reconciler.onSwimMemberHealthy(PEER_D);
+            reconciler.onSwimMemberHealthy(PEER_D, 1L);
             fireDebouncedReconcile();
 
             var intent = listener.events().getFirst();
@@ -1336,7 +1359,7 @@ class LeaderReconcilerTest {
 
             // The replacement boots under its minted id and joins membership (back to 5).
             seedClusterWithPeers(mintedId);
-            reconciler.onSwimMemberHealthy(mintedId);
+            reconciler.onSwimMemberHealthy(mintedId, 1L);
             fireDebouncedReconcile();
 
             assertThat(reconciler.inFlightProvisioningSnapshot()).doesNotContainKey(mintedId);
@@ -1368,7 +1391,7 @@ class LeaderReconcilerTest {
             listener.clear();
 
             seedClusterWithPeers(mintedId);
-            reconciler.onSwimMemberHealthy(mintedId);
+            reconciler.onSwimMemberHealthy(mintedId, 1L);
             fireDebouncedReconcile();
 
             var intent = listener.events().getFirst();
