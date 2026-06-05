@@ -261,8 +261,15 @@ non-voting learner, already built** — reuse it, do not invent a learner.
      (NTP step-back / VM migration). Strict monotonicity would need a persisted counter
      (`max(persisted+1, bootMillis)`) or a regression guard; SWIM has no durable store today. Deferred —
      not required for fencing under a sane clock. (Akka UID / Serf incarnation.)
-2. **New-incarnation-fences-old** — replace `terminallyEvicted` + the co-confirmation gate with an
-   Akka-style auto-down of the prior incarnation on observing a higher one. (Next: now unblocked by #1.)
+2. **New-incarnation-fences-old — DONE (2026-06-05).** Replaced the reconciler's `NodeId`-only
+   `terminallyEvicted` set (which permanently blocked a co-confirmed-dead id and *contradicted* SWIM's
+   already-correct incarnation-fenced tombstone) with a `Map<NodeId, Long> terminalIncarnation`. The
+   SWIM-half ingress (`onSwimFaulty`/`onSwimHealthy`) now threads `incarnation`: eviction stamps the
+   FAULTY incarnation; a **strictly-higher** incarnation on `onSwimHealthy` un-fences (auto-downs the
+   prior life → same-id rejoin allowed), a same/lower one stays fenced (stale). The QUIC half
+   (`onPeerRecovered`, no transport-plane incarnation) defers to SWIM authority via map presence. This
+   aligns the reconciler with `SwimProtocol.supersedeOrRefuse`; surplus from a rejoin is drained by the
+   existing `computePeersToDrain` path. Pinned by the rewritten `TerminalEviction` tests (53/53).
 3. **Rejoin via PASSIVE + single-snapshot sync, promote on synced** — reuse `NodeRole.PASSIVE` (§9.3).
 4. **Serialize concurrent membership changes** — one change at a time (etcd joint-consensus safety);
    directly targets the multi-kill instability (§9.5).
