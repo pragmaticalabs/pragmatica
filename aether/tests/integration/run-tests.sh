@@ -511,12 +511,12 @@ deploy_docker() {
     # `aether-core-node-*` containers from prior runs that compose doesn't manage.
     if [ "$host" = "localhost" ]; then
         docker compose -f "$COMPOSE_A" down -v 2>/dev/null || true
-        # CTM-provisioned containers now carry cluster scope: aether-<cluster>-<pool>-node-...
-        # Sweep both legacy (aether-core-node-) and current (aether-default-core-node-) plus
-        # any aether-a-core-node-* / aether-test-cluster-core-node-* shapes from test runs.
-        docker rm -f $(docker ps -aq --filter "name=aether-core-node-") 2>/dev/null || true
-        docker rm -f $(docker ps -aq --filter "name=aether-default-core-node-") 2>/dev/null || true
-        docker rm -f $(docker ps -aq --filter "name=aether-a-core-node-") 2>/dev/null || true
+        # CTM-provisioned containers share the canonical core prefix aether-<cluster>-node-
+        # (NodeId == container_name; NO -core-/pool segment). Name-prefix sweep is a
+        # redundant backup to the authoritative label sweep below; cover cluster A + default.
+        docker rm -f $(docker ps -aq --filter "name=aether-a-node-") 2>/dev/null || true
+        docker rm -f $(docker ps -aq --filter "name=aether-default-node-") 2>/dev/null || true
+        docker rm -f $(docker ps -aq --filter "name=aether-a-node-") 2>/dev/null || true
         # Label-scoped zombie sweep (catches any CTM container missed by the name-prefix
         # filters above, e.g. shapes introduced by future provider/pool naming changes).
         _local_cleanup_zombies "a"
@@ -524,7 +524,7 @@ deploy_docker() {
         docker compose -f "$COMPOSE_A" up -d 2>&1 | tail -5
     else
         remote_scp "$COMPOSE_A" "~/docker-compose-a.yml"
-        remote_exec "cd ~ && docker compose -f docker-compose-a.yml down -v 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-core-node-) 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-default-core-node-) 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-a-core-node-) 2>/dev/null || true; docker volume rm -f aether_pgdata 2>/dev/null || true"
+        remote_exec "cd ~ && docker compose -f docker-compose-a.yml down -v 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-a-node-) 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-default-node-) 2>/dev/null || true; docker volume rm -f aether_pgdata 2>/dev/null || true"
         cleanup_cluster_zombies "a"
         remote_exec "cd ~ && docker compose -f docker-compose-a.yml up -d 2>&1 | tail -5"
     fi
@@ -536,7 +536,7 @@ deploy_docker() {
         docker compose -f "$COMPOSE_B" up -d 2>&1 | tail -5
     else
         remote_scp "$COMPOSE_B" "~/docker-compose-b.yml"
-        remote_exec "cd ~ && docker rm -f \$(docker ps -aq --filter name=aether-default-core-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-b-core-node-) 2>/dev/null || true; docker compose -f docker-compose-b.yml down -v 2>/dev/null || true"
+        remote_exec "cd ~ && docker rm -f \$(docker ps -aq --filter name=aether-b-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-default-node-) 2>/dev/null || true; docker compose -f docker-compose-b.yml down -v 2>/dev/null || true"
         cleanup_cluster_zombies "b"
         remote_exec "cd ~ && docker compose -f docker-compose-b.yml up -d 2>&1 | tail -5"
     fi
@@ -555,13 +555,14 @@ teardown() {
         docker|remote)
             local host="${TARGET_HOST:-localhost}"
             if [ "$host" = "localhost" ]; then
-                # CTM containers first — they hold the network; compose down would stall otherwise
-                docker rm -f $(docker ps -aq --filter "name=aether-core") 2>/dev/null || true
+                # CTM containers first — they hold the network; compose down would stall otherwise.
+                # Match the canonical aether-<cluster>-node- prefix (covers seeds + CTM replacements).
+                docker rm -f $(docker ps -aq --filter "name=aether-a-node-" --filter "name=aether-b-node-") 2>/dev/null || true
                 docker compose -f "$COMPOSE_A" down -v 2>/dev/null || true
                 docker compose -f "$COMPOSE_B" down -v 2>/dev/null || true
             else
                 # Same order on remote: sweep CTM containers before compose down
-                remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-core-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-default-core-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-a-core-node-) 2>/dev/null || true"
+                remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-a-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-b-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-default-node-) 2>/dev/null || true"
                 remote_exec "docker compose -f ~/docker-compose-a.yml down -v 2>/dev/null || true"
                 remote_exec "docker compose -f ~/docker-compose-b.yml down -v 2>/dev/null || true"
             fi
