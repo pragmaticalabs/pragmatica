@@ -235,7 +235,16 @@ public class CodecProcessor extends AbstractProcessor {
                     note(subtypeElement, "Generated codec: " + subtypeElement.getSimpleName() + "Codec");
                 }
             } else if (subtypeKind == ElementKind.INTERFACE) {
-                processSealedInterface(subtypeElement, packageToCodecNames);
+                // A non-sealed permitted interface is an extension hatch (e.g. ClusterEvent.ExtendedEvent):
+                // it has no closed permitted set, so no parent-level codec is generated for it. Its concrete
+                // app-provided variants serialize via their own @Codec record codecs at runtime. Recursing
+                // into processSealedInterface would hard-error on the empty permitted set, so skip it here.
+                if (subtypeElement.getPermittedSubclasses().isEmpty()) {
+                    note(subtypeElement, "Skipping non-sealed permitted interface (extension hatch): "
+                        + subtypeElement.getSimpleName());
+                } else {
+                    processSealedInterface(subtypeElement, packageToCodecNames);
+                }
             }
         }
 

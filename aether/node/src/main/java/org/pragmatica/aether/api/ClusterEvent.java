@@ -7,6 +7,7 @@ package org.pragmatica.aether.api;
 import org.pragmatica.aether.slice.stream.StreamAddress;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.serialization.Codec;
 
 import java.util.Map;
 
@@ -23,6 +24,7 @@ import java.util.Map;
 /// Consumers exhaust the sealed parent via pattern-matching `switch`; the compiler enforces that
 /// every closed variant is handled and that an `ExtendedEvent` arm is present (typically a
 /// discriminator-keyed dispatch, structured log, or no-op).
+@Codec
 public sealed interface ClusterEvent permits
         ClusterEvent.NodeJoined,
         ClusterEvent.NodeLeft,
@@ -73,6 +75,7 @@ public sealed interface ClusterEvent permits
     /// Free-form key/value payload carried by every closed-set variant.
     Map<String, String> details();
 
+    @Codec
     enum Severity {
         INFO,
         WARNING,

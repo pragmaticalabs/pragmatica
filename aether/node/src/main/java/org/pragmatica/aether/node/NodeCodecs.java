@@ -49,6 +49,7 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.aether.slice.SliceCodecsNode.CODECS);
         all.addAll(org.pragmatica.aether.slice.SliceCodecsInvoke.CODECS);
         all.addAll(org.pragmatica.aether.slice.kvstore.KvstoreCodecsSlice.CODECS);
+        all.addAll(org.pragmatica.aether.api.ApiCodecsNode.CODECS);
         all.addAll(org.pragmatica.aether.slice.generation.GenerationCodecsSlice.CODECS);
         all.addAll(org.pragmatica.aether.slice.blueprint.BlueprintCodecsSlice.CODECS);
         all.addAll(org.pragmatica.aether.invoke.InvokeCodecsInvoke.CODECS);

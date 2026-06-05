@@ -53,6 +53,7 @@ public sealed interface WorkerCodecs {
         all.addAll(SliceCodecsNode.CODECS);
         all.addAll(SliceCodecsInvoke.CODECS);
         all.addAll(org.pragmatica.aether.slice.kvstore.KvstoreCodecsSlice.CODECS);
+        all.addAll(org.pragmatica.aether.api.ApiCodecsNode.CODECS);
         all.addAll(BlueprintCodecsSlice.CODECS);
         all.addAll(InvokeCodecsInvoke.CODECS);
         all.addAll(MutationCodecsNode.CODECS);
