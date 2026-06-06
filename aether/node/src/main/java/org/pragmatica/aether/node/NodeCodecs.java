@@ -54,6 +54,11 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.aether.slice.blueprint.BlueprintCodecsSlice.CODECS);
         all.addAll(org.pragmatica.aether.invoke.InvokeCodecsInvoke.CODECS);
         all.addAll(org.pragmatica.aether.http.forward.ForwardCodecsInvoke.CODECS);
+        // aether-stream wire types (replication, read-forward, stream-consensus) — without these the
+        // active replication / catch-up / forward sends throw "No codec registered" over the cluster network.
+        all.addAll(org.pragmatica.aether.stream.consensus.ConsensusCodecsStream.CODECS);
+        all.addAll(org.pragmatica.aether.stream.replication.ReplicationCodecsStream.CODECS);
+        all.addAll(org.pragmatica.aether.stream.forward.ForwardCodecsStream.CODECS);
         all.addAll(org.pragmatica.aether.dht.DhtCodecsInvoke.CODECS);
         all.addAll(org.pragmatica.aether.http.handler.HandlerCodecs.CODECS);
         all.addAll(org.pragmatica.aether.http.handler.security.SecurityCodecs.CODECS);
