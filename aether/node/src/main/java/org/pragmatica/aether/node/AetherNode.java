@@ -2988,9 +2988,13 @@ public interface AetherNode extends ManageableNode {
     }
 
     /// `system:cluster-events:1.0.0` retention `maxBytes` — the byte hard-cap OOM guard for the
-    /// off-heap partition store. Default ~64MB. Override: `CLUSTER_EVENTS_MAX_BYTES`.
+    /// off-heap partition store. Default 16MB. Cluster events are small JSON records, so 16MB retains
+    /// many thousands of them while leaving the bulk of the per-node stream budget
+    /// (`DEFAULT_MAX_TOTAL_BYTES`, 128MB) for app streams — the prior 64MB default reserved HALF the
+    /// budget for one system stream and starved app-stream creation (STREAM_MEMORY_EXCEEDED).
+    /// Override: `CLUSTER_EVENTS_MAX_BYTES`.
     private static long resolveClusterEventsMaxBytes() {
-        return resolveLongEnv("CLUSTER_EVENTS_MAX_BYTES", 64L * 1024 * 1024);
+        return resolveLongEnv("CLUSTER_EVENTS_MAX_BYTES", 16L * 1024 * 1024);
     }
 
     /// `system:cluster-events:1.0.0` retention `maxAgeMs`. Default ~24h.
