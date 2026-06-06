@@ -6,10 +6,10 @@ package org.pragmatica.aether.slice.resource;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.Verify.Is;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.serialization.Codec;
-
-import static org.pragmatica.lang.Result.success;
 
 
 /// Resource schema version — the single, resource-generic version type for all addressable
@@ -48,10 +48,10 @@ import static org.pragmatica.lang.Result.success;
     }
 
     public static Result<ResourceVersion> resourceVersion(int major, int minor, int patch) {
-        if (major < 0 || minor < 0 || patch < 0) {
-            return ResourceVersionError.General.NEGATIVE_COMPONENT.result();
-        }
-        return success(new ResourceVersion(major, minor, patch));
+        return Verify.ensure(major, Is::nonNegative, ResourceVersionError.General.NEGATIVE_COMPONENT)
+                     .flatMap(_ -> Verify.ensure(minor, Is::nonNegative, ResourceVersionError.General.NEGATIVE_COMPONENT))
+                     .flatMap(_ -> Verify.ensure(patch, Is::nonNegative, ResourceVersionError.General.NEGATIVE_COMPONENT))
+                     .map(_ -> new ResourceVersion(major, minor, patch));
     }
 
     /// Default resource version applied to legacy / un-namespaced declarations that omit an
