@@ -82,6 +82,9 @@ public class RabiaEngine<C extends Command> {
     private static final double SCALE = 0.2d;
     /// Default phase stall check interval.
     public static final TimeSpan DEFAULT_PHASE_STALL_CHECK = TimeSpan.timeSpan(500).millis();
+    /// Apply-task duration probe threshold (5 ms). Diagnostic only — tasks at or above this on
+    /// the single consensus apply worker are logged as `SLOW-APPLY` with the executor queue depth.
+    private static final long SLOW_APPLY_THRESHOLD_NANOS = 5_000_000L;
 
     private final NodeId self;
     private final TopologyManager topologyManager;
@@ -673,14 +676,28 @@ public class RabiaEngine<C extends Command> {
     /// sender's retry. Errors (non-RuntimeException Throwable) are intentionally left to propagate.
     private void safeExecute(Runnable task) {
         executor.execute(() -> {
+            var start = System.nanoTime();
             try {
                 task.run();
+                var elapsed = System.nanoTime() - start;
+                if (elapsed >= SLOW_APPLY_THRESHOLD_NANOS) {
+                    log.warn("SLOW-APPLY ms={} queueDepth={}", elapsed / 1_000_000, applyQueueDepth());
+                }
             } catch (RuntimeException e) {
                 log.error("Consensus apply task threw {} — contained; worker preserved, round not applied",
                           e.getClass().getSimpleName(),
                           e);
             }
         });
+    }
+
+    /// Diagnostic helper: backlog of the single-thread apply executor. The executor is always a
+    /// `ThreadPoolExecutor` (see field construction); returns -1 if that ever changes so the probe
+    /// never throws.
+    private int applyQueueDepth() {
+        return executor instanceof ThreadPoolExecutor pool
+               ? pool.getQueue().size()
+               : -1;
     }
 
     @MessageReceiver

@@ -121,6 +121,7 @@ public sealed interface MessageRouter {
 
         record SimpleMutableRouter<T extends Message>(ConcurrentMap<Class<T>, List<Consumer<T>>> routingTable) implements MutableRouter {
             private static final Logger log = LoggerFactory.getLogger(MessageRouter.class);
+            private static final long SLOW_HANDLER_THRESHOLD_NANOS = 5_000_000L;
 
             @Override
             @SuppressWarnings("unchecked")
@@ -133,8 +134,13 @@ public sealed interface MessageRouter {
             }
 
             private void dispatchOne(Consumer<T> handler, T message) {
+                var start = System.nanoTime();
                 try {
                     handler.accept(message);
+                    var elapsed = System.nanoTime() - start;
+                    if (elapsed >= SLOW_HANDLER_THRESHOLD_NANOS) {
+                        log.warn("SLOW-HANDLER type={} ms={}", message.getClass().getSimpleName(), elapsed / 1_000_000);
+                    }
                 } catch (RuntimeException e) {
                     log.error("Listener for {} threw {}; continuing dispatch chain",
                               message.getClass().getSimpleName(),
@@ -158,6 +164,7 @@ public sealed interface MessageRouter {
     /// Immutable router with fixed routes.
     non-sealed interface ImmutableRouter<T extends Message> extends MessageRouter {
         Logger LOG = LoggerFactory.getLogger(ImmutableRouter.class);
+        long SLOW_HANDLER_THRESHOLD_NANOS = 5_000_000L;
 
         Map<Class<T>, List<Consumer<T>>> routingTable();
 
@@ -169,8 +176,13 @@ public sealed interface MessageRouter {
         }
 
         private void dispatchOne(Consumer<T> handler, T message) {
+            var start = System.nanoTime();
             try {
                 handler.accept(message);
+                var elapsed = System.nanoTime() - start;
+                if (elapsed >= SLOW_HANDLER_THRESHOLD_NANOS) {
+                    LOG.warn("SLOW-HANDLER type={} ms={}", message.getClass().getSimpleName(), elapsed / 1_000_000);
+                }
             } catch (RuntimeException e) {
                 LOG.error("Listener for {} threw {}; continuing dispatch chain",
                           message.getClass().getSimpleName(),
