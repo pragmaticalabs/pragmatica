@@ -8,8 +8,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.Codec;
 
-import java.util.Set;
-
 
 /// Three-component resource address: `<namespace>:<name>:<version>`.
 ///
@@ -32,10 +30,6 @@ import java.util.Set;
     /// deploy path replaces this with the blueprint-derived namespace; this constant is only the
     /// floor that keeps a bare name resolving to a valid `namespace:name:version`.
     public static final String DEFAULT_NAMESPACE = Namespace.DEFAULT;
-
-    public static final Set<String> RESERVED_NAMESPACES = Namespace.RESERVED;
-
-    public static final Set<String> RESERVED_NAMES = ResourceName.RESERVED;
 
     public sealed interface ResourceAddressError extends Cause {
         enum General implements ResourceAddressError {

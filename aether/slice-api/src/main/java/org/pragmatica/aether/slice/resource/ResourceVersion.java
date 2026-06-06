@@ -61,20 +61,14 @@ import org.pragmatica.serialization.Codec;
     }
 
     public static Result<ResourceVersion> resourceVersion(String value) {
-        if (value == null) {
-            return ResourceVersionError.General.NULL_VALUE.result();
-        }
-        if (value.isBlank()) {
-            return ResourceVersionError.General.BLANK_VALUE.result();
-        }
-        var parts = value.split("\\.", -1);
-        if (parts.length != 3) {
-            return ResourceVersionError.General.WRONG_FORMAT.result();
-        }
-        return parseComponent(parts[0])
-                .flatMap(major -> parseComponent(parts[1])
-                        .flatMap(minor -> parseComponent(parts[2])
-                                .flatMap(patch -> resourceVersion(major, minor, patch))));
+        return Verify.ensure(value, Is::notNull, ResourceVersionError.General.NULL_VALUE)
+                     .flatMap(notNull -> Verify.ensure(notNull, Is::notBlank, ResourceVersionError.General.BLANK_VALUE))
+                     .map(blank -> blank.split("\\.", -1))
+                     .flatMap(parts -> Verify.ensure(parts, p -> p.length == 3, ResourceVersionError.General.WRONG_FORMAT))
+                     .flatMap(parts -> parseComponent(parts[0])
+                             .flatMap(major -> parseComponent(parts[1])
+                                     .flatMap(minor -> parseComponent(parts[2])
+                                             .flatMap(patch -> resourceVersion(major, minor, patch)))));
     }
 
     private static Result<Integer> parseComponent(String component) {
