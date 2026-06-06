@@ -172,6 +172,14 @@ public final class LeaderReconciler {
     private final AtomicReference<ScheduledFuture<?>> debounceReEvalFutureRef = new AtomicReference<>();
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
     private final ConcurrentHashMap<NodeId, Long> inFlightProvisioning = new ConcurrentHashMap<>();
+    /// Provisioning-stickiness fix — supplier of the STICKILY-retained set of in-flight provisioning
+    /// ids the prior leader broadcast (via the metrics ping's `dispatchedNodes`, retained term-fenced
+    /// by `ClusterSyncCollector`). On leadership GAIN ([`#activate()`]) this set seeds
+    /// `inFlightProvisioning` for ids not already members, so a new leader inherits the prior leader's
+    /// dispatches instead of re-dispatching them (over-provisioning). Default `() -> Set.of()` (no
+    /// seed) so existing construction / tests keep working unchanged; `AetherNode` wires it to
+    /// `ClusterSyncCollector::retainedDispatchedNodes`.
+    private final AtomicReference<Supplier<Set<NodeId>>> retainedDispatchedSupplier = new AtomicReference<>(Set::of);
     private volatile Consumer<ReconcileIntent> reconcileListener = NOOP_LISTENER;
 
     private LeaderReconciler(MembershipConfig membershipConfig,
@@ -261,9 +269,35 @@ public final class LeaderReconciler {
             reachedFullMembership.set(true);
             log.info("LeaderReconciler re-election activation (leaderTerm={}) — reachedFullMembership pre-latched", leaderTermSupplier.get());
         }
+        seedInFlightFromRetainedDispatched();
         var future = scheduler.schedule(this::onActivationDelayFire, leaderActivationDelay);
 
         activationFutureRef.set(future);
+    }
+
+    /// Provisioning-stickiness fix — on leadership GAIN, seed `inFlightProvisioning` from the prior
+    /// leader's STICKILY-retained dispatched set (the metrics-ping `dispatchedNodes`, retained
+    /// term-fenced by `ClusterSyncCollector`). Each retained id that is NOT already a current member
+    /// is recorded in-flight (stamped with the same `timeSource.nanoTime()` clock the normal dispatch
+    /// path uses, so the ×3 expiry backstop ages it identically), via `putIfAbsent` so a concurrent
+    /// genuine dispatch is never clobbered. This makes the new leader INHERIT the prior leader's
+    /// in-flight provisions instead of re-dispatching them (the over-provisioning / "6 cores instead
+    /// of 5" bug). Ids that are already members are skipped — the provision already fulfilled.
+    private void seedInFlightFromRetainedDispatched() {
+        var retained = retainedDispatchedSupplier.get().get();
+        if (retained.isEmpty()) {
+            return;
+        }
+        var now = timeSource.nanoTime();
+        var currentMembers = ntt.currentMembers();
+        for (var id : retained) {
+            if (currentMembers.contains(id)) {
+                continue;
+            }
+            inFlightProvisioning.putIfAbsent(id, now);
+        }
+        log.info("LeaderReconciler seeded in-flight provisioning from retained dispatched set (retained={}, inFlight={})",
+                 retained.size(), inFlightProvisioning.size());
     }
 
     /// Deactivate the leader-pinned reconciler. Idempotent. Cancels the pending one-shot
@@ -360,6 +394,25 @@ public final class LeaderReconciler {
     /// Observability — number of in-flight provisioning records this leader is tracking.
     public int inFlightProvisioningCount() {
         return inFlightProvisioning.size();
+    }
+
+    /// Provisioning-stickiness fix — the set of in-flight provisioning ids this leader currently
+    /// tracks. Fed to the metrics ping's `dispatchedNodes` (via
+    /// `ClusterSyncContext.setDispatchedNodesSupplier`) so followers retain it and a new leader can
+    /// seed from it. Read-only snapshot.
+    public Set<NodeId> inFlightProvisioningKeys() {
+        return Set.copyOf(inFlightProvisioning.keySet());
+    }
+
+    /// Provisioning-stickiness fix — inject the supplier of the prior leader's STICKILY-retained
+    /// dispatched set, consulted on leadership gain ([`#activate()`]) to seed `inFlightProvisioning`.
+    /// `AetherNode` wires this to `ClusterSyncCollector::retainedDispatchedNodes`. `null` resets to
+    /// the empty-set default (no seed).
+    @Contract
+    public void setRetainedDispatchedSupplier(Supplier<Set<NodeId>> supplier) {
+        retainedDispatchedSupplier.set(supplier == null
+                                       ? Set::of
+                                       : supplier);
     }
 
     /// Observability — the one-shot leader-activation delay, computed once as

@@ -56,6 +56,15 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
     ///                               (leader+term-gated, TTL) so per-node readiness is queryable from
     ///                               any node and not just the leader. `null`/legacy pings and
     ///                               non-leader pings default to the empty map.
+    /// @param dispatchedNodes        GLOBAL set of node ids the leader currently tracks as IN-FLIGHT
+    ///                               provisioning (dispatched-but-not-yet-joined replacements). The
+    ///                               leader broadcasts its in-flight set so followers retain it STICKILY
+    ///                               (term-fenced, NOT TTL). On leader change the new leader SEEDS its
+    ///                               in-flight provisioning set from this retained set instead of
+    ///                               starting empty — preventing re-dispatch (over-provisioning) of
+    ///                               replacements already provisioned by the prior leader. Mirrors
+    ///                               `drainNodes` / `evictionHints`: a global advisory set. `null`/legacy
+    ///                               pings and non-leader pings default to the empty set.
     record ClusterSyncPing(NodeId sender,
                            Map<NodeId, Map<String, Double>> allMetrics,
                            long rabiaTerm,
@@ -63,7 +72,8 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
                            long epochCounter,
                            Set<NodeId> evictionHints,
                            Set<NodeId> drainNodes,
-                           Map<NodeId, String> readinessView) implements ClusterSyncMessage {
+                           Map<NodeId, String> readinessView,
+                           Set<NodeId> dispatchedNodes) implements ClusterSyncMessage {
         public ClusterSyncPing {
             evictionHints = evictionHints == null
                            ? Set.of()
@@ -74,10 +84,26 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
             readinessView = readinessView == null
                            ? Map.of()
                            : Map.copyOf(readinessView);
+            dispatchedNodes = dispatchedNodes == null
+                             ? Set.of()
+                             : Set.copyOf(dispatchedNodes);
+        }
+
+        /// Backward-compatible constructor for call sites that pre-date the `dispatchedNodes`
+        /// extension. Defaults the dispatched set to the empty set.
+        public ClusterSyncPing(NodeId sender,
+                               Map<NodeId, Map<String, Double>> allMetrics,
+                               long rabiaTerm,
+                               long epochTerm,
+                               long epochCounter,
+                               Set<NodeId> evictionHints,
+                               Set<NodeId> drainNodes,
+                               Map<NodeId, String> readinessView) {
+            this(sender, allMetrics, rabiaTerm, epochTerm, epochCounter, evictionHints, drainNodes, readinessView, Set.of());
         }
 
         /// Backward-compatible constructor for call sites that pre-date the `readinessView`
-        /// extension. Defaults the view to the empty map.
+        /// extension. Defaults the view to the empty map and dispatched set to the empty set.
         public ClusterSyncPing(NodeId sender,
                                Map<NodeId, Map<String, Double>> allMetrics,
                                long rabiaTerm,
@@ -85,13 +111,13 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
                                long epochCounter,
                                Set<NodeId> evictionHints,
                                Set<NodeId> drainNodes) {
-            this(sender, allMetrics, rabiaTerm, epochTerm, epochCounter, evictionHints, drainNodes, Map.of());
+            this(sender, allMetrics, rabiaTerm, epochTerm, epochCounter, evictionHints, drainNodes, Map.of(), Set.of());
         }
 
         /// Backward-compatible factory for legacy call sites that have no epoch info.
         /// Produces a term/epoch of zero — receivers treat it as a pre-migration heartbeat.
         public static ClusterSyncPing clusterSyncPing(NodeId sender, Map<NodeId, Map<String, Double>> allMetrics) {
-            return new ClusterSyncPing(sender, allMetrics, 0L, 0L, 0L, Set.of(), Set.of(), Map.of());
+            return new ClusterSyncPing(sender, allMetrics, 0L, 0L, 0L, Set.of(), Set.of(), Map.of(), Set.of());
         }
     }
 

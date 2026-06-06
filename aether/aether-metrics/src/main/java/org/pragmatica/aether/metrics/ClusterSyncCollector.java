@@ -90,6 +90,17 @@ public interface ClusterSyncCollector {
         return false;
     }
 
+    /// Provisioning-stickiness fix — the STICKILY-retained set of node ids the most-recent (highest
+    /// rabia-term) leader reported as IN-FLIGHT provisioning on its broadcast `ClusterSyncPing`. A
+    /// new leader seeds its in-flight provisioning set from this on leadership gain (via
+    /// `LeaderReconciler::setRetainedDispatchedSupplier`) so it does NOT re-dispatch replacements the
+    /// prior leader already provisioned. Unlike the readiness cache this is term-fenced but NOT
+    /// TTL-gated — it must survive a leaderless gap. Default `Set.of()` (no retained set; test
+    /// doubles inherit, fresh collectors before any leader ping).
+    default Set<NodeId> retainedDispatchedNodes() {
+        return Set.of();
+    }
+
     /// Readiness-broadcast (failover-readability): wire the leader manager, monotonic clock, and
     /// ping interval used by the follower readiness cache. After this is wired, [reportedStates]
     /// falls back to the cached leader view on followers and [hasAuthoritativeReadiness] reflects
@@ -251,6 +262,18 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// while absent the follower fallback yields the empty map (cold follower → 503 at the route).
     private final AtomicReference<Option<FollowerReadinessCache>> readinessCache = new AtomicReference<>(Option.none());
 
+    /// Provisioning-stickiness fix — the term-fenced retained set of in-flight provisioning node ids
+    /// the leader broadcasts on `ClusterSyncPing.dispatchedNodes`. SEPARATE from [readinessCache]:
+    /// term-fenced (a higher-or-equal-term ping REPLACES, even with an empty set — empty-from-the-
+    /// current-leader is the truth; a strictly-lower-term ping is rejected as a stale fence) but NOT
+    /// TTL-gated, so it survives a leaderless re-election gap. `Option.none()` until the first
+    /// accepted leader ping; read back via [retainedDispatchedNodes] by a new leader's seed path.
+    private final AtomicReference<Option<RetainedDispatched>> retainedDispatched = new AtomicReference<>(Option.none());
+
+    /// Term-tagged retained in-flight provisioning set. `term` is the broadcasting leader's
+    /// `rabiaTerm`; `nodes` is the leader's in-flight provisioning id set at broadcast time.
+    private record RetainedDispatched(long term, Set<NodeId> nodes) {}
+
     ClusterSyncCollectorImpl(NodeId self, ClusterNetwork network, long slidingWindowMs) {
         this.self = self;
         this.network = network;
@@ -351,6 +374,11 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         // view so this follower can serve `/api/nodes/lifecycle` without round-tripping the leader.
         // The cache itself is leader+TTL gated and ignores empty / non-leader views.
         cacheReadinessView(ping);
+        // Provisioning-stickiness fix: retain the leader's broadcast in-flight provisioning set
+        // STICKILY (term-fenced, NOT TTL-gated) so a new leader can seed its in-flight set from it on
+        // leadership gain instead of starting empty (which would re-dispatch already-provisioned
+        // replacements → over-provisioning). Stored after the global fence accepted the ping.
+        retainDispatchedNodes(ping);
         var pong = buildPong();
         log.debug("ClusterSync: sending PONG to {} (epoch={}:{})",
                   ping.sender(),
@@ -456,6 +484,22 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     private void cacheReadinessView(ClusterSyncPing ping) {
         readinessCache.get().onPresent(cache -> cache.maybeStore(ping.sender(), ping.rabiaTerm(), ping.readinessView()));
+    }
+
+    /// Provisioning-stickiness fix — term-fenced sticky store of the leader's broadcast in-flight
+    /// provisioning set. A ping at a term >= the retained term REPLACES the retained set
+    /// UNCONDITIONALLY (including with an empty set — empty-from-the-current-leader means the leader
+    /// has nothing in flight, which is the truth). A strictly-lower-term ping is rejected (stale
+    /// fence). No TTL: the retained set survives a leaderless gap so a freshly-elected leader can seed
+    /// from it. Lock-free CAS so concurrent ping handling never clobbers a higher-term retention.
+    private void retainDispatchedNodes(ClusterSyncPing ping) {
+        retainedDispatched.updateAndGet(current ->
+            current.filter(retained -> retained.term() > ping.rabiaTerm())
+                   .orElse(Option.some(new RetainedDispatched(ping.rabiaTerm(), Set.copyOf(ping.dispatchedNodes())))));
+    }
+
+    @Override public Set<NodeId> retainedDispatchedNodes() {
+        return retainedDispatched.get().map(RetainedDispatched::nodes).or(Set.of());
     }
 
     private static Map<NodeId, String> stringifyView(Map<NodeId, NodeReportedState> view) {

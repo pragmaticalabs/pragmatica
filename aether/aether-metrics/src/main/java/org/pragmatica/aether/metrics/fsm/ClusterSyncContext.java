@@ -71,6 +71,18 @@ public final class ClusterSyncContext {
     /// `DrainCommandRegistry` exists, without a constructor-signature change to the wiring path.
     private final AtomicReference<Supplier<Set<NodeId>>> drainTargets = new AtomicReference<>(Set::of);
 
+    /// Provisioning-stickiness fix — leader-local supplier of the GLOBAL set of node ids the leader
+    /// currently tracks as IN-FLIGHT provisioning (dispatched-but-not-yet-joined replacements).
+    /// `broadcastPing` snapshots it via `dispatchedNodesSupplier.get().get()` and stamps the set into
+    /// the single uniform `ClusterSyncPing.dispatchedNodes` BROADCAST to every QUIC-connected peer.
+    /// Followers retain it stickily (term-fenced) so a NEW leader seeds its in-flight set from the
+    /// retained set instead of starting empty (preventing re-dispatch / over-provisioning). Sourced
+    /// from `LeaderReconciler::inFlightProvisioningKeys` in production. Defaults to `() -> Set.of()`
+    /// (no in-flight ever) so existing construction / tests keep working with no behavior change.
+    /// Mutable holder so `AetherNode` can inject the real supplier AFTER scheduler construction
+    /// (`ClusterSyncScheduler.setDispatchedNodesSupplier`) once the `LeaderReconciler` exists.
+    private final AtomicReference<Supplier<Set<NodeId>>> dispatchedNodesSupplier = new AtomicReference<>(Set::of);
+
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
 
     private final AtomicLong quorumSequence = new AtomicLong();
@@ -327,7 +339,8 @@ public final class ClusterSyncContext {
                                        currentEpoch.localCounter(),
                                        currentEvictionHints(),
                                        drainTargets.get().get(),
-                                       collector.authoritativeReadinessView());
+                                       collector.authoritativeReadinessView(),
+                                       dispatchedNodesSupplier.get().get());
         log.debug("ClusterSync: broadcasting PING (rabiaTerm={}, epoch={}:{})",
                   rabiaTerm,
                   currentEpoch.rabiaTerm(),
@@ -343,6 +356,16 @@ public final class ClusterSyncContext {
         drainTargets.set(supplier == null
                          ? Set::of
                          : supplier);
+    }
+
+    /// Provisioning-stickiness fix — inject the leader-local IN-FLIGHT provisioning supplier after
+    /// construction. `AetherNode` calls this (via `ClusterSyncScheduler.setDispatchedNodesSupplier`)
+    /// once the `LeaderReconciler` exists, wiring `LeaderReconciler::inFlightProvisioningKeys`.
+    /// `null` resets to the empty-set default.
+    @Contract public void setDispatchedNodesSupplier(Supplier<Set<NodeId>> supplier) {
+        dispatchedNodesSupplier.set(supplier == null
+                                    ? Set::of
+                                    : supplier);
     }
 
     /// RC1 (S01 fix) — snapshot of peers this node has locally evicted via

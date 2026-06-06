@@ -58,6 +58,11 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
     /// carry the global `drainNodes` set for registered targets. Forwarded into the `ClusterSyncContext`.
     /// Default no-op for test doubles that don't drive drains.
     @Contract default void setDrainTargets(Supplier<Set<NodeId>> supplier) {}
+    /// Provisioning-stickiness fix — inject the leader-local IN-FLIGHT provisioning supplier.
+    /// `AetherNode` wires this to `LeaderReconciler::inFlightProvisioningKeys` after constructing the
+    /// reconciler so leader pings carry the global `dispatchedNodes` set. Forwarded into the
+    /// `ClusterSyncContext`. Default no-op for test doubles that don't drive provisioning.
+    @Contract default void setDispatchedNodesSupplier(Supplier<Set<NodeId>> supplier) {}
     /// Drive one periodic `PeerConnectivityObservation` emission synchronously.
     /// Wired by the scheduled task at `PeriodicObservationConfig.period()` cadence
     /// and exposed for deterministic testing. NOT leader-gated.
@@ -317,6 +322,10 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
 
     @Override@Contract public void setDrainTargets(Supplier<Set<NodeId>> supplier) {
         context.setDrainTargets(supplier);
+    }
+
+    @Override@Contract public void setDispatchedNodesSupplier(Supplier<Set<NodeId>> supplier) {
+        context.setDispatchedNodesSupplier(supplier);
     }
 
     @Override@Contract public void emitPeriodicConnectivityNow() {

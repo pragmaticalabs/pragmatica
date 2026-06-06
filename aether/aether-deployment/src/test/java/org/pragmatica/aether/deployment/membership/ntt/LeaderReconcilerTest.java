@@ -155,6 +155,89 @@ class LeaderReconcilerTest {
     }
 
     @Nested
+    class SeedInFlightFromRetainedDispatched {
+        /// Provisioning-stickiness fix — a retained dispatched id that is NOT a current member is
+        /// seeded into in-flight on `activate()`, so the next reconcile counts it toward `effective`
+        /// and does NOT re-dispatch a replacement the prior leader already provisioned.
+        @Test
+        void activate_seedsRetainedDispatchedIdNotYetAMember_intoInFlight() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B);
+            var dispatchedNotYetMember = NodeId.randomNodeId();
+            reconciler.setRetainedDispatchedSupplier(() -> Set.of(dispatchedNotYetMember));
+
+            reconciler.activate();
+
+            assertThat(reconciler.inFlightProvisioningSnapshot()).containsKey(dispatchedNotYetMember);
+            assertThat(reconciler.inFlightProvisioningKeys()).containsExactly(dispatchedNotYetMember);
+        }
+
+        /// A retained id that is ALREADY a current member is NOT seeded — the provision is fulfilled,
+        /// so tracking it in-flight would double-count it in `effective`.
+        @Test
+        void activate_doesNotSeedRetainedIdThatIsAlreadyAMember() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B);
+            // PEER_A is a current member; the prior leader's retained set still lists it (race window).
+            reconciler.setRetainedDispatchedSupplier(() -> Set.of(PEER_A));
+
+            reconciler.activate();
+
+            assertThat(reconciler.inFlightProvisioningSnapshot()).doesNotContainKey(PEER_A);
+            assertThat(reconciler.inFlightProvisioningCount()).isZero();
+        }
+
+        /// Mixed retained set: the non-member id is seeded, the already-member id is skipped.
+        @Test
+        void activate_seedsOnlyNonMemberRetainedIds() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B);
+            var dispatchedNotYetMember = NodeId.randomNodeId();
+            reconciler.setRetainedDispatchedSupplier(() -> Set.of(PEER_A, dispatchedNotYetMember));
+
+            reconciler.activate();
+
+            assertThat(reconciler.inFlightProvisioningKeys()).containsExactly(dispatchedNotYetMember);
+        }
+
+        /// Default (no supplier wired) and an empty retained set both seed nothing — inert until wired.
+        @Test
+        void activate_emptyOrUnwiredRetainedSet_seedsNothing() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B);
+
+            reconciler.activate();
+
+            assertThat(reconciler.inFlightProvisioningCount()).isZero();
+        }
+
+        /// The seed feeds `effectiveCapacity`: a seeded in-flight id closes the deficit so the next
+        /// reconcile does NOT dispatch a (duplicate) provision for it. This is the over-provisioning
+        /// fix end-to-end at the reconciler level — a re-elected leader inherits, not re-dispatches.
+        @Test
+        void seededInFlightId_suppressesReDispatchOnReconcile() {
+            configuredCoreCount.set(5);
+            // Re-election onto an already-formed, now-deficient cluster (4/5): SELF + A + B + C = 4.
+            leaderTerm.set(2L);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+            // The prior leader had already dispatched ONE replacement for the missing 5th node.
+            var priorDispatch = NodeId.randomNodeId();
+            reconciler.setRetainedDispatchedSupplier(() -> Set.of(priorDispatch));
+
+            reconciler.activate();
+            // Re-election pre-latches reachedFullMembership and the seed makes effective = 4 + 1 = 5.
+            assertThat(reconciler.inFlightProvisioningKeys()).containsExactly(priorDispatch);
+
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+
+            // effective (4 members + 1 seeded in-flight) == configured 5 → NO new provision dispatched.
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+        }
+    }
+
+    @Nested
     class DefaultState {
         @Test
         void freshReconciler_isNotLeader_andSchedulesNoActivation() {

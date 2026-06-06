@@ -1612,6 +1612,13 @@ public interface AetherNode extends ManageableNode {
                                                                  TimeSource.system(),
                                                                  SharedScheduler::schedule);
         leaderReconcilerRef.set(leaderReconciler);
+        // Provisioning-stickiness fix — read-only supplier wiring (no consensus). The leader's metrics
+        // ping carries its in-flight provisioning set (LeaderReconciler -> ClusterSyncPing.dispatchedNodes);
+        // followers retain it term-fenced. On leadership gain LeaderReconciler seeds its in-flight set
+        // from that retained set (ClusterSyncCollector::retainedDispatchedNodes) so a new leader does
+        // not re-dispatch replacements the prior leader already provisioned (the over-provisioning bug).
+        metricsScheduler.setDispatchedNodesSupplier(leaderReconciler::inFlightProvisioningKeys);
+        leaderReconciler.setRetainedDispatchedSupplier(metricsCollector::retainedDispatchedNodes);
         // Membership v2 Phase 2 LIVE — the per-member MembershipFsm is the authoritative membership-
         // death decision-maker (leader-gated, consensus-independent, SWIM/liveness-driven). It runs
         // ALWAYS (no shadow flag). On every transition into DEAD it hard-evicts the dead identity from
