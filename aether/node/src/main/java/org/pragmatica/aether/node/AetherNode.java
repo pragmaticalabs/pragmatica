@@ -110,6 +110,7 @@ import org.pragmatica.aether.stream.DefaultStreamPublisher;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
@@ -1982,9 +1983,12 @@ public interface AetherNode extends ManageableNode {
                                                                                                               kvStore);
         var streamNamespacesService = new StreamNamespacesService(streamRegistry,
                                                                   new org.pragmatica.aether.slice.stream.SystemStreamBootstrap(streamRegistry));
-        streamNamespacesService.bootstrap()
-                .onFailure(cause -> LOG.warn("system-stream bootstrap registration failed: {} — namespace listing may omit system streams until re-registered",
-                                             cause.message()));
+        // System-stream registration (system:cluster-events etc.) is driven on LEADER-GAIN, not here.
+        // This point runs on [main] during construction, seconds before consensus activates, so an
+        // eager bootstrap() always failed "Node is inactive" and was never retried — the stream stayed
+        // unregistered and /api/events|alerts|traces returned 500 "Stream not found". Registration is
+        // idempotent and consensus-committed, so it is performed by registerSystemStreamsOnLeaderChange
+        // (appended to the LeaderChange routes below), where the node can actually commit.
         // deleted alongside the audit publisher and RecentCommandsBuffer.
         var streamSegmentIndex = new SegmentIndex();
         var streamWatermarkTracker = WatermarkTracker.watermarkTracker();
@@ -2065,6 +2069,11 @@ public interface AetherNode extends ManageableNode {
                                                  change -> toggleStreamingOnLeaderChange(change, streamingCoordinator)));
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> toggleStorageOnLeaderChange(change, delegatedStorageAdapter)));
+        // System streams (system:cluster-events) are registered on leader-gain — see comment at the
+        // streamNamespacesService construction site. Idempotent + consensus-committed, so re-running on
+        // each leader-gain is safe and self-heals across re-elections.
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 change -> registerSystemStreamsOnLeaderChange(change, streamNamespacesService, streamPartitionManager, clusterEventsStreamConfig)));
         var streamForwardHandler = StreamForwardHandler.streamForwardHandler(config.self(),
                                                                              streamPartitionManager,
                                                                              streamForwardTransport,
@@ -2612,6 +2621,31 @@ public interface AetherNode extends ManageableNode {
     private static void toggleNttReconcilerOnLeaderChange(LeaderNotification.LeaderChange change,
                                                           LeaderReconciler reconciler) {
         if (change.localNodeIsLeader()) {reconciler.activate();} else {reconciler.deactivate();}
+    }
+
+    /// System-stream registration (system:cluster-events etc.) driven on leader-gain. The eager
+    /// construction-time bootstrap on [main] ran before consensus activation and always failed
+    /// "Node is inactive" with no retry, leaving the stream unregistered (observability reads 500).
+    /// bootstrap() is idempotent + consensus-committed, so re-running on each leader-gain is safe and
+    /// self-heals across re-elections; non-leaders skip it (only the leader can commit the config).
+    private static void registerSystemStreamsOnLeaderChange(LeaderNotification.LeaderChange change,
+                                                            StreamNamespacesService streamNamespacesService,
+                                                            StreamPartitionManager streamPartitionManager,
+                                                            StreamConfig clusterEventsStreamConfig) {
+        if (!change.localNodeIsLeader()) {
+            return;
+        }
+        // Partition-managed system:cluster-events stream the observability READ path resolves
+        // (/api/events|alerts|traces). createStream publishes the StreamConfigKey via consensus, so it
+        // must run when this node can commit (leader/active) — not on [main] at boot, where it failed
+        // "Node is inactive" with no retry. Idempotent.
+        streamPartitionManager.createStream(clusterEventsStreamConfig)
+                .onFailure(cause -> LOG.warn("system:cluster-events createStream on leader-gain failed: {} — will retry on next leader change",
+                                             cause.message()));
+        // Stream-namespaces catalog registration (namespace listing). Idempotent.
+        streamNamespacesService.bootstrap()
+                .onFailure(cause -> LOG.warn("system-stream bootstrap on leader-gain failed: {} — will retry on next leader change",
+                                             cause.message()));
     }
 
     /// #231 Step 2 — leader-pin the remaining control-plane components. Each mirrors
