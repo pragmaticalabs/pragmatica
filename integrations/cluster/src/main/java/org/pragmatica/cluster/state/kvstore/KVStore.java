@@ -30,6 +30,9 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final MessageRouter router;
+    /// Per-thread flag, true while this store is re-applying a restored/resync snapshot — see
+    /// [#isReplaying()]. Thread-scoped so a concurrent live apply on another thread reads false.
+    private final ThreadLocal<Boolean> replaying = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
     public KVStore(MessageRouter router, Serializer serializer, Deserializer deserializer) {
         this.router = router;
@@ -91,11 +94,33 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return Result.lift(Causes::fromThrowable,
                            () -> deserializer.decode(snapshot))
                      .map(map -> (Map<K, V>) map)
-                     .onSuccessRun(this::notifyRemoveAll)
-                     .onSuccessRun(storage::clear)
-                     .onSuccess(storage::putAll)
-                     .onSuccessRun(this::notifyPutAll)
+                     .onSuccess(this::replaceAllDuringReplay)
                      .mapToUnit();
+    }
+
+    /// True while THIS thread is re-applying a restored/resync snapshot (the [#restoreSnapshot]
+    /// notify fan-out). Both fresh-node restore and already-ACTIVE catch-up resync funnel through
+    /// `restoreSnapshot`, so one flag here covers both. Router subscribers invoked synchronously
+    /// during the replay fan-out can query this to suppress side-effects (e.g. re-emitting historical
+    /// events) that must fire only on live application. Thread-scoped: a concurrent live apply on
+    /// another thread reads false.
+    public boolean isReplaying() {
+        return replaying.get();
+    }
+
+    /// Re-applies a restored snapshot with the replay flag raised so router subscribers can tell
+    /// replayed application from live. try/finally guarantees the flag is lowered even if a subscriber
+    /// throws (paired with the consensus apply-executor exception containment).
+    private void replaceAllDuringReplay(Map<K, V> restored) {
+        replaying.set(Boolean.TRUE);
+        try {
+            notifyRemoveAll();
+            storage.clear();
+            storage.putAll(restored);
+            notifyPutAll();
+        } finally {
+            replaying.set(Boolean.FALSE);
+        }
     }
 
     private void notifyRemoveAll() {
