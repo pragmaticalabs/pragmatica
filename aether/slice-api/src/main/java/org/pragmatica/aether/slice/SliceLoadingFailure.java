@@ -140,6 +140,7 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
 
     static SliceLoadingFailure classify(Cause cause) {
         if (cause instanceof SliceLoadingFailure failure) {return failure;}
+        if (ResourceCapacityExhausted.isTransientCapacity(cause)) {return new Intermittent.ResourceUnavailable("resource capacity", cause);}
         if (cause instanceof CoreError.Timeout) {return new Intermittent.Timeout("slice activation", cause);}
         return new Fatal.UnexpectedError(cause);
     }

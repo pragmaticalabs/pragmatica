@@ -8,7 +8,9 @@ import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.ProviderBasedConfigService;
 import org.pragmatica.aether.slice.ProvisioningContext;
+import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -176,9 +178,7 @@ public final class SpiResourceProvider implements ResourceProvider {
         for (var factory : factoryList) {
             var typed = (ResourceFactory<T, C>) factory;
             if (typed.supports(config)) {return typed.provision(config)
-                                                               .mapError(cause -> new SliceLoadingFailure.Fatal.ResourceCreationFailed(resourceType.getSimpleName(),
-                                                                                                                                       configSection,
-                                                                                                                                       cause));}
+                                                               .mapError(cause -> classifyProvisionFailure(resourceType, configSection, cause));}
         }
         return new SliceLoadingFailure.Fatal.ResourceFactoryNotFound(resourceType.getName()).promise();
     }
@@ -191,11 +191,21 @@ public final class SpiResourceProvider implements ResourceProvider {
         for (var factory : factoryList) {
             var typed = (ResourceFactory<T, C>) factory;
             if (typed.supports(config)) {return typed.provision(config, context)
-                                                               .mapError(cause -> new SliceLoadingFailure.Fatal.ResourceCreationFailed(resourceType.getSimpleName(),
-                                                                                                                                       configSection,
-                                                                                                                                       cause));}
+                                                               .mapError(cause -> classifyProvisionFailure(resourceType, configSection, cause));}
         }
         return new SliceLoadingFailure.Fatal.ResourceFactoryNotFound(resourceType.getName()).promise();
+    }
+
+    /// Classify a resource-provisioning failure for the slice-loading FSM (spec §6 / decision #7).
+    /// A TRANSIENT capacity shortage ({@link ResourceCapacityExhausted}, e.g. `STREAM_MEMORY_EXCEEDED`)
+    /// becomes {@link SliceLoadingFailure.Intermittent.ResourceUnavailable} so the deployment FSM
+    /// RETRIES with backoff (the pool may clear) and surfaces `DeploymentFailed` only after
+    /// MAX_RETRIES — visibly failed, not "deployed but dead". Everything else stays
+    /// {@link SliceLoadingFailure.Fatal.ResourceCreationFailed} (permanent, no retry).
+    private static SliceLoadingFailure classifyProvisionFailure(Class<?> resourceType, String configSection, Cause cause) {
+        return ResourceCapacityExhausted.isTransientCapacity(cause)
+              ? new SliceLoadingFailure.Intermittent.ResourceUnavailable(resourceType.getSimpleName(), cause)
+              : new SliceLoadingFailure.Fatal.ResourceCreationFailed(resourceType.getSimpleName(), configSection, cause);
     }
 
     @SuppressWarnings("unchecked") private <C> Promise<C> loadConfig(String section,

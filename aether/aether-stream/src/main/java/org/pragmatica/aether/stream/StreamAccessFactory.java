@@ -14,6 +14,8 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -39,20 +41,27 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
     @Override public Promise<StreamAccess> provision(StreamConfig config, ProvisioningContext context) {
         return context.extension(StreamPartitionManager.class).flatMap(manager -> context.extension(Serializer.class)
                                                                                                    .flatMap(serializer -> context.extension(Deserializer.class)
-                                                                                                                                           .map(deserializer -> buildAccess(manager,
-                                                                                                                                                                            serializer,
-                                                                                                                                                                            deserializer,
-                                                                                                                                                                            config,
-                                                                                                                                                                            context))))
+                                                                                                                                           .flatMap(deserializer -> buildAccess(manager,
+                                                                                                                                                                                serializer,
+                                                                                                                                                                                deserializer,
+                                                                                                                                                                                config,
+                                                                                                                                                                                context))))
                                 .async();
     }
 
-    @SuppressWarnings("unchecked") private static StreamAccess buildAccess(StreamPartitionManager manager,
-                                                                           Serializer serializer,
-                                                                           Deserializer deserializer,
-                                                                           StreamConfig config,
-                                                                           ProvisioningContext context) {
-        ensureStreamExists(manager, config);
+    @SuppressWarnings("unchecked") private static Result<StreamAccess> buildAccess(StreamPartitionManager manager,
+                                                                                   Serializer serializer,
+                                                                                   Deserializer deserializer,
+                                                                                   StreamConfig config,
+                                                                                   ProvisioningContext context) {
+        return ensureStreamExists(manager, config).map(_ -> assembleAccess(manager, serializer, deserializer, config, context));
+    }
+
+    @SuppressWarnings("unchecked") private static StreamAccess assembleAccess(StreamPartitionManager manager,
+                                                                              Serializer serializer,
+                                                                              Deserializer deserializer,
+                                                                              StreamConfig config,
+                                                                              ProvisioningContext context) {
         var keyExtractor = extractPartitionKeyFunction(context);
         var self = context.extension(NodeId.class).option();
         // A6: when the runtime supplies a forward client + owner-resolver + self identity, wire
@@ -109,7 +118,7 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
                                    .map(fn -> (Function<T, Object>) input -> ((org.pragmatica.lang.Functions.Fn1) fn).apply(input));
     }
 
-    private static void ensureStreamExists(StreamPartitionManager manager, StreamConfig config) {
-        manager.createStream(config);
+    private static Result<Unit> ensureStreamExists(StreamPartitionManager manager, StreamConfig config) {
+        return StreamCreateOutcome.tolerateAlreadyExists(manager.createStream(config));
     }
 }

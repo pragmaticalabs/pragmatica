@@ -4,11 +4,18 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.lang.Cause;
 
 
 public sealed interface StreamError extends Cause {
-    enum General implements StreamError {
+    /// `General` implements {@link ResourceCapacityExhausted} so the ONE capacity-class constant —
+    /// `STREAM_MEMORY_EXCEEDED` — is classified TRANSIENT by the slice-loading / resource-provisioning
+    /// path (retry, then `DeploymentFailed` after MAX_RETRIES; spec §6 / decision #7). Every other
+    /// constant overrides the marker predicate to false, so only off-heap budget exhaustion is
+    /// retryable; genuine config errors (e.g. `AHSE_REQUIRED_FOR_STRONG`) stay fatal. Enum identity is
+    /// preserved — `cause == STREAM_MEMORY_EXCEEDED` checks elsewhere are unaffected (spec §8).
+    enum General implements StreamError, ResourceCapacityExhausted {
         BUFFER_CLOSED("Ring buffer is closed"),
         BUFFER_EMPTY("Ring buffer is empty"),
         STREAM_ALREADY_EXISTS("Stream already exists"),
@@ -29,6 +36,12 @@ public sealed interface StreamError extends Cause {
         }
         @Override public String message() {
             return message;
+        }
+
+        /// Only `STREAM_MEMORY_EXCEEDED` is a transient capacity shortage (the pool may clear as other
+        /// streams are destroyed / right-sized); every other constant is a non-capacity error.
+        @Override public boolean transientCapacity() {
+            return this == STREAM_MEMORY_EXCEEDED;
         }
     }
 

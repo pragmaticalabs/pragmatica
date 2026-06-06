@@ -18,8 +18,8 @@ import java.util.Map;
 /// {@link ExtendedEvent} non-sealed extension hatch for framework plugins to introduce
 /// additional variants without modifying the sealed parent.
 ///
-/// Closed-set count is **30 variants** (25 prior framework events + STREAM_REGISTERED/DELETED +
-/// ALERT_INJECTED/TRACE_INJECTED/SELF_DRAIN_INITIATED).
+/// Closed-set count is **31 variants** (25 prior framework events + STREAM_REGISTERED/DELETED +
+/// ALERT_INJECTED/TRACE_INJECTED/SELF_DRAIN_INITIATED + STREAM_MEMORY_EXCEEDED).
 ///
 /// Consumers exhaust the sealed parent via pattern-matching `switch`; the compiler enforces that
 /// every closed variant is handled and that an `ExtendedEvent` arm is present (typically a
@@ -56,6 +56,7 @@ public sealed interface ClusterEvent permits
         ClusterEvent.AlertInjected,
         ClusterEvent.TraceInjected,
         ClusterEvent.SelfDrainInitiated,
+        ClusterEvent.StreamMemoryExceeded,
         ExtendedEvent {
 
     /// Restart-safe identity + total cluster ordering: HLC physical micros + logical counter + origin nodeId.
@@ -157,4 +158,13 @@ public sealed interface ClusterEvent permits
     /// `details` carries `nodeId`, `reason` (one of `sustained-below-quorum`,
     /// `quorum-disappeared`, `rabia-paused`), and `graceMs`.
     record SelfDrainInitiated(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    /// Off-heap stream budget exhausted at stream creation (floor) or growth (elastic pool)
+    /// (stream-offheap-budget-spec §4.5c / §7). A per-node fact (each node has its own budget), so —
+    /// like {@link SelfDrainInitiated} — it is NOT leader-gated; every node reports its own exhaustion
+    /// via the aggregator's `emitLocal` path. Severity WARNING (recoverable: destroying/right-sizing
+    /// other streams frees the pool). `details` carries `streamName`, `partitions`, `phase` (one of
+    /// `create-floor` | `growth`), `requestedBytes`, `availableBytes`, `maxTotalBytes`,
+    /// `consistencyMode`, and `nodeId` (the reporting node).
+    record StreamMemoryExceeded(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
 }

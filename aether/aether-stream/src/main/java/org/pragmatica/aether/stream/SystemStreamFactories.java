@@ -16,6 +16,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.Deserializer;
@@ -161,32 +162,40 @@ public final class SystemStreamFactories {
         return FrameworkStreamConsumers.systemStreamConsumer(address, transport);
     }
 
-    /// Idempotent partition creation from a fully-specified {@link StreamConfig}. `createStream`
-    /// returns `Result<Unit>` — fresh-creation success or "already exists" failure; both are
-    /// acceptable (the stream is usable in either case). Because `createStream` also publishes the
-    /// `StreamConfigKey` into the cluster KV-store, the stream appears in
-    /// {@link StreamPartitionManager#replicaCatalog()}, which is what the `ReplicaSetController`
-    /// reconciles against — so a system stream created here becomes replicated.
+    /// Idempotent partition creation from a fully-specified {@link StreamConfig}. FAIL-SOFT for the
+    /// system bootstrap path: a node must still boot and `SystemStreamRegistrar` owns the leader-pinned
+    /// retry, so a create failure here does NOT propagate (spec §5.4 / reconciliation #17). But it is no
+    /// longer DEBUG-buried — a genuine memory failure logs WARN (a benign `STREAM_ALREADY_EXISTS` stays
+    /// quiet) and the budget-exhaustion cluster event is emitted by the manager's own exhaustion sink
+    /// inside `createStream` (per-node `StreamMemoryExceeded`), so the soft failure is visible.
     private static void ensureLocalPartition(StreamPartitionManager partitionManager, StreamConfig config) {
         partitionManager.createStream(config)
-                        .onFailure(cause -> LOG.debug("system stream {} local-partition create deferred to publish/fetch: {}",
-                                                      config.name(),
-                                                      cause.message()));
+                        .onFailure(cause -> logSystemStreamCreateFailure(config.name(), cause));
     }
 
-    /// Idempotent partition creation. `createStream` returns `Result<Unit>` — either fresh creation
-    /// success or "already exists" failure. Both are acceptable for our purposes: the stream is
-    /// usable in either case. Genuine creation failures (out of memory, bad config) propagate as
-    /// failures from the subsequent publish/fetch call rather than from here, mirroring the
-    /// app-side `StreamPublisherFactory`/`StreamAccessFactory` pattern (which also calls
-    /// `createStream` unconditionally without checking the result).
+    /// WARN for genuine create failures (memory, bad config); DEBUG for the benign idempotent
+    /// `STREAM_ALREADY_EXISTS`. The `StreamMemoryExceeded` cluster event is emitted by the manager's
+    /// exhaustion sink, not here — this is the human-visible log leg of the fail-soft path (§5.4).
+    private static void logSystemStreamCreateFailure(String streamName, Cause cause) {
+        if (cause == StreamError.General.STREAM_ALREADY_EXISTS) {
+            LOG.debug("system stream {} already exists — reusing", streamName);
+            return;
+        }
+        LOG.warn("system stream {} local-partition create FAILED (fail-soft; SystemStreamRegistrar will retry): {}",
+                 streamName,
+                 cause.message());
+    }
+
+    /// Idempotent partition creation. FAIL-SOFT (spec §5.4 / reconciliation #17): create failures do not
+    /// propagate from the system bootstrap path — `SystemStreamRegistrar` owns retry and the node must
+    /// still boot — but a genuine memory failure now logs WARN (not DEBUG) and the manager's exhaustion
+    /// sink emits the `StreamMemoryExceeded` cluster event, so the soft failure is visible rather than
+    /// buried.
     private static void ensureLocalPartition(ResourceAddress address,
                                              StreamPartitionManager partitionManager,
                                              int partitions,
                                              RetentionPolicy retention) {
         partitionManager.createStream(StreamConfig.streamConfig(address.asString(), partitions, retention, "earliest"))
-                        .onFailure(cause -> LOG.debug("system stream {} local-partition create deferred to publish/fetch: {}",
-                                                      address.asString(),
-                                                      cause.message()));
+                        .onFailure(cause -> logSystemStreamCreateFailure(address.asString(), cause));
     }
 }

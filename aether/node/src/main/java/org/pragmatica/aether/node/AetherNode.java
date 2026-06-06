@@ -1925,6 +1925,12 @@ public interface AetherNode extends ManageableNode {
                                                                                    EvictionListener.NOOP,
                                                                                    streamReplicationManager,
                                                                                    clusterNode);
+        // stream-offheap-budget-spec §4.5c / reconciliation #14: route off-heap budget exhaustion
+        // (create-floor + growth) OUT of aether-stream via the injected Consumer<Exhaustion> sink and
+        // INTO the cluster-event aggregator, which stamps this node's id and emits a
+        // StreamMemoryExceeded event through its un-gated emitLocal path (per-node fact, like
+        // SelfDrainInitiated). The aggregator owns the per-(stream,phase) 60s throttle.
+        streamPartitionManager.exhaustionSink(eventAggregator::onStreamMemoryExceeded);
         var streamConfigKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.StreamConfigKey.class,
                                                                                                                 streamPartitionManager::onStreamConfigPut).onRemove(AetherKey.StreamConfigKey.class,
                                                                                                                                                                     streamPartitionManager::onStreamConfigRemove).build();

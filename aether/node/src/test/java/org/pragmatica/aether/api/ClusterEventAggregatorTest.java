@@ -14,6 +14,7 @@ import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
 import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.StreamPartitionManager.Exhaustion;
 import org.pragmatica.aether.stream.SystemStreamFactories;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
@@ -192,6 +193,60 @@ class ClusterEventAggregatorTest {
         h.aggregator().onMembershipDecision(MembershipDecision.nodeRemoved(new NodeId("dead"), List.of(SELF)));
         // Non-owner publishes nothing — the partition stays empty.
         assertThat(h.events()).isEmpty();
+    }
+
+    // --- budget exhaustion (per-node, NOT owner-gated; reconciliation #13/#15) ------------------
+
+    private static Exhaustion createFloorExhaustion(String streamName) {
+        return new Exhaustion(streamName, 4, Exhaustion.Phase.CREATE_FLOOR, 2_097_152L, 1_153_433L,
+                              134_217_728L, ConsistencyMode.EVENTUAL);
+    }
+
+    private static Exhaustion growthExhaustion(String streamName) {
+        return new Exhaustion(streamName, 4, Exhaustion.Phase.GROWTH, 262_144L, 0L,
+                              134_217_728L, ConsistencyMode.EVENTUAL);
+    }
+
+    /// Budget exhaustion is a per-node fact: even a NON-OWNER node must report its own exhaustion via
+    /// the un-gated `emitLocal` path (mirrors SelfDrainInitiated). The owner gate that suppresses
+    /// consensus-derived events does NOT apply here.
+    @Test
+    void onStreamMemoryExceeded_emitsLocal_notOwnerGated() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER);
+        h.aggregator().onStreamMemoryExceeded(createFloorExhaustion("orders"));
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.StreamMemoryExceeded.class);
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.getFirst().details()).containsEntry("streamName", "orders")
+                                               .containsEntry("phase", "create-floor")
+                                               .containsEntry("nodeId", SELF.id());
+    }
+
+    /// Rate-limit: within the 60s window per (streamName, phase) the first growth-phase exhaustion
+    /// emits and subsequent ones are suppressed (a saturated growing stream must not flood the log).
+    @Test
+    void onStreamMemoryExceeded_rateLimitsPerStreamPhase_withinWindow() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER);
+        h.aggregator().onStreamMemoryExceeded(growthExhaustion("hot"));
+        h.aggregator().onStreamMemoryExceeded(growthExhaustion("hot"));
+        h.aggregator().onStreamMemoryExceeded(growthExhaustion("hot"));
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst().details()).containsEntry("phase", "growth");
+    }
+
+    /// The throttle key includes the phase, so a create-floor exhaustion is NOT suppressed by a prior
+    /// growth-phase exhaustion of the same stream (distinct operator-relevant signals).
+    @Test
+    void onStreamMemoryExceeded_distinctPhases_notMutuallyThrottled() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER);
+        h.aggregator().onStreamMemoryExceeded(growthExhaustion("mixed"));
+        h.aggregator().onStreamMemoryExceeded(createFloorExhaustion("mixed"));
+
+        assertThat(h.events()).hasSize(2);
     }
 
     // --- production retention -------------------------------------------------------------------

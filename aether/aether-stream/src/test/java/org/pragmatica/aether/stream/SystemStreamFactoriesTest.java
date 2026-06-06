@@ -8,6 +8,7 @@ import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.stream.SystemStreams;
@@ -113,6 +114,39 @@ class SystemStreamFactoriesTest {
             .isEmpty();
         assertThat(events).hasSize(1);
         assertThat(events.getFirst().payload()).isEqualTo("local".getBytes());
+    }
+
+    /// stream-offheap-budget-spec §5.4 / reconciliation #17: system-stream bootstrap stays FAIL-SOFT —
+    /// `systemStreamPublisher` still returns a wired publisher even when the underlying floor create
+    /// cannot be admitted (SystemStreamRegistrar owns the leader-pinned retry; the node must boot) —
+    /// but the failure is no longer silently swallowed: the manager's exhaustion sink fires a
+    /// CREATE_FLOOR `Exhaustion`, which `AetherNode` routes into a `StreamMemoryExceeded` cluster event.
+    @Test
+    void ensureLocalPartition_memoryExceeded_failsSoft_butEmits() {
+        var capturedExhaustions = new ArrayList<StreamPartitionManager.Exhaustion>();
+        var tinyManager = StreamPartitionManager.streamPartitionManager(1L);
+        tinyManager.exhaustionSink(capturedExhaustions::add);
+
+        try {
+            // 4 partitions, EVENTUAL: the per-partition floor cannot fit a 1-byte budget.
+            var retention = RetentionPolicy.retentionPolicy(10_000, 4 * 1024 * 1024L, 60_000L);
+            var config = StreamConfig.streamConfig(STREAM, 4, retention, "earliest", 1024 * 1024L,
+                                                   ConsistencyMode.EVENTUAL, 1);
+
+            var publisher = SystemStreamFactories.<byte[]>systemStreamPublisher(SystemStreams.CLUSTER_EVENTS,
+                                                                               tinyManager,
+                                                                               identitySerializer(),
+                                                                               config)
+                                                 .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("System-stream publisher wiring must stay fail-soft"))
+                                                 .unwrap();
+
+            assertThat(publisher).as("fail-soft: a wired publisher is still returned").isNotNull();
+            assertThat(capturedExhaustions).as("the soft create failure is visible via the exhaustion sink").hasSize(1);
+            assertThat(capturedExhaustions.getFirst().phase()).isEqualTo(StreamPartitionManager.Exhaustion.Phase.CREATE_FLOOR);
+            assertThat(capturedExhaustions.getFirst().streamName()).isEqualTo(STREAM);
+        } finally {
+            tinyManager.close();
+        }
     }
 
     private static Serializer identitySerializer() {

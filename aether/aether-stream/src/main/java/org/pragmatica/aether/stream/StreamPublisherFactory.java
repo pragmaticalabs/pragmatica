@@ -15,6 +15,8 @@ import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Serializer;
 
@@ -38,18 +40,24 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
 
     @Override public Promise<StreamPublisher> provision(StreamConfig config, ProvisioningContext context) {
         return context.extension(StreamPartitionManager.class).flatMap(manager -> context.extension(Serializer.class)
-                                                                                                   .map(serializer -> buildPublisher(manager,
-                                                                                                                                     serializer,
-                                                                                                                                     config,
-                                                                                                                                     context)))
+                                                                                                   .flatMap(serializer -> buildPublisher(manager,
+                                                                                                                                         serializer,
+                                                                                                                                         config,
+                                                                                                                                         context)))
                                 .async();
     }
 
-    @SuppressWarnings("unchecked") private static StreamPublisher buildPublisher(StreamPartitionManager manager,
-                                                                                 Serializer serializer,
-                                                                                 StreamConfig config,
-                                                                                 ProvisioningContext context) {
-        ensureStreamExists(manager, config);
+    @SuppressWarnings("unchecked") private static Result<StreamPublisher> buildPublisher(StreamPartitionManager manager,
+                                                                                         Serializer serializer,
+                                                                                         StreamConfig config,
+                                                                                         ProvisioningContext context) {
+        return ensureStreamExists(manager, config).map(_ -> assemblePublisher(manager, serializer, config, context));
+    }
+
+    @SuppressWarnings("unchecked") private static StreamPublisher assemblePublisher(StreamPartitionManager manager,
+                                                                                    Serializer serializer,
+                                                                                    StreamConfig config,
+                                                                                    ProvisioningContext context) {
         var keyExtractor = extractPartitionKeyFunction(context);
         var forwardClient = context.extension(StreamForwardClient.class).option();
         var governorResolver = context.extension(GovernorResolver.class).option()
@@ -71,8 +79,8 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
                                    .map(fn -> (Function<T, Object>) input -> ((org.pragmatica.lang.Functions.Fn1) fn).apply(input));
     }
 
-    private static void ensureStreamExists(StreamPartitionManager manager, StreamConfig config) {
-        manager.createStream(config);
+    private static Result<Unit> ensureStreamExists(StreamPartitionManager manager, StreamConfig config) {
+        return StreamCreateOutcome.tolerateAlreadyExists(manager.createStream(config));
     }
 
     /// Owner-resolver extension consumed by the app stream publish path.

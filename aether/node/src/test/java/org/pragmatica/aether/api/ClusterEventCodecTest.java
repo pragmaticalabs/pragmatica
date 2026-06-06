@@ -35,6 +35,7 @@ import org.pragmatica.aether.api.ClusterEvent.SelfDrainInitiated;
 import org.pragmatica.aether.api.ClusterEvent.Severity;
 import org.pragmatica.aether.api.ClusterEvent.SliceFailure;
 import org.pragmatica.aether.api.ClusterEvent.StreamDeleted;
+import org.pragmatica.aether.api.ClusterEvent.StreamMemoryExceeded;
 import org.pragmatica.aether.api.ClusterEvent.StreamRegistered;
 import org.pragmatica.aether.api.ClusterEvent.TraceInjected;
 import org.pragmatica.aether.node.NodeCodecs;
@@ -122,6 +123,27 @@ class ClusterEventCodecTest {
                                               details("nodeId", "n3", "reason", "quorum-disappeared", "graceMs", "5000"));
 
         assertThat(roundTrip(original)).isEqualTo(original);
+    }
+
+    @Test
+    void streamMemoryExceeded_codecRoundTrip() {
+        var original = new StreamMemoryExceeded(at(4_500L, 8, "n3"), Severity.WARNING,
+                                                "Off-heap budget exhausted (create-floor) for stream 'orders' (4 parts): need 2097152 bytes, 1153433 available of 134217728",
+                                                details("streamName", "orders",
+                                                        "partitions", "4",
+                                                        "phase", "create-floor",
+                                                        "requestedBytes", "2097152",
+                                                        "availableBytes", "1153433",
+                                                        "maxTotalBytes", "134217728",
+                                                        "consistencyMode", "EVENTUAL",
+                                                        "nodeId", "n3"));
+        var decoded = roundTrip(original);
+
+        assertThat(decoded).isEqualTo(original);
+        assertThat(decoded.severity()).isEqualTo(Severity.WARNING);
+        assertThat(decoded.details()).containsEntry("phase", "create-floor")
+                                     .containsEntry("streamName", "orders")
+                                     .containsEntry("nodeId", "n3");
     }
 
     @Test
@@ -270,7 +292,8 @@ class ClusterEventCodecTest {
             new StreamDeleted(ts, sev, "StreamDeleted", d, addr),
             new AlertInjected(ts, sev, "AlertInjected", d),
             new TraceInjected(ts, sev, "TraceInjected", d),
-            new SelfDrainInitiated(ts, sev, "SelfDrainInitiated", d)
+            new SelfDrainInitiated(ts, sev, "SelfDrainInitiated", d),
+            new StreamMemoryExceeded(ts, sev, "StreamMemoryExceeded", d)
         );
     }
 

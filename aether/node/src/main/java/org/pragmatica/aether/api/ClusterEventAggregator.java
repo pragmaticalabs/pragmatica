@@ -28,6 +28,7 @@ import org.pragmatica.aether.api.ClusterEvent.ScaleDown;
 import org.pragmatica.aether.api.ClusterEvent.ScaleUp;
 import org.pragmatica.aether.api.ClusterEvent.Severity;
 import org.pragmatica.aether.api.ClusterEvent.SliceFailure;
+import org.pragmatica.aether.api.ClusterEvent.StreamMemoryExceeded;
 import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
@@ -38,6 +39,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
+import org.pragmatica.aether.stream.StreamPartitionManager.Exhaustion;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
@@ -143,6 +145,16 @@ public final class ClusterEventAggregator {
     private final ConcurrentHashMap<String, Long> deploymentStartTimes = new ConcurrentHashMap<>();
 
     private final ConcurrentHashMap<String, Long> nodeJoinTimes = new ConcurrentHashMap<>();
+
+    /// Per-`(streamName, phase)` last-emit timestamp (HLC physical millis) for the budget-exhaustion
+    /// rate-limiter (spec §4.5c / reconciliation #15). A saturated growing stream fires exhaustion on
+    /// every append; this throttles to at most one `StreamMemoryExceeded` event per key per
+    /// {@link #STREAM_MEMORY_EVENT_THROTTLE_MS}. Create-phase exhaustion is naturally infrequent but
+    /// shares the same key space (keyed by phase), so it is never starved by growth-phase noise.
+    private final ConcurrentHashMap<String, Long> streamMemoryEventThrottle = new ConcurrentHashMap<>();
+
+    /// Throttle window for {@link #onStreamMemoryExceeded}: 60s per `(streamName, phase)` (spec §4.5c).
+    private static final long STREAM_MEMORY_EVENT_THROTTLE_MS = 60_000L;
 
     private final IntSupplier clusterSizeSupplier;
 
@@ -264,6 +276,65 @@ public final class ClusterEventAggregator {
                   Promise<?> ignored = publisher.publish(event);
               })
               .onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)", event));
+    }
+
+    /// Owner-gate-bypassing emit for per-node facts (spec §4.5c). Identical to {@link #emit} except it
+    /// does NOT consult `ownerCheck`: budget exhaustion is a per-node truth (each node has its own
+    /// off-heap budget), so every node must report its own — mirroring the `SelfDrainInitiated`
+    /// not-leader-gated contract. The replay gate and publisher-bound bootstrap drop still apply.
+    @Contract public void emitLocal(ClusterEvent event) {
+        if (replayingCheck.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing local emit of {}", event);
+            return;
+        }
+        Option.option(publisherSupplier.get())
+              .onPresent(publisher -> {
+                  Promise<?> ignored = publisher.publish(event);
+              })
+              .onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — local event {} dropped (bootstrap window)", event));
+    }
+
+    /// Budget-exhaustion sink entry point (spec §4.5c / reconciliation #13). Bound into the
+    /// `StreamPartitionManager` by `AetherNode` (reconciliation #14). Stamps THIS node's id, builds a
+    /// `StreamMemoryExceeded` event, and emits it through the un-gated {@link #emitLocal} path
+    /// (per-node fact). Rate-limited per `(streamName, phase)` to one event per
+    /// {@link #STREAM_MEMORY_EVENT_THROTTLE_MS} so a saturated growing stream cannot flood the log.
+    @Contract public void onStreamMemoryExceeded(Exhaustion exhaustion) {
+        if (!shouldEmitStreamMemoryEvent(exhaustion)) {
+            LOG.debug("ClusterEventAggregator: suppressing throttled StreamMemoryExceeded for {}", exhaustion.streamName());
+            return;
+        }
+        emitLocal(new StreamMemoryExceeded(hlcClock.now(), Severity.WARNING, exhaustion.summary(), withNodeId(exhaustion.details())));
+    }
+
+    /// Throttle decision: emit iff no event for this `(streamName, phase)` key fired within the window.
+    /// The window check + timestamp update run atomically inside `compute` (the remapping function holds
+    /// the bin lock), so concurrent growth-phase appends from multiple partitions cannot both pass the
+    /// gate within the same window. The admit decision is captured in a thread-confined holder set
+    /// inside the remapping function — robust even when two calls land on the same physical millisecond.
+    private boolean shouldEmitStreamMemoryEvent(Exhaustion exhaustion) {
+        var key = exhaustion.streamName() + ":" + exhaustion.phase().name();
+        var now = hlcClock.now().physicalMillis();
+        var admitted = new boolean[1];
+        streamMemoryEventThrottle.compute(key, (_, previous) -> advanceWindow(previous, now, admitted));
+        return admitted[0];
+    }
+
+    /// Advance the throttle window for one key: when the previous emit is absent or older than the
+    /// window, stamp `now` and record admission; otherwise keep the previous stamp and suppress.
+    private static long advanceWindow(Long previous, long now, boolean[] admitted) {
+        if (previous != null && now - previous < STREAM_MEMORY_EVENT_THROTTLE_MS) {
+            admitted[0] = false;
+            return previous;
+        }
+        admitted[0] = true;
+        return now;
+    }
+
+    private Map<String, String> withNodeId(Map<String, String> details) {
+        var enriched = new HashMap<>(details);
+        enriched.put("nodeId", selfNode.id());
+        return Map.copyOf(enriched);
     }
 
     /// NODE_JOINED represents transport-level visibility ("this node observed a peer connect").

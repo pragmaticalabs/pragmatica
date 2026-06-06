@@ -10,6 +10,7 @@ import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
+import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.PartitionInfo;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamInfo;
@@ -230,17 +231,10 @@ public final class StreamRoutes implements RouteSource {
                                                                                                     60 * 60 * 1000L);
 
     private Result<Unit> ensureStreamExists(String name) {
-        return streamManager().createStream(StreamConfig.streamConfig(name,
-                                                                      DEFAULT_PARTITIONS,
-                                                                      MANAGEMENT_API_RETENTION,
-                                                                      "latest"))
-                            .fold(StreamRoutes::recoverWhenAlreadyExists, Result::success);
-    }
-
-    private static Result<Unit> recoverWhenAlreadyExists(Cause cause) {
-        return cause == org.pragmatica.aether.stream.StreamError.General.STREAM_ALREADY_EXISTS
-              ? Result.unitResult()
-              : cause.result();
+        return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(StreamConfig.streamConfig(name,
+                                                                                                               DEFAULT_PARTITIONS,
+                                                                                                               MANAGEMENT_API_RETENTION,
+                                                                                                               "latest")));
     }
 
     private Promise<ReadEventsResponse> readEvents(String name,
