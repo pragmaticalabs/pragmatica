@@ -38,7 +38,7 @@ import org.pragmatica.aether.api.ClusterEvent.StreamDeleted;
 import org.pragmatica.aether.api.ClusterEvent.StreamRegistered;
 import org.pragmatica.aether.api.ClusterEvent.TraceInjected;
 import org.pragmatica.aether.node.NodeCodecs;
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.serialization.FrameworkCodecs;
@@ -56,7 +56,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// `@Codec`-generated codec framework (increment B5a). Encodes via the polymorphic
 /// `SliceCodec.encode`/`decode` byte[] path that the partition stream transport will use,
 /// then asserts the decoded event equals the original — including the `details` map, the
-/// `at()` HLC timestamp, and (for stream events) the carried [StreamAddress].
+/// `at()` HLC timestamp, and (for stream events) the carried [ResourceAddress].
 ///
 /// Codecs are sourced from the runtime registry exactly as production builds it:
 /// `NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs())`, which now includes the
@@ -78,8 +78,8 @@ class ClusterEventCodecTest {
         return Map.copyOf(map);
     }
 
-    private static StreamAddress streamAddress() {
-        return StreamAddress.streamAddress("ns", "events", "1.2.3").unwrap();
+    private static ResourceAddress resourceAddress() {
+        return ResourceAddress.resourceAddress("ns", "events", "1.2.3").unwrap();
     }
 
     /// Polymorphic round-trip via the byte[] codec path. Encoding uses the runtime
@@ -126,7 +126,7 @@ class ClusterEventCodecTest {
 
     @Test
     void streamRegistered_roundTrips_withAddress() {
-        var addr = streamAddress();
+        var addr = resourceAddress();
         var original = new StreamRegistered(at(5_000L, 2, "n4"), Severity.INFO, "stream registered",
                                             details("stream", "ns:events:1.2.3"), addr);
         var decoded = roundTrip(original);
@@ -137,7 +137,7 @@ class ClusterEventCodecTest {
 
     @Test
     void streamDeleted_roundTrips_withAddress() {
-        var addr = streamAddress();
+        var addr = resourceAddress();
         var original = new StreamDeleted(at(6_000L, 9, "n5"), Severity.WARNING, "stream deleted",
                                          details("stream", "ns:events:1.2.3"), addr);
         var decoded = roundTrip(original);
@@ -238,7 +238,7 @@ class ClusterEventCodecTest {
         var ts = at(100_000L, 1, "src");
         var sev = Severity.INFO;
         var d = details("k", "v");
-        var addr = streamAddress();
+        var addr = resourceAddress();
 
         return List.of(
             new NodeJoined(ts, sev, "NodeJoined", d),

@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceVersion;
+
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -32,15 +36,15 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.aether.slice.stream.StreamAddress.streamAddress;
-import static org.pragmatica.aether.slice.stream.StreamVersion.streamVersion;
+import static org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress;
+import static org.pragmatica.aether.slice.resource.ResourceVersion.resourceVersion;
 
 
 class KvBackedStreamRegistryTest {
 
-    private static final StreamAddress SYSTEM_EVENTS = streamAddress("system:cluster-events:1.0.0").unwrap();
-    private static final StreamAddress APP_ORDERS = streamAddress("com.example.app:orders:1.0.0").unwrap();
-    private static final StreamAddress APP_ORDERS_V2 = streamAddress("com.example.app:orders:2.0.0").unwrap();
+    private static final ResourceAddress SYSTEM_EVENTS = resourceAddress("system:cluster-events:1.0.0").unwrap();
+    private static final ResourceAddress APP_ORDERS = resourceAddress("com.example.app:orders:1.0.0").unwrap();
+    private static final ResourceAddress APP_ORDERS_V2 = resourceAddress("com.example.app:orders:2.0.0").unwrap();
 
     private static Cause errorOf(Result<?> result) {
         return result.fold(c -> c, _ -> null);
@@ -50,11 +54,11 @@ class KvBackedStreamRegistryTest {
         return errorOf(promise.await());
     }
 
-    private static StreamRegistryEntry frameworkEntry(StreamAddress address) {
+    private static StreamRegistryEntry frameworkEntry(ResourceAddress address) {
         return StreamRegistryEntry.framework(address, RetentionPolicy.retentionPolicy(), Instant.EPOCH);
     }
 
-    private static StreamRegistryEntry blueprintEntry(StreamAddress address) {
+    private static StreamRegistryEntry blueprintEntry(ResourceAddress address) {
         return StreamRegistryEntry.blueprint(address, RetentionPolicy.retentionPolicy(), Instant.EPOCH);
     }
 
@@ -125,7 +129,7 @@ class KvBackedStreamRegistryTest {
 
             var result = registry.resolve("com.example.app", "orders", StreamVersionSpec.latest());
 
-            assertThat(result.unwrap().address().version()).isEqualTo(streamVersion(2, 0, 0).unwrap());
+            assertThat(result.unwrap().address().version()).isEqualTo(resourceVersion(2, 0, 0).unwrap());
         }
 
         @Test
@@ -133,7 +137,7 @@ class KvBackedStreamRegistryTest {
             registry.register(blueprintEntry(APP_ORDERS));
 
             var result = registry.resolve("com.example.app", "orders",
-                                           StreamVersionSpec.exact(streamVersion(1, 0, 0).unwrap()));
+                                           StreamVersionSpec.exact(resourceVersion(1, 0, 0).unwrap()));
 
             assertThat(result.unwrap().address()).isEqualTo(APP_ORDERS);
         }

@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.ArtifactId;
@@ -76,7 +78,7 @@ class BlueprintNamespaceTest {
         void namespaceValidationErrorsAreSurfaced() {
             // All legal Maven coord combinations produce valid namespaces under the current grammar.
             // Guard: if the reserved/charset rules ever tighten, errors must propagate as
-            // StreamAddressError, not leak as raw validation noise. Regression surface only.
+            // ResourceAddressError, not leak as raw validation noise. Regression surface only.
             var result = deriveNamespace(group("com.example"), artifact("x"));
 
             assertThat(result.isSuccess()).isTrue();

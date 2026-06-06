@@ -46,13 +46,13 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.resource.ScheduleConfig;
 import org.pragmatica.aether.resource.StreamNameConfig;
 import org.pragmatica.aether.resource.TopicConfig;
-import org.pragmatica.aether.slice.topic.TopicAddress;
-import org.pragmatica.aether.slice.topic.TopicVersion;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -674,7 +674,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             return new KVCommand.Remove<>(key);
         }
 
-        private record SubscriptionManifestEntry(TopicAddress address, MethodName methodName) {}
+        private record SubscriptionManifestEntry(ResourceAddress address, MethodName methodName) {}
 
         private record ScheduledTaskManifestEntry(String configSection, MethodName methodName) {}
 
@@ -741,28 +741,28 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             return result;
         }
 
-        /// Resolve a subscription's declared topic config to a canonical [TopicAddress].
+        /// Resolve a subscription's declared topic config to a canonical [ResourceAddress].
         ///
         /// Back-compat derivation rule (mirrors streams):
         ///  - read the declared `topicName` via [TopicConfig];
         ///  - if the declaration is already fully namespaced (`namespace:topic:version`), keep it;
         ///  - otherwise (bare/legacy name) derive the namespace from the slice's blueprint Maven
         ///    coordinates via [BlueprintNamespace] and default the version to
-        ///    [TopicVersion#defaultVersion] (`1.0.0`).
-        private Result<TopicAddress> resolveTopicAddress(Artifact artifact, String configSection) {
+        ///    [ResourceVersion#defaultVersion] (`1.0.0`).
+        private Result<ResourceAddress> resolveTopicAddress(Artifact artifact, String configSection) {
             return sliceConfigService(artifact).orElse(ConfigService::instance)
                                      .toResult(Causes.cause("ConfigService not available for topic resolution"))
                                      .flatMap(svc -> svc.config(configSection, TopicConfig.class))
                                      .flatMap(config -> resolveTopicAddress(artifact, config));
         }
 
-        private Result<TopicAddress> resolveTopicAddress(Artifact artifact, TopicConfig config) {
+        private Result<ResourceAddress> resolveTopicAddress(Artifact artifact, TopicConfig config) {
             var declared = config.topicName();
             if (declared != null && declared.contains(":")) {
                 return config.address();
             }
             return BlueprintNamespace.deriveNamespace(artifact)
-                                     .flatMap(namespace -> TopicAddress.topicAddress(namespace, declared, TopicVersion.defaultVersion()));
+                                     .flatMap(namespace -> ResourceAddress.resourceAddress(namespace, declared, ResourceVersion.defaultVersion()));
         }
 
         private Promise<SliceNodeKey> publishScheduledTasks(SliceNodeKey sliceKey) {
@@ -1152,7 +1152,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private void appendRefCommand(org.pragmatica.aether.slice.stream.KvBackedStreamRegistry registry,
                                       List<KVCommand<AetherKey>> sink,
-                                      StreamAddress address,
+                                      ResourceAddress address,
                                       RefcountAction action) {
             switch (action) {
                 case ACQUIRE -> sink.add(registry.acquireCommand(blueprintTemplate(address)));
@@ -1160,7 +1160,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             }
         }
 
-        private StreamRegistryEntry blueprintTemplate(StreamAddress address) {
+        private StreamRegistryEntry blueprintTemplate(ResourceAddress address) {
             return StreamRegistryEntry.blueprint(address,
                                                  RetentionPolicy.retentionPolicy(),
                                                  Instant.ofEpochMilli(ctx.nowMs()));

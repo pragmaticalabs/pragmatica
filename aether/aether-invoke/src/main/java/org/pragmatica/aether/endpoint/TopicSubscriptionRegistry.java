@@ -6,7 +6,7 @@ package org.pragmatica.aether.endpoint;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
-import org.pragmatica.aether.slice.topic.TopicAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -33,14 +33,14 @@ public interface TopicSubscriptionRegistry {
     List<TopicSubscriber> findSubscribers(String topicName);
     List<TopicSubscription> allSubscriptions();
 
-    record TopicSubscription(TopicAddress address, Artifact artifact, MethodName methodName, NodeId nodeId) {
+    record TopicSubscription(ResourceAddress address, Artifact artifact, MethodName methodName, NodeId nodeId) {
         public TopicSubscriptionKey toKey() {
             return TopicSubscriptionKey.topicSubscriptionKey(address, artifact, methodName);
         }
 
         /// Bare topic name — the runtime routing identity.
         public String topicName() {
-            return address.topic();
+            return address.name();
         }
     }
 

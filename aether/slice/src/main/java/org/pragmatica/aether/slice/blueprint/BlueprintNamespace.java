@@ -7,7 +7,7 @@ package org.pragmatica.aether.slice.blueprint;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.lang.Result;
 
 
@@ -30,6 +30,6 @@ public final class BlueprintNamespace {
     }
 
     public static Result<String> deriveNamespace(GroupId groupId, ArtifactId artifactId) {
-        return StreamAddress.validateAppNamespace(groupId.id() + "." + artifactId.id());
+        return ResourceAddress.validateAppNamespace(groupId.id() + "." + artifactId.id());
     }
 }

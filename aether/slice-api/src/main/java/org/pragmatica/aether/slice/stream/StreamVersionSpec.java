@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
@@ -17,9 +18,9 @@ import static org.pragmatica.lang.Result.success;
 ///  - [Latest] — resolve to the latest registered version at subscribe time
 ///    (consumers only; producers must always pin).
 ///
-/// Distinct from [StreamVersion], which represents a concrete version.
+/// Distinct from [ResourceVersion], which represents a concrete version.
 /// A [StreamVersionSpec] captures the user's intent (a pin vs. latest marker);
-/// the name-mapper resolves [Latest] into a [StreamVersion] per spec §9.2.
+/// the name-mapper resolves [Latest] into a [ResourceVersion] per spec §9.2.
 public sealed interface StreamVersionSpec {
     String LATEST_TOKEN = "latest";
 
@@ -48,7 +49,7 @@ public sealed interface StreamVersionSpec {
     boolean isLatest();
 
     /// Exact version pin.
-    record Exact(StreamVersion version) implements StreamVersionSpec {
+    record Exact(ResourceVersion version) implements StreamVersionSpec {
         @Override public String asString() {
             return version.asString();
         }
@@ -81,10 +82,10 @@ public sealed interface StreamVersionSpec {
         if (LATEST_TOKEN.equalsIgnoreCase(value.trim())) {
             return success(Latest.INSTANCE);
         }
-        return StreamVersion.streamVersion(value).map(Exact::new);
+        return ResourceVersion.resourceVersion(value).map(Exact::new);
     }
 
-    static StreamVersionSpec exact(StreamVersion version) {
+    static StreamVersionSpec exact(ResourceVersion version) {
         return new Exact(version);
     }
 

@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceVersion;
+
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -16,8 +20,8 @@ import org.pragmatica.lang.Result;
 import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.aether.slice.stream.StreamAddress.streamAddress;
-import static org.pragmatica.aether.slice.stream.StreamVersion.streamVersion;
+import static org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress;
+import static org.pragmatica.aether.slice.resource.ResourceVersion.resourceVersion;
 
 
 class InMemoryStreamRegistryTest {
@@ -30,15 +34,15 @@ class InMemoryStreamRegistryTest {
         return errorOf(promise.await());
     }
 
-    private static StreamAddress addr(String s) {
-        return streamAddress(s).unwrap();
+    private static ResourceAddress addr(String s) {
+        return resourceAddress(s).unwrap();
     }
 
-    private static StreamRegistryEntry frameworkEntry(StreamAddress address) {
+    private static StreamRegistryEntry frameworkEntry(ResourceAddress address) {
         return StreamRegistryEntry.framework(address, RetentionPolicy.retentionPolicy(), Instant.EPOCH);
     }
 
-    private static StreamRegistryEntry blueprintEntry(StreamAddress address) {
+    private static StreamRegistryEntry blueprintEntry(ResourceAddress address) {
         return StreamRegistryEntry.blueprint(address, RetentionPolicy.retentionPolicy(), Instant.EPOCH);
     }
 
@@ -111,7 +115,7 @@ class InMemoryStreamRegistryTest {
             registry.register(entry);
 
             var result = registry.resolve("system", "cluster-events",
-                                           StreamVersionSpec.exact(streamVersion(1, 0, 0).unwrap()));
+                                           StreamVersionSpec.exact(resourceVersion(1, 0, 0).unwrap()));
 
             assertThat(result.unwrap()).isEqualTo(entry);
         }
@@ -119,7 +123,7 @@ class InMemoryStreamRegistryTest {
         @Test
         void resolveExactMissingReturnsNotFound() {
             var result = registry.resolve("system", "cluster-events",
-                                           StreamVersionSpec.exact(streamVersion(1, 0, 0).unwrap()));
+                                           StreamVersionSpec.exact(resourceVersion(1, 0, 0).unwrap()));
 
             assertThat(errorOf(result)).isEqualTo(General.NOT_FOUND);
         }
@@ -133,7 +137,7 @@ class InMemoryStreamRegistryTest {
             var result = registry.resolve("system", "cluster-events", StreamVersionSpec.latest());
 
             assertThat(result.unwrap().address().version())
-                    .isEqualTo(streamVersion(2, 1, 0).unwrap());
+                    .isEqualTo(resourceVersion(2, 1, 0).unwrap());
         }
 
         @Test
@@ -151,7 +155,7 @@ class InMemoryStreamRegistryTest {
             var result = registry.resolve("com.example.a", "feed", StreamVersionSpec.latest());
 
             assertThat(result.unwrap().address().namespace()).isEqualTo("com.example.a");
-            assertThat(result.unwrap().address().version()).isEqualTo(streamVersion(1, 0, 0).unwrap());
+            assertThat(result.unwrap().address().version()).isEqualTo(resourceVersion(1, 0, 0).unwrap());
         }
     }
 

@@ -7,7 +7,7 @@ package org.pragmatica.aether.cli.stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// `false` after a configured number of calls, so the loop terminates without real waits.
 class StreamTailPollerTest {
 
-    private StreamAddress addr;
+    private ResourceAddress addr;
     private ByteArrayOutputStream outBuf;
     private ByteArrayOutputStream errBuf;
     private PrintStream out;
@@ -39,7 +39,7 @@ class StreamTailPollerTest {
 
     @BeforeEach
     void setUp() {
-        addr = StreamAddress.streamAddress("com.example.app", "orders", "1.0.0").unwrap();
+        addr = ResourceAddress.resourceAddress("com.example.app", "orders", "1.0.0").unwrap();
         outBuf = new ByteArrayOutputStream();
         errBuf = new ByteArrayOutputStream();
         out = new PrintStream(outBuf, true, StandardCharsets.UTF_8);
@@ -163,7 +163,7 @@ class StreamTailPollerTest {
         @Test
         void offsetAdvances_acrossSuccessivePages() {
             var captured = new ArrayList<String>();
-            BiFunction<StreamAddress, String, String> fetcher = (_, query) -> {
+            BiFunction<ResourceAddress, String, String> fetcher = (_, query) -> {
                 captured.add(query);
                 if (captured.size() == 1) {return pageWithEvents(0, 2, true);}
                 return pageWithEvents(2, 1, false);
@@ -180,7 +180,7 @@ class StreamTailPollerTest {
 
     /// Build a fetcher that returns successive responses from the given list. Once exhausted, the
     /// last entry is returned indefinitely (useful for tests that rely on the sleeper to terminate).
-    private static BiFunction<StreamAddress, String, String> scriptedFetcher(List<String> responses) {
+    private static BiFunction<ResourceAddress, String, String> scriptedFetcher(List<String> responses) {
         var idx = new AtomicInteger(0);
         return (_, _) -> {
             var i = Math.min(idx.getAndIncrement(), responses.size() - 1);

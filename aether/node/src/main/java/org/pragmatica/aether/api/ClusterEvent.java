@@ -4,7 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.serialization.Codec;
@@ -134,11 +134,11 @@ public sealed interface ClusterEvent permits
 
     /// Stream lifecycle event: a stream was registered (spec §13.1).
     record StreamRegistered(HlcTimestamp at, Severity severity, String summary, Map<String, String> details,
-                            StreamAddress address) implements ClusterEvent {}
+                            ResourceAddress address) implements ClusterEvent {}
 
     /// Stream lifecycle event: a stream was deleted (spec §13.2).
     record StreamDeleted(HlcTimestamp at, Severity severity, String summary, Map<String, String> details,
-                         StreamAddress address) implements ClusterEvent {}
+                         ResourceAddress address) implements ClusterEvent {}
 
     /// Operator-injected synthetic alert. Replicated cluster-wide via the events stream so peers
     /// surface it on /api/alerts read regardless of which node received the inject POST.

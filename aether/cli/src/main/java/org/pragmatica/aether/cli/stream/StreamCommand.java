@@ -8,7 +8,7 @@ import org.pragmatica.aether.cli.AetherCli;
 import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.aether.cli.Prompt;
 import org.pragmatica.aether.management.route.ManagementRoute;
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.lang.Contract;
 
 import java.util.List;
@@ -22,7 +22,7 @@ import picocli.CommandLine.Parameters;
 /// `aether stream` command group — operator surface for stream namespaces.
 ///
 /// Spec event-stream-namespaces §8.6: six commands wrap the HTTP route surface added in Wave 4A
-/// (`StreamApiRoutes`). Address parsing delegates to the canonical `StreamAddress.streamAddress`
+/// (`StreamApiRoutes`). Address parsing delegates to the canonical `ResourceAddress.resourceAddress`
 /// from slice-api so error messages stay aligned with the rest of the platform.
 ///
 /// Exit codes follow [StreamExitCode]: 0=success, 1=error, 2=validation, 3=user-cancelled,
@@ -182,9 +182,9 @@ public class StreamCommand implements Runnable {
         return StreamExitCode.VALIDATION;
     }
 
-    private static int fetchMetadata(StreamAddress addr, AetherCli cli) {
+    private static int fetchMetadata(ResourceAddress addr, AetherCli cli) {
         var response = cli.fetch(ManagementRoute.STREAMS_METADATA,
-                                 List.of(addr.namespace(), addr.stream(), addr.version().asString()));
+                                 List.of(addr.namespace(), addr.name(), addr.version().asString()));
         return renderQueryOrError(response, cli, "Failed to load stream metadata");
     }
 
@@ -192,12 +192,12 @@ public class StreamCommand implements Runnable {
     /// helper drives the polling loop against `/events`, printing each event payload on its own
     /// stdout line. The HTTP `fetch` callback delegates to [AetherCli#fetch] with the assembled
     /// route + query string so the wire-level concerns stay inside the existing CLI HTTP layer.
-    private static int tailStream(StreamAddress addr, AetherCli cli, StreamTailPoller.PollerOptions options) {
+    private static int tailStream(ResourceAddress addr, AetherCli cli, StreamTailPoller.PollerOptions options) {
         return StreamTailPoller.runTailLoop(addr,
                                             options,
                                             (a, query) -> cli.fetch(ManagementRoute.STREAMS_EVENTS,
                                                                     List.of(a.namespace(),
-                                                                            a.stream(),
+                                                                            a.name(),
                                                                             a.version().asString()),
                                                                     query),
                                             System.out,
@@ -205,12 +205,12 @@ public class StreamCommand implements Runnable {
                                             StreamTailPoller.Sleeper.REAL);
     }
 
-    private static int deleteStreamWithConfirmation(StreamAddress addr, boolean force, AetherCli cli) {
+    private static int deleteStreamWithConfirmation(ResourceAddress addr, boolean force, AetherCli cli) {
         if (!force && !confirm("Delete stream version '" + addr.asString() + "'?")) {
             return StreamExitCode.USER_CANCELLED;
         }
         var response = cli.delete(ManagementRoute.STREAMS_DELETE,
-                                  List.of(addr.namespace(), addr.stream(), addr.version().asString()));
+                                  List.of(addr.namespace(), addr.name(), addr.version().asString()));
         var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), "Failed to delete stream");
         if (errorCode >= 0) {
             return mapHttpErrorOrFallback(response, errorCode);
@@ -218,11 +218,11 @@ public class StreamCommand implements Runnable {
         return OutputFormatter.printAction(response, cli.outputOptions(), "Deleted stream: " + addr.asString());
     }
 
-    private static int createGroup(StreamAddress addr, String groupId, String initialPosition, AetherCli cli) {
+    private static int createGroup(ResourceAddress addr, String groupId, String initialPosition, AetherCli cli) {
         var body = "{\"groupId\":\"" + escapeJson(groupId) + "\",\"initialPosition\":\"" + escapeJson(initialPosition)
                 + "\"}";
         var response = cli.post(ManagementRoute.STREAMS_GROUP_CREATE,
-                                List.of(addr.namespace(), addr.stream(), addr.version().asString()),
+                                List.of(addr.namespace(), addr.name(), addr.version().asString()),
                                 body);
         var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), "Failed to create group");
         if (errorCode >= 0) {
@@ -232,12 +232,12 @@ public class StreamCommand implements Runnable {
                                            "Created group '" + groupId + "' on " + addr.asString());
     }
 
-    private static int deleteGroupWithConfirmation(StreamAddress addr, String groupId, boolean force, AetherCli cli) {
+    private static int deleteGroupWithConfirmation(ResourceAddress addr, String groupId, boolean force, AetherCli cli) {
         if (!force && !confirm("Delete consumer group '" + groupId + "' on '" + addr.asString() + "'?")) {
             return StreamExitCode.USER_CANCELLED;
         }
         var response = cli.delete(ManagementRoute.STREAMS_GROUP_DELETE,
-                                  List.of(addr.namespace(), addr.stream(), addr.version().asString(), groupId));
+                                  List.of(addr.namespace(), addr.name(), addr.version().asString(), groupId));
         var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), "Failed to delete group");
         if (errorCode >= 0) {
             return mapHttpErrorOrFallback(response, errorCode);

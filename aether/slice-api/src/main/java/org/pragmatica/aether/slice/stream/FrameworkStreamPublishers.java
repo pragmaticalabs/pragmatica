@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
@@ -17,7 +19,7 @@ import java.util.function.Consumer;
 ///   1. The single permitted implementation ({@link SystemStreamPublisher}) is a package-private
 ///      class. Application code outside `org.pragmatica.aether.slice.stream` cannot reference,
 ///      extend, or instantiate it.
-///   2. The factory entry point {@link #systemStreamPublisher(StreamAddress, StreamPublisher)}
+///   2. The factory entry point {@link #systemStreamPublisher(ResourceAddress, StreamPublisher)}
 ///      validates the supplied address is in the `system` namespace and refuses otherwise.
 ///
 /// Closed-write principle is therefore a compile-time invariant: app code has no expression that
@@ -29,7 +31,7 @@ public sealed interface FrameworkStreamPublishers {
     /// {@link FrameworkStreamPublisherError.General#NOT_SYSTEM_NAMESPACE} so a misuse from inside
     /// the framework module surfaces immediately rather than silently delivering app-namespace
     /// events through the privileged SPI.
-    static <T> Result<FrameworkStreamPublisher<T>> systemStreamPublisher(StreamAddress address, StreamPublisher<T> transport) {
+    static <T> Result<FrameworkStreamPublisher<T>> systemStreamPublisher(ResourceAddress address, StreamPublisher<T> transport) {
         if (!address.isSystem()) {
             return FrameworkStreamPublisherError.General.NOT_SYSTEM_NAMESPACE.result();
         }
@@ -42,7 +44,7 @@ public sealed interface FrameworkStreamPublishers {
     /// Validates `address` is a system address — same invariant as the production factory. Use in
     /// downstream tests that need to verify framework components publish into a system stream
     /// without spinning up the full transport stack.
-    static <T> Result<FrameworkStreamPublisher<T>> testPublisher(StreamAddress address, Consumer<T> capture) {
+    static <T> Result<FrameworkStreamPublisher<T>> testPublisher(ResourceAddress address, Consumer<T> capture) {
         if (!address.isSystem()) {
             return FrameworkStreamPublisherError.General.NOT_SYSTEM_NAMESPACE.result();
         }

@@ -18,11 +18,11 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
-import org.pragmatica.aether.slice.stream.StreamVersion;
-import org.pragmatica.aether.slice.topic.TopicAddress;
-import org.pragmatica.aether.slice.topic.TopicVersion;
+import org.pragmatica.aether.slice.resource.ResourceVersion;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.lang.Option;
@@ -609,8 +609,8 @@ class KVStoreSerializerTest {
 
     @Nested
     class StreamNamespaceRoundTrip {
-        private static StreamAddress addr(String namespace, String stream, int major, int minor, int patch) {
-            return StreamAddress.streamAddress(namespace, stream, StreamVersion.streamVersion(major, minor, patch).unwrap())
+        private static ResourceAddress addr(String namespace, String stream, int major, int minor, int patch) {
+            return ResourceAddress.resourceAddress(namespace, stream, ResourceVersion.resourceVersion(major, minor, patch).unwrap())
                                 .unwrap();
         }
 
@@ -659,8 +659,8 @@ class KVStoreSerializerTest {
         void roundTrip_namespacedTopicSubscriptionKey_preservesAddressArtifactMethod() {
             var entries = new LinkedHashMap<AetherKey, AetherValue>();
 
-            var address = TopicAddress.topicAddress("com.example.app", "order-events",
-                                                    TopicVersion.topicVersion(2, 1, 3).unwrap()).unwrap();
+            var address = ResourceAddress.resourceAddress("com.example.app", "order-events",
+                                                    ResourceVersion.resourceVersion(2, 1, 3).unwrap()).unwrap();
             var artifact = Artifact.artifact("com.example:order-slice:1.0.0").unwrap();
             var method = MethodName.methodName("onOrder").unwrap();
             var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, method);

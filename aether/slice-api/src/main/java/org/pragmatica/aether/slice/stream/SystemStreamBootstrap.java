@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.lang.Result;
 
@@ -51,12 +53,12 @@ public final class SystemStreamBootstrap {
         return success(List.copyOf(accumulated));
     }
 
-    private Result<StreamRegistryEntry> ensureRegistered(StreamAddress address) {
+    private Result<StreamRegistryEntry> ensureRegistered(ResourceAddress address) {
         return registry.lookup(address)
                        .fold(() -> registerFramework(address), Result::success);
     }
 
-    private Result<StreamRegistryEntry> registerFramework(StreamAddress address) {
+    private Result<StreamRegistryEntry> registerFramework(ResourceAddress address) {
         var entry = StreamRegistryEntry.framework(address, defaultRetention, clock.instant());
         return registry.register(entry);
     }

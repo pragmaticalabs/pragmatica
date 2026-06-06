@@ -4,8 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
-import org.pragmatica.aether.slice.topic.TopicAddress;
-import org.pragmatica.aether.slice.topic.TopicVersion;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.aether.slice.topology.SliceTopology;
 import org.pragmatica.lang.Result;
 
@@ -35,8 +35,8 @@ import static org.pragmatica.lang.Result.success;
     /// `StreamResourceValidator`'s reserved-namespace gate. Aggregates all diagnostics instead of
     /// short-circuiting at the first one.
     ///
-    ///  - Explicitly-namespaced configs (`namespace:topic:version`) are parsed as a [TopicAddress]
-    ///    via [TopicAddress#validateAppNamespace] on the namespace plus full-address grammar.
+    ///  - Explicitly-namespaced configs (`namespace:topic:version`) are parsed as a [ResourceAddress]
+    ///    via [ResourceAddress#validateAppNamespace] on the namespace plus full-address grammar.
     ///  - Bare configs are validated only for kebab-case topic-name grammar; their namespace is
     ///    derived at deploy time from the blueprint coordinates and cannot be `system`.
     private static List<String> validateTopicAddresses(List<SliceTopology> topologies) {
@@ -46,12 +46,12 @@ import static org.pragmatica.lang.Result.success;
         return List.copyOf(diagnostics);
     }
 
-    private static Result<TopicAddress> validateTopicConfig(String config) {
+    private static Result<ResourceAddress> validateTopicConfig(String config) {
         if (config != null && config.contains(":")) {
-            return TopicAddress.topicAddress(config)
-                               .flatMap(address -> TopicAddress.validateAppNamespace(address.namespace()).map(_ -> address));
+            return ResourceAddress.resourceAddress(config)
+                               .flatMap(address -> ResourceAddress.validateAppNamespace(address.namespace()).map(_ -> address));
         }
-        return TopicAddress.topicAddress(TopicAddress.DEFAULT_NAMESPACE, config, TopicVersion.defaultVersion());
+        return ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, config, ResourceVersion.defaultVersion());
     }
 
     private static Set<String> declaredTopicConfigs(List<SliceTopology> topologies) {

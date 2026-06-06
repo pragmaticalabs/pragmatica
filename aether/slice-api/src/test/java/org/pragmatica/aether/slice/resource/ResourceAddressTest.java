@@ -2,22 +2,25 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-package org.pragmatica.aether.slice.stream;
+package org.pragmatica.aether.slice.resource;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.slice.stream.StreamAddress.StreamAddressError.General;
+import org.pragmatica.aether.slice.resource.ResourceAddress.ResourceAddressError.General;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.aether.slice.stream.StreamAddress.streamAddress;
-import static org.pragmatica.aether.slice.stream.StreamAddress.systemStream;
-import static org.pragmatica.aether.slice.stream.StreamAddress.validateAppNamespace;
-import static org.pragmatica.aether.slice.stream.StreamVersion.streamVersion;
+import static org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress;
+import static org.pragmatica.aether.slice.resource.ResourceAddress.systemResource;
+import static org.pragmatica.aether.slice.resource.ResourceAddress.validateAppNamespace;
+import static org.pragmatica.aether.slice.resource.ResourceVersion.resourceVersion;
 
 
-class StreamAddressTest {
+/// Consolidated address tests for the single, shared [ResourceAddress] naming type — covers what the
+/// former `StreamAddressTest` and `TopicAddressTest` asserted, since streams and topics now reuse the
+/// same address type directly. The string form `namespace:name:version` is unchanged (KV/TOML form).
+class ResourceAddressTest {
 
     private static Cause errorOf(Result<?> result) {
         return result.fold(cause -> cause, _ -> null);
@@ -28,85 +31,85 @@ class StreamAddressTest {
 
         @Test
         void parsesSystemAddress() {
-            var addr = streamAddress("system:cluster-events:1.0.0").unwrap();
+            var addr = resourceAddress("system:cluster-events:1.0.0").unwrap();
 
             assertThat(addr.namespace()).isEqualTo("system");
-            assertThat(addr.stream()).isEqualTo("cluster-events");
-            assertThat(addr.version()).isEqualTo(streamVersion(1, 0, 0).unwrap());
+            assertThat(addr.name()).isEqualTo("cluster-events");
+            assertThat(addr.version()).isEqualTo(resourceVersion(1, 0, 0).unwrap());
             assertThat(addr.isSystem()).isTrue();
         }
 
         @Test
         void parsesAppAddress() {
-            var addr = streamAddress("com.example.myapp:orders:2.1.3").unwrap();
+            var addr = resourceAddress("com.example.myapp:orders:2.1.3").unwrap();
 
             assertThat(addr.namespace()).isEqualTo("com.example.myapp");
-            assertThat(addr.stream()).isEqualTo("orders");
-            assertThat(addr.version()).isEqualTo(streamVersion(2, 1, 3).unwrap());
+            assertThat(addr.name()).isEqualTo("orders");
+            assertThat(addr.version()).isEqualTo(resourceVersion(2, 1, 3).unwrap());
             assertThat(addr.isSystem()).isFalse();
         }
 
         @Test
         void rejectsNull() {
-            assertThat(errorOf(streamAddress(null))).isEqualTo(General.NULL_VALUE);
+            assertThat(errorOf(resourceAddress(null))).isEqualTo(General.NULL_VALUE);
         }
 
         @Test
         void rejectsBlank() {
-            assertThat(errorOf(streamAddress(""))).isEqualTo(General.BLANK_VALUE);
-            assertThat(errorOf(streamAddress("   "))).isEqualTo(General.BLANK_VALUE);
+            assertThat(errorOf(resourceAddress(""))).isEqualTo(General.BLANK_VALUE);
+            assertThat(errorOf(resourceAddress("   "))).isEqualTo(General.BLANK_VALUE);
         }
 
         @Test
         void rejectsTooFewComponents() {
-            assertThat(errorOf(streamAddress("system:cluster-events"))).isEqualTo(General.WRONG_FORMAT);
+            assertThat(errorOf(resourceAddress("system:cluster-events"))).isEqualTo(General.WRONG_FORMAT);
         }
 
         @Test
         void rejectsTooManyComponents() {
-            assertThat(errorOf(streamAddress("a:b:1.0.0:extra"))).isEqualTo(General.WRONG_FORMAT);
+            assertThat(errorOf(resourceAddress("a:b:1.0.0:extra"))).isEqualTo(General.WRONG_FORMAT);
         }
 
         @Test
         void rejectsEmptyNamespace() {
-            assertThat(errorOf(streamAddress(":orders:1.0.0"))).isEqualTo(General.NAMESPACE_INVALID);
+            assertThat(errorOf(resourceAddress(":orders:1.0.0"))).isEqualTo(General.NAMESPACE_INVALID);
         }
 
         @Test
-        void rejectsEmptyStream() {
-            assertThat(errorOf(streamAddress("system::1.0.0"))).isEqualTo(General.STREAM_NAME_INVALID);
+        void rejectsEmptyName() {
+            assertThat(errorOf(resourceAddress("system::1.0.0"))).isEqualTo(General.NAME_INVALID);
         }
 
         @Test
-        void rejectsUppercaseStream() {
-            assertThat(errorOf(streamAddress("system:ClusterEvents:1.0.0"))).isEqualTo(General.STREAM_NAME_INVALID);
+        void rejectsUppercaseName() {
+            assertThat(errorOf(resourceAddress("system:ClusterEvents:1.0.0"))).isEqualTo(General.NAME_INVALID);
         }
 
         @Test
-        void rejectsLeadingHyphenStream() {
-            assertThat(errorOf(streamAddress("system:-orders:1.0.0"))).isEqualTo(General.STREAM_NAME_INVALID);
+        void rejectsLeadingHyphenName() {
+            assertThat(errorOf(resourceAddress("system:-orders:1.0.0"))).isEqualTo(General.NAME_INVALID);
         }
 
         @Test
-        void rejectsTrailingHyphenStream() {
-            assertThat(errorOf(streamAddress("system:orders-:1.0.0"))).isEqualTo(General.STREAM_NAME_INVALID);
+        void rejectsTrailingHyphenName() {
+            assertThat(errorOf(resourceAddress("system:orders-:1.0.0"))).isEqualTo(General.NAME_INVALID);
         }
 
         @Test
-        void rejectsDoubleHyphenStream() {
-            assertThat(errorOf(streamAddress("system:or--ders:1.0.0"))).isEqualTo(General.STREAM_NAME_INVALID);
+        void rejectsDoubleHyphenName() {
+            assertThat(errorOf(resourceAddress("system:or--ders:1.0.0"))).isEqualTo(General.NAME_INVALID);
         }
 
         @Test
-        void rejectsReservedStreamName() {
-            assertThat(errorOf(streamAddress("system:latest:1.0.0"))).isEqualTo(General.STREAM_NAME_RESERVED);
+        void rejectsReservedName() {
+            assertThat(errorOf(resourceAddress("system:latest:1.0.0"))).isEqualTo(General.NAME_RESERVED);
         }
 
         @Test
         void rejectsMalformedVersion() {
-            var error = errorOf(streamAddress("system:cluster-events:1.0"));
+            var error = errorOf(resourceAddress("system:cluster-events:1.0"));
 
-            assertThat(error).isInstanceOf(StreamVersion.StreamVersionError.class);
+            assertThat(error).isInstanceOf(ResourceVersion.ResourceVersionError.class);
         }
     }
 
@@ -114,8 +117,8 @@ class StreamAddressTest {
     class SystemConstruction {
 
         @Test
-        void systemStreamAccepted() {
-            var addr = systemStream("cluster-events", streamVersion(1, 0, 0).unwrap()).unwrap();
+        void systemResourceAccepted() {
+            var addr = systemResource("cluster-events", resourceVersion(1, 0, 0).unwrap()).unwrap();
 
             assertThat(addr.namespace()).isEqualTo("system");
             assertThat(addr.isSystem()).isTrue();
@@ -187,24 +190,32 @@ class StreamAddressTest {
 
         @Test
         void asStringUsesCanonicalSeparators() {
-            var addr = streamAddress("com.example.myapp", "orders", streamVersion(1, 2, 3).unwrap()).unwrap();
+            var addr = resourceAddress("com.example.myapp", "orders", resourceVersion(1, 2, 3).unwrap()).unwrap();
 
             assertThat(addr.asString()).isEqualTo("com.example.myapp:orders:1.2.3");
         }
 
         @Test
         void toStringDelegatesToAsString() {
-            var addr = streamAddress("system:cluster-events:1.0.0").unwrap();
+            var addr = resourceAddress("system:cluster-events:1.0.0").unwrap();
 
             assertThat(addr.toString()).isEqualTo("system:cluster-events:1.0.0");
         }
 
         @Test
         void roundtripPreservesComponents() {
-            var original = streamAddress("com.example.myapp:orders:1.0.0").unwrap();
-            var reparsed = streamAddress(original.asString()).unwrap();
+            var original = resourceAddress("com.example.myapp:orders:1.0.0").unwrap();
+            var reparsed = resourceAddress(original.asString()).unwrap();
 
             assertThat(reparsed).isEqualTo(original);
+        }
+
+        @Test
+        void defaultNamespaceIsDefault() {
+            var addr = resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, "orders", ResourceVersion.defaultVersion()).unwrap();
+
+            assertThat(addr.namespace()).isEqualTo("default");
+            assertThat(addr.version()).isEqualTo(resourceVersion(1, 0, 0).unwrap());
         }
     }
 }

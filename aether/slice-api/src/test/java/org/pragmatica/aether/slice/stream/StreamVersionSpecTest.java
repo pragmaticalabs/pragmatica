@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceVersion;
+
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec.Exact;
@@ -13,7 +15,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.aether.slice.stream.StreamVersion.streamVersion;
+import static org.pragmatica.aether.slice.resource.ResourceVersion.resourceVersion;
 import static org.pragmatica.aether.slice.stream.StreamVersionSpec.streamVersionSpec;
 
 
@@ -32,7 +34,7 @@ class StreamVersionSpecTest {
 
             assertThat(spec).isInstanceOf(Exact.class);
             assertThat(spec.isLatest()).isFalse();
-            assertThat(((Exact) spec).version()).isEqualTo(streamVersion(1, 0, 0).unwrap());
+            assertThat(((Exact) spec).version()).isEqualTo(resourceVersion(1, 0, 0).unwrap());
         }
 
         @Test
@@ -70,7 +72,7 @@ class StreamVersionSpecTest {
         void rejectsMalformedTriplet() {
             var error = errorOf(streamVersionSpec("1.0"));
 
-            assertThat(error).isInstanceOf(StreamVersion.StreamVersionError.class);
+            assertThat(error).isInstanceOf(ResourceVersion.ResourceVersionError.class);
         }
     }
 
@@ -111,7 +113,7 @@ class StreamVersionSpecTest {
 
         @Test
         void exactFactory() {
-            var spec = StreamVersionSpec.exact(streamVersion(1, 2, 3).unwrap());
+            var spec = StreamVersionSpec.exact(resourceVersion(1, 2, 3).unwrap());
 
             assertThat(spec).isInstanceOf(Exact.class);
             assertThat(spec.isLatest()).isFalse();

@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.StreamPublisher;
@@ -18,16 +20,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// Verifies the sealed-SPI publisher split (spec §6.1):
 /// - Framework path can construct a {@link FrameworkStreamPublisher} for a system address.
 /// - App path is refused (NOT_SYSTEM_NAMESPACE) when the factory is mis-called with an app address.
-/// - {@link StreamPublisher#ensureAppAddress(StreamAddress)} resolver fail-safe rejects system addresses.
+/// - {@link StreamPublisher#ensureAppAddress(ResourceAddress)} resolver fail-safe rejects system addresses.
 /// - Publish delegates to the underlying transport publisher.
 class FrameworkStreamPublisherTest {
 
-    private static StreamAddress systemAddress() {
+    private static ResourceAddress systemAddress() {
         return SystemStreams.CLUSTER_EVENTS;
     }
 
-    private static StreamAddress appAddress() {
-        return StreamAddress.streamAddress("com.example.app", "orders", "1.0.0").unwrap();
+    private static ResourceAddress appAddress() {
+        return ResourceAddress.resourceAddress("com.example.app", "orders", "1.0.0").unwrap();
     }
 
     @Nested

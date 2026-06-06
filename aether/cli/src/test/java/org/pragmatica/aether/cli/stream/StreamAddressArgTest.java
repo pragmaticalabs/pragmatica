@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -11,7 +13,7 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// Adapter Leaf — verifies the CLI's stream-address parser delegates correctly to the canonical
-/// `StreamAddress` parser from slice-api. Failure causes flow through unchanged so error output
+/// `ResourceAddress` parser from slice-api. Failure causes flow through unchanged so error output
 /// stays aligned across CLI / HTTP / SDK.
 class StreamAddressArgTest {
 
@@ -23,7 +25,7 @@ class StreamAddressArgTest {
             StreamAddressArg.parse("com.example.app:orders:1.0.0")
                     .onFailure(cause -> Assertions.fail("unexpected failure: " + cause))
                     .onSuccess(addr -> assertThat(addr.namespace()).isEqualTo("com.example.app"))
-                    .onSuccess(addr -> assertThat(addr.stream()).isEqualTo("orders"))
+                    .onSuccess(addr -> assertThat(addr.name()).isEqualTo("orders"))
                     .onSuccess(addr -> assertThat(addr.version().asString()).isEqualTo("1.0.0"));
         }
 

@@ -7,8 +7,8 @@ package org.pragmatica.aether.slice.topology;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
-import org.pragmatica.aether.slice.topic.TopicAddress;
-import org.pragmatica.aether.slice.topic.TopicVersion;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -186,7 +186,7 @@ import org.slf4j.LoggerFactory;
     /// Mirrors the deploy-path rule in `NodeDeploymentState.resolveTopicAddress`:
     ///  - an already-namespaced declaration (`namespace:topic:version`) is kept verbatim;
     ///  - a bare/legacy name derives its namespace from the slice's blueprint Maven coordinates
-    ///    via [BlueprintNamespace] and defaults the version to [TopicVersion#defaultVersion].
+    ///    via [BlueprintNamespace] and defaults the version to [ResourceVersion#defaultVersion].
     ///
     /// Resolution is best-effort: if the artifact coordinates or the declared name fail to parse
     /// (e.g. malformed manifest), the raw `config` string is returned unchanged so the topology
@@ -194,14 +194,14 @@ import org.slf4j.LoggerFactory;
     private static String resolveTopicAddress(String config, String artifact) {
         if (config == null || config.isBlank()) {return config;}
         if (config.contains(":")) {
-            return TopicAddress.topicAddress(config)
-                               .map(TopicAddress::asString)
+            return ResourceAddress.resourceAddress(config)
+                               .map(ResourceAddress::asString)
                                .or(config);
         }
         return Artifact.artifact(artifact)
                        .flatMap(BlueprintNamespace::deriveNamespace)
-                       .flatMap(namespace -> TopicAddress.topicAddress(namespace, config, TopicVersion.defaultVersion()))
-                       .map(TopicAddress::asString)
+                       .flatMap(namespace -> ResourceAddress.resourceAddress(namespace, config, ResourceVersion.defaultVersion()))
+                       .map(ResourceAddress::asString)
                        .or(config);
     }
 

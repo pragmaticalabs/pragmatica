@@ -8,7 +8,7 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.slice.stream.StreamRegistry;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
@@ -86,7 +86,7 @@ public final class StreamApiRoutes implements RouteSource {
                                 long registeredAtEpochMs) {
         static StreamSummary fromEntry(StreamRegistryEntry entry) {
             return new StreamSummary(entry.address().namespace(),
-                                     entry.address().stream(),
+                                     entry.address().name(),
                                      entry.address().version().asString(),
                                      entry.refCount(),
                                      entry.registeredAtEpochMillis());
@@ -110,7 +110,7 @@ public final class StreamApiRoutes implements RouteSource {
         static StreamMetadataResponse fromEntry(StreamRegistryEntry entry) {
             var retention = entry.retention();
             return new StreamMetadataResponse(entry.address().namespace(),
-                                              entry.address().stream(),
+                                              entry.address().name(),
                                               entry.address().version().asString(),
                                               entry.refCount(),
                                               defaultPartitionCount(),
@@ -253,7 +253,7 @@ public final class StreamApiRoutes implements RouteSource {
     private Result<VersionsListResponse> listVersions(String namespace, String stream) {
         var versions = namespacesService.snapshot().stream()
                                        .filter(e -> e.address().namespace().equals(namespace))
-                                       .filter(e -> e.address().stream().equals(stream))
+                                       .filter(e -> e.address().name().equals(stream))
                                        .map(StreamSummary::fromEntry)
                                        .toList();
         if (versions.isEmpty()) {return STREAM_NOT_FOUND.result();}
@@ -266,14 +266,14 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     private Result<StreamMetadataResponse> streamMetadata(String namespace, String stream, String version) {
-        return StreamAddress.streamAddress(namespace, stream, version)
+        return ResourceAddress.resourceAddress(namespace, stream, version)
                             .flatMap(addr -> namespacesService.lookup(addr)
                                                               .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))
                             .map(StreamMetadataResponse::fromEntry);
     }
 
     private Result<GroupListResponse> listGroups(String namespace, String stream, String version) {
-        return StreamAddress.streamAddress(namespace, stream, version)
+        return ResourceAddress.resourceAddress(namespace, stream, version)
                             .map(addr -> new GroupListResponse(addr.asString(), List.of()));
     }
 
@@ -300,11 +300,11 @@ public final class StreamApiRoutes implements RouteSource {
                                                       Option<Integer> maxEvents) {
         var offset = fromOffset.or(0L);
         var limit = clampMaxEvents(maxEvents.or(DEFAULT_MAX_EVENTS));
-        return StreamAddress.streamAddress(namespace, stream, version)
+        return ResourceAddress.resourceAddress(namespace, stream, version)
                             .flatMap(addr -> readEventsAtAddress(addr, offset, limit));
     }
 
-    private Result<StreamEventsResponse> readEventsAtAddress(StreamAddress addr, long fromOffset, int maxEvents) {
+    private Result<StreamEventsResponse> readEventsAtAddress(ResourceAddress addr, long fromOffset, int maxEvents) {
         var streamName = addr.asString();
         return namespacesService.lookup(addr)
                                 .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND)
@@ -312,7 +312,7 @@ public final class StreamApiRoutes implements RouteSource {
                                 .map(events -> buildEventsResponse(addr, events, fromOffset, maxEvents));
     }
 
-    private static StreamEventsResponse buildEventsResponse(StreamAddress addr,
+    private static StreamEventsResponse buildEventsResponse(ResourceAddress addr,
                                                             List<org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent> events,
                                                             long fromOffset,
                                                             int maxEvents) {
@@ -344,7 +344,7 @@ public final class StreamApiRoutes implements RouteSource {
                                                  String stream,
                                                  String version,
                                                  PublishRequest request) {
-        return StreamAddress.streamAddress(namespace, stream, version)
+        return ResourceAddress.resourceAddress(namespace, stream, version)
                             .flatMap(addr -> publishOne(addr, request).map(offset -> new PublishResponse(addr.asString(),
                                                                                                           offset)));
     }
@@ -353,11 +353,11 @@ public final class StreamApiRoutes implements RouteSource {
                                                       String stream,
                                                       String version,
                                                       PublishRequest[] requests) {
-        return StreamAddress.streamAddress(namespace, stream, version)
+        return ResourceAddress.resourceAddress(namespace, stream, version)
                             .flatMap(addr -> publishMany(addr, requests));
     }
 
-    private Result<PublishBatchResponse> publishMany(StreamAddress addr, PublishRequest[] requests) {
+    private Result<PublishBatchResponse> publishMany(ResourceAddress addr, PublishRequest[] requests) {
         var perEvent = java.util.Arrays.stream(requests)
                                        .map(req -> publishOne(addr, req))
                                        .toList();
@@ -365,7 +365,7 @@ public final class StreamApiRoutes implements RouteSource {
                      .map(offsets -> new PublishBatchResponse(addr.asString(), offsets.size(), offsets));
     }
 
-    private Result<Long> publishOne(StreamAddress addr, PublishRequest request) {
+    private Result<Long> publishOne(ResourceAddress addr, PublishRequest request) {
         var streamName = addr.asString();
         var payload = decodePayload(request.data());
         return ensureStreamExists(streamName).flatMap(_ -> streamManager().publishLocal(streamName,
@@ -398,11 +398,11 @@ public final class StreamApiRoutes implements RouteSource {
                                               String stream,
                                               String version,
                                               GroupCreateRequest request) {
-        return StreamAddress.streamAddress(namespace, stream, version)
+        return ResourceAddress.resourceAddress(namespace, stream, version)
                             .flatMap(addr -> joinGroupAtAddress(addr, request));
     }
 
-    private Result<GroupResponse> joinGroupAtAddress(StreamAddress addr, GroupCreateRequest request) {
+    private Result<GroupResponse> joinGroupAtAddress(ResourceAddress addr, GroupCreateRequest request) {
         var streamName = addr.asString();
         var consumerId = "operator-" + System.nanoTime();
         return coordinator.joinGroup(request.groupId(),
@@ -417,11 +417,11 @@ public final class StreamApiRoutes implements RouteSource {
                                               String stream,
                                               String version,
                                               String group) {
-        return StreamAddress.streamAddress(namespace, stream, version)
+        return ResourceAddress.resourceAddress(namespace, stream, version)
                             .flatMap(addr -> leaveGroupAtAddress(addr, group));
     }
 
-    private Result<GroupResponse> leaveGroupAtAddress(StreamAddress addr, String group) {
+    private Result<GroupResponse> leaveGroupAtAddress(ResourceAddress addr, String group) {
         var streamName = addr.asString();
         var status = coordinator.groupStatus(group);
         if (status.isEmpty()) {return GROUP_NOT_FOUND.result();}
@@ -434,10 +434,10 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     private Result<DeleteResponse> deleteStream(String namespace, String stream, String version) {
-        return StreamAddress.streamAddress(namespace, stream, version).flatMap(this::destroyAtAddress);
+        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(this::destroyAtAddress);
     }
 
-    private Result<DeleteResponse> destroyAtAddress(StreamAddress addr) {
+    private Result<DeleteResponse> destroyAtAddress(ResourceAddress addr) {
         var streamName = addr.asString();
         return streamManager().destroyStream(streamName)
                               .recover(_ -> org.pragmatica.lang.Unit.unit())

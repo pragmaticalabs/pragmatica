@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.pragmatica.aether.slice.StreamAccess;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.aether.slice.StreamAccess.StreamMetadata;
@@ -18,9 +20,9 @@ import java.util.List;
 ///
 /// Package-private record — application code outside this package cannot reference or construct
 /// this type. Construction flows exclusively through
-/// {@link FrameworkStreamConsumers#systemStreamConsumer(StreamAddress, StreamAccess)} which
+/// {@link FrameworkStreamConsumers#systemStreamConsumer(ResourceAddress, StreamAccess)} which
 /// validates the address is in the `system` namespace.
-record SystemStreamConsumer<T>(StreamAddress address, StreamAccess<T> transport) implements FrameworkStreamConsumer<T> {
+record SystemStreamConsumer<T>(ResourceAddress address, StreamAccess<T> transport) implements FrameworkStreamConsumer<T> {
     @Override public Promise<List<StreamEvent<T>>> fetch(long fromOffset, int maxEvents) {
         return transport.fetch(fromOffset, maxEvents);
     }

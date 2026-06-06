@@ -5,7 +5,7 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.management.route.ManagementRoute;
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.slice.stream.StreamRegistry;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
@@ -48,7 +48,7 @@ public final class StreamNamespacesRoutes implements RouteSource {
                                           int refCount) {
         static StreamRegistryEntryDto fromEntry(StreamRegistryEntry entry) {
             return new StreamRegistryEntryDto(entry.address().namespace(),
-                                               entry.address().stream(),
+                                               entry.address().name(),
                                                entry.address().version().asString(),
                                                entry.registeredBy().name(),
                                                entry.registeredAtEpochMillis(),
@@ -75,7 +75,7 @@ public final class StreamNamespacesRoutes implements RouteSource {
     }
 
     private Result<StreamNamespacesEntryResponse> lookupEntry(String namespace, String stream, String version) {
-        return StreamAddress.streamAddress(namespace, stream, version)
+        return ResourceAddress.resourceAddress(namespace, stream, version)
                              .flatMap(address -> service.lookup(address)
                                                          .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))
                              .map(StreamRegistryEntryDto::fromEntry)

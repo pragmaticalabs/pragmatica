@@ -19,7 +19,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.Phase;
@@ -1085,11 +1085,11 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static Result<AetherValue> buildStreamRegistryValue(String[] parts) {
-        return StreamAddress.streamAddress(parts[0])
+        return ResourceAddress.resourceAddress(parts[0])
                             .flatMap(address -> Result.lift(() -> assembleStreamRegistryValue(address, parts)));
     }
 
-    private static AetherValue assembleStreamRegistryValue(StreamAddress address, String[] parts) {
+    private static AetherValue assembleStreamRegistryValue(ResourceAddress address, String[] parts) {
         var refCount = Integer.parseInt(parts[1]);
         var registeredAtEpochMillis = Long.parseLong(parts[2]);
         var registeredBy = StreamRegistryEntry.RegisteredByKind.valueOf(parts[3]);
@@ -1125,7 +1125,7 @@ import static org.pragmatica.lang.Result.success;
         if (eq <= 0 || eq == token.length() - 1) {return parseFailure("blueprint-stream-bindings entry requires alias=address, got: " + token);}
         var alias = token.substring(0, eq);
         var addressPart = token.substring(eq + 1);
-        return StreamAddress.streamAddress(addressPart).map(address -> new NamedAddress(alias, address));
+        return ResourceAddress.resourceAddress(addressPart).map(address -> new NamedAddress(alias, address));
     }
 
     private static String serializeCloudCredentials(CloudCredentialsValue v) {        return java.util.Base64.getUrlEncoder().withoutPadding()

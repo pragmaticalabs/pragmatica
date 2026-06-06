@@ -25,7 +25,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsVa
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
@@ -275,7 +275,7 @@ class BlueprintServiceInstance implements BlueprintService {
         // (see SliceStore.loadSlice). The resourcesConfig parameter is kept here because the
         // ExpandedBlueprint already embeds it for downstream consumers (e.g., schema gating).
         //
-        // Stage-3 (stream-namespaces §8.5): the per-blueprint alias→StreamAddress bindings ARE
+        // Stage-3 (stream-namespaces §8.5): the per-blueprint alias→ResourceAddress bindings ARE
         // published to KV (replicated), so the per-slice runtime FSM can resolve refcount targets.
         // rc1's deploy chain has no stream-resource validation gate, so the resolved resource map is
         // (re-)derived here from the embedded resources.toml + roleHints. Derivation is best-effort:
@@ -317,9 +317,9 @@ class BlueprintServiceInstance implements BlueprintService {
     /// the explicit version produce the fully-qualified address. `Latest` version specs have no
     /// concrete address at deploy time — the consumer resolves them at subscribe-time against the
     /// live registry, so they're omitted from the bindings map.
-    private static Option<StreamAddress> resolveOwnedAddress(String namespace, String alias, StreamResource.Owned owned) {
+    private static Option<ResourceAddress> resolveOwnedAddress(String namespace, String alias, StreamResource.Owned owned) {
         return switch (owned.version()) {
-            case StreamVersionSpec.Exact exact -> StreamAddress.streamAddress(namespace, alias, exact.version()).option();
+            case StreamVersionSpec.Exact exact -> ResourceAddress.resourceAddress(namespace, alias, exact.version()).option();
             case StreamVersionSpec.Latest _ -> Option.none();
         };
     }

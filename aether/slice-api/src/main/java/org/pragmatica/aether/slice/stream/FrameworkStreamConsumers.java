@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.pragmatica.aether.slice.StreamAccess;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.lang.Cause;
@@ -19,7 +21,7 @@ import java.util.function.Supplier;
 ///   1. The single permitted implementation ({@link SystemStreamConsumer}) is a package-private
 ///      class. Application code outside `org.pragmatica.aether.slice.stream` cannot reference,
 ///      extend, or instantiate it.
-///   2. The factory entry point {@link #systemStreamConsumer(StreamAddress, StreamAccess)}
+///   2. The factory entry point {@link #systemStreamConsumer(ResourceAddress, StreamAccess)}
 ///      validates the supplied address is in the `system` namespace and refuses otherwise.
 ///
 /// Closed-read principle is therefore a compile-time invariant: app code has no expression that
@@ -31,7 +33,7 @@ public sealed interface FrameworkStreamConsumers {
     /// {@link FrameworkStreamConsumerError.General#NOT_SYSTEM_NAMESPACE} so a misuse from inside
     /// the framework module surfaces immediately rather than silently exposing app-namespace
     /// events through the privileged SPI.
-    static <T> Result<FrameworkStreamConsumer<T>> systemStreamConsumer(StreamAddress address, StreamAccess<T> transport) {
+    static <T> Result<FrameworkStreamConsumer<T>> systemStreamConsumer(ResourceAddress address, StreamAccess<T> transport) {
         if (!address.isSystem()) {
             return FrameworkStreamConsumerError.General.NOT_SYSTEM_NAMESPACE.result();
         }
@@ -44,7 +46,7 @@ public sealed interface FrameworkStreamConsumers {
     /// Validates `address` is a system address — same invariant as the production factory. Use in
     /// downstream tests that need to verify framework components consume from a system stream
     /// without spinning up the full transport stack.
-    static <T> Result<FrameworkStreamConsumer<T>> testConsumer(StreamAddress address,
+    static <T> Result<FrameworkStreamConsumer<T>> testConsumer(ResourceAddress address,
                                                                Supplier<List<StreamEvent<T>>> fetchSupplier) {
         if (!address.isSystem()) {
             return FrameworkStreamConsumerError.General.NOT_SYSTEM_NAMESPACE.result();

@@ -5,7 +5,7 @@
 package org.pragmatica.aether.slice;
 
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -21,8 +21,8 @@ import java.util.List;
 /// `StreamPublisher<T>` for any `system:*` address — apps cannot publish to system streams. See
 /// {@link FrameworkStreamPublisher} for the framework-only system-namespace SPI.
 ///
-/// Resolver-level enforcement uses {@link #ensureAppAddress(StreamAddress)} as the canonical
-/// belt-and-suspenders check. Once {@link StreamAddress} is plumbed into the publisher factory
+/// Resolver-level enforcement uses {@link #ensureAppAddress(ResourceAddress)} as the canonical
+/// belt-and-suspenders check. Once {@link ResourceAddress} is plumbed into the publisher factory
 /// (separate wave), the factory's provision path invokes this check before constructing a
 /// publisher.
 public interface StreamPublisher<T> {
@@ -38,7 +38,7 @@ public interface StreamPublisher<T> {
     /// Spec §6.1: the framework-vs-app boundary is a compile-time invariant via the sealed-SPI
     /// split. This runtime check is the second layer of defense for paths that bypass normal
     /// resolution (reflection, hand-edited blueprints, test harnesses).
-    static Result<StreamAddress> ensureAppAddress(StreamAddress address) {
+    static Result<ResourceAddress> ensureAppAddress(ResourceAddress address) {
         if (address.isSystem()) {
             return StreamPublisherError.General.SYSTEM_ADDRESS_REFUSED.result();
         }

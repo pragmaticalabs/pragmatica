@@ -4,12 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceVersion;
+
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.StreamConfig;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.aether.slice.stream.StreamAddress.streamAddress;
-import static org.pragmatica.aether.slice.stream.StreamVersion.streamVersion;
+import static org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress;
+import static org.pragmatica.aether.slice.resource.ResourceVersion.resourceVersion;
 
 
 class StreamResourceTest {
@@ -17,7 +21,7 @@ class StreamResourceTest {
     @Test
     void ownedCapturesAliasVersionAndConfig() {
         var config = StreamConfig.streamConfig("orders");
-        var spec = StreamVersionSpec.exact(streamVersion(1, 0, 0).unwrap());
+        var spec = StreamVersionSpec.exact(resourceVersion(1, 0, 0).unwrap());
 
         var resource = StreamResource.owned("orders", spec, config);
 
@@ -30,7 +34,7 @@ class StreamResourceTest {
 
     @Test
     void externalCapturesAliasAndTargetAddress() {
-        var target = streamAddress("io.acme.inventory:stock-updates:2.0.0").unwrap();
+        var target = resourceAddress("io.acme.inventory:stock-updates:2.0.0").unwrap();
 
         var resource = StreamResource.external("inventory_feed", target);
 
@@ -46,7 +50,7 @@ class StreamResourceTest {
                                                     StreamVersionSpec.latest(),
                                                     StreamConfig.DEFAULT);
         StreamResource external = StreamResource.external("e",
-                                                           streamAddress("a.b:s:1.0.0").unwrap());
+                                                           resourceAddress("a.b:s:1.0.0").unwrap());
 
         assertThat(owned.alias()).isEqualTo("o");
         assertThat(external.alias()).isEqualTo("e");

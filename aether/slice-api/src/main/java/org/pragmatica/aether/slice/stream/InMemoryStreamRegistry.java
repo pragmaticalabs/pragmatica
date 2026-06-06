@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -24,7 +26,7 @@ import static org.pragmatica.lang.Result.success;
 /// the streaming runtime. The consensus-backed registry replaces this implementation without
 /// API changes.
 public final class InMemoryStreamRegistry implements StreamRegistry {
-    private final ConcurrentHashMap<StreamAddress, StreamRegistryEntry> entries = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<ResourceAddress, StreamRegistryEntry> entries = new ConcurrentHashMap<>();
 
     @Override public Result<StreamRegistryEntry> register(StreamRegistryEntry entry) {
         var previous = entries.putIfAbsent(entry.address(), entry);
@@ -34,21 +36,21 @@ public final class InMemoryStreamRegistry implements StreamRegistry {
         return success(entry);
     }
 
-    @Override public Option<StreamRegistryEntry> lookup(StreamAddress address) {
+    @Override public Option<StreamRegistryEntry> lookup(ResourceAddress address) {
         return option(entries.get(address));
     }
 
     @Override public Result<StreamRegistryEntry> resolve(String namespace, String stream, StreamVersionSpec spec) {
         return switch (spec) {
             case StreamVersionSpec.Exact exact -> {
-                var address = new StreamAddress(namespace, stream, exact.version());
+                var address = new ResourceAddress(namespace, stream, exact.version());
                 yield lookup(address).toResult(StreamRegistryError.General.NOT_FOUND);
             }
             case StreamVersionSpec.Latest _ -> resolveLatest(namespace, stream);
         };
     }
 
-    @Override public Promise<StreamRegistryEntry> acquireReference(StreamAddress address) {
+    @Override public Promise<StreamRegistryEntry> acquireReference(ResourceAddress address) {
         var updated = entries.computeIfPresent(address, (_, entry) -> entry.incrementRef());
         if (updated == null) {
             return StreamRegistryError.General.NOT_FOUND.promise();
@@ -56,7 +58,7 @@ public final class InMemoryStreamRegistry implements StreamRegistry {
         return Promise.success(updated);
     }
 
-    @Override public Promise<ReleaseOutcome> releaseReference(StreamAddress address) {
+    @Override public Promise<ReleaseOutcome> releaseReference(ResourceAddress address) {
         var current = entries.get(address);
         if (current == null) {
             return StreamRegistryError.General.NOT_FOUND.promise();
@@ -78,7 +80,7 @@ public final class InMemoryStreamRegistry implements StreamRegistry {
 
     private Result<StreamRegistryEntry> resolveLatest(String namespace, String stream) {
         return entries.values().stream()
-                      .filter(e -> e.address().namespace().equals(namespace) && e.address().stream().equals(stream))
+                      .filter(e -> e.address().namespace().equals(namespace) && e.address().name().equals(stream))
                       .max(Comparator.comparing(e -> e.address().version()))
                       .map(Result::success)
                       .orElseGet(() -> StreamRegistryError.General.NO_VERSIONS_REGISTERED.result());

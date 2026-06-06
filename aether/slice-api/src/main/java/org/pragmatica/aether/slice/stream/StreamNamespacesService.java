@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -45,7 +47,7 @@ public final class StreamNamespacesService {
     }
 
     /// Read-only lookup by exact address used by the HTTP route.
-    public Option<StreamRegistryEntry> lookup(StreamAddress address) {
+    public Option<StreamRegistryEntry> lookup(ResourceAddress address) {
         return registry.lookup(address);
     }
 

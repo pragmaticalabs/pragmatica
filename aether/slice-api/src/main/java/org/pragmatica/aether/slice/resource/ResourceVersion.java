@@ -21,9 +21,8 @@ import static org.pragmatica.lang.Result.success;
 ///
 /// Versions are immutable once registered. Schema bug fixes produce a new PATCH version.
 ///
-/// This type owns the version grammar and ordering. Resource-flavored version types
-/// (e.g. `StreamVersion`) delegate their parsing/ordering here while keeping their own
-/// error vocabulary for backward-compatible diagnostics.
+/// This type owns the version grammar and ordering. It is the single, uniform version type
+/// reused directly by streams, topics, and any future addressable resource.
 @Codec public record ResourceVersion(int major, int minor, int patch) implements Comparable<ResourceVersion> {
     public sealed interface ResourceVersionError extends Cause {
         enum General implements ResourceVersionError {
@@ -53,6 +52,12 @@ import static org.pragmatica.lang.Result.success;
             return ResourceVersionError.General.NEGATIVE_COMPONENT.result();
         }
         return success(new ResourceVersion(major, minor, patch));
+    }
+
+    /// Default resource version applied to legacy / un-namespaced declarations that omit an
+    /// explicit version. A bare name resolves to `1.0.0`.
+    public static ResourceVersion defaultVersion() {
+        return new ResourceVersion(1, 0, 0);
     }
 
     public static Result<ResourceVersion> resourceVersion(String value) {

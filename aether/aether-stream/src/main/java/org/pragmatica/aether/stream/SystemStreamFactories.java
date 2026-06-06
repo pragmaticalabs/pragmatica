@@ -10,7 +10,7 @@ import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
 import org.pragmatica.aether.slice.stream.FrameworkStreamConsumers;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublishers;
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -47,7 +47,7 @@ public final class SystemStreamFactories {
     /// production knobs — `maxEventSizeBytes`, `consistencyMode`, `minSyncReplicas` — carried on the
     /// {@link StreamConfig} (e.g. `system:cluster-events`, B5b). The config's `name` must equal
     /// `address.asString()`.
-    public static <T> Result<FrameworkStreamPublisher<T>> systemStreamPublisher(StreamAddress address,
+    public static <T> Result<FrameworkStreamPublisher<T>> systemStreamPublisher(ResourceAddress address,
                                                                                 StreamPartitionManager partitionManager,
                                                                                 Serializer serializer,
                                                                                 StreamConfig config) {
@@ -64,7 +64,7 @@ public final class SystemStreamFactories {
     /// partition materialized from `config`. Read path uses {@link PartitionedStreamAccess}: once the
     /// `ReplicaSetController` has populated the replica registry, a replica reads locally and a
     /// non-replica read-forwards automatically. The config's `name` must equal `address.asString()`.
-    public static <T> Result<FrameworkStreamConsumer<T>> systemStreamConsumer(StreamAddress address,
+    public static <T> Result<FrameworkStreamConsumer<T>> systemStreamConsumer(ResourceAddress address,
                                                                               StreamPartitionManager partitionManager,
                                                                               Serializer serializer,
                                                                               Deserializer deserializer,
@@ -84,7 +84,7 @@ public final class SystemStreamFactories {
     ///
     /// `partitions` controls the partition count of the underlying ring buffer. For low-volume
     /// system streams (cluster-events, etc.) `1` is the natural choice.
-    public static <T> Result<FrameworkStreamPublisher<T>> systemStreamPublisher(StreamAddress address,
+    public static <T> Result<FrameworkStreamPublisher<T>> systemStreamPublisher(ResourceAddress address,
                                                                                 StreamPartitionManager partitionManager,
                                                                                 Serializer serializer,
                                                                                 int partitions,
@@ -102,7 +102,7 @@ public final class SystemStreamFactories {
     /// partition. Read path uses {@link PartitionedStreamAccess} with default (governor) read
     /// preference and no replica/forward-client wiring — system streams in RC1 read from the local
     /// owner.
-    public static <T> Result<FrameworkStreamConsumer<T>> systemStreamConsumer(StreamAddress address,
+    public static <T> Result<FrameworkStreamConsumer<T>> systemStreamConsumer(ResourceAddress address,
                                                                               StreamPartitionManager partitionManager,
                                                                               Serializer serializer,
                                                                               Deserializer deserializer,
@@ -134,7 +134,7 @@ public final class SystemStreamFactories {
     /// failures from the subsequent publish/fetch call rather than from here, mirroring the
     /// app-side `StreamPublisherFactory`/`StreamAccessFactory` pattern (which also calls
     /// `createStream` unconditionally without checking the result).
-    private static void ensureLocalPartition(StreamAddress address,
+    private static void ensureLocalPartition(ResourceAddress address,
                                              StreamPartitionManager partitionManager,
                                              int partitions,
                                              RetentionPolicy retention) {

@@ -13,7 +13,7 @@ import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.config.toml.TomlDocument;
@@ -202,7 +202,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
     }
 
     private static Result<StreamResource> parseExternalResource(String streamName, String source) {
-        return StreamAddress.streamAddress(source)
+        return ResourceAddress.resourceAddress(source)
                              .map(addr -> StreamResource.external(streamName, addr));
     }
 

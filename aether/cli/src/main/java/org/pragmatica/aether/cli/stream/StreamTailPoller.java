@@ -6,7 +6,7 @@ package org.pragmatica.aether.cli.stream;
 
 import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.aether.management.route.ManagementRoute;
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.json.JsonMapper;
 
 import java.io.PrintStream;
@@ -34,9 +34,9 @@ public sealed interface StreamTailPoller {
     /// `httpFetch` is parameterized so unit tests can drive the loop with a stub response sequence
     /// without spinning up a server. The fetcher receives `(addr, query)` and returns the raw JSON
     /// body the server would have sent.
-    static int runTailLoop(StreamAddress addr,
+    static int runTailLoop(ResourceAddress addr,
                            PollerOptions options,
-                           BiFunction<StreamAddress, String, String> httpFetch,
+                           BiFunction<ResourceAddress, String, String> httpFetch,
                            PrintStream out,
                            PrintStream err,
                            Sleeper sleeper) {

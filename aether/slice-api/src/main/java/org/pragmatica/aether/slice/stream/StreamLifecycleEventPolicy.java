@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 
 /// Policy guard for stream lifecycle events.
 ///
@@ -16,7 +18,7 @@ package org.pragmatica.aether.slice.stream;
 /// Application-namespace stream lifecycle events are produced normally.
 ///
 /// Callers that emit `STREAM_REGISTERED`/`STREAM_DELETED` (and analogous lifecycle events) must
-/// gate their emit with [#shouldEmit(StreamAddress)]. The lifecycle event types themselves are
+/// gate their emit with [#shouldEmit(ResourceAddress)]. The lifecycle event types themselves are
 /// added in the emission reconciliation PR; this guard is in place ahead of them so the
 /// circular-dep prevention rule has a single, discoverable home.
 public final class StreamLifecycleEventPolicy {
@@ -24,7 +26,7 @@ public final class StreamLifecycleEventPolicy {
 
     /// Returns true when a lifecycle event for `address` should be emitted into the cluster
     /// event stream. False when `address` is in the system namespace.
-    public static boolean shouldEmit(StreamAddress address) {
+    public static boolean shouldEmit(ResourceAddress address) {
         return !address.isSystem();
     }
 }

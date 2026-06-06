@@ -8,8 +8,8 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
-import org.pragmatica.aether.slice.stream.StreamAddress;
-import org.pragmatica.aether.slice.topic.TopicAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -309,16 +309,16 @@ import static org.pragmatica.lang.Result.success;
 
     /// Per-subscription registry key, now namespaced: `topic-sub/{namespace}/{topic}/{version}/{artifact}/{method}`.
     ///
-    /// Carries a full [TopicAddress] (namespace + topic + version) so pub/sub mirrors the stream
-    /// addressing model. Runtime routing still matches on the bare topic name ([TopicAddress#topic])
+    /// Carries a full [ResourceAddress] (namespace + topic + version) so pub/sub mirrors the stream
+    /// addressing model. Runtime routing still matches on the bare topic name ([ResourceAddress#topic])
     /// — see [TopicSubscriptionRegistry] — so existing un-namespaced topics keep working; the
     /// namespace/version travel as addressing metadata in the key's wire form. `asString`/parse are
     /// symmetric so the `topic-sub` serializer arm round-trips automatically.
-    record TopicSubscriptionKey(TopicAddress address, Artifact artifact, MethodName methodName) implements AetherKey {
+    record TopicSubscriptionKey(ResourceAddress address, Artifact artifact, MethodName methodName) implements AetherKey {
         private static final String PREFIX = "topic-sub/";
 
         @Override public String asString() {
-            return PREFIX + address.namespace() + "/" + address.topic() + "/" + address.version().asString()
+            return PREFIX + address.namespace() + "/" + address.name() + "/" + address.version().asString()
                    + "/" + artifact.asString() + "/" + methodName.name();
         }
 
@@ -329,10 +329,10 @@ import static org.pragmatica.lang.Result.success;
         /// Bare topic name — the runtime routing identity, kept for back-compat with publishers that
         /// route on the un-namespaced name.
         public String topicName() {
-            return address.topic();
+            return address.name();
         }
 
-        public static TopicSubscriptionKey topicSubscriptionKey(TopicAddress address,
+        public static TopicSubscriptionKey topicSubscriptionKey(ResourceAddress address,
                                                                 Artifact artifact,
                                                                 MethodName methodName) {
             return new TopicSubscriptionKey(address, artifact, methodName);
@@ -358,7 +358,7 @@ import static org.pragmatica.lang.Result.success;
             var artifactPart = rest3.substring(0, lastSlash);
             var methodPart = rest3.substring(lastSlash + 1);
             if (methodPart.isEmpty()) {return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();}
-            return Result.all(TopicAddress.topicAddress(namespace, topic, version),
+            return Result.all(ResourceAddress.resourceAddress(namespace, topic, version),
                               Artifact.artifact(artifactPart),
                               MethodName.methodName(methodPart))
             .map(TopicSubscriptionKey::new);
@@ -1355,18 +1355,18 @@ import static org.pragmatica.lang.Result.success;
     /// single key/value pair so each refcount mutation is a single consensus command instead of
     /// two — the spec separation is conceptual; the implementation collapses them for atomic
     /// piggyback on the SliceNodeValue update.
-    record StreamRegistryKey(StreamAddress address) implements AetherKey {
+    record StreamRegistryKey(ResourceAddress address) implements AetherKey {
         private static final String PREFIX = "stream-registry/";
 
         @Override public String asString() {
-            return PREFIX + address.namespace() + "/" + address.stream() + "/" + address.version().asString();
+            return PREFIX + address.namespace() + "/" + address.name() + "/" + address.version().asString();
         }
 
         @Override public String toString() {
             return asString();
         }
 
-        public static StreamRegistryKey streamRegistryKey(StreamAddress address) {
+        public static StreamRegistryKey streamRegistryKey(ResourceAddress address) {
             return new StreamRegistryKey(address);
         }
 
@@ -1383,20 +1383,20 @@ import static org.pragmatica.lang.Result.success;
             }
             var stream = rest.substring(0, secondSlash);
             var version = rest.substring(secondSlash + 1);
-            return StreamAddress.streamAddress(namespace, stream, version).map(StreamRegistryKey::new);
+            return ResourceAddress.resourceAddress(namespace, stream, version).map(StreamRegistryKey::new);
         }
     }
 
-    // Stage 2 (stream-namespaces) additive graft: per-blueprint alias->StreamAddress bindings.
+    // Stage 2 (stream-namespaces) additive graft: per-blueprint alias->ResourceAddress bindings.
     // Persistent/replicated deploy-time state (NOT ephemeral) — written by BlueprintService at
     // deploy and read by the per-slice runtime FSM to resolve refcount targets (spec §8.5).
     Fn1<Cause, String> BLUEPRINT_STREAM_BINDINGS_KEY_FORMAT_ERROR =
         Causes.forOneValue("Invalid blueprint-stream-bindings key format: %s");
 
-    /// Per-blueprint alias→StreamAddress map persisted at deploy time so per-slice runtime FSM
+    /// Per-blueprint alias→ResourceAddress map persisted at deploy time so per-slice runtime FSM
     /// transitions (ACTIVE entry / DEACTIVATING / UNLOADING exit) can resolve the slice manifest's
     /// `stream.publisher.<i>.config` / `stream.access.<i>.config` aliases into fully-qualified
-    /// `StreamAddress` values without re-running blueprint validation.
+    /// `ResourceAddress` values without re-running blueprint validation.
     ///
     /// Spec reference: event-stream-namespaces §8.5 (consensus-mediated refcount accounting requires
     /// the resolved address per slice declaration).

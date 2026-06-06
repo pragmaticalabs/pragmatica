@@ -6,9 +6,9 @@ package org.pragmatica.aether.slice.blueprint;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamResource;
-import org.pragmatica.aether.slice.stream.StreamVersion;
+import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,7 +49,7 @@ class StreamConfigParserTest {
             assertThat(resource).isInstanceOf(StreamResource.Owned.class);
             var owned = (StreamResource.Owned) resource;
             assertThat(owned.alias()).isEqualTo("orders");
-            assertThat(owned.version()).isEqualTo(StreamVersionSpec.exact(StreamVersion.streamVersion(1, 0, 0).unwrap()));
+            assertThat(owned.version()).isEqualTo(StreamVersionSpec.exact(ResourceVersion.resourceVersion(1, 0, 0).unwrap()));
             assertThat(owned.config().partitions()).isEqualTo(8);
         }
 
@@ -81,7 +81,7 @@ class StreamConfigParserTest {
             var external = (StreamResource.External) resource;
             assertThat(external.alias()).isEqualTo("inventory_feed");
             assertThat(external.target()).isEqualTo(
-                    StreamAddress.streamAddress("io.acme.inventory:stock-updates:2.0.0").unwrap());
+                    ResourceAddress.resourceAddress("io.acme.inventory:stock-updates:2.0.0").unwrap());
         }
 
         @Test
@@ -213,7 +213,7 @@ class StreamConfigParserTest {
             var result = parseResources(toml).unwrap();
 
             var owned = (StreamResource.Owned) result.get("orders");
-            assertThat(owned.version()).isEqualTo(StreamVersionSpec.exact(StreamVersion.streamVersion(1, 0, 0).unwrap()));
+            assertThat(owned.version()).isEqualTo(StreamVersionSpec.exact(ResourceVersion.resourceVersion(1, 0, 0).unwrap()));
         }
 
         @Test
@@ -241,7 +241,7 @@ class StreamConfigParserTest {
             var result = parseResources(toml).unwrap();
 
             var owned = (StreamResource.Owned) result.get("notifications");
-            assertThat(owned.version()).isEqualTo(StreamVersionSpec.exact(StreamVersion.streamVersion(1, 0, 0).unwrap()));
+            assertThat(owned.version()).isEqualTo(StreamVersionSpec.exact(ResourceVersion.resourceVersion(1, 0, 0).unwrap()));
         }
 
         @Test

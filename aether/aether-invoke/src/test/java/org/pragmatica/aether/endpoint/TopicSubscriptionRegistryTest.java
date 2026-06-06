@@ -11,8 +11,8 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
-import org.pragmatica.aether.slice.topic.TopicAddress;
-import org.pragmatica.aether.slice.topic.TopicVersion;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -40,20 +40,20 @@ class TopicSubscriptionRegistryTest {
     }
 
     private void registerSubscription(String topicName, Artifact artifact, MethodName method, NodeId nodeId) {
-        var key = TopicSubscriptionKey.topicSubscriptionKey(topicAddress(topicName), artifact, method);
+        var key = TopicSubscriptionKey.topicSubscriptionKey(resourceAddress(topicName), artifact, method);
         var value = TopicSubscriptionValue.topicSubscriptionValue(nodeId);
         var put = new KVCommand.Put<>(key, value);
         registry.onSubscriptionPut(new ValuePut<>(put, Option.none()));
     }
 
     private void removeSubscription(String topicName, Artifact artifact, MethodName method) {
-        var key = TopicSubscriptionKey.topicSubscriptionKey(topicAddress(topicName), artifact, method);
+        var key = TopicSubscriptionKey.topicSubscriptionKey(resourceAddress(topicName), artifact, method);
         var remove = new KVCommand.Remove<TopicSubscriptionKey>(key);
         registry.onSubscriptionRemove(new ValueRemove<>(remove, Option.none()));
     }
 
-    private static TopicAddress topicAddress(String topicName) {
-        return TopicAddress.topicAddress(TopicAddress.DEFAULT_NAMESPACE, topicName, TopicVersion.defaultVersion()).unwrap();
+    private static ResourceAddress resourceAddress(String topicName) {
+        return ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, topicName, ResourceVersion.defaultVersion()).unwrap();
     }
 
     @Nested

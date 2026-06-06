@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -13,9 +15,9 @@ import org.pragmatica.lang.Unit;
 ///
 /// Package-private record — application code outside this package cannot reference or construct
 /// this type. Construction flows exclusively through
-/// {@link FrameworkStreamPublishers#systemStreamPublisher(StreamAddress, StreamPublisher)} which
+/// {@link FrameworkStreamPublishers#systemStreamPublisher(ResourceAddress, StreamPublisher)} which
 /// validates the address is in the `system` namespace.
-record SystemStreamPublisher<T>(StreamAddress address, StreamPublisher<T> transport) implements FrameworkStreamPublisher<T> {
+record SystemStreamPublisher<T>(ResourceAddress address, StreamPublisher<T> transport) implements FrameworkStreamPublisher<T> {
     @Override public Promise<Unit> publish(T event) {
         return transport.publish(event);
     }

@@ -5,7 +5,7 @@
 package org.pragmatica.aether.resource;
 
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.slice.topic.TopicAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -21,7 +21,7 @@ class TopicConfigTest {
         var address = config.address().unwrap();
 
         assertThat(address.namespace()).isEqualTo("org.example.shop");
-        assertThat(address.topic()).isEqualTo("order-events");
+        assertThat(address.name()).isEqualTo("order-events");
         assertThat(address.version().asString()).isEqualTo("2.1.0");
         assertThat(address.asString()).isEqualTo("org.example.shop:order-events:2.1.0");
     }
@@ -42,8 +42,8 @@ class TopicConfigTest {
 
         var address = config.address().unwrap();
 
-        assertThat(address.namespace()).isEqualTo(TopicAddress.DEFAULT_NAMESPACE);
-        assertThat(address.topic()).isEqualTo("order-events");
+        assertThat(address.namespace()).isEqualTo(ResourceAddress.DEFAULT_NAMESPACE);
+        assertThat(address.name()).isEqualTo("order-events");
         assertThat(address.version().asString()).isEqualTo("1.0.0");
     }
 

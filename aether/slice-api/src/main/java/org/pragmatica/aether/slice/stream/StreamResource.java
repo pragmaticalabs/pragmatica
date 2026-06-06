@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.pragmatica.aether.slice.StreamConfig;
 
 
@@ -15,7 +17,7 @@ import org.pragmatica.aether.slice.StreamConfig;
 ///    (partitions, retention, etc.). Both producer and consumer roles use this form; the role is
 ///    determined at annotation-binding time.
 ///  - [External] — reference to a stream owned by a different namespace (consumer-only in RC1).
-///    Carries a fully-qualified [StreamAddress]; no config is duplicated here because the producing
+///    Carries a fully-qualified [ResourceAddress]; no config is duplicated here because the producing
 ///    blueprint owns the authoritative config.
 ///
 /// The alias is the local TOML section name (e.g., `orders` from `[streams.orders]`) and is used by
@@ -25,13 +27,13 @@ public sealed interface StreamResource {
 
     record Owned(String alias, StreamVersionSpec version, StreamConfig config) implements StreamResource {}
 
-    record External(String alias, StreamAddress target) implements StreamResource {}
+    record External(String alias, ResourceAddress target) implements StreamResource {}
 
     static StreamResource owned(String alias, StreamVersionSpec version, StreamConfig config) {
         return new Owned(alias, version, config);
     }
 
-    static StreamResource external(String alias, StreamAddress target) {
+    static StreamResource external(String alias, ResourceAddress target) {
         return new External(alias, target);
     }
 }

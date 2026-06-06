@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -50,7 +52,7 @@ public interface StreamRegistry {
     Result<StreamRegistryEntry> register(StreamRegistryEntry entry);
 
     /// Fetch the entry for an exact address. [Option.none] if not found.
-    Option<StreamRegistryEntry> lookup(StreamAddress address);
+    Option<StreamRegistryEntry> lookup(ResourceAddress address);
 
     /// Resolve a version spec to a concrete entry.
     ///
@@ -67,14 +69,14 @@ public interface StreamRegistry {
     /// fire-and-forget prediction that could mislead callers when the apply call failed mid-round
     /// (TOCTOU race + silent consensus failure). For in-memory implementations the returned promise
     /// is already resolved.
-    Promise<StreamRegistryEntry> acquireReference(StreamAddress address);
+    Promise<StreamRegistryEntry> acquireReference(ResourceAddress address);
 
     /// Decrement the reference count for the entry at the given address. When the count reaches
     /// zero the entry is removed. Fails if no entry exists or the count is already zero.
     ///
     /// Returns [Promise] for the same reason as [#acquireReference] — consensus-backed
     /// implementations must observe the apply outcome before reporting `removed`.
-    Promise<ReleaseOutcome> releaseReference(StreamAddress address);
+    Promise<ReleaseOutcome> releaseReference(ResourceAddress address);
 
     /// Snapshot of all registered entries in undefined order.
     List<StreamRegistryEntry> snapshot();

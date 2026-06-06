@@ -5,7 +5,7 @@
 package org.pragmatica.aether.slice;
 
 import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -23,8 +23,8 @@ import java.util.List;
 /// {@link FrameworkStreamConsumer} for the framework-only system-namespace read SPI and
 /// {@link StreamPublisher} / `FrameworkStreamPublisher` for the write split.
 ///
-/// Resolver-level enforcement uses {@link #ensureAppAddress(StreamAddress)} as the canonical
-/// belt-and-suspenders check. Once {@link StreamAddress} is plumbed into the access factory
+/// Resolver-level enforcement uses {@link #ensureAppAddress(ResourceAddress)} as the canonical
+/// belt-and-suspenders check. Once {@link ResourceAddress} is plumbed into the access factory
 /// (separate wave), the factory's provision path invokes this check before constructing access.
 public interface StreamAccess<T> {
     Promise<Long> publish(T event);
@@ -40,7 +40,7 @@ public interface StreamAccess<T> {
     /// split ({@link FrameworkStreamConsumer} for reads, `FrameworkStreamPublisher` for writes).
     /// This runtime check is the second layer of defense for paths that bypass normal resolution
     /// (reflection, hand-edited blueprints, test harnesses).
-    static Result<StreamAddress> ensureAppAddress(StreamAddress address) {
+    static Result<ResourceAddress> ensureAppAddress(ResourceAddress address) {
         if (address.isSystem()) {
             return StreamAccessError.General.SYSTEM_ADDRESS_REFUSED.result();
         }

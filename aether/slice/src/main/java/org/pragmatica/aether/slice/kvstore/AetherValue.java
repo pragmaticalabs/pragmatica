@@ -12,7 +12,7 @@ import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
@@ -1391,11 +1391,11 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
-    // Stage 2 (stream-namespaces) additive graft: per-blueprint resolved alias->StreamAddress map.
+    // Stage 2 (stream-namespaces) additive graft: per-blueprint resolved alias->ResourceAddress map.
 
-    /// Per-blueprint resolved alias→`StreamAddress` map persisted at deploy time.
+    /// Per-blueprint resolved alias→`ResourceAddress` map persisted at deploy time.
     ///
-    /// Kept as `List<NamedAddress>` instead of `Map<String, StreamAddress>` so the compile-time
+    /// Kept as `List<NamedAddress>` instead of `Map<String, ResourceAddress>` so the compile-time
     /// codec processor doesn't have to handle a `Map<K, V>` where `V` is a record-typed codec
     /// element (only `Map<String, String>` is exercised by the processor today; List-of-record
     /// is explicitly tested).
@@ -1411,7 +1411,7 @@ import static org.pragmatica.lang.Option.none;
             return new BlueprintStreamBindingsValue(bindings);
         }
 
-        public Option<StreamAddress> addressFor(String alias) {
+        public Option<ResourceAddress> addressFor(String alias) {
             return Option.option(bindings.stream()
                                          .filter(b -> b.alias().equals(alias))
                                          .findFirst()
@@ -1419,8 +1419,8 @@ import static org.pragmatica.lang.Option.none;
                          .map(NamedAddress::address);
         }
 
-        public record NamedAddress(String alias, StreamAddress address) {
-            public static NamedAddress namedAddress(String alias, StreamAddress address) {
+        public record NamedAddress(String alias, ResourceAddress address) {
+            public static NamedAddress namedAddress(String alias, ResourceAddress address) {
                 return new NamedAddress(alias, address);
             }
         }

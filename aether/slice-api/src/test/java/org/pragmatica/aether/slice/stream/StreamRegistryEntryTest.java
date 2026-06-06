@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry.RegisteredByKind;
@@ -11,15 +13,15 @@ import org.pragmatica.aether.slice.stream.StreamRegistryEntry.RegisteredByKind;
 import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.aether.slice.stream.StreamAddress.streamAddress;
+import static org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress;
 
 
 class StreamRegistryEntryTest {
 
-    private static final StreamAddress SYSTEM_EVENTS =
-            streamAddress("system:cluster-events:1.0.0").unwrap();
-    private static final StreamAddress APP_ORDERS =
-            streamAddress("com.example.app:orders:1.0.0").unwrap();
+    private static final ResourceAddress SYSTEM_EVENTS =
+            resourceAddress("system:cluster-events:1.0.0").unwrap();
+    private static final ResourceAddress APP_ORDERS =
+            resourceAddress("com.example.app:orders:1.0.0").unwrap();
 
     @Test
     void frameworkFactorySetsRegisteredByAndInitialRef() {

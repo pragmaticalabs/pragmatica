@@ -7,7 +7,7 @@ package org.pragmatica.aether.deployment.validation;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser;
-import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.lang.Cause;
@@ -216,7 +216,7 @@ import java.util.Set;
     /// Defensive double-check of the spec §4.3 reserved-namespace rule. The address parser already
     /// enforces this; this hook keeps the runtime gate explicit per spec §15.1.
     static boolean isReservedNamespace(String namespace) {
-        return StreamAddress.isReservedNamespace(namespace);
+        return ResourceAddress.isReservedNamespace(namespace);
     }
 
     record unused() implements StreamResourceValidator {}

@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.pragmatica.aether.slice.StreamAccess;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.aether.slice.StreamAccess.StreamMetadata;
@@ -20,7 +22,7 @@ import java.util.List;
 /// `system:*` reads is enforced as a compile-time invariant rather than a runtime check: the only
 /// permitted implementation is the package-private {@link SystemStreamConsumer} record in this
 /// package, which application code cannot reference or instantiate. The factory entry point
-/// {@link FrameworkStreamConsumers#systemStreamConsumer(StreamAddress, StreamAccess)} is the sole
+/// {@link FrameworkStreamConsumers#systemStreamConsumer(ResourceAddress, StreamAccess)} is the sole
 /// construction site and additionally validates the supplied address is in the `system` namespace.
 ///
 /// Companion to {@link StreamAccess} (which is app-facing). The slice-runtime resolver MUST refuse

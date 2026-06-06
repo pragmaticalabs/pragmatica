@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -91,7 +93,7 @@ public final class KvBackedStreamRegistry implements StreamRegistry {
     /// Build the command that decrements the refcount on an existing entry, or removes the entry
     /// outright if the refcount would drop to zero. Returns [Option#none] if no entry exists at
     /// the address — caller treats this as a no-op (idempotent release).
-    public Option<KVCommand<AetherKey>> releaseCommand(StreamAddress address) {
+    public Option<KVCommand<AetherKey>> releaseCommand(ResourceAddress address) {
         return readEntry(address).map(entry -> entry.refCount() <= 1
                                               ? new KVCommand.Remove<>(StreamRegistryKey.streamRegistryKey(address))
                                               : new KVCommand.Put<>(StreamRegistryKey.streamRegistryKey(address),
@@ -109,28 +111,28 @@ public final class KvBackedStreamRegistry implements StreamRegistry {
         return Result.success(entry);
     }
 
-    @Override public Option<StreamRegistryEntry> lookup(StreamAddress address) {
+    @Override public Option<StreamRegistryEntry> lookup(ResourceAddress address) {
         return readEntry(address);
     }
 
     @Override public Result<StreamRegistryEntry> resolve(String namespace, String stream, StreamVersionSpec spec) {
         return switch (spec) {
             case StreamVersionSpec.Exact exact -> {
-                var address = new StreamAddress(namespace, stream, exact.version());
+                var address = new ResourceAddress(namespace, stream, exact.version());
                 yield lookup(address).toResult(StreamRegistryError.General.NOT_FOUND);
             }
             case StreamVersionSpec.Latest _ -> resolveLatest(namespace, stream);
         };
     }
 
-    @Override public Promise<StreamRegistryEntry> acquireReference(StreamAddress address) {
+    @Override public Promise<StreamRegistryEntry> acquireReference(ResourceAddress address) {
         return readEntry(address)
                 .async(StreamRegistryError.General.NOT_FOUND)
                 .map(StreamRegistryEntry::incrementRef)
                 .flatMap(incremented -> applyAcquire(address, incremented));
     }
 
-    private Promise<StreamRegistryEntry> applyAcquire(StreamAddress address, StreamRegistryEntry incremented) {
+    private Promise<StreamRegistryEntry> applyAcquire(ResourceAddress address, StreamRegistryEntry incremented) {
         return cluster.<Object>apply(List.of(new KVCommand.Put<>(StreamRegistryKey.streamRegistryKey(address),
                                                                  StreamRegistryValue.streamRegistryValue(incremented))))
                       .onFailure(cause -> log.warn("Stream registry acquireReference({}) consensus apply failed: {}",
@@ -139,13 +141,13 @@ public final class KvBackedStreamRegistry implements StreamRegistry {
                       .map(_ -> incremented);
     }
 
-    @Override public Promise<ReleaseOutcome> releaseReference(StreamAddress address) {
+    @Override public Promise<ReleaseOutcome> releaseReference(ResourceAddress address) {
         return readEntry(address)
                 .async(StreamRegistryError.General.NOT_FOUND)
                 .flatMap(entry -> applyRelease(address, entry));
     }
 
-    private Promise<ReleaseOutcome> applyRelease(StreamAddress address, StreamRegistryEntry entry) {
+    private Promise<ReleaseOutcome> applyRelease(ResourceAddress address, StreamRegistryEntry entry) {
         if (entry.refCount() <= 1) {
             return cluster.<Object>apply(List.of(new KVCommand.Remove<>(StreamRegistryKey.streamRegistryKey(address))))
                           .onFailure(cause -> log.warn("Stream registry releaseReference({}) consensus apply failed: {}",
@@ -170,7 +172,7 @@ public final class KvBackedStreamRegistry implements StreamRegistry {
         return List.copyOf(result);
     }
 
-    private Option<StreamRegistryEntry> readEntry(StreamAddress address) {
+    private Option<StreamRegistryEntry> readEntry(ResourceAddress address) {
         return kvStore.get(StreamRegistryKey.streamRegistryKey(address))
                       .filter(StreamRegistryValue.class::isInstance)
                       .map(StreamRegistryValue.class::cast)
@@ -194,7 +196,7 @@ public final class KvBackedStreamRegistry implements StreamRegistry {
                                       String namespace,
                                       String stream) {
         var address = key.address();
-        if (address.namespace().equals(namespace) && address.stream().equals(stream)) {
+        if (address.namespace().equals(namespace) && address.name().equals(stream)) {
             sink.add(value.entry());
         }
     }

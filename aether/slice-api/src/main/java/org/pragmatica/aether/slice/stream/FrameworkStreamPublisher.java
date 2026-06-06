@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -17,7 +19,7 @@ import java.util.List;
 /// rather than a runtime check: the only permitted implementation is the package-private
 /// {@link SystemStreamPublisher} record in this package, which application code cannot reference
 /// or instantiate. The factory entry point
-/// {@link FrameworkStreamPublishers#systemStreamPublisher(StreamAddress, StreamPublisher)} is the
+/// {@link FrameworkStreamPublishers#systemStreamPublisher(ResourceAddress, StreamPublisher)} is the
 /// sole construction site and additionally validates the supplied address is in the `system`
 /// namespace.
 ///
@@ -25,7 +27,7 @@ import java.util.List;
 /// refuse to bind a `StreamPublisher<T>` for any `system:*` address — apps that somehow obtained
 /// such a binding (e.g. via reflection, hand-edited blueprints, or test paths) get a clean failure
 /// at provision time rather than silent privilege escalation. That resolver-level enforcement is
-/// wired in the same wave that plumbs {@link StreamAddress} into the publisher factory; this
+/// wired in the same wave that plumbs {@link ResourceAddress} into the publisher factory; this
 /// SPI split lands the compile-time half ahead of the resolver wiring.
 ///
 /// Method shape mirrors {@link StreamPublisher}: a single `publish(T event)` returning
@@ -34,7 +36,7 @@ import java.util.List;
 /// Permitted impls:
 ///   - {@link SystemStreamPublisher} — production: delegates to a transport `StreamPublisher<T>`.
 ///   - {@link TestSystemStreamPublisher} — test-only: delegates to a capture callback. Constructed
-///     via {@link FrameworkStreamPublishers#testPublisher(StreamAddress, java.util.function.Consumer)}.
+///     via {@link FrameworkStreamPublishers#testPublisher(ResourceAddress, java.util.function.Consumer)}.
 public sealed interface FrameworkStreamPublisher<T> permits SystemStreamPublisher, TestSystemStreamPublisher {
     Promise<Unit> publish(T event);
 

@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.http.forward.HttpForwarder;
@@ -1123,7 +1125,7 @@ class ManagementServerImpl implements ManagementServer {
         for (var raw : withoutQuery.split("/")) {
             if (raw.isEmpty()) {continue;}
             var seg = java.net.URLDecoder.decode(raw, java.nio.charset.StandardCharsets.UTF_8);
-            if (org.pragmatica.aether.slice.stream.StreamAddress.SYSTEM_NAMESPACE.equalsIgnoreCase(seg)
+            if (org.pragmatica.aether.slice.resource.ResourceAddress.SYSTEM_NAMESPACE.equalsIgnoreCase(seg)
                 || seg.regionMatches(true, 0, SYSTEM_NAMESPACE_COLON, 0, SYSTEM_NAMESPACE_COLON.length())) {
                 return true;
             }
@@ -1135,7 +1137,7 @@ class ManagementServerImpl implements ManagementServer {
     private static final String STREAM_WRITE_PATH_PREFIX = "/api/streams";
 
     private static final String SYSTEM_NAMESPACE_COLON =
-            org.pragmatica.aether.slice.stream.StreamAddress.SYSTEM_NAMESPACE + ":";
+            org.pragmatica.aether.slice.resource.ResourceAddress.SYSTEM_NAMESPACE + ":";
 
     @SuppressWarnings("JBCT-PAT-01")
     private boolean validateManagementSecurity(RequestContext ctx,

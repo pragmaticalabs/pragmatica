@@ -16,17 +16,22 @@ import static org.pragmatica.lang.Result.success;
 
 /// Three-component resource address: `<namespace>:<name>:<version>`.
 ///
-/// This is the single source of truth for resource addressing across Aether — streams,
-/// pub/sub topics, and any future addressable resource share this grammar, validation,
-/// `system`-namespace reservation, and ordering. Resource-flavored address types
-/// (e.g. `StreamAddress`, future `TopicAddress`) are thin, distinct nominal types that
-/// delegate their rules here; only the error vocabulary and accessor naming differ per
-/// resource, so that a topic address can never be passed where a stream address is expected.
+/// This is the single, uniform naming type for addressing across Aether — streams,
+/// pub/sub topics, and any future addressable resource share this exact type, its grammar,
+/// validation, `system`-namespace reservation, and ordering. The stream-vs-topic domain
+/// distinction lives in the registry KEY types (`StreamRegistryKey` vs `TopicSubscriptionKey`),
+/// not in the address: a resource address is a uniform naming scheme, reused directly.
 ///
 /// Namespace is either the reserved token `system` (framework-internal resources)
 /// or a Maven-derived identifier of the form `groupId + "." + strip_suffix(artifactId, "-blueprint")`.
 @Codec public record ResourceAddress(String namespace, String name, ResourceVersion version) {
     public static final String SYSTEM_NAMESPACE = "system";
+
+    /// Namespace applied to legacy / un-namespaced topic declarations when no blueprint coordinates
+    /// are available to derive one (e.g. a bare `topicName` string with no deploy context). The
+    /// deploy path replaces this with the blueprint-derived namespace; this constant is only the
+    /// floor that keeps a bare name resolving to a valid `namespace:name:version`.
+    public static final String DEFAULT_NAMESPACE = "default";
 
     public static final Set<String> RESERVED_NAMESPACES = Set.of(SYSTEM_NAMESPACE);
 
