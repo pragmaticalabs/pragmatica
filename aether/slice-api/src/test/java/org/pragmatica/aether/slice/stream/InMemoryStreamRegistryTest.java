@@ -154,7 +154,7 @@ class InMemoryStreamRegistryTest {
 
             var result = registry.resolve("com.example.a", "feed", StreamVersionSpec.latest());
 
-            assertThat(result.unwrap().address().namespace()).isEqualTo("com.example.a");
+            assertThat(result.unwrap().address().namespace().value()).isEqualTo("com.example.a");
             assertThat(result.unwrap().address().version()).isEqualTo(resourceVersion(1, 0, 0).unwrap());
         }
     }

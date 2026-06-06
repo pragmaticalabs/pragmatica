@@ -20,8 +20,8 @@ class TopicConfigTest {
 
         var address = config.address().unwrap();
 
-        assertThat(address.namespace()).isEqualTo("org.example.shop");
-        assertThat(address.name()).isEqualTo("order-events");
+        assertThat(address.namespace().value()).isEqualTo("org.example.shop");
+        assertThat(address.name().value()).isEqualTo("order-events");
         assertThat(address.version().asString()).isEqualTo("2.1.0");
         assertThat(address.asString()).isEqualTo("org.example.shop:order-events:2.1.0");
     }
@@ -42,8 +42,8 @@ class TopicConfigTest {
 
         var address = config.address().unwrap();
 
-        assertThat(address.namespace()).isEqualTo(ResourceAddress.DEFAULT_NAMESPACE);
-        assertThat(address.name()).isEqualTo("order-events");
+        assertThat(address.namespace().value()).isEqualTo(ResourceAddress.DEFAULT_NAMESPACE);
+        assertThat(address.name().value()).isEqualTo("order-events");
         assertThat(address.version().asString()).isEqualTo("1.0.0");
     }
 

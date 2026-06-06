@@ -42,10 +42,9 @@ public final class InMemoryStreamRegistry implements StreamRegistry {
 
     @Override public Result<StreamRegistryEntry> resolve(String namespace, String stream, StreamVersionSpec spec) {
         return switch (spec) {
-            case StreamVersionSpec.Exact exact -> {
-                var address = new ResourceAddress(namespace, stream, exact.version());
-                yield lookup(address).toResult(StreamRegistryError.General.NOT_FOUND);
-            }
+            case StreamVersionSpec.Exact exact ->
+                    ResourceAddress.resourceAddress(namespace, stream, exact.version())
+                                   .flatMap(address -> lookup(address).toResult(StreamRegistryError.General.NOT_FOUND));
             case StreamVersionSpec.Latest _ -> resolveLatest(namespace, stream);
         };
     }
@@ -80,7 +79,7 @@ public final class InMemoryStreamRegistry implements StreamRegistry {
 
     private Result<StreamRegistryEntry> resolveLatest(String namespace, String stream) {
         return entries.values().stream()
-                      .filter(e -> e.address().namespace().equals(namespace) && e.address().name().equals(stream))
+                      .filter(e -> e.address().namespace().value().equals(namespace) && e.address().name().value().equals(stream))
                       .max(Comparator.comparing(e -> e.address().version()))
                       .map(Result::success)
                       .orElseGet(() -> StreamRegistryError.General.NO_VERSIONS_REGISTERED.result());

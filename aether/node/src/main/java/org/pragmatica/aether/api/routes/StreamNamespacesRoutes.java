@@ -47,8 +47,8 @@ public final class StreamNamespacesRoutes implements RouteSource {
                                           long registeredAtEpochMs,
                                           int refCount) {
         static StreamRegistryEntryDto fromEntry(StreamRegistryEntry entry) {
-            return new StreamRegistryEntryDto(entry.address().namespace(),
-                                               entry.address().name(),
+            return new StreamRegistryEntryDto(entry.address().namespace().value(),
+                                               entry.address().name().value(),
                                                entry.address().version().asString(),
                                                entry.registeredBy().name(),
                                                entry.registeredAtEpochMillis(),

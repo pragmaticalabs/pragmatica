@@ -33,8 +33,8 @@ class ResourceAddressTest {
         void parsesSystemAddress() {
             var addr = resourceAddress("system:cluster-events:1.0.0").unwrap();
 
-            assertThat(addr.namespace()).isEqualTo("system");
-            assertThat(addr.name()).isEqualTo("cluster-events");
+            assertThat(addr.namespace().value()).isEqualTo("system");
+            assertThat(addr.name().value()).isEqualTo("cluster-events");
             assertThat(addr.version()).isEqualTo(resourceVersion(1, 0, 0).unwrap());
             assertThat(addr.isSystem()).isTrue();
         }
@@ -43,8 +43,8 @@ class ResourceAddressTest {
         void parsesAppAddress() {
             var addr = resourceAddress("com.example.myapp:orders:2.1.3").unwrap();
 
-            assertThat(addr.namespace()).isEqualTo("com.example.myapp");
-            assertThat(addr.name()).isEqualTo("orders");
+            assertThat(addr.namespace().value()).isEqualTo("com.example.myapp");
+            assertThat(addr.name().value()).isEqualTo("orders");
             assertThat(addr.version()).isEqualTo(resourceVersion(2, 1, 3).unwrap());
             assertThat(addr.isSystem()).isFalse();
         }
@@ -120,7 +120,7 @@ class ResourceAddressTest {
         void systemResourceAccepted() {
             var addr = systemResource("cluster-events", resourceVersion(1, 0, 0).unwrap()).unwrap();
 
-            assertThat(addr.namespace()).isEqualTo("system");
+            assertThat(addr.namespace().value()).isEqualTo("system");
             assertThat(addr.isSystem()).isTrue();
         }
     }
@@ -214,7 +214,7 @@ class ResourceAddressTest {
         void defaultNamespaceIsDefault() {
             var addr = resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, "orders", ResourceVersion.defaultVersion()).unwrap();
 
-            assertThat(addr.namespace()).isEqualTo("default");
+            assertThat(addr.namespace().value()).isEqualTo("default");
             assertThat(addr.version()).isEqualTo(resourceVersion(1, 0, 0).unwrap());
         }
     }

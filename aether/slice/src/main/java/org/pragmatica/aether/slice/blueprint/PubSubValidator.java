@@ -49,7 +49,7 @@ import static org.pragmatica.lang.Result.success;
     private static Result<ResourceAddress> validateTopicConfig(String config) {
         if (config != null && config.contains(":")) {
             return ResourceAddress.resourceAddress(config)
-                               .flatMap(address -> ResourceAddress.validateAppNamespace(address.namespace()).map(_ -> address));
+                               .flatMap(address -> ResourceAddress.validateAppNamespace(address.namespace().value()).map(_ -> address));
         }
         return ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, config, ResourceVersion.defaultVersion());
     }

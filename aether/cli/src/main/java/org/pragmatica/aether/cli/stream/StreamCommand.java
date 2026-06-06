@@ -184,7 +184,7 @@ public class StreamCommand implements Runnable {
 
     private static int fetchMetadata(ResourceAddress addr, AetherCli cli) {
         var response = cli.fetch(ManagementRoute.STREAMS_METADATA,
-                                 List.of(addr.namespace(), addr.name(), addr.version().asString()));
+                                 List.of(addr.namespace().value(), addr.name().value(), addr.version().asString()));
         return renderQueryOrError(response, cli, "Failed to load stream metadata");
     }
 
@@ -196,8 +196,8 @@ public class StreamCommand implements Runnable {
         return StreamTailPoller.runTailLoop(addr,
                                             options,
                                             (a, query) -> cli.fetch(ManagementRoute.STREAMS_EVENTS,
-                                                                    List.of(a.namespace(),
-                                                                            a.name(),
+                                                                    List.of(a.namespace().value(),
+                                                                            a.name().value(),
                                                                             a.version().asString()),
                                                                     query),
                                             System.out,
@@ -210,7 +210,7 @@ public class StreamCommand implements Runnable {
             return StreamExitCode.USER_CANCELLED;
         }
         var response = cli.delete(ManagementRoute.STREAMS_DELETE,
-                                  List.of(addr.namespace(), addr.name(), addr.version().asString()));
+                                  List.of(addr.namespace().value(), addr.name().value(), addr.version().asString()));
         var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), "Failed to delete stream");
         if (errorCode >= 0) {
             return mapHttpErrorOrFallback(response, errorCode);
@@ -222,7 +222,7 @@ public class StreamCommand implements Runnable {
         var body = "{\"groupId\":\"" + escapeJson(groupId) + "\",\"initialPosition\":\"" + escapeJson(initialPosition)
                 + "\"}";
         var response = cli.post(ManagementRoute.STREAMS_GROUP_CREATE,
-                                List.of(addr.namespace(), addr.name(), addr.version().asString()),
+                                List.of(addr.namespace().value(), addr.name().value(), addr.version().asString()),
                                 body);
         var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), "Failed to create group");
         if (errorCode >= 0) {
@@ -237,7 +237,7 @@ public class StreamCommand implements Runnable {
             return StreamExitCode.USER_CANCELLED;
         }
         var response = cli.delete(ManagementRoute.STREAMS_GROUP_DELETE,
-                                  List.of(addr.namespace(), addr.name(), addr.version().asString(), groupId));
+                                  List.of(addr.namespace().value(), addr.name().value(), addr.version().asString(), groupId));
         var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), "Failed to delete group");
         if (errorCode >= 0) {
             return mapHttpErrorOrFallback(response, errorCode);

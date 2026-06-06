@@ -24,8 +24,8 @@ class StreamAddressArgTest {
         void parse_validCanonicalAddress_returnsAddress() {
             StreamAddressArg.parse("com.example.app:orders:1.0.0")
                     .onFailure(cause -> Assertions.fail("unexpected failure: " + cause))
-                    .onSuccess(addr -> assertThat(addr.namespace()).isEqualTo("com.example.app"))
-                    .onSuccess(addr -> assertThat(addr.name()).isEqualTo("orders"))
+                    .onSuccess(addr -> assertThat(addr.namespace().value()).isEqualTo("com.example.app"))
+                    .onSuccess(addr -> assertThat(addr.name().value()).isEqualTo("orders"))
                     .onSuccess(addr -> assertThat(addr.version().asString()).isEqualTo("1.0.0"));
         }
 
@@ -33,7 +33,7 @@ class StreamAddressArgTest {
         void parse_systemNamespace_returnsAddress() {
             StreamAddressArg.parse("system:audit:1.0.0")
                     .onFailure(cause -> Assertions.fail("unexpected failure: " + cause))
-                    .onSuccess(addr -> assertThat(addr.namespace()).isEqualTo("system"));
+                    .onSuccess(addr -> assertThat(addr.namespace().value()).isEqualTo("system"));
         }
     }
 

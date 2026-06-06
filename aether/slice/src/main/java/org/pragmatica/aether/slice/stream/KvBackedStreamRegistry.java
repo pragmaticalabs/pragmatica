@@ -117,10 +117,9 @@ public final class KvBackedStreamRegistry implements StreamRegistry {
 
     @Override public Result<StreamRegistryEntry> resolve(String namespace, String stream, StreamVersionSpec spec) {
         return switch (spec) {
-            case StreamVersionSpec.Exact exact -> {
-                var address = new ResourceAddress(namespace, stream, exact.version());
-                yield lookup(address).toResult(StreamRegistryError.General.NOT_FOUND);
-            }
+            case StreamVersionSpec.Exact exact ->
+                    ResourceAddress.resourceAddress(namespace, stream, exact.version())
+                                   .flatMap(address -> lookup(address).toResult(StreamRegistryError.General.NOT_FOUND));
             case StreamVersionSpec.Latest _ -> resolveLatest(namespace, stream);
         };
     }
@@ -196,7 +195,7 @@ public final class KvBackedStreamRegistry implements StreamRegistry {
                                       String namespace,
                                       String stream) {
         var address = key.address();
-        if (address.namespace().equals(namespace) && address.name().equals(stream)) {
+        if (address.namespace().value().equals(namespace) && address.name().value().equals(stream)) {
             sink.add(value.entry());
         }
     }

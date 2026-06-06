@@ -85,8 +85,8 @@ public final class StreamApiRoutes implements RouteSource {
                                 int refCount,
                                 long registeredAtEpochMs) {
         static StreamSummary fromEntry(StreamRegistryEntry entry) {
-            return new StreamSummary(entry.address().namespace(),
-                                     entry.address().name(),
+            return new StreamSummary(entry.address().namespace().value(),
+                                     entry.address().name().value(),
                                      entry.address().version().asString(),
                                      entry.refCount(),
                                      entry.registeredAtEpochMillis());
@@ -109,8 +109,8 @@ public final class StreamApiRoutes implements RouteSource {
                                          String registeredBy) {
         static StreamMetadataResponse fromEntry(StreamRegistryEntry entry) {
             var retention = entry.retention();
-            return new StreamMetadataResponse(entry.address().namespace(),
-                                              entry.address().name(),
+            return new StreamMetadataResponse(entry.address().namespace().value(),
+                                              entry.address().name().value(),
                                               entry.address().version().asString(),
                                               entry.refCount(),
                                               defaultPartitionCount(),
@@ -242,7 +242,7 @@ public final class StreamApiRoutes implements RouteSource {
         var snapshot = namespacesService.snapshot();
         var filtered = namespace.fold(() -> snapshot,
                                       ns -> snapshot.stream()
-                                                    .filter(e -> e.address().namespace().equals(ns))
+                                                    .filter(e -> e.address().namespace().value().equals(ns))
                                                     .toList());
         var capped = limit.fold(() -> filtered,
                                 n -> filtered.stream().limit(n).toList());
@@ -252,8 +252,8 @@ public final class StreamApiRoutes implements RouteSource {
 
     private Result<VersionsListResponse> listVersions(String namespace, String stream) {
         var versions = namespacesService.snapshot().stream()
-                                       .filter(e -> e.address().namespace().equals(namespace))
-                                       .filter(e -> e.address().name().equals(stream))
+                                       .filter(e -> e.address().namespace().value().equals(namespace))
+                                       .filter(e -> e.address().name().value().equals(stream))
                                        .map(StreamSummary::fromEntry)
                                        .toList();
         if (versions.isEmpty()) {return STREAM_NOT_FOUND.result();}

@@ -40,7 +40,7 @@ public interface TopicSubscriptionRegistry {
 
         /// Bare topic name — the runtime routing identity.
         public String topicName() {
-            return address.name();
+            return address.name().value();
         }
     }
 

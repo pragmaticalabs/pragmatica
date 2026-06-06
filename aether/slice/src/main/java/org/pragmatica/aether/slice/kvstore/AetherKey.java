@@ -318,7 +318,7 @@ import static org.pragmatica.lang.Result.success;
         private static final String PREFIX = "topic-sub/";
 
         @Override public String asString() {
-            return PREFIX + address.namespace() + "/" + address.name() + "/" + address.version().asString()
+            return PREFIX + address.namespace().value() + "/" + address.name().value() + "/" + address.version().asString()
                    + "/" + artifact.asString() + "/" + methodName.name();
         }
 
@@ -329,7 +329,7 @@ import static org.pragmatica.lang.Result.success;
         /// Bare topic name — the runtime routing identity, kept for back-compat with publishers that
         /// route on the un-namespaced name.
         public String topicName() {
-            return address.name();
+            return address.name().value();
         }
 
         public static TopicSubscriptionKey topicSubscriptionKey(ResourceAddress address,
@@ -1359,7 +1359,7 @@ import static org.pragmatica.lang.Result.success;
         private static final String PREFIX = "stream-registry/";
 
         @Override public String asString() {
-            return PREFIX + address.namespace() + "/" + address.name() + "/" + address.version().asString();
+            return PREFIX + address.namespace().value() + "/" + address.name().value() + "/" + address.version().asString();
         }
 
         @Override public String toString() {
