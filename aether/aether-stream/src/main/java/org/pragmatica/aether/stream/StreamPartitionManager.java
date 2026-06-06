@@ -19,7 +19,9 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.ArrayList;
@@ -38,6 +40,7 @@ import static org.pragmatica.lang.Unit.unit;
 
 public final class StreamPartitionManager implements AutoCloseable {
     private static final long DEFAULT_MAX_TOTAL_BYTES = 128 * 1024 * 1024L;
+    private static final TimeSpan COMMIT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
     private static final Logger log = LoggerFactory.getLogger(StreamPartitionManager.class);
 
     private final ConcurrentHashMap<String, StreamEntry> streams = new ConcurrentHashMap<>();
@@ -118,8 +121,15 @@ public final class StreamPartitionManager implements AutoCloseable {
             return StreamError.General.STREAM_ALREADY_EXISTS.result();
         }
         totalAllocatedBytes.addAndGet(requiredBytes);
-        publishStreamConfig(config);
-        return success(unit());
+        return publishStreamConfig(config).onFailure(_ -> rollbackOptimisticEntry(config, requiredBytes));
+    }
+
+    private void rollbackOptimisticEntry(StreamConfig config, long requiredBytes) {
+        var removed = streams.remove(config.name());
+        if (removed != null) {
+            removed.close();
+            totalAllocatedBytes.addAndGet(-requiredBytes);
+        }
     }
 
     public Result<Unit> destroyStream(String streamName) {
@@ -128,22 +138,25 @@ public final class StreamPartitionManager implements AutoCloseable {
                      .onSuccess(_ -> publishStreamConfigRemoval(streamName));
     }
 
-    @Contract private void publishStreamConfig(StreamConfig config) {
-        clusterNode.onPresent(node -> applyPutCommand(node, config));
+    private Result<Unit> publishStreamConfig(StreamConfig config) {
+        return clusterNode.fold(Result::unitResult, node -> applyPutCommand(node, config));
     }
 
     @Contract private void publishStreamConfigRemoval(String streamName) {
         clusterNode.onPresent(node -> applyRemoveCommand(node, streamName));
     }
 
-    private void applyPutCommand(ClusterNode<KVCommand<AetherKey>> node, StreamConfig config) {
+    @TerminalOperation private Result<Unit> applyPutCommand(ClusterNode<KVCommand<AetherKey>> node, StreamConfig config) {
         var key = StreamConfigKey.streamConfigKey(config.name());
         var value = StreamConfigValue.streamConfigValue(config);
         var put = new KVCommand.Put<AetherKey, AetherValue>(key, value);
-        node.apply(List.of(put))
+        return node.apply(List.of(put))
+                  .await(COMMIT_TIMEOUT)
+                  .mapToUnit()
                   .onFailure(cause -> log.warn("Failed to publish stream config for {}: {}",
                                                config.name(),
-                                               cause.message()));
+                                               cause.message()))
+                  .mapError(_ -> StreamError.General.STREAM_CONFIG_COMMIT_FAILED);
     }
 
     private void applyRemoveCommand(ClusterNode<KVCommand<AetherKey>> node, String streamName) {

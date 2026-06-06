@@ -21,6 +21,7 @@ public sealed interface StreamError extends Cause {
         CONSENSUS_PATH_UNAVAILABLE("Consensus publish path not configured for STRONG consistency stream"),
         BUFFER_FULL("Ring buffer is full, STRONG consistency prevents eviction"),
         AHSE_REQUIRED_FOR_STRONG("STRONG consistency requires AHSE storage (EvictionListener must not be NOOP)"),
+        STREAM_CONFIG_COMMIT_FAILED("Stream config consensus commit failed"),
         PARTITION_NOT_LOCAL("Stream partition is not owned by this node");
         private final String message;
         General(String message) {

@@ -234,7 +234,13 @@ public final class StreamRoutes implements RouteSource {
                                                                       DEFAULT_PARTITIONS,
                                                                       MANAGEMENT_API_RETENTION,
                                                                       "latest"))
-                            .recover(_ -> Unit.unit());
+                            .fold(StreamRoutes::recoverWhenAlreadyExists, Result::success);
+    }
+
+    private static Result<Unit> recoverWhenAlreadyExists(Cause cause) {
+        return cause == org.pragmatica.aether.stream.StreamError.General.STREAM_ALREADY_EXISTS
+              ? Result.unitResult()
+              : cause.result();
     }
 
     private Promise<ReadEventsResponse> readEvents(String name,

@@ -19,9 +19,11 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -217,6 +219,48 @@ class StreamConfigReplicationTest {
         }
     }
 
+    @Nested
+    class CommitFailurePropagation {
+
+        @Test
+        void createStream_failure_whenConsensusCommitFails() {
+            // The masking bug: a failed StreamConfigKey commit used to be logged and swallowed,
+            // so createStream returned success and the publish path looked accepted while the
+            // stream was never durably created. The commit failure must now be honest.
+            var failingNode = new FailingClusterNode();
+            var manager = streamPartitionManager(Long.MAX_VALUE, failingNode);
+            try {
+                var config = StreamConfig.streamConfig("orders");
+
+                manager.createStream(config)
+                       .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
+                       .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.STREAM_CONFIG_COMMIT_FAILED));
+            } finally {
+                manager.close();
+            }
+        }
+
+        @Test
+        void createStream_rollsBackOptimisticEntry_whenConsensusCommitFails() {
+            // On commit failure the optimistic local entry and its byte accounting must be undone
+            // so state stays honest and a later retry can succeed.
+            var failingNode = new FailingClusterNode();
+            var manager = streamPartitionManager(Long.MAX_VALUE, failingNode);
+            try {
+                manager.createStream(StreamConfig.streamConfig("orders"));
+
+                assertThat(manager.streamInfo("orders").isEmpty())
+                    .as("failed commit must not leave a phantom local entry")
+                    .isTrue();
+                assertThat(manager.totalAllocatedBytes())
+                    .as("failed commit must release optimistically allocated bytes")
+                    .isEqualTo(0L);
+            } finally {
+                manager.close();
+            }
+        }
+    }
+
     @AfterEach
     void tearDown() {
         // streams owned by each test are closed inline via try/finally
@@ -262,6 +306,24 @@ class StreamConfigReplicationTest {
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             applied.addAll(commands);
             return (Promise<List<R>>) (Promise<?>) Promise.success(List.of());
+        }
+    }
+
+    /// Simulates a cluster node whose consensus commit fails (e.g. no quorum). Used to prove
+    /// that {@link StreamPartitionManager#createStream} surfaces the failure instead of masking it.
+    private static final class FailingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
+        private static final Cause COMMIT_REJECTED = Causes.cause("Consensus commit rejected");
+
+        @Override public NodeId self() {return SELF;}
+
+        @Override public TopologyManager topologyManager() {throw new UnsupportedOperationException();}
+
+        @Override public Promise<Unit> start() {return Promise.unitPromise();}
+
+        @Override public Promise<Unit> stop() {return Promise.unitPromise();}
+
+        @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+            return COMMIT_REJECTED.promise();
         }
     }
 }
