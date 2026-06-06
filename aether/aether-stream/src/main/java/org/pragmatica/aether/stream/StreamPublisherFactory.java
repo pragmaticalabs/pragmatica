@@ -12,6 +12,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn0;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Causes;
@@ -74,5 +75,18 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
         manager.createStream(config);
     }
 
-    public record GovernorResolver(Fn0<Option<NodeId>> resolver){}
+    /// Owner-resolver extension consumed by the app stream publish path.
+    ///
+    /// `resolver` is the arg-less leader resolver (consensus leader for the STREAMING group); it is
+    /// retained for the STRONG / forward-fallback path. `partitionOwnerResolver` is the #47 HRW
+    /// owner-resolver keyed by `(streamName, partition)` — it returns the SAME HRW owner the
+    /// `ReplicaSetController` uses for the replica set, so app-stream publishes route to that owner
+    /// instead of the leader. When absent (test / minimal runtime) the publish path keeps the prior
+    /// leader-routed behaviour.
+    public record GovernorResolver(Fn0<Option<NodeId>> resolver,
+                                   Option<Fn2<Option<NodeId>, String, Integer>> partitionOwnerResolver) {
+        public GovernorResolver(Fn0<Option<NodeId>> resolver) {
+            this(resolver, Option.none());
+        }
+    }
 }

@@ -70,8 +70,15 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
                                                                                      Option<Function<T, Object>> keyExtractor,
                                                                                      NodeId self) {
         var forwardClient = context.extension(StreamForwardClient.class).option();
-        var ownerResolver = context.extension(GovernorResolver.class).option()
-                                   .map(GovernorResolver::resolver);
+        var governor = context.extension(GovernorResolver.class).option();
+        var ownerResolver = governor.map(GovernorResolver::resolver);
+        // #47: bind the stream name into the partition-aware HRW owner-resolver so app-stream publishes
+        // route to the same HRW owner the ReplicaSetController places the replica set on (one placement
+        // authority). Absent => owner-routed access keeps the prior arg-less (leader) resolver.
+        var streamName = config.name();
+        Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver =
+            governor.flatMap(GovernorResolver::partitionOwnerResolver)
+                    .map(resolver -> partition -> resolver.apply(streamName, partition));
         return PartitionedStreamAccess.streamAccess(manager,
                                                     serializer,
                                                     deserializer,
@@ -80,7 +87,8 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
                                                     keyExtractor,
                                                     forwardClient,
                                                     self,
-                                                    ownerResolver);
+                                                    ownerResolver,
+                                                    partitionOwnerResolver);
     }
 
     @SuppressWarnings("unchecked") private static <T> StreamAccess plainAccess(StreamPartitionManager manager,

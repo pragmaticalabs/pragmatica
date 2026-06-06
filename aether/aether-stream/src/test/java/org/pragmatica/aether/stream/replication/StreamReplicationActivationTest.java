@@ -27,6 +27,7 @@ import org.pragmatica.serialization.Serializer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
@@ -84,6 +85,7 @@ class StreamReplicationActivationTest {
 
     private PartitionedStreamAccess<byte[]> ownerAccess(Option<Fn0<Option<NodeId>>> ownerResolver,
                                                         Option<StreamForwardClient> forwardClient) {
+        Option<Function<Integer, Option<NodeId>>> noHrwResolver = Option.none();
         return PartitionedStreamAccess.streamAccess(ownerManager,
                                                     BytePassthrough.SER,
                                                     BytePassthrough.DESER,
@@ -92,7 +94,8 @@ class StreamReplicationActivationTest {
                                                     Option.none(),
                                                     forwardClient,
                                                     OWNER,
-                                                    ownerResolver);
+                                                    ownerResolver,
+                                                    noHrwResolver);
     }
 
     @Test
@@ -139,6 +142,7 @@ class StreamReplicationActivationTest {
         var forwardClient = new RecordingForwardClient();
         // Self is OWNER constant for the access object, but the resolver names REPLICA as the owner,
         // so self != owner → write-forward.
+        Option<Function<Integer, Option<NodeId>>> noHrwResolver = Option.none();
         var access = PartitionedStreamAccess.streamAccess(ownerManager,
                                                           BytePassthrough.SER,
                                                           BytePassthrough.DESER,
@@ -147,7 +151,8 @@ class StreamReplicationActivationTest {
                                                           Option.none(),
                                                           Option.some(forwardClient),
                                                           OWNER,
-                                                          resolver(REPLICA));
+                                                          resolver(REPLICA),
+                                                          noHrwResolver);
 
         var result = access.publish("forwarded".getBytes()).await();
 
@@ -184,6 +189,65 @@ class StreamReplicationActivationTest {
         assertThat(result.isSuccess()).isTrue();
         var local = ownerManager.readLocal(STREAM, PARTITION, 0L, 10).unwrap();
         assertThat(local).hasSize(1);
+    }
+
+    // #47: the partition-aware HRW resolver names self (OWNER) → publish lands locally + replicates.
+    @Test
+    void hrwResolverNamesSelf_publishesLocally() {
+        var access = hrwAccess(hrwResolver(OWNER), Option.none());
+
+        var result = access.publish("self-owned".getBytes()).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        var local = ownerManager.readLocal(STREAM, PARTITION, 0L, 10).unwrap();
+        assertThat(local).hasSize(1);
+        assertThat(local.getFirst().data()).isEqualTo("self-owned".getBytes());
+    }
+
+    // #47: the partition-aware HRW resolver names a remote node → write-forward to the HRW owner.
+    @Test
+    void hrwResolverNamesRemote_forwardsToHrwOwner() {
+        var forwardClient = new RecordingForwardClient();
+        var access = hrwAccess(hrwResolver(REPLICA), Option.some(forwardClient));
+
+        var result = access.publish("hrw-forwarded".getBytes()).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(forwardClient.publishes).hasSize(1);
+        assertThat(forwardClient.publishes.getFirst().target()).isEqualTo(REPLICA);
+        // The owner did NOT write locally — the publish was forwarded to the HRW owner.
+        var local = ownerManager.readLocal(STREAM, PARTITION, 0L, 10).unwrap();
+        assertThat(local).isEmpty();
+    }
+
+    // #47: HRW resolver undetermined (none()) → fail-soft local publish, same as the arg-less path.
+    @Test
+    void hrwResolverUndetermined_failSoftLocalPublish() {
+        var access = hrwAccess(_ -> Option.none(), Option.none());
+
+        var result = access.publish("hrw-bootstrap".getBytes()).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        var local = ownerManager.readLocal(STREAM, PARTITION, 0L, 10).unwrap();
+        assertThat(local).hasSize(1);
+    }
+
+    private PartitionedStreamAccess<byte[]> hrwAccess(Function<Integer, Option<NodeId>> partitionOwnerResolver,
+                                                      Option<StreamForwardClient> forwardClient) {
+        return PartitionedStreamAccess.streamAccess(ownerManager,
+                                                    BytePassthrough.SER,
+                                                    BytePassthrough.DESER,
+                                                    STREAM,
+                                                    1,
+                                                    Option.none(),
+                                                    forwardClient,
+                                                    OWNER,
+                                                    Option.none(),
+                                                    Option.some(partitionOwnerResolver));
+    }
+
+    private static Function<Integer, Option<NodeId>> hrwResolver(NodeId owner) {
+        return _ -> Option.some(owner);
     }
 
     private static Option<Fn0<Option<NodeId>>> resolver(NodeId owner) {

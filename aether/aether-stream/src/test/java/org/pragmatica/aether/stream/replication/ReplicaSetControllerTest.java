@@ -10,6 +10,7 @@ import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.lang.Option;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -19,6 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.lang.Option.some;
 
 class ReplicaSetControllerTest {
     private static final String APP_STREAM = "orders.v1:events:1.0.0";
@@ -192,6 +194,42 @@ class ReplicaSetControllerTest {
             assertThat(outsiderCtrl.roleFor(APP_STREAM, p)).isEqualTo(Role.NONE);
             assertThat(outsiderCtrl.isOwner(APP_STREAM, p)).isFalse();
         }
+    }
+
+    // #47: ownerFor reuses the SAME B3 placement that drives roleFor/isOwner and the replica set, so
+    // the publish owner-routing agrees with the replica-set owner on every node.
+    @Test
+    void ownerForMatchesPlacementOwnerAndIsObserverIndependent() {
+        var members = nodes("n0", "n1", "n2", "n3", "n4");
+        var rf = 3;
+
+        for (var p = 0; p < PARTITIONS; p++) {
+            var expectedOwner = ReplicaPlacement.place(APP_STREAM, p, members, rf)
+                                                .map(Placement::owner)
+                                                .or(() -> {
+                                                    throw new AssertionError("placement");
+                                                });
+
+            // Every node computes the IDENTICAL HRW owner for (stream, partition).
+            for (var node : members) {
+                var ctrl = controller(ReplicaRegistry.replicaRegistry(), node, new AtomicReference<>(members), appCatalog(rf, Set.of()), (_, _) -> {});
+                assertThat(ctrl.ownerFor(APP_STREAM, p)).isEqualTo(some(expectedOwner));
+            }
+
+            // And ownerFor==self exactly when roleFor reports OWNER.
+            var ownerCtrl = controller(ReplicaRegistry.replicaRegistry(), expectedOwner, new AtomicReference<>(members), appCatalog(rf, Set.of()), (_, _) -> {});
+            assertThat(ownerCtrl.roleFor(APP_STREAM, p)).isEqualTo(Role.OWNER);
+            assertThat(ownerCtrl.ownerFor(APP_STREAM, p)).isEqualTo(some(expectedOwner));
+        }
+    }
+
+    // #47: empty member view (bootstrap window) → ownerFor returns none() so publish falls back to a
+    // local write rather than failing.
+    @Test
+    void ownerForReturnsNoneForEmptyMembership() {
+        var ctrl = controller(ReplicaRegistry.replicaRegistry(), node("n0"), new AtomicReference<>(nodes()), appCatalog(2, Set.of()), (_, _) -> {});
+
+        assertThat(ctrl.ownerFor(APP_STREAM, 0)).isEqualTo(Option.<NodeId>none());
     }
 
     @Test

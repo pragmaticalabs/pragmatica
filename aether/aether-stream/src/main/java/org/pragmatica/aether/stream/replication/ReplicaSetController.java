@@ -286,6 +286,20 @@ public final class ReplicaSetController implements AutoCloseable {
         return roleFor(streamName, partition) == Role.OWNER;
     }
 
+    /// HRW owner of `(stream, partition)` under the membership snapshot the controller last reconciled
+    /// from (B3) — the SAME placement that drives {@link #roleFor} / {@link #isOwner} and the registry
+    /// reconcile, so the publish owner-routing agrees with the replica-set owner on every node during
+    /// churn. Returns {@link Option#none()} only when no placement can be computed (empty member view /
+    /// bootstrap window before the first reconcile reports members); publish callers fall back to a
+    /// local write in that case (#47).
+    public Option<NodeId> ownerFor(String streamName, int partition) {
+        var members = currentMembers();
+        var rf = rfFor(streamName, classify(streamName));
+
+        return ReplicaPlacement.place(streamName, partition, members, rf)
+                               .map(Placement::owner);
+    }
+
     private int rfFor(String streamName, StreamClass streamClass) {
         var clusterSize = currentClusterSize();
         var requested = catalog.streams()

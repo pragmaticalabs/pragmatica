@@ -200,6 +200,7 @@ import org.pragmatica.consensus.net.quic.QuicTlsProvider;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -2095,6 +2096,7 @@ public interface AetherNode extends ManageableNode {
         registerStreamForwardExtensions(resourceProviderSetup,
                                         streamForwardClient,
                                         taskGroupOwnerResolver,
+                                        streamReplicaSetController::ownerFor,
                                         streamPartitionManager,
                                         serializer,
                                         deserializer,
@@ -3466,6 +3468,7 @@ public interface AetherNode extends ManageableNode {
     private static void registerStreamForwardExtensions(ResourceProviderSetup resourceProviderSetup,
                                                         StreamForwardClient forwardClient,
                                                         Fn1<Result<NodeId>, TaskGroup> ownerResolver,
+                                                        Fn2<Option<NodeId>, String, Integer> partitionOwnerResolver,
                                                         StreamPartitionManager streamPartitionManager,
                                                         Serializer serializer,
                                                         Deserializer deserializer,
@@ -3473,6 +3476,7 @@ public interface AetherNode extends ManageableNode {
         resourceProviderSetup.spiProvider().onPresent(spi -> registerForwardExtensionsOnSpi(spi,
                                                                                             forwardClient,
                                                                                             ownerResolver,
+                                                                                            partitionOwnerResolver,
                                                                                             streamPartitionManager,
                                                                                             serializer,
                                                                                             deserializer,
@@ -3482,6 +3486,7 @@ public interface AetherNode extends ManageableNode {
     private static void registerForwardExtensionsOnSpi(SpiResourceProvider spi,
                                                        StreamForwardClient forwardClient,
                                                        Fn1<Result<NodeId>, TaskGroup> ownerResolver,
+                                                       Fn2<Option<NodeId>, String, Integer> partitionOwnerResolver,
                                                        StreamPartitionManager streamPartitionManager,
                                                        Serializer serializer,
                                                        Deserializer deserializer,
@@ -3493,9 +3498,15 @@ public interface AetherNode extends ManageableNode {
         // A6: self identity so the app StreamAccessFactory can wire owner-routed publish (compare the
         // resolved HRW owner against this node).
         spi.registerExtension(NodeId.class, self);
+        // #47: the STREAMING publish resolver carries BOTH the arg-less leader resolver (retained for
+        // the STRONG / forward-fallback path) AND the (stream, partition)-aware HRW owner-resolver from
+        // the ReplicaSetController. App-stream EVENTUAL publishes now route to the HRW owner — the SAME
+        // placement authority that owns the replica set — instead of the consensus leader. The general
+        // taskGroupOwnerResolver (leader) is unchanged; only the STREAMING publish path is repointed.
         spi.registerExtension(StreamPublisherFactory.GovernorResolver.class,
                               new StreamPublisherFactory.GovernorResolver(() -> ownerResolver.apply(TaskGroup.STREAMING)
-                                                                                        .option()));
+                                                                                        .option(),
+                                                                          Option.some(partitionOwnerResolver)));
     }
 
     /// Project the aggregator's materialised `ClusterEvent` view onto

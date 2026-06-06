@@ -66,6 +66,7 @@ import static org.pragmatica.lang.Result.allOf;
     private final Option<StreamForwardClient> forwardClient;
     private final NodeId selfNodeId;
     private final Option<Fn0<Option<NodeId>>> ownerResolver;
+    private final Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver;
     private final StreamReadForwardMetrics metrics;
     private final AtomicLong roundRobinCounter;
     private final ConcurrentHashMap<ConsumerPartitionKey, Long> committedOffsets;
@@ -84,6 +85,7 @@ import static org.pragmatica.lang.Result.allOf;
                                     Option<StreamForwardClient> forwardClient,
                                     NodeId selfNodeId,
                                     Option<Fn0<Option<NodeId>>> ownerResolver,
+                                    Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
                                     StreamReadForwardMetrics metrics) {
         this.partitionManager = partitionManager;
         this.serializer = serializer;
@@ -99,6 +101,7 @@ import static org.pragmatica.lang.Result.allOf;
         this.forwardClient = forwardClient;
         this.selfNodeId = selfNodeId;
         this.ownerResolver = ownerResolver;
+        this.partitionOwnerResolver = partitionOwnerResolver;
         this.metrics = metrics;
         this.roundRobinCounter = new AtomicLong(0);
         this.committedOffsets = new ConcurrentHashMap<>();
@@ -124,6 +127,7 @@ import static org.pragmatica.lang.Result.allOf;
                                              Option.none(),
                                              EMPTY_SELF,
                                              Option.none(),
+                                             Option.none(),
                                              StreamReadForwardMetrics.NOOP);
     }
 
@@ -138,7 +142,8 @@ import static org.pragmatica.lang.Result.allOf;
                                                               Option<Function<T, Object>> partitionKeyExtractor,
                                                               Option<StreamForwardClient> forwardClient,
                                                               NodeId selfNodeId,
-                                                              Option<Fn0<Option<NodeId>>> ownerResolver) {
+                                                              Option<Fn0<Option<NodeId>>> ownerResolver,
+                                                              Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver) {
         return new PartitionedStreamAccess<>(partitionManager,
                                              serializer,
                                              deserializer,
@@ -153,6 +158,7 @@ import static org.pragmatica.lang.Result.allOf;
                                              forwardClient,
                                              selfNodeId,
                                              ownerResolver,
+                                             partitionOwnerResolver,
                                              StreamReadForwardMetrics.NOOP);
     }
 
@@ -176,6 +182,7 @@ import static org.pragmatica.lang.Result.allOf;
                                              Option.none(),
                                              Option.none(),
                                              EMPTY_SELF,
+                                             Option.none(),
                                              Option.none(),
                                              StreamReadForwardMetrics.NOOP);
     }
@@ -202,6 +209,7 @@ import static org.pragmatica.lang.Result.allOf;
                                              Option.none(),
                                              EMPTY_SELF,
                                              Option.none(),
+                                             Option.none(),
                                              StreamReadForwardMetrics.NOOP);
     }
 
@@ -227,6 +235,7 @@ import static org.pragmatica.lang.Result.allOf;
                                              Option.none(),
                                              Option.none(),
                                              EMPTY_SELF,
+                                             Option.none(),
                                              Option.none(),
                                              StreamReadForwardMetrics.NOOP);
     }
@@ -255,6 +264,7 @@ import static org.pragmatica.lang.Result.allOf;
                                              Option.some(replicaRegistry),
                                              Option.none(),
                                              EMPTY_SELF,
+                                             Option.none(),
                                              Option.none(),
                                              StreamReadForwardMetrics.NOOP);
     }
@@ -286,6 +296,7 @@ import static org.pragmatica.lang.Result.allOf;
                                              Option.some(replicaRegistry),
                                              forwardClient,
                                              selfNodeId,
+                                             Option.none(),
                                              Option.none(),
                                              metrics);
     }
@@ -325,6 +336,7 @@ import static org.pragmatica.lang.Result.allOf;
                                              forwardClient,
                                              selfNodeId,
                                              ownerResolver,
+                                             Option.none(),
                                              metrics);
     }
 
@@ -346,12 +358,18 @@ import static org.pragmatica.lang.Result.allOf;
         var bytes = serializer.encode(event);
         var partition = resolvePartition(event);
         var timestamp = System.currentTimeMillis();
-        return resolveOwner().map(owner -> routeToOwner(owner, partition, bytes, timestamp))
+        return resolveOwner(partition).map(owner -> routeToOwner(owner, partition, bytes, timestamp))
                              .or(() -> publishLocal(partition, bytes, timestamp));
     }
 
-    private Option<NodeId> resolveOwner() {
-        return ownerResolver.flatMap(Fn0::apply);
+    /// #47: resolve the publish owner for `(streamName, partition)`. Prefers the partition-aware HRW
+    /// resolver (the SAME `ReplicaSetController` placement that owns the replica set) so the publish
+    /// owner and the replica-set owner are one authority; falls back to the arg-less resolver only when
+    /// no HRW resolver is wired (legacy / minimal runtimes). {@link Option#none()} from either path
+    /// keeps the fail-soft local write in {@link #publish}.
+    private Option<NodeId> resolveOwner(int partition) {
+        return partitionOwnerResolver.flatMap(resolver -> resolver.apply(partition))
+                                     .orElse(() -> ownerResolver.flatMap(Fn0::apply));
     }
 
     private Promise<Long> routeToOwner(NodeId owner, int partition, byte[] bytes, long timestamp) {
