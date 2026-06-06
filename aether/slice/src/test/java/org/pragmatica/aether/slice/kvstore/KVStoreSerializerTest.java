@@ -9,7 +9,9 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -19,6 +21,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsVa
 import org.pragmatica.aether.slice.stream.StreamAddress;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.stream.StreamVersion;
+import org.pragmatica.aether.slice.topic.TopicAddress;
+import org.pragmatica.aether.slice.topic.TopicVersion;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.lang.Option;
@@ -648,6 +652,33 @@ class KVStoreSerializerTest {
                                  assertThat(bv.bindings()).hasSize(2);
                                  assertThat(bv.addressFor("orders-out")).isEqualTo(Option.some(addr("com.example.app", "orders", 1, 2, 3)));
                                  assertThat(bv.addressFor("events-in")).isEqualTo(Option.some(addr("com.example.app", "events", 4, 0, 0)));
+                             });
+        }
+
+        @Test
+        void roundTrip_namespacedTopicSubscriptionKey_preservesAddressArtifactMethod() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+
+            var address = TopicAddress.topicAddress("com.example.app", "order-events",
+                                                    TopicVersion.topicVersion(2, 1, 3).unwrap()).unwrap();
+            var artifact = Artifact.artifact("com.example:order-slice:1.0.0").unwrap();
+            var method = MethodName.methodName("onOrder").unwrap();
+            var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, method);
+            var value = TopicSubscriptionValue.topicSubscriptionValue(new NodeId("node-a"));
+            entries.put(key, value);
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).hasSize(1);
+                                 assertThat(restored).containsKey(key);
+                                 var rk = (TopicSubscriptionKey) restored.keySet().iterator().next();
+                                 assertThat(rk.address()).isEqualTo(address);
+                                 assertThat(rk.topicName()).isEqualTo("order-events");
+                                 assertThat(rk.artifact()).isEqualTo(artifact);
+                                 assertThat(rk.methodName()).isEqualTo(method);
+                                 assertThat(restored.get(key)).isEqualTo(value);
                              });
         }
 

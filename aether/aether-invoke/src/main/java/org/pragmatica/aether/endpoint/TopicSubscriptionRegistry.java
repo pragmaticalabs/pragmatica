@@ -6,6 +6,7 @@ package org.pragmatica.aether.endpoint;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.topic.TopicAddress;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -32,9 +33,14 @@ public interface TopicSubscriptionRegistry {
     List<TopicSubscriber> findSubscribers(String topicName);
     List<TopicSubscription> allSubscriptions();
 
-    record TopicSubscription(String topicName, Artifact artifact, MethodName methodName, NodeId nodeId) {
+    record TopicSubscription(TopicAddress address, Artifact artifact, MethodName methodName, NodeId nodeId) {
         public TopicSubscriptionKey toKey() {
-            return TopicSubscriptionKey.topicSubscriptionKey(topicName, artifact, methodName);
+            return TopicSubscriptionKey.topicSubscriptionKey(address, artifact, methodName);
+        }
+
+        /// Bare topic name — the runtime routing identity.
+        public String topicName() {
+            return address.topic();
         }
     }
 
@@ -48,7 +54,7 @@ public interface TopicSubscriptionRegistry {
             @Override@SuppressWarnings("JBCT-RET-01") public void onSubscriptionPut(ValuePut<TopicSubscriptionKey, TopicSubscriptionValue> valuePut) {
                 var key = valuePut.cause().key();
                 var value = valuePut.cause().value();
-                var subscription = new TopicSubscription(key.topicName(),
+                var subscription = new TopicSubscription(key.address(),
                                                          key.artifact(),
                                                          key.methodName(),
                                                          value.nodeId());

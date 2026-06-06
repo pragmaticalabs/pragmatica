@@ -31,6 +31,18 @@ public sealed interface ExpanderError extends Cause {
         }
     }
 
+    /// One or more topic declarations carry an invalid address: a malformed `namespace:topic:version`
+    /// form, an invalid topic name, or the reserved `system` namespace used by an app topic.
+    record InvalidTopicAddresses(List<String> diagnostics) implements ExpanderError {
+        public static InvalidTopicAddresses invalidTopicAddresses(List<String> diagnostics) {
+            return new InvalidTopicAddresses(List.copyOf(diagnostics));
+        }
+
+        @Override public String message() {
+            return "Invalid topic addresses in blueprint: " + String.join("; ", diagnostics);
+        }
+    }
+
     record unused() implements ExpanderError {
         @Override public String message() {
             return "unused";

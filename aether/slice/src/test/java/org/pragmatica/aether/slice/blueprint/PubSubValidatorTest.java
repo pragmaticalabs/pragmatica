@@ -117,6 +117,53 @@ class PubSubValidatorTest {
         assertThat(message).doesNotContain(expectedAbsent);
     }
 
+    @Nested
+    class TopicAddressValidation {
+        @Test
+        void validate_rejects_systemNamespaceForAppTopic() {
+            var publisher = topologyWithPub("system:audit-events:1.0.0");
+            var subscriber = topologyWithSub("system:audit-events:1.0.0");
+
+            PubSubValidator.validate(List.of(publisher, subscriber))
+                           .onSuccessRun(() -> fail("Expected failure for reserved system namespace"))
+                           .onFailure(cause -> {
+                               assertThat(cause).isInstanceOf(ExpanderError.InvalidTopicAddresses.class);
+                               assertThat(cause.message()).contains("system:audit-events:1.0.0");
+                               assertThat(cause.message().toLowerCase()).contains("reserved");
+                           });
+        }
+
+        @Test
+        void validate_rejects_systemDotPrefixForAppTopic() {
+            var publisher = topologyWithPub("system.audit:events:1.0.0");
+            var subscriber = topologyWithSub("system.audit:events:1.0.0");
+
+            PubSubValidator.validate(List.of(publisher, subscriber))
+                           .onSuccessRun(() -> fail("Expected failure for reserved system.* namespace"))
+                           .onFailure(cause -> assertThat(cause).isInstanceOf(ExpanderError.InvalidTopicAddresses.class));
+        }
+
+        @Test
+        void validate_accepts_explicitlyNamespacedAppTopic() {
+            var publisher = topologyWithPub("com.example.app:order-events:2.0.0");
+            var subscriber = topologyWithSub("com.example.app:order-events:2.0.0");
+
+            PubSubValidator.validate(List.of(publisher, subscriber))
+                           .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                           .onSuccess(topologies -> assertThat(topologies).hasSize(2));
+        }
+
+        @Test
+        void validate_rejects_invalidBareTopicName() {
+            var publisher = topologyWithPub("Order_Events");
+            var subscriber = topologyWithSub("Order_Events");
+
+            PubSubValidator.validate(List.of(publisher, subscriber))
+                           .onSuccessRun(() -> fail("Expected failure for invalid bare topic name"))
+                           .onFailure(cause -> assertThat(cause).isInstanceOf(ExpanderError.InvalidTopicAddresses.class));
+        }
+    }
+
     private static SliceTopology topologyWithPub(String config) {
         return new SliceTopology(
             "pub-slice", "org.example:pub-slice:1.0.0",

@@ -9,6 +9,7 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.topic.TopicAddress;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -306,39 +307,61 @@ import static org.pragmatica.lang.Result.success;
         }
     }
 
-    record TopicSubscriptionKey(String topicName, Artifact artifact, MethodName methodName) implements AetherKey {
+    /// Per-subscription registry key, now namespaced: `topic-sub/{namespace}/{topic}/{version}/{artifact}/{method}`.
+    ///
+    /// Carries a full [TopicAddress] (namespace + topic + version) so pub/sub mirrors the stream
+    /// addressing model. Runtime routing still matches on the bare topic name ([TopicAddress#topic])
+    /// — see [TopicSubscriptionRegistry] — so existing un-namespaced topics keep working; the
+    /// namespace/version travel as addressing metadata in the key's wire form. `asString`/parse are
+    /// symmetric so the `topic-sub` serializer arm round-trips automatically.
+    record TopicSubscriptionKey(TopicAddress address, Artifact artifact, MethodName methodName) implements AetherKey {
         private static final String PREFIX = "topic-sub/";
 
         @Override public String asString() {
-            return PREFIX + topicName + "/" + artifact.asString() + "/" + methodName.name();
+            return PREFIX + address.namespace() + "/" + address.topic() + "/" + address.version().asString()
+                   + "/" + artifact.asString() + "/" + methodName.name();
         }
 
         @Override public String toString() {
             return asString();
         }
 
-        public static TopicSubscriptionKey topicSubscriptionKey(String topicName,
+        /// Bare topic name — the runtime routing identity, kept for back-compat with publishers that
+        /// route on the un-namespaced name.
+        public String topicName() {
+            return address.topic();
+        }
+
+        public static TopicSubscriptionKey topicSubscriptionKey(TopicAddress address,
                                                                 Artifact artifact,
                                                                 MethodName methodName) {
-            return new TopicSubscriptionKey(topicName, artifact, methodName);
+            return new TopicSubscriptionKey(address, artifact, methodName);
         }
 
         public static Result<TopicSubscriptionKey> topicSubscriptionKey(String key) {
             if (!key.startsWith(PREFIX)) {return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();}
             var content = key.substring(PREFIX.length());
             var firstSlash = content.indexOf('/');
-            if (firstSlash == - 1) {return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();}
-            var topicName = content.substring(0, firstSlash);
+            if (firstSlash <= 0) {return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();}
+            var namespace = content.substring(0, firstSlash);
             var rest = content.substring(firstSlash + 1);
-            var lastSlash = rest.lastIndexOf('/');
-            if (lastSlash == - 1) {return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();}
-            var artifactPart = rest.substring(0, lastSlash);
-            var methodPart = rest.substring(lastSlash + 1);
-            if (topicName.isEmpty() || methodPart.isEmpty()) {return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key)
-                                                                                                              .result();}
-            return Result.all(Artifact.artifact(artifactPart),
+            var secondSlash = rest.indexOf('/');
+            if (secondSlash <= 0) {return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();}
+            var topic = rest.substring(0, secondSlash);
+            var rest2 = rest.substring(secondSlash + 1);
+            var thirdSlash = rest2.indexOf('/');
+            if (thirdSlash <= 0) {return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();}
+            var version = rest2.substring(0, thirdSlash);
+            var rest3 = rest2.substring(thirdSlash + 1);
+            var lastSlash = rest3.lastIndexOf('/');
+            if (lastSlash <= 0) {return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();}
+            var artifactPart = rest3.substring(0, lastSlash);
+            var methodPart = rest3.substring(lastSlash + 1);
+            if (methodPart.isEmpty()) {return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();}
+            return Result.all(TopicAddress.topicAddress(namespace, topic, version),
+                              Artifact.artifact(artifactPart),
                               MethodName.methodName(methodPart))
-            .map((artifact, method) -> new TopicSubscriptionKey(topicName, artifact, method));
+            .map(TopicSubscriptionKey::new);
         }
     }
 

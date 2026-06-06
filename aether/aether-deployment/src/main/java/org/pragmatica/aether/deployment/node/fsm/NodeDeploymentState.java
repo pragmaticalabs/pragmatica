@@ -27,6 +27,7 @@ import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
@@ -50,6 +51,8 @@ import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.resource.ScheduleConfig;
 import org.pragmatica.aether.resource.StreamNameConfig;
 import org.pragmatica.aether.resource.TopicConfig;
+import org.pragmatica.aether.slice.topic.TopicAddress;
+import org.pragmatica.aether.slice.topic.TopicVersion;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -633,7 +636,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private KVCommand<AetherKey> buildTopicSubscriptionPutCommand(Artifact artifact,
                                                                       SubscriptionManifestEntry entry) {
-            var key = TopicSubscriptionKey.topicSubscriptionKey(entry.topicName(), artifact, entry.methodName());
+            var key = TopicSubscriptionKey.topicSubscriptionKey(entry.address(), artifact, entry.methodName());
             var value = TopicSubscriptionValue.topicSubscriptionValue(ctx.self());
 
             return new KVCommand.Put<>(key, value);
@@ -666,12 +669,12 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private KVCommand<AetherKey> buildTopicSubscriptionRemoveCommand(Artifact artifact,
                                                                          SubscriptionManifestEntry entry) {
-            var key = TopicSubscriptionKey.topicSubscriptionKey(entry.topicName(), artifact, entry.methodName());
+            var key = TopicSubscriptionKey.topicSubscriptionKey(entry.address(), artifact, entry.methodName());
 
             return new KVCommand.Remove<>(key);
         }
 
-        private record SubscriptionManifestEntry(String topicName, MethodName methodName) {}
+        private record SubscriptionManifestEntry(TopicAddress address, MethodName methodName) {}
 
         private record ScheduledTaskManifestEntry(String configSection, MethodName methodName) {}
 
@@ -730,7 +733,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
             for (var entry : reactive) {
                 if ("subscription".equals(entry.category())) {
-                    resolveTopicName(artifact, entry.config()).flatMap(topicName -> MethodName.methodName(entry.method()).map(method -> new SubscriptionManifestEntry(topicName,
+                    resolveTopicAddress(artifact, entry.config()).flatMap(address -> MethodName.methodName(entry.method()).map(method -> new SubscriptionManifestEntry(address,
                                                                                                                                                                       method))).option().onPresent(result::add);
                 }
             }
@@ -738,11 +741,28 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             return result;
         }
 
-        private Result<String> resolveTopicName(Artifact artifact, String configSection) {
+        /// Resolve a subscription's declared topic config to a canonical [TopicAddress].
+        ///
+        /// Back-compat derivation rule (mirrors streams):
+        ///  - read the declared `topicName` via [TopicConfig];
+        ///  - if the declaration is already fully namespaced (`namespace:topic:version`), keep it;
+        ///  - otherwise (bare/legacy name) derive the namespace from the slice's blueprint Maven
+        ///    coordinates via [BlueprintNamespace] and default the version to
+        ///    [TopicVersion#defaultVersion] (`1.0.0`).
+        private Result<TopicAddress> resolveTopicAddress(Artifact artifact, String configSection) {
             return sliceConfigService(artifact).orElse(ConfigService::instance)
                                      .toResult(Causes.cause("ConfigService not available for topic resolution"))
                                      .flatMap(svc -> svc.config(configSection, TopicConfig.class))
-                                     .map(TopicConfig::topicName);
+                                     .flatMap(config -> resolveTopicAddress(artifact, config));
+        }
+
+        private Result<TopicAddress> resolveTopicAddress(Artifact artifact, TopicConfig config) {
+            var declared = config.topicName();
+            if (declared != null && declared.contains(":")) {
+                return config.address();
+            }
+            return BlueprintNamespace.deriveNamespace(artifact)
+                                     .flatMap(namespace -> TopicAddress.topicAddress(namespace, declared, TopicVersion.defaultVersion()));
         }
 
         private Promise<SliceNodeKey> publishScheduledTasks(SliceNodeKey sliceKey) {
