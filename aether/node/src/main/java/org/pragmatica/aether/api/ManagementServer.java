@@ -91,7 +91,9 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.TlsConfig;
 
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -643,7 +645,7 @@ class ManagementServerImpl implements ManagementServer {
         // source it from the HLC's physical-millis half (the sealed ClusterEvent carries `at()`,
         // an HlcTimestamp, instead of the old wall-clock Instant). `type` is the record variant
         // simple name (e.g. "NodeJoined") now that EventType is a sealed hierarchy, not an enum.
-        sb.append("{\"timestamp\":\"").append(java.time.Instant.ofEpochMilli(event.at().physicalMillis())).append("\"");
+        sb.append("{\"timestamp\":\"").append(Instant.ofEpochMilli(event.at().physicalMillis())).append("\"");
         sb.append(",\"type\":\"").append(event.getClass().getSimpleName()).append("\"");
         sb.append(",\"severity\":\"").append(event.severity().name()).append("\"");
         sb.append(",\"summary\":\"").append(escapeJson(event.summary())).append("\"");
@@ -1001,7 +1003,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                context.path(),
                                                                context.requestId());
         var notFound = new HttpResponseData(HttpStatus.NOT_FOUND.code(),
-                                            java.util.Map.of("Content-Type", ProblemResponses.problemContentType()),
+                                            Map.of("Content-Type", ProblemResponses.problemContentType()),
                                             notFoundBody);
         sendManagementForwardSuccess(network, request, ser, notFound);
     }
@@ -1124,8 +1126,8 @@ class ManagementServerImpl implements ManagementServer {
         var withoutQuery = path.indexOf('?') >= 0 ? path.substring(0, path.indexOf('?')) : path;
         for (var raw : withoutQuery.split("/")) {
             if (raw.isEmpty()) {continue;}
-            var seg = java.net.URLDecoder.decode(raw, java.nio.charset.StandardCharsets.UTF_8);
-            if (org.pragmatica.aether.slice.resource.ResourceAddress.SYSTEM_NAMESPACE.equalsIgnoreCase(seg)
+            var seg = URLDecoder.decode(raw, StandardCharsets.UTF_8);
+            if (ResourceAddress.SYSTEM_NAMESPACE.equalsIgnoreCase(seg)
                 || seg.regionMatches(true, 0, SYSTEM_NAMESPACE_COLON, 0, SYSTEM_NAMESPACE_COLON.length())) {
                 return true;
             }

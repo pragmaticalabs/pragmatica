@@ -54,6 +54,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -524,7 +525,7 @@ public final class ClusterEventAggregator {
     }
 
     private static Map<String, String> withDuration(Map<String, String> base, long durationMs) {
-        var metadata = new java.util.HashMap<>(base);
+        var metadata = new HashMap<>(base);
         metadata.put("durationMs", String.valueOf(durationMs));
         return Map.copyOf(metadata);
     }

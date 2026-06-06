@@ -217,6 +217,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
+import org.pragmatica.net.tcp.Server;
 import org.pragmatica.net.tcp.security.CertificateBundle;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 import org.pragmatica.swim.AesGcmGossipEncryptor;
@@ -241,9 +242,13 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -573,7 +578,7 @@ public interface AetherNode extends ManageableNode {
                 // around them until they reconcile back to CONNECTED via the SWIM /
                 // reconciler path. The ring still holds them as owners, but quorum is
                 // computed against the live intersection.
-                var live = new java.util.HashSet<>(clusterNode.network().connectedPeers());
+                var live = new HashSet<>(clusterNode.network().connectedPeers());
                 live.add(config.self());
 
                 return live;
@@ -1004,7 +1009,7 @@ public interface AetherNode extends ManageableNode {
                 return MembershipView.strict(() -> {
                                                                                                   var swim = swimHealthDetector.currentHealth()
                                                                                                                                .or(() -> HealthSnapshot.healthSnapshot(Map.of()));
-                                                                                                  var merged = new java.util.HashMap<>(swim.peerHealth());
+                                                                                                  var merged = new HashMap<>(swim.peerHealth());
                                                                                                   merged.putIfAbsent(config.self(),
                                                                                                                      SwimHealth.HEALTHY);
                                                                                                   return Option.some(HealthSnapshot.healthSnapshot(merged));
@@ -1388,8 +1393,8 @@ public interface AetherNode extends ManageableNode {
                                                                                             config.timeouts().deployment().activationChain(),
                                                                                             config.timeouts().deployment().transitionRetryDelay(),
                                                                                             snapshotSupplier);
-        var serverBossGroup = clusterNode.network().server().map(org.pragmatica.net.tcp.Server::bossGroup);
-        var serverWorkerGroup = clusterNode.network().server().map(org.pragmatica.net.tcp.Server::workerGroup);
+        var serverBossGroup = clusterNode.network().server().map(Server::bossGroup);
+        var serverWorkerGroup = clusterNode.network().server().map(Server::workerGroup);
         // #231 Step 3: every control-plane TaskGroup is leader-pinned, so the owner of any group is
         // the current leader. Resolver mirrors the former registry's no-owner failure (notAssigned)
         // when no leader is committed, using the same leaderManager source as the toggle*OnLeaderChange routes.
@@ -1797,7 +1802,7 @@ public interface AetherNode extends ManageableNode {
                                                                          .onPresent(swimHealthDetector::onNodeConnected)
                                                                          .onEmpty(() -> swimHealthDetector.onNodeConnected(connection.nodeId()))));
         Supplier<BootstrapModule.ClusterConfigBaseline> configBaselineSupplier = () -> clusterConfigBaseline(config.topology());
-        var publisherExecutor = java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> {
+        var publisherExecutor = Executors.newSingleThreadExecutor(runnable -> {
                                                                                            var thread = new Thread(runnable,
                                                                                                                    "generation-snapshot-publisher");
                                                                                            thread.setDaemon(true);
@@ -1829,7 +1834,7 @@ public interface AetherNode extends ManageableNode {
                                                               config::self,
                                                               configBaselineSupplier,
                                                               clusterNode);
-        var publisherTickExecutor = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(runnable -> {
+        var publisherTickExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
                                                                                                         var thread = new Thread(runnable,
                                                                                                                                 "generation-publisher-tick");
                                                                                                         thread.setDaemon(true);
@@ -1838,7 +1843,7 @@ public interface AetherNode extends ManageableNode {
         publisherTickExecutor.scheduleAtFixedRate(generationSnapshotPublisher::markDirty,
                                                   1,
                                                   1,
-                                                  java.util.concurrent.TimeUnit.SECONDS);
+                                                  TimeUnit.SECONDS);
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
         attachQuicConnectivityReporter(clusterNode.network(),
                                        isLeaderSupplier,
@@ -2017,7 +2022,7 @@ public interface AetherNode extends ManageableNode {
                                                                           streamPartitionRecovery,
                                                                           streamCatchupTransport,
                                                                           config.self());
-        var streamBackfillExecutor = java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> {
+        var streamBackfillExecutor = Executors.newSingleThreadExecutor(runnable -> {
             var thread = new Thread(runnable, "stream-partition-backfill");
             thread.setDaemon(true);
             return thread;
@@ -2320,7 +2325,7 @@ public interface AetherNode extends ManageableNode {
                                               NodeReportedStateHolder selfHolder,
                                               NodeId self,
                                               NodeReportedState target) {
-        var matching = new java.util.HashSet<NodeId>();
+        var matching = new HashSet<NodeId>();
 
         fan.readinessSnapshot().forEach((nodeId, state) -> addIfMatching(matching, nodeId, state, target));
         if (selfHolder.current() == target) {
@@ -2676,7 +2681,7 @@ public interface AetherNode extends ManageableNode {
                                   ClusterNetwork network,
                                   RotatingGossipEncryptor encryptor,
                                   Runnable announceJoinTrigger) {
-        var workerGroup = network.server().map(org.pragmatica.net.tcp.Server::workerGroup);
+        var workerGroup = network.server().map(Server::workerGroup);
         swimHealthDetector.start(workerGroup, encryptor);
         announceJoinTrigger.run();
     }

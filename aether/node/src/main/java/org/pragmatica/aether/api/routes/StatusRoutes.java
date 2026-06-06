@@ -33,6 +33,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.routing.PathParameter;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -69,20 +70,20 @@ public final class StatusRoutes implements RouteSource {
     public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<StatusResponse> route(ManagementRoute.NODE_STATUS).toJson(this::buildStatusResponse),
                          ManagementRoutes.<StatusResponse> route(ManagementRoute.NODE_STATUS_GET)
-                                         .withPath(org.pragmatica.http.routing.PathParameter.aString())
-                                         .to(__ -> org.pragmatica.lang.Promise.success(buildStatusResponse()))
+                                         .withPath(PathParameter.aString())
+                                         .to(__ -> Promise.success(buildStatusResponse()))
                                          .asJson(),
                          ManagementRoutes.<NodesResponse> route(ManagementRoute.NODES_LIST).toJson(this::buildNodesResponse),
                          ManagementRoutes.<HealthResponse> route(ManagementRoute.CLUSTER_HEALTH).toJson(this::buildHealthResponse),
                          ManagementRoutes.<LivenessResponse> route(ManagementRoute.HEALTH_LIVE).toJson(this::buildLivenessResponse),
                          ManagementRoutes.<LivenessResponse> route(ManagementRoute.HEALTH_LIVE_GET)
-                                         .withPath(org.pragmatica.http.routing.PathParameter.aString())
-                                         .to(__ -> org.pragmatica.lang.Promise.success(buildLivenessResponse()))
+                                         .withPath(PathParameter.aString())
+                                         .to(__ -> Promise.success(buildLivenessResponse()))
                                          .asJson(),
                          ManagementRoutes.<ReadinessResponse> route(ManagementRoute.HEALTH_READY).toJson(this::buildReadinessResponse),
                          ManagementRoutes.<ReadinessResponse> route(ManagementRoute.HEALTH_READY_GET)
-                                         .withPath(org.pragmatica.http.routing.PathParameter.aString())
-                                         .to(__ -> org.pragmatica.lang.Promise.success(buildReadinessResponse()))
+                                         .withPath(PathParameter.aString())
+                                         .to(__ -> Promise.success(buildReadinessResponse()))
                                          .asJson(),
                          ManagementRoutes.<List<ClusterEvent>> route(ManagementRoute.EVENTS)
                                          .withQuery(QueryParameter.aLong("sinceEpoch"),
