@@ -1,9 +1,13 @@
 # Session Handover — 2026-06-06
 
-**Branch:** `release-1.0.0-rc1` · **HEAD:** `37e4e257b` (pushed, 0 unpushed) · tree clean. Also active: local branch `test-239` = `origin/feature/stream-namespaces-rebuild` (PR #239) checked out for validation.
+**Branch:** `release-1.0.0-rc1` · **HEAD:** `37e4e257b` (pushed) · tree clean. Also active: local branch `test-239` = `origin/feature/stream-namespaces-rebuild` (PR #239) checked out for validation.
+
+## ▶ NEXT SESSION — priority order (per user)
+1. **PR #239 first.** It has an **RC-BLOCKER**: a consensus leader-election wedge after a leader kill (Issue 7, below). Cooperation model: **the other agent owns #239 code fixes; this session owns validation** (only we have the remote test env). When they push a fix: re-run the isolated `02-chaos` kill-leader repro first (fast confirm), then the full suite. Also our lane: migrate the stale stream-harness/tests to the new path-based addressing (Issues 5/6) once the author confirms the intended external pub/sub contract. State + all detail in the "PR #239" section below; durable record = the two PR comments.
+2. **Then remaining rc1 test failures** (the A1–A4 / B5 inventory below) — A1 scale-down data-loss is the highest-value real correctness item.
 
 ## TL;DR
-Two RC1 fixes shipped to rc1 (auto-heal cluster-identity + transport REMOVED-reversibility), each Docker-validated and pushed. The alarming `connectedPeerCount=2` was **disproven as a permanent defect** (transient/env — the mesh forms and re-forms to 4). Then pivoted to **co-validating PR #239** (stream namespaces + cluster-events-over-replicated-stream, supersedes #187): posted a full code review (2 blockers, both since fixed by the other agent), and am now running the full integration suite against #239 and filing validation findings. **Division of labor with another agent: it owns #239 code changes, I own validation (only I have the remote test env).**
+Two RC1 fixes shipped to rc1 (auto-heal cluster-identity + transport REMOVED-reversibility), each Docker-validated and pushed. The alarming `connectedPeerCount=2` was **disproven as a permanent defect** (transient/env — the mesh forms and re-forms to 4). Then pivoted to **co-validating PR #239** (stream namespaces + cluster-events-over-replicated-stream, supersedes #187): posted a full code review (2 blockers, both since fixed by the other agent), then ran the full integration suite against it — which surfaced an **RC-blocking consensus leader-election regression (Issue 7)** plus several stream-test-staleness items and a few real candidates. **Division of labor: the other agent owns #239 code changes, this session owns validation.**
 
 ## Shipped to rc1 this session (pushed)
 | Commit | What |
@@ -36,13 +40,13 @@ So `=2` is **mid-churn (assertion measures before heal completes) + amplified by
 
 **My review (posted):** `gh pr review` COMMENT — 2 blockers since fixed: C1 (KVStoreSerializer serialize-without-parse → broken snapshot restore — fixed `cf9283fe5`), C3 (triad docs — fixed `e123c4d79`); C2/C4/C5/C6 cleanups.
 
-**Validation findings (posted as PR comment `#issuecomment-4637322989`), split by lane:**
-- 🐞 (other agent): **Issue 1** sustained pub/sub publish 100% fail — owner-route/auto-create race under load (`04 load-test-stream`); **Issue 2** cross-node replicated-event delivery gap (`11/All_nodes_agree_on_order` node-0 zero events — same path membership NODE_FAILED rides); **Issue 3** rolling-promote quiesce-30s (`06`, refcount-on-ACTIVE chain); **Issue 4** (low-conf) transient no-leader 503 (`07`).
-- 🧪 (my lane): **Issue 5** `@Notify` namespaced stream accessed via flat pub/sub API (`08 notifications`) — stale test; **Issue 6** harness stream helpers (`cluster.sh:2291-2303`) vs new addressing — open contract question for author.
+**Validation findings (filed as two PR comments):**
+- Comment 1 (`#issuecomment-4637322989`) — cluster-A + streaming. 🐞 (other agent): **Issue 1** sustained pub/sub publish 100% fail — owner-route/auto-create race under load (`04 load-test-stream`); **Issue 2** cross-node replicated-event delivery gap (`11/All_nodes_agree_on_order`); **Issue 3** rolling-promote quiesce-30s (`06`); **Issue 4** (low-conf) transient no-leader 503 (`07`). 🧪 (our lane): **Issue 5** `@Notify` namespaced stream via flat pub/sub API (`08`) — stale test; **Issue 6** harness stream helpers (`cluster.sh:2291-2303`) vs new addressing — open contract question for the author.
+- Comment 2 (`#issuecomment-4637387472`) — cluster B. 🔴 **Issue 7 (RC-BLOCKER): consensus leader-election wedges after a leader kill.** `02-chaos/Kill_leader_and_re-elect`: kill the leader → survivors submit leader proposals with a **monotonically climbing epoch (57→103+, ~9s/round) that NEVER commits** → permanent no-leader → quorum 0, all leader-bound routes 503, auto-heal can't run (`current=0`). 4 alive quorum-capable nodes, **0 `Network is unreachable`** (NOT env). **Passes on rc1 → #239 regression.** Suspects: new owner-routed/replicated emit or stream-replication wiring contending with the Rabia consensus apply path (membership/`ntt`/`LeaderReconciler` untouched by #239 → it's on the consensus/event/replication side). **Cascade-contaminates the rest of cluster B (03/05/12/13 ran leaderless).** **Issue 8:** `/api/events` (+ topology/generation) is now **leader-bound** → 503 during any leader churn (was node-local on rc1) — observability-availability regression that compounds Issue 7.
 
 **Key framing (from the user):** pub/sub is **not** namespaced (plain names + flat API correct); slice `@Notify`/`resources.toml` streams **are** namespaced (need full `(namespace,stream,version)` address externally). So several "failures" are stale tests, not regressions. Spec: `aether/docs/specs/event-stream-namespaces-spec.md` (§3 address, §4 derivation, §9 resolution).
 
-**Cluster-A vs rc1 (was 10/10):** failures in 04/08 (stale stream-harness), 06 (deploy quiesce), 07 (transient leader), 11 (cross-node delivery). **Cluster B still running** at handover time (02-chaos) — owe a **follow-up PR comment** with the membership `NODE_FAILED`-over-replicated-events verdict (linked to Issue 2) + the full tally.
+**Bottom line:** the namespace rework itself looks faithful, but **Issue 7 gates everything — #239 is not mergeable until consensus re-election is restored**, and cluster-B destructive validation can't produce a clean tally until then. Run was stopped + remote cleaned once the wedge was confirmed.
 
 ## Resume / state
 - **rc1:** HEAD `37e4e257b`, pushed, clean. `v1.0.0-rc1-candidate` tag still at `ca55c8ddc` (one HEAD behind — move if desired).
