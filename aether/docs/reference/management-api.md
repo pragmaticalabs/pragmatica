@@ -2428,15 +2428,15 @@ The graph preserves route declaration order from TOML configuration files.
       "sliceArtifact": "org.example:url-shortener:1.0.0"
     },
     {
-      "id": "topic-pub:org.example:url-shortener:1.0.0:click-events",
+      "id": "topic-pub:org.example:url-shortener:1.0.0:org.example.url-shortener:click-events:1.0.0",
       "type": "TOPIC_PUB",
-      "label": "click-events",
+      "label": "org.example.url-shortener:click-events:1.0.0",
       "sliceArtifact": "org.example:url-shortener:1.0.0"
     },
     {
-      "id": "topic-sub:org.example:analytics:1.0.0:click-events",
+      "id": "topic-sub:org.example:analytics:1.0.0:org.example.url-shortener:click-events:1.0.0",
       "type": "TOPIC_SUB",
-      "label": "click-events",
+      "label": "org.example.url-shortener:click-events:1.0.0",
       "sliceArtifact": "org.example:analytics:1.0.0"
     }
   ],
@@ -2448,10 +2448,10 @@ The graph preserves route declaration order from TOML configuration files.
       "topicConfig": ""
     },
     {
-      "from": "topic-pub:org.example:url-shortener:1.0.0:click-events",
-      "to": "topic-sub:org.example:analytics:1.0.0:click-events",
+      "from": "topic-pub:org.example:url-shortener:1.0.0:org.example.url-shortener:click-events:1.0.0",
+      "to": "topic-sub:org.example:analytics:1.0.0:org.example.url-shortener:click-events:1.0.0",
       "style": "DOTTED",
-      "topicConfig": "click-events"
+      "topicConfig": "org.example.url-shortener:click-events:1.0.0"
     }
   ]
 }
@@ -2467,10 +2467,21 @@ The graph preserves route declaration order from TOML configuration files.
 - Endpoints: `endpoint:{method}:{path}`
 - Slices: `slice:{artifact}`
 - Resources: `resource:{artifact}:{type}:{config}` (per-slice)
-- Topic publishers: `topic-pub:{artifact}:{config}` (per-slice)
-- Topic subscribers: `topic-sub:{artifact}:{config}` (per-slice)
+- Topic publishers: `topic-pub:{artifact}:{namespace}:{topic}:{version}` (per-slice)
+- Topic subscribers: `topic-sub:{artifact}:{namespace}:{topic}:{version}` (per-slice)
 
-**Cross-slice matching:** Publishers and subscribers with the same config suffix are connected many-to-many via DOTTED edges. The `topicConfig` field on these edges contains the matching config name.
+**Topic addressing:** Pub/sub topics are identified by their resolved canonical
+`namespace:topic:version` address (the same `ResourceAddress` model used by streams — see
+[Stream Namespaces](#stream-namespaces)). A bare/legacy topic declaration (`order-events`) has its
+namespace derived from the publishing slice's blueprint Maven coordinates (`groupId.artifactId`) and
+its version defaulted to `1.0.0`; an explicitly-namespaced declaration is used verbatim. The
+`namespace`/`label`/`topicConfig` values therefore carry the fully-qualified address, so a bare
+publisher and an explicitly-namespaced subscriber of the same logical topic resolve to the same
+address and connect. The `system` namespace is reserved for framework-internal topics.
+
+**Cross-slice matching:** Publishers and subscribers whose resolved `namespace:topic:version`
+addresses are equal are connected many-to-many via DOTTED edges. The `topicConfig` field on these
+edges contains the matching canonical address.
 
 ---
 

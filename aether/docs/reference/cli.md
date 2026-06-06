@@ -1514,6 +1514,23 @@ aether stream group delete orders:order-events:1.0.0 fulfillment --force
 
 ---
 
+## Pub/Sub Topics
+
+Pub/sub topics share the streams' `namespace:topic:version` addressing model (the topic-flavored
+view of the same `ResourceAddress` abstraction — see [Stream Namespaces](#stream-namespaces-aether-stream)).
+A bare/legacy topic name has its namespace derived from the publishing slice's blueprint Maven
+coordinates (`groupId.artifactId`) and its version defaulted to `1.0.0`; an explicit
+`namespace:topic:version` declaration in slice config is accepted verbatim. The `system` namespace is
+reserved for framework topics.
+
+Unlike streams, pub/sub is an in-process, declaration-driven delivery mechanism: there is **no
+`aether topic` CLI command group** and **no topic management HTTP route**. Operators inspect topic
+wiring (publishers, subscribers, and their resolved `namespace:topic:version` addresses) through the
+topology graph — `GET /api/slices/topology` and the dashboard topology view — where pub→sub edges
+are matched on the resolved canonical address.
+
+---
+
 ## Cluster Management
 
 ### `aether cluster init`
