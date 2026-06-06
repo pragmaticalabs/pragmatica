@@ -49,9 +49,9 @@ import org.pragmatica.serialization.Codec;
 
     public static Result<ResourceVersion> resourceVersion(int major, int minor, int patch) {
         return Verify.ensure(major, Is::nonNegative, ResourceVersionError.General.NEGATIVE_COMPONENT)
-                     .flatMap(_ -> Verify.ensure(minor, Is::nonNegative, ResourceVersionError.General.NEGATIVE_COMPONENT))
-                     .flatMap(_ -> Verify.ensure(patch, Is::nonNegative, ResourceVersionError.General.NEGATIVE_COMPONENT))
-                     .map(_ -> new ResourceVersion(major, minor, patch));
+                     .all(_ -> Verify.ensure(minor, Is::nonNegative, ResourceVersionError.General.NEGATIVE_COMPONENT),
+                          _ -> Verify.ensure(patch, Is::nonNegative, ResourceVersionError.General.NEGATIVE_COMPONENT))
+                     .map((_, _) -> new ResourceVersion(major, minor, patch));
     }
 
     /// Default resource version applied to legacy / un-namespaced declarations that omit an
@@ -65,10 +65,10 @@ import org.pragmatica.serialization.Codec;
                      .flatMap(notNull -> Verify.ensure(notNull, Is::notBlank, ResourceVersionError.General.BLANK_VALUE))
                      .map(blank -> blank.split("\\.", -1))
                      .flatMap(parts -> Verify.ensure(parts, p -> p.length == 3, ResourceVersionError.General.WRONG_FORMAT))
-                     .flatMap(parts -> parseComponent(parts[0])
-                             .flatMap(major -> parseComponent(parts[1])
-                                     .flatMap(minor -> parseComponent(parts[2])
-                                             .flatMap(patch -> resourceVersion(major, minor, patch)))));
+                     .all(parts -> parseComponent(parts[0]),
+                          parts -> parseComponent(parts[1]),
+                          parts -> parseComponent(parts[2]))
+                     .flatMap(ResourceVersion::resourceVersion);
     }
 
     private static Result<Integer> parseComponent(String component) {
