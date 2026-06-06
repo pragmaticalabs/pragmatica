@@ -1307,7 +1307,8 @@ public interface AetherNode extends ManageableNode {
                                                                             clusterEventsOwnerCheck,
                                                                             config.self(),
                                                                             clusterEventsHlcClock,
-                                                                            clusterTopologyManager.observer()::clusterSize);
+                                                                            clusterTopologyManager.observer()::clusterSize,
+                                                                            kvStore::isReplaying);
         // Item-8 graft: best-effort SelfDrainInitiated emit on drain initiation. The aggregator is
         // forward-declared to DrainProcedure (constructed earlier) via this ref; the emitter lambda
         // resolves it lazily and no-ops until bound. NOT leader-gated — the draining node is the only

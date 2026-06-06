@@ -117,6 +117,10 @@ public final class ClusterEventAggregator {
     /// always-owner, preserving prior unconditional-emit behaviour for those callers.
     private static final BooleanSupplier ALWAYS_OWNER = () -> true;
 
+    /// Default replay-check for the legacy factories: never replaying, so emit is never suppressed on
+    /// this account — preserves the prior unconditional-emit behaviour for test / non-gated callers.
+    private static final BooleanSupplier NEVER_REPLAYING = () -> false;
+
     /// Read window for `events()`. Must stay >= the stream's retention `maxCount` so a single fetch
     /// always covers the full retained window (no newest-event truncation) — the B5a/#239 fix. The
     /// stream's retention is now config-driven in [org.pragmatica.aether.node.AetherNode]; this is the
@@ -129,6 +133,7 @@ public final class ClusterEventAggregator {
     private final Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier;
     private final Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier;
     private final BooleanSupplier ownerCheck;
+    private final BooleanSupplier replayingCheck;
     private final HlcClock hlcClock;
     private final NodeId selfNode;
 
@@ -145,20 +150,22 @@ public final class ClusterEventAggregator {
                                    BooleanSupplier ownerCheck,
                                    NodeId selfNode,
                                    HlcClock hlcClock,
-                                   IntSupplier clusterSizeSupplier) {
+                                   IntSupplier clusterSizeSupplier,
+                                   BooleanSupplier replayingCheck) {
         this.publisherSupplier = publisherSupplier;
         this.consumerSupplier = consumerSupplier;
         this.ownerCheck = ownerCheck;
         this.selfNode = selfNode;
         this.hlcClock = hlcClock;
         this.clusterSizeSupplier = clusterSizeSupplier;
+        this.replayingCheck = replayingCheck;
     }
 
     public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
                                                                 Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
                                                                 NodeId selfNode,
                                                                 HlcClock hlcClock) {
-        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ALWAYS_OWNER, selfNode, hlcClock, UNKNOWN_CLUSTER_SIZE);
+        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ALWAYS_OWNER, selfNode, hlcClock, UNKNOWN_CLUSTER_SIZE, NEVER_REPLAYING);
     }
 
     public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
@@ -166,19 +173,23 @@ public final class ClusterEventAggregator {
                                                                 NodeId selfNode,
                                                                 HlcClock hlcClock,
                                                                 IntSupplier clusterSizeSupplier) {
-        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ALWAYS_OWNER, selfNode, hlcClock, clusterSizeSupplier);
+        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ALWAYS_OWNER, selfNode, hlcClock, clusterSizeSupplier, NEVER_REPLAYING);
     }
 
     /// Production factory (B5b): emit is gated by `ownerCheck` — only the owner of
     /// (`system:cluster-events:1.0.0`, partition 0) publishes; non-owners suppress. See class doc for
-    /// the owner-gating rationale and bootstrap-window behaviour.
+    /// the owner-gating rationale and bootstrap-window behaviour. `replayingCheck` (7b) additionally
+    /// suppresses emit while this node is re-applying a snapshot/resync (e.g. `KVStore::isReplaying`),
+    /// so replaying committed history does not re-publish historical cluster-events or re-fire
+    /// outbound replication.
     public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
                                                                 Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
                                                                 BooleanSupplier ownerCheck,
                                                                 NodeId selfNode,
                                                                 HlcClock hlcClock,
-                                                                IntSupplier clusterSizeSupplier) {
-        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ownerCheck, selfNode, hlcClock, clusterSizeSupplier);
+                                                                IntSupplier clusterSizeSupplier,
+                                                                BooleanSupplier replayingCheck) {
+        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ownerCheck, selfNode, hlcClock, clusterSizeSupplier, replayingCheck);
     }
 
     /// Read all events currently retained in the system stream's partition.
@@ -239,6 +250,10 @@ public final class ClusterEventAggregator {
     /// dropped+logged. If the publisher is not yet bound (bootstrap window) the event is likewise
     /// logged rather than dropped silently — spec §13.3.
     @Contract public void emit(ClusterEvent event) {
+        if (replayingCheck.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing side-effect emit of {}", event);
+            return;
+        }
         if (!ownerCheck.getAsBoolean()) {
             LOG.debug("ClusterEventAggregator: not owner of cluster-events partition — suppressing emit of {}", event);
             return;

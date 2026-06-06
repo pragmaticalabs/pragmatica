@@ -51,6 +51,10 @@ class ClusterEventAggregatorTest {
 
     private record Harness(ClusterEventAggregator aggregator, HlcClock hlc, StreamPartitionManager manager) {
         static Harness create(RetentionPolicy retention, BooleanSupplier ownerCheck) {
+            return create(retention, ownerCheck, () -> false);
+        }
+
+        static Harness create(RetentionPolicy retention, BooleanSupplier ownerCheck, BooleanSupplier replayingCheck) {
             // Generous memory budget so calculateStreamBytes (64 + 24*maxCount + maxBytes) fits.
             var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
             var config = StreamConfig.streamConfig(SystemStreams.CLUSTER_EVENTS.asString(),
@@ -77,7 +81,8 @@ class ClusterEventAggregatorTest {
                                                                            ownerCheck,
                                                                            SELF,
                                                                            hlc,
-                                                                           () -> 1);
+                                                                           () -> 1,
+                                                                           replayingCheck);
             return new Harness(aggregator, hlc, manager);
         }
 
@@ -109,6 +114,18 @@ class ClusterEventAggregatorTest {
         assertThat(events).hasSize(1);
         assertThat(events.getFirst()).isInstanceOf(ClusterEvent.NodeJoined.class);
         assertThat(events.getFirst().details()).containsEntry("nodeId", "peer-1");
+    }
+
+    @Test
+    void replayingNode_suppressesEmit() {
+        // 7b: while this node is re-applying a snapshot/resync (KVStore.isReplaying() == true), replayed
+        // subscribers must NOT re-publish historical cluster-events. Owner-check is true here, so only the
+        // replay gate can suppress — proving the gate is independent of ownership.
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> true);
+        h.aggregator().onPeerJoined(peerJoined("peer-1", List.of(SELF, new NodeId("peer-1"))));
+        h.aggregator().onMembershipDecision(MembershipDecision.nodeRemoved(new NodeId("dead-1"), List.of(SELF)));
+
+        assertThat(h.events()).isEmpty();
     }
 
     @Test
