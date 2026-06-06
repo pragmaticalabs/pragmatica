@@ -4,12 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceVersion;
+import org.pragmatica.aether.slice.resource.ResourceVersion.ResourceVersionError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.parse.Number;
 import org.pragmatica.serialization.Codec;
-
-import static org.pragmatica.lang.Result.success;
 
 
 /// Stream schema version.
@@ -19,6 +18,12 @@ import static org.pragmatica.lang.Result.success;
 /// with full SemVer 2.0.0 if widened later.
 ///
 /// Versions are immutable once registered. Schema bug fixes produce a new PATCH version.
+///
+/// This is the stream-flavored view of the resource-generic [ResourceVersion]: it keeps a
+/// flat `(major, minor, patch)` record shape (so its `@Codec` wire form is unchanged) and its
+/// own [StreamVersionError] vocabulary, but delegates all parsing and ordering to
+/// [ResourceVersion]. It carries no rules of its own — [ResourceVersion] is the single
+/// source of truth for the version grammar.
 @Codec public record StreamVersion(int major, int minor, int patch) implements Comparable<StreamVersion> {
     public sealed interface StreamVersionError extends Cause {
         enum General implements StreamVersionError {
@@ -44,44 +49,45 @@ import static org.pragmatica.lang.Result.success;
     }
 
     public static Result<StreamVersion> streamVersion(int major, int minor, int patch) {
-        if (major < 0 || minor < 0 || patch < 0) {
-            return StreamVersionError.General.NEGATIVE_COMPONENT.result();
-        }
-        return success(new StreamVersion(major, minor, patch));
+        return ResourceVersion.resourceVersion(major, minor, patch)
+                              .map(StreamVersion::from)
+                              .mapError(StreamVersion::mapVersionError);
     }
 
     public static Result<StreamVersion> streamVersion(String value) {
-        if (value == null) {
-            return StreamVersionError.General.NULL_VALUE.result();
-        }
-        if (value.isBlank()) {
-            return StreamVersionError.General.BLANK_VALUE.result();
-        }
-        var parts = value.split("\\.", -1);
-        if (parts.length != 3) {
-            return StreamVersionError.General.WRONG_FORMAT.result();
-        }
-        return parseComponent(parts[0])
-                .flatMap(major -> parseComponent(parts[1])
-                        .flatMap(minor -> parseComponent(parts[2])
-                                .flatMap(patch -> streamVersion(major, minor, patch))));
+        return ResourceVersion.resourceVersion(value)
+                              .map(StreamVersion::from)
+                              .mapError(StreamVersion::mapVersionError);
     }
 
-    private static Result<Integer> parseComponent(String component) {
-        return Number.parseInt(component)
-                     .mapError(_ -> StreamVersionError.General.NON_NUMERIC_COMPONENT);
+    /// Adapt the resource-generic version to the stream-flavored view.
+    public static StreamVersion from(ResourceVersion version) {
+        return new StreamVersion(version.major(), version.minor(), version.patch());
+    }
+
+    /// The resource-generic view of this version.
+    public ResourceVersion toResourceVersion() {
+        return new ResourceVersion(major, minor, patch);
+    }
+
+    /// Translate a shared [ResourceVersionError] into the stream-flavored vocabulary so that
+    /// callers (and tests) observe [StreamVersionError] constants regardless of the delegate.
+    /// Package-visible so [StreamAddress] can re-flavor version errors surfaced during parsing.
+    static Cause mapVersionError(Cause cause) {
+        return switch (cause) {
+            case ResourceVersionError.General general -> switch (general) {
+                case NULL_VALUE -> StreamVersionError.General.NULL_VALUE;
+                case BLANK_VALUE -> StreamVersionError.General.BLANK_VALUE;
+                case WRONG_FORMAT -> StreamVersionError.General.WRONG_FORMAT;
+                case NON_NUMERIC_COMPONENT -> StreamVersionError.General.NON_NUMERIC_COMPONENT;
+                case NEGATIVE_COMPONENT -> StreamVersionError.General.NEGATIVE_COMPONENT;
+            };
+            default -> cause;
+        };
     }
 
     @Override public int compareTo(StreamVersion other) {
-        var majorDiff = Integer.compare(major, other.major);
-        if (majorDiff != 0) {
-            return majorDiff;
-        }
-        var minorDiff = Integer.compare(minor, other.minor);
-        if (minorDiff != 0) {
-            return minorDiff;
-        }
-        return Integer.compare(patch, other.patch);
+        return toResourceVersion().compareTo(other.toResourceVersion());
     }
 
     @Override public String toString() {

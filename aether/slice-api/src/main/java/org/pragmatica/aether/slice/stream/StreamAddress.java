@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress.ResourceAddressError;
+import org.pragmatica.aether.slice.resource.ResourceVersion.ResourceVersionError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.Codec;
 
 import java.util.Set;
-import java.util.regex.Pattern;
-
-import static org.pragmatica.lang.Result.success;
 
 
 /// Three-component stream address: `<namespace>:<stream>:<version>`.
@@ -19,20 +19,18 @@ import static org.pragmatica.lang.Result.success;
 /// Namespace is either the reserved token `system` (framework-internal streams)
 /// or a Maven-derived identifier of the form `groupId + "." + strip_suffix(artifactId, "-blueprint")`.
 ///
-/// Stream and version syntax are defined in {@link StreamVersion} and the companion grammar.
+/// This is the stream-flavored view of the resource-generic [ResourceAddress]: it keeps a flat
+/// `(namespace, stream, version)` record shape (so its `@Codec` wire form is unchanged) and its
+/// own [StreamAddressError] vocabulary and `stream()` accessor, but delegates all grammar,
+/// validation, and `system`-namespace reservation to [ResourceAddress]. It carries no rules of
+/// its own — [ResourceAddress] is the single source of truth. The distinct nominal type prevents
+/// a (future) topic address from being passed where a stream address is expected.
 @Codec public record StreamAddress(String namespace, String stream, StreamVersion version) {
-    public static final String SYSTEM_NAMESPACE = "system";
+    public static final String SYSTEM_NAMESPACE = ResourceAddress.SYSTEM_NAMESPACE;
 
-    public static final Set<String> RESERVED_NAMESPACES = Set.of(SYSTEM_NAMESPACE);
+    public static final Set<String> RESERVED_NAMESPACES = ResourceAddress.RESERVED_NAMESPACES;
 
-    public static final Set<String> RESERVED_STREAM_NAMES = Set.of("latest");
-
-    // Intentional deviation from spec text `[a-z0-9._-]+`: this pattern additionally requires a
-    // leading alphanumeric (first char cannot be `.`, `_`, or `-`). Stricter and safe — avoids
-    // ambiguous/relative-looking namespaces; can be relaxed to the spec form if a use case needs it.
-    private static final Pattern NAMESPACE_PATTERN = Pattern.compile("[a-z0-9][a-z0-9._-]{0,127}");
-
-    private static final Pattern STREAM_PATTERN = Pattern.compile("[a-z][a-z0-9-]{0,63}");
+    public static final Set<String> RESERVED_STREAM_NAMES = ResourceAddress.RESERVED_NAMES;
 
     public sealed interface StreamAddressError extends Cause {
         enum General implements StreamAddressError {
@@ -61,53 +59,44 @@ import static org.pragmatica.lang.Result.success;
 
     /// Parse a canonical three-component address.
     public static Result<StreamAddress> streamAddress(String value) {
-        if (value == null) {
-            return StreamAddressError.General.NULL_VALUE.result();
-        }
-        if (value.isBlank()) {
-            return StreamAddressError.General.BLANK_VALUE.result();
-        }
-        var parts = value.split(":", -1);
-        if (parts.length != 3) {
-            return StreamAddressError.General.WRONG_FORMAT.result();
-        }
-        return streamAddress(parts[0], parts[1], parts[2]);
+        return ResourceAddress.resourceAddress(value)
+                              .map(StreamAddress::from)
+                              .mapError(StreamAddress::mapError);
     }
 
     /// Build an address from raw components. Used by both the string parser and callers
     /// that already hold parsed namespace/stream tokens (e.g., blueprint tooling).
     public static Result<StreamAddress> streamAddress(String namespace, String stream, String version) {
-        return StreamVersion.streamVersion(version).flatMap(v -> streamAddress(namespace, stream, v));
+        return ResourceAddress.resourceAddress(namespace, stream, version)
+                              .map(StreamAddress::from)
+                              .mapError(StreamAddress::mapError);
     }
 
     public static Result<StreamAddress> streamAddress(String namespace, String stream, StreamVersion version) {
-        return validateNamespace(namespace)
-                .flatMap(_ -> validateStream(stream))
-                .map(_ -> new StreamAddress(namespace, stream, version));
+        return ResourceAddress.resourceAddress(namespace, stream, version.toResourceVersion())
+                              .map(StreamAddress::from)
+                              .mapError(StreamAddress::mapError);
+    }
+
+    /// Adapt a resource-generic address to the stream-flavored view.
+    public static StreamAddress from(ResourceAddress address) {
+        return new StreamAddress(address.namespace(), address.name(), StreamVersion.from(address.version()));
+    }
+
+    /// The resource-generic view of this address.
+    public ResourceAddress toResourceAddress() {
+        return new ResourceAddress(namespace, stream, version.toResourceVersion());
     }
 
     /// Namespace validation used by both address parsing and jbct blueprint build-time checks.
     /// Rejects the reserved `system` namespace (and any `system.*` prefix) when called via an app
-    /// context (see {@link #systemNamespace()} for framework-internal construction). The reserved
-    /// check is case-insensitive and runs before the lowercase-charset check so that operators
-    /// using `SYSTEM` or `System.audit` get the more informative "reserved" diagnostic.
+    /// context. See [ResourceAddress#validateAppNamespace(String)] for the shared rule.
     public static Result<String> validateAppNamespace(String namespace) {
-        if (isReservedNamespace(namespace)) {
-            return StreamAddressError.General.NAMESPACE_RESERVED_FOR_APPS.result();
-        }
-        return validateNamespace(namespace);
+        return ResourceAddress.validateAppNamespace(namespace).mapError(StreamAddress::mapError);
     }
 
     public static boolean isReservedNamespace(String namespace) {
-        if (namespace == null) {
-            return false;
-        }
-        if (RESERVED_NAMESPACES.stream().anyMatch(r -> r.equalsIgnoreCase(namespace))) {
-            return true;
-        }
-        var dot = namespace.indexOf('.');
-        var firstSegment = dot < 0 ? namespace : namespace.substring(0, dot);
-        return RESERVED_NAMESPACES.stream().anyMatch(r -> r.equalsIgnoreCase(firstSegment));
+        return ResourceAddress.isReservedNamespace(namespace);
     }
 
     /// Framework-only construction path that accepts the reserved `system` namespace.
@@ -131,33 +120,23 @@ import static org.pragmatica.lang.Result.success;
         return namespace + ":" + stream + ":" + version.asString();
     }
 
-    private static Result<String> validateNamespace(String namespace) {
-        if (namespace == null || namespace.isBlank() || !NAMESPACE_PATTERN.matcher(namespace).matches()) {
-            return StreamAddressError.General.NAMESPACE_INVALID.result();
-        }
-        return success(namespace);
-    }
-
-    private static Result<String> validateStream(String stream) {
-        if (stream == null || !STREAM_PATTERN.matcher(stream).matches()) {
-            return StreamAddressError.General.STREAM_NAME_INVALID.result();
-        }
-        if (hasInvalidHyphenPlacement(stream)) {
-            return StreamAddressError.General.STREAM_NAME_INVALID.result();
-        }
-        if (RESERVED_STREAM_NAMES.contains(stream)) {
-            return StreamAddressError.General.STREAM_NAME_RESERVED.result();
-        }
-        return success(stream);
-    }
-
-    /// Spec §4.2 stream-name rule: kebab-case must not have a leading or trailing hyphen, and
-    /// must not contain a double hyphen. The `STREAM_PATTERN` regex (`[a-z][a-z0-9-]{0,63}`)
-    /// already forbids a leading hyphen because the first character must be `[a-z]`, but we keep
-    /// the explicit check here for symmetry with the `endsWith("-")` and `contains("--")`
-    /// branches — otherwise a future regex tweak (e.g., dropping the leading-letter constraint to
-    /// allow leading digits) would silently let leading hyphens through.
-    private static boolean hasInvalidHyphenPlacement(String stream) {
-        return stream.startsWith("-") || stream.endsWith("-") || stream.contains("--");
+    /// Translate a shared [ResourceAddressError] into the stream-flavored vocabulary so that
+    /// callers (and tests) observe [StreamAddressError] constants regardless of the delegate.
+    /// Version-grammar failures are re-flavored to [StreamVersion.StreamVersionError] so the
+    /// stream surface never leaks resource-generic version errors.
+    private static Cause mapError(Cause cause) {
+        return switch (cause) {
+            case ResourceAddressError.General general -> switch (general) {
+                case NULL_VALUE -> StreamAddressError.General.NULL_VALUE;
+                case BLANK_VALUE -> StreamAddressError.General.BLANK_VALUE;
+                case WRONG_FORMAT -> StreamAddressError.General.WRONG_FORMAT;
+                case NAMESPACE_INVALID -> StreamAddressError.General.NAMESPACE_INVALID;
+                case NAMESPACE_RESERVED_FOR_APPS -> StreamAddressError.General.NAMESPACE_RESERVED_FOR_APPS;
+                case NAME_INVALID -> StreamAddressError.General.STREAM_NAME_INVALID;
+                case NAME_RESERVED -> StreamAddressError.General.STREAM_NAME_RESERVED;
+            };
+            case ResourceVersionError _ -> StreamVersion.mapVersionError(cause);
+            default -> cause;
+        };
     }
 }
