@@ -246,7 +246,7 @@ Generates per service: client interface with example `@Get`/`@Post`, qualifier a
 
 Depends on: slice, aether.
 
-Generates: publisher qualifier annotation, `@Subscribe` method on slice, event record, `[messaging.<name>]` section in resources.toml.
+Generates: publisher qualifier annotation, `@Subscribe` method on slice, event record, `[<name>]` section in resources.toml (bare kebab-case topic name; namespace auto-derived from the blueprint's Maven coordinates).
 
 ### 4.8 Streaming (`--with-streaming`)
 

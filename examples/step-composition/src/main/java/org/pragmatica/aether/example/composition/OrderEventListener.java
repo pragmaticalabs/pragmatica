@@ -19,7 +19,7 @@ import org.pragmatica.lang.Unit;
 ///    parameter — triggering transitive resource provisioning (same as PersistOrder).
 ///
 /// 3. `onOrderPlaced()` has an @OnOrderEvent annotation on the method itself.
-///    @OnOrderEvent is a @ResourceQualifier(type = Subscriber.class, config = "messaging.order-events").
+///    @OnOrderEvent is a @ResourceQualifier(type = Subscriber.class, config = "order-events").
 ///
 /// 4. The processor generates a qualified method name by combining the step
 ///    parameter name from the slice factory and the method name:
@@ -31,7 +31,7 @@ import org.pragmatica.lang.Unit;
 /// 6. The method reference `listener::onOrderPlaced` is included in the
 ///    generated Slice.methods() list so Aether can dispatch events to it.
 ///
-/// At runtime, when an OrderPlacedEvent arrives on the "messaging.order-events"
+/// At runtime, when an OrderPlacedEvent arrives on the "order-events"
 /// topic, Aether invokes `listenerOnOrderPlaced`, which writes an audit record.
 public interface OrderEventListener {
 

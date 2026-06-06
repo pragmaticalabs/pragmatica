@@ -1,4 +1,4 @@
-[messaging.click-events]
+[click-events]
 topic_name = "click-events"
 
 [database]

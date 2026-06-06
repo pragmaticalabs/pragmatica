@@ -23,7 +23,7 @@ import java.lang.annotation.Target;
 /// This is the transitive method-level annotation pattern — the @Slice
 /// (OrderProcessor) never mentions subscriptions directly; they are
 /// discovered through its step dependencies.
-@ResourceQualifier(type = Subscriber.class, config = "messaging.order-events")
+@ResourceQualifier(type = Subscriber.class, config = "order-events")
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.METHOD)
 public @interface OnOrderEvent {}

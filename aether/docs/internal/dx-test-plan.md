@@ -483,15 +483,15 @@ This creates:
 - `src/main/java/com/example/myslice/shared/resource/GreetEventPublisher.java` — publisher annotation
 - `src/main/java/com/example/myslice/shared/resource/GreetEventSubscription.java` — subscription annotation
 
-It also appends a `[messaging.greet-event]` section to `aether.toml` so the runtime can find the messaging config.
+It also appends a `[greet-event]` section to `aether.toml` so the runtime can find the messaging config. The topic namespace is auto-derived from the blueprint's Maven coordinates; use an explicit `namespace:name:version` 3-part form only when a different namespace is required.
 
 ### Verify add-event
 
 | # | Check | Command | Expected |
 |---|-------|---------|----------|
-| 8.0a | Publisher created | `cat src/main/java/com/example/myslice/shared/resource/GreetEventPublisher.java` | `@ResourceQualifier(type = Publisher.class, config = "messaging.greet-event")` |
-| 8.0b | Subscription created | `cat src/main/java/com/example/myslice/shared/resource/GreetEventSubscription.java` | `@ResourceQualifier(type = Subscriber.class, config = "messaging.greet-event")` |
-| 8.0c | Config added | `grep -A1 'messaging.greet-event' aether.toml` | `[messaging.greet-event]` with `topic_name = "greet-event"` |
+| 8.0a | Publisher created | `cat src/main/java/com/example/myslice/shared/resource/GreetEventPublisher.java` | `@ResourceQualifier(type = Publisher.class, config = "greet-event")` |
+| 8.0b | Subscription created | `cat src/main/java/com/example/myslice/shared/resource/GreetEventSubscription.java` | `@ResourceQualifier(type = Subscriber.class, config = "greet-event")` |
+| 8.0c | Config added | `grep -A1 'greet-event' aether.toml` | `[greet-event]` with `topic_name = "greet-event"` |
 
 ### 8b. Define the event record
 

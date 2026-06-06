@@ -1,4 +1,4 @@
-[messaging.high-value-orders]
+[high-value-orders]
 topic_name = "high-value-order-events"
 
 [database]
