@@ -335,7 +335,7 @@ public class RabiaEngine<C extends Command> {
             log.info("Node {}: replaying stored cluster-state notification", self);
             clusterConnected();
         } else if (engineState.get().isObserving()) {
-            executor.execute(this::promoteObserverToActive);
+            safeExecute(this::promoteObserverToActive);
         }
     }
 
@@ -344,7 +344,7 @@ public class RabiaEngine<C extends Command> {
         exitState(oldState);
         notifyConsensusStateTransition();
         log.info("Node {} promoted from observer to active in phase {}", self, currentPhase.get());
-        executor.execute(this::startPhase);
+        safeExecute(this::startPhase);
     }
 
     /// Authorize a gated engine to enter observer mode.
@@ -379,7 +379,7 @@ public class RabiaEngine<C extends Command> {
     /// [#resumeFromPause] which preserves all in-memory state.
     private void clusterConnected() {
         log.info("Node {}: quorum connected. Starting synchronization attempts", self);
-        executor.execute(this::doClusterConnected);
+        safeExecute(this::doClusterConnected);
     }
 
     private void doClusterConnected() {
@@ -412,7 +412,7 @@ public class RabiaEngine<C extends Command> {
     /// In-flight stall/sync timers are cancelled. State is also persisted to durable
     /// storage so that a crash during the pause leaves a recoverable snapshot.
     private void pauseForQuorumLoss() {
-        executor.execute(this::doPauseForQuorumLoss);
+        safeExecute(this::doPauseForQuorumLoss);
     }
 
     private void doPauseForQuorumLoss() {
@@ -441,7 +441,7 @@ public class RabiaEngine<C extends Command> {
     /// `lockedValue`. Re-arms phase processing if pending batches remain. No sync round —
     /// Decisions delivered during the pause have already been applied.
     private void resumeFromPause() {
-        executor.execute(this::doResumeFromPause);
+        safeExecute(this::doResumeFromPause);
     }
 
     private void doResumeFromPause() {
@@ -458,7 +458,7 @@ public class RabiaEngine<C extends Command> {
         // idempotently (PhaseData.tryMarkDecided makes re-application a no-op).
         drainBufferedDecisions();
         if (!pendingBatches.isEmpty()) {
-            executor.execute(this::startPhase);
+            safeExecute(this::startPhase);
         }
     }
 
@@ -474,7 +474,7 @@ public class RabiaEngine<C extends Command> {
     /// matches the engine's current view. Returns success on no-op too.
     public Promise<Unit> reconfigure(ClusterConfig newConfig) {
         var promise = Promise.<Unit>promise();
-        executor.execute(() -> doReconfigure(newConfig, promise));
+        safeExecute(() -> doReconfigure(newConfig, promise));
         return promise;
     }
 
@@ -595,8 +595,8 @@ public class RabiaEngine<C extends Command> {
             log.debug("Node {} submitting {} command(s): {} [caller: {}]", self, commands.size(), commands, callerInfo);
         }
         return validateSubmission(commands).map(_ -> prepareBatch(commands))
-                                 .onSuccess(batch -> executor.execute(() -> registerBatch(batch, onBatchPrepared)))
-                                 .onSuccess(batch -> executor.execute(() -> broadcastBatch(batch)));
+                                 .onSuccess(batch -> safeExecute(() -> registerBatch(batch, onBatchPrepared)))
+                                 .onSuccess(batch -> safeExecute(() -> broadcastBatch(batch)));
     }
 
     private Result<List<C>> validateSubmission(List<C> commands) {
@@ -636,7 +636,7 @@ public class RabiaEngine<C extends Command> {
 
     private void triggerPhaseIfNeeded() {
         if (engineState.get() instanceof EngineState.Idle) {
-            executor.execute(this::startPhase);
+            safeExecute(this::startPhase);
         }
     }
 
@@ -663,35 +663,55 @@ public class RabiaEngine<C extends Command> {
         promise.succeed(Unit.unit());
     }
 
+    /// Containment boundary for the single consensus apply worker (7c). Every task submitted to
+    /// {@link #executor} runs through here so a handler that throws — on the live-apply path OR the
+    /// snapshot/resync restore path — is caught and logged instead of escaping the worker's run(),
+    /// terminating the thread, dropping the in-flight consensus round, and leaving the node
+    /// permanently un-converged (topology never applied -> stuck behind -> infinite resync). Mirrors
+    /// the swallow semantics the live KV dispatch already has (MessageRouter.dispatchOne): the worker
+    /// survives to process subsequent rounds; the failed round is abandoned and re-driven by the
+    /// sender's retry. Errors (non-RuntimeException Throwable) are intentionally left to propagate.
+    private void safeExecute(Runnable task) {
+        executor.execute(() -> {
+            try {
+                task.run();
+            } catch (RuntimeException e) {
+                log.error("Consensus apply task threw {} — contained; worker preserved, round not applied",
+                          e.getClass().getSimpleName(),
+                          e);
+            }
+        });
+    }
+
     @MessageReceiver
     public void processPropose(Propose<C> propose) {
-        executor.execute(() -> handlePropose(propose));
+        safeExecute(() -> handlePropose(propose));
     }
 
     @MessageReceiver
     public void processVoteRound1(VoteRound1 voteRound1) {
-        executor.execute(() -> handleVoteRound1(voteRound1));
+        safeExecute(() -> handleVoteRound1(voteRound1));
     }
 
     @MessageReceiver
     public void processVoteRound2(VoteRound2 voteRound2) {
-        executor.execute(() -> handleVoteRound2(voteRound2));
+        safeExecute(() -> handleVoteRound2(voteRound2));
     }
 
     @MessageReceiver
     public void processDecision(Decision<C> decision) {
-        executor.execute(() -> handleDecision(decision));
+        safeExecute(() -> handleDecision(decision));
     }
 
     @MessageReceiver
     public void processSyncResponse(SyncResponse<C> syncResponse) {
-        executor.execute(() -> handleSyncResponse(syncResponse));
+        safeExecute(() -> handleSyncResponse(syncResponse));
     }
 
     @SuppressWarnings("unchecked")
     @MessageReceiver
     public void handleNewBatch(NewBatch<?> newBatch) {
-        executor.execute(() -> doHandleNewBatch((Batch<C>) newBatch.batch()));
+        safeExecute(() -> doHandleNewBatch((Batch<C>) newBatch.batch()));
     }
 
     private void doHandleNewBatch(Batch<C> incoming) {
@@ -743,7 +763,7 @@ public class RabiaEngine<C extends Command> {
     private void reExecuteStartPhaseIfBatchPending() {
         // Re-check after — a batch may have been added during the window
         if (!pendingBatches.isEmpty()) {
-            executor.execute(this::startPhase);
+            safeExecute(this::startPhase);
         }
     }
 
@@ -776,7 +796,7 @@ public class RabiaEngine<C extends Command> {
 
     /// Synchronizes with other nodes to catch up if needed.
     private void synchronize() {
-        executor.execute(this::doSynchronize);
+        safeExecute(this::doSynchronize);
     }
 
     private void doSynchronize() {
@@ -894,7 +914,7 @@ public class RabiaEngine<C extends Command> {
         // Must happen AFTER engineState=Idle so that `handleDecision`'s state guard accepts
         // re-applied Decisions, and AFTER the Idle-restore so phase-filter math is correct.
         drainBufferedDecisions();
-        executor.execute(this::startPhase);
+        safeExecute(this::startPhase);
     }
 
     private void activateAsObserver() {
@@ -948,7 +968,7 @@ public class RabiaEngine<C extends Command> {
     /// when a phase hasn't advanced within the configured interval.
     private ScheduledFuture<?> createStallDetector() {
         return SharedScheduler.scheduleAtFixedRate(
-            () -> executor.execute(this::checkPhaseStall),
+            () -> safeExecute(this::checkPhaseStall),
             phaseStallCheck);
     }
 
@@ -1002,7 +1022,7 @@ public class RabiaEngine<C extends Command> {
     /// Handles a synchronization request from another node.
     @MessageReceiver
     public void handleSyncRequest(SyncRequest request) {
-        executor.execute(() -> doHandleSyncRequest(request));
+        safeExecute(() -> doHandleSyncRequest(request));
     }
 
     private void doHandleSyncRequest(SyncRequest request) {
@@ -1042,7 +1062,7 @@ public class RabiaEngine<C extends Command> {
 
     /// Cleans up old phase data to prevent memory leaks.
     private void cleanupOldPhases() {
-        executor.execute(this::doCleanupOldPhases);
+        safeExecute(this::doCleanupOldPhases);
     }
 
     private void doCleanupOldPhases() {
@@ -1418,7 +1438,7 @@ public class RabiaEngine<C extends Command> {
         }
         log.trace("Node {} advancing to phase {} with value {} (forceLock={})", self, nextPhase, value, forceLock);
         if (!pendingBatches.isEmpty()) {
-            executor.execute(this::startPhase);
+            safeExecute(this::startPhase);
         }
     }
 
