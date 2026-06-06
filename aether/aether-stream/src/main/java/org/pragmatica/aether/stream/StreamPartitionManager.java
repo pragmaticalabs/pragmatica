@@ -26,10 +26,14 @@ import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
+import java.util.function.LongConsumer;
+import java.util.function.LongPredicate;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,6 +48,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     private static final TimeSpan COMMIT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
     private static final Logger log = LoggerFactory.getLogger(StreamPartitionManager.class);
 
+    /// Default exhaustion sink — no-op. Wave 3 (`AetherNode`) replaces it with a binding to the
+    /// cluster-event aggregator. See spec §4.5c.
+    private static final Consumer<Exhaustion> NOOP_SINK = _ -> {};
+
     private final ConcurrentHashMap<String, StreamEntry> streams = new ConcurrentHashMap<>();
 
     private final AtomicLong totalAllocatedBytes = new AtomicLong(0);
@@ -52,6 +60,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final EvictionListener evictionListener;
     private final ReplicationManager replicationManager;
     private final Option<ClusterNode<KVCommand<AetherKey>>> clusterNode;
+    private volatile Consumer<Exhaustion> exhaustionSink = NOOP_SINK;
 
     private StreamPartitionManager(long maxTotalBytes,
                                    EvictionListener evictionListener,
@@ -110,6 +119,34 @@ public final class StreamPartitionManager implements AutoCloseable {
         return maxTotalBytes;
     }
 
+    /// Bytes available in the shared elastic pool: `maxTotalBytes − totalAllocatedBytes`. Telemetry
+    /// and test accessor. See spec §4.4.
+    public long availableBytes() {
+        return maxTotalBytes - totalAllocatedBytes.get();
+    }
+
+    /// Install the budget-exhaustion sink (Wave 3 binds it to the cluster-event aggregator). Default
+    /// is a no-op. See spec §4.5c / reconciliation #14.
+    @Contract public void exhaustionSink(Consumer<Exhaustion> sink) {
+        this.exhaustionSink = sink;
+    }
+
+    /// Atomically reserve `bytes` against the shared pool. Returns true iff the reservation fit under
+    /// `maxTotalBytes`. CAS loop — correct under concurrent create and concurrent growth (replaces the
+    /// former read-then-add TOCTOU). See spec §4.3.
+    private boolean tryReserve(long bytes) {
+        for (;;) {
+            var current = totalAllocatedBytes.get();
+            if (current + bytes > maxTotalBytes) {return false;}
+            if (totalAllocatedBytes.compareAndSet(current, current + bytes)) {return true;}
+        }
+    }
+
+    /// Return `bytes` to the shared pool. See spec §4.3.
+    @Contract private void release(long bytes) {
+        totalAllocatedBytes.addAndGet(-bytes);
+    }
+
     /// Create (materialize + publish) a stream. LOCAL materialization and CLUSTER-CONFIG publish are
     /// DECOUPLED so a transient consensus failure never destroys the already-materialized local
     /// partition (Fix #2). The already-materialized branch is split by COMMIT state so the hot
@@ -148,27 +185,53 @@ public final class StreamPartitionManager implements AutoCloseable {
               : republishExistingConfig(config, existing);
     }
 
+    /// Per-stream growth-admission seam. Wraps `tryReserve` so that a rejected growth segment (pool
+    /// exhausted) fires the exhaustion sink tagged `phase=growth` for this stream. The buffer stays
+    /// decoupled — it only sees a `LongPredicate`; the manager owns the event semantics. The buffer's
+    /// own rate-of-fire is bounded by its growth attempts (once frozen it stops asking), and Wave 3
+    /// adds the per-(stream,phase) 60s throttle on the sink side. See spec §4.5c / reconciliation #6.
+    private boolean reserveForGrowth(StreamConfig config, long bytes) {
+        if (tryReserve(bytes)) {return true;}
+        exhaustionSink.accept(Exhaustion.growth(config, bytes, availableBytes(), maxTotalBytes));
+        return false;
+    }
+
     private Result<Unit> createFreshStream(StreamConfig config) {
         if (config.consistencyMode() == ConsistencyMode.STRONG && evictionListener == EvictionListener.NOOP) {return StreamError.General.AHSE_REQUIRED_FOR_STRONG.result();}
-        var requiredBytes = calculateStreamBytes(config);
-        if (totalAllocatedBytes.get() + requiredBytes > maxTotalBytes) {return StreamError.General.STREAM_MEMORY_EXCEEDED.result();}
-        var entry = StreamEntry.fromConfig(config, evictionListener);
+        var floorBytes = floorBytes(config);
+        if (!tryReserve(floorBytes)) {return reportFloorExhaustion(config, floorBytes);}
+        var entry = StreamEntry.fromConfig(config, evictionListener, bytes -> reserveForGrowth(config, bytes), this::release);
         return option(streams.putIfAbsent(config.name(), entry))
-                   .fold(() -> reserveAndPublish(config, entry, requiredBytes),
+                   .fold(() -> reserveAndPublish(config, entry),
                          winner -> closeLoserAndRepublish(config, entry, winner));
     }
 
-    /// Won the put-if-absent race: reserve the partition's off-heap bytes and publish the config.
-    /// A successful publish latches the entry committed so subsequent creates short-circuit.
-    private Result<Unit> reserveAndPublish(StreamConfig config, StreamEntry entry, long requiredBytes) {
-        totalAllocatedBytes.addAndGet(requiredBytes);
+    /// Floor admission failed: release nothing (the floor reservation never succeeded), emit the
+    /// exhaustion event to the sink, log WARN, and fail loud. No ring is built, nothing published.
+    /// See spec §4.1 / §4.5.
+    private Result<Unit> reportFloorExhaustion(StreamConfig config, long floorBytes) {
+        log.warn("Off-heap budget exhausted creating stream '{}' ({} parts): need {} floor bytes, {} available of {}",
+                 config.name(),
+                 config.partitions(),
+                 floorBytes,
+                 availableBytes(),
+                 maxTotalBytes);
+        exhaustionSink.accept(Exhaustion.createFloor(config, floorBytes, availableBytes(), maxTotalBytes));
+        return StreamError.General.STREAM_MEMORY_EXCEEDED.result();
+    }
+
+    /// Won the put-if-absent race: the floor bytes are already reserved by the atomic admission in
+    /// `createFreshStream`. Publish the config; a successful publish latches the entry committed so
+    /// subsequent creates short-circuit. See spec §4.1.
+    private Result<Unit> reserveAndPublish(StreamConfig config, StreamEntry entry) {
         return publishStreamConfig(config).onSuccess(_ -> entry.markCommitted());
     }
 
-    /// Lost the put-if-absent race: another thread already materialized the stream, so close this
-    /// duplicate entry (no bytes were reserved for it) and reconcile against the winner's commit state.
+    /// Lost the put-if-absent race: another thread already materialized the stream. Release this
+    /// duplicate's floor reservation and close it (the buffer's seam-close releases its data bytes;
+    /// the manager releases the control bytes it reserved), then reconcile against the winner.
     private Result<Unit> closeLoserAndRepublish(StreamConfig config, StreamEntry duplicate, StreamEntry winner) {
-        duplicate.close();
+        releaseEntry(duplicate);
         return ensureConfigCommitted(config, winner);
     }
 
@@ -237,10 +300,28 @@ public final class StreamPartitionManager implements AutoCloseable {
         option(streams.remove(streamName)).onPresent(this::closeAndRelease);
     }
 
+    /// Follower (apply/notification-thread) materialization from a committed `StreamConfigKey` Put.
+    /// Reserves only the FLOOR (keeps apply-thread allocation small — strictly less work than the old
+    /// eager full allocation). Per spec §5.2.4 / §8 / decision #6: if the floor cannot be admitted
+    /// within budget, the entry is created ANYWAY — a follower must NOT diverge from committed cluster
+    /// config. In that case the floor is added UNCONDITIONALLY (`addAndGet`, transient over-subscription
+    /// past `maxTotalBytes`) rather than dropped, so the reserve/release accounting stays SYMMETRIC:
+    /// the buffers always seed + release their first-segment via the seam and the manager always
+    /// releases the control bytes on destroy. Dropping the floor here would leave the buffer seam
+    /// releasing bytes the pool never reserved (a NEGATIVE leak). The growth seam still gates every
+    /// later segment against the pool normally. WARN + event make the over-subscription visible.
     private StreamEntry hydrateEntry(StreamConfig config) {
-        var requiredBytes = calculateStreamBytes(config);
-        var entry = StreamEntry.fromConfig(config, evictionListener);
-        totalAllocatedBytes.addAndGet(requiredBytes);
+        var floorBytes = floorBytes(config);
+        if (!tryReserve(floorBytes)) {
+            totalAllocatedBytes.addAndGet(floorBytes);
+            log.warn("Follower over-subscribed floor ({} bytes) for committed stream '{}' to avoid cluster divergence (now {} of {})",
+                     floorBytes,
+                     config.name(),
+                     totalAllocatedBytes.get(),
+                     maxTotalBytes);
+            exhaustionSink.accept(Exhaustion.createFloor(config, floorBytes, availableBytes(), maxTotalBytes));
+        }
+        var entry = StreamEntry.fromConfig(config, evictionListener, bytes -> reserveForGrowth(config, bytes), this::release);
         // Materialized FROM a committed consensus Put — the config is already committed, so a later
         // createStream on this node (e.g. a follower handling a publish) must short-circuit, not re-publish.
         entry.markCommitted();
@@ -402,15 +483,30 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private Result<Unit> closeAndRelease(StreamEntry entry) {
-        totalAllocatedBytes.addAndGet(- calculateStreamBytes(entry.config()));
-        entry.close();
+        releaseEntry(entry);
         return success(unit());
     }
 
-    private static long calculateStreamBytes(StreamConfig config) {
+    /// Release a stream's live budget and close it WITHOUT double-counting the buffer seam.
+    ///
+    /// Composition (see spec §4.3): at create the manager floor-reserved `Σ (control + firstSegment)`
+    /// per partition. Each `OffHeapRingBuffer` separately tracks its own seam-`accountedBytes` =
+    /// `firstSegment + grown data segments`, which it releases on `close()`. The manager therefore must
+    /// release ONLY the **control** bytes (header + index) it reserved beyond the buffer's seam —
+    /// releasing the control bytes FIRST, then `entry.close()` releases the data bytes via the seam.
+    /// Sum released = `control + firstSegment + grown` = the live allocation. No double-release, no leak.
+    @Contract private void releaseEntry(StreamEntry entry) {
+        release(entry.controlBytes());
+        entry.close();
+    }
+
+    /// Per-stream floor = `Σ_partitions OffHeapRingBuffer.floorBytes(maxCount, maxBytes)` =
+    /// `(header + index + first-data-segment)` per partition. This is exactly the bytes the buffer
+    /// allocates at construction (which it does NOT gate through the seam), so the manager owns the
+    /// floor admission. See spec §4.1.
+    private static long floorBytes(StreamConfig config) {
         var retention = config.retention();
-        var perPartition = 64 + (24 * retention.maxCount()) + retention.maxBytes();
-        return perPartition * config.partitions();
+        return OffHeapRingBuffer.floorBytes(retention.maxCount(), retention.maxBytes()) * config.partitions();
     }
 
     public Result<PartitionInfo> partitionInfo(String streamName, int partition) {
@@ -446,12 +542,65 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
     }
 
+    /// Off-heap budget exhaustion signal handed to the injected sink. Node-id-agnostic by design —
+    /// the Wave 3 aggregator stamps the node id when it converts this into a `ClusterEvent`. `phase`
+    /// distinguishes create-floor exhaustion (loud, fails the create) from growth exhaustion (the
+    /// buffer could not grow). See spec §4.5c / reconciliation #14.
+    public record Exhaustion(String streamName,
+                             int partitions,
+                             Phase phase,
+                             long requestedBytes,
+                             long availableBytes,
+                             long maxTotalBytes,
+                             ConsistencyMode consistencyMode) {
+        public enum Phase {CREATE_FLOOR, GROWTH}
+
+        static Exhaustion createFloor(StreamConfig config, long requestedBytes, long availableBytes, long maxTotalBytes) {
+            return new Exhaustion(config.name(),
+                                  config.partitions(),
+                                  Phase.CREATE_FLOOR,
+                                  requestedBytes,
+                                  availableBytes,
+                                  maxTotalBytes,
+                                  config.consistencyMode());
+        }
+
+        static Exhaustion growth(StreamConfig config, long requestedBytes, long availableBytes, long maxTotalBytes) {
+            return new Exhaustion(config.name(),
+                                  config.partitions(),
+                                  Phase.GROWTH,
+                                  requestedBytes,
+                                  availableBytes,
+                                  maxTotalBytes,
+                                  config.consistencyMode());
+        }
+
+        public String summary() {
+            return "Off-heap budget exhausted (" + phase.name().toLowerCase().replace('_', '-')
+                   + ") for stream '" + streamName + "' (" + partitions + " parts): need " + requestedBytes
+                   + " bytes, " + availableBytes + " available of " + maxTotalBytes;
+        }
+
+        public Map<String, String> details() {
+            return Map.of("streamName", streamName,
+                          "partitions", Integer.toString(partitions),
+                          "phase", phase.name().toLowerCase().replace('_', '-'),
+                          "requestedBytes", Long.toString(requestedBytes),
+                          "availableBytes", Long.toString(availableBytes),
+                          "maxTotalBytes", Long.toString(maxTotalBytes),
+                          "consistencyMode", consistencyMode.name());
+        }
+    }
+
     record StreamEntry(StreamConfig config,
                        OffHeapRingBuffer[] partitions,
                        long createdAt,
                        AtomicLong lastActivityRef,
                        AtomicBoolean configCommitted) implements AutoCloseable {
-        static StreamEntry fromConfig(StreamConfig config, EvictionListener listener) {
+        static StreamEntry fromConfig(StreamConfig config,
+                                      EvictionListener listener,
+                                      LongPredicate reserve,
+                                      LongConsumer release) {
             var retention = config.retention();
             var policy = deriveEvictionPolicy(config);
             var buffers = new OffHeapRingBuffer[config.partitions()];
@@ -460,9 +609,29 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                          retention.maxCount(),
                                                                                                          retention.maxBytes(),
                                                                                                          listener,
-                                                                                                         policy);}
+                                                                                                         policy,
+                                                                                                         reserve,
+                                                                                                         release);}
             var now = System.currentTimeMillis();
             return new StreamEntry(config, buffers, now, new AtomicLong(now), new AtomicBoolean(false));
+        }
+
+        /// Live bytes allocated across all partitions (control + allocated data segments). Used by
+        /// telemetry and as the release-on-destroy basis. See spec §4.3.
+        long allocatedBytes() {
+            var total = 0L;
+            for (var buffer : partitions) {total += buffer.allocatedBytes();}
+            return total;
+        }
+
+        /// Control-region bytes (header + index) summed across partitions. This is the portion of the
+        /// floor the manager reserved but the buffer's growth/close seam does NOT account, so the
+        /// manager releases exactly this on destroy (the buffer releases its data bytes itself). See
+        /// spec §4.3.
+        long controlBytes() {
+            var total = 0L;
+            for (var buffer : partitions) {total += buffer.controlBytes();}
+            return total;
         }
 
         /// Whether this stream's config has been committed to the cluster KV. Once true, a duplicate

@@ -351,6 +351,13 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return controlSegment.byteSize() + allocatedDataBytes;
     }
 
+    /// Control-region bytes (header + index). This portion of the floor is NOT accounted against the
+    /// seam (the seam tracks only data segments), so the manager releases it separately on destroy to
+    /// avoid double-release. See spec §4.3.
+    public long controlBytes() {
+        return controlSegment.byteSize();
+    }
+
     @Contract public void applyRetention(RetentionPolicy policy) {
         policy.tierAwareRetention().filter(_ -> lastSealedOffset >= 0)
                                  .onPresent(this::applyTierAwareRetention);
