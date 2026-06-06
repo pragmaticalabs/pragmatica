@@ -37,7 +37,7 @@ final class FlowPrinter {
     // ===== Configuration and state =====
     private final FormatterConfig config;
     private final String source;
-    private final StringBuilder output;
+    private StringBuilder output;
     private int currentColumn;
     private int indentLevel;
     private char lastChar;
@@ -128,6 +128,47 @@ final class FlowPrinter {
 
     private boolean fitsOnLine(Cursor node) {
         return currentColumn + measureWidth(node) <= config.maxLineLength();
+    }
+
+    /// True iff a single-statement block collapsed inline (`{ stmt }`) would render on a
+    /// single physical line. Used to keep inline-block collapse idempotent: a body that is
+    /// over-wide OR contains a force-broken method chain wraps when emitted inline, which
+    /// flips `isOnSingleSourceLine` next pass and re-expands the block. We decide by trial-
+    /// rendering the statement at the current column and checking for an emitted newline —
+    /// width alone underestimates, because chains break on structure, not just width.
+    private boolean inlineBlockFits(Cursor stmt) {
+        var savedOutput = output;
+        int savedColumn = currentColumn;
+        int savedIndent = indentLevel;
+        char savedLastChar = lastChar;
+        char savedPrevChar = prevChar;
+        String savedLastWord = lastWord;
+        int savedTokenIndex = tokenIndex;
+        int savedLine = currentLine;
+        int savedForcedIndent = forcedIndentCol;
+        var savedTokenLineMap = new HashMap<>(tokenLineMap);
+        var savedEmittedTrivia = new java.util.HashSet<>(emittedTriviaTokens);
+
+        output = new StringBuilder();
+        printNode(stmt);
+        emitBare("}");
+        boolean singleLine = currentColumn <= config.maxLineLength()
+                             && output.indexOf("\n") < 0;
+
+        output = savedOutput;
+        currentColumn = savedColumn;
+        indentLevel = savedIndent;
+        lastChar = savedLastChar;
+        prevChar = savedPrevChar;
+        lastWord = savedLastWord;
+        tokenIndex = savedTokenIndex;
+        currentLine = savedLine;
+        forcedIndentCol = savedForcedIndent;
+        tokenLineMap.clear();
+        tokenLineMap.putAll(savedTokenLineMap);
+        emittedTriviaTokens.clear();
+        emittedTriviaTokens.addAll(savedEmittedTrivia);
+        return singleLine;
     }
 
     // ===== Node dispatch =====
@@ -329,11 +370,16 @@ final class FlowPrinter {
         var otherImports = filterOtherImports(imports);
         var staticImports = filterImports(imports, "static", true);
 
+        // De-duplicate against the rendered statement text, not the CST span. Some import
+        // nodes absorb the following type's doc-comment as trailing trivia (e.g. a `java.*`
+        // import whose doc mentions `org.pragmatica`); without dedup such an import is
+        // emitted in two groups and re-formatting never reaches a fixpoint.
+        var emitted = new HashSet<String>();
         boolean needsBlank = false;
-        needsBlank = printImportGroup(pragmatica, needsBlank);
-        needsBlank = printImportGroup(javaImports, needsBlank);
-        needsBlank = printImportGroup(otherImports, needsBlank);
-        printImportGroup(staticImports, needsBlank);
+        needsBlank = printImportGroup(pragmatica, needsBlank, emitted);
+        needsBlank = printImportGroup(javaImports, needsBlank, emitted);
+        needsBlank = printImportGroup(otherImports, needsBlank, emitted);
+        printImportGroup(staticImports, needsBlank, emitted);
     }
 
     private List<Cursor> filterImports(List<Cursor> imports, String contains, boolean isStatic) {
@@ -343,7 +389,7 @@ final class FlowPrinter {
     }
 
     private boolean matchesImportFilter(Cursor i, String contains, boolean isStatic) {
-        var t = text(i);
+        var t = importStatementText(i);
         return t.contains(contains) && (isStatic || !t.contains("static"));
     }
 
@@ -354,8 +400,8 @@ final class FlowPrinter {
     }
 
     private boolean isJavaImport(Cursor i) {
-        var t = text(i);
-        return (t.contains("java.") || t.contains("javax.")) && !t.contains("static");
+        var t = importStatementText(i);
+        return (t.contains("java.") || t.contains("javax.")) && !t.contains("static") && !t.contains("org.pragmatica");
     }
 
     private List<Cursor> filterOtherImports(List<Cursor> imports) {
@@ -365,26 +411,36 @@ final class FlowPrinter {
     }
 
     private boolean isOtherImport(Cursor i) {
-        var t = text(i);
+        var t = importStatementText(i);
         return !t.contains("org.pragmatica") && !t.contains("java.") && !t.contains("javax.") && !t.contains("static");
     }
 
-    private boolean printImportGroup(List<Cursor> group, boolean needsBlank) {
-        if (group.isEmpty()) {
+    private boolean printImportGroup(List<Cursor> group, boolean needsBlank, Set<String> emitted) {
+        var fresh = group.stream()
+            .filter(imp -> emitted.add(importStatementText(imp)))
+            .toList();
+        if (fresh.isEmpty()) {
             return needsBlank;
         }
         if (needsBlank) {
             newline();
         }
-        for (var imp : group) {
+        for (var imp : fresh) {
             printImportDecl(imp);
         }
         return true;
     }
 
     private void printImportDecl(Cursor imp) {
-        // Walk non-trivia tokens directly so trailing comments (`/// ...` after `;`) are
-        // not pulled into the import — they belong to whatever follows.
+        emit(importStatementText(imp));
+        newline();
+    }
+
+    /// Render an import as just its statement text (`import a.b.C;`), built from the
+    /// node's non-trivia tokens. Trailing comments (`/// ...` after `;`) are excluded —
+    /// they belong to whatever follows. This is the single source of truth for both
+    /// classifying imports into groups and de-duplicating them.
+    private String importStatementText(Cursor imp) {
         var tokens = imp.cst().tokens();
         var sb = new StringBuilder();
         for (int t = imp.firstTokenIdx(); t <= imp.lastTokenIdx(); t++) {
@@ -396,9 +452,7 @@ final class FlowPrinter {
             }
         }
         // Drop the space before `.` and `;` and before `*` after `.`.
-        var importText = sb.toString().replaceAll(" ([.;*])", "$1").replaceAll("([.]) ", "$1");
-        emit(importText);
-        newline();
+        return sb.toString().replaceAll(" ([.;*])", "$1").replaceAll("([.]) ", "$1");
     }
 
     // ===== Type bodies =====
@@ -621,12 +675,17 @@ final class FlowPrinter {
             // line (e.g. `if (x) {return y;}`), keep it inline. This mirrors the legacy
             // formatter's same-line brace detection. Don't collapse if the stmt carries a
             // leading comment — that's a signal the dev wants spacing.
+            // Only collapse when the inline form actually fits on the line: an over-wide
+            // inner statement gets wrapped across lines when emitted inline, which flips
+            // `isOnSingleSourceLine` on the next pass and re-expands the block — a
+            // non-idempotent oscillation. If it won't fit, fall through to the expanded form.
             if (!measuringMode
                 && !useLambdaAlign
                 && !useChainAlign
                 && isOnSingleSourceLine(block)
                 && stmts.size() == 1
-                && !hasLeadingComment(stmts.get(0))) {
+                && !hasLeadingComment(stmts.get(0))
+                && inlineBlockFits(stmts.get(0))) {
                 printNode(stmts.get(0));
                 emitBare("}");
                 return;
@@ -795,11 +854,21 @@ final class FlowPrinter {
         for (int i = 0; i < returnIdx; i++) {
             var s = stmts.get(i);
             if (isBlockShapedStmt(s)) continue;
-            if (s instanceof Cursor.Branch br && isOnSingleSourceLine(br)) {
+            if (rendersOnSingleLine(s)) {
                 return true;
             }
         }
         return false;
+    }
+
+    /// True iff the statement would render on a single line at the current block indent.
+    /// This must reflect the FORMATTED layout, not the source layout: a method-chain
+    /// statement written across several source lines is reflowed onto one line when it
+    /// fits, so a source-`\n` check would flip the blank-before-return decision between
+    /// passes and break idempotency.
+    private boolean rendersOnSingleLine(Cursor stmt) {
+        int indentCol = indentLevel * config.indentSize();
+        return indentCol + measureWidth(stmt) <= config.maxLineLength();
     }
 
     /// True if a stmt is one of the block-shaped control-flow constructs.
