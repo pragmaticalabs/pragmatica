@@ -2,6 +2,7 @@ package org.pragmatica.jbct.format;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.List;
 
 /// Manages alignment state for the CST printer.
 /// Tracks chain alignment, lambda body alignment columns, and ternary alignment columns.
@@ -229,5 +230,46 @@ public final class AlignmentContext {
         public void close() {
             ternaryColumn = prevColumn;
         }
+    }
+
+    /// Immutable snapshot of all mutable alignment state. Captured before a speculative
+    /// trial render and restored afterwards, so the trial cannot corrupt real alignment
+    /// state even if it follows an unbalanced force-break/early-return path. The lambda
+    /// alignment stack is deep-copied (its elements are immutable `Integer`s).
+    public record Snapshot(List<Integer> lambdaAlignStack,
+                           int chainColumn,
+                           boolean inBreakingChain,
+                           int ternaryColumn,
+                           int inlineExpressionDepth,
+                           int tailContextDepth,
+                           int ternaryCond) {}
+
+    /// Capture the current mutable alignment state into an immutable snapshot.
+    public Snapshot snapshot() {
+        return new Snapshot(List.copyOf(lambdaAlignStack),
+                            chainColumn,
+                            inBreakingChain,
+                            ternaryColumn,
+                            inlineExpressionDepth,
+                            tailContextDepth,
+                            ternaryCond);
+    }
+
+    /// Restore mutable alignment state from a previously captured snapshot. Rebuilds the
+    /// lambda alignment stack so its iteration order matches the captured order.
+    public void restore(Snapshot snapshot) {
+        lambdaAlignStack.clear();
+        // List.copyOf preserves the Deque's iteration order (head-first); push in reverse
+        // so the head element ends up back on top.
+        var saved = snapshot.lambdaAlignStack();
+        for (int i = saved.size() - 1; i >= 0; i--) {
+            lambdaAlignStack.push(saved.get(i));
+        }
+        this.chainColumn = snapshot.chainColumn();
+        this.inBreakingChain = snapshot.inBreakingChain();
+        this.ternaryColumn = snapshot.ternaryColumn();
+        this.inlineExpressionDepth = snapshot.inlineExpressionDepth();
+        this.tailContextDepth = snapshot.tailContextDepth();
+        this.ternaryCond = snapshot.ternaryCond();
     }
 }

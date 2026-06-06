@@ -55,7 +55,7 @@ final class FlowPrinter {
 
     // Track trivia tokens we've already emitted as comments (prevents double-emit when
     // an outer node and its first CST child share leading trivia under v6 attribution).
-    private final java.util.Set<Integer> emittedTriviaTokens = new java.util.HashSet<>();
+    private final Set<Integer> emittedTriviaTokens = new HashSet<>();
 
     // Alignment tracking
     private final AlignmentContext alignment = new AlignmentContext();
@@ -130,24 +130,75 @@ final class FlowPrinter {
         return currentColumn + measureWidth(node) <= config.maxLineLength();
     }
 
+    /// Complete snapshot of all mutable render state, captured before a speculative trial
+    /// render (see `inlineBlockFits`) and restored afterwards. Capturing EVERYTHING — the
+    /// scalar cursor state, the two mutable collections (defensively copied), AND the
+    /// alignment context — guarantees the trial cannot leak state even if `printNode`
+    /// follows an unbalanced force-break/early-return path inside a scope guard.
+    private record SavedState(StringBuilder output,
+                              int currentColumn,
+                              int indentLevel,
+                              char lastChar,
+                              char prevChar,
+                              String lastWord,
+                              boolean measuringMode,
+                              int measureBuffer,
+                              int tokenIndex,
+                              int currentLine,
+                              int forcedIndentCol,
+                              Map<Integer, Integer> tokenLineMap,
+                              Set<Integer> emittedTriviaTokens,
+                              AlignmentContext.Snapshot alignment) {}
+
+    private SavedState saveState() {
+        return new SavedState(output,
+                              currentColumn,
+                              indentLevel,
+                              lastChar,
+                              prevChar,
+                              lastWord,
+                              measuringMode,
+                              measureBuffer,
+                              tokenIndex,
+                              currentLine,
+                              forcedIndentCol,
+                              new HashMap<>(tokenLineMap),
+                              new HashSet<>(emittedTriviaTokens),
+                              alignment.snapshot());
+    }
+
+    private void restoreState(SavedState saved) {
+        output = saved.output();
+        currentColumn = saved.currentColumn();
+        indentLevel = saved.indentLevel();
+        lastChar = saved.lastChar();
+        prevChar = saved.prevChar();
+        lastWord = saved.lastWord();
+        measuringMode = saved.measuringMode();
+        measureBuffer = saved.measureBuffer();
+        tokenIndex = saved.tokenIndex();
+        currentLine = saved.currentLine();
+        forcedIndentCol = saved.forcedIndentCol();
+        tokenLineMap.clear();
+        tokenLineMap.putAll(saved.tokenLineMap());
+        emittedTriviaTokens.clear();
+        emittedTriviaTokens.addAll(saved.emittedTriviaTokens());
+        alignment.restore(saved.alignment());
+    }
+
     /// True iff a single-statement block collapsed inline (`{ stmt }`) would render on a
     /// single physical line. Used to keep inline-block collapse idempotent: a body that is
     /// over-wide OR contains a force-broken method chain wraps when emitted inline, which
     /// flips `isOnSingleSourceLine` next pass and re-expands the block. We decide by trial-
     /// rendering the statement at the current column and checking for an emitted newline —
     /// width alone underestimates, because chains break on structure, not just width.
+    ///
+    /// The trial mutates real render state (alignment scopes, cursor position, trivia
+    /// tracking), so we snapshot ALL of it up front and restore it afterwards. The
+    /// snapshot includes the alignment context so an unbalanced scope inside the trial
+    /// cannot corrupt subsequent layout.
     private boolean inlineBlockFits(Cursor stmt) {
-        var savedOutput = output;
-        int savedColumn = currentColumn;
-        int savedIndent = indentLevel;
-        char savedLastChar = lastChar;
-        char savedPrevChar = prevChar;
-        String savedLastWord = lastWord;
-        int savedTokenIndex = tokenIndex;
-        int savedLine = currentLine;
-        int savedForcedIndent = forcedIndentCol;
-        var savedTokenLineMap = new HashMap<>(tokenLineMap);
-        var savedEmittedTrivia = new java.util.HashSet<>(emittedTriviaTokens);
+        var saved = saveState();
 
         output = new StringBuilder();
         printNode(stmt);
@@ -155,19 +206,7 @@ final class FlowPrinter {
         boolean singleLine = currentColumn <= config.maxLineLength()
                              && output.indexOf("\n") < 0;
 
-        output = savedOutput;
-        currentColumn = savedColumn;
-        indentLevel = savedIndent;
-        lastChar = savedLastChar;
-        prevChar = savedPrevChar;
-        lastWord = savedLastWord;
-        tokenIndex = savedTokenIndex;
-        currentLine = savedLine;
-        forcedIndentCol = savedForcedIndent;
-        tokenLineMap.clear();
-        tokenLineMap.putAll(savedTokenLineMap);
-        emittedTriviaTokens.clear();
-        emittedTriviaTokens.addAll(savedEmittedTrivia);
+        restoreState(saved);
         return singleLine;
     }
 
@@ -401,7 +440,7 @@ final class FlowPrinter {
 
     private boolean isJavaImport(Cursor i) {
         var t = importStatementText(i);
-        return (t.contains("java.") || t.contains("javax.")) && !t.contains("static") && !t.contains("org.pragmatica");
+        return (t.contains("java.") || t.contains("javax.")) && !t.contains("static");
     }
 
     private List<Cursor> filterOtherImports(List<Cursor> imports) {
@@ -854,7 +893,9 @@ final class FlowPrinter {
         for (int i = 0; i < returnIdx; i++) {
             var s = stmts.get(i);
             if (isBlockShapedStmt(s)) continue;
-            if (rendersOnSingleLine(s)) {
+            // Keep the original Branch-only restriction; only the single-line test changed
+            // from a SOURCE-line check to the FORMATTED-layout check for idempotency.
+            if (s instanceof Cursor.Branch && rendersOnSingleLine(s)) {
                 return true;
             }
         }
