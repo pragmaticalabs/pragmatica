@@ -241,20 +241,55 @@ class StreamConfigReplicationTest {
         }
 
         @Test
-        void createStream_rollsBackOptimisticEntry_whenConsensusCommitFails() {
-            // On commit failure the optimistic local entry and its byte accounting must be undone
-            // so state stays honest and a later retry can succeed.
+        void createStream_keepsLocalEntry_whenConsensusCommitFails() {
+            // Fix #2: a transient consensus-publish failure must NOT destroy the already-materialized
+            // local partition. The previous behaviour (rollbackOptimisticEntry) wiped the local ring on
+            // a commit timeout, so the owner could no longer serve/publish locally and the system-stream
+            // could never recover. The local ring + its byte accounting must now SURVIVE the failure so
+            // the owner keeps serving and the leader-pinned retry can re-publish the config.
             var failingNode = new FailingClusterNode();
             var manager = streamPartitionManager(Long.MAX_VALUE, failingNode);
             try {
-                manager.createStream(StreamConfig.streamConfig("orders"));
+                manager.createStream(StreamConfig.streamConfig("orders"))
+                       .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected commit failure"))
+                       .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.STREAM_CONFIG_COMMIT_FAILED));
 
-                assertThat(manager.streamInfo("orders").isEmpty())
-                    .as("failed commit must not leave a phantom local entry")
+                assertThat(manager.streamInfo("orders").isPresent())
+                    .as("failed commit must KEEP the local partition (decoupled from publish)")
                     .isTrue();
                 assertThat(manager.totalAllocatedBytes())
-                    .as("failed commit must release optimistically allocated bytes")
-                    .isEqualTo(0L);
+                    .as("failed commit must keep the local ring's allocated bytes")
+                    .isGreaterThan(0L);
+            } finally {
+                manager.close();
+            }
+        }
+
+        @Test
+        void createStream_retryAfterCommitFailure_returnsAlreadyExists_withoutDoubleAllocating() {
+            // Fix #2: after a transient commit failure left the local ring intact, a retry (the
+            // leader-pinned SystemStreamRegistrar's re-attempt) must (a) NOT re-materialize / double-
+            // allocate the partition, and (b) report STREAM_ALREADY_EXISTS once the (re-)publish
+            // succeeds — the "stop" signal the registrar treats as DONE. Here the node recovers between
+            // the two attempts (failing → recording).
+            var failingNode = new FailingClusterNode();
+            var manager = streamPartitionManager(Long.MAX_VALUE, failingNode);
+            try {
+                manager.createStream(StreamConfig.streamConfig("orders"))
+                       .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected first attempt to fail"));
+                var allocatedAfterFirstAttempt = manager.totalAllocatedBytes();
+                assertThat(allocatedAfterFirstAttempt).isGreaterThan(0L);
+
+                // Second attempt: the local ring already exists, so createStream must re-publish the
+                // (idempotent) config and report ALREADY_EXISTS on a now-healthy commit path.
+                failingNode.recover();
+                manager.createStream(StreamConfig.streamConfig("orders"))
+                       .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected STREAM_ALREADY_EXISTS"))
+                       .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.STREAM_ALREADY_EXISTS));
+
+                assertThat(manager.totalAllocatedBytes())
+                    .as("retry must not double-allocate the already-materialized partition")
+                    .isEqualTo(allocatedAfterFirstAttempt);
             } finally {
                 manager.close();
             }
@@ -311,8 +346,12 @@ class StreamConfigReplicationTest {
 
     /// Simulates a cluster node whose consensus commit fails (e.g. no quorum). Used to prove
     /// that {@link StreamPartitionManager#createStream} surfaces the failure instead of masking it.
+    /// [`#recover()`] flips it to a healthy commit path so a Fix-#2 retry can succeed.
     private static final class FailingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         private static final Cause COMMIT_REJECTED = Causes.cause("Consensus commit rejected");
+        private volatile boolean healthy = false;
+
+        void recover() {this.healthy = true;}
 
         @Override public NodeId self() {return SELF;}
 
@@ -322,7 +361,9 @@ class StreamConfigReplicationTest {
 
         @Override public Promise<Unit> stop() {return Promise.unitPromise();}
 
+        @SuppressWarnings("unchecked")
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+            if (healthy) {return (Promise<List<R>>) (Promise<?>) Promise.success(List.of());}
             return COMMIT_REJECTED.promise();
         }
     }

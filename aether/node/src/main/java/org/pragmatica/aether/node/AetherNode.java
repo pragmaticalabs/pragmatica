@@ -110,7 +110,6 @@ import org.pragmatica.aether.stream.DefaultStreamPublisher;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.StreamPartitionManager;
-import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
@@ -534,6 +533,15 @@ public interface AetherNode extends ManageableNode {
                                                                     List.of(memoryTier, dht)))
                         .or(StorageInstance.storageInstance("streams",
                                                             List.of(memoryTier)));
+    }
+
+    /// Build a named daemon thread for a single-thread executor's `ThreadFactory`. Extracted so the
+    /// executor factories pass a method-reference-friendly single-expression lambda instead of a
+    /// multi-statement block.
+    private static Thread daemonThread(Runnable runnable, String name) {
+        var thread = new Thread(runnable, name);
+        thread.setDaemon(true);
+        return thread;
     }
 
     private static Result<AetherNode> assembleNode(AetherNodeConfig config,
@@ -1803,12 +1811,7 @@ public interface AetherNode extends ManageableNode {
                                                                          .onPresent(swimHealthDetector::onNodeConnected)
                                                                          .onEmpty(() -> swimHealthDetector.onNodeConnected(connection.nodeId()))));
         Supplier<BootstrapModule.ClusterConfigBaseline> configBaselineSupplier = () -> clusterConfigBaseline(config.topology());
-        var publisherExecutor = Executors.newSingleThreadExecutor(runnable -> {
-                                                                                           var thread = new Thread(runnable,
-                                                                                                                   "generation-snapshot-publisher");
-                                                                                           thread.setDaemon(true);
-                                                                                           return thread;
-                                                                                       });
+        var publisherExecutor = Executors.newSingleThreadExecutor(runnable -> daemonThread(runnable, "generation-snapshot-publisher"));
         var swimHints = SwimHintsRegistry.swimHintsRegistry(java.time.Duration.ofMillis(config.autoHeal().swimHintsTtl().millis()),
                                                             () -> Option.option(publisherRef.get()).onPresent(GenerationSnapshotPublisher::markDirty));
         peerObservationStore.subscribeHealth(swimHints::onPeerHealth);
@@ -1835,12 +1838,7 @@ public interface AetherNode extends ManageableNode {
                                                               config::self,
                                                               configBaselineSupplier,
                                                               clusterNode);
-        var publisherTickExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
-                                                                                                        var thread = new Thread(runnable,
-                                                                                                                                "generation-publisher-tick");
-                                                                                                        thread.setDaemon(true);
-                                                                                                        return thread;
-                                                                                                    });
+        var publisherTickExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> daemonThread(runnable, "generation-publisher-tick"));
         publisherTickExecutor.scheduleAtFixedRate(generationSnapshotPublisher::markDirty,
                                                   1,
                                                   1,
@@ -1964,13 +1962,11 @@ public interface AetherNode extends ManageableNode {
                                                                                                clusterEventsStreamConfig)
                 .onSuccess(clusterEventsPublisherRef::set)
                 .onFailure(cause -> LOG.warn("cluster-events stream publisher wiring failed: {} — events fall back to log-only", cause.message()));
-        org.pragmatica.aether.stream.SystemStreamFactories.<ClusterEvent>systemStreamConsumer(org.pragmatica.aether.slice.stream.SystemStreams.CLUSTER_EVENTS,
-                                                                                              streamPartitionManager,
-                                                                                              serializer,
-                                                                                              deserializer,
-                                                                                              clusterEventsStreamConfig)
-                .onSuccess(clusterEventsConsumerRef::set)
-                .onFailure(cause -> LOG.warn("cluster-events stream consumer wiring failed: {} — events reads return empty", cause.message()));
+        // Fix #3: the forward-capable cluster-events CONSUMER is wired further below, after
+        // streamForwardClient + streamReadForwardMetrics are constructed, so a non-replica node
+        // read-forwards observability reads to a caught-up replica instead of reading its own empty
+        // local partition. The aggregator reads the consumer lazily via clusterEventsConsumerRef::get,
+        // so deferring the wiring does not affect construction order.
         // Stage 5: stream-namespaces registry + service.
         //
         // Stage 4 deferred the StreamRegistry registration to here, where the namespace-listing
@@ -1983,12 +1979,12 @@ public interface AetherNode extends ManageableNode {
                                                                                                               kvStore);
         var streamNamespacesService = new StreamNamespacesService(streamRegistry,
                                                                   new org.pragmatica.aether.slice.stream.SystemStreamBootstrap(streamRegistry));
-        // System-stream registration (system:cluster-events etc.) is driven on LEADER-GAIN, not here.
-        // This point runs on [main] during construction, seconds before consensus activates, so an
-        // eager bootstrap() always failed "Node is inactive" and was never retried — the stream stayed
-        // unregistered and /api/events|alerts|traces returned 500 "Stream not found". Registration is
-        // idempotent and consensus-committed, so it is performed by registerSystemStreamsOnLeaderChange
-        // (appended to the LeaderChange routes below), where the node can actually commit.
+        // System-stream registration (system:cluster-events etc.) is driven LEVEL-TRIGGERED by the
+        // self-healing SystemStreamRegistrar (Fix #1), not here. This point runs on [main] during
+        // construction, seconds before consensus activates, so an eager bootstrap() always failed
+        // "Node is inactive". The registrar (constructed + LeaderChange-wired below) retries on bounded
+        // backoff until both legs commit, so a commit timeout in the post-leader-gain window no longer
+        // leaves the stream unregistered (which made /api/events|alerts|traces return 200 []).
         // deleted alongside the audit publisher and RecentCommandsBuffer.
         var streamSegmentIndex = new SegmentIndex();
         var streamWatermarkTracker = WatermarkTracker.watermarkTracker();
@@ -2020,17 +2016,30 @@ public interface AetherNode extends ManageableNode {
                                                                           streamingConfig.publishForwardTimeout(),
                                                                           streamingConfig.readForwardTimeout(),
                                                                           streamReadForwardMetrics);
+        // Fix #3: wire the forward-capable cluster-events CONSUMER now that the replica registry,
+        // forward client, self id and read-forward metrics all exist. ANY_REPLICA read preference +
+        // replica registry + forward client mean a node OUTSIDE the (system:cluster-events:1.0.0,
+        // partition 0) replica set forwards observability reads to a caught-up replica (the owner)
+        // instead of reading its own empty local partition (which returned 200 []). Fail-soft to local
+        // during the bootstrap window (no caught-up replica visible yet).
+        org.pragmatica.aether.stream.SystemStreamFactories.<ClusterEvent>systemStreamConsumer(org.pragmatica.aether.slice.stream.SystemStreams.CLUSTER_EVENTS,
+                                                                                              streamPartitionManager,
+                                                                                              serializer,
+                                                                                              deserializer,
+                                                                                              clusterEventsStreamConfig,
+                                                                                              streamReplicaRegistry,
+                                                                                              Option.some(streamForwardClient),
+                                                                                              config.self(),
+                                                                                              streamReadForwardMetrics)
+                .onSuccess(clusterEventsConsumerRef::set)
+                .onFailure(cause -> LOG.warn("cluster-events stream consumer wiring failed: {} — events reads return empty", cause.message()));
         var streamCatchupTransport = ForwardCatchupTransport.forwardCatchupTransport(streamForwardClient,
                                                                                      STREAM_CATCHUP_BATCH_SIZE);
         var streamPartitionBackfill = PartitionBackfill.partitionBackfill(streamReplicaRegistry,
                                                                           streamPartitionRecovery,
                                                                           streamCatchupTransport,
                                                                           config.self());
-        var streamBackfillExecutor = Executors.newSingleThreadExecutor(runnable -> {
-            var thread = new Thread(runnable, "stream-partition-backfill");
-            thread.setDaemon(true);
-            return thread;
-        });
+        var streamBackfillExecutor = Executors.newSingleThreadExecutor(runnable -> daemonThread(runnable, "stream-partition-backfill"));
         // A2: per-node controller that reconciles the (previously never-populated) ReplicaRegistry
         // against the HRW-derived desired replica set on every membership change. Members + cluster
         // size come from the consensus topology observer; the stream catalog (name/partitions/
@@ -2069,11 +2078,18 @@ public interface AetherNode extends ManageableNode {
                                                  change -> toggleStreamingOnLeaderChange(change, streamingCoordinator)));
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> toggleStorageOnLeaderChange(change, delegatedStorageAdapter)));
-        // System streams (system:cluster-events) are registered on leader-gain — see comment at the
-        // streamNamespacesService construction site. Idempotent + consensus-committed, so re-running on
+        // System streams (system:cluster-events + the namespace catalog backing /api/events|alerts|
+        // traces) are registered LEVEL-TRIGGERED by the self-healing SystemStreamRegistrar (Fix #1).
+        // The prior fire-once-on-leader-gain handler logged "will retry on next leader change" but never
+        // did — a commit timeout in the post-leader-gain window (consensus not yet quorate) left the
+        // stream unregistered forever on a stable cluster. The registrar instead retries on bounded
+        // backoff until both legs commit (or hit a terminal config error), latches each leg DONE, and
+        // disarms on leadership loss. Both legs are idempotent + consensus-committed, so re-arming on
         // each leader-gain is safe and self-heals across re-elections.
+        var systemStreamRegistrar = SystemStreamRegistrar.systemStreamRegistrar(() -> streamPartitionManager.createStream(clusterEventsStreamConfig),
+                                                                                streamNamespacesService::bootstrap);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                                 change -> registerSystemStreamsOnLeaderChange(change, streamNamespacesService, streamPartitionManager, clusterEventsStreamConfig)));
+                                                 systemStreamRegistrar::onLeaderChange));
         var streamForwardHandler = StreamForwardHandler.streamForwardHandler(config.self(),
                                                                              streamPartitionManager,
                                                                              streamForwardTransport,
@@ -2621,31 +2637,6 @@ public interface AetherNode extends ManageableNode {
     private static void toggleNttReconcilerOnLeaderChange(LeaderNotification.LeaderChange change,
                                                           LeaderReconciler reconciler) {
         if (change.localNodeIsLeader()) {reconciler.activate();} else {reconciler.deactivate();}
-    }
-
-    /// System-stream registration (system:cluster-events etc.) driven on leader-gain. The eager
-    /// construction-time bootstrap on [main] ran before consensus activation and always failed
-    /// "Node is inactive" with no retry, leaving the stream unregistered (observability reads 500).
-    /// bootstrap() is idempotent + consensus-committed, so re-running on each leader-gain is safe and
-    /// self-heals across re-elections; non-leaders skip it (only the leader can commit the config).
-    private static void registerSystemStreamsOnLeaderChange(LeaderNotification.LeaderChange change,
-                                                            StreamNamespacesService streamNamespacesService,
-                                                            StreamPartitionManager streamPartitionManager,
-                                                            StreamConfig clusterEventsStreamConfig) {
-        if (!change.localNodeIsLeader()) {
-            return;
-        }
-        // Partition-managed system:cluster-events stream the observability READ path resolves
-        // (/api/events|alerts|traces). createStream publishes the StreamConfigKey via consensus, so it
-        // must run when this node can commit (leader/active) — not on [main] at boot, where it failed
-        // "Node is inactive" with no retry. Idempotent.
-        streamPartitionManager.createStream(clusterEventsStreamConfig)
-                .onFailure(cause -> LOG.warn("system:cluster-events createStream on leader-gain failed: {} — will retry on next leader change",
-                                             cause.message()));
-        // Stream-namespaces catalog registration (namespace listing). Idempotent.
-        streamNamespacesService.bootstrap()
-                .onFailure(cause -> LOG.warn("system-stream bootstrap on leader-gain failed: {} — will retry on next leader change",
-                                             cause.message()));
     }
 
     /// #231 Step 2 — leader-pin the remaining control-plane components. Each mirrors

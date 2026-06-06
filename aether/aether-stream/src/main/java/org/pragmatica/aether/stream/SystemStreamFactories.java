@@ -5,17 +5,24 @@
 package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
 import org.pragmatica.aether.slice.stream.FrameworkStreamConsumers;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublishers;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.stream.forward.StreamForwardClient;
+import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
+import org.pragmatica.aether.stream.replication.ReplicaRegistry;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /// Production convenience factories for binding system-namespace streams to the local
@@ -40,6 +47,8 @@ import org.pragmatica.serialization.Serializer;
 /// metadata is the canonical source of truth for stream existence; partition creation here is the
 /// local materialization step.
 public final class SystemStreamFactories {
+    private static final Logger LOG = LoggerFactory.getLogger(SystemStreamFactories.class);
+
     private SystemStreamFactories() {}
 
     /// Construct a {@link FrameworkStreamPublisher} for a system address backed by a local
@@ -76,6 +85,40 @@ public final class SystemStreamFactories {
                                                                 config.name(),
                                                                 config.partitions(),
                                                                 Option.none());
+        return FrameworkStreamConsumers.systemStreamConsumer(address, transport);
+    }
+
+    /// Fix #3: construct a forward-capable {@link FrameworkStreamConsumer} for a REPLICATED system
+    /// address. Unlike the {@link #systemStreamConsumer(ResourceAddress, StreamPartitionManager,
+    /// Serializer, Deserializer, StreamConfig)} overload — which wires a local-only
+    /// {@link PartitionedStreamAccess} — this one threads the `replicaRegistry`, `forwardClient` and
+    /// `self` node id and pins a replica-routed read preference, so a node OUTSIDE the stream's replica
+    /// set forwards reads to a caught-up replica (the owner) instead of reading its own empty local
+    /// partition (returning `200 []`). Required for `system:cluster-events` observability reads to work
+    /// on a non-replica node. Fail-soft: until the replica registry reports a caught-up replica
+    /// (bootstrap window) the read lands locally rather than failing. The config's `name` must equal
+    /// `address.asString()`.
+    public static <T> Result<FrameworkStreamConsumer<T>> systemStreamConsumer(ResourceAddress address,
+                                                                              StreamPartitionManager partitionManager,
+                                                                              Serializer serializer,
+                                                                              Deserializer deserializer,
+                                                                              StreamConfig config,
+                                                                              ReplicaRegistry replicaRegistry,
+                                                                              Option<StreamForwardClient> forwardClient,
+                                                                              NodeId self,
+                                                                              StreamReadForwardMetrics metrics) {
+        ensureLocalPartition(partitionManager, config);
+        var transport = PartitionedStreamAccess.<T>streamAccess(partitionManager,
+                                                                serializer,
+                                                                deserializer,
+                                                                config.name(),
+                                                                config.partitions(),
+                                                                Option.none(),
+                                                                ReadPreference.ANY_REPLICA,
+                                                                replicaRegistry,
+                                                                forwardClient,
+                                                                self,
+                                                                metrics);
         return FrameworkStreamConsumers.systemStreamConsumer(address, transport);
     }
 
@@ -125,7 +168,10 @@ public final class SystemStreamFactories {
     /// {@link StreamPartitionManager#replicaCatalog()}, which is what the `ReplicaSetController`
     /// reconciles against — so a system stream created here becomes replicated.
     private static void ensureLocalPartition(StreamPartitionManager partitionManager, StreamConfig config) {
-        Result<Unit> ignored = partitionManager.createStream(config);
+        partitionManager.createStream(config)
+                        .onFailure(cause -> LOG.debug("system stream {} local-partition create deferred to publish/fetch: {}",
+                                                      config.name(),
+                                                      cause.message()));
     }
 
     /// Idempotent partition creation. `createStream` returns `Result<Unit>` — either fresh creation
@@ -138,9 +184,9 @@ public final class SystemStreamFactories {
                                              StreamPartitionManager partitionManager,
                                              int partitions,
                                              RetentionPolicy retention) {
-        Result<Unit> ignored = partitionManager.createStream(StreamConfig.streamConfig(address.asString(),
-                                                                                       partitions,
-                                                                                       retention,
-                                                                                       "earliest"));
+        partitionManager.createStream(StreamConfig.streamConfig(address.asString(), partitions, retention, "earliest"))
+                        .onFailure(cause -> LOG.debug("system stream {} local-partition create deferred to publish/fetch: {}",
+                                                      address.asString(),
+                                                      cause.message()));
     }
 }

@@ -162,6 +162,43 @@ import static org.pragmatica.lang.Result.allOf;
                                              StreamReadForwardMetrics.NOOP);
     }
 
+    /// Fix #3: read-forwarding overload for REPLICATED single-/multi-partition streams that carry no
+    /// tiered/segment store (system streams, e.g. `system:cluster-events`). Wires the replica registry
+    /// + forward client + self node id and pins a replica-routed `readPreference` (typically
+    /// `ANY_REPLICA`) so a node OUTSIDE the stream's replica set forwards reads to a caught-up replica
+    /// instead of reading its own empty local partition. When self IS a caught-up replica the read
+    /// lands locally; during the bootstrap window (no caught-up replica visible yet) it fails soft to
+    /// the local partition (see {@link #selectReplicaAndRead}). No cursor/tiered machinery is wired —
+    /// those are `Option.none()`.
+    public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              String streamName,
+                                                              int partitionCount,
+                                                              Option<Function<T, Object>> partitionKeyExtractor,
+                                                              ReadPreference readPreference,
+                                                              ReplicaRegistry replicaRegistry,
+                                                              Option<StreamForwardClient> forwardClient,
+                                                              NodeId selfNodeId,
+                                                              StreamReadForwardMetrics metrics) {
+        return new PartitionedStreamAccess<>(partitionManager,
+                                             serializer,
+                                             deserializer,
+                                             streamName,
+                                             partitionCount,
+                                             partitionKeyExtractor,
+                                             NOOP_WRITER,
+                                             Option.none(),
+                                             Option.none(),
+                                             readPreference,
+                                             Option.some(replicaRegistry),
+                                             forwardClient,
+                                             selfNodeId,
+                                             Option.none(),
+                                             Option.none(),
+                                             metrics);
+    }
+
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
                                                               Serializer serializer,
                                                               Deserializer deserializer,
@@ -373,10 +410,9 @@ import static org.pragmatica.lang.Result.allOf;
     }
 
     private Promise<Long> routeToOwner(NodeId owner, int partition, byte[] bytes, long timestamp) {
-        if (owner.equals(selfNodeId)) {
-            return publishLocal(partition, bytes, timestamp);
-        }
-        return forwardClient.map(client -> client.publishRemote(owner, streamName, partition, bytes, timestamp))
+        return owner.equals(selfNodeId)
+             ? publishLocal(partition, bytes, timestamp)
+             : forwardClient.map(client -> client.publishRemote(owner, streamName, partition, bytes, timestamp))
                             .or(() -> publishLocal(partition, bytes, timestamp));
     }
 
@@ -433,10 +469,18 @@ import static org.pragmatica.lang.Result.allOf;
         return new PartitionInfo(pi.partition(), pi.headOffset(), pi.tailOffset(), pi.eventCount());
     }
 
+    /// Fix #3: the all-partitions fetch routes EACH partition read through the configured
+    /// `readPreference` (via {@link #readWithPreference}), not a hard-coded local-only
+    /// {@link #readPartition}. Previously `fetch(fromOffset, maxEvents)` always read locally regardless
+    /// of preference, so a non-replica reading a replicated single-partition system stream
+    /// (`system:cluster-events`) got its own empty partition (`200 []`) even with the replica registry +
+    /// forward client wired. With this change `GOVERNOR` (the default) still reads local — `readWithPreference`
+    /// routes GOVERNOR → `readPartition`, so existing local-only callers are unaffected — while
+    /// `ANY_REPLICA`/`NEAREST` forward to a caught-up replica.
     private Promise<List<StreamEvent<T>>> fetchFromAllPartitions(long fromOffset, int maxEvents) {
-        List<Promise<List<StreamEvent<T>>>> perPartitionPromises = IntStream.range(0, partitionCount).mapToObj(p -> readPartition(p,
-                                                                                                                                  fromOffset,
-                                                                                                                                  maxEvents))
+        List<Promise<List<StreamEvent<T>>>> perPartitionPromises = IntStream.range(0, partitionCount).mapToObj(p -> readWithPreference(p,
+                                                                                                                                       fromOffset,
+                                                                                                                                       maxEvents))
                                                                                   .toList();
         return Promise.allOf(perPartitionPromises)
                             .flatMap(results -> allOf(results).map(lists -> mergeAndLimit(lists, maxEvents)).async());
