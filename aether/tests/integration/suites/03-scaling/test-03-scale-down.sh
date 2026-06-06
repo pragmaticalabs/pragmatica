@@ -64,7 +64,9 @@ test_seed_marker() {
         -H "Content-Type: application/octet-stream" \
         --data-binary "@${MARKER_PUSH_FILE}" \
         "${CLUSTER_ENDPOINT}${marker_path}")
-    assert_eq "$status" "201" "Marker PUT returned 201 (sha=${push_sha:0:12}…)"
+    # 200 (not 201): a stored artifact PUT returns the deploy JSON ("uploaded"/"already-present"),
+    # same as .jar PUTs. The old 201 reflected the now-fixed bug where non-.jar PUTs were discarded.
+    assert_eq "$status" "200" "Marker PUT stored, returned 200 (sha=${push_sha:0:12}…)"
 }
 
 test_scale_up_to_7() {

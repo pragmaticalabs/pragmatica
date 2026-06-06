@@ -138,8 +138,11 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
 
     private Promise<MavenResponse> handlePutParsed(ParsedPath parsed, byte[] content) {
         return switch (parsed){
-            case ParsedPath.ArtifactPath ap when ap.extension().equals("jar") -> handlePutJar(ap, content);
-            case ParsedPath.ArtifactPath _ -> Promise.success(MavenResponse.created());
+            // Every artifact is durable, not just .jar: store.deploy is byte-oriented and
+            // extension-blind. Previously non-jar artifact PUTs (e.g. .bin/.pom) returned 201 with
+            // the content DISCARDED, so a subsequent GET 404'd — silent data loss (the GET path
+            // resolves any extension). Sidecars stay contentless 201s (separate ParsedPath cases).
+            case ParsedPath.ArtifactPath ap -> handlePutArtifact(ap, content);
             case ParsedPath.ChecksumPath _ -> Promise.success(MavenResponse.created());
             case ParsedPath.MetadataPath _ -> Promise.success(MavenResponse.created());
         };
@@ -161,7 +164,7 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
     /// each client's "uploaded" semantics still hold (the PUT they sent did write
     /// content to the store) and `ArtifactStore.deploy` is idempotent at the chunk
     /// level (content-addressed BlockIds).
-    private Promise<MavenResponse> handlePutJar(ParsedPath.ArtifactPath ap, byte[] content) {
+    private Promise<MavenResponse> handlePutArtifact(ParsedPath.ArtifactPath ap, byte[] content) {
         return store.metadata(ap.artifact())
                     .flatMap(metaOpt -> metaOpt.map(meta -> buildAlreadyPresentResponse(ap.artifact(), meta))
                                               .or(() -> deployAndBuildResponse(ap.artifact(), content)))
