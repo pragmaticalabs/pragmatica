@@ -27,6 +27,7 @@ import org.pragmatica.messaging.MessageReceiver;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -111,13 +112,20 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// Create (materialize + publish) a stream. LOCAL materialization and CLUSTER-CONFIG publish are
     /// DECOUPLED so a transient consensus failure never destroys the already-materialized local
-    /// partition (Fix #2):
+    /// partition (Fix #2). The already-materialized branch is split by COMMIT state so the hot
+    /// per-publish path (`StreamRoutes.ensureStreamExists` calls this on EVERY publish) does not
+    /// thrash consensus:
     ///
-    ///   - **Stream already materialized locally** — re-attempt the (idempotent) config publish so a
-    ///     prior publish that failed transiently can be re-committed by a retry. Publish success →
-    ///     `STREAM_ALREADY_EXISTS` (the duplicate-create contract; a "stop" signal to the self-healing
-    ///     retry). Publish failure → the publish error (a "retry" signal). No re-materialization and no
-    ///     second byte allocation occur on this path.
+    ///   - **Materialized AND config committed** — return `STREAM_ALREADY_EXISTS` immediately, with NO
+    ///     consensus round-trip. This is the steady-state path for every publish to an existing stream;
+    ///     re-committing the (idempotent) config here floods consensus and — worse — surfaces a
+    ///     transient commit failure as a publish failure to the caller, since
+    ///     `recoverWhenAlreadyExists` only tolerates `STREAM_ALREADY_EXISTS`.
+    ///   - **Materialized but NOT yet committed** — the first publish failed transiently (or this is a
+    ///     fresh local ring whose config never committed). Re-attempt the idempotent publish so the
+    ///     leader-pinned retry can commit it; success marks the entry committed and reports
+    ///     `STREAM_ALREADY_EXISTS` (the retry "stop" signal), a transient failure surfaces for retry.
+    ///     No re-materialization and no second byte allocation occur on this path.
     ///   - **Fresh stream** — validate (strong-mode, memory), materialize the local ring + reserve its
     ///     off-heap bytes, then publish the config. On publish failure the local ring is KEPT (NOT
     ///     rolled back): the owner can still serve/publish locally and the leader's reconcile retry can
@@ -127,35 +135,52 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Genuine, non-transient failures (`STREAM_MEMORY_EXCEEDED`, `AHSE_REQUIRED_FOR_STRONG`) are
     /// returned before any materialization, so they neither allocate nor publish.
     public Result<Unit> createStream(StreamConfig config) {
-        if (streams.containsKey(config.name())) {return republishExistingConfig(config);}
+        return option(streams.get(config.name()))
+                   .fold(() -> createFreshStream(config), existing -> ensureConfigCommitted(config, existing));
+    }
+
+    /// Already materialized: a committed config is an instant `STREAM_ALREADY_EXISTS` (no consensus —
+    /// the hot per-publish path); a not-yet-committed entry re-attempts the idempotent publish so the
+    /// leader-pinned retry can commit the config that a prior attempt failed to commit.
+    private Result<Unit> ensureConfigCommitted(StreamConfig config, StreamEntry existing) {
+        return existing.isCommitted()
+              ? StreamError.General.STREAM_ALREADY_EXISTS.result()
+              : republishExistingConfig(config, existing);
+    }
+
+    private Result<Unit> createFreshStream(StreamConfig config) {
         if (config.consistencyMode() == ConsistencyMode.STRONG && evictionListener == EvictionListener.NOOP) {return StreamError.General.AHSE_REQUIRED_FOR_STRONG.result();}
         var requiredBytes = calculateStreamBytes(config);
         if (totalAllocatedBytes.get() + requiredBytes > maxTotalBytes) {return StreamError.General.STREAM_MEMORY_EXCEEDED.result();}
         var entry = StreamEntry.fromConfig(config, evictionListener);
         return option(streams.putIfAbsent(config.name(), entry))
                    .fold(() -> reserveAndPublish(config, entry, requiredBytes),
-                         _ -> closeLoserAndRepublish(config, entry));
+                         winner -> closeLoserAndRepublish(config, entry, winner));
     }
 
     /// Won the put-if-absent race: reserve the partition's off-heap bytes and publish the config.
+    /// A successful publish latches the entry committed so subsequent creates short-circuit.
     private Result<Unit> reserveAndPublish(StreamConfig config, StreamEntry entry, long requiredBytes) {
         totalAllocatedBytes.addAndGet(requiredBytes);
-        return publishStreamConfig(config);
+        return publishStreamConfig(config).onSuccess(_ -> entry.markCommitted());
     }
 
     /// Lost the put-if-absent race: another thread already materialized the stream, so close this
-    /// duplicate entry (no bytes were reserved for it) and re-publish the (idempotent) config.
-    private Result<Unit> closeLoserAndRepublish(StreamConfig config, StreamEntry entry) {
-        entry.close();
-        return republishExistingConfig(config);
+    /// duplicate entry (no bytes were reserved for it) and reconcile against the winner's commit state.
+    private Result<Unit> closeLoserAndRepublish(StreamConfig config, StreamEntry duplicate, StreamEntry winner) {
+        duplicate.close();
+        return ensureConfigCommitted(config, winner);
     }
 
-    /// Re-publish the config for a stream whose local partition is already materialized. The KV `Put`
-    /// is idempotent, so re-committing is safe; a successful (re-)commit reports `STREAM_ALREADY_EXISTS`
-    /// (duplicate-create contract + retry "stop" signal), while a transient publish failure surfaces so
-    /// the leader-pinned retry can re-attempt. Never re-materializes or re-reserves bytes.
-    private Result<Unit> republishExistingConfig(StreamConfig config) {
-        return publishStreamConfig(config).flatMap(_ -> StreamError.General.STREAM_ALREADY_EXISTS.result());
+    /// Re-publish the config for a stream whose local partition is already materialized but whose config
+    /// never committed. The KV `Put` is idempotent; a successful (re-)commit latches the entry committed
+    /// and reports `STREAM_ALREADY_EXISTS` (duplicate-create contract + retry "stop" signal), while a
+    /// transient publish failure surfaces so the leader-pinned retry can re-attempt. Never
+    /// re-materializes or re-reserves bytes.
+    private Result<Unit> republishExistingConfig(StreamConfig config, StreamEntry entry) {
+        return publishStreamConfig(config)
+                   .onSuccess(_ -> entry.markCommitted())
+                   .flatMap(_ -> StreamError.General.STREAM_ALREADY_EXISTS.result());
     }
 
     public Result<Unit> destroyStream(String streamName) {
@@ -216,6 +241,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         var requiredBytes = calculateStreamBytes(config);
         var entry = StreamEntry.fromConfig(config, evictionListener);
         totalAllocatedBytes.addAndGet(requiredBytes);
+        // Materialized FROM a committed consensus Put — the config is already committed, so a later
+        // createStream on this node (e.g. a follower handling a publish) must short-circuit, not re-publish.
+        entry.markCommitted();
         return entry;
     }
 
@@ -421,7 +449,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     record StreamEntry(StreamConfig config,
                        OffHeapRingBuffer[] partitions,
                        long createdAt,
-                       AtomicLong lastActivityRef) implements AutoCloseable {
+                       AtomicLong lastActivityRef,
+                       AtomicBoolean configCommitted) implements AutoCloseable {
         static StreamEntry fromConfig(StreamConfig config, EvictionListener listener) {
             var retention = config.retention();
             var policy = deriveEvictionPolicy(config);
@@ -433,7 +462,17 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                          listener,
                                                                                                          policy);}
             var now = System.currentTimeMillis();
-            return new StreamEntry(config, buffers, now, new AtomicLong(now));
+            return new StreamEntry(config, buffers, now, new AtomicLong(now), new AtomicBoolean(false));
+        }
+
+        /// Whether this stream's config has been committed to the cluster KV. Once true, a duplicate
+        /// `createStream` returns `STREAM_ALREADY_EXISTS` without touching consensus.
+        boolean isCommitted() {
+            return configCommitted.get();
+        }
+
+        @Contract void markCommitted() {
+            configCommitted.set(true);
         }
 
         long lastActivity() {

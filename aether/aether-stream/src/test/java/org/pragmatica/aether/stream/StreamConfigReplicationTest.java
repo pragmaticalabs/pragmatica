@@ -296,6 +296,61 @@ class StreamConfigReplicationTest {
         }
     }
 
+    @Nested
+    class HotPathNoRepublish {
+
+        @Test
+        void createStream_onCommittedStream_issuesNoAdditionalConsensusPut() {
+            // Regression guard: StreamRoutes.ensureStreamExists calls createStream on EVERY publish.
+            // Once the config is committed, a duplicate create must return STREAM_ALREADY_EXISTS without
+            // any consensus round-trip — re-publishing here floods consensus and surfaces a transient
+            // commit failure as a publish failure (the 04/08 "100% publish error" regression).
+            var manager = streamPartitionManager(Long.MAX_VALUE, clusterNode);
+            try {
+                var config = StreamConfig.streamConfig("orders");
+                manager.createStream(config)
+                       .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected fresh create to succeed"));
+                assertThat(clusterNode.streamConfigPuts()).as("fresh create publishes exactly one config Put").hasSize(1);
+
+                manager.createStream(config)
+                       .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected STREAM_ALREADY_EXISTS"))
+                       .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.STREAM_ALREADY_EXISTS));
+                manager.createStream(config);
+                manager.createStream(config);
+
+                assertThat(clusterNode.streamConfigPuts())
+                    .as("createStream on a committed stream must NOT re-publish to consensus (hot per-publish path)")
+                    .hasSize(1);
+            } finally {
+                manager.close();
+            }
+        }
+
+        @Test
+        void createStream_onConsensusHydratedStream_issuesNoConsensusPut() {
+            // A follower hydrates a stream from a committed ValuePut. A subsequent createStream on that
+            // follower (e.g. it handles a publish for a stream the leader created) must short-circuit to
+            // STREAM_ALREADY_EXISTS without re-publishing — the hydrated config is already committed.
+            var follower = streamPartitionManager(Long.MAX_VALUE, clusterNode);
+            try {
+                var config = StreamConfig.streamConfig("orders");
+                var put = new KVCommand.Put<StreamConfigKey, StreamConfigValue>(StreamConfigKey.streamConfigKey("orders"),
+                                                                                StreamConfigValue.streamConfigValue(config));
+                follower.onStreamConfigPut(new ValuePut<>(put, Option.empty()));
+
+                follower.createStream(config)
+                        .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected STREAM_ALREADY_EXISTS"))
+                        .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.STREAM_ALREADY_EXISTS));
+
+                assertThat(clusterNode.streamConfigPuts())
+                    .as("createStream on a consensus-hydrated stream must not re-publish")
+                    .isEmpty();
+            } finally {
+                follower.close();
+            }
+        }
+    }
+
     @AfterEach
     void tearDown() {
         // streams owned by each test are closed inline via try/finally
