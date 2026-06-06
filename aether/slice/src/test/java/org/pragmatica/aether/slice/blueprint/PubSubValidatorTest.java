@@ -61,8 +61,8 @@ class PubSubValidatorTest {
             var topology = new SliceTopology(
                 "self-loop-slice", "org.example:self-loop:1.0.0",
                 List.of(), List.of(), List.of(),
-                List.of(new SliceTopology.TopicPub("internal-events", "Event")),
-                List.of(new SliceTopology.TopicSub("internal-events", "onEvent", "Event"))
+                List.of(new SliceTopology.TopicPub("internal-events", "internal-events", "Event")),
+                List.of(new SliceTopology.TopicSub("internal-events", "internal-events", "onEvent", "Event"))
             );
 
             PubSubValidator.validate(List.of(topology))
@@ -168,7 +168,7 @@ class PubSubValidatorTest {
         return new SliceTopology(
             "pub-slice", "org.example:pub-slice:1.0.0",
             List.of(), List.of(), List.of(),
-            List.of(new SliceTopology.TopicPub(config, "Event")),
+            List.of(new SliceTopology.TopicPub(config, config, "Event")),
             List.of()
         );
     }
@@ -178,7 +178,7 @@ class PubSubValidatorTest {
             "sub-slice", "org.example:sub-slice:1.0.0",
             List.of(), List.of(), List.of(),
             List.of(),
-            List.of(new SliceTopology.TopicSub(config, "onEvent", "Event"))
+            List.of(new SliceTopology.TopicSub(config, config, "onEvent", "Event"))
         );
     }
 

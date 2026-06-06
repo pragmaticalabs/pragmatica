@@ -115,9 +115,9 @@ public record TopologyGraph(List<TopologyNode> nodes, List<TopologyEdge> edges) 
                                                   Map<String, TopologyNode> nodeMap,
                                                   List<TopologyEdge> edgeList) {
         for (var pub : slice.publishes()) {
-            var topicId = "topic-pub:" + slice.artifact() + ":" + pub.config();
+            var topicId = "topic-pub:" + slice.artifact() + ":" + pub.address();
             nodeMap.putIfAbsent(topicId,
-                                new TopologyNode(topicId, NodeType.TOPIC_PUB, pub.config(), slice.artifact()));
+                                new TopologyNode(topicId, NodeType.TOPIC_PUB, pub.address(), slice.artifact()));
             edgeList.add(new TopologyEdge(sliceId, topicId, EdgeStyle.SOLID, ""));
         }
     }
@@ -127,9 +127,9 @@ public record TopologyGraph(List<TopologyNode> nodes, List<TopologyEdge> edges) 
                                                     Map<String, TopologyNode> nodeMap,
                                                     List<TopologyEdge> edgeList) {
         for (var sub : slice.subscribes()) {
-            var topicId = "topic-sub:" + slice.artifact() + ":" + sub.config();
+            var topicId = "topic-sub:" + slice.artifact() + ":" + sub.address();
             nodeMap.putIfAbsent(topicId,
-                                new TopologyNode(topicId, NodeType.TOPIC_SUB, sub.config(), slice.artifact()));
+                                new TopologyNode(topicId, NodeType.TOPIC_SUB, sub.address(), slice.artifact()));
             edgeList.add(new TopologyEdge(topicId, sliceId, EdgeStyle.SOLID, ""));
         }
     }

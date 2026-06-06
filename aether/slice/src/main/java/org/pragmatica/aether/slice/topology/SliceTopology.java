@@ -28,7 +28,16 @@ public record SliceTopology(String sliceName,
 
     public record ResourceDep(String type, String config){}
 
-    public record TopicPub(String config, String messageType){}
+    /// A published topic.
+    ///
+    /// `config` is the raw declared topic string (kept verbatim for back-compat). `address` is the
+    /// resolved canonical `namespace:topic:version` — a bare/legacy name has its namespace derived
+    /// from the slice's blueprint Maven coordinates and its version defaulted to `1.0.0`; an
+    /// already-namespaced declaration is kept as-is. Topology node identity and cross-slice pub/sub
+    /// matching key on `address`, so a bare publisher and an explicitly-namespaced subscriber of the
+    /// same logical topic connect.
+    public record TopicPub(String config, String address, String messageType){}
 
-    public record TopicSub(String config, String method, String messageType){}
+    /// A subscribed topic. See [TopicPub] for the `config` vs. `address` distinction.
+    public record TopicSub(String config, String address, String method, String messageType){}
 }

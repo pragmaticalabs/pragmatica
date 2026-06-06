@@ -4,7 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.topology;
 
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.Slice;
+import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
+import org.pragmatica.aether.slice.topic.TopicAddress;
+import org.pragmatica.aether.slice.topic.TopicVersion;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -103,8 +107,8 @@ import org.slf4j.LoggerFactory;
                                  parseRoutes(props),
                                  parseDependencies(props),
                                  parseResources(props),
-                                 parsePublishTopics(props),
-                                 parseSubscriptions(props));
+                                 parsePublishTopics(props, artifact),
+                                 parseSubscriptions(props, artifact));
     }
 
     private static List<SliceTopology.Route> parseRoutes(Properties props) {
@@ -148,19 +152,19 @@ import org.slf4j.LoggerFactory;
         return resources;
     }
 
-    private static List<SliceTopology.TopicPub> parsePublishTopics(Properties props) {
+    private static List<SliceTopology.TopicPub> parsePublishTopics(Properties props, String artifact) {
         var count = intProp(props, "publish.topics.count");
         var topics = new ArrayList<SliceTopology.TopicPub>();
         for (int i = 0;i <count;i++) {
             var prefix = "publish.topic." + i + ".";
             var config = props.getProperty(prefix + "config", "");
             var messageType = props.getProperty(prefix + "messageType", "");
-            topics.add(new SliceTopology.TopicPub(config, messageType));
+            topics.add(new SliceTopology.TopicPub(config, resolveTopicAddress(config, artifact), messageType));
         }
         return topics;
     }
 
-    private static List<SliceTopology.TopicSub> parseSubscriptions(Properties props) {
+    private static List<SliceTopology.TopicSub> parseSubscriptions(Properties props, String artifact) {
         var count = intProp(props, "reactive.count");
         var subs = new ArrayList<SliceTopology.TopicSub>();
         for (int i = 0;i <count;i++) {
@@ -170,10 +174,35 @@ import org.slf4j.LoggerFactory;
                 var config = props.getProperty(prefix + "config", "");
                 var method = props.getProperty(prefix + "method", "");
                 var messageType = props.getProperty(prefix + "messageType", "");
-                subs.add(new SliceTopology.TopicSub(config, method, messageType));
+                subs.add(new SliceTopology.TopicSub(config, resolveTopicAddress(config, artifact), method, messageType));
             }
         }
         return subs;
+    }
+
+    /// Resolve a declared topic config string to its canonical `namespace:topic:version` form for
+    /// topology display and cross-slice matching.
+    ///
+    /// Mirrors the deploy-path rule in `NodeDeploymentState.resolveTopicAddress`:
+    ///  - an already-namespaced declaration (`namespace:topic:version`) is kept verbatim;
+    ///  - a bare/legacy name derives its namespace from the slice's blueprint Maven coordinates
+    ///    via [BlueprintNamespace] and defaults the version to [TopicVersion#defaultVersion].
+    ///
+    /// Resolution is best-effort: if the artifact coordinates or the declared name fail to parse
+    /// (e.g. malformed manifest), the raw `config` string is returned unchanged so the topology
+    /// stays renderable rather than dropping the node.
+    private static String resolveTopicAddress(String config, String artifact) {
+        if (config == null || config.isBlank()) {return config;}
+        if (config.contains(":")) {
+            return TopicAddress.topicAddress(config)
+                               .map(TopicAddress::asString)
+                               .or(config);
+        }
+        return Artifact.artifact(artifact)
+                       .flatMap(BlueprintNamespace::deriveNamespace)
+                       .flatMap(namespace -> TopicAddress.topicAddress(namespace, config, TopicVersion.defaultVersion()))
+                       .map(TopicAddress::asString)
+                       .or(config);
     }
 
     private static int intProp(Properties props, String key) {
