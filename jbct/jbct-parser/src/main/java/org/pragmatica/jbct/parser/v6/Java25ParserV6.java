@@ -217,9 +217,6 @@ public final class Java25ParserV6 {
     private static final int KIND_INLINE__LT_EQ = 84;
     private static final int KIND_INLINE__GT_EQ = 85;
     private static final int KIND_INLINE_INSTANCEOF = 40;
-    private static final int KIND_URSHIFT = 25;
-    private static final int KIND_LSHIFT = 27;
-    private static final int KIND_RSHIFT = 26;
     private static final int KIND_INLINE__PLUS = 107;
     private static final int KIND_INLINE__MINUS = 108;
     private static final int KIND_INLINE__SLASH = 109;
@@ -260,7 +257,6 @@ public final class Java25ParserV6 {
     private final CstArrayBuilder cst;
     private final List<Diagnostic> diagnostics;
     private int pos;
-    private int splitGt;   // phantom > tokens remaining from a split >> or >>> token in type-arg context
     private int errorPos;
     private String expected;
     private int found;
@@ -698,119 +694,6 @@ public final class Java25ParserV6 {
 
     private void advance() {
         pos = tokens.nextNonTrivia(pos + 1);
-    }
-
-    // Consume one closing '>' in a generic type context.
-    // Handles the Java angle-bracket ambiguity: >> and >>> are lexed as single
-    // tokens but must be split into individual '>' tokens when closing nested
-    // type-argument lists.  Returns true and advances state on success, false
-    // (without modifying state) if neither a '>' nor a splittable >> / >>> is present.
-    private boolean advanceGt() {
-        if (splitGt > 0) {
-            splitGt--;
-            return true;  // consume phantom '>' — pos stays, no token array advance
-        }
-        int k = peek();
-        if (k == KIND_INLINE__GT) {
-            advance();
-            return true;
-        }
-        if (k == KIND_RSHIFT) {
-            advance();
-            splitGt = 1;  // one phantom '>' left over from >>
-            return true;
-        }
-        if (k == KIND_URSHIFT) {
-            advance();
-            splitGt = 2;  // two phantom '>' left over from >>>
-            return true;
-        }
-        return false;
-    }
-
-    // Consume '>>' in an expression shift context.
-    // The lexer emits '>>' as two consecutive INLINE__GT tokens rather than a
-    // single KIND_RSHIFT token.  Returns true and advances past both on success.
-    private boolean advanceRShift() {
-        int k = peek();
-        if (k == KIND_RSHIFT) {
-            advance();
-            return true;
-        }
-        if (k == KIND_INLINE__GT) {
-            int nextPos = tokens.nextNonTrivia(pos + 1);
-            if (nextPos < tokens.count() && tokens.kindAt(nextPos) == KIND_INLINE__GT) {
-                advance();  // consume first >
-                advance();  // consume second >
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // Consume '>>>' in an expression shift context.
-    // The lexer emits '>>>' as three consecutive INLINE__GT tokens rather than a
-    // single KIND_URSHIFT token.  Returns true and advances past all three on success.
-    private boolean advanceURShift() {
-        int k = peek();
-        if (k == KIND_URSHIFT) {
-            advance();
-            return true;
-        }
-        if (k == KIND_INLINE__GT) {
-            int nextPos1 = tokens.nextNonTrivia(pos + 1);
-            if (nextPos1 < tokens.count() && tokens.kindAt(nextPos1) == KIND_INLINE__GT) {
-                int nextPos2 = tokens.nextNonTrivia(nextPos1 + 1);
-                if (nextPos2 < tokens.count() && tokens.kindAt(nextPos2) == KIND_INLINE__GT) {
-                    advance();  // consume first >
-                    advance();  // consume second >
-                    advance();  // consume third >
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    // Consume '<<' in an expression shift context.
-    // The lexer emits '<<' as two consecutive INLINE__LT tokens rather than a
-    // single KIND_LSHIFT token.  Returns true and advances past both tokens on
-    // success, false (without modifying state) if no left-shift is present.
-    private boolean advanceLShift() {
-        int k = peek();
-        if (k == KIND_LSHIFT) {
-            advance();
-            return true;
-        }
-        if (k == KIND_INLINE__LT) {
-            int nextPos = tokens.nextNonTrivia(pos + 1);
-            if (nextPos < tokens.count() && tokens.kindAt(nextPos) == KIND_INLINE__LT) {
-                advance();  // consume first <
-                advance();  // consume second <
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // Consume '<<=' in an assignment context.
-    // The lexer emits '<<=' as INLINE__LT + INLINE__LT_EQ rather than a
-    // single KIND_LSHIFTASSIGN token.
-    private boolean advanceLShiftAssign() {
-        int k = peek();
-        if (k == KIND_LSHIFTASSIGN) {
-            advance();
-            return true;
-        }
-        if (k == KIND_INLINE__LT) {
-            int nextPos = tokens.nextNonTrivia(pos + 1);
-            if (nextPos < tokens.count() && tokens.kindAt(nextPos) == KIND_INLINE__LT_EQ) {
-                advance();  // consume <
-                advance();  // consume <=
-                return true;
-            }
-        }
-        return false;
     }
 
     private int peek() {
@@ -2055,7 +1938,6 @@ public final class Java25ParserV6 {
         if (!parseTypeParam(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         // zero-or-more: rep_0
         while (true) {
-            if (splitGt > 0) break; // phantom '>' available — at closing position
             int savedPos_rep_0 = pos;
             int savedNodes_rep_0 = cst.currentNodeCount();
             boolean iterOk_rep_0 = false;
@@ -2072,7 +1954,8 @@ public final class Java25ParserV6 {
             }
             if (pos == savedPos_rep_0) break; // guard against infinite loops on zero-width matches
         }
-        if (!advanceGt()) { fail("'>'", RULE_TypeParams_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        if (peek() != KIND_INLINE__GT) { fail("'>'", RULE_TypeParams_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+        advance();
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
         if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
         if (lastTok < firstTok) lastTok = firstTok;
@@ -4760,7 +4643,8 @@ public final class Java25ParserV6 {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            if (!advanceLShiftAssign()) { fail("LShiftAssign", RULE_Assignment_KIND); break; }
+                            if (peek() != KIND_LSHIFTASSIGN) { fail("LShiftAssign", RULE_Assignment_KIND); break; }
+                            advance();
                             matched_alt_1 = true;
                         } while (false);
                         if (!matched_alt_1) {
@@ -5355,7 +5239,17 @@ public final class Java25ParserV6 {
                     boolean cutHit_alt_1 = false;
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            if (!advanceURShift()) { fail("URShift", RULE_Shift_KIND); break; }
+                            int __ie_prev_2 = -1;
+                            if (peek() != KIND_INLINE__GT) { fail("URShift", RULE_Shift_KIND); break; }
+                            __ie_prev_2 = pos;
+                            advance();
+                            if (peek() != KIND_INLINE__GT || __ie_prev_2 < 0 || tokens.endAt(__ie_prev_2) != tokens.startAt(pos)) { fail("URShift", RULE_Shift_KIND); break; }
+                            __ie_prev_2 = pos;
+                            advance();
+                            if (peek() != KIND_INLINE__GT || __ie_prev_2 < 0 || tokens.endAt(__ie_prev_2) != tokens.startAt(pos)) { fail("URShift", RULE_Shift_KIND); break; }
+                            __ie_prev_2 = pos;
+                            advance();
+                            if (peek() == KIND_INLINE__EQ && __ie_prev_2 >= 0 && tokens.endAt(__ie_prev_2) == tokens.startAt(pos)) { fail("URShift", RULE_Shift_KIND); break; }
                             matched_alt_1 = true;
                         } while (false);
                         if (!matched_alt_1) {
@@ -5365,7 +5259,14 @@ public final class Java25ParserV6 {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            if (!advanceLShift()) { fail("LShift", RULE_Shift_KIND); break; }
+                            int __ie_prev_3 = -1;
+                            if (peek() != KIND_INLINE__LT) { fail("LShift", RULE_Shift_KIND); break; }
+                            __ie_prev_3 = pos;
+                            advance();
+                            if (peek() != KIND_INLINE__LT || __ie_prev_3 < 0 || tokens.endAt(__ie_prev_3) != tokens.startAt(pos)) { fail("LShift", RULE_Shift_KIND); break; }
+                            __ie_prev_3 = pos;
+                            advance();
+                            if (peek() == KIND_INLINE__EQ && __ie_prev_3 >= 0 && tokens.endAt(__ie_prev_3) == tokens.startAt(pos)) { fail("LShift", RULE_Shift_KIND); break; }
                             matched_alt_1 = true;
                         } while (false);
                         if (!matched_alt_1) {
@@ -5375,7 +5276,15 @@ public final class Java25ParserV6 {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            if (!advanceRShift()) { fail("RShift", RULE_Shift_KIND); break; }
+                            int __ie_prev_4 = -1;
+                            if (peek() != KIND_INLINE__GT) { fail("RShift", RULE_Shift_KIND); break; }
+                            __ie_prev_4 = pos;
+                            advance();
+                            if (peek() != KIND_INLINE__GT || __ie_prev_4 < 0 || tokens.endAt(__ie_prev_4) != tokens.startAt(pos)) { fail("RShift", RULE_Shift_KIND); break; }
+                            __ie_prev_4 = pos;
+                            advance();
+                            if (peek() == KIND_INLINE__GT && __ie_prev_4 >= 0 && tokens.endAt(__ie_prev_4) == tokens.startAt(pos)) { fail("RShift", RULE_Shift_KIND); break; }
+                            if (peek() == KIND_INLINE__EQ && __ie_prev_4 >= 0 && tokens.endAt(__ie_prev_4) == tokens.startAt(pos)) { fail("RShift", RULE_Shift_KIND); break; }
                             matched_alt_1 = true;
                         } while (false);
                         if (!matched_alt_1) {
@@ -7176,7 +7085,6 @@ public final class Java25ParserV6 {
                     if (!parseTypeArg(self)) { break; }
                     // zero-or-more: rep_1
                     while (true) {
-                        if (splitGt > 0) break; // phantom '>' available — at closing position
                         int savedPos_rep_1 = pos;
                         int savedNodes_rep_1 = cst.currentNodeCount();
                         boolean iterOk_rep_1 = false;
@@ -7193,7 +7101,8 @@ public final class Java25ParserV6 {
                         }
                         if (pos == savedPos_rep_1) break; // guard against infinite loops on zero-width matches
                     }
-                    if (!advanceGt()) { fail("'>'", RULE_TypeArgs_KIND); break; }
+                    if (peek() != KIND_INLINE__GT) { fail("'>'", RULE_TypeArgs_KIND); break; }
+                    advance();
                     matched_alt_0 = true;
                 } while (false);
                 if (!matched_alt_0) {

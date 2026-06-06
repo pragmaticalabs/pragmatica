@@ -17,7 +17,7 @@
     <description>Java 25 PEG parser with CST output for JBCT tools (v6 lex-then-parse pipeline)</description>
 
     <properties>
-        <peglib.maven.plugin.version>0.6.1</peglib.maven.plugin.version>
+        <peglib.maven.plugin.version>0.6.2</peglib.maven.plugin.version>
     </properties>
 
     <dependencies>
