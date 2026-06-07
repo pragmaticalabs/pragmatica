@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.membership.fsm;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker;
+import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
@@ -796,6 +797,76 @@ class MembershipFsmTest {
 
     private static void promoteToMember(MembershipFsm manager, NodeId id) {
         manager.onSwimHealthy(id, 1L);
+    }
+
+    /// Membership-FSM unification (Wave D, consumer #4): the FSM-state → quiescence `HealthHint`
+    /// projection that replaces the SWIM-hints map feeding `ClusterGenerationProjector`. Downgrade-only
+    /// (DEAD → FAULTY, SUSPECT → SUSPECTED); every healthy-by-construction state is OMITTED so the
+    /// projector defaults it to HEALTHY — reproducing the swimHints semantics exactly.
+    @Nested
+    class HealthHints {
+        @Test
+        void member_isOmitted_soProjectorDefaultsHealthy() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            assertThat(manager.memberStates()).containsEntry(A, "Member");
+            assertThat(manager.healthHints()).doesNotContainKey(A);
+        }
+
+        @Test
+        void observed_isOmitted_soProjectorDefaultsHealthy() {
+            var manager = activeManager();
+
+            manager.onMemberDescriptor(unlabeledInfo(A, "host-a", 9001));
+            assertThat(manager.memberStates()).containsEntry(A, "Observed");
+            assertThat(manager.healthHints()).doesNotContainKey(A);
+        }
+
+        @Test
+        void suspect_mapsToSuspected() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onSwimSuspect(A, 2L);
+            assertThat(manager.memberStates()).containsEntry(A, "Suspect");
+            assertThat(manager.healthHints()).containsEntry(A, HealthHint.SUSPECTED);
+        }
+
+        @Test
+        void departing_isOmitted_soProjectorDefaultsHealthy() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onSwimSuspect(A, 2L);
+            manager.onDownHysteresisMet(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Departing");
+            assertThat(manager.healthHints()).doesNotContainKey(A);
+        }
+
+        @Test
+        void dead_mapsToFaulty() {
+            var manager = activeManager();
+
+            driveToDead(manager, A, 4L);
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+            assertThat(manager.healthHints()).containsEntry(A, HealthHint.FAULTY);
+        }
+
+        @Test
+        void mixedCluster_carriesOnlyDowngrades() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            promoteToMember(manager, B);
+            manager.onSwimSuspect(B, 2L);
+            driveToDead(manager, C, 4L);
+
+            var hints = manager.healthHints();
+            assertThat(hints).doesNotContainKey(A);
+            assertThat(hints).containsEntry(B, HealthHint.SUSPECTED);
+            assertThat(hints).containsEntry(C, HealthHint.FAULTY);
+        }
     }
 
     private static void driveToDead(MembershipFsm manager, NodeId id, long incarnation) {

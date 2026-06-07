@@ -28,7 +28,6 @@ import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -266,14 +265,14 @@ class GenerationSnapshotPublisherAsyncTest {
         AtomicReference<Map<AetherKey, AetherValue>> kvRef = new AtomicReference<>(new HashMap<>());
         // Provide a copy each call so the publisher's snapshot supplier matches production semantics.
         java.util.function.Supplier<Map<AetherKey, AetherValue>> kvSupplier = () -> Map.copyOf(kvRef.get());
-        var swimHints = SwimHintsRegistry.swimHintsRegistry(Duration.ofSeconds(60), () -> {});
+        java.util.function.Supplier<Map<NodeId, org.pragmatica.aether.slice.generation.HealthHint>> healthHints = Map::of;
         var cluster = new ManualPromiseClusterNode();
         var executor = Executors.newSingleThreadExecutor();
         var publisher = GenerationSnapshotPublisher.generationSnapshotPublisher(isLeader::get,
                                                                                 () -> 1L,
                                                                                 hlcClock,
                                                                                 projector,
-                                                                                swimHints,
+                                                                                healthHints,
                                                                                 kvSupplier,
                                                                                 kvStore,
                                                                                 cluster,

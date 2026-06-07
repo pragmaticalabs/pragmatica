@@ -22,7 +22,6 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
-import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -130,7 +129,7 @@ class LeaderStuckEpochRegressionTest {
         var isLeader = new AtomicBoolean(true);
         AtomicReference<Map<AetherKey, AetherValue>> kvRef = new AtomicReference<>(new HashMap<>());
         java.util.function.Supplier<Map<AetherKey, AetherValue>> kvSupplier = () -> Map.copyOf(kvRef.get());
-        var swimHints = SwimHintsRegistry.swimHintsRegistry(Duration.ofSeconds(60), () -> {});
+        java.util.function.Supplier<Map<NodeId, org.pragmatica.aether.slice.generation.HealthHint>> healthHints = Map::of;
         var cluster = new KvReflectingClusterNode(kvStore, kvRef);
         var executor = Executors.newSingleThreadExecutor();
         // Membership-v2 finale: membership is SWIM/NTT-derived presence; the node-lifecycle KV
@@ -142,7 +141,7 @@ class LeaderStuckEpochRegressionTest {
                                                                                 () -> 1L,
                                                                                 hlcClock,
                                                                                 projector,
-                                                                                swimHints,
+                                                                                healthHints,
                                                                                 kvSupplier,
                                                                                 kvStore,
                                                                                 cluster,
