@@ -16,7 +16,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.SwimHealt
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.SwimSuspect;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.SwimUnknown;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.UpHysteresisMet;
-import org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker;
+import org.pragmatica.aether.deployment.membership.ntt.PresenceSampler;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -42,14 +42,14 @@ import java.util.stream.Collectors;
 /// membership-death decision-maker). It is no longer a passive shadow: it drives one
 /// [`MembershipState`] FSM per [`NodeId`] from tapped SWIM / transport / liveness edges and, on
 /// every transition into [`MembershipState.Dead`], hard-evicts the dead identity from the
-/// [`NodeTopologyTracker`] (`ntt.evict(id)`). The presence-derived
+/// [`PresenceSampler`] (`presenceSampler.evict(id)`). The presence-derived
 /// `TopologyObserver → MembershipDecision → ClusterEventAggregator` path then emits the
 /// `NODE_FAILED` / `NODE_LEFT` event from the resulting `stableMembers` delta — this FSM never
-/// emits an event directly; mutating NTT's presence view is the sole side effect.
+/// emits an event directly; mutating presence sampler's presence view is the sole side effect.
 ///
 /// **Always-on per-node, consensus-independent, SWIM/liveness-driven.** The FSM is armed from
 /// construction on EVERY node (not only the leader): each node drives its OWN per-member FSMs from its
-/// tapped SWIM gossip + composite liveness and evicts from its OWN [`NodeTopologyTracker`] view,
+/// tapped SWIM gossip + composite liveness and evicts from its OWN [`PresenceSampler`] view,
 /// independent of consensus health — so a dead member is removed even when the death decision must not
 /// wait on a consensus round, and even on a follower. Only scaling (`LeaderReconciler`) stays
 /// leader-gated; membership tracking and eviction are unconditional.
@@ -57,8 +57,8 @@ import java.util.stream.Collectors;
 /// **Promotion is edge-driven (up-hysteresis = `UP_HYSTERESIS` = 1).** A member is promoted
 /// OBSERVED→MEMBER on the FIRST `onSwimHealthy` observation. This consumes SWIM *edges* — SWIM emits
 /// `HealthyObserved` exactly once, on the transition into ALIVE, not as a periodic sample — so a
-/// single HealthyObserved IS the promotion signal: it means the node is healthy now. NTT's 2-sample
-/// consecutive hysteresis ([`NodeTopologyTracker#K_UP_DEFAULT`]) models periodic samples and does
+/// single HealthyObserved IS the promotion signal: it means the node is healthy now. presence sampler's 2-sample
+/// consecutive hysteresis ([`PresenceSampler#K_UP_DEFAULT`]) models periodic samples and does
 /// NOT apply to an edge consumer; a 2-sample requirement here would never be met because the edge
 /// never fires twice. The healthy streak is still tracked (any doubt event resets it) but the
 /// promotion threshold is 1. On reaching the threshold the manager dispatches [`UpHysteresisMet`] to
@@ -80,12 +80,12 @@ import java.util.stream.Collectors;
 /// [`DownHysteresisMet`] then [`Stopped`] (Suspect→Departing→Dead). A graceful `onSwimDeparted` and an
 /// `onJoinGraceExpired` reach DEAD directly without the co-confirmation gate.
 ///
-/// **DEAD → `ntt.evict`.** Entry into DEAD is detected CENTRALLY in [`MemberTracking#dispatch`]:
+/// **DEAD → `presenceSampler.evict`.** Entry into DEAD is detected CENTRALLY in [`MemberTracking#dispatch`]:
 /// after every dispatch it compares the FSM's pre/post state and, on a fresh edge INTO `Dead` (was
 /// not Dead before, is Dead after), invokes the manager's eviction hook. This covers ALL three DEAD
 /// paths uniformly (co-confirmed death, graceful departure, join-grace expiry) without scattering the
 /// call across the ingress methods. The hook is idempotent — the fresh-edge guard fires once per
-/// death, and `ntt.evict` is itself idempotent (a no-op for an id already absent from `stableMembers`).
+/// death, and `presenceSampler.evict` is itself idempotent (a no-op for an id already absent from `stableMembers`).
 ///
 /// **DEAD retention + rejoin.** DEAD FSM entries are KEPT in the map (never removed on death) so a
 /// higher-incarnation [`SwimHealthy`] re-arms the same identity (DEAD→OBSERVED, fenced by the
@@ -103,29 +103,29 @@ public final class MembershipFsm {
 
     /// Up-hysteresis promotion threshold for this **edge-driven** manager (= 1). SWIM emits
     /// `HealthyObserved` once, on the edge into ALIVE — not as a periodic sample — so the first
-    /// observation is the promotion signal. NTT's 2-sample
-    /// [`NodeTopologyTracker#K_UP_DEFAULT`] models periodic sampling and does NOT apply here: a
+    /// observation is the promotion signal. presence sampler's 2-sample
+    /// [`PresenceSampler#K_UP_DEFAULT`] models periodic sampling and does NOT apply here: a
     /// 2-sample requirement would never be met because the edge never fires twice for the same
     /// transition.
     public static final int UP_HYSTERESIS = 1;
 
     private final FsmObserver<MembershipState, MembershipEvent> observer;
-    private final NodeTopologyTracker ntt;
+    private final PresenceSampler presenceSampler;
     private final Map<NodeId, MemberTracking> members = new ConcurrentHashMap<>();
 
-    private MembershipFsm(NodeTopologyTracker ntt, FsmObserver<MembershipState, MembershipEvent> observer) {
-        this.ntt = ntt;
+    private MembershipFsm(PresenceSampler presenceSampler, FsmObserver<MembershipState, MembershipEvent> observer) {
+        this.presenceSampler = presenceSampler;
         this.observer = observer;
     }
 
     /// Factory with the default no-op transition observer.
-    public static MembershipFsm membershipFsm(NodeTopologyTracker ntt) {
-        return membershipFsm(ntt, FsmObserver.noop());
+    public static MembershipFsm membershipFsm(PresenceSampler presenceSampler) {
+        return membershipFsm(presenceSampler, FsmObserver.noop());
     }
 
     /// Factory with an explicit transition observer (transition logging / metrics).
-    public static MembershipFsm membershipFsm(NodeTopologyTracker ntt, FsmObserver<MembershipState, MembershipEvent> observer) {
-        return new MembershipFsm(ntt, observer);
+    public static MembershipFsm membershipFsm(PresenceSampler presenceSampler, FsmObserver<MembershipState, MembershipEvent> observer) {
+        return new MembershipFsm(presenceSampler, observer);
     }
 
     // --- Boot seed ---
@@ -218,9 +218,9 @@ public final class MembershipFsm {
         withMember(id, tracking -> tracking.dispatch(new JoinGraceExpiredNeverHealthy()));
     }
 
-    /// The NTT down-hysteresis threshold was crossed for `id` (sustained absence over the
+    /// The presence sampler down-hysteresis threshold was crossed for `id` (sustained absence over the
     /// down-hysteresis window). Routes that crossing INTO this FSM so a sustained-absence SUSPECT
-    /// member is bounded by the FSM (SUSPECT→DEPARTING per spec §3.3 / invariant I4), rather than NTT
+    /// member is bounded by the FSM (SUSPECT→DEPARTING per spec §3.3 / invariant I4), rather than presence sampler
     /// independently removing the id from its own set. Always-on; ignored in any state but SUSPECT.
     @Contract
     public void onDownHysteresisMet(NodeId id) {
@@ -355,7 +355,7 @@ public final class MembershipFsm {
                          .toList();
     }
 
-    // --- Per-member transition drivers (NTT promotion + co-confirmation eviction) ---
+    // --- Per-member transition drivers (presence sampler promotion + co-confirmation eviction) ---
 
     private void healthy(MemberTracking tracking, long incarnation) {
         tracking.dispatch(new SwimHealthy(incarnation));
@@ -412,13 +412,13 @@ public final class MembershipFsm {
 
     /// Hard-evict hook invoked CENTRALLY on every fresh edge into DEAD (detected in
     /// [`MemberTracking#dispatch`]). Idempotent — the fresh-edge guard fires once per death and
-    /// [`NodeTopologyTracker#evict`] is itself idempotent. Mutating NTT's presence view is the sole side
+    /// [`PresenceSampler#evict`] is itself idempotent. Mutating presence sampler's presence view is the sole side
     /// effect; the presence-derived TopologyObserver path emits the resulting NODE_FAILED / NODE_LEFT
     /// event.
     @Contract
     private void onEnteredDead(NodeId id) {
-        log.info("MembershipFsm evicting co-confirmed-dead member {} from NTT", id);
-        ntt.evict(id);
+        log.info("MembershipFsm evicting co-confirmed-dead member {} from presence sampler", id);
+        presenceSampler.evict(id);
     }
 
     // --- Dispatch frame ---

@@ -48,13 +48,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.deployment.membership.MembershipConfig.membershipConfig;
 import static org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.membershipFsm;
 import static org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler.leaderReconciler;
-import static org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker.nodeTopologyTracker;
+import static org.pragmatica.aether.deployment.membership.ntt.PresenceSampler.presenceSampler;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Unit tests for [`LeaderReconciler`] (E2 Phase 1.6) — state-derived
-/// reconciliation sourcing membership from NTT. No periodic tick; the
+/// reconciliation sourcing membership from presence sampler. No periodic tick; the
 /// leader-activation reconcile is a single delayed one-shot at
 /// `nttDepartureTimeout × 1.5`.
 class LeaderReconcilerTest {
@@ -79,7 +79,7 @@ class LeaderReconcilerTest {
     private MutableLongSupplier leaderTerm;
     private RecordingCtm ctm;
     private MutableHealthSource health;
-    private NodeTopologyTracker ntt;
+    private PresenceSampler sampler;
     private MembershipFsm membershipFsm;
     /// Monotonic SWIM incarnation for FSM drives. Every promote/kill uses a strictly increasing
     /// incarnation so a re-seed after death always clears the DEAD incarnation fence (rejoin) and a
@@ -97,22 +97,22 @@ class LeaderReconcilerTest {
         ctm = new RecordingCtm();
         health = new MutableHealthSource();
         // upHysteresis = downHysteresis = 1 so a single sample() converges the member set
-        // deterministically — the reconciler reads ntt.currentMembers() synchronously.
-        ntt = nodeTopologyTracker(SELF,
+        // deterministically — the reconciler reads sampler.currentMembers() synchronously.
+        sampler = presenceSampler(SELF,
                                   health,
                                   timeSpan(1).seconds(),
                                   1,
                                   1,
                                   timeSource::nanoTime);
         // FSM-count cutover: the reconciler now counts membershipFsm.countedMembers() (MEMBER +
-        // SUSPECT), NOT ntt.currentMembers(). The FSM is always-on (armed from construction, no leader
-        // gate) and is driven in lockstep with the NTT helpers so countedMembers() mirrors the
-        // NTT-intended membership at every step. SELF is promoted to MEMBER here to match NTT's self-seed
-        // (ntt.currentMembers() always includes SELF), so the FSM count and the NTT-era count agree.
-        membershipFsm = membershipFsm(ntt);
+        // SUSPECT), NOT sampler.currentMembers(). The FSM is always-on (armed from construction, no leader
+        // gate) and is driven in lockstep with the presence sampler helpers so countedMembers() mirrors the
+        // presence sampler-intended membership at every step. SELF is promoted to MEMBER here to match presence sampler's self-seed
+        // (sampler.currentMembers() always includes SELF), so the FSM count and the presence sampler-era count agree.
+        membershipFsm = membershipFsm(sampler);
         membershipFsm.onSwimHealthy(SELF, fsmIncarnation.getAndIncrement());
         reconciler = leaderReconciler(membershipConfig(),
-                                      ntt,
+                                      sampler,
                                       membershipFsm,
                                       configuredCoreCount,
                                       leaderTerm,
@@ -123,7 +123,7 @@ class LeaderReconcilerTest {
         reconciler.setReconcileListener(listener);
     }
 
-    /// Feed N healthy peers into the NTT health snapshot, then sample so the stable member
+    /// Feed N healthy peers into the presence sampler health snapshot, then sample so the stable member
     /// set (which always includes `SELF`) absorbs them. Drive the FSM in lockstep: each peer is
     /// promoted to MEMBER (a single SWIM HealthyObserved edge, up-hysteresis = 1) so the
     /// reconciler's base set [`MembershipFsm#countedMembers`] grows to match. A peer that was
@@ -134,10 +134,10 @@ class LeaderReconcilerTest {
             health.markHealthy(peer);
             membershipFsm.onSwimHealthy(peer, fsmIncarnation.getAndIncrement());
         }
-        ntt.sample();
+        sampler.sample();
     }
 
-    /// Mark peers absent in the NTT health snapshot (simulates a departure) and sample so the
+    /// Mark peers absent in the presence sampler health snapshot (simulates a departure) and sample so the
     /// next reconcile observes a deficit. Drive the FSM in lockstep: each peer is co-confirmed dead
     /// (SWIM-FAULTY ∧ liveness-gone) so it drops out of [`MembershipFsm#countedMembers`] — matching
     /// the test's intent that the peer departed.
@@ -148,7 +148,7 @@ class LeaderReconcilerTest {
             membershipFsm.onSwimFaulty(peer, fsmIncarnation.getAndIncrement());
             membershipFsm.onLivenessGone(peer);
         }
-        ntt.sample();
+        sampler.sample();
     }
 
     /// Drive the post-activation reconcile path: fire the queued debounced reconcile that
@@ -168,7 +168,7 @@ class LeaderReconcilerTest {
         timeSource.advanceTimeMillis(EXPECTED_GRACE_WINDOW.millis() + EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
     }
 
-    /// Convenience: trigger an NTT-fire reconcile and fire its debounced pass. The standard
+    /// Convenience: trigger a presence sampler-fire reconcile and fire its debounced pass. The standard
     /// "observe current membership and reconcile" step used between time advances.
     @Contract
     private void triggerAndFireReconcile() {
@@ -701,7 +701,7 @@ class LeaderReconcilerTest {
     @Nested
     class ColdStartGraceAndDebounce {
         /// Scenario 1 — the exact cold-start bug. The leader arms at quorum during formation, then
-        /// `ntt.currentMembers()` transiently shows fewer than configured while QUIC peers are
+        /// `sampler.currentMembers()` transiently shows fewer than configured while QUIC peers are
         /// still reconnecting (NOT a departure). Reconciling DURING the grace window must provision
         /// nothing — no phantom replacements for mid-reconnect peers.
         @Test
@@ -826,7 +826,7 @@ class LeaderReconcilerTest {
     /// once full is seen (or this leader was re-elected onto an already-formed cluster) a deficit is
     /// a departure, gated only by deficit-debounce + quorum-safety + the arm latch. A pass suppressed
     /// purely by the debounce schedules a single re-evaluation follow-up so a stable-in-deficit
-    /// cluster is healed without any further NTT event.
+    /// cluster is healed without any further presence sampler event.
     @Nested
     class ReachedFullMembershipLatch {
         /// Row 1 — cold-start climbing: count 1..4 below configured, never reached full, deficit.
@@ -893,7 +893,7 @@ class LeaderReconcilerTest {
 
         /// Row 4 — after the latch, a departure whose debounce has NOT elapsed is suppressed
         /// (`WITHIN_DEBOUNCE`) AND a single re-evaluation follow-up reconcile is scheduled so the
-        /// deficit is acted on when the gate clears, without any further NTT event.
+        /// deficit is acted on when the gate clears, without any further presence sampler event.
         @Test
         void afterLatch_departureWithinDebounce_suppressedAndSchedulesReEval() {
             configuredCoreCount.set(5);
@@ -984,10 +984,10 @@ class LeaderReconcilerTest {
             assertThat(reconciler.isReachedFullMembership()).isFalse();
         }
 
-        /// THE auto-heal fix, reproducing the live Docker trace exactly. NTT reaches full size 5 at
+        /// THE auto-heal fix, reproducing the live Docker trace exactly. presence sampler reaches full size 5 at
         /// formation (peakMembershipCount→5), then a priming kill drops membership to 4 BEFORE the
         /// reconciler runs a single pass — so the reconciler is departure-triggered and its FIRST
-        /// pass observes clusterMembershipCount=4, NEVER 5. With the latch sourced from NTT's
+        /// pass observes clusterMembershipCount=4, NEVER 5. With the latch sourced from presence sampler's
         /// peakMembershipCount() (=5) instead of the per-pass count, that first pass latches
         /// reachedFullMembership=true even at count=4 → COLD_START_NOT_FULL no longer applies → after
         /// the debounce the deficit provisions. (term=1: NOT a re-election; the peak alone latches.)
@@ -995,13 +995,13 @@ class LeaderReconcilerTest {
         void peakReachedFullButFirstPassAtDeficit_latchesViaPeak_andProvisionsAfterDebounce() {
             configuredCoreCount.set(5);
             assertThat(leaderTerm.get()).isEqualTo(1L);
-            // Formation: NTT reaches full size 5 (peak→5).
+            // Formation: presence sampler reaches full size 5 (peak→5).
             seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
-            assertThat(ntt.peakMembershipCount()).isEqualTo(5);
+            assertThat(sampler.peakMembershipCount()).isEqualTo(5);
             // Priming kill BEFORE any reconcile pass: membership 5 -> 4. peak stays 5.
             removePeers(PEER_D);
-            assertThat(ntt.currentMembers()).hasSize(4);
-            assertThat(ntt.peakMembershipCount()).isEqualTo(5);
+            assertThat(sampler.currentMembers()).hasSize(4);
+            assertThat(sampler.peakMembershipCount()).isEqualTo(5);
 
             // Activate AFTER the kill, then run the first (departure-triggered) pass at count=4.
             reconciler.activate();
@@ -1033,7 +1033,7 @@ class LeaderReconcilerTest {
             configuredCoreCount.set(5);
             // Cluster only ever climbs to 4 (SELF + 3 peers) — never reaches full 5.
             seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
-            assertThat(ntt.peakMembershipCount()).isEqualTo(4);
+            assertThat(sampler.peakMembershipCount()).isEqualTo(4);
 
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
@@ -1076,7 +1076,7 @@ class LeaderReconcilerTest {
             assertThat(scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY)).hasSize(1);
             listener.clear();
 
-            // The replacement boots then dies (never re-joins NTT). No further events arrive.
+            // The replacement boots then dies (never re-joins presence sampler). No further events arrive.
             // Advance past the expiry window and fire the armed sweep runnable directly. The purge
             // drops effective to 4 (< 5), re-opening the deficit — but the new deficit run must
             // re-age past the debounce window before the re-provision fires.
@@ -1336,7 +1336,7 @@ class LeaderReconcilerTest {
             assertThat(mintedId.id()).startsWith("aether-test-cluster-node-");
         }
 
-        /// (b) Once the exact minted id appears in NTT `currentMembers`, the next reconcile clears
+        /// (b) Once the exact minted id appears in presence sampler `currentMembers`, the next reconcile clears
         /// it from in-flight and `effective` counts it exactly once (no double count): membership
         /// returns to configured, so the snapshot shows no in-flight and no further provision.
         @Test
@@ -1401,8 +1401,8 @@ class LeaderReconcilerTest {
         }
     }
 
-    /// Mutable SWIM health snapshot source backing the [`NodeTopologyTracker`]. `markHealthy`
-    /// adds a peer as `HEALTHY`; `markAbsent` drops it (so the next NTT sample sees it gone).
+    /// Mutable SWIM health snapshot source backing the [`PresenceSampler`]. `markHealthy`
+    /// adds a peer as `HEALTHY`; `markAbsent` drops it (so the next presence sampler sample sees it gone).
     /// `SELF` is supplied by the tracker's self-seed and is never listed here. The tracker is
     /// constructed with hysteresis 1, so a single `sample()` after a mutation converges the
     /// stable member set the reconciler reads via `currentMembers()`.

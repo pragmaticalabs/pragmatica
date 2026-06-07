@@ -6,7 +6,7 @@ package org.pragmatica.aether.deployment.membership.fsm;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker;
+import org.pragmatica.aether.deployment.membership.ntt.PresenceSampler;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -25,12 +25,12 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker.nodeTopologyTracker;
+import static org.pragmatica.aether.deployment.membership.ntt.PresenceSampler.presenceSampler;
 
 /// Verifies the LIVE membership manager ([`MembershipFsm`]) drives the per-member FSM faithfully from
 /// tapped events, computes the cluster aggregate (spec §3.4 effective / would-provision / would-drain),
 /// AND — as the authoritative death decision-maker — hard-evicts a co-confirmed-dead member from the
-/// [`NodeTopologyTracker`] on every transition into DEAD. Promotion is edge-driven (a single SWIM
+/// [`PresenceSampler`] on every transition into DEAD. Promotion is edge-driven (a single SWIM
 /// HealthyObserved edge promotes OBSERVED→MEMBER, up-hysteresis = 1) with a one-time formation seed;
 /// confirmed eviction requires co-confirmation (SWIM-FAULTY ∧ liveness-gone) and is never undone by a
 /// later seed.
@@ -39,20 +39,20 @@ class MembershipFsmTest {
     private static final NodeId B = new NodeId("node-b");
     private static final NodeId C = new NodeId("node-c");
 
-    private static final NodeId NTT_SELF = new NodeId("ntt-self");
+    private static final NodeId SAMPLER_SELF = new NodeId("sampler-self");
     private static final TimeSpan INTERVAL = TimeSpan.timeSpan(100).millis();
     private static final int K_UP = 2;
     private static final int K_DOWN = 3;
 
     private static MembershipFsm activeManager() {
-        return MembershipFsm.membershipFsm(emptyNtt());
+        return MembershipFsm.membershipFsm(emptySampler());
     }
 
-    /// A real [`NodeTopologyTracker`] with no live members — eviction of an absent id is a harmless
+    /// A real [`PresenceSampler`] with no live members — eviction of an absent id is a harmless
     /// no-op, so the FSM's DEAD→evict hook never affects these behavioral assertions.
-    private static NodeTopologyTracker emptyNtt() {
+    private static PresenceSampler emptySampler() {
         Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.of());
-        return nodeTopologyTracker(NTT_SELF, health, INTERVAL, K_UP, K_DOWN, () -> 0L);
+        return presenceSampler(SAMPLER_SELF, health, INTERVAL, K_UP, K_DOWN, () -> 0L);
     }
 
     @Nested
@@ -129,75 +129,75 @@ class MembershipFsmTest {
     }
 
     @Nested
-    class NttEviction {
+    class SamplerEviction {
         /// The cardinal Phase-2 contract: a co-confirmed-dead member (SWIM-FAULTY ∧ liveness-gone)
-        /// must be hard-evicted from the live [`NodeTopologyTracker`] on the transition into DEAD.
-        /// Drive a real member into NTT's stable set via samples, promote + co-confirm it dead in the
-        /// FSM, and assert NTT's presence view no longer contains it (the observable effect that the
+        /// must be hard-evicted from the live [`PresenceSampler`] on the transition into DEAD.
+        /// Drive a real member into presence sampler's stable set via samples, promote + co-confirm it dead in the
+        /// FSM, and assert presence sampler's presence view no longer contains it (the observable effect that the
         /// presence-derived TopologyObserver path then emits NODE_FAILED from).
         @Test
-        void enteringDead_coConfirmed_evictsFromNtt() {
+        void enteringDead_coConfirmed_evictsFromSampler() {
             var liveness = new HashMap<NodeId, SwimHealth>();
             var clock = new AtomicLong(0L);
             Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.copyOf(liveness));
-            var ntt = nodeTopologyTracker(NTT_SELF, health, INTERVAL, K_UP, K_DOWN, clock::get);
+            var presenceSampler = presenceSampler(SAMPLER_SELF, health, INTERVAL, K_UP, K_DOWN, clock::get);
 
             liveness.put(A, SwimHealth.HEALTHY);
-            sampleTimes(ntt, K_UP);
-            assertThat(ntt.currentMembers()).contains(A);
+            sampleTimes(presenceSampler, K_UP);
+            assertThat(presenceSampler.currentMembers()).contains(A);
 
-            var manager = MembershipFsm.membershipFsm(ntt);
+            var manager = MembershipFsm.membershipFsm(presenceSampler);
             manager.seed(Set.of(A));
             manager.onSwimFaulty(A, 4L);
             manager.onLivenessGone(A);
 
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
-            assertThat(ntt.currentMembers()).doesNotContain(A);
+            assertThat(presenceSampler.currentMembers()).doesNotContain(A);
         }
 
-        /// Graceful departure also reaches DEAD (no co-confirmation needed) and must evict from NTT.
+        /// Graceful departure also reaches DEAD (no co-confirmation needed) and must evict from presence sampler.
         @Test
-        void enteringDead_graceful_evictsFromNtt() {
+        void enteringDead_graceful_evictsFromSampler() {
             var liveness = new HashMap<NodeId, SwimHealth>();
             var clock = new AtomicLong(0L);
             Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.copyOf(liveness));
-            var ntt = nodeTopologyTracker(NTT_SELF, health, INTERVAL, K_UP, K_DOWN, clock::get);
+            var presenceSampler = presenceSampler(SAMPLER_SELF, health, INTERVAL, K_UP, K_DOWN, clock::get);
 
             liveness.put(A, SwimHealth.HEALTHY);
-            sampleTimes(ntt, K_UP);
-            assertThat(ntt.currentMembers()).contains(A);
+            sampleTimes(presenceSampler, K_UP);
+            assertThat(presenceSampler.currentMembers()).contains(A);
 
-            var manager = MembershipFsm.membershipFsm(ntt);
+            var manager = MembershipFsm.membershipFsm(presenceSampler);
             manager.seed(Set.of(A));
             manager.onSwimDeparted(A, 5L);
 
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
-            assertThat(ntt.currentMembers()).doesNotContain(A);
+            assertThat(presenceSampler.currentMembers()).doesNotContain(A);
         }
 
-        /// Single-plane death (bare SWIM-FAULTY) stays SUSPECT — it must NOT evict from NTT.
+        /// Single-plane death (bare SWIM-FAULTY) stays SUSPECT — it must NOT evict from presence sampler.
         @Test
-        void singlePlaneFaulty_doesNotEvictFromNtt() {
+        void singlePlaneFaulty_doesNotEvictFromSampler() {
             var liveness = new HashMap<NodeId, SwimHealth>();
             var clock = new AtomicLong(0L);
             Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.copyOf(liveness));
-            var ntt = nodeTopologyTracker(NTT_SELF, health, INTERVAL, K_UP, K_DOWN, clock::get);
+            var presenceSampler = presenceSampler(SAMPLER_SELF, health, INTERVAL, K_UP, K_DOWN, clock::get);
 
             liveness.put(A, SwimHealth.HEALTHY);
-            sampleTimes(ntt, K_UP);
-            assertThat(ntt.currentMembers()).contains(A);
+            sampleTimes(presenceSampler, K_UP);
+            assertThat(presenceSampler.currentMembers()).contains(A);
 
-            var manager = MembershipFsm.membershipFsm(ntt);
+            var manager = MembershipFsm.membershipFsm(presenceSampler);
             manager.seed(Set.of(A));
             manager.onSwimFaulty(A, 4L);
 
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
-            assertThat(ntt.currentMembers()).contains(A);
+            assertThat(presenceSampler.currentMembers()).contains(A);
         }
 
-        private static void sampleTimes(NodeTopologyTracker ntt, int times) {
+        private static void sampleTimes(PresenceSampler presenceSampler, int times) {
             for (var i = 0; i < times; i++) {
-                ntt.sample();
+                presenceSampler.sample();
             }
         }
     }
@@ -324,7 +324,7 @@ class MembershipFsmTest {
 
         @Test
         void onDownHysteresisMet_onObservedId_isIgnored() {
-            var manager = MembershipFsm.membershipFsm(emptyNtt());
+            var manager = MembershipFsm.membershipFsm(emptySampler());
 
             manager.onDownHysteresisMet(A);
 
@@ -378,7 +378,7 @@ class MembershipFsmTest {
 
         @Test
         void seed_atConstruction_promotesInitialMembers() {
-            var manager = MembershipFsm.membershipFsm(emptyNtt());
+            var manager = MembershipFsm.membershipFsm(emptySampler());
 
             manager.seed(Set.of(A, B));
 
@@ -412,7 +412,7 @@ class MembershipFsmTest {
         /// was never seeded still tracks and promotes a member on its first SWIM HealthyObserved edge.
         @Test
         void ingressFromConstruction_isTracked() {
-            var manager = MembershipFsm.membershipFsm(emptyNtt());
+            var manager = MembershipFsm.membershipFsm(emptySampler());
 
             manager.onSwimHealthy(A, 1L);
 

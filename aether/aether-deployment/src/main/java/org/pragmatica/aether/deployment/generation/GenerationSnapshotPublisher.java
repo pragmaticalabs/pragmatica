@@ -253,7 +253,7 @@ public final class GenerationSnapshotPublisher {
     }
 
     /// Phase C-1 / membership-v2 finale: the member map fed to the projector is derived purely
-    /// from `ntt.currentMembers()` presence. Every present node IS a member — there is no
+    /// from `presenceSampler.currentMembers()` presence. Every present node IS a member — there is no
     /// synthesized per-node lifecycle state (the only real work-state, `NodeReportedState`
     /// SYNCING/READY/DRAINING, travels on the metrics pong, not the generation snapshot).
     /// Departed nodes simply are not in `memberSupplier` so they never appear. Address is

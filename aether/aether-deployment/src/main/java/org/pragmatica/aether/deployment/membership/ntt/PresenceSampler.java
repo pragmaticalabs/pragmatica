@@ -30,20 +30,28 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
-/// Node Topology Tracker (membership v2 spec §6, I12) — **THE** cluster-membership
-/// source. Maintains the authoritative "who is in the cluster right now" set sourced
-/// from SWIM liveness, with `self` included unconditionally.
+/// Presence Sampler (formerly `NodeTopologyTracker`) — a **SWIM-sampling debounce clock**,
+/// NOT a membership authority. Since the membership-FSM cutover (Waves D1/E) the authoritative
+/// "who is in the cluster" answer is owned by [`MembershipFsm`]; this class no longer answers
+/// membership-authority queries. Its sole remaining job is to debounce raw SWIM liveness into
+/// stable presence edges and emit two signals:
+///
+/// - the **DOWN-hysteresis crossing edge** ([`#onDownHysteresisCrossing`]) → routed to the FSM
+///   as the sustained-absence departure signal, and
+/// - the **reconcile trigger** ([`#onReconcileNeeded`]) + **peak presence count**
+///   ([`#peakMembershipCount`]) → consumed by `LeaderReconciler` (the peak feeds its
+///   reached-full-membership cold-start latch).
 ///
 /// **Mechanism = periodic sample + delta + asymmetric hysteresis.** Replaces the prior
 /// per-peer one-shot `ScheduledFuture` departure-timer map (and its timer-race class)
 /// with a single deterministic **sample tick**:
 ///
-/// - On each tick the tracker recomputes the *candidate live set* from the injected
+/// - On each tick the sampler recomputes the *candidate live set* from the injected
 ///   SWIM health snapshot supplier (a peer is a candidate iff currently `HEALTHY`),
 ///   biased by transient QUIC connect/disconnect hints. A disconnect makes a node
 ///   "likely gone" for that one sample, a reconnect "likely back" — hints DO NOT
 ///   bypass hysteresis, they only colour the per-sample observation.
-/// - A node ENTERS the stable member set after `upHysteresis` consecutive present
+/// - A node ENTERS the stable presence set after `upHysteresis` consecutive present
 ///   samples (fast — see asymmetry below) and LEAVES after `downHysteresis` consecutive
 ///   absent samples. Counters are kept per `NodeId` (identity-preserving). A direction
 ///   flip resets the streak, so a transient blip is absorbed.
@@ -59,7 +67,15 @@ import static org.pragmatica.lang.Option.some;
 /// destructive (drains, leadership churn, provisioning), so it must only react to a
 /// genuinely sustained absence.
 ///
-/// `self` is always a member (self-seed) and can never leave.
+/// `self` is always present (self-seed) and can never leave.
+///
+/// **Internal presence set is NOT a membership authority.** The `stableMembers` set is this
+/// sampler's OWN debounced presence state — it drives the reconcile trigger and the peak. It
+/// is no longer exposed as a count anyone treats as cluster membership. The one remaining
+/// presence-view read ([`#currentMembers`]) still backs the **generation-snapshot path**
+/// (`PresenceGenerationSnapshotSource` BOOTING→NORMAL latch + `GenerationSnapshotPublisher`
+/// membership source); migrating that path off this presence view onto the FSM is a
+/// deliberately-deferred separate step (behavior-affecting on the #68-critical generation path).
 ///
 /// **Inputs.**
 /// - [`#onSwimObservation`] — biases the NEXT sample only: `HealthyObserved` PRESENT,
@@ -68,12 +84,12 @@ import static org.pragmatica.lang.Option.some;
 /// - [`#onQuicReconnect`] — up-bias for the next sample (the resurrection signal per I7).
 /// - [`#onQuicDisconnect`] — down-bias for the next sample (fast "likely gone" signal).
 ///
-/// **Concurrency.** Each [`#sample`] tick runs under `sampleLock`; member-set and streak
+/// **Concurrency.** Each [`#sample`] tick runs under `sampleLock`; presence-set and streak
 /// state use concurrent collections so QUIC/SWIM bias writes are lock-free. The periodic
 /// tick is bound to the process-wide [`SharedScheduler`] via [`#start`]; tests call
-/// [`#sample`] directly to step the FSM deterministically without a real scheduler.
-public final class NodeTopologyTracker {
-    private static final Logger log = LoggerFactory.getLogger(NodeTopologyTracker.class);
+/// [`#sample`] directly to step the sampler deterministically without a real scheduler.
+public final class PresenceSampler {
+    private static final Logger log = LoggerFactory.getLogger(PresenceSampler.class);
 
     /// Default sample tick period: recompute the candidate live set once per second.
     public static final TimeSpan SAMPLE_INTERVAL_DEFAULT = TimeSpan.timeSpan(1).seconds();
@@ -101,8 +117,8 @@ public final class NodeTopologyTracker {
     /// to a no-op so callers/tests that don't supply it are unaffected. Additive to — not a
     /// replacement for — the presence-sensor `stableMembers.remove(node)` at that edge.
     ///
-    /// `volatile` (not `final`): the [`MembershipFsm`] is constructed AFTER this tracker (it
-    /// needs the tracker), so production cannot pass `membershipFsm::onDownHysteresisMet` into
+    /// `volatile` (not `final`): the [`MembershipFsm`] is constructed AFTER this sampler (it
+    /// needs the sampler), so production cannot pass `membershipFsm::onDownHysteresisMet` into
     /// the constructor — it installs the listener post-construction via
     /// [`#onDownHysteresisCrossing(Consumer)`]. The constructor param + no-op default remain for
     /// tests that have the callback at construction time.
@@ -136,7 +152,7 @@ public final class NodeTopologyTracker {
     /// synchronized accessor.
     private int peakMembershipCount = 1;
 
-    private NodeTopologyTracker(NodeId self,
+    private PresenceSampler(NodeId self,
                                 Supplier<HealthSnapshot> healthSupplier,
                                 TimeSpan sampleInterval,
                                 int upHysteresis,
@@ -159,21 +175,21 @@ public final class NodeTopologyTracker {
     /// Production factory: 1s sample tick on the [`SharedScheduler`], `K_UP_DEFAULT` up
     /// hysteresis, down hysteresis derived from `config.nttDepartureTimeout`,
     /// `System::nanoTime` clock.
-    public static NodeTopologyTracker nodeTopologyTracker(MembershipConfig config,
+    public static PresenceSampler presenceSampler(MembershipConfig config,
                                                           NodeId self,
                                                           Supplier<HealthSnapshot> healthSupplier,
                                                           Runnable onReconcileNeeded) {
-        return nodeTopologyTracker(config, self, healthSupplier, onReconcileNeeded, NOOP_DOWN_CROSSING);
+        return presenceSampler(config, self, healthSupplier, onReconcileNeeded, NOOP_DOWN_CROSSING);
     }
 
     /// Production factory with an explicit DOWN-hysteresis crossing callback (routes the
     /// crossing edge to the membership FSM). Otherwise identical to the no-callback overload.
-    public static NodeTopologyTracker nodeTopologyTracker(MembershipConfig config,
+    public static PresenceSampler presenceSampler(MembershipConfig config,
                                                           NodeId self,
                                                           Supplier<HealthSnapshot> healthSupplier,
                                                           Runnable onReconcileNeeded,
                                                           Consumer<NodeId> onDownHysteresisCrossing) {
-        return new NodeTopologyTracker(self,
+        return new PresenceSampler(self,
                                        healthSupplier,
                                        SAMPLE_INTERVAL_DEFAULT,
                                        K_UP_DEFAULT,
@@ -185,13 +201,13 @@ public final class NodeTopologyTracker {
 
     /// Test factory: explicit sample interval, hysteresis, clock and a no-op reconcile
     /// trigger. The periodic tick is NOT scheduled — tests drive the FSM via [`#sample`].
-    public static NodeTopologyTracker nodeTopologyTracker(NodeId self,
+    public static PresenceSampler presenceSampler(NodeId self,
                                                           Supplier<HealthSnapshot> healthSupplier,
                                                           TimeSpan sampleInterval,
                                                           int upHysteresis,
                                                           int downHysteresis,
                                                           LongSupplier nowNanos) {
-        return new NodeTopologyTracker(self,
+        return new PresenceSampler(self,
                                        healthSupplier,
                                        sampleInterval,
                                        upHysteresis,
@@ -203,14 +219,14 @@ public final class NodeTopologyTracker {
 
     /// Test factory: explicit sample interval, hysteresis, clock and a reconcile trigger.
     /// Required for deterministic emit-once assertions. The periodic tick is NOT scheduled.
-    public static NodeTopologyTracker nodeTopologyTracker(NodeId self,
+    public static PresenceSampler presenceSampler(NodeId self,
                                                           Supplier<HealthSnapshot> healthSupplier,
                                                           TimeSpan sampleInterval,
                                                           int upHysteresis,
                                                           int downHysteresis,
                                                           LongSupplier nowNanos,
                                                           Runnable onReconcileNeeded) {
-        return nodeTopologyTracker(self,
+        return presenceSampler(self,
                                    healthSupplier,
                                    sampleInterval,
                                    upHysteresis,
@@ -223,7 +239,7 @@ public final class NodeTopologyTracker {
     /// Test factory: explicit sample interval, hysteresis, clock, a reconcile trigger and a
     /// DOWN-hysteresis crossing callback. Required for deterministic crossing-edge
     /// assertions. The periodic tick is NOT scheduled.
-    public static NodeTopologyTracker nodeTopologyTracker(NodeId self,
+    public static PresenceSampler presenceSampler(NodeId self,
                                                           Supplier<HealthSnapshot> healthSupplier,
                                                           TimeSpan sampleInterval,
                                                           int upHysteresis,
@@ -231,7 +247,7 @@ public final class NodeTopologyTracker {
                                                           LongSupplier nowNanos,
                                                           Runnable onReconcileNeeded,
                                                           Consumer<NodeId> onDownHysteresisCrossing) {
-        return new NodeTopologyTracker(self,
+        return new PresenceSampler(self,
                                        healthSupplier,
                                        sampleInterval,
                                        upHysteresis,
@@ -296,7 +312,7 @@ public final class NodeTopologyTracker {
 
     /// Post-construction installer for the DOWN-hysteresis crossing listener (routes the crossing
     /// edge to the membership FSM). Required because the [`MembershipFsm`] is built AFTER this
-    /// tracker (it needs the tracker), so production cannot supply `membershipFsm::onDownHysteresisMet`
+    /// sampler (it needs the sampler), so production cannot supply `membershipFsm::onDownHysteresisMet`
     /// at construction time. `null` resets to the no-op default. No behavior change to the firing
     /// logic in [`#crossDownHysteresis`] — only which listener it dispatches to.
     @Contract

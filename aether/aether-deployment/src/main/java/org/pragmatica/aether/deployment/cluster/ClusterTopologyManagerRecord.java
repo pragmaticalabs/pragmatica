@@ -429,7 +429,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// authoritative fulfillment signal. CTM no longer runs its own slot machinery here: it
     /// builds a `ProvisionSpec` whose PEERS are seeded from the LIVE member set `clusterMembers`
     /// passed in by the reconciler (the freshest "who is in the cluster right now" signal from
-    /// `NodeTopologyTracker.currentMembers`). Each member id is resolved to its
+    /// `PresenceSampler.currentMembers`). Each member id is resolved to its
     /// `nodeId:host:port` entry via the same `observer.get(id)` → `formatPeerEntry` mechanism
     /// `buildProvisionContext` uses; ids that do not resolve are dropped, and `self` is always
     /// included (the CTM runs on the leader, which is alive by definition). Seeding from the

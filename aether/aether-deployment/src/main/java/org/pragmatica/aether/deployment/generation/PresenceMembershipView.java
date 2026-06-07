@@ -14,11 +14,11 @@ import java.util.function.Supplier;
 
 /// Presence-derived counterpart to `SnapshotMembershipView`. Where the snapshot adapter
 /// projects a `ClusterGenerationSnapshot`, this adapter derives membership directly from
-/// NTT presence (`NodeTopologyTracker.currentMembers()`): in membership-v2 presence IS
+/// presence sampler presence (`PresenceSampler.currentMembers()`): in membership-v2 presence IS
 /// membership and being on duty, so `onDutyMemberIds()` equals `coreMemberIds()` and
-/// `healthyOnDutyCount()` is the member count (the NTT set is healthy by construction).
+/// `healthyOnDutyCount()` is the member count (the presence sampler set is healthy by construction).
 ///
-/// NTT does not carry `desiredCoreSize` or the CTM-provisioned set, so those are supplied
+/// presence sampler does not carry `desiredCoreSize` or the CTM-provisioned set, so those are supplied
 /// separately rather than read from the live presence set.
 ///
 /// Step 1 of the membership/placement split
@@ -34,7 +34,7 @@ record PresenceMembershipView(Set<NodeId> members,
 
     /// Captures a point-in-time view by reading each supplier exactly once, so a single
     /// consumer invocation observes a consistent membership set. At wiring time (a later
-    /// step) `memberSupplier` will be `ntt::currentMembers`.
+    /// step) `memberSupplier` will be `presenceSampler::currentMembers`.
     static MembershipView from(Supplier<Set<NodeId>> memberSupplier,
                                IntSupplier desiredCoreSizeSupplier,
                                Supplier<Set<NodeId>> ctmProvisionedSupplier) {

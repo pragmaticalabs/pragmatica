@@ -24,14 +24,14 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker.nodeTopologyTracker;
+import static org.pragmatica.aether.deployment.membership.ntt.PresenceSampler.presenceSampler;
 
 
-/// Unit proof for [`NodeTopologyTracker`] (membership v2 §6) — periodic-sample + delta +
+/// Unit proof for [`PresenceSampler`] (membership v2 §6) — periodic-sample + delta +
 /// asymmetric-hysteresis FSM. Drives the FSM deterministically via direct
-/// [`NodeTopologyTracker#sample`] calls (no real scheduler) against an injected mutable
+/// [`PresenceSampler#sample`] calls (no real scheduler) against an injected mutable
 /// health snapshot and an injected clock.
-class NodeTopologyTrackerTest {
+class PresenceSamplerTest {
     private static final NodeId SELF = NodeId.randomNodeId();
     private static final NodeId A = NodeId.randomNodeId();
     private static final NodeId B = NodeId.randomNodeId();
@@ -52,15 +52,15 @@ class NodeTopologyTrackerTest {
         clock = new AtomicLong(0);
     }
 
-    private NodeTopologyTracker tracker() {
+    private PresenceSampler sampler() {
         Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.copyOf(liveness));
-        return nodeTopologyTracker(SELF, health, INTERVAL, K_UP, K_DOWN, clock::get,
+        return presenceSampler(SELF, health, INTERVAL, K_UP, K_DOWN, clock::get,
                                    reconcileInvocations::incrementAndGet);
     }
 
-    private NodeTopologyTracker tracker(Consumer<NodeId> onDownHysteresisCrossing) {
+    private PresenceSampler sampler(Consumer<NodeId> onDownHysteresisCrossing) {
         Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.copyOf(liveness));
-        return nodeTopologyTracker(SELF, health, INTERVAL, K_UP, K_DOWN, clock::get,
+        return presenceSampler(SELF, health, INTERVAL, K_UP, K_DOWN, clock::get,
                                    reconcileInvocations::incrementAndGet, onDownHysteresisCrossing);
     }
 
@@ -76,10 +76,10 @@ class NodeTopologyTrackerTest {
         liveness.put(node, SwimHealth.FAULTY);
     }
 
-    private void sampleTimes(NodeTopologyTracker tracker, int times) {
+    private void sampleTimes(PresenceSampler sampler, int times) {
         for (var i = 0; i < times; i++) {
             clock.addAndGet(1_000_000L);
-            tracker.sample();
+            sampler.sample();
         }
     }
 
@@ -87,81 +87,81 @@ class NodeTopologyTrackerTest {
     class Hysteresis {
         @Test
         void sample_absorbsTransientFlap_noReconcile() {
-            var ntt = tracker();
+            var sampler = sampler();
 
             healthy(A);
-            sampleTimes(ntt, 1); // up-streak 1 (K_UP = 2, not yet stable)
+            sampleTimes(sampler, 1); // up-streak 1 (K_UP = 2, not yet stable)
             absent(A);
-            sampleTimes(ntt, 1); // flips to down-streak before reaching K-up
+            sampleTimes(sampler, 1); // flips to down-streak before reaching K-up
             healthy(A);
-            sampleTimes(ntt, 1); // back up, streak 1 again
+            sampleTimes(sampler, 1); // back up, streak 1 again
 
             assertThat(reconcileInvocations.get()).isZero();
-            assertThat(ntt.currentMembers()).containsExactly(SELF);
+            assertThat(sampler.currentMembers()).containsExactly(SELF);
         }
 
         @Test
         void sample_stableJoin_invokesReconcileExactlyOnce() {
-            var ntt = tracker();
+            var sampler = sampler();
 
             healthy(A);
-            sampleTimes(ntt, K_UP - 1); // not yet stable
+            sampleTimes(sampler, K_UP - 1); // not yet stable
             assertThat(reconcileInvocations.get()).isZero();
 
-            sampleTimes(ntt, 1); // K_UP-th consecutive healthy → ENTER
-            sampleTimes(ntt, 3); // further healthy samples must NOT re-fire
+            sampleTimes(sampler, 1); // K_UP-th consecutive healthy → ENTER
+            sampleTimes(sampler, 3); // further healthy samples must NOT re-fire
 
             assertThat(reconcileInvocations.get()).isEqualTo(1);
-            assertThat(ntt.currentMembers()).containsExactlyInAnyOrder(SELF, A);
+            assertThat(sampler.currentMembers()).containsExactlyInAnyOrder(SELF, A);
         }
 
         @Test
         void sample_stableDeparture_invokesReconcileExactlyOnce() {
-            var ntt = tracker();
+            var sampler = sampler();
 
             healthy(A);
-            sampleTimes(ntt, K_UP); // A enters
+            sampleTimes(sampler, K_UP); // A enters
             assertThat(reconcileInvocations.get()).isEqualTo(1);
 
             absent(A);
-            sampleTimes(ntt, K_DOWN - 1); // not yet stable-departed
+            sampleTimes(sampler, K_DOWN - 1); // not yet stable-departed
             assertThat(reconcileInvocations.get()).isEqualTo(1);
 
-            sampleTimes(ntt, 1); // K_DOWN-th consecutive absent → LEAVE
-            sampleTimes(ntt, 3); // further absent samples must NOT re-fire
+            sampleTimes(sampler, 1); // K_DOWN-th consecutive absent → LEAVE
+            sampleTimes(sampler, 3); // further absent samples must NOT re-fire
 
             assertThat(reconcileInvocations.get()).isEqualTo(2);
-            assertThat(ntt.currentMembers()).containsExactly(SELF);
+            assertThat(sampler.currentMembers()).containsExactly(SELF);
         }
 
         @Test
         void sample_asymmetricEdges_upFastDownSlow() {
-            var ntt = tracker();
+            var sampler = sampler();
 
             healthy(A);
-            sampleTimes(ntt, K_UP); // fast admit at K_UP=2
-            assertThat(ntt.currentMembers()).contains(A);
+            sampleTimes(sampler, K_UP); // fast admit at K_UP=2
+            assertThat(sampler.currentMembers()).contains(A);
 
             absent(A);
-            sampleTimes(ntt, K_UP); // K_UP absent samples are NOT enough to drop (K_DOWN=3)
-            assertThat(ntt.currentMembers()).contains(A);
+            sampleTimes(sampler, K_UP); // K_UP absent samples are NOT enough to drop (K_DOWN=3)
+            assertThat(sampler.currentMembers()).contains(A);
 
-            sampleTimes(ntt, K_DOWN - K_UP); // reach K_DOWN total → drop
-            assertThat(ntt.currentMembers()).containsExactly(SELF);
+            sampleTimes(sampler, K_DOWN - K_UP); // reach K_DOWN total → drop
+            assertThat(sampler.currentMembers()).containsExactly(SELF);
         }
 
         @Test
         void sample_faultyHealthCountsAsAbsent_drivesDeparture() {
-            var ntt = tracker();
+            var sampler = sampler();
 
             healthy(A);
-            sampleTimes(ntt, K_UP);
-            assertThat(ntt.currentMembers()).contains(A);
+            sampleTimes(sampler, K_UP);
+            assertThat(sampler.currentMembers()).contains(A);
 
             faulty(A); // FAULTY is not HEALTHY → absent for the candidate set
-            sampleTimes(ntt, K_DOWN);
+            sampleTimes(sampler, K_DOWN);
 
-            assertThat(ntt.currentMembers()).containsExactly(SELF);
+            assertThat(sampler.currentMembers()).containsExactly(SELF);
         }
     }
 
@@ -174,23 +174,23 @@ class NodeTopologyTrackerTest {
         @Test
         void advanceOne_downHysteresisCrossing_firesDownCrossingCallbackOnce() {
             var crossings = new ArrayList<NodeId>();
-            var ntt = tracker(crossings::add);
+            var sampler = sampler(crossings::add);
 
             healthy(A);
-            sampleTimes(ntt, K_UP); // A enters the stable set
-            assertThat(ntt.currentMembers()).contains(A);
+            sampleTimes(sampler, K_UP); // A enters the stable set
+            assertThat(sampler.currentMembers()).contains(A);
             assertThat(crossings).isEmpty(); // up edge does not fire the down-crossing
 
             absent(A);
-            sampleTimes(ntt, K_DOWN - 1); // not yet at the crossing
+            sampleTimes(sampler, K_DOWN - 1); // not yet at the crossing
             assertThat(crossings).isEmpty();
 
-            sampleTimes(ntt, 1); // K_DOWN-th consecutive absent → DOWN crossing
-            sampleTimes(ntt, 3); // further absent samples must NOT re-fire
+            sampleTimes(sampler, 1); // K_DOWN-th consecutive absent → DOWN crossing
+            sampleTimes(sampler, 3); // further absent samples must NOT re-fire
 
             assertThat(crossings).containsExactly(A); // exactly once, with A's id
             // Existing presence-sensor removal + reconcile-trigger behaviour unchanged.
-            assertThat(ntt.currentMembers()).containsExactly(SELF);
+            assertThat(sampler.currentMembers()).containsExactly(SELF);
             assertThat(reconcileInvocations.get()).isEqualTo(2); // join + departure
         }
     }
@@ -199,22 +199,22 @@ class NodeTopologyTrackerTest {
     class Self {
         @Test
         void members_alwaysIncludesSelf_evenWithNoLiveness() {
-            var ntt = tracker();
+            var sampler = sampler();
 
-            sampleTimes(ntt, K_DOWN * 2);
+            sampleTimes(sampler, K_DOWN * 2);
 
-            assertThat(ntt.currentMembers()).containsExactly(SELF);
-            assertThat(ntt.currentMemberCount()).isEqualTo(1);
+            assertThat(sampler.currentMembers()).containsExactly(SELF);
+            assertThat(sampler.currentMemberCount()).isEqualTo(1);
         }
 
         @Test
         void sample_selfNeverLeaves_evenIfReportedFaulty() {
-            var ntt = tracker();
+            var sampler = sampler();
 
             faulty(SELF); // self is force-added to candidate set regardless
-            sampleTimes(ntt, K_DOWN * 2);
+            sampleTimes(sampler, K_DOWN * 2);
 
-            assertThat(ntt.currentMembers()).contains(SELF);
+            assertThat(sampler.currentMembers()).contains(SELF);
         }
     }
 
@@ -222,26 +222,26 @@ class NodeTopologyTrackerTest {
     class MemberSet {
         @Test
         void freshTracker_membersContainSelfOnly() {
-            var ntt = tracker();
+            var sampler = sampler();
 
-            assertThat(ntt.currentMembers()).containsExactly(SELF);
-            assertThat(ntt.currentMemberCount()).isEqualTo(1);
+            assertThat(sampler.currentMembers()).containsExactly(SELF);
+            assertThat(sampler.currentMemberCount()).isEqualTo(1);
         }
 
         @Test
         void memberCount_reflectsAddRemoveSequence() {
-            var ntt = tracker();
+            var sampler = sampler();
 
             healthy(A);
             healthy(B);
             healthy(C);
-            sampleTimes(ntt, K_UP);
-            assertThat(ntt.currentMemberCount()).isEqualTo(4);
+            sampleTimes(sampler, K_UP);
+            assertThat(sampler.currentMemberCount()).isEqualTo(4);
 
             absent(B);
-            sampleTimes(ntt, K_DOWN);
-            assertThat(ntt.currentMemberCount()).isEqualTo(3);
-            assertThat(ntt.currentMembers()).containsExactlyInAnyOrder(SELF, A, C);
+            sampleTimes(sampler, K_DOWN);
+            assertThat(sampler.currentMemberCount()).isEqualTo(3);
+            assertThat(sampler.currentMembers()).containsExactlyInAnyOrder(SELF, A, C);
         }
     }
 
@@ -249,52 +249,52 @@ class NodeTopologyTrackerTest {
     class SwimObservationBias {
         @Test
         void onSwimObservation_healthy_biasesPresent_butStillRequiresKSamples() {
-            var ntt = tracker();
+            var sampler = sampler();
 
             // A is NOT in the snapshot, but a HealthyObserved biases one sample present.
-            ntt.onSwimObservation(new HealthyObserved(A, 1L));
-            sampleTimes(ntt, 1); // up-streak 1 only
-            assertThat(ntt.currentMembers()).containsExactly(SELF); // not bypassed
+            sampler.onSwimObservation(new HealthyObserved(A, 1L));
+            sampleTimes(sampler, 1); // up-streak 1 only
+            assertThat(sampler.currentMembers()).containsExactly(SELF); // not bypassed
 
-            sampleTimes(ntt, K_UP); // no continued presence → cannot reach K_UP again
-            assertThat(ntt.currentMembers()).containsExactly(SELF);
+            sampleTimes(sampler, K_UP); // no continued presence → cannot reach K_UP again
+            assertThat(sampler.currentMembers()).containsExactly(SELF);
             assertThat(reconcileInvocations.get()).isZero();
         }
 
         @Test
         void onSwimObservation_faulty_biasesAbsent_butDoesNotBypassHysteresis() {
-            var ntt = tracker();
+            var sampler = sampler();
 
             healthy(A);
-            sampleTimes(ntt, K_UP); // A is a stable member
-            assertThat(ntt.currentMembers()).contains(A);
+            sampleTimes(sampler, K_UP); // A is a stable member
+            assertThat(sampler.currentMembers()).contains(A);
 
             // A is still SWIM-healthy in the snapshot, but FaultyObserved biases the NEXT
             // sample absent — a single biased sample must NOT evict A.
-            ntt.onSwimObservation(new FaultyObserved(A, 2L));
-            sampleTimes(ntt, 1);
-            assertThat(ntt.currentMembers()).contains(A);
+            sampler.onSwimObservation(new FaultyObserved(A, 2L));
+            sampleTimes(sampler, 1);
+            assertThat(sampler.currentMembers()).contains(A);
             assertThat(reconcileInvocations.get()).isEqualTo(1); // still only the join
 
             // Snapshot shows A healthy again → recovers, transient bias absorbed.
-            sampleTimes(ntt, K_DOWN);
-            assertThat(ntt.currentMembers()).contains(A);
+            sampleTimes(sampler, K_DOWN);
+            assertThat(sampler.currentMembers()).contains(A);
             assertThat(reconcileInvocations.get()).isEqualTo(1);
         }
 
         @Test
         void onSwimObservation_departed_biasesAbsent() {
-            var ntt = tracker();
+            var sampler = sampler();
 
             healthy(A);
-            sampleTimes(ntt, K_UP);
-            assertThat(ntt.currentMembers()).contains(A);
+            sampleTimes(sampler, K_UP);
+            assertThat(sampler.currentMembers()).contains(A);
 
             absent(A);
-            ntt.onSwimObservation(new DepartedObserved(A, 2L));
-            sampleTimes(ntt, K_DOWN);
+            sampler.onSwimObservation(new DepartedObserved(A, 2L));
+            sampleTimes(sampler, K_DOWN);
 
-            assertThat(ntt.currentMembers()).containsExactly(SELF);
+            assertThat(sampler.currentMembers()).containsExactly(SELF);
         }
     }
 
@@ -302,57 +302,57 @@ class NodeTopologyTrackerTest {
     class QuicHints {
         @Test
         void onQuicDisconnect_biasesAbsent_butDoesNotBypassHysteresis() {
-            var ntt = tracker();
+            var sampler = sampler();
 
             healthy(A);
-            sampleTimes(ntt, K_UP); // A is a stable member
-            assertThat(ntt.currentMembers()).contains(A);
+            sampleTimes(sampler, K_UP); // A is a stable member
+            assertThat(sampler.currentMembers()).contains(A);
 
             // A is still SWIM-healthy, but QUIC says "likely gone". One biased sample must
             // NOT evict A (hysteresis).
-            ntt.onQuicDisconnect(A);
-            sampleTimes(ntt, 1);
-            assertThat(ntt.currentMembers()).contains(A); // not bypassed
+            sampler.onQuicDisconnect(A);
+            sampleTimes(sampler, 1);
+            assertThat(sampler.currentMembers()).contains(A); // not bypassed
             assertThat(reconcileInvocations.get()).isEqualTo(1); // still only the join
 
             // Without a renewed hint, the next sample sees A SWIM-healthy → recovers.
-            sampleTimes(ntt, K_DOWN);
-            assertThat(ntt.currentMembers()).contains(A);
+            sampleTimes(sampler, K_DOWN);
+            assertThat(sampler.currentMembers()).contains(A);
             assertThat(reconcileInvocations.get()).isEqualTo(1);
         }
 
         @Test
         void onQuicDisconnect_sustainedWithAbsence_eventuallyEvictsViaHysteresis() {
-            var ntt = tracker();
+            var sampler = sampler();
 
             healthy(A);
-            sampleTimes(ntt, K_UP);
-            assertThat(ntt.currentMembers()).contains(A);
+            sampleTimes(sampler, K_UP);
+            assertThat(sampler.currentMembers()).contains(A);
 
             // SWIM also drops A; disconnect hints reinforce each absent sample.
             absent(A);
-            ntt.onQuicDisconnect(A);
-            sampleTimes(ntt, 1);
-            ntt.onQuicDisconnect(A);
-            sampleTimes(ntt, 1);
-            assertThat(ntt.currentMembers()).contains(A); // still within window (K_DOWN=3)
-            ntt.onQuicDisconnect(A);
-            sampleTimes(ntt, 1); // K_DOWN-th absent → evicted
+            sampler.onQuicDisconnect(A);
+            sampleTimes(sampler, 1);
+            sampler.onQuicDisconnect(A);
+            sampleTimes(sampler, 1);
+            assertThat(sampler.currentMembers()).contains(A); // still within window (K_DOWN=3)
+            sampler.onQuicDisconnect(A);
+            sampleTimes(sampler, 1); // K_DOWN-th absent → evicted
 
-            assertThat(ntt.currentMembers()).containsExactly(SELF);
+            assertThat(sampler.currentMembers()).containsExactly(SELF);
         }
 
         @Test
         void onQuicReconnect_biasesPresent_butStillRequiresKSamples() {
-            var ntt = tracker();
+            var sampler = sampler();
 
             // A is NOT SWIM-healthy, but a reconnect hint biases one sample present.
-            ntt.onQuicReconnect(A);
-            sampleTimes(ntt, 1); // up-streak 1 only
-            assertThat(ntt.currentMembers()).containsExactly(SELF); // not bypassed
+            sampler.onQuicReconnect(A);
+            sampleTimes(sampler, 1); // up-streak 1 only
+            assertThat(sampler.currentMembers()).containsExactly(SELF); // not bypassed
 
-            sampleTimes(ntt, K_UP);
-            assertThat(ntt.currentMembers()).containsExactly(SELF);
+            sampleTimes(sampler, K_UP);
+            assertThat(sampler.currentMembers()).containsExactly(SELF);
             assertThat(reconcileInvocations.get()).isZero();
         }
     }
@@ -361,48 +361,48 @@ class NodeTopologyTrackerTest {
     /// cold-start-over guard off (independent of reconcile-pass timing).
     @Nested
     class PeakMembership {
-        private NodeTopologyTracker formedTracker() {
-            var ntt = tracker();
+        private PresenceSampler formedTracker() {
+            var sampler = sampler();
             healthy(A);
             healthy(B);
             healthy(C);
-            sampleTimes(ntt, K_UP); // SELF + A + B + C = 4 stable
-            return ntt;
+            sampleTimes(sampler, K_UP); // SELF + A + B + C = 4 stable
+            return sampler;
         }
 
         @Test
         void freshTracker_peakIsSelfOnly() {
-            assertThat(tracker().peakMembershipCount()).isEqualTo(1);
+            assertThat(sampler().peakMembershipCount()).isEqualTo(1);
         }
 
         @Test
         void peakRecordsFormationGrowth() {
-            var ntt = formedTracker();
+            var sampler = formedTracker();
 
-            assertThat(ntt.currentMemberCount()).isEqualTo(4);
-            assertThat(ntt.peakMembershipCount()).isEqualTo(4);
+            assertThat(sampler.currentMemberCount()).isEqualTo(4);
+            assertThat(sampler.peakMembershipCount()).isEqualTo(4);
         }
 
         @Test
         void peakNeverDecreasesAfterDeparture() {
-            var ntt = formedTracker(); // SELF + A + B + C = 4
-            assertThat(ntt.peakMembershipCount()).isEqualTo(4);
+            var sampler = formedTracker(); // SELF + A + B + C = 4
+            assertThat(sampler.peakMembershipCount()).isEqualTo(4);
 
             absent(C);
-            sampleTimes(ntt, K_DOWN); // C leaves the stable set: 4 -> 3
+            sampleTimes(sampler, K_DOWN); // C leaves the stable set: 4 -> 3
 
-            assertThat(ntt.currentMemberCount()).isEqualTo(3);
+            assertThat(sampler.currentMemberCount()).isEqualTo(3);
             // Peak is a one-way high-water mark — it holds at the formation maximum.
-            assertThat(ntt.peakMembershipCount()).isEqualTo(4);
+            assertThat(sampler.peakMembershipCount()).isEqualTo(4);
         }
 
         @Test
         void peakSurvivesHardEvict() {
-            var ntt = formedTracker(); // peak 4
-            ntt.evict(C);
+            var sampler = formedTracker(); // peak 4
+            sampler.evict(C);
 
-            assertThat(ntt.currentMemberCount()).isEqualTo(3);
-            assertThat(ntt.peakMembershipCount()).isEqualTo(4);
+            assertThat(sampler.currentMemberCount()).isEqualTo(3);
+            assertThat(sampler.peakMembershipCount()).isEqualTo(4);
         }
     }
 }

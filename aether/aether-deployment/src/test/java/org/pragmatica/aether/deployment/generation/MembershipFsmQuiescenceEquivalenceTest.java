@@ -7,7 +7,7 @@ package org.pragmatica.aether.deployment.generation;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.generation.ClusterGenerationProjector.ProjectionInput;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
-import org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker;
+import org.pragmatica.aether.deployment.membership.ntt.PresenceSampler;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.GenerationReason;
 import org.pragmatica.aether.slice.generation.HealthHint;
@@ -35,7 +35,7 @@ class MembershipFsmQuiescenceEquivalenceTest {
     private static final NodeId A = new NodeId("node-a");
     private static final NodeId B = new NodeId("node-b");
     private static final NodeId C = new NodeId("node-c");
-    private static final NodeId NTT_SELF = new NodeId("ntt-self");
+    private static final NodeId SAMPLER_SELF = new NodeId("sampler-self");
     private static final TimeSpan INTERVAL = TimeSpan.timeSpan(100).millis();
     private static final ClusterGenerationProjector PROJECTOR = ClusterGenerationProjector.clusterGenerationProjector();
 
@@ -124,8 +124,8 @@ class MembershipFsmQuiescenceEquivalenceTest {
 
     private static MembershipFsm activeManager() {
         Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.of());
-        var ntt = NodeTopologyTracker.nodeTopologyTracker(NTT_SELF, health, INTERVAL, 2, 3, () -> 0L);
-        return MembershipFsm.membershipFsm(ntt);
+        var sampler = PresenceSampler.presenceSampler(SAMPLER_SELF, health, INTERVAL, 2, 3, () -> 0L);
+        return MembershipFsm.membershipFsm(sampler);
     }
 
     private static void promoteToMember(MembershipFsm manager, NodeId id) {

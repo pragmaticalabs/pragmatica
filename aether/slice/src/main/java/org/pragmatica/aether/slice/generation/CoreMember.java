@@ -11,7 +11,7 @@ import org.pragmatica.serialization.Codec;
 
 /// Presence-derived core-member descriptor. The synthetic per-node lifecycle enum was removed
 /// in the membership-v2 finale: membership is now reconstructible each tick from
-/// `ntt.currentMembers()` presence, and the only real node work-state is `NodeReportedState`
+/// `presenceSampler.currentMembers()` presence, and the only real node work-state is `NodeReportedState`
 /// (SYNCING / READY / DRAINING) reported via pong — carried on the metrics heartbeat, not on
 /// this generation-snapshot record. A `CoreMember` therefore carries presence (it exists ⇒ the
 /// node is a current member), display address, the SWIM-derived `healthHint`, generation epochs,

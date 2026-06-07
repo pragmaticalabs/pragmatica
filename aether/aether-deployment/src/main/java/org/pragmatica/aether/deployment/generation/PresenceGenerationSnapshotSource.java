@@ -16,23 +16,23 @@ import java.util.function.Supplier;
 
 
 /// Presence-derived `GenerationSnapshotSource` that feeds `TopologyObserver`'s membership
-/// (`publishMembershipDeltas`) and quorum evaluation from local NTT presence
-/// (`NodeTopologyTracker.currentMembers()`) instead of the committed `GenerationSnapshot`.
+/// (`publishMembershipDeltas`) and quorum evaluation from local presence sampler presence
+/// (`PresenceSampler.currentMembers()`) instead of the committed `GenerationSnapshot`.
 /// This decouples `NodeRemoved`/`NodeJoined` and quorum from consensus commits
 /// (`aether/docs/specs/membership-placement-split-spec.md` §4.1–4.2, step 2 of §8).
 ///
 /// Cold-start gating uses a **one-way quorum latch** mirroring `TopologyObserver`'s own
-/// BOOTING→NORMAL latch. `NodeTopologyTracker.currentMembers()` is never empty — it is
+/// BOOTING→NORMAL latch. `PresenceSampler.currentMembers()` is never empty — it is
 /// seeded with `{self}` at construction — so an "empty-members" check can never trigger
-/// the fallback. Instead, until NTT first converges to quorum-many members the cluster is
+/// the fallback. Instead, until presence sampler first converges to quorum-many members the cluster is
 /// still cold-starting and `currentMembershipView()` returns `Option.none()`, letting
 /// `TopologyObserver` bootstrap quorum from its legacy in-memory `nodeStatesById`
-/// peer-count path (CRITICAL for cold-start formation — must not be removed). Once NTT
+/// peer-count path (CRITICAL for cold-start formation — must not be removed). Once presence sampler
 /// has shown quorum the latch flips permanently: the presence view then governs membership
 /// deltas AND steady-state quorum forever, so a later sub-quorum drop is reported as a low
 /// member count (which drives the dissolve path), NOT a flip back to the legacy fallback.
 ///
-/// NTT carries neither `desiredCoreSize` nor the CTM-provisioned set, so those are
+/// presence sampler carries neither `desiredCoreSize` nor the CTM-provisioned set, so those are
 /// supplied separately (`desiredCoreSize` from `ClusterConfigKey.CURRENT` / topology,
 /// `ctmProvisioned` delegated to the retained KV-backed source).
 public final class PresenceGenerationSnapshotSource implements GenerationSnapshotSource {

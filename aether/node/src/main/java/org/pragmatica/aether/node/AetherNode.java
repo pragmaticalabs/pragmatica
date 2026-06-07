@@ -37,7 +37,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossDetector;
-import org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker;
+import org.pragmatica.aether.deployment.membership.ntt.PresenceSampler;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossIntent;
 import org.pragmatica.aether.deployment.membership.phase.ClusterPhaseView;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
@@ -403,7 +403,7 @@ public interface AetherNode extends ManageableNode {
         // Membership/placement split (spec §4.1–4.2, step 2): TopologyObserver's membership
         // (publishMembershipDeltas) and quorum eval now read LOCAL NTT presence, not the
         // committed GenerationSnapshot — so NodeRemoved/NodeJoined fire decoupled from
-        // consensus commits. The NTT is built later in assembleNode; nttRef is the empty
+        // consensus commits. The NTT is built later in assembleNode; presenceSamplerRef is the empty
         // deferred holder (declared here, populated at NTT construction, threaded through).
         // memberSupplier returns Set.of() until NTT exists → PresenceGenerationSnapshotSource
         // yields none() → TopologyObserver falls back to its legacy BOOTING quorum path
@@ -412,15 +412,15 @@ public interface AetherNode extends ManageableNode {
         // ctmProvisioned + observedRabiaTerm delegate to the retained KV source / leader term.
         // rawSnapshotSource (KV-backed) stays alive — it is the ctmProvisioned delegate
         // below, and the committed placement snapshot it reads still backs BootstrapModule.
-        var nttRef = new AtomicReference<NodeTopologyTracker>();
+        var presenceSamplerRef = new AtomicReference<PresenceSampler>();
         // Membership-FSM unification (Wave D): deferred holder for the authoritative MembershipFsm.
         // The FSM is constructed later in createNode (after NTT), but several membership CONSUMERS are
         // wired before that point (the DHT livePeers() adapter, the forward-routing accessibility
         // filter, the NTT-reconcile quorum-count propagation). They deref this holder at request time
         // and degrade to their pre-FSM source while it is still null — populated at FSM construction.
         var membershipFsmRef = new AtomicReference<MembershipFsm>();
-        Supplier<Set<NodeId>> presenceMemberSupplier = () -> Option.option(nttRef.get())
-                                                                   .map(NodeTopologyTracker::currentMembers)
+        Supplier<Set<NodeId>> presenceMemberSupplier = () -> Option.option(presenceSamplerRef.get())
+                                                                   .map(PresenceSampler::currentMembers)
                                                                    .or(Set.of());
         IntSupplier presenceCoreSizeSupplier = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT)
                                                             .filter(v -> v instanceof AetherValue.ClusterConfigValue)
@@ -472,7 +472,7 @@ public interface AetherNode extends ManageableNode {
                                                              leaderTerm,
                                                              hlcClock,
                                                              snapshotSource,
-                                                             nttRef,
+                                                             presenceSamplerRef,
                                                              membershipFsmRef,
                                                              syncHoldRegistry,
                                                              jvmExit));
@@ -512,11 +512,11 @@ public interface AetherNode extends ManageableNode {
     /// instead of waiting for an unrelated dirty trigger.
     @Contract
     private static void onNttReconcile(AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
-                                       AtomicReference<NodeTopologyTracker> nttRef,
+                                       AtomicReference<PresenceSampler> presenceSamplerRef,
                                        AtomicReference<MembershipFsm> membershipFsmRef,
                                        AtomicReference<LeaderReconciler> leaderReconcilerRef,
                                        AtomicReference<GenerationSnapshotPublisher> publisherRef) {
-        Option.option(nttRef.get()).onPresent(tracker -> propagateMemberCount(quorumLossDetectorRef, membershipFsmRef, tracker));
+        Option.option(presenceSamplerRef.get()).onPresent(sampler -> propagateMemberCount(quorumLossDetectorRef, membershipFsmRef, sampler));
         Option.option(leaderReconcilerRef.get()).onPresent(LeaderReconciler::onTopologyUnhealthy);
         Option.option(publisherRef.get()).onPresent(GenerationSnapshotPublisher::markDirty);
     }
@@ -532,10 +532,10 @@ public interface AetherNode extends ManageableNode {
     @Contract
     private static void propagateMemberCount(AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
                                              AtomicReference<MembershipFsm> membershipFsmRef,
-                                             NodeTopologyTracker tracker) {
+                                             PresenceSampler sampler) {
         var memberCount = Option.option(membershipFsmRef.get())
                                 .map(fsm -> fsm.countedMembers().size())
-                                .or(tracker::currentMemberCount);
+                                .or(sampler::currentMemberCount);
         Option.option(quorumLossDetectorRef.get())
               .onPresent(detector -> detector.onMemberCountChanged(memberCount));
     }
@@ -579,7 +579,7 @@ public interface AetherNode extends ManageableNode {
                                                    AtomicLong leaderTerm,
                                                    HlcClock hlcClock,
                                                    GenerationSnapshotSource snapshotSource,
-                                                   AtomicReference<NodeTopologyTracker> nttRef,
+                                                   AtomicReference<PresenceSampler> presenceSamplerRef,
                                                    AtomicReference<MembershipFsm> membershipFsmRef,
                                                    org.pragmatica.cluster.node.rabia.SyncHoldRegistry syncHoldRegistry,
                                                    Runnable jvmExit) {
@@ -696,7 +696,7 @@ public interface AetherNode extends ManageableNode {
                           ClusterTopologyManager clusterTopologyManagerInstance,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
-                          NodeTopologyTracker ntt,
+                          PresenceSampler presenceSampler,
                           Runnable startSwimTrigger,
                           Supplier<Option<ClusterGenerationSnapshot>> generationSnapshotSupplier,
                           Runnable refreshGenerationSnapshot,
@@ -780,7 +780,7 @@ public interface AetherNode extends ManageableNode {
                 streamPartitionManager.close();
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::stop);
                 swimHealthDetector.stop();
-                ntt.stop();
+                presenceSampler.stop();
                 discoveryProvider.onPresent(this::deregisterFromDiscovery);
 
                 return managementServer.map(ManagementServer::stop)
@@ -1680,13 +1680,13 @@ public interface AetherNode extends ManageableNode {
         var leaderReconcilerRef = new AtomicReference<LeaderReconciler>();
         var quorumLossDetectorRef = new AtomicReference<QuorumLossDetector>();
         var publisherRef = new AtomicReference<GenerationSnapshotPublisher>();
-        Runnable nttReconcileTrigger = () -> onNttReconcile(quorumLossDetectorRef, nttRef, membershipFsmRef, leaderReconcilerRef, publisherRef);
+        Runnable nttReconcileTrigger = () -> onNttReconcile(quorumLossDetectorRef, presenceSamplerRef, membershipFsmRef, leaderReconcilerRef, publisherRef);
         Supplier<HealthSnapshot> nttHealthSupplier =
             () -> swimHealthDetector.currentHealth()
                                     .or(() -> HealthSnapshot.healthSnapshot(Map.of()));
-        var ntt = NodeTopologyTracker.nodeTopologyTracker(membershipConfig, config.self(), nttHealthSupplier, nttReconcileTrigger);
-        nttRef.set(ntt);
-        ntt.start();
+        var presenceSampler = PresenceSampler.presenceSampler(membershipConfig, config.self(), nttHealthSupplier, nttReconcileTrigger);
+        presenceSamplerRef.set(presenceSampler);
+        presenceSampler.start();
         // P3 (membership unification): quorum-loss self-drain is sourced from NTT's stable
         // member count via the nttReconcileTrigger above; the grace window + the
         // arm-after-first-quorum guard live in QuorumLossDetector (ported from the deleted
@@ -1701,13 +1701,13 @@ public interface AetherNode extends ManageableNode {
         // Membership v2 Phase 2 LIVE — the per-member MembershipFsm is the authoritative membership-
         // death decision-maker. It is ALWAYS-ON per node (no leader gate): every node drives its own
         // per-member FSMs from its tapped SWIM/liveness edges and hard-evicts the dead identity from its
-        // own NTT view (ntt.evict) on every transition into DEAD. Only scaling (LeaderReconciler) stays
+        // own NTT view (presenceSampler.evict) on every transition into DEAD. Only scaling (LeaderReconciler) stays
         // leader-gated. The presence-derived TopologyObserver → MembershipDecision →
         // ClusterEventAggregator path then emits NODE_FAILED / NODE_LEFT from the resulting stableMembers
-        // delta. The FSM emits no event directly. It is injected with the SAME `ntt` instance and is
+        // delta. The FSM emits no event directly. It is injected with the SAME `presenceSampler` instance and is
         // constructed BEFORE the reconciler because the reconciler now COUNTS this FSM's countedMembers()
         // (MEMBER + SUSPECT) as its base membership set (#68/#94 churn cutover).
-        var membershipFsm = MembershipFsm.membershipFsm(ntt);
+        var membershipFsm = MembershipFsm.membershipFsm(presenceSampler);
         // Publish the FSM into the deferred holder so the membership consumers wired earlier (DHT
         // livePeers, accessibility filter, quorum-count propagation) read the authoritative FSM set.
         membershipFsmRef.set(membershipFsm);
@@ -1717,12 +1717,12 @@ public interface AetherNode extends ManageableNode {
         // belt-and-suspenders: it promotes only still-OBSERVED ids and never resurrects a DEAD one.
         membershipFsm.seed(config.topology().coreNodes().stream().map(NodeInfo::id).collect(Collectors.toSet()));
         // Route NTT's down-hysteresis crossing edge into the FSM (post-construction installer — the FSM
-        // exists only now, AFTER ntt). A sustained-absence SUSPECT member is then bounded by the FSM
+        // exists only now, AFTER presenceSampler). A sustained-absence SUSPECT member is then bounded by the FSM
         // (SUSPECT→DEPARTING per spec §3.3 / invariant I4) so a genuinely-gone node still departs the
         // count exactly once, rather than NTT independently removing it from its own set.
-        ntt.onDownHysteresisCrossing(membershipFsm::onDownHysteresisMet);
+        presenceSampler.onDownHysteresisCrossing(membershipFsm::onDownHysteresisMet);
         var leaderReconciler = LeaderReconciler.leaderReconciler(membershipConfig,
-                                                                 ntt,
+                                                                 presenceSampler,
                                                                  membershipFsm,
                                                                  configuredCoreCountSupplier,
                                                                  leaderTerm::get,
@@ -1738,7 +1738,7 @@ public interface AetherNode extends ManageableNode {
         // not re-dispatch replacements the prior leader already provisioned (the over-provisioning bug).
         metricsScheduler.setDispatchedNodesSupplier(leaderReconciler::inFlightProvisioningKeys);
         leaderReconciler.setRetainedDispatchedSupplier(metricsCollector::retainedDispatchedNodes);
-        swimHealthDetector.addObservationListener(ntt::onSwimObservation);
+        swimHealthDetector.addObservationListener(presenceSampler::onSwimObservation);
         // E2 Phase 1.5 — symmetric "surplus appeared" trigger: a SWIM HealthyObserved
         // signals a peer became reachable; if the leader is in surplus the reconcile
         // will dispatch drains. NTT catches shortage (DepartedObserved), this catches
@@ -1764,14 +1764,14 @@ public interface AetherNode extends ManageableNode {
         quorumLossDetector.setQuorumLossListener(quorumLossChain);
         metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
         // QUIC reconnect feeds NTT's soft up-bias (unchanged) AND the FSM's peer-connected tap.
-        Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) ntt::onQuicReconnect).andThen(membershipFsm::onPeerConnected);
+        Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) presenceSampler::onQuicReconnect).andThen(membershipFsm::onPeerConnected);
         // QUIC disconnect feeds BOTH NTT's soft down-bias (unchanged) AND the liveness half of the
         // confirmed-death gate in the authoritative MembershipFsm. A routed QUIC disconnect fires on a
         // bare transport drop AND on the 3-missed-pong ClusterSync ping-timeout
         // (emitPingTimeoutIfExceeded calls network.disconnect → PeerDisconnected), so this single tap
         // captures the spec's liveness-gone signal. Bare disconnect alone does NOT evict — the FSM
         // gates it behind SWIM-FAULTY co-confirmation. Leader-gated inside the FSM.
-        Consumer<NodeId> nttDisconnectTap = ((Consumer<NodeId>) ntt::onQuicDisconnect).andThen(membershipFsm::onLivenessGone);
+        Consumer<NodeId> nttDisconnectTap = ((Consumer<NodeId>) presenceSampler::onQuicDisconnect).andThen(membershipFsm::onLivenessGone);
         // P5: the NTT-reconciler leader-toggle (auto-heal activation) is now wired into the
         // live router. Safe because LeaderReconciler is identity-aware — it arms provisioning
         // only after the cluster first reaches configuredCoreCount, so it never provisions a
@@ -1868,7 +1868,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                   kvStore,
                                                                                                   clusterNode,
                                                                                                   publisherExecutor,
-                                                                                                  ntt::currentMembers,
+                                                                                                  presenceSampler::currentMembers,
                                                                                                   ((TopologyObserver) clusterNode.topologyManager())::get);
         publisherRef.set(generationSnapshotPublisher);
         var bootstrapModule = BootstrapModule.bootstrapModule(isLeaderSupplier,
@@ -2236,7 +2236,7 @@ public interface AetherNode extends ManageableNode {
                                   clusterTopologyManager,
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
-                                  ntt,
+                                  presenceSampler,
                                   startSwimTrigger,
                                   spokesmanSnapshotSupplier,
                                   generationSnapshotPublisher::markDirty,
@@ -2338,7 +2338,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                       clusterTopologyManager,
                                                                                                       eventLoopMetricsCollector,
                                                                                                       swimHealthDetector,
-                                                                                                      ntt,
+                                                                                                      presenceSampler,
                                                                                                       startSwimTrigger,
                                                                                                       spokesmanSnapshotSupplier,
                                                                                                       generationSnapshotPublisher::markDirty,

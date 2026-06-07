@@ -616,7 +616,7 @@ public interface TopologyObserver extends TopologyManager {
             /// departure into N+ redundant routings.
             ///
             /// Membership-v2 finale: the synthetic per-node lifecycle-projection walker was
-            /// removed. Membership is presence-derived (`coreMemberIds()` = `ntt.currentMembers()`),
+            /// removed. Membership is presence-derived (`coreMemberIds()` = `presenceSampler.currentMembers()`),
             /// so only the core-membership delta (`NodeJoined` / `NodeRemoved`) is emitted here.
             /// Every emission is
             /// stamped with `(logIndex = snapshotSource.observedRabiaTerm(), stampedAt =

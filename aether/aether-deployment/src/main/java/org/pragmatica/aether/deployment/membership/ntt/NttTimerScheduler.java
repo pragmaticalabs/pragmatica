@@ -9,11 +9,11 @@ import org.pragmatica.lang.io.TimeSpan;
 import java.util.concurrent.ScheduledFuture;
 
 
-/// Scheduler indirection for [`NodeTopologyTracker`]. Production wiring binds this to
+/// Scheduler indirection for [`PresenceSampler`]. Production wiring binds this to
 /// `SharedScheduler::schedule`; tests provide a deterministic manual scheduler so timer
 /// fire is driven by an explicit tick rather than wall-clock advancement.
 ///
-/// Returns a [`ScheduledFuture`] so NTT can call `cancel(false)` to evict a still-pending
+/// Returns a [`ScheduledFuture`] so presence sampler can call `cancel(false)` to evict a still-pending
 /// timer atomically with the map removal.
 @FunctionalInterface
 public interface NttTimerScheduler {

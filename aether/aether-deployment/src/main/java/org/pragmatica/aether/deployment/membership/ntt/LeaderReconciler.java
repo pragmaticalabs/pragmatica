@@ -36,12 +36,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Leader-pinned reconciler (membership v2 spec §7.4 — E2 Phase 1.6: state-derived
-/// reconciliation sourcing membership from NTT). All trigger paths converge on a
+/// reconciliation sourcing membership from presence sampler). All trigger paths converge on a
 /// single CAS-debounced `triggerReconcile(trigger)` entry point; the periodic tick
 /// has been removed (the previous tick existed only because surplus had no event
-/// signal — now SWIM `HealthyObserved` provides it symmetrically with NTT for
+/// signal — now SWIM `HealthyObserved` provides it symmetrically with presence sampler for
 /// shortage). `clusterMembershipCount` and the current member set are both sourced
-/// from [`NodeTopologyTracker#currentMembers`] / [`NodeTopologyTracker#currentMemberCount`],
+/// from [`PresenceSampler#currentMembers`] / [`PresenceSampler#currentMemberCount`],
 /// the single SWIM-fed membership source (freshest "who is in the cluster" signal). The
 /// member set always includes `self`.
 ///
@@ -50,7 +50,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///    [`ReconcileTrigger#LEADER_ACTIVATION`] reconcile at
 ///    `nttDepartureTimeout × 1.5`. Reasoning: leader churn is invasive; let SWIM gossip
 ///    + QUIC connections quiesce before reconciling. No immediate reconcile is emitted.
-/// 2. [`#onTopologyUnhealthy()`] — wired from NTT's timer-fire callback while leader.
+/// 2. [`#onTopologyUnhealthy()`] — wired from presence sampler's timer-fire callback while leader.
 ///    Non-leader nodes ignore. Trigger: [`ReconcileTrigger#NTT_FIRE`].
 /// 3. [`#onQuorumLossIntent(QuorumLossIntent)`] — wired from
 ///    [`QuorumLossDetector`]. Emitted on every node. Trigger:
@@ -108,7 +108,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// **Suppressed-deficit re-evaluation tick (Fix 2).** A pass that computes a deficit but suppresses
 /// provisioning purely on the deficit-debounce TIME gate (`WITHIN_DEBOUNCE`) schedules a single
 /// follow-up reconcile after the remaining debounce window (+ a small margin), so the deficit is
-/// acted on when the gate clears instead of waiting for the next NTT membership-change event (which
+/// acted on when the gate clears instead of waiting for the next presence sampler membership-change event (which
 /// never arrives when membership is stable in deficit). At most one such follow-up is pending at a
 /// time (deduped via [`#debounceReEvalFutureRef`]); it does not busy-loop.
 ///
@@ -130,13 +130,13 @@ public final class LeaderReconciler {
     private final TimeSpan provisioningGraceWindow;
     private final TimeSpan deficitDebounceWindow;
     private final TimeSpan inFlightExpiry;
-    private final NodeTopologyTracker ntt;
+    private final PresenceSampler presenceSampler;
     /// Authoritative membership-count source (membership v2 cutover, #68/#94). The reconciler
     /// COUNTS this FSM's [`MembershipFsm#countedMembers`] (MEMBER + SUSPECT) as its base membership
-    /// set — NOT NTT's presence set. A SUSPECT member still counts here, so a single-plane false
+    /// set — NOT presence sampler's presence set. A SUSPECT member still counts here, so a single-plane false
     /// positive no longer opens a phantom deficit that over-provisions; a genuinely-gone node drops
-    /// from the count via co-confirmed death or the routed down-hysteresis crossing. NTT is retained
-    /// for its monotonic [`NodeTopologyTracker#peakMembershipCount`] cold-start latch and trigger
+    /// from the count via co-confirmed death or the routed down-hysteresis crossing. presence sampler is retained
+    /// for its monotonic [`PresenceSampler#peakMembershipCount`] cold-start latch and trigger
     /// wiring.
     private final MembershipFsm membershipFsm;
     private final IntSupplier configuredCoreCountSupplier;
@@ -192,7 +192,7 @@ public final class LeaderReconciler {
     private volatile Consumer<ReconcileIntent> reconcileListener = NOOP_LISTENER;
 
     private LeaderReconciler(MembershipConfig membershipConfig,
-                             NodeTopologyTracker ntt,
+                             PresenceSampler presenceSampler,
                              MembershipFsm membershipFsm,
                              IntSupplier configuredCoreCountSupplier,
                              Supplier<Long> leaderTermSupplier,
@@ -214,7 +214,7 @@ public final class LeaderReconciler {
         // membership-timing constant rather than introducing a new literal.
         this.deficitDebounceWindow = membershipConfig.nttDepartureTimeout();
         this.inFlightExpiry = computeInFlightExpiry(membershipConfig.nttDepartureTimeout());
-        this.ntt = ntt;
+        this.presenceSampler = presenceSampler;
         this.membershipFsm = membershipFsm;
         this.configuredCoreCountSupplier = configuredCoreCountSupplier;
         this.leaderTermSupplier = leaderTermSupplier;
@@ -226,14 +226,14 @@ public final class LeaderReconciler {
 
     /// Production factory bound to the process-wide [`SharedScheduler`] and the system clock.
     public static LeaderReconciler leaderReconciler(MembershipConfig membershipConfig,
-                                                    NodeTopologyTracker ntt,
+                                                    PresenceSampler presenceSampler,
                                                     MembershipFsm membershipFsm,
                                                     IntSupplier configuredCoreCountSupplier,
                                                     Supplier<Long> leaderTermSupplier,
                                                     ClusterTopologyManager ctm,
                                                     Supplier<String> clusterNameSupplier) {
         return new LeaderReconciler(membershipConfig,
-                                    ntt,
+                                    presenceSampler,
                                     membershipFsm,
                                     configuredCoreCountSupplier,
                                     leaderTermSupplier,
@@ -246,7 +246,7 @@ public final class LeaderReconciler {
     /// Test factory accepting explicit [`TimeSource`] and [`NttTimerScheduler`] —
     /// required for deterministic activation/debounce assertions.
     public static LeaderReconciler leaderReconciler(MembershipConfig membershipConfig,
-                                                    NodeTopologyTracker ntt,
+                                                    PresenceSampler presenceSampler,
                                                     MembershipFsm membershipFsm,
                                                     IntSupplier configuredCoreCountSupplier,
                                                     Supplier<Long> leaderTermSupplier,
@@ -255,7 +255,7 @@ public final class LeaderReconciler {
                                                     TimeSource timeSource,
                                                     NttTimerScheduler scheduler) {
         return new LeaderReconciler(membershipConfig,
-                                    ntt,
+                                    presenceSampler,
                                     membershipFsm,
                                     configuredCoreCountSupplier,
                                     leaderTermSupplier,
@@ -331,7 +331,7 @@ public final class LeaderReconciler {
         reachedFullMembership.set(false);
     }
 
-    /// Live-event ingress for NTT timer-expiry. Stage 6 wires this from the NTT
+    /// Live-event ingress for presence sampler timer-expiry. Stage 6 wires this from the presence sampler
     /// reconcile-trigger callback. Non-leader nodes ignore.
     @Contract
     public void onTopologyUnhealthy() {
@@ -488,7 +488,7 @@ public final class LeaderReconciler {
     }
 
     /// Single reconcile pass. Derives `clusterMembershipCount` and the current member set
-    /// from [`NodeTopologyTracker#currentMembers`], latches [`#reachedFullMembership`] on first
+    /// from [`PresenceSampler#currentMembers`], latches [`#reachedFullMembership`] on first
     /// observed full configured membership, then gates provisioning behind `quorumSafe &&
     /// armedForProvisioning && reachedFullMembership && deficitDebounced` (identity-aware rule —
     /// membership-unification-spec P5). Provisioning is suppressed until the latch reaches full
@@ -549,20 +549,20 @@ public final class LeaderReconciler {
         }
 
         // Reached-full-membership latch (Bug C — cold-start-over is a FACT, not a timer). Sourced
-        // from NTT's INDEPENDENT high-water mark ([`NodeTopologyTracker#peakMembershipCount`]), NOT
+        // from presence sampler's INDEPENDENT high-water mark ([`PresenceSampler#peakMembershipCount`]), NOT
         // the per-pass `clusterMembershipCount`: the reconciler is departure-triggered, so its FIRST
         // pass runs at the post-departure count (e.g. 4/5) and never during the full-membership
         // window — a per-pass `>= configured` check could therefore never latch (live Docker trace
-        // proved it). NTT updates the peak on the 1→full formation growth regardless of reconcile
+        // proved it). presence sampler updates the peak on the 1→full formation growth regardless of reconcile
         // timing, so the first pass at 4/5 sees peak=5 → latches. Latch true once; never resets.
         // While false the cluster never reached full — a deficit may be a slow-joining configured
         // peer, so provisioning is suppressed (COLD_START_NOT_FULL). Once true the cold-start guard
         // no longer applies: a deficit is a departure, gated only by deficit-debounce +
         // quorum-safety + the arm latch.
-        if (configuredCoreCount >= 1 && ntt.peakMembershipCount() >= configuredCoreCount) {
+        if (configuredCoreCount >= 1 && presenceSampler.peakMembershipCount() >= configuredCoreCount) {
             if (reachedFullMembership.compareAndSet(false, true)) {
                 log.info("Reached full membership at nanoTime={} (peakMembershipCount={}, configuredCoreCount={})",
-                         now, ntt.peakMembershipCount(), configuredCoreCount);
+                         now, presenceSampler.peakMembershipCount(), configuredCoreCount);
             }
         }
 
@@ -596,7 +596,7 @@ public final class LeaderReconciler {
         // Fix 2 — suppressed-deficit re-evaluation tick. A pass that has a quorum-safe, armed,
         // full-membership deficit suppressed ONLY by the deficit-debounce time gate schedules a
         // single follow-up reconcile after the remaining debounce window so the deficit is acted on
-        // when the gate clears — instead of waiting for an NTT membership-change event that never
+        // when the gate clears — instead of waiting for a presence sampler membership-change event that never
         // arrives while membership is stable in deficit. Deduped + bounded; does not busy-loop.
         scheduleDebounceReEvalIfNeeded(now, effective, configuredCoreCount, quorumSafe, provisioningPermitted);
 
@@ -683,7 +683,7 @@ public final class LeaderReconciler {
         log.info("LeaderReconciler pass: trigger={} clusterMembershipCount={} peakMembershipCount={} members={} effective={} configuredCoreCount={} armedForProvisioning={} reachedFullMembership={} deficitAgeMs={} quorumSafe={} reason={}",
                  trigger,
                  currentMembers.size(),
-                 ntt.peakMembershipCount(),
+                 presenceSampler.peakMembershipCount(),
                  currentMembers,
                  effective,
                  configuredCoreCount,
@@ -886,7 +886,7 @@ public final class LeaderReconciler {
     /// quorum-safe, armed, full-membership deficit suppressed ONLY by the deficit-debounce time gate
     /// (the `WITHIN_DEBOUNCE` reason). The follow-up fires after the remaining debounce window plus a
     /// small margin, re-entering the reconcile path so the now-aged deficit can provision — instead
-    /// of waiting for an NTT membership-change event that never arrives while membership is stable in
+    /// of waiting for a presence sampler membership-change event that never arrives while membership is stable in
     /// deficit. Deduped: a non-null [`#debounceReEvalFutureRef`] short-circuits (at most one pending),
     /// the CAS-arm cancels a lost race, so it never busy-loops or unbounded-schedules.
     @Contract
@@ -983,9 +983,9 @@ public final class LeaderReconciler {
         return membershipConfig;
     }
 
-    /// Observability — the [`NodeTopologyTracker`] collaborator the reconciler reads the
+    /// Observability — the [`PresenceSampler`] collaborator the reconciler reads the
     /// current member set from (unified SWIM-fed membership source; includes self).
-    public NodeTopologyTracker ntt() {
-        return ntt;
+    public PresenceSampler presenceSampler() {
+        return presenceSampler;
     }
 }
