@@ -19,6 +19,7 @@ package org.pragmatica.consensus.net.quic;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import io.netty.channel.ChannelFuture;
@@ -343,6 +344,67 @@ class QuicConsensusBackpressureTest {
             assertThat(dropped.isEmpty()).isTrue();
             assertThat(s.phase()).isEqualTo(PeerState.Phase.REMOVED);
             return s;
+        }
+    }
+
+    @Nested
+    class BroadcastMembershipFilter {
+
+        private static final NodeId IN_VIEW = new NodeId("member-in-view");
+        private static final NodeId EVICTED = new NodeId("evicted-but-cached");
+
+        /// With an FSM-backed membership view that EXCLUDES a still-cached peer, a broadcast must
+        /// NOT target that peer — even though it lingers in the transport `peers` table as a live
+        /// connection. This is the #68 dead-ULID storm fix: the evicted peer is never re-targeted,
+        /// so no `CONSENSUS stream backpressured` retry can ever start against it.
+        @Test
+        void broadcastTargets_membershipViewExcludesPeer_peerNotTargeted() {
+            var network = network();
+            network.seedPeerForTests(IN_VIEW, PeerState.peerState(IN_VIEW, System.nanoTime()));
+            network.seedPeerForTests(EVICTED, PeerState.peerState(EVICTED, System.nanoTime()));
+
+            network.setBroadcastMembership(() -> Set.of(IN_VIEW));
+
+            var targets = network.broadcastTargetsForTests(false);
+
+            assertThat(targets)
+                .as("only the membership-view member is a broadcast target")
+                .containsExactly(IN_VIEW);
+            assertThat(targets)
+                .as("an evicted-but-cached peer is never targeted — #68 storm fix")
+                .doesNotContain(EVICTED);
+        }
+
+        /// The default (unwired) supplier returns `null` ⇒ NO filtering ⇒ every cached peer is a
+        /// broadcast target, preserving the prior behaviour for consensus-only fixtures and tests.
+        @Test
+        void broadcastTargets_defaultNullView_targetsAllCachedPeers() {
+            var network = network();
+            network.seedPeerForTests(IN_VIEW, PeerState.peerState(IN_VIEW, System.nanoTime()));
+            network.seedPeerForTests(EVICTED, PeerState.peerState(EVICTED, System.nanoTime()));
+
+            var targets = network.broadcastTargetsForTests(false);
+
+            assertThat(targets)
+                .as("default null membership view applies no filter — broadcast to all")
+                .containsExactlyInAnyOrder(IN_VIEW, EVICTED);
+        }
+
+        /// A `null` supplier passed to `setBroadcastMembership` resets to the back-compat default
+        /// (no filter) rather than NPE-ing on broadcast.
+        @Test
+        void broadcastTargets_nullSupplierResetsToNoFilter() {
+            var network = network();
+            network.seedPeerForTests(IN_VIEW, PeerState.peerState(IN_VIEW, System.nanoTime()));
+
+            network.setBroadcastMembership(() -> Set.of());
+            network.setBroadcastMembership(null);
+
+            var targets = network.broadcastTargetsForTests(false);
+
+            assertThat(targets)
+                .as("null supplier restores all-peers default")
+                .containsExactly(IN_VIEW);
         }
     }
 

@@ -28,6 +28,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import io.netty.buffer.Unpooled;
@@ -199,6 +201,18 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// behaviour until AetherNode wires the gate post-construction.
     private volatile Option<Function<NodeId, Boolean>> swimHealthGate = Option.empty();
 
+    /// Membership-view supplier gating consensus broadcast targets. The transport `peers`
+    /// table is a connection CACHE, not the membership AUTHORITY: a peer absent from the
+    /// membership view (evicted / dead per the FSM) must never be a broadcast target, even
+    /// if a stale CONNECTED QUIC link to it lingers. Filtering `broadcastPayload` by this
+    /// view dissolves the dead-ULID CONSENSUS retry-storm (#68) at the source — without it,
+    /// consensus keeps broadcasting to an evicted node forever (`Retry N/200 @25ms`).
+    ///
+    /// Back-compat sentinel: the default supplier returns `null`, meaning "no filter / all
+    /// peers" — existing consensus-only fixtures and unit tests broadcast to every connected
+    /// peer exactly as before until AetherNode wires the FSM-backed view post-construction.
+    private volatile Supplier<Set<NodeId>> broadcastMembership = () -> null;
+
     /// Minimal cross-module shape for the follower's observed epoch — keeps the
     /// consensus module free of `aether/slice` types. Upper layers translate.
     public interface ObservedEpochSupplier {
@@ -322,6 +336,19 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// A `null` argument removes the gate (all reconnects allowed — default behaviour).
     @Contract public void setSwimHealthGate(Function<NodeId, Boolean> gate) {
         this.swimHealthGate = Option.option(gate);
+    }
+
+    /// Attach the FSM-backed membership-view supplier that gates consensus broadcast targets.
+    /// The supplier returns the set of NodeIds the membership authority still considers members
+    /// (FSM core members: MEMBER + SUSPECT, worker-excluded). `broadcastPayload` skips any
+    /// connected peer absent from this set — a stale CONNECTED link to an evicted node is never
+    /// a broadcast target, dissolving the #68 CONSENSUS retry-storm at the source.
+    /// A `null` argument (or a supplier returning `null`) restores the default "no filter /
+    /// all peers" behaviour.
+    @Contract public void setBroadcastMembership(Supplier<Set<NodeId>> membershipView) {
+        this.broadcastMembership = membershipView == null
+                                  ? () -> null
+                                  : membershipView;
     }
 
     /// Attach a QUIC-disconnect listener post-construction. Higher layers (e.g.
@@ -905,14 +932,33 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// types in isolation. Each connected peer encodes independently (the message rides a
     /// per-peer stream); the prior serialize-once-across-peers reuse is intentionally dropped
     /// in favour of one serialization site and a message-typed offline buffer.
+    /// The membership view is the AUTHORITY for broadcast eligibility; the `peers` table is only
+    /// a connection cache. A peer the FSM has evicted (absent from `broadcastMembership`) is
+    /// skipped even while a stale CONNECTED QUIC link to it lingers — this is the #68 storm fix:
+    /// consensus never re-targets a dead ULID, so `Retry N/200 @25ms` against it cannot start.
+    /// When the supplier returns `null` (default / unwired), no filtering is applied and every
+    /// connected peer is a target, preserving the prior behaviour for consensus-only fixtures.
     @SuppressWarnings("JBCT-PAT-01") // Iterate eligible peers, dispatch
     private void broadcastPayload(Message.Wired message, boolean skipPassive) {
+        var membershipView = broadcastMembership.get();
         for (var state : peers.values()) {
-            if (skipPassive && state.isPassive()) {
+            if (!isBroadcastEligible(state, membershipView, skipPassive)) {
                 continue;
             }
             var _ = dispatchToPeer(state, message);
         }
+    }
+
+    /// Broadcast-eligibility decision for a single peer. A peer is eligible unless it is a
+    /// skipped passive peer, or — when a membership view is present (non-null) — it is absent
+    /// from that view. The view is the membership AUTHORITY: an evicted-but-still-CONNECTED peer
+    /// (present in the `peers` cache, absent from the view) is NOT eligible, which is the #68
+    /// storm fix. A `null` view (default / unwired supplier) means "no filter / all peers".
+    private static boolean isBroadcastEligible(PeerState state, Set<NodeId> membershipView, boolean skipPassive) {
+        if (skipPassive && state.isPassive()) {
+            return false;
+        }
+        return membershipView == null || membershipView.contains(state.peerId());
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Outcome dispatch with metrics + write
@@ -1335,6 +1381,19 @@ public class QuicClusterNetwork implements ClusterNetwork {
     PeerState seedPeerForTests(NodeId peerId, PeerState peerState) {
         peers.put(peerId, peerState);
         return peerState;
+    }
+
+    /// Test hook: the set of peer NodeIds a `broadcast(skipPassive)` would actually target,
+    /// after applying the same passive-skip + membership-view filter as `broadcastPayload`.
+    /// Lets transport-level tests assert the #68 fix (an evicted-but-cached peer absent from the
+    /// membership view is never targeted) without standing up live QUIC datagram channels.
+    Set<NodeId> broadcastTargetsForTests(boolean skipPassive) {
+        var membershipView = broadcastMembership.get();
+        return peers.values()
+                    .stream()
+                    .filter(state -> isBroadcastEligible(state, membershipView, skipPassive))
+                    .map(PeerState::peerId)
+                    .collect(Collectors.toSet());
     }
 
     // --- Internal: view change ---

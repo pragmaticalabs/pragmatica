@@ -1858,6 +1858,7 @@ public interface AetherNode extends ManageableNode {
                                        nttConnectTap,
                                        nttDisconnectTap);
         attachQuicPeerStateListener(clusterNode.network(), swimHealthDetector);
+        attachBroadcastMembershipView(clusterNode.network(), membershipFsm);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForPublisher(change,
                                                                                       leaderTerm,
@@ -2446,6 +2447,18 @@ public interface AetherNode extends ManageableNode {
             QuicDisconnectListener listener = nodeId -> sink.emit(new HealthSignal.QuicDisconnect(nodeId,
                                                                                                   epochSupplier.get()));
             quicNetwork.setDisconnectListener(listener);
+        }
+    }
+
+    /// Wire the FSM-backed membership-view supplier into the QUIC transport so consensus
+    /// broadcasts target only peers the membership authority still considers members
+    /// ([`MembershipFsm#coreMembers`] — MEMBER + SUSPECT, worker-excluded). The transport
+    /// `peers` table is a connection cache, not the membership authority: an evicted-but-still-
+    /// CONNECTED peer must never receive consensus broadcasts, otherwise it drives the #68
+    /// dead-ULID CONSENSUS retry-storm. No-ops on a non-QUIC network.
+    private static void attachBroadcastMembershipView(ClusterNetwork network, MembershipFsm membershipFsm) {
+        if (network instanceof QuicClusterNetwork quicNetwork) {
+            quicNetwork.setBroadcastMembership(membershipFsm::coreMembers);
         }
     }
 
