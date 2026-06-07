@@ -38,6 +38,7 @@ import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -909,7 +910,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
 
         var member = SwimMember.swimMember(announce.nodeInfo().id(), MemberState.ALIVE,
-                                           announce.incarnation(), probeAddress);
+                                           announce.incarnation(), probeAddress,
+                                           announce.nodeInfo().labels());
         members.put(member.nodeId(), member);
         suspectTimestamps.remove(member.nodeId());
         addMemberUpdate(member);
@@ -928,14 +930,16 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// Derive the peer's QUIC `NodeInfo` from its SWIM probe address: the QUIC port is the
     /// SWIM port minus `swimPortOffset` (inverse of [swimAddressFor]); prefer the kernel-resolved
-    /// IP when present (DNS-free dial), else fall back to the address host string.
+    /// IP when present (DNS-free dial), else fall back to the address host string. The member's
+    /// stored labels (role/source learned via ANNOUNCE) are hydrated into the reconstructed
+    /// `NodeInfo`; an empty label map yields an address-only `NodeInfo` exactly as before.
     private NodeInfo dialInfoFor(SwimMember member) {
         var swimAddr = member.address();
         var quicPort = swimAddr.getPort() - config.swimPortOffset();
         var host = Option.option(swimAddr.getAddress())
                          .map(InetAddress::getHostAddress)
                          .or(swimAddr.getHostString());
-        return NodeInfo.nodeInfo(member.nodeId(), new NodeAddress(host, quicPort));
+        return NodeInfo.nodeInfo(member.nodeId(), new NodeAddress(host, quicPort), NodeRole.ACTIVE, member.labels());
     }
 
     /// Send ANNOUNCE to all seeds every 500ms until this node is acknowledged by a peer or 60 attempts are exhausted.

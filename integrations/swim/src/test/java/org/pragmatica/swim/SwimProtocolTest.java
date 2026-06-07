@@ -18,6 +18,7 @@ package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -26,6 +27,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Option;
@@ -277,6 +279,73 @@ class SwimProtocolTest {
         }
 
         private static NodeInfo nodeInfoFor(NodeId id, InetSocketAddress addr) {
+            return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress(addr.getHostString(), addr.getPort()).unwrap());
+        }
+    }
+
+    /// Announce-carried descriptor labels (#241 Wave A): a node self-describes its
+    /// role/source as `NodeInfo` labels; the ANNOUNCE carries them; the receiving node
+    /// stores them on the `SwimMember` and re-exposes them via `dialInfoFor`'s reconstructed
+    /// `NodeInfo`. An ANNOUNCE without labels (old node / piggyback-only) yields an
+    /// address-only `NodeInfo` with no labels and never fails. No `MembershipUpdate` wire change.
+    @Nested
+    class AnnounceCarriedLabels {
+        private RecordingTransport transport;
+        private RecordingListener listener;
+        private SwimProtocol protocol;
+        private RecordingObservationSink observations;
+
+        @BeforeEach
+        void setUp() {
+            transport = new RecordingTransport();
+            listener = new RecordingListener();
+            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+                                   .fold(cause -> null, v -> v);
+            observations = new RecordingObservationSink();
+            protocol.addObservationListener(observations);
+        }
+
+        @Test
+        void dialInfoFor_announceWithRoleAndSource_exposesLabels() {
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoWithLabels(NODE_A, ADDR_A), "", 0L));
+
+            var discovered = observations.byType(SwimObservation.MemberDiscovered.class);
+            assertThat(discovered).hasSize(1);
+
+            var labels = discovered.getFirst().nodeInfo().labels();
+            assertThat(labels).containsEntry(NodeInfo.LABEL_ROLE, "active");
+            assertThat(labels).containsEntry(NodeInfo.LABEL_SOURCE, "replacement");
+        }
+
+        @Test
+        void dialInfoFor_announceWithoutLabels_exposesAddressOnlyNodeInfo() {
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoNoLabels(NODE_A, ADDR_A), "", 0L));
+
+            var discovered = observations.byType(SwimObservation.MemberDiscovered.class);
+            assertThat(discovered).hasSize(1);
+            assertThat(discovered.getFirst().nodeInfo().labels())
+                .as("an ANNOUNCE without descriptor labels must yield an address-only NodeInfo, no failure")
+                .isEmpty();
+        }
+
+        @Test
+        void member_announceWithLabels_retainsLabelsOnSwimMember() {
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoWithLabels(NODE_A, ADDR_A), "", 0L));
+
+            assertThat(protocol.members().get(NODE_A).labels())
+                .containsEntry(NodeInfo.LABEL_ROLE, "active")
+                .containsEntry(NodeInfo.LABEL_SOURCE, "replacement");
+        }
+
+        private static NodeInfo nodeInfoWithLabels(NodeId id, InetSocketAddress addr) {
+            return NodeInfo.nodeInfo(id,
+                                     NodeAddress.nodeAddress(addr.getHostString(), addr.getPort()).unwrap(),
+                                     NodeRole.ACTIVE,
+                                     Map.of(NodeInfo.LABEL_ROLE, "active",
+                                            NodeInfo.LABEL_SOURCE, "replacement"));
+        }
+
+        private static NodeInfo nodeInfoNoLabels(NodeId id, InetSocketAddress addr) {
             return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress(addr.getHostString(), addr.getPort()).unwrap());
         }
     }
