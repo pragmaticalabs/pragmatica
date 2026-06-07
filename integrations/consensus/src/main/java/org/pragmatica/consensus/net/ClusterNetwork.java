@@ -27,7 +27,9 @@ import org.pragmatica.net.tcp.Server;
 
 import java.util.Map;
 import java.util.Set;
+import java.util.Collection;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import static org.pragmatica.consensus.net.NetworkServiceMessage.*;
 
@@ -65,6 +67,13 @@ public interface ClusterNetwork {
     /// Gate the missing-peer reconciler: peers for which the supplier returns false
     /// (FAULTY or UNKNOWN in SWIM) are skipped during reconnect attempts.
     default void setSwimHealthGate(Function<NodeId, Boolean> gate) {}
+
+    /// Publish the FSM-authoritative desired core-member connection set. When present, the
+    /// missing-peer reconciler reconciles live connections against THIS set (MEMBER + SUSPECT,
+    /// non-worker, address-known) instead of static topology, dropping the legacy SWIM
+    /// membership/health dial gates (the set already encodes them). Default no-op: transports
+    /// without a reconciler keep the legacy topology-driven behaviour.
+    default void setDesiredConnections(Supplier<Collection<NodeInfo>> supplier) {}
 
     /// Register a callback fired once the transport is bound and ready to dial/accept
     /// connections — i.e. transport-ready, NOT consensus-quorum-ready. If the transport is

@@ -33,7 +33,9 @@ import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
+import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.deployment.membership.fsm.PeerTarget;
 import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossDetector;
@@ -174,6 +176,7 @@ import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.TopologyObserver;
@@ -245,6 +248,7 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executors;
@@ -1715,6 +1719,12 @@ public interface AetherNode extends ManageableNode {
         // (added below, before SWIM starts via the whenReady(startSwimTrigger) lifecycle) already
         // promotes members naturally on their first HealthyObserved edge, so this seed is
         // belt-and-suspenders: it promotes only still-OBSERVED ids and never resurrects a DEAD one.
+        // Item 1 (activation): seed FSM descriptors (address/role/source) from the configured topology
+        // BEFORE the member seed below, so `desiredConnections()` carries dial addresses IMMEDIATELY at
+        // boot. Without this the descriptor map is empty until SWIM supplies NodeInfo observations, the
+        // desired-connection set would have no address-known members, and formation would stall waiting
+        // for the first gossip round. Last-wins: SWIM-resolved addresses overwrite these as they arrive.
+        config.topology().coreNodes().forEach(membershipFsm::onMemberDescriptor);
         membershipFsm.seed(config.topology().coreNodes().stream().map(NodeInfo::id).collect(Collectors.toSet()));
         // Route NTT's down-hysteresis crossing edge into the FSM (post-construction installer — the FSM
         // exists only now, AFTER presenceSampler). A sustained-absence SUSPECT member is then bounded by the FSM
@@ -1836,6 +1846,21 @@ public interface AetherNode extends ManageableNode {
                                                 var h = swimHealthDetector.healthOf(nodeId);
                                                 return h != SwimHealth.FAULTY && h != SwimHealth.UNKNOWN;
                                             });
+        // Item 2 (activation): the per-node MembershipFsm is now the connection AUTHORITY. The transport
+        // reconciler reconciles live connections against this FSM desired core-member set (counted MEMBER+
+        // SUSPECT, non-worker, address-known) instead of static topology, dropping the legacy SWIM
+        // membership/health dial gates — the set already encodes them. `setDesiredConnections` is a
+        // QuicClusterNetwork-only capability (not on the ClusterNetwork interface), so it is wired through
+        // the same `instanceof QuicClusterNetwork` guard used elsewhere for QUIC-specific wiring; with
+        // this wired the `setSwimHealthGate` call above is LEGACY-INERT (it now serves only the unwired
+        // reconciler path, which the desired-set reconciler bypasses).
+        // Item 3 (activation): co-confirmed DEAD (swimFaulty ∧ livenessGone) now drops the dead peer's
+        // QUIC link promptly via departurePermanent, instead of lingering ~14s until SWIM emits
+        // DepartedObserved. ADDITIVE — the graceful paths (NodeDecommissioned, DepartedObserved above)
+        // already fire departurePermanent; this adds the co-confirmed-death edge. departurePermanent is
+        // idempotent on an already-removed peer, so the overlap is harmless.
+        membershipFsm.onConfirmedDeparture(clusterNetworkRef::departurePermanent);
+        clusterNetworkRef.setDesiredConnections(() -> desiredDialTargets(membershipFsm));
         var topologyForSwim = clusterNode.topologyManager();
         // P1 fix: prefer the transport-supplied `NodeInfo` (QUIC/Netty Hello handshake)
         // over the static-topology lookup. CTM-replaced or topology-forgotten peers are
@@ -2991,6 +3016,27 @@ public interface AetherNode extends ManageableNode {
         rotateQuicNetwork(clusterNode, serverSsl, clientSsl, log);
         managementServerSupplier.get().onPresent(mgmt -> rotateManagementServer(mgmt, newBundle, log));
         rotateAppHttpServer(appHttpServer, newBundle, log);
+    }
+
+    /// Item 4 (activation): map the authoritative MembershipFsm desired-connection set into the transport's
+    /// `Collection<NodeInfo>` dial contract. Each `PeerTarget` already carries the FSM-resolved dial address
+    /// (`MemberDescriptor.fromNodeInfo` stored `NodeInfo.resolvedAddress()`), so `target.address()` is the
+    /// exact address the transport must dial. The per-target descriptor supplies the role/source labels.
+    private static Collection<NodeInfo> desiredDialTargets(MembershipFsm membershipFsm) {
+        return membershipFsm.desiredConnections()
+                            .stream()
+                            .map(target -> dialNodeInfo(target, membershipFsm.memberDescriptor(target.id())))
+                            .toList();
+    }
+
+    /// Build the dial `NodeInfo` for a desired target. The 4-arg `NodeInfo.nodeInfo` factory defaults
+    /// `resolvedAddress()` to the supplied `address`, and the transport's `connectPeer` dials
+    /// `resolvedAddress()`; since `target.address()` IS the FSM-resolved address, the dialed address is
+    /// correct. Role/source labels come from the per-member descriptor (empty map when none is known yet).
+    private static NodeInfo dialNodeInfo(PeerTarget target, Option<MemberDescriptor> descriptor) {
+        var labels = descriptor.map(d -> Map.of(NodeInfo.LABEL_ROLE, d.role(), NodeInfo.LABEL_SOURCE, d.source()))
+                               .or(Map.of());
+        return NodeInfo.nodeInfo(target.id(), target.address(), NodeRole.ACTIVE, labels);
     }
 
     private static void rotateQuicNetwork(RabiaNode<KVCommand<AetherKey>> clusterNode,
