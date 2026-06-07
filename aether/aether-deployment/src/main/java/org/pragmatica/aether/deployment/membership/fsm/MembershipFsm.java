@@ -18,7 +18,10 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.SwimUnkno
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.UpHysteresisMet;
 import org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmObserver;
 import org.slf4j.Logger;
@@ -26,6 +29,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -139,6 +143,16 @@ public final class MembershipFsm {
     }
 
     // --- Ingress (live taps feed these; always-on) ---
+
+    /// Upsert the last-wins network descriptor (address + role + source) for `info.id()` from a
+    /// NodeInfo-bearing SWIM observation (JoinAnnounced / MemberDiscovered). Leader-gate-free and
+    /// orthogonal to the lifecycle FSM: it lazily creates the member's tracking via [`#trackingFor`]
+    /// (leaving its state in OBSERVED) and overwrites only the descriptor, so the address/role/source
+    /// become known the moment the first NodeInfo lands and a later observation replaces them.
+    @Contract
+    public void onMemberDescriptor(NodeInfo info) {
+        trackingFor(info.id()).updateDescriptor(MemberDescriptor.fromNodeInfo(info));
+    }
 
     /// SWIM reported `id` ALIVE at `incarnation`. Records the incarnation, bumps the consecutive-
     /// healthy streak, and promotes OBSERVED→MEMBER once the streak reaches [`#UP_HYSTERESIS`].
@@ -254,6 +268,42 @@ public final class MembershipFsm {
         return snapshot;
     }
 
+    // --- Projections (desired connection-set for the transport executor) ---
+
+    /// The core membership set the transport executor should keep mesh-connected: counted members
+    /// (MEMBER + SUSPECT) that are NOT explicitly role=worker. An unknown / absent role counts as
+    /// included, so an all-core cluster with no role labels yields every counted member. Insertion-
+    /// ordered ([`LinkedHashSet`]) for stable iteration.
+    public Set<NodeId> coreMembers() {
+        return members.entrySet()
+                      .stream()
+                      .filter(entry -> entry.getValue().isCoreCountedMember())
+                      .map(Map.Entry::getKey)
+                      .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    /// The desired dial-set for the transport executor: [`#coreMembers`] intersected with members whose
+    /// address is known, each mapped to a [`PeerTarget`] `(id, address)`. A member whose descriptor has
+    /// not yet supplied an address is skipped — it reappears once a NodeInfo observation lands.
+    public Set<PeerTarget> desiredConnections() {
+        return members.entrySet()
+                      .stream()
+                      .filter(entry -> entry.getValue().isCoreCountedMember())
+                      .flatMap(entry -> entry.getValue().peerTarget(entry.getKey()).stream())
+                      .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    /// Filter `candidates` to those that currently COUNT (MEMBER + SUSPECT) per [`#countedMembers`].
+    /// Used by the forward-routing consumer migration to drop candidates the FSM no longer considers
+    /// live. Preserves the caller's candidate order.
+    public List<NodeId> reachableMembers(List<NodeId> candidates) {
+        var counted = countedMembers();
+
+        return candidates.stream()
+                         .filter(counted::contains)
+                         .toList();
+    }
+
     // --- Per-member transition drivers (NTT promotion + co-confirmation eviction) ---
 
     private void healthy(MemberTracking tracking, long incarnation) {
@@ -359,6 +409,7 @@ public final class MembershipFsm {
         private int healthyStreak = 0;
         private boolean swimFaultySeen = false;
         private boolean livenessGoneSeen = false;
+        private MemberDescriptor descriptor = MemberDescriptor.UNKNOWN;
 
         private MemberTracking(NodeId id, Fsm<MembershipState, MembershipEvent> fsm, Consumer<NodeId> onEnteredDead) {
             this.id = id;
@@ -419,8 +470,30 @@ public final class MembershipFsm {
             livenessGoneSeen = false;
         }
 
+        /// Last-wins upsert of the network descriptor from a NodeInfo observation. Orthogonal to the
+        /// lifecycle FSM — never touches the FSM state.
+        synchronized void updateDescriptor(MemberDescriptor next) {
+            descriptor = next;
+        }
+
         boolean countsTowardEffective() {
             return fsm.current().countsTowardEffective();
+        }
+
+        /// Whether this member belongs in the core dial-set: it currently counts (MEMBER + SUSPECT)
+        /// AND its descriptor role is not the explicit literal `worker` (unknown role = included).
+        synchronized boolean isCoreCountedMember() {
+            return countsTowardEffective() && descriptor.isCore();
+        }
+
+        /// The [`PeerTarget`] for this member iff its descriptor has a known address; empty otherwise
+        /// (the dial-set skips address-unknown members until a NodeInfo observation lands).
+        synchronized Option<NodeAddress> address() {
+            return descriptor.address();
+        }
+
+        Option<PeerTarget> peerTarget(NodeId memberId) {
+            return address().map(addr -> new PeerTarget(memberId, addr));
         }
 
         String stateName() {

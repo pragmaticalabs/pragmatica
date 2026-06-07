@@ -8,11 +8,15 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.SwimHealth;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
@@ -458,7 +462,196 @@ class MembershipFsmTest {
         }
     }
 
+    @Nested
+    class Descriptor {
+        @Test
+        void onMemberDescriptor_upsertsAddressRoleSource_withoutChangingLifecycleState() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            assertThat(manager.memberStates()).containsEntry(A, "Member");
+
+            manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
+
+            assertThat(manager.memberStates()).containsEntry(A, "Member");
+            assertThat(manager.desiredConnections())
+                    .contains(new PeerTarget(A, address("10.0.0.1", 7000)));
+        }
+
+        @Test
+        void onMemberDescriptor_onUnseenId_linksFsmInObservedAndDoesNotPromote() {
+            var manager = activeManager();
+
+            manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
+
+            assertThat(manager.memberStates()).containsEntry(A, "Observed");
+            assertThat(manager.effective()).isZero();
+            assertThat(manager.desiredConnections()).isEmpty();
+        }
+
+        @Test
+        void onMemberDescriptor_laterDescriptor_overwritesLastWins() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
+            manager.onMemberDescriptor(coreInfo(A, "10.0.0.9", 7100));
+
+            assertThat(manager.desiredConnections())
+                    .containsExactly(new PeerTarget(A, address("10.0.0.9", 7100)));
+        }
+    }
+
+    @Nested
+    class DesiredConnections {
+        @Test
+        void desiredConnections_includesMemberAndSuspect_withKnownAddress() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            promoteToMember(manager, B);
+            manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
+            manager.onMemberDescriptor(coreInfo(B, "10.0.0.2", 7000));
+            manager.onSwimFaulty(B, 4L);
+            assertThat(manager.memberStates()).containsEntry(B, "Suspect");
+
+            assertThat(manager.desiredConnections())
+                    .containsExactlyInAnyOrder(new PeerTarget(A, address("10.0.0.1", 7000)),
+                                               new PeerTarget(B, address("10.0.0.2", 7000)));
+        }
+
+        @Test
+        void desiredConnections_excludesDeadDepartingObserved() {
+            var manager = activeManager();
+
+            manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
+            assertThat(manager.memberStates()).containsEntry(A, "Observed");
+
+            promoteToMember(manager, B);
+            manager.onMemberDescriptor(coreInfo(B, "10.0.0.2", 7000));
+            manager.onSwimFaulty(B, 4L);
+            manager.onDownHysteresisMet(B);
+            assertThat(manager.memberStates()).containsEntry(B, "Departing");
+
+            promoteToMember(manager, C);
+            manager.onMemberDescriptor(coreInfo(C, "10.0.0.3", 7000));
+            manager.onSwimFaulty(C, 4L);
+            manager.onLivenessGone(C);
+            assertThat(manager.memberStates()).containsEntry(C, "Dead");
+
+            assertThat(manager.desiredConnections()).isEmpty();
+        }
+
+        @Test
+        void desiredConnections_excludesExplicitWorkerRole() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            promoteToMember(manager, B);
+            manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
+            manager.onMemberDescriptor(workerInfo(B, "10.0.0.2", 7000));
+
+            assertThat(manager.desiredConnections())
+                    .containsExactly(new PeerTarget(A, address("10.0.0.1", 7000)));
+        }
+
+        @Test
+        void desiredConnections_includesUnknownRole_allCoreCluster() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            promoteToMember(manager, B);
+            manager.onMemberDescriptor(unlabeledInfo(A, "10.0.0.1", 7000));
+            manager.onMemberDescriptor(unlabeledInfo(B, "10.0.0.2", 7000));
+
+            assertThat(manager.desiredConnections())
+                    .containsExactlyInAnyOrder(new PeerTarget(A, address("10.0.0.1", 7000)),
+                                               new PeerTarget(B, address("10.0.0.2", 7000)));
+        }
+
+        @Test
+        void desiredConnections_excludesUnknownAddress() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            promoteToMember(manager, B);
+            manager.onMemberDescriptor(coreInfo(B, "10.0.0.2", 7000));
+
+            assertThat(manager.desiredConnections())
+                    .containsExactly(new PeerTarget(B, address("10.0.0.2", 7000)));
+        }
+    }
+
+    @Nested
+    class CoreMembers {
+        @Test
+        void coreMembers_includesCountedNonWorker_unknownRoleIncluded() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            promoteToMember(manager, B);
+            promoteToMember(manager, C);
+            manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
+            manager.onMemberDescriptor(workerInfo(B, "10.0.0.2", 7000));
+
+            assertThat(manager.coreMembers()).containsExactlyInAnyOrder(A, C);
+        }
+
+        @Test
+        void coreMembers_excludesDeadMember() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            driveToDead(manager, B, 4L);
+
+            assertThat(manager.coreMembers()).containsExactly(A);
+        }
+    }
+
+    @Nested
+    class ReachableMembers {
+        @Test
+        void reachableMembers_filtersToCountedMembers_preservingOrder() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            promoteToMember(manager, B);
+            driveToDead(manager, C, 4L);
+
+            assertThat(manager.reachableMembers(List.of(C, B, A))).containsExactly(B, A);
+        }
+
+        @Test
+        void reachableMembers_emptyWhenNoCandidatesCount() {
+            var manager = activeManager();
+
+            driveToDead(manager, A, 4L);
+
+            assertThat(manager.reachableMembers(List.of(A))).isEmpty();
+        }
+    }
+
     // --- helpers ---
+
+    private static NodeAddress address(String host, int port) {
+        return NodeAddress.nodeAddress(host, port).unwrap();
+    }
+
+    private static NodeInfo coreInfo(NodeId id, String host, int port) {
+        return labeledInfo(id, host, port, Map.of(NodeInfo.LABEL_ROLE, "core"));
+    }
+
+    private static NodeInfo workerInfo(NodeId id, String host, int port) {
+        return labeledInfo(id, host, port, Map.of(NodeInfo.LABEL_ROLE, "worker"));
+    }
+
+    private static NodeInfo unlabeledInfo(NodeId id, String host, int port) {
+        return labeledInfo(id, host, port, Map.of());
+    }
+
+    private static NodeInfo labeledInfo(NodeId id, String host, int port, Map<String, String> labels) {
+        return NodeInfo.nodeInfo(id, address(host, port), NodeRole.ACTIVE, labels);
+    }
 
     private static void promoteToMember(MembershipFsm manager, NodeId id) {
         manager.onSwimHealthy(id, 1L);

@@ -2574,6 +2574,8 @@ public interface AetherNode extends ManageableNode {
             case SwimObservation.FaultyObserved faulty -> membershipFsm.onSwimFaulty(faulty.peer(), faulty.incarnation());
             case SwimObservation.DepartedObserved departed -> membershipFsm.onSwimDeparted(departed.peer(), departed.incarnation());
             case SwimObservation.UnknownObserved unknown -> membershipFsm.onSwimUnknown(unknown.peer(), unknown.incarnation());
+            case SwimObservation.JoinAnnounced joined -> membershipFsm.onMemberDescriptor(joined.nodeInfo());
+            case SwimObservation.MemberDiscovered discovered -> membershipFsm.onMemberDescriptor(discovered.nodeInfo());
             default -> {}
         }
     }
