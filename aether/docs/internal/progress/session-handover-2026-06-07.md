@@ -49,6 +49,13 @@ The decoupling experiment proved (via the `SLOW-APPLY`/`SLOW-HANDLER` probes, ke
 - **#95** — 05-security needs secure-mode cluster-B variant.
 - **#91** — physical-node-drain DHT durability (RC2; barrier patch preserved).
 
+## Adversarial off-heap review — 3 bugs found + fixed (`cb00fb574`)
+A post-implementation `jbct-reviewer` adversarial pass on the committed off-heap code found what the 6000-op property oracle missed (it always grew to full cap):
+- **CRITICAL (data corruption/OOB):** a frozen-below-cap DROP_OLDEST ring receiving an event larger than its *allocated* (not cap) size evicted to empty, then wrote `L` bytes into an `A`-byte ring → self-overlap corruption OR `dataSegments.get(idx)` IndexOutOfBounds. Fixed: guard rejects/drops events `> allocatedDataBytes` after the grow attempt (STRONG→loud fail, EVENTUAL→drop, never write past allocation).
+- **WARNING (native-OOM leak):** multi-partition construction OOM on partition k leaked Arenas + budget + escaped `Result`. Fixed: `OffHeapRingBuffer.fromConfig`→`Result<StreamEntry>`, partial-build closes siblings + releases floor budget.
+- **WARNING (close race):** shared-Arena `close()` vs in-flight read/append → uncaught `IllegalStateException`. Fixed: `guardedAccess` converts it to a `BUFFER_CLOSED` Result.
+Re-validated: aether-stream **422/0** incl. 6 new tests (frozen-ring oversized drop/reject, frozen-regime property oracle, concurrent-close, partial-construction budget-return). **NOTE:** the full-suite run was launched on the pre-fix Wave-3 image; **re-Docker 04/08 on the `cb00fb574` image is the one remaining validation** (the fix touches the create path via `fromConfig`→`Result`; happy-path is unit-covered, but a Docker confirm is the gold standard).
+
 ## Learnings (saved to memory: `feedback_capture_actual_error_first`)
 - **For an API/endpoint failure, capture the actual error RESPONSE BODY first (curl the live endpoint) before theorizing from logs.** Two wrong root-cause theories + two built-and-validated fixes were avoided by one curl. The `"detail"` field named the exact error enum.
 - **Off-heap correctness via a property oracle**: the 6000-op random-sequence equivalence test was the right safety net for the segmented-ring rewrite — stronger than re-deriving offset math by hand.
