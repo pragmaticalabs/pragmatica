@@ -26,7 +26,9 @@ public sealed interface ClusterIdentityEnv {
     List<String> IDENTITY_VARS = List.of("AETHER_CLUSTER_NAME",
                                          "AETHER_CLUSTER_SECRET",
                                          "AETHER_PROVISIONED_BY",
-                                         "AETHER_API_KEY");
+                                         "AETHER_API_KEY",
+                                         "AETHER_SOURCE",
+                                         "AETHER_ROLE");
 
     /// Docker-specific infrastructure env vars (network + docker group id).
     List<String> DOCKER_INFRA_VARS = List.of("AETHER_DOCKER_NETWORK", "DOCKER_GID");

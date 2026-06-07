@@ -54,6 +54,12 @@ public record NodeInfo(NodeId id, NodeAddress address, NodeRole role, Map<String
     /// Standard label key for the node pool name.
     public static final String LABEL_POOL = "pool";
 
+    /// Standard label key for the node's provisioning source (e.g. seed, replacement).
+    public static final String LABEL_SOURCE = "source";
+
+    /// Standard label key for the node's self-described role label.
+    public static final String LABEL_ROLE = "role";
+
     /// Compact constructor ensures labels are an immutable copy.
     public NodeInfo {
         labels = Map.copyOf(labels);

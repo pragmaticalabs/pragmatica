@@ -517,11 +517,20 @@ public record Main(String[] args) {
     }
 
     private Map<String, String> collectNodeLabels() {
+        return collectNodeLabels(resolveHostname(), this::findEnv);
+    }
+
+    /// Pure env-to-label mapping seam: hostname is always present; zone, instance-type,
+    /// pool, source and role ride only when their env var is present. Extracted as a static
+    /// function so the env-to-label contract is testable without a live node boot.
+    static Map<String, String> collectNodeLabels(String hostname, Fn1<Option<String>, String> envLookup) {
         var labels = new HashMap<String, String>();
-        labels.put(NodeInfo.LABEL_HOSTNAME, resolveHostname());
-        findEnv("AETHER_ZONE").onPresent(z -> labels.put(NodeInfo.LABEL_ZONE, z));
-        findEnv("AETHER_INSTANCE_TYPE").onPresent(t -> labels.put(NodeInfo.LABEL_INSTANCE_TYPE, t));
-        findEnv("AETHER_POOL").onPresent(p -> labels.put(NodeInfo.LABEL_POOL, p));
+        labels.put(NodeInfo.LABEL_HOSTNAME, hostname);
+        envLookup.apply("AETHER_ZONE").onPresent(z -> labels.put(NodeInfo.LABEL_ZONE, z));
+        envLookup.apply("AETHER_INSTANCE_TYPE").onPresent(t -> labels.put(NodeInfo.LABEL_INSTANCE_TYPE, t));
+        envLookup.apply("AETHER_POOL").onPresent(p -> labels.put(NodeInfo.LABEL_POOL, p));
+        envLookup.apply("AETHER_SOURCE").onPresent(s -> labels.put(NodeInfo.LABEL_SOURCE, s));
+        envLookup.apply("AETHER_ROLE").onPresent(r -> labels.put(NodeInfo.LABEL_ROLE, r));
 
         return Map.copyOf(labels);
     }
