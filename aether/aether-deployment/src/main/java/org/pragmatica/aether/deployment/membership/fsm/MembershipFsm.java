@@ -17,6 +17,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.SwimSuspe
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.SwimUnknown;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.UpHysteresisMet;
 import org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker;
+import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Contract;
@@ -265,6 +266,20 @@ public final class MembershipFsm {
         var snapshot = new LinkedHashMap<NodeId, String>();
 
         members.forEach((id, tracking) -> snapshot.put(id, tracking.stateName()));
+        return snapshot;
+    }
+
+    /// FSM-derived health-hint projection for the cluster-quiescence gate
+    /// ([`org.pragmatica.aether.deployment.generation.ClusterGenerationProjector#deriveClusterQuiescence`]).
+    /// Mirrors the semantics of the SWIM-hints map it replaces: only a downgrade is carried, a
+    /// HEALTHY member is OMITTED (the projector's `deriveHealthHint` defaults an absent entry to
+    /// HEALTHY). DEAD → [`HealthHint#FAULTY`], SUSPECT → [`HealthHint#SUSPECTED`]; every other state
+    /// (OBSERVED / MEMBER / DEPARTING) is healthy-by-construction and contributes no entry.
+    /// Insertion-ordered ([`LinkedHashMap`]) for stable iteration, matching [`#memberStates`].
+    public Map<NodeId, HealthHint> healthHints() {
+        var snapshot = new LinkedHashMap<NodeId, HealthHint>();
+
+        members.forEach((id, tracking) -> tracking.healthHint().onPresent(hint -> snapshot.put(id, hint)));
         return snapshot;
     }
 
@@ -548,6 +563,17 @@ public final class MembershipFsm {
 
         String stateName() {
             return fsm.current().getClass().getSimpleName();
+        }
+
+        /// FSM-state → quiescence health-hint projection. DEAD → FAULTY, SUSPECT → SUSPECTED;
+        /// every other state is healthy-by-construction and yields `none()` (the projector
+        /// defaults an absent entry to HEALTHY). Pure read of the current FSM state.
+        Option<HealthHint> healthHint() {
+            return switch (fsm.current()) {
+                case MembershipState.Dead _ -> Option.some(HealthHint.FAULTY);
+                case MembershipState.Suspect _ -> Option.some(HealthHint.SUSPECTED);
+                case MembershipState.Observed _, MembershipState.Member _, MembershipState.Departing _ -> Option.none();
+            };
         }
     }
 }

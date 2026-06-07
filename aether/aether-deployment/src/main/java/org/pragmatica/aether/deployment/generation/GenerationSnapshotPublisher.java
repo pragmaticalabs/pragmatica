@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.generation;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.GenerationReason;
+import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
@@ -55,7 +56,7 @@ public final class GenerationSnapshotPublisher {
     private final Supplier<Long> rabiaTermSupplier;
     private final HlcClock hlcClock;
     private final ClusterGenerationProjector projector;
-    private final SwimHintsRegistry swimHints;
+    private final Supplier<Map<NodeId, HealthHint>> healthHintsSupplier;
     private final Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier;
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final ClusterNode<KVCommand<AetherKey>> cluster;
@@ -67,7 +68,7 @@ public final class GenerationSnapshotPublisher {
                                         Supplier<Long> rabiaTermSupplier,
                                         HlcClock hlcClock,
                                         ClusterGenerationProjector projector,
-                                        SwimHintsRegistry swimHints,
+                                        Supplier<Map<NodeId, HealthHint>> healthHintsSupplier,
                                         Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier,
                                         KVStore<AetherKey, AetherValue> kvStore,
                                         ClusterNode<KVCommand<AetherKey>> cluster,
@@ -78,7 +79,7 @@ public final class GenerationSnapshotPublisher {
         this.rabiaTermSupplier = rabiaTermSupplier;
         this.hlcClock = hlcClock;
         this.projector = projector;
-        this.swimHints = swimHints;
+        this.healthHintsSupplier = healthHintsSupplier;
         this.kvSnapshotSupplier = kvSnapshotSupplier;
         this.kvStore = kvStore;
         this.cluster = cluster;
@@ -91,7 +92,7 @@ public final class GenerationSnapshotPublisher {
                                                                           Supplier<Long> rabiaTermSupplier,
                                                                           HlcClock hlcClock,
                                                                           ClusterGenerationProjector projector,
-                                                                          SwimHintsRegistry swimHints,
+                                                                          Supplier<Map<NodeId, HealthHint>> healthHintsSupplier,
                                                                           Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier,
                                                                           KVStore<AetherKey, AetherValue> kvStore,
                                                                           ClusterNode<KVCommand<AetherKey>> cluster,
@@ -102,7 +103,7 @@ public final class GenerationSnapshotPublisher {
                                                rabiaTermSupplier,
                                                hlcClock,
                                                projector,
-                                               swimHints,
+                                               healthHintsSupplier,
                                                kvSnapshotSupplier,
                                                kvStore,
                                                cluster,
@@ -226,7 +227,7 @@ public final class GenerationSnapshotPublisher {
         var counter = currentInKv.map(s -> s.epoch()
                                             .localCounter() + 1L).or(0L);
         var desiredCoreSize = collectDesiredCoreSize(kv).or(lifecycles.size());
-        var hints = swimHints.currentTtlFiltered();
+        var hints = healthHintsSupplier.get();
         var input = ClusterGenerationProjector.ProjectionInput.projectionInput(term,
                                                                                counter,
                                                                                desiredCoreSize,
