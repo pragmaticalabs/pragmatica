@@ -21,6 +21,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
@@ -83,6 +84,8 @@ public final class NodeTopologyTracker {
 
     private static final Runnable NOOP_RECONCILE_TRIGGER = () -> {};
 
+    private static final Consumer<NodeId> NOOP_DOWN_CROSSING = id -> {};
+
     /// Transient per-sample QUIC/SWIM bias for a node.
     private enum SampleBias { PRESENT, ABSENT }
 
@@ -93,6 +96,12 @@ public final class NodeTopologyTracker {
     private final int downHysteresis;
     private final LongSupplier nowNanos;
     private final Runnable onReconcileNeeded;
+
+    /// Injected callback fired exactly at the DOWN-hysteresis crossing edge for a node
+    /// (mirrors `onReconcileNeeded`). Routes the crossing to the membership FSM; defaults
+    /// to a no-op so callers/tests that don't supply it are unaffected. Additive to — not a
+    /// replacement for — the presence-sensor `stableMembers.remove(node)` at that edge.
+    private final Consumer<NodeId> onDownHysteresisCrossing;
 
     /// Per-node consecutive-sample counters. Positive = up-streak, negative = down-streak.
     /// A node not present here has never been sampled.
@@ -128,7 +137,8 @@ public final class NodeTopologyTracker {
                                 int upHysteresis,
                                 int downHysteresis,
                                 LongSupplier nowNanos,
-                                Runnable onReconcileNeeded) {
+                                Runnable onReconcileNeeded,
+                                Consumer<NodeId> onDownHysteresisCrossing) {
         this.self = self;
         this.healthSupplier = healthSupplier;
         this.sampleInterval = sampleInterval;
@@ -136,6 +146,7 @@ public final class NodeTopologyTracker {
         this.downHysteresis = Math.max(1, downHysteresis);
         this.nowNanos = nowNanos;
         this.onReconcileNeeded = onReconcileNeeded;
+        this.onDownHysteresisCrossing = onDownHysteresisCrossing;
         this.stableMembers.add(self);
         this.lastEmitted = new AtomicReference<>(Set.of(self));
     }
@@ -147,13 +158,24 @@ public final class NodeTopologyTracker {
                                                           NodeId self,
                                                           Supplier<HealthSnapshot> healthSupplier,
                                                           Runnable onReconcileNeeded) {
+        return nodeTopologyTracker(config, self, healthSupplier, onReconcileNeeded, NOOP_DOWN_CROSSING);
+    }
+
+    /// Production factory with an explicit DOWN-hysteresis crossing callback (routes the
+    /// crossing edge to the membership FSM). Otherwise identical to the no-callback overload.
+    public static NodeTopologyTracker nodeTopologyTracker(MembershipConfig config,
+                                                          NodeId self,
+                                                          Supplier<HealthSnapshot> healthSupplier,
+                                                          Runnable onReconcileNeeded,
+                                                          Consumer<NodeId> onDownHysteresisCrossing) {
         return new NodeTopologyTracker(self,
                                        healthSupplier,
                                        SAMPLE_INTERVAL_DEFAULT,
                                        K_UP_DEFAULT,
                                        downHysteresisFor(config.nttDepartureTimeout(), SAMPLE_INTERVAL_DEFAULT),
                                        System::nanoTime,
-                                       onReconcileNeeded);
+                                       onReconcileNeeded,
+                                       onDownHysteresisCrossing);
     }
 
     /// Test factory: explicit sample interval, hysteresis, clock and a no-op reconcile
@@ -170,7 +192,8 @@ public final class NodeTopologyTracker {
                                        upHysteresis,
                                        downHysteresis,
                                        nowNanos,
-                                       NOOP_RECONCILE_TRIGGER);
+                                       NOOP_RECONCILE_TRIGGER,
+                                       NOOP_DOWN_CROSSING);
     }
 
     /// Test factory: explicit sample interval, hysteresis, clock and a reconcile trigger.
@@ -182,13 +205,35 @@ public final class NodeTopologyTracker {
                                                           int downHysteresis,
                                                           LongSupplier nowNanos,
                                                           Runnable onReconcileNeeded) {
+        return nodeTopologyTracker(self,
+                                   healthSupplier,
+                                   sampleInterval,
+                                   upHysteresis,
+                                   downHysteresis,
+                                   nowNanos,
+                                   onReconcileNeeded,
+                                   NOOP_DOWN_CROSSING);
+    }
+
+    /// Test factory: explicit sample interval, hysteresis, clock, a reconcile trigger and a
+    /// DOWN-hysteresis crossing callback. Required for deterministic crossing-edge
+    /// assertions. The periodic tick is NOT scheduled.
+    public static NodeTopologyTracker nodeTopologyTracker(NodeId self,
+                                                          Supplier<HealthSnapshot> healthSupplier,
+                                                          TimeSpan sampleInterval,
+                                                          int upHysteresis,
+                                                          int downHysteresis,
+                                                          LongSupplier nowNanos,
+                                                          Runnable onReconcileNeeded,
+                                                          Consumer<NodeId> onDownHysteresisCrossing) {
         return new NodeTopologyTracker(self,
                                        healthSupplier,
                                        sampleInterval,
                                        upHysteresis,
                                        downHysteresis,
                                        nowNanos,
-                                       onReconcileNeeded);
+                                       onReconcileNeeded,
+                                       onDownHysteresisCrossing);
     }
 
     /// Down hysteresis derived from the legacy departure timeout:
@@ -328,7 +373,18 @@ public final class NodeTopologyTracker {
         if (present && next >= upHysteresis) {
             stableMembers.add(node);
         } else if (!present && (-next) >= downHysteresis) {
-            stableMembers.remove(node);
+            crossDownHysteresis(node);
+        }
+    }
+
+    /// DOWN-hysteresis crossing edge: remove the node from the stable set (presence-sensor
+    /// removal, unchanged) and route the crossing to the FSM callback. The callback fires
+    /// ONLY on the genuine member→removed transition (gated on `stableMembers.remove`
+    /// returning true, mirroring `evictLocked`'s `wasStableMember`), so it does not re-fire
+    /// on every subsequent absent sample once the streak stays past the threshold.
+    private void crossDownHysteresis(NodeId node) {
+        if (stableMembers.remove(node)) {
+            onDownHysteresisCrossing.accept(node);
         }
     }
 

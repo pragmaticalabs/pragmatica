@@ -15,11 +15,13 @@ import org.pragmatica.swim.SwimObservation.DepartedObserved;
 import org.pragmatica.swim.SwimObservation.FaultyObserved;
 import org.pragmatica.swim.SwimObservation.HealthyObserved;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -55,6 +57,12 @@ class NodeTopologyTrackerTest {
         Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.copyOf(liveness));
         return nodeTopologyTracker(SELF, health, INTERVAL, K_UP, K_DOWN, clock::get,
                                    reconcileInvocations::incrementAndGet);
+    }
+
+    private NodeTopologyTracker tracker(Consumer<NodeId> onDownHysteresisCrossing) {
+        Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.copyOf(liveness));
+        return nodeTopologyTracker(SELF, health, INTERVAL, K_UP, K_DOWN, clock::get,
+                                   reconcileInvocations::incrementAndGet, onDownHysteresisCrossing);
     }
 
     private void healthy(NodeId node) {
@@ -155,6 +163,36 @@ class NodeTopologyTrackerTest {
             sampleTimes(ntt, K_DOWN);
 
             assertThat(ntt.currentMembers()).containsExactly(SELF);
+        }
+    }
+
+    /// DOWN-hysteresis crossing callback — the additive FSM-routing seam. Fires exactly at
+    /// the crossing edge (mirroring the presence-sensor `stableMembers.remove`), not on every
+    /// absent sample, and leaves the existing membership-removal + reconcile-trigger
+    /// behaviour unchanged.
+    @Nested
+    class DownHysteresisCrossingCallback {
+        @Test
+        void advanceOne_downHysteresisCrossing_firesDownCrossingCallbackOnce() {
+            var crossings = new ArrayList<NodeId>();
+            var ntt = tracker(crossings::add);
+
+            healthy(A);
+            sampleTimes(ntt, K_UP); // A enters the stable set
+            assertThat(ntt.currentMembers()).contains(A);
+            assertThat(crossings).isEmpty(); // up edge does not fire the down-crossing
+
+            absent(A);
+            sampleTimes(ntt, K_DOWN - 1); // not yet at the crossing
+            assertThat(crossings).isEmpty();
+
+            sampleTimes(ntt, 1); // K_DOWN-th consecutive absent → DOWN crossing
+            sampleTimes(ntt, 3); // further absent samples must NOT re-fire
+
+            assertThat(crossings).containsExactly(A); // exactly once, with A's id
+            // Existing presence-sensor removal + reconcile-trigger behaviour unchanged.
+            assertThat(ntt.currentMembers()).containsExactly(SELF);
+            assertThat(reconcileInvocations.get()).isEqualTo(2); // join + departure
         }
     }
 
