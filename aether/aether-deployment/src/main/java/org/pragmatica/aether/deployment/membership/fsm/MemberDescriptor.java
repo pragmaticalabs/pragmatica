@@ -18,6 +18,10 @@ import org.pragmatica.net.tcp.NodeAddress;
 /// until a descriptor lands. `role` / `source` default to empty strings ("unknown"); an absent or
 /// blank role counts as a non-worker (included in the core set).
 public record MemberDescriptor(Option<NodeAddress> address, String role, String source) {
+    /// The explicit non-core role label. A member self-asserting this role is excluded from the
+    /// connectable core set.
+    private static final String ROLE_WORKER = "worker";
+
     /// The unknown descriptor: no address, blank role (→ counts as core), blank source.
     public static final MemberDescriptor UNKNOWN = new MemberDescriptor(Option.none(), "", "");
 
@@ -31,7 +35,13 @@ public record MemberDescriptor(Option<NodeAddress> address, String role, String 
 
     /// Whether this member is part of the connectable core: a role that is NOT the explicit literal
     /// `worker`. An unknown / blank role is included (an all-core cluster carries no role labels).
+    ///
+    /// `role` is a SELF-ASSERTED SWIM label — a node can claim its own role. It is trusted here
+    /// because cluster admission is already gated by `AETHER_CLUSTER_SECRET`, so an unauthorized
+    /// node never reaches this classification. The structured [`NodeInfo.NodeRole`] is a SEPARATE
+    /// axis (transport active/passive); classification deliberately uses the self-asserted label.
+    /// Role-based isolation hardening (cryptographic role attestation) is tracked under #241.
     public boolean isCore() {
-        return !"worker".equals(role);
+        return !ROLE_WORKER.equals(role);
     }
 }

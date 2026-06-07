@@ -11,4 +11,9 @@ import org.pragmatica.net.tcp.NodeAddress;
 /// (non-explicit-worker) member paired with its latest-known dial address. The transport executor
 /// consumes the resulting set to drive its connect/disconnect reconciliation, dialing exactly the
 /// members the FSM considers part of the live core whose address is known.
-public record PeerTarget(NodeId id, NodeAddress address) {}
+public record PeerTarget(NodeId id, NodeAddress address) {
+    /// Factory for a desired-connection target binding a member `id` to its dial `address`.
+    public static PeerTarget peerTarget(NodeId id, NodeAddress address) {
+        return new PeerTarget(id, address);
+    }
+}

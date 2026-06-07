@@ -436,7 +436,7 @@ public final class PresenceSampler {
         if (current.equals(previous)) {
             return;
         }
-        log.info("NTT membership changed: {} -> {} (added={}, removed={})",
+        log.info("PresenceSampler membership changed: {} -> {} (added={}, removed={})",
                  previous.size(),
                  current.size(),
                  difference(current, previous),
@@ -476,7 +476,7 @@ public final class PresenceSampler {
         streaks.remove(node);
         biases.remove(node);
         var wasStableMember = stableMembers.remove(node);
-        log.info("NTT evict({}): wasStableMember={}", node, wasStableMember);
+        log.info("PresenceSampler evict({}): wasStableMember={}", node, wasStableMember);
         if (!wasStableMember) {
             return;
         }
