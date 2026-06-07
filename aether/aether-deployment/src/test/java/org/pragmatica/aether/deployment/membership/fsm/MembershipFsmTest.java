@@ -10,6 +10,7 @@ import org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.HealthSnapshot;
@@ -631,10 +632,82 @@ class MembershipFsmTest {
         }
     }
 
+    @Nested
+    class MemberDescriptors {
+        @Test
+        void memberDescriptor_returnsStoredAddressRoleSource() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.1", 7000, "core", "seed"));
+
+            var descriptor = descriptorOf(manager, A);
+            assertThat(descriptor.address()).isEqualTo(Option.some(address("10.0.0.1", 7000)));
+            assertThat(descriptor.role()).isEqualTo("core");
+            assertThat(descriptor.source()).isEqualTo("seed");
+        }
+
+        @Test
+        void memberDescriptor_untrackedId_returnsNone() {
+            var manager = activeManager();
+
+            assertThat(manager.memberDescriptor(A).isEmpty()).isTrue();
+        }
+
+        @Test
+        void memberDescriptor_survivesIntoDead_sourceStillQueryable() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.1", 7000, "core", "replacement"));
+
+            manager.onSwimFaulty(A, 4L);
+            manager.onLivenessGone(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+
+            assertThat(descriptorOf(manager, A).source()).isEqualTo("replacement");
+        }
+
+        @Test
+        void memberDescriptors_snapshotsAllTrackedMembers() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            promoteToMember(manager, B);
+            manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.1", 7000, "core", "seed"));
+            manager.onMemberDescriptor(sourcedInfo(B, "10.0.0.2", 7000, "worker", "scale-up"));
+
+            var snapshot = manager.memberDescriptors();
+            assertThat(snapshot).containsOnlyKeys(A, B);
+            assertThat(snapshot.get(A).source()).isEqualTo("seed");
+            assertThat(snapshot.get(B).role()).isEqualTo("worker");
+        }
+
+        @Test
+        void memberDescriptors_unobservedMember_carriesUnknownDescriptor() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+
+            var snapshot = manager.memberDescriptors();
+            assertThat(snapshot).containsKey(A);
+            assertThat(snapshot.get(A).address().isEmpty()).isTrue();
+            assertThat(snapshot.get(A).role()).isEmpty();
+        }
+    }
+
     // --- helpers ---
+
+    private static MemberDescriptor descriptorOf(MembershipFsm manager, NodeId id) {
+        return manager.memberDescriptor(id).or(MemberDescriptor.UNKNOWN);
+    }
 
     private static NodeAddress address(String host, int port) {
         return NodeAddress.nodeAddress(host, port).unwrap();
+    }
+
+    private static NodeInfo sourcedInfo(NodeId id, String host, int port, String role, String source) {
+        return labeledInfo(id, host, port, Map.of(NodeInfo.LABEL_ROLE, role, NodeInfo.LABEL_SOURCE, source));
     }
 
     private static NodeInfo coreInfo(NodeId id, String host, int port) {

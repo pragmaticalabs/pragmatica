@@ -268,6 +268,23 @@ public final class MembershipFsm {
         return snapshot;
     }
 
+    /// The stored last-wins network descriptor (address + role + source) for `id`, or `none()` if the
+    /// id is untracked. Works in ANY lifecycle state INCLUDING DEAD — DEAD members are retained in the
+    /// map, and a dead node's `source` is needed to provision its same-source replacement, so this
+    /// reads from the retained [`MemberTracking`] (not from [`#countedMembers`]).
+    public Option<MemberDescriptor> memberDescriptor(NodeId id) {
+        return Option.option(members.get(id)).map(MemberTracking::descriptor);
+    }
+
+    /// Insertion-ordered snapshot of every tracked member's descriptor (for status / observability
+    /// surfaces). Matches the snapshot style of [`#memberStates`]; includes DEAD members.
+    public Map<NodeId, MemberDescriptor> memberDescriptors() {
+        var snapshot = new LinkedHashMap<NodeId, MemberDescriptor>();
+
+        members.forEach((id, tracking) -> snapshot.put(id, tracking.descriptor()));
+        return snapshot;
+    }
+
     // --- Projections (desired connection-set for the transport executor) ---
 
     /// The core membership set the transport executor should keep mesh-connected: counted members
@@ -474,6 +491,12 @@ public final class MembershipFsm {
         /// lifecycle FSM — never touches the FSM state.
         synchronized void updateDescriptor(MemberDescriptor next) {
             descriptor = next;
+        }
+
+        /// The stored last-wins descriptor (address + role + source). Retained across DEAD so a dead
+        /// node's `source` stays queryable for same-source replacement provisioning.
+        synchronized MemberDescriptor descriptor() {
+            return descriptor;
         }
 
         boolean countsTowardEffective() {
