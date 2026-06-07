@@ -114,6 +114,14 @@ public final class MembershipFsm {
     private final PresenceSampler presenceSampler;
     private final Map<NodeId, MemberTracking> members = new ConcurrentHashMap<>();
 
+    /// Confirmed-departure listener invoked ONCE per fresh edge into DEAD — at the SAME central
+    /// chokepoint ([`MemberTracking#dispatch`]) as the presence-sampler eviction, for ALL three DEAD
+    /// paths (co-confirmed death, graceful departure, join-grace expiry). Default no-op
+    /// (production-inert): a later wave wires it to the transport executor's `departurePermanent` so the
+    /// dead peer's QUIC link is dropped promptly on the death edge instead of waiting ~14s for SWIM to
+    /// time the link out. Reset to the no-op by passing `null` to [`#onConfirmedDeparture`].
+    private volatile Consumer<NodeId> onConfirmedDeparture = ignored -> {};
+
     private MembershipFsm(PresenceSampler presenceSampler, FsmObserver<MembershipState, MembershipEvent> observer) {
         this.presenceSampler = presenceSampler;
         this.observer = observer;
@@ -127,6 +135,17 @@ public final class MembershipFsm {
     /// Factory with an explicit transition observer (transition logging / metrics).
     public static MembershipFsm membershipFsm(PresenceSampler presenceSampler, FsmObserver<MembershipState, MembershipEvent> observer) {
         return new MembershipFsm(presenceSampler, observer);
+    }
+
+    /// Register the confirmed-departure listener invoked ONCE per fresh edge into DEAD — at the SAME
+    /// central chokepoint as the presence-sampler eviction, for ALL three DEAD paths (co-confirmed
+    /// death, graceful departure, join-grace expiry). A later wave wires this to the transport
+    /// executor's `departurePermanent` so the dead peer's QUIC link is dropped promptly on the death
+    /// edge instead of waiting ~14s for SWIM to time the link out. A `null` argument resets it to the
+    /// no-op.
+    @Contract
+    public void onConfirmedDeparture(Consumer<NodeId> listener) {
+        this.onConfirmedDeparture = listener == null ? ignored -> {} : listener;
     }
 
     // --- Boot seed ---
@@ -339,11 +358,15 @@ public final class MembershipFsm {
     /// The desired dial-set for the transport executor: [`#coreMembers`] intersected with members whose
     /// address is known, each mapped to a [`PeerTarget`] `(id, address)`. A member whose descriptor has
     /// not yet supplied an address is skipped — it reappears once a NodeInfo observation lands.
+    ///
+    /// The is-core decision AND the address read are captured ATOMICALLY under a single per-member
+    /// monitor acquisition via [`MemberTracking#coreDialTarget`]: a concurrent tap thread can no longer
+    /// interleave between the is-core filter and the address map and pair a stale is-core decision with a
+    /// newer/inconsistent address. Insertion ordering is preserved ([`LinkedHashSet`]).
     public Set<PeerTarget> desiredConnections() {
         return members.entrySet()
                       .stream()
-                      .filter(entry -> entry.getValue().isCoreCountedMember())
-                      .flatMap(entry -> entry.getValue().peerTarget(entry.getKey()).stream())
+                      .flatMap(entry -> entry.getValue().coreDialTarget(entry.getKey()).stream())
                       .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
@@ -417,11 +440,13 @@ public final class MembershipFsm {
     /// [`MemberTracking#dispatch`]). Idempotent — the fresh-edge guard fires once per death and
     /// [`PresenceSampler#evict`] is itself idempotent. Mutating presence sampler's presence view is the sole side
     /// effect; the presence-derived TopologyObserver path emits the resulting NODE_FAILED / NODE_LEFT
-    /// event.
+    /// event. Alongside the eviction it notifies the [`#onConfirmedDeparture`] listener (default no-op)
+    /// at this same single chokepoint, so the transport executor can drop the dead peer's link promptly.
     @Contract
     private void onEnteredDead(NodeId id) {
         log.info("MembershipFsm evicting co-confirmed-dead member {} from presence sampler", id);
         presenceSampler.evict(id);
+        onConfirmedDeparture.accept(id);
     }
 
     // --- Dispatch frame ---
@@ -562,6 +587,19 @@ public final class MembershipFsm {
 
         Option<PeerTarget> peerTarget(NodeId memberId) {
             return address().map(addr -> PeerTarget.peerTarget(memberId, addr));
+        }
+
+        /// Atomic dial-target read for [`#desiredConnections`]: under ONE monitor acquisition, returns
+        /// `Some(PeerTarget(id, addr))` iff this member currently counts toward effective (MEMBER +
+        /// SUSPECT) AND its descriptor role is core (non-explicit-worker) AND its descriptor has a known
+        /// address; `none()` otherwise. Folding the is-core decision and the address read into a single
+        /// `synchronized` method closes the window where a concurrent tap thread could mutate the
+        /// descriptor / FSM state between two separate acquisitions and pair a stale is-core decision with
+        /// a newer/inconsistent address.
+        synchronized Option<PeerTarget> coreDialTarget(NodeId memberId) {
+            return isCoreCountedMember()
+                   ? descriptor.address().map(addr -> PeerTarget.peerTarget(memberId, addr))
+                   : Option.none();
         }
 
         synchronized String stateName() {

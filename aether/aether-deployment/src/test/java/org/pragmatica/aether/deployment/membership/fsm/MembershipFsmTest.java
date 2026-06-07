@@ -17,6 +17,7 @@ import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.SwimHealth;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -199,6 +200,128 @@ class MembershipFsmTest {
             for (var i = 0; i < times; i++) {
                 presenceSampler.sample();
             }
+        }
+    }
+
+    @Nested
+    class ConfirmedDeparture {
+        /// Co-confirmed death (SWIM-FAULTY ∧ liveness-gone) is a fresh edge into DEAD — the listener
+        /// fires exactly once.
+        @Test
+        void onConfirmedDeparture_coConfirmedDeath_firesExactlyOnce() {
+            var manager = activeManager();
+            var fired = new ArrayList<NodeId>();
+            manager.onConfirmedDeparture(fired::add);
+
+            promoteToMember(manager, A);
+            manager.onSwimFaulty(A, 4L);
+            manager.onLivenessGone(A);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+            assertThat(fired).containsExactly(A);
+        }
+
+        /// Graceful departure reaches DEAD without co-confirmation — the listener still fires once.
+        @Test
+        void onConfirmedDeparture_gracefulDeparted_firesExactlyOnce() {
+            var manager = activeManager();
+            var fired = new ArrayList<NodeId>();
+            manager.onConfirmedDeparture(fired::add);
+
+            promoteToMember(manager, A);
+            manager.onSwimDeparted(A, 5L);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+            assertThat(fired).containsExactly(A);
+        }
+
+        /// Join-grace expiry on an OBSERVED member drives OBSERVED→DEAD — a fresh edge into DEAD, so the
+        /// listener fires once.
+        @Test
+        void onConfirmedDeparture_joinGraceExpiryOnObserved_firesExactlyOnce() {
+            var manager = activeManager();
+            var fired = new ArrayList<NodeId>();
+            manager.onConfirmedDeparture(fired::add);
+
+            // Link the FSM in OBSERVED without promoting, then expire its join grace.
+            manager.onPeerDisconnected(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Observed");
+            manager.onJoinGraceExpired(A);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+            assertThat(fired).containsExactly(A);
+        }
+
+        /// A single-plane signal (bare SWIM-FAULTY) leaves the member in SUSPECT, never DEAD — the
+        /// listener must NOT fire (gated on real DEAD, not doubt).
+        @Test
+        void onConfirmedDeparture_singlePlaneFaulty_doesNotFire() {
+            var manager = activeManager();
+            var fired = new ArrayList<NodeId>();
+            manager.onConfirmedDeparture(fired::add);
+
+            promoteToMember(manager, A);
+            manager.onSwimFaulty(A, 4L);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Suspect");
+            assertThat(fired).isEmpty();
+        }
+
+        /// A single-plane signal (bare liveness-gone) leaves the member in SUSPECT, never DEAD — the
+        /// listener must NOT fire.
+        @Test
+        void onConfirmedDeparture_singlePlaneLivenessGone_doesNotFire() {
+            var manager = activeManager();
+            var fired = new ArrayList<NodeId>();
+            manager.onConfirmedDeparture(fired::add);
+
+            promoteToMember(manager, A);
+            manager.onLivenessGone(A);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Suspect");
+            assertThat(fired).isEmpty();
+        }
+
+        /// The confirmed-departure listener fires ALONGSIDE the presence-sampler eviction at the same
+        /// central DEAD chokepoint — both side effects occur on the one death edge.
+        @Test
+        void onConfirmedDeparture_firesAlongsideSamplerEviction() {
+            var liveness = new HashMap<NodeId, SwimHealth>();
+            var clock = new AtomicLong(0L);
+            Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.copyOf(liveness));
+            var presenceSampler = presenceSampler(SAMPLER_SELF, health, INTERVAL, K_UP, K_DOWN, clock::get);
+
+            liveness.put(A, SwimHealth.HEALTHY);
+            for (var i = 0; i < K_UP; i++) {
+                presenceSampler.sample();
+            }
+            assertThat(presenceSampler.currentMembers()).contains(A);
+
+            var manager = MembershipFsm.membershipFsm(presenceSampler);
+            var fired = new ArrayList<NodeId>();
+            manager.onConfirmedDeparture(fired::add);
+            manager.seed(Set.of(A));
+            manager.onSwimFaulty(A, 4L);
+            manager.onLivenessGone(A);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+            assertThat(presenceSampler.currentMembers()).doesNotContain(A);
+            assertThat(fired).containsExactly(A);
+        }
+
+        /// Passing `null` resets the listener to the no-op — a subsequent death does not throw and does
+        /// not invoke a stale listener.
+        @Test
+        void onConfirmedDeparture_nullResetsToNoop() {
+            var manager = activeManager();
+            var fired = new ArrayList<NodeId>();
+            manager.onConfirmedDeparture(fired::add);
+            manager.onConfirmedDeparture(null);
+
+            driveToDead(manager, A, 4L);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+            assertThat(fired).isEmpty();
         }
     }
 
