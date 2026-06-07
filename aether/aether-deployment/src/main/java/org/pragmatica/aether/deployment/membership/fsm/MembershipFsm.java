@@ -28,6 +28,7 @@ import org.pragmatica.statemachine.FsmObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -326,11 +327,13 @@ public final class MembershipFsm {
     /// excluded. Insertion-ordered ([`LinkedHashSet`]) for stable iteration, matching
     /// [`#coreMembers`]/[`#memberStates`].
     public Set<NodeId> broadcastEligibleMembers() {
+        // HashSet, not LinkedHashSet: the result is consumed only for membership `contains()` on
+        // the consensus broadcast hot path, so insertion ordering is unused — skip the linked overhead.
         return members.entrySet()
                       .stream()
                       .filter(entry -> entry.getValue().notDead())
                       .map(Map.Entry::getKey)
-                      .collect(Collectors.toCollection(LinkedHashSet::new));
+                      .collect(Collectors.toCollection(HashSet::new));
     }
 
     /// The desired dial-set for the transport executor: [`#coreMembers`] intersected with members whose
@@ -481,7 +484,7 @@ public final class MembershipFsm {
             }
         }
 
-        private boolean isDead() {
+        private synchronized boolean isDead() {
             return fsm.current() instanceof MembershipState.Dead;
         }
 
@@ -533,7 +536,7 @@ public final class MembershipFsm {
             return descriptor;
         }
 
-        boolean countsTowardEffective() {
+        synchronized boolean countsTowardEffective() {
             return fsm.current().countsTowardEffective();
         }
 
@@ -541,7 +544,7 @@ public final class MembershipFsm {
         /// OBSERVED / MEMBER / SUSPECT / DEPARTING, false only for DEAD. Used by
         /// [`#broadcastEligibleMembers`] — consensus must keep reaching joining/suspected
         /// peers, only a co-confirmed-DEAD zombie is excluded.
-        boolean notDead() {
+        synchronized boolean notDead() {
             return !isDead();
         }
 
@@ -558,17 +561,17 @@ public final class MembershipFsm {
         }
 
         Option<PeerTarget> peerTarget(NodeId memberId) {
-            return address().map(addr -> new PeerTarget(memberId, addr));
+            return address().map(addr -> PeerTarget.peerTarget(memberId, addr));
         }
 
-        String stateName() {
+        synchronized String stateName() {
             return fsm.current().getClass().getSimpleName();
         }
 
         /// FSM-state → quiescence health-hint projection. DEAD → FAULTY, SUSPECT → SUSPECTED;
         /// every other state is healthy-by-construction and yields `none()` (the projector
         /// defaults an absent entry to HEALTHY). Pure read of the current FSM state.
-        Option<HealthHint> healthHint() {
+        synchronized Option<HealthHint> healthHint() {
             return switch (fsm.current()) {
                 case MembershipState.Dead _ -> Option.some(HealthHint.FAULTY);
                 case MembershipState.Suspect _ -> Option.some(HealthHint.SUSPECTED);
