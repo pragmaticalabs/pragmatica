@@ -121,20 +121,20 @@ class StreamBudgetAccountingTest {
             var reservedTotal = new java.util.concurrent.atomic.AtomicLong(0);
             var releasedTotal = new java.util.concurrent.atomic.AtomicLong(0);
             var grantsLeft = new java.util.concurrent.atomic.AtomicLong(1); // grant one growth, then reject
-            var buffer = OffHeapRingBuffer.offHeapRingBuffer("frag",
-                                                             0,
-                                                             1_000,
-                                                             5L * SEGMENT,
-                                                             EvictionListener.NOOP,
-                                                             EvictionPolicy.DROP_OLDEST,
-                                                             bytes -> {
-                                                                 if (grantsLeft.getAndDecrement() > 0) {
-                                                                     reservedTotal.addAndGet(bytes);
-                                                                     return true;
-                                                                 }
-                                                                 return false;
-                                                             },
-                                                             releasedTotal::addAndGet);
+            var buffer = unwrap(OffHeapRingBuffer.offHeapRingBuffer("frag",
+                                                                    0,
+                                                                    1_000,
+                                                                    5L * SEGMENT,
+                                                                    EvictionListener.NOOP,
+                                                                    EvictionPolicy.DROP_OLDEST,
+                                                                    bytes -> {
+                                                                        if (grantsLeft.getAndDecrement() > 0) {
+                                                                            reservedTotal.addAndGet(bytes);
+                                                                            return true;
+                                                                        }
+                                                                        return false;
+                                                                    },
+                                                                    releasedTotal::addAndGet));
             try {
                 for (var i = 0; i < 50; i++) {
                     buffer.append(new byte[50_000], 1_000L + i)
@@ -320,7 +320,66 @@ class StreamBudgetAccountingTest {
         }
     }
 
+    @Nested
+    class PartialConstructionFailure {
+
+        /// Bug #6: a native floor-allocation failure on a LATER partition during multi-partition
+        /// construction must (a) close the partitions already built (no Arena leak), (b) release the
+        /// reserved floor budget (no budget leak), and (c) surface STREAM_MEMORY_EXCEEDED through the
+        /// Result chain (no escaped OutOfMemoryError). Fault-injected via the buffer's floor-alloc seam
+        /// so the partition-k failure is deterministic.
+        @Test
+        void createStream_partialPartitionAllocFailure_releasesBudgetAndClosesBuffers() {
+            var manager = streamPartitionManager(64 * 1024 * 1024L);
+            var pre = manager.totalAllocatedBytes();
+            // Fail the floor allocation of partition 2 (of 4) — partitions 0,1 build, 2 fails, 3 never opens.
+            OffHeapRingBuffer.floorAllocFaultInjector(partition -> partition != 2);
+            try {
+                manager.createStream(mgmtDefault("partial"))
+                       .onSuccess(_ -> fail("Expected STREAM_MEMORY_EXCEEDED from partition-2 floor failure"))
+                       .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.STREAM_MEMORY_EXCEEDED));
+
+                // No entry materialized, budget returned to the pre-create value, no leak.
+                assertThat(manager.streamInfo("partial").isPresent()).isFalse();
+                assertThat(manager.totalAllocatedBytes()).isEqualTo(pre);
+                assertThat(manager.availableBytes()).isEqualTo(manager.maxTotalBytes());
+            } finally {
+                OffHeapRingBuffer.clearFloorAllocFaultInjector();
+                manager.close();
+            }
+        }
+
+        /// Bug #6 (first partition fails): partition 0's floor allocation fails — nothing was built — and
+        /// the reserved floor budget is still released with STREAM_MEMORY_EXCEEDED returned.
+        @Test
+        void createStream_firstPartitionAllocFailure_releasesBudget() {
+            var manager = streamPartitionManager(64 * 1024 * 1024L);
+            var pre = manager.totalAllocatedBytes();
+            OffHeapRingBuffer.floorAllocFaultInjector(partition -> partition != 0);
+            try {
+                manager.createStream(mgmtDefault("first-fail"))
+                       .onSuccess(_ -> fail("Expected STREAM_MEMORY_EXCEEDED"))
+                       .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.STREAM_MEMORY_EXCEEDED));
+
+                assertThat(manager.streamInfo("first-fail").isPresent()).isFalse();
+                assertThat(manager.totalAllocatedBytes()).isEqualTo(pre);
+            } finally {
+                OffHeapRingBuffer.clearFloorAllocFaultInjector();
+                manager.close();
+            }
+        }
+    }
+
     // ---- helpers ----
+
+    /// Unwrap the guarded seam-factory `Result<OffHeapRingBuffer>` (bug #6) to a raw buffer; a
+    /// (never-expected, tiny-allocation) floor failure fails the test loudly.
+    private static OffHeapRingBuffer unwrap(org.pragmatica.lang.Result<OffHeapRingBuffer> result) {
+        var holder = new java.util.concurrent.atomic.AtomicReference<OffHeapRingBuffer>();
+        result.onFailure(cause -> fail("buffer construction failed: " + cause.message()))
+              .onSuccess(holder::set);
+        return holder.get();
+    }
 
     private static org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut<
             org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey,

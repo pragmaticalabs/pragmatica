@@ -159,8 +159,8 @@ class OffHeapRingBufferGrowthTest {
         LongPredicate reserve = _ -> grantsLeft.getAndDecrement() > 0;
         LongConsumer release = _ -> {};
 
-        var buffer = offHeapRingBuffer("evt", 0, capacity, maxBytes, EvictionListener.NOOP,
-                                       EvictionPolicy.DROP_OLDEST, reserve, release);
+        var buffer = unwrap(offHeapRingBuffer("evt", 0, capacity, maxBytes, EvictionListener.NOOP,
+                                              EvictionPolicy.DROP_OLDEST, reserve, release));
 
         try {
             // Distinct content per event so a misaddressed read is detectable. 50_000-byte events
@@ -203,8 +203,8 @@ class OffHeapRingBufferGrowthTest {
         LongPredicate reserveNever = _ -> false; // never admit any growth
         LongConsumer release = _ -> {};
 
-        var buffer = offHeapRingBuffer("strong", 0, capacity, maxBytes, EvictionListener.NOOP,
-                                       EvictionPolicy.REJECT_WHEN_FULL, reserveNever, release);
+        var buffer = unwrap(offHeapRingBuffer("strong", 0, capacity, maxBytes, EvictionListener.NOOP,
+                                              EvictionPolicy.REJECT_WHEN_FULL, reserveNever, release));
 
         try {
             // Fill the single floor segment (256 KiB) with events that don't trigger count/data
@@ -224,6 +224,150 @@ class OffHeapRingBufferGrowthTest {
         }
     }
 
+    /// Bug #7 (DROP_OLDEST): a frozen-below-cap ring (zero growth granted, allocated == floor 256 KiB)
+    /// receiving an event LARGER than the allocated ring (300_000 > 262_144) must NOT write it — doing so
+    /// would self-overlap the ring or index a non-existent segment. The event is dropped (EVENTUAL
+    /// contract: append still reports success at the current head) and every previously-stored event
+    /// reads back byte-identical. Exercised at dataPos == 0 AND at dataPos ~= 200 KiB (after a smaller
+    /// pre-append), the two layouts that trigger the corruption / IndexOutOfBounds in the unfixed code.
+    @Test
+    void frozenRing_eventLargerThanAllocated_dropOldest_doesNotCorruptOrThrow() {
+        var capacity = 1_000L;
+        var maxBytes = 5L * SEGMENT;
+        LongPredicate reserveNever = _ -> false; // freeze at the floor segment (no growth ever)
+        LongConsumer release = _ -> {};
+
+        var buffer = unwrap(offHeapRingBuffer("frozen-drop", 0, capacity, maxBytes, EvictionListener.NOOP,
+                                              EvictionPolicy.DROP_OLDEST, reserveNever, release));
+
+        try {
+            // Frozen allocation == floor first segment (256 KiB); the cap (5 segments) is never reached.
+            assertThat(buffer.allocatedBytes()).isEqualTo(64 + 24 * capacity + SEGMENT);
+
+            var oversized = patterned(300_000, 9); // 300_000 > 262_144 allocated, <= 5*SEGMENT cap
+
+            // --- Case A: dataPos == 0 (fresh ring) ---
+            var headBefore = buffer.headOffset();
+            buffer.append(oversized, 1L)
+                  .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("EVENTUAL oversized-for-allocated must drop, not fail"));
+            // Dropped: head unchanged, nothing stored, no corruption/exception.
+            assertThat(buffer.headOffset()).as("oversized event dropped at dataPos=0").isEqualTo(headBefore);
+            assertThat(buffer.eventCount()).isEqualTo(0L);
+
+            // --- Set up dataPos ~= 200 KiB by storing a fitting event first ---
+            var stored = patterned(200_000, 3); // fits in the 262_144 floor (dataPos -> 200_000)
+            buffer.append(stored, 2L)
+                  .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("200 KiB event fits the floor"));
+            assertThat(buffer.eventCount()).isEqualTo(1L);
+
+            // --- Case B: dataPos ~= 200 KiB, append oversized again ---
+            var headBeforeB = buffer.headOffset();
+            buffer.append(oversized, 3L)
+                  .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("EVENTUAL oversized-for-allocated must drop, not fail"));
+            assertThat(buffer.headOffset()).as("oversized event dropped at dataPos~=200K").isEqualTo(headBeforeB);
+
+            // The previously-stored fitting event survives byte-identical (no corruption from the drop).
+            buffer.read(buffer.tailOffset(), 8)
+                  .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"))
+                  .onSuccess(events -> {
+                      assertThat(events).hasSize(1);
+                      assertThat(events.getFirst().data()).isEqualTo(stored);
+                      assertThat(events.getFirst().timestamp()).isEqualTo(2L);
+                  });
+        } finally {
+            buffer.close();
+        }
+    }
+
+    /// Bug #7 (REJECT_WHEN_FULL / STRONG): the same frozen-below-cap, oversized-for-allocated event must
+    /// fail loud with STREAM_MEMORY_EXCEEDED (never a silent corrupting write) and leave prior events
+    /// intact.
+    @Test
+    void frozenRing_eventLargerThanAllocated_strong_returnsFull() {
+        var capacity = 1_000L;
+        var maxBytes = 5L * SEGMENT;
+        LongPredicate reserveNever = _ -> false; // freeze at the floor segment
+        LongConsumer release = _ -> {};
+
+        var buffer = unwrap(offHeapRingBuffer("frozen-strong", 0, capacity, maxBytes, EvictionListener.NOOP,
+                                              EvictionPolicy.REJECT_WHEN_FULL, reserveNever, release));
+
+        try {
+            var stored = patterned(200_000, 4);
+            buffer.append(stored, 1L)
+                  .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("200 KiB fits the floor"));
+
+            var oversized = patterned(300_000, 9); // > 262_144 allocated, <= cap
+            buffer.append(oversized, 2L)
+                  .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected STREAM_MEMORY_EXCEEDED"))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.STREAM_MEMORY_EXCEEDED));
+
+            // The first event is untouched by the rejected oversized append.
+            buffer.read(buffer.tailOffset(), 8)
+                  .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"))
+                  .onSuccess(events -> {
+                      assertThat(events).hasSize(1);
+                      assertThat(events.getFirst().data()).isEqualTo(stored);
+                  });
+        } finally {
+            buffer.close();
+        }
+    }
+
+    /// Bug #7 property variant: a FROZEN regime (seam rejects ALL growth, ring fixed at the 256 KiB
+    /// floor) driven with mixed payload sizes — many fit, some exceed the allocated ring. The buffer
+    /// must match a reference oracle that drops oversized-for-allocated events (DROP_OLDEST), with NO
+    /// IndexOutOfBounds and NO corruption, across thousands of frozen-ring wraps + segment splits.
+    @Test
+    void frozenRing_property_dropsOversizedForAllocated_matchesOracle() {
+        var capacity = 64L;
+        var maxBytes = 5L * SEGMENT;          // cap is 5 segments but the seam freezes us at 1 (256 KiB)
+        var allocated = SEGMENT;              // frozen allocation
+        var ops = 4_000;
+        var seed = 0x1234ABCDL;
+
+        LongPredicate reserveNever = _ -> false;     // freeze at floor immediately
+        LongConsumer release = _ -> {};
+        var buffer = unwrap(offHeapRingBuffer("frozen-prop", 0, capacity, maxBytes, EvictionListener.NOOP,
+                                              EvictionPolicy.DROP_OLDEST, reserveNever, release));
+        // Oracle's effective data capacity is the FROZEN allocated bytes, and it drops events that
+        // exceed that allocation (mirroring the buffer's bug-#7 gate).
+        var oracle = new RingOracle(capacity, allocated);
+        var rng = new Lcg(seed);
+
+        try {
+            for (var step = 0; step < ops; step++) {
+                var choice = rng.nextInt(10);
+                if (choice < 8) {
+                    // Sizes from 1 .. 320_000 — straddling the 262_144 allocated boundary so ~18% are
+                    // oversized-for-allocated and must be dropped by both.
+                    var size = 1 + rng.nextInt(320_000);
+                    var payload = patterned(size, rng.nextInt(251) + 1);
+                    var ts = 5_000L + step;
+
+                    var actual = appendOffset(buffer.append(payload, ts));
+                    var expected = oracle.appendDroppingOversized(payload, ts, allocated);
+                    assertThat(actual)
+                            .as("append/drop offset at step %d (size %d)", step, size)
+                            .isEqualTo(expected);
+                } else {
+                    var from = oracle.tail() + rng.nextInt(4);
+                    var max = rng.nextInt(8) + 1;
+                    assertReadMatches(buffer, oracle, from, max, step);
+                }
+
+                assertThat(buffer.tailOffset()).as("tail at step %d", step).isEqualTo(oracle.tail());
+                assertThat(buffer.headOffset()).as("head at step %d", step).isEqualTo(oracle.head());
+                assertThat(buffer.eventCount()).as("count at step %d", step).isEqualTo(oracle.count());
+            }
+
+            var span = (int) (oracle.head() - oracle.tail() + 2);
+            assertReadMatches(buffer, oracle, oracle.tail(), Math.max(span, 1), ops);
+        } finally {
+            buffer.close();
+        }
+    }
+
     @Test
     void close_releasesAccountedBytesViaSeam() {
         var capacity = 100L;
@@ -236,8 +380,8 @@ class OffHeapRingBufferGrowthTest {
         };
         LongConsumer release = released::addAndGet;
 
-        var buffer = offHeapRingBuffer("acct", 0, capacity, maxBytes, EvictionListener.NOOP,
-                                       EvictionPolicy.DROP_OLDEST, reserve, release);
+        var buffer = unwrap(offHeapRingBuffer("acct", 0, capacity, maxBytes, EvictionListener.NOOP,
+                                              EvictionPolicy.DROP_OLDEST, reserve, release));
 
         // Floor segment (256 KiB) is accounted directly (not via reserve) but IS released on close.
         // Three ~200 KiB payloads force two growths:
@@ -259,7 +403,82 @@ class OffHeapRingBufferGrowthTest {
         assertThat(released.get()).isEqualTo(floorSegment + grownViaSeam);
     }
 
+    /// Bug #5: a concurrent `close()` on the shared arena (manager reap/destroy thread) racing in-flight
+    /// reads/appends (publish/read thread) must surface a clean `Result` failure, never an escaped
+    /// `IllegalStateException` from native `MemorySegment` access after the TOCTOU `closed.get()` check.
+    /// The JDK keeps it memory-safe (no UAF); we assert the error stays IN the Result channel. Many
+    /// iterations widen the race window; any escaped throwable on the worker threads fails the test.
+    @Test
+    void concurrentClose_duringReadAndAppend_neverThrows_returnsResultFailure() throws InterruptedException {
+        var escaped = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+
+        for (var iter = 0; iter < 200; iter++) {
+            var buffer = offHeapRingBuffer("race", 0, 256L, 4L * SEGMENT, EvictionListener.NOOP);
+            for (var i = 0; i < 32; i++) {
+                buffer.append(patterned(2_048, (i % 250) + 1), 1_000L + i)
+                      .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("seed append"));
+            }
+
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var reader = new Thread(() -> raceReadAppend(buffer, start, escaped));
+            var closer = new Thread(() -> raceClose(buffer, start));
+            reader.start();
+            closer.start();
+            start.countDown();
+            reader.join();
+            closer.join();
+        }
+
+        assertThat(escaped.get())
+                .as("a concurrent-close access escaped the Result channel: %s", escaped.get())
+                .isNull();
+    }
+
+    private static void raceReadAppend(OffHeapRingBuffer buffer,
+                                       java.util.concurrent.CountDownLatch start,
+                                       java.util.concurrent.atomic.AtomicReference<Throwable> escaped) {
+        awaitQuietly(start);
+        for (var i = 0; i < 64; i++) {
+            var seed = (i % 250) + 1;
+            var ts = 9_000L + i;
+            captureEscape(() -> buffer.read(0, 16), escaped);
+            captureEscape(() -> buffer.append(patterned(2_048, seed), ts), escaped);
+        }
+    }
+
+    private static void raceClose(OffHeapRingBuffer buffer, java.util.concurrent.CountDownLatch start) {
+        awaitQuietly(start);
+        buffer.close();
+    }
+
+    /// Runs a native-access op; a returned Result (success OR failure) is fine. Only a THROWN throwable
+    /// (the bug #5 escape) is recorded. The ops already convert concurrent-close to a Result failure.
+    private static void captureEscape(java.util.function.Supplier<org.pragmatica.lang.Result<?>> op,
+                                      java.util.concurrent.atomic.AtomicReference<Throwable> escaped) {
+        try {
+            op.get();
+        } catch (Throwable t) {
+            escaped.compareAndSet(null, t);
+        }
+    }
+
+    private static void awaitQuietly(java.util.concurrent.CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException _) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     // ---- helpers ----
+    /// Unwrap the guarded seam-factory `Result<OffHeapRingBuffer>` (bug #6) to a raw buffer for tests;
+    /// a (never-expected, tiny-allocation) floor failure fails the test loudly rather than returning null.
+    private static OffHeapRingBuffer unwrap(org.pragmatica.lang.Result<OffHeapRingBuffer> result) {
+        var holder = new java.util.concurrent.atomic.AtomicReference<OffHeapRingBuffer>();
+        result.onFailure(cause -> org.junit.jupiter.api.Assertions.fail("buffer construction failed: " + cause.message()))
+              .onSuccess(holder::set);
+        return holder.get();
+    }
 
     private static void assertReadMatches(OffHeapRingBuffer buffer, RingOracle oracle, long from, int max, int step) {
         var expected = oracle.read(from, max);
@@ -350,6 +569,16 @@ class OffHeapRingBufferGrowthTest {
             usedData += payload.length;
             head = offset;
             return offset;
+        }
+
+        /// Frozen-ring (bug #7) variant: an event larger than the FROZEN allocated bytes can never be
+        /// stored, so it is DROPPED (no store, no offset advance) and the current head is returned —
+        /// exactly what the buffer does under DROP_OLDEST. Otherwise behaves like `append`.
+        long appendDroppingOversized(byte[] payload, long timestamp, long allocated) {
+            if (payload.length > allocated) {
+                return head;
+            }
+            return append(payload, timestamp);
         }
 
         private void dropOldest() {
