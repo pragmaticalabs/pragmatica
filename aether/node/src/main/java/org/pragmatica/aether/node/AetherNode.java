@@ -1672,14 +1672,20 @@ public interface AetherNode extends ManageableNode {
                                .map(AetherValue.ClusterConfigValue::clusterName)
                                .or("");
         // Membership v2 Phase 2 LIVE — the per-member MembershipFsm is the authoritative membership-
-        // death decision-maker (leader-gated, consensus-independent, SWIM/liveness-driven). It runs
-        // ALWAYS (no shadow flag). On every transition into DEAD it hard-evicts the dead identity from
-        // NTT (ntt.evict); the presence-derived TopologyObserver → MembershipDecision →
-        // ClusterEventAggregator path then emits NODE_FAILED / NODE_LEFT from the resulting
-        // stableMembers delta. The FSM emits no event directly. It is injected with the SAME `ntt`
-        // instance and is constructed BEFORE the reconciler because the reconciler now COUNTS this
-        // FSM's countedMembers() (MEMBER + SUSPECT) as its base membership set (#68/#94 churn cutover).
+        // death decision-maker. It is ALWAYS-ON per node (no leader gate): every node drives its own
+        // per-member FSMs from its tapped SWIM/liveness edges and hard-evicts the dead identity from its
+        // own NTT view (ntt.evict) on every transition into DEAD. Only scaling (LeaderReconciler) stays
+        // leader-gated. The presence-derived TopologyObserver → MembershipDecision →
+        // ClusterEventAggregator path then emits NODE_FAILED / NODE_LEFT from the resulting stableMembers
+        // delta. The FSM emits no event directly. It is injected with the SAME `ntt` instance and is
+        // constructed BEFORE the reconciler because the reconciler now COUNTS this FSM's countedMembers()
+        // (MEMBER + SUSPECT) as its base membership set (#68/#94 churn cutover).
         var membershipFsm = MembershipFsm.membershipFsm(ntt);
+        // One-time boot seed from the configured topology member set. The FSM's SWIM observation tap
+        // (added below, before SWIM starts via the whenReady(startSwimTrigger) lifecycle) already
+        // promotes members naturally on their first HealthyObserved edge, so this seed is
+        // belt-and-suspenders: it promotes only still-OBSERVED ids and never resurrects a DEAD one.
+        membershipFsm.seed(config.topology().coreNodes().stream().map(NodeInfo::id).collect(Collectors.toSet()));
         // Route NTT's down-hysteresis crossing edge into the FSM (post-construction installer — the FSM
         // exists only now, AFTER ntt). A sustained-absence SUSPECT member is then bounded by the FSM
         // (SUSPECT→DEPARTING per spec §3.3 / invariant I4) so a genuinely-gone node still departs the
@@ -1736,12 +1742,6 @@ public interface AetherNode extends ManageableNode {
         // captures the spec's liveness-gone signal. Bare disconnect alone does NOT evict — the FSM
         // gates it behind SWIM-FAULTY co-confirmation. Leader-gated inside the FSM.
         Consumer<NodeId> nttDisconnectTap = ((Consumer<NodeId>) ntt::onQuicDisconnect).andThen(membershipFsm::onLivenessGone);
-        // Phase 2 LIVE: leader-gate the authoritative MembershipFsm on leader change. On leader gain
-        // arm it AND seed its model from the live membership snapshot (NodeTopologyTracker#currentMembers)
-        // — the one-time formation bootstrap that catches the already-formed cluster the late-arming FSM
-        // missed. On leader loss disarm and clear its model. Mirrors toggleNttReconcilerOnLeaderChange.
-        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                                 change -> toggleMembershipFsmOnLeaderChange(change, membershipFsm, ntt)));
         // P5: the NTT-reconciler leader-toggle (auto-heal activation) is now wired into the
         // live router. Safe because LeaderReconciler is identity-aware — it arms provisioning
         // only after the cluster first reaches configuredCoreCount, so it never provisions a
@@ -2575,23 +2575,6 @@ public interface AetherNode extends ManageableNode {
             case SwimObservation.DepartedObserved departed -> membershipFsm.onSwimDeparted(departed.peer(), departed.incarnation());
             case SwimObservation.UnknownObserved unknown -> membershipFsm.onSwimUnknown(unknown.peer(), unknown.incarnation());
             default -> {}
-        }
-    }
-
-    /// Phase 2 LIVE leader-gate: on leader gain arm the authoritative [`MembershipFsm`] AND seed its
-    /// model from the live membership snapshot ([`NodeTopologyTracker#currentMembers`]) — the one-time
-    /// formation bootstrap that catches the already-formed cluster the late-arming FSM missed (its
-    /// members' SWIM HealthyObserved edges fired once, at formation, before the leader-gated FSM armed).
-    /// On leader loss disarm and clear its model. Mirrors `toggleNttReconcilerOnLeaderChange`.
-    /// `activate`/`seedMembers`/`deactivate` are `@Contract` void on the FSM, so no return value is
-    /// abandoned and no suppression is needed.
-    private static void toggleMembershipFsmOnLeaderChange(LeaderNotification.LeaderChange change,
-                                                          MembershipFsm membershipFsm,
-                                                          NodeTopologyTracker ntt) {
-        if (change.localNodeIsLeader()) {
-            membershipFsm.activate(ntt.currentMembers());
-        } else {
-            membershipFsm.deactivate();
         }
     }
 

@@ -29,7 +29,6 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -43,10 +42,12 @@ import java.util.stream.Collectors;
 /// `NODE_FAILED` / `NODE_LEFT` event from the resulting `stableMembers` delta — this FSM never
 /// emits an event directly; mutating NTT's presence view is the sole side effect.
 ///
-/// **Leader-gated, consensus-independent, SWIM/liveness-driven.** Eviction is gated on holding the
-/// leader lease (only the leader mutates membership) and is driven purely by SWIM gossip + composite
-/// liveness, independent of consensus health — so a dead member is removed even when the death
-/// decision must not wait on a consensus round.
+/// **Always-on per-node, consensus-independent, SWIM/liveness-driven.** The FSM is armed from
+/// construction on EVERY node (not only the leader): each node drives its OWN per-member FSMs from its
+/// tapped SWIM gossip + composite liveness and evicts from its OWN [`NodeTopologyTracker`] view,
+/// independent of consensus health — so a dead member is removed even when the death decision must not
+/// wait on a consensus round, and even on a follower. Only scaling (`LeaderReconciler`) stays
+/// leader-gated; membership tracking and eviction are unconditional.
 ///
 /// **Promotion is edge-driven (up-hysteresis = `UP_HYSTERESIS` = 1).** A member is promoted
 /// OBSERVED→MEMBER on the FIRST `onSwimHealthy` observation. This consumes SWIM *edges* — SWIM emits
@@ -58,13 +59,13 @@ import java.util.stream.Collectors;
 /// promotion threshold is 1. On reaching the threshold the manager dispatches [`UpHysteresisMet`] to
 /// the member's FSM (OBSERVED→MEMBER).
 ///
-/// **One-time seed on activation.** Because the manager is leader-gated and arms AFTER cluster
-/// formation, it MISSES the formation-time `HealthyObserved` edges (each fires once, on the edge).
-/// [`#seedMembers`] bootstraps the already-formed cluster from the live membership snapshot at
-/// activation: each untracked or still-OBSERVED id is promoted straight to MEMBER. It NEVER touches an
-/// id already in MEMBER/SUSPECT/DEPARTING/DEAD — death stays the manager's own SWIM/liveness decision
-/// and is never resurrected from the live snapshot. After the seed, NEW joiners promote independently
-/// via their first `HealthyObserved` edge.
+/// **One-time seed at boot.** Although the always-on FSM has its SWIM observation taps attached at
+/// construction (before SWIM begins emitting), [`#seed`] is kept as a belt-and-suspenders boot
+/// bootstrap from the initially-known members (e.g. the configured topology member set): each untracked
+/// or still-OBSERVED id is promoted straight to MEMBER. It NEVER touches an id already in
+/// MEMBER/SUSPECT/DEPARTING/DEAD — death stays the manager's own SWIM/liveness decision and is never
+/// resurrected from the seed snapshot. After the seed, members promote independently via their first
+/// `HealthyObserved` edge.
 ///
 /// **Eviction co-confirmation gate (`swimFaulty ∧ livenessGone`).** A member is driven
 /// Suspect→Departing→Dead only when BOTH planes confirm death: SWIM has declared it FAULTY
@@ -78,14 +79,8 @@ import java.util.stream.Collectors;
 /// after every dispatch it compares the FSM's pre/post state and, on a fresh edge INTO `Dead` (was
 /// not Dead before, is Dead after), invokes the manager's eviction hook. This covers ALL three DEAD
 /// paths uniformly (co-confirmed death, graceful departure, join-grace expiry) without scattering the
-/// call across the ingress methods. The hook is leader-gated (no-op while inactive) and idempotent —
-/// the fresh-edge guard fires once per death, and `ntt.evict` is itself idempotent (a no-op for an id
-/// already absent from `stableMembers`).
-///
-/// **Leader-gating.** The manager only tracks while it holds the leader lease. [`#activate`] arms it
-/// and seeds the model from the supplied live snapshot (the one-time formation bootstrap);
-/// [`#deactivate`] clears the FSM map and all bookkeeping (a new leader term starts fresh). All
-/// ingress methods no-op while inactive.
+/// call across the ingress methods. The hook is idempotent — the fresh-edge guard fires once per
+/// death, and `ntt.evict` is itself idempotent (a no-op for an id already absent from `stableMembers`).
 ///
 /// **DEAD retention + rejoin.** DEAD FSM entries are KEPT in the map (never removed on death) so a
 /// higher-incarnation [`SwimHealthy`] re-arms the same identity (DEAD→OBSERVED, fenced by the
@@ -93,8 +88,8 @@ import java.util.stream.Collectors;
 /// it DEAD.
 ///
 /// **Concurrency.** Ingress may be called from the SWIM / transport / liveness tap threads. The FSM
-/// map and the leader flag are concurrent; per-member bookkeeping ([`MemberTracking`]) is mutated only
-/// under the per-member monitor so the streak / co-confirmation flags stay internally consistent.
+/// map is concurrent; per-member bookkeeping ([`MemberTracking`]) is mutated only under the per-member
+/// monitor so the streak / co-confirmation flags stay internally consistent.
 public final class MembershipFsm {
     private static final Logger log = LoggerFactory.getLogger(MembershipFsm.class);
 
@@ -111,7 +106,6 @@ public final class MembershipFsm {
 
     private final FsmObserver<MembershipState, MembershipEvent> observer;
     private final NodeTopologyTracker ntt;
-    private final AtomicBoolean active = new AtomicBoolean(false);
     private final Map<NodeId, MemberTracking> members = new ConcurrentHashMap<>();
 
     private MembershipFsm(NodeTopologyTracker ntt, FsmObserver<MembershipState, MembershipEvent> observer) {
@@ -129,45 +123,22 @@ public final class MembershipFsm {
         return new MembershipFsm(ntt, observer);
     }
 
-    // --- Leader gating ---
+    // --- Boot seed ---
 
-    /// Arm the manager on leader gain and seed the model from the supplied live membership snapshot
-    /// (the one-time formation bootstrap — see [`#seedMembers`]). Idempotent.
+    /// One-time boot bootstrap: promote each id in the initially-known member snapshot (e.g. the
+    /// configured topology member set) that the always-on FSM has not yet observed healthy. For every
+    /// id that is UNTRACKED or currently OBSERVED, promote it straight to MEMBER (creating its FSM if
+    /// needed and dispatching [`UpHysteresisMet`]). Ids already in MEMBER/SUSPECT/DEPARTING/DEAD are left
+    /// untouched — a dead/suspect node is NEVER resurrected from the seed snapshot; death stays the
+    /// manager's own SWIM/liveness decision. Idempotent (re-seeding a MEMBER touches nothing). Because
+    /// the SWIM observation taps are attached at construction (before SWIM emits), members also promote
+    /// naturally via their first `HealthyObserved` edge — the seed is belt-and-suspenders.
     @Contract
-    public void activate(Set<NodeId> currentMembers) {
-        active.set(true);
-        seedMembers(currentMembers);
+    public void seed(Set<NodeId> initialMembers) {
+        initialMembers.forEach(this::seedMember);
     }
 
-    /// One-time formation bootstrap: promote each id in the live membership snapshot that the manager
-    /// missed by arming late. For every id that is UNTRACKED or currently OBSERVED, promote it straight
-    /// to MEMBER (creating its FSM if needed and dispatching [`UpHysteresisMet`]). Ids already in
-    /// MEMBER/SUSPECT/DEPARTING/DEAD are left untouched — a dead/suspect node is NEVER resurrected from
-    /// the live snapshot; death stays the manager's own SWIM/liveness decision. A no-op while inactive,
-    /// and idempotent (re-seeding a MEMBER touches nothing). After the seed, NEW joiners promote
-    /// independently via their first `HealthyObserved` edge.
-    @Contract
-    public void seedMembers(Set<NodeId> currentMembers) {
-        if (!active.get()) {
-            return;
-        }
-        currentMembers.forEach(this::seedMember);
-    }
-
-    /// Disarm the manager on leader loss. Idempotent. Clears the per-member FSM map and all
-    /// bookkeeping so a new leader term starts from a clean model.
-    @Contract
-    public void deactivate() {
-        active.set(false);
-        members.clear();
-    }
-
-    /// Observability — whether the manager currently holds the leader lease.
-    public boolean isActive() {
-        return active.get();
-    }
-
-    // --- Ingress (live taps feed these; each is leader-gated) ---
+    // --- Ingress (live taps feed these; always-on) ---
 
     /// SWIM reported `id` ALIVE at `incarnation`. Records the incarnation, bumps the consecutive-
     /// healthy streak, and promotes OBSERVED→MEMBER once the streak reaches [`#UP_HYSTERESIS`].
@@ -235,7 +206,7 @@ public final class MembershipFsm {
     /// The NTT down-hysteresis threshold was crossed for `id` (sustained absence over the
     /// down-hysteresis window). Routes that crossing INTO this FSM so a sustained-absence SUSPECT
     /// member is bounded by the FSM (SUSPECT→DEPARTING per spec §3.3 / invariant I4), rather than NTT
-    /// independently removing the id from its own set. Leader-gated; ignored in any state but SUSPECT.
+    /// independently removing the id from its own set. Always-on; ignored in any state but SUSPECT.
     @Contract
     public void onDownHysteresisMet(NodeId id) {
         withMember(id, tracking -> tracking.dispatch(new DownHysteresisMet()));
@@ -338,30 +309,23 @@ public final class MembershipFsm {
         }
     }
 
-    /// Leader-gated hard-evict hook invoked CENTRALLY on every fresh edge into DEAD (detected in
-    /// [`MemberTracking#dispatch`]). No-op while inactive (only the leader mutates membership);
-    /// idempotent — the fresh-edge guard fires once per death and [`NodeTopologyTracker#evict`] is
-    /// itself idempotent. Mutating NTT's presence view is the sole side effect; the presence-derived
-    /// TopologyObserver path emits the resulting NODE_FAILED / NODE_LEFT event.
+    /// Hard-evict hook invoked CENTRALLY on every fresh edge into DEAD (detected in
+    /// [`MemberTracking#dispatch`]). Idempotent — the fresh-edge guard fires once per death and
+    /// [`NodeTopologyTracker#evict`] is itself idempotent. Mutating NTT's presence view is the sole side
+    /// effect; the presence-derived TopologyObserver path emits the resulting NODE_FAILED / NODE_LEFT
+    /// event.
     @Contract
     private void onEnteredDead(NodeId id) {
-        if (!active.get()) {
-            return;
-        }
         log.info("MembershipFsm evicting co-confirmed-dead member {} from NTT", id);
         ntt.evict(id);
     }
 
-    // --- Leader-gated dispatch frame ---
+    // --- Dispatch frame ---
 
-    /// Run `action` against the (lazily-created) tracking for `id`, leader-gated: a no-op while
-    /// inactive, otherwise dispatch to the member's FSM. JBCT code returns errors as values
-    /// (`Result`/`Option`), never throws, so no try/catch is needed.
+    /// Run `action` against the (lazily-created) tracking for `id`, dispatching to the member's FSM.
+    /// JBCT code returns errors as values (`Result`/`Option`), never throws, so no try/catch is needed.
     @Contract
     private void withMember(NodeId id, Consumer<MemberTracking> action) {
-        if (!active.get()) {
-            return;
-        }
         action.accept(trackingFor(id));
     }
 
