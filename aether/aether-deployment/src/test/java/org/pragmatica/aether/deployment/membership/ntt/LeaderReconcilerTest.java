@@ -105,12 +105,11 @@ class LeaderReconcilerTest {
                                   1,
                                   timeSource::nanoTime);
         // FSM-count cutover: the reconciler now counts membershipFsm.countedMembers() (MEMBER +
-        // SUSPECT), NOT ntt.currentMembers(). The FSM must be driven in lockstep with the NTT
-        // helpers so countedMembers() mirrors the NTT-intended membership at every step. SELF is
-        // promoted to MEMBER here to match NTT's self-seed (ntt.currentMembers() always includes
-        // SELF), so the FSM count and the NTT-era count agree.
+        // SUSPECT), NOT ntt.currentMembers(). The FSM is always-on (armed from construction, no leader
+        // gate) and is driven in lockstep with the NTT helpers so countedMembers() mirrors the
+        // NTT-intended membership at every step. SELF is promoted to MEMBER here to match NTT's self-seed
+        // (ntt.currentMembers() always includes SELF), so the FSM count and the NTT-era count agree.
         membershipFsm = membershipFsm(ntt);
-        membershipFsm.activate(Set.of());
         membershipFsm.onSwimHealthy(SELF, fsmIncarnation.getAndIncrement());
         reconciler = leaderReconciler(membershipConfig(),
                                       ntt,

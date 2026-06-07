@@ -39,9 +39,7 @@ class MembershipFsmTest {
     private static final int K_DOWN = 3;
 
     private static MembershipFsm activeManager() {
-        var manager = MembershipFsm.membershipFsm(emptyNtt());
-        manager.activate(Set.of());
-        return manager;
+        return MembershipFsm.membershipFsm(emptyNtt());
     }
 
     /// A real [`NodeTopologyTracker`] with no live members — eviction of an absent id is a harmless
@@ -143,7 +141,7 @@ class MembershipFsmTest {
             assertThat(ntt.currentMembers()).contains(A);
 
             var manager = MembershipFsm.membershipFsm(ntt);
-            manager.activate(Set.of(A));
+            manager.seed(Set.of(A));
             manager.onSwimFaulty(A, 4L);
             manager.onLivenessGone(A);
 
@@ -164,7 +162,7 @@ class MembershipFsmTest {
             assertThat(ntt.currentMembers()).contains(A);
 
             var manager = MembershipFsm.membershipFsm(ntt);
-            manager.activate(Set.of(A));
+            manager.seed(Set.of(A));
             manager.onSwimDeparted(A, 5L);
 
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
@@ -184,7 +182,7 @@ class MembershipFsmTest {
             assertThat(ntt.currentMembers()).contains(A);
 
             var manager = MembershipFsm.membershipFsm(ntt);
-            manager.activate(Set.of(A));
+            manager.seed(Set.of(A));
             manager.onSwimFaulty(A, 4L);
 
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
@@ -319,24 +317,23 @@ class MembershipFsmTest {
         }
 
         @Test
-        void onDownHysteresisMet_beforeActivate_isNoOp() {
+        void onDownHysteresisMet_onObservedId_isIgnored() {
             var manager = MembershipFsm.membershipFsm(emptyNtt());
 
             manager.onDownHysteresisMet(A);
 
-            assertThat(manager.isActive()).isFalse();
+            assertThat(manager.memberStates()).containsEntry(A, "Observed");
             assertThat(manager.effective()).isZero();
-            assertThat(manager.memberStates()).isEmpty();
         }
     }
 
     @Nested
     class Seeding {
         @Test
-        void seedMembers_onActiveManager_promotesAllUntrackedToMember() {
+        void seed_promotesAllUntrackedToMember() {
             var manager = activeManager();
 
-            manager.seedMembers(Set.of(A, B, C));
+            manager.seed(Set.of(A, B, C));
 
             assertThat(manager.memberStates()).containsEntry(A, "Member")
                                               .containsEntry(B, "Member")
@@ -345,11 +342,11 @@ class MembershipFsmTest {
         }
 
         @Test
-        void seedMembers_calledTwice_isIdempotent() {
+        void seed_calledTwice_isIdempotent() {
             var manager = activeManager();
 
-            manager.seedMembers(Set.of(A, B, C));
-            manager.seedMembers(Set.of(A, B, C));
+            manager.seed(Set.of(A, B, C));
+            manager.seed(Set.of(A, B, C));
 
             assertThat(manager.effective()).isEqualTo(3);
             assertThat(manager.memberStates()).containsEntry(A, "Member")
@@ -358,7 +355,7 @@ class MembershipFsmTest {
         }
 
         @Test
-        void seedMembers_promotesObservedButNotDead() {
+        void seed_promotesObservedButNotDead() {
             var manager = activeManager();
 
             manager.onPeerDisconnected(A);
@@ -366,7 +363,7 @@ class MembershipFsmTest {
             driveToDead(manager, B, 4L);
             assertThat(manager.memberStates()).containsEntry(B, "Dead");
 
-            manager.seedMembers(Set.of(A, B));
+            manager.seed(Set.of(A, B));
 
             assertThat(manager.memberStates()).containsEntry(A, "Member")
                                               .containsEntry(B, "Dead");
@@ -374,10 +371,10 @@ class MembershipFsmTest {
         }
 
         @Test
-        void activate_seedsFromSnapshot() {
+        void seed_atConstruction_promotesInitialMembers() {
             var manager = MembershipFsm.membershipFsm(emptyNtt());
 
-            manager.activate(Set.of(A, B));
+            manager.seed(Set.of(A, B));
 
             assertThat(manager.effective()).isEqualTo(2);
             assertThat(manager.memberStates()).containsEntry(A, "Member")
@@ -385,21 +382,10 @@ class MembershipFsmTest {
         }
 
         @Test
-        void seedMembers_beforeActivate_isNoOp() {
-            var manager = MembershipFsm.membershipFsm(emptyNtt());
-
-            manager.seedMembers(Set.of(A, B));
-
-            assertThat(manager.isActive()).isFalse();
-            assertThat(manager.effective()).isZero();
-            assertThat(manager.memberStates()).isEmpty();
-        }
-
-        @Test
-        void seedMembers_afterDeath_doesNotResurrect() {
+        void seed_afterDeath_doesNotResurrect() {
             var manager = activeManager();
 
-            manager.seedMembers(Set.of(A, B));
+            manager.seed(Set.of(A, B));
             assertThat(manager.effective()).isEqualTo(2);
 
             manager.onSwimFaulty(A, 4L);
@@ -407,7 +393,7 @@ class MembershipFsmTest {
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(manager.effective()).isEqualTo(1);
 
-            manager.seedMembers(Set.of(A, B));
+            manager.seed(Set.of(A, B));
             assertThat(manager.memberStates()).containsEntry(A, "Dead")
                                               .containsEntry(B, "Member");
             assertThat(manager.effective()).isEqualTo(1);
@@ -415,30 +401,29 @@ class MembershipFsmTest {
     }
 
     @Nested
-    class LeaderGating {
+    class AlwaysOn {
+        /// Ingress is processed unconditionally from construction (no leader gate): a fresh manager that
+        /// was never seeded still tracks and promotes a member on its first SWIM HealthyObserved edge.
         @Test
-        void ingressBeforeActivate_isNoOp() {
+        void ingressFromConstruction_isTracked() {
             var manager = MembershipFsm.membershipFsm(emptyNtt());
 
             manager.onSwimHealthy(A, 1L);
-            manager.onSwimHealthy(A, 1L);
 
-            assertThat(manager.isActive()).isFalse();
-            assertThat(manager.effective()).isZero();
-            assertThat(manager.memberStates()).isEmpty();
+            assertThat(manager.memberStates()).containsEntry(A, "Member");
+            assertThat(manager.effective()).isEqualTo(1);
         }
 
+        /// Eviction fires on every node (no leader gate): a co-confirmed-dead member is driven to DEAD
+        /// and drops out of the count regardless of any leadership role.
         @Test
-        void deactivate_clearsTrackedMembers() {
+        void evictionFires_withoutAnyActivation() {
             var manager = activeManager();
 
-            promoteToMember(manager, A);
-            assertThat(manager.effective()).isEqualTo(1);
+            driveToDead(manager, A, 4L);
 
-            manager.deactivate();
-            assertThat(manager.isActive()).isFalse();
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(manager.effective()).isZero();
-            assertThat(manager.memberStates()).isEmpty();
         }
     }
 
