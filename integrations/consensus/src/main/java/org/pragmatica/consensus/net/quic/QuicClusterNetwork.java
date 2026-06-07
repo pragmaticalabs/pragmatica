@@ -208,10 +208,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// view dissolves the dead-ULID CONSENSUS retry-storm (#68) at the source — without it,
     /// consensus keeps broadcasting to an evicted node forever (`Retry N/200 @25ms`).
     ///
-    /// Back-compat sentinel: the default supplier returns `null`, meaning "no filter / all
+    /// Back-compat default: the default supplier yields `Option.none()`, meaning "no filter / all
     /// peers" — existing consensus-only fixtures and unit tests broadcast to every connected
     /// peer exactly as before until AetherNode wires the FSM-backed view post-construction.
-    private volatile Supplier<Set<NodeId>> broadcastMembership = () -> null;
+    private volatile Supplier<Option<Set<NodeId>>> broadcastMembership = Option::none;
 
     /// Minimal cross-module shape for the follower's observed epoch — keeps the
     /// consensus module free of `aether/slice` types. Upper layers translate.
@@ -347,8 +347,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// all peers" behaviour.
     @Contract public void setBroadcastMembership(Supplier<Set<NodeId>> membershipView) {
         this.broadcastMembership = membershipView == null
-                                  ? () -> null
-                                  : membershipView;
+                                  ? Option::none
+                                  : () -> Option.option(membershipView.get());
     }
 
     /// Attach a QUIC-disconnect listener post-construction. Higher layers (e.g.
@@ -932,12 +932,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// types in isolation. Each connected peer encodes independently (the message rides a
     /// per-peer stream); the prior serialize-once-across-peers reuse is intentionally dropped
     /// in favour of one serialization site and a message-typed offline buffer.
-    /// The membership view is the AUTHORITY for broadcast eligibility; the `peers` table is only
-    /// a connection cache. A peer the FSM has evicted (absent from `broadcastMembership`) is
+    /// A peer the FSM has evicted (absent from `broadcastMembership`) is
     /// skipped even while a stale CONNECTED QUIC link to it lingers — this is the #68 storm fix:
     /// consensus never re-targets a dead ULID, so `Retry N/200 @25ms` against it cannot start.
-    /// When the supplier returns `null` (default / unwired), no filtering is applied and every
-    /// connected peer is a target, preserving the prior behaviour for consensus-only fixtures.
+    /// When the supplier yields `Option.none()` (default / unwired), no filtering is applied and
+    /// every connected peer is a target, preserving the prior behaviour for consensus-only fixtures.
     @SuppressWarnings("JBCT-PAT-01") // Iterate eligible peers, dispatch
     private void broadcastPayload(Message.Wired message, boolean skipPassive) {
         var membershipView = broadcastMembership.get();
@@ -950,15 +949,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// Broadcast-eligibility decision for a single peer. A peer is eligible unless it is a
-    /// skipped passive peer, or — when a membership view is present (non-null) — it is absent
+    /// skipped passive peer, or — when a membership view is present — it is absent
     /// from that view. The view is the membership AUTHORITY: an evicted-but-still-CONNECTED peer
     /// (present in the `peers` cache, absent from the view) is NOT eligible, which is the #68
-    /// storm fix. A `null` view (default / unwired supplier) means "no filter / all peers".
-    private static boolean isBroadcastEligible(PeerState state, Set<NodeId> membershipView, boolean skipPassive) {
+    /// storm fix. An empty view (`Option.none()`, default / unwired supplier) means "no filter /
+    /// all peers".
+    private static boolean isBroadcastEligible(PeerState state, Option<Set<NodeId>> membershipView, boolean skipPassive) {
         if (skipPassive && state.isPassive()) {
             return false;
         }
-        return membershipView == null || membershipView.contains(state.peerId());
+        return membershipView.map(view -> view.contains(state.peerId())).or(true);
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Outcome dispatch with metrics + write
