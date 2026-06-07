@@ -299,6 +299,25 @@ public final class MembershipFsm {
                       .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
+    /// The consensus-broadcast target set: every tracked member whose current state is NOT
+    /// terminally DEAD (i.e. OBSERVED + MEMBER + SUSPECT + DEPARTING). NO worker/role filter —
+    /// broadcast carries more than consensus, so role-aware targeting is a later concern (#241);
+    /// this projection only strips the storm's lingering zombie.
+    ///
+    /// Distinct from [`#coreMembers`] (MEMBER + SUSPECT, role-filtered): consensus must keep
+    /// reaching joining/suspected peers — a replacement catching up is OBSERVED, not yet MEMBER,
+    /// and excluding it would delay the #68 auto-heal recovery path. Only a co-confirmed-DEAD
+    /// peer — the storm's lingering zombie still cached as a CONNECTED transport link — is
+    /// excluded. Insertion-ordered ([`LinkedHashSet`]) for stable iteration, matching
+    /// [`#coreMembers`]/[`#memberStates`].
+    public Set<NodeId> broadcastEligibleMembers() {
+        return members.entrySet()
+                      .stream()
+                      .filter(entry -> entry.getValue().notDead())
+                      .map(Map.Entry::getKey)
+                      .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
     /// The desired dial-set for the transport executor: [`#coreMembers`] intersected with members whose
     /// address is known, each mapped to a [`PeerTarget`] `(id, address)`. A member whose descriptor has
     /// not yet supplied an address is skipped — it reappears once a NodeInfo observation lands.
@@ -501,6 +520,14 @@ public final class MembershipFsm {
 
         boolean countsTowardEffective() {
             return fsm.current().countsTowardEffective();
+        }
+
+        /// Whether this member is still in the lifecycle (NOT terminally DEAD): true for
+        /// OBSERVED / MEMBER / SUSPECT / DEPARTING, false only for DEAD. Used by
+        /// [`#broadcastEligibleMembers`] — consensus must keep reaching joining/suspected
+        /// peers, only a co-confirmed-DEAD zombie is excluded.
+        boolean notDead() {
+            return !isDead();
         }
 
         /// Whether this member belongs in the core dial-set: it currently counts (MEMBER + SUSPECT)

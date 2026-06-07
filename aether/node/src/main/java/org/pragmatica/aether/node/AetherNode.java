@@ -2451,14 +2451,16 @@ public interface AetherNode extends ManageableNode {
     }
 
     /// Wire the FSM-backed membership-view supplier into the QUIC transport so consensus
-    /// broadcasts target only peers the membership authority still considers members
-    /// ([`MembershipFsm#coreMembers`] — MEMBER + SUSPECT, worker-excluded). The transport
-    /// `peers` table is a connection cache, not the membership authority: an evicted-but-still-
-    /// CONNECTED peer must never receive consensus broadcasts, otherwise it drives the #68
-    /// dead-ULID CONSENSUS retry-storm. No-ops on a non-QUIC network.
+    /// broadcasts target only peers the membership authority still considers reachable
+    /// ([`MembershipFsm#broadcastEligibleMembers`] — every tracked member NOT terminally DEAD:
+    /// OBSERVED + MEMBER + SUSPECT + DEPARTING). The transport `peers` table is a connection
+    /// cache, not the membership authority: a co-confirmed-DEAD-but-still-CONNECTED peer must
+    /// never receive consensus broadcasts, otherwise it drives the #68 dead-ULID CONSENSUS
+    /// retry-storm. Joining/suspected peers stay targets so a replacement (OBSERVED) catches up.
+    /// No-ops on a non-QUIC network.
     private static void attachBroadcastMembershipView(ClusterNetwork network, MembershipFsm membershipFsm) {
         if (network instanceof QuicClusterNetwork quicNetwork) {
-            quicNetwork.setBroadcastMembership(membershipFsm::coreMembers);
+            quicNetwork.setBroadcastMembership(membershipFsm::broadcastEligibleMembers);
         }
     }
 

@@ -610,6 +610,74 @@ class MembershipFsmTest {
     }
 
     @Nested
+    class BroadcastEligibleMembers {
+        @Test
+        void broadcastEligibleMembers_includesObservedMemberSuspect_excludesDead() {
+            var manager = activeManager();
+
+            // A: bare OBSERVED (descriptor links the FSM without promoting).
+            manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
+            assertThat(manager.memberStates()).containsEntry(A, "Observed");
+
+            // B: MEMBER.
+            promoteToMember(manager, B);
+            assertThat(manager.memberStates()).containsEntry(B, "Member");
+
+            // C: SUSPECT (still in the lifecycle).
+            promoteToMember(manager, C);
+            manager.onSwimSuspect(C, 2L);
+            assertThat(manager.memberStates()).containsEntry(C, "Suspect");
+
+            // D: terminally DEAD — the storm's zombie, the only exclusion.
+            var d = new NodeId("node-d");
+            driveToDead(manager, d, 4L);
+            assertThat(manager.memberStates()).containsEntry(d, "Dead");
+
+            assertThat(manager.broadcastEligibleMembers())
+                    .as("OBSERVED + MEMBER + SUSPECT stay broadcast targets; only DEAD is excluded")
+                    .containsExactlyInAnyOrder(A, B, C);
+        }
+
+        @Test
+        void broadcastEligibleMembers_includesDeparting() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onSwimFaulty(A, 4L);
+            manager.onDownHysteresisMet(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Departing");
+
+            assertThat(manager.broadcastEligibleMembers())
+                    .as("a DEPARTING member is still draining and must keep receiving consensus")
+                    .containsExactly(A);
+        }
+
+        @Test
+        void broadcastEligibleMembers_includesWorkerRole_noRoleFilter() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            promoteToMember(manager, B);
+            manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
+            manager.onMemberDescriptor(workerInfo(B, "10.0.0.2", 7000));
+
+            assertThat(manager.broadcastEligibleMembers())
+                    .as("broadcast carries more than consensus — NO worker/role filter (#241 later)")
+                    .containsExactlyInAnyOrder(A, B);
+        }
+
+        @Test
+        void broadcastEligibleMembers_excludesDeadMember() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            driveToDead(manager, B, 4L);
+
+            assertThat(manager.broadcastEligibleMembers()).containsExactly(A);
+        }
+    }
+
+    @Nested
     class ReachableMembers {
         @Test
         void reachableMembers_filtersToCountedMembers_preservingOrder() {
