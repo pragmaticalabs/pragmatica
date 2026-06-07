@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.cluster.NodeReconcilerState;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -45,6 +46,7 @@ import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.deployment.membership.MembershipConfig.membershipConfig;
+import static org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.membershipFsm;
 import static org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler.leaderReconciler;
 import static org.pragmatica.aether.deployment.membership.ntt.NodeTopologyTracker.nodeTopologyTracker;
 import static org.pragmatica.lang.Unit.unit;
@@ -78,6 +80,11 @@ class LeaderReconcilerTest {
     private RecordingCtm ctm;
     private MutableHealthSource health;
     private NodeTopologyTracker ntt;
+    private MembershipFsm membershipFsm;
+    /// Monotonic SWIM incarnation for FSM drives. Every promote/kill uses a strictly increasing
+    /// incarnation so a re-seed after death always clears the DEAD incarnation fence (rejoin) and a
+    /// kill always carries a fresh incarnation.
+    private final AtomicLong fsmIncarnation = new AtomicLong(1L);
     private LeaderReconciler reconciler;
 
     @BeforeEach
@@ -97,8 +104,17 @@ class LeaderReconcilerTest {
                                   1,
                                   1,
                                   timeSource::nanoTime);
+        // FSM-count cutover: the reconciler now counts membershipFsm.countedMembers() (MEMBER +
+        // SUSPECT), NOT ntt.currentMembers(). The FSM must be driven in lockstep with the NTT
+        // helpers so countedMembers() mirrors the NTT-intended membership at every step. SELF is
+        // promoted to MEMBER here to match NTT's self-seed (ntt.currentMembers() always includes
+        // SELF), so the FSM count and the NTT-era count agree.
+        membershipFsm = membershipFsm(ntt);
+        membershipFsm.activate(Set.of());
+        membershipFsm.onSwimHealthy(SELF, fsmIncarnation.getAndIncrement());
         reconciler = leaderReconciler(membershipConfig(),
                                       ntt,
+                                      membershipFsm,
                                       configuredCoreCount,
                                       leaderTerm,
                                       ctm,
@@ -109,22 +125,29 @@ class LeaderReconcilerTest {
     }
 
     /// Feed N healthy peers into the NTT health snapshot, then sample so the stable member
-    /// set (which always includes `SELF`) absorbs them. The reconciler's
-    /// `clusterMembershipCount` reads via `ntt.currentMembers().size()`.
+    /// set (which always includes `SELF`) absorbs them. Drive the FSM in lockstep: each peer is
+    /// promoted to MEMBER (a single SWIM HealthyObserved edge, up-hysteresis = 1) so the
+    /// reconciler's base set [`MembershipFsm#countedMembers`] grows to match. A peer that was
+    /// previously driven DEAD rejoins because the monotonic incarnation clears the DEAD fence.
     @Contract
     private void seedClusterWithPeers(NodeId... peers) {
         for (var peer : peers) {
             health.markHealthy(peer);
+            membershipFsm.onSwimHealthy(peer, fsmIncarnation.getAndIncrement());
         }
         ntt.sample();
     }
 
     /// Mark peers absent in the NTT health snapshot (simulates a departure) and sample so the
-    /// next reconcile observes a deficit.
+    /// next reconcile observes a deficit. Drive the FSM in lockstep: each peer is co-confirmed dead
+    /// (SWIM-FAULTY ∧ liveness-gone) so it drops out of [`MembershipFsm#countedMembers`] — matching
+    /// the test's intent that the peer departed.
     @Contract
     private void removePeers(NodeId... peers) {
         for (var peer : peers) {
             health.markAbsent(peer);
+            membershipFsm.onSwimFaulty(peer, fsmIncarnation.getAndIncrement());
+            membershipFsm.onLivenessGone(peer);
         }
         ntt.sample();
     }
