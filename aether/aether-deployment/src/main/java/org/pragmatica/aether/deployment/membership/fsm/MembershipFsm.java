@@ -25,12 +25,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /// Per-member membership FSM manager (membership v2, **Phase 2 LIVE** — the authoritative
 /// membership-death decision-maker). It is no longer a passive shadow: it drives one
@@ -230,6 +232,15 @@ public final class MembershipFsm {
         withMember(id, tracking -> tracking.dispatch(new JoinGraceExpiredNeverHealthy()));
     }
 
+    /// The NTT down-hysteresis threshold was crossed for `id` (sustained absence over the
+    /// down-hysteresis window). Routes that crossing INTO this FSM so a sustained-absence SUSPECT
+    /// member is bounded by the FSM (SUSPECT→DEPARTING per spec §3.3 / invariant I4), rather than NTT
+    /// independently removing the id from its own set. Leader-gated; ignored in any state but SUSPECT.
+    @Contract
+    public void onDownHysteresisMet(NodeId id) {
+        withMember(id, tracking -> tracking.dispatch(new DownHysteresisMet()));
+    }
+
     // --- Aggregate (spec §3.4) ---
 
     /// Effective on-duty count = number of tracked members whose current state
@@ -240,6 +251,18 @@ public final class MembershipFsm {
                             .stream()
                             .filter(MemberTracking::countsTowardEffective)
                             .count();
+    }
+
+    /// Set form of [`#effective`]: the NodeIds of every tracked member whose current state
+    /// [`MembershipState#countsTowardEffective`] is true (MEMBER + SUSPECT). Insertion-ordered
+    /// (a [`LinkedHashSet`], matching [`#memberStates`]) for stable iteration. Its size always
+    /// equals [`#effective`].
+    public Set<NodeId> countedMembers() {
+        return members.entrySet()
+                      .stream()
+                      .filter(entry -> entry.getValue().countsTowardEffective())
+                      .map(Map.Entry::getKey)
+                      .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
     /// Provisioning deficit: `max(0, configuredCoreCount - effective())`.

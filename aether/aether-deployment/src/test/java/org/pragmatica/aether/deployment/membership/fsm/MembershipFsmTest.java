@@ -270,6 +270,67 @@ class MembershipFsmTest {
     }
 
     @Nested
+    class CountedMembers {
+        @Test
+        void countedMembers_memberAndSuspect_includesBoth() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            promoteToMember(manager, B);
+            manager.onSwimFaulty(B, 4L);
+            assertThat(manager.memberStates()).containsEntry(B, "Suspect");
+
+            assertThat(manager.countedMembers()).containsExactlyInAnyOrder(A, B);
+            assertThat(manager.countedMembers()).hasSize(2);
+            assertThat(manager.countedMembers()).hasSize(manager.effective());
+        }
+
+        @Test
+        void countedMembers_afterDead_excludesDeadMember() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            promoteToMember(manager, B);
+            manager.onSwimFaulty(A, 4L);
+            manager.onLivenessGone(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+
+            assertThat(manager.countedMembers()).doesNotContain(A);
+            assertThat(manager.countedMembers()).containsExactly(B);
+        }
+    }
+
+    @Nested
+    class DownHysteresis {
+        @Test
+        void onDownHysteresisMet_suspectMember_transitionsToDeparting() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onSwimFaulty(A, 4L);
+            assertThat(manager.memberStates()).containsEntry(A, "Suspect");
+            assertThat(manager.effective()).isEqualTo(1);
+
+            manager.onDownHysteresisMet(A);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Departing");
+            assertThat(manager.countedMembers()).doesNotContain(A);
+            assertThat(manager.effective()).isZero();
+        }
+
+        @Test
+        void onDownHysteresisMet_beforeActivate_isNoOp() {
+            var manager = MembershipFsm.membershipFsm(emptyNtt());
+
+            manager.onDownHysteresisMet(A);
+
+            assertThat(manager.isActive()).isFalse();
+            assertThat(manager.effective()).isZero();
+            assertThat(manager.memberStates()).isEmpty();
+        }
+    }
+
+    @Nested
     class Seeding {
         @Test
         void seedMembers_onActiveManager_promotesAllUntrackedToMember() {
