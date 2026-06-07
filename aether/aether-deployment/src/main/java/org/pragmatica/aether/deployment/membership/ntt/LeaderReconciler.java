@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.membership.ntt;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
@@ -130,6 +131,14 @@ public final class LeaderReconciler {
     private final TimeSpan deficitDebounceWindow;
     private final TimeSpan inFlightExpiry;
     private final NodeTopologyTracker ntt;
+    /// Authoritative membership-count source (membership v2 cutover, #68/#94). The reconciler
+    /// COUNTS this FSM's [`MembershipFsm#countedMembers`] (MEMBER + SUSPECT) as its base membership
+    /// set — NOT NTT's presence set. A SUSPECT member still counts here, so a single-plane false
+    /// positive no longer opens a phantom deficit that over-provisions; a genuinely-gone node drops
+    /// from the count via co-confirmed death or the routed down-hysteresis crossing. NTT is retained
+    /// for its monotonic [`NodeTopologyTracker#peakMembershipCount`] cold-start latch and trigger
+    /// wiring.
+    private final MembershipFsm membershipFsm;
     private final IntSupplier configuredCoreCountSupplier;
     /// Leader-term supplier (monotonic, incremented once per election). A value `> 1` on
     /// activation means a prior leader existed → this leadership was gained via RE-ELECTION
@@ -184,6 +193,7 @@ public final class LeaderReconciler {
 
     private LeaderReconciler(MembershipConfig membershipConfig,
                              NodeTopologyTracker ntt,
+                             MembershipFsm membershipFsm,
                              IntSupplier configuredCoreCountSupplier,
                              Supplier<Long> leaderTermSupplier,
                              ClusterTopologyManager ctm,
@@ -205,6 +215,7 @@ public final class LeaderReconciler {
         this.deficitDebounceWindow = membershipConfig.nttDepartureTimeout();
         this.inFlightExpiry = computeInFlightExpiry(membershipConfig.nttDepartureTimeout());
         this.ntt = ntt;
+        this.membershipFsm = membershipFsm;
         this.configuredCoreCountSupplier = configuredCoreCountSupplier;
         this.leaderTermSupplier = leaderTermSupplier;
         this.ctm = ctm;
@@ -216,12 +227,14 @@ public final class LeaderReconciler {
     /// Production factory bound to the process-wide [`SharedScheduler`] and the system clock.
     public static LeaderReconciler leaderReconciler(MembershipConfig membershipConfig,
                                                     NodeTopologyTracker ntt,
+                                                    MembershipFsm membershipFsm,
                                                     IntSupplier configuredCoreCountSupplier,
                                                     Supplier<Long> leaderTermSupplier,
                                                     ClusterTopologyManager ctm,
                                                     Supplier<String> clusterNameSupplier) {
         return new LeaderReconciler(membershipConfig,
                                     ntt,
+                                    membershipFsm,
                                     configuredCoreCountSupplier,
                                     leaderTermSupplier,
                                     ctm,
@@ -234,6 +247,7 @@ public final class LeaderReconciler {
     /// required for deterministic activation/debounce assertions.
     public static LeaderReconciler leaderReconciler(MembershipConfig membershipConfig,
                                                     NodeTopologyTracker ntt,
+                                                    MembershipFsm membershipFsm,
                                                     IntSupplier configuredCoreCountSupplier,
                                                     Supplier<Long> leaderTermSupplier,
                                                     ClusterTopologyManager ctm,
@@ -242,6 +256,7 @@ public final class LeaderReconciler {
                                                     NttTimerScheduler scheduler) {
         return new LeaderReconciler(membershipConfig,
                                     ntt,
+                                    membershipFsm,
                                     configuredCoreCountSupplier,
                                     leaderTermSupplier,
                                     ctm,
@@ -289,7 +304,7 @@ public final class LeaderReconciler {
             return;
         }
         var now = timeSource.nanoTime();
-        var currentMembers = ntt.currentMembers();
+        var currentMembers = membershipFsm.countedMembers();
         for (var id : retained) {
             if (currentMembers.contains(id)) {
                 continue;
@@ -490,7 +505,7 @@ public final class LeaderReconciler {
 
         evictExpiredInFlightEntries(now);
 
-        var currentMembers = ntt.currentMembers();
+        var currentMembers = membershipFsm.countedMembers();
         // Identity-match clear (provision-fulfillment signal). With the completed
         // "boot under the leader-supplied id" contract, the in-flight provisioning key is the
         // EXACT id the replacement boots under, so once that id appears in `currentMembers` the

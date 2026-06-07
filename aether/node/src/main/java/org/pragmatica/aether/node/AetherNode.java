@@ -1671,8 +1671,23 @@ public interface AetherNode extends ManageableNode {
             clusterConfigReader.get()
                                .map(AetherValue.ClusterConfigValue::clusterName)
                                .or("");
+        // Membership v2 Phase 2 LIVE — the per-member MembershipFsm is the authoritative membership-
+        // death decision-maker (leader-gated, consensus-independent, SWIM/liveness-driven). It runs
+        // ALWAYS (no shadow flag). On every transition into DEAD it hard-evicts the dead identity from
+        // NTT (ntt.evict); the presence-derived TopologyObserver → MembershipDecision →
+        // ClusterEventAggregator path then emits NODE_FAILED / NODE_LEFT from the resulting
+        // stableMembers delta. The FSM emits no event directly. It is injected with the SAME `ntt`
+        // instance and is constructed BEFORE the reconciler because the reconciler now COUNTS this
+        // FSM's countedMembers() (MEMBER + SUSPECT) as its base membership set (#68/#94 churn cutover).
+        var membershipFsm = MembershipFsm.membershipFsm(ntt);
+        // Route NTT's down-hysteresis crossing edge into the FSM (post-construction installer — the FSM
+        // exists only now, AFTER ntt). A sustained-absence SUSPECT member is then bounded by the FSM
+        // (SUSPECT→DEPARTING per spec §3.3 / invariant I4) so a genuinely-gone node still departs the
+        // count exactly once, rather than NTT independently removing it from its own set.
+        ntt.onDownHysteresisCrossing(membershipFsm::onDownHysteresisMet);
         var leaderReconciler = LeaderReconciler.leaderReconciler(membershipConfig,
                                                                  ntt,
+                                                                 membershipFsm,
                                                                  configuredCoreCountSupplier,
                                                                  leaderTerm::get,
                                                                  clusterTopologyManager,
@@ -1687,14 +1702,6 @@ public interface AetherNode extends ManageableNode {
         // not re-dispatch replacements the prior leader already provisioned (the over-provisioning bug).
         metricsScheduler.setDispatchedNodesSupplier(leaderReconciler::inFlightProvisioningKeys);
         leaderReconciler.setRetainedDispatchedSupplier(metricsCollector::retainedDispatchedNodes);
-        // Membership v2 Phase 2 LIVE — the per-member MembershipFsm is the authoritative membership-
-        // death decision-maker (leader-gated, consensus-independent, SWIM/liveness-driven). It runs
-        // ALWAYS (no shadow flag). On every transition into DEAD it hard-evicts the dead identity from
-        // NTT (ntt.evict); the presence-derived TopologyObserver → MembershipDecision →
-        // ClusterEventAggregator path then emits NODE_FAILED / NODE_LEFT from the resulting
-        // stableMembers delta. The FSM emits no event directly. It is injected with the SAME `ntt`
-        // instance the reconciler reads membership from.
-        var membershipFsm = MembershipFsm.membershipFsm(ntt);
         swimHealthDetector.addObservationListener(ntt::onSwimObservation);
         // E2 Phase 1.5 — symmetric "surplus appeared" trigger: a SWIM HealthyObserved
         // signals a peer became reachable; if the leader is in surplus the reconcile
