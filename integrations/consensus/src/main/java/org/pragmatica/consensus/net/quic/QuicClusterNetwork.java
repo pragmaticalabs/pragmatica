@@ -18,6 +18,7 @@ package org.pragmatica.consensus.net.quic;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -213,6 +214,23 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// peer exactly as before until AetherNode wires the FSM-backed view post-construction.
     private volatile Supplier<Option<Set<NodeId>>> broadcastMembership = Option::none;
 
+    /// FSM-published desired-connection set for the missing-peer reconciler. When present, the
+    /// reconciler reconciles ACTUAL connections against THIS FSM core-member set instead of the
+    /// static `topologyManager.topology()`, and SKIPS the legacy SWIM membership/health gates
+    /// (`swimMembershipAllows` / `swimHealthAllows`): the FSM projection already encodes
+    /// membership AND health — it contains MEMBER+SUSPECT core members and excludes DEAD/worker
+    /// peers, so a peer present in this set is by definition both a member and reconnect-eligible.
+    ///
+    /// `NodeInfo` is the carried type (a consensus type) so the adapter in `AetherNode` maps the
+    /// FSM `desiredConnections` + per-member descriptors → `NodeInfo`. Single-dialer ordering,
+    /// the higher-id grace window, and per-peer reconcile backoff stay MECHANICAL and are applied
+    /// to this path unchanged.
+    ///
+    /// Back-compat default: the default supplier yields `Option.none()`, i.e. UNWIRED — the
+    /// reconciler runs the legacy topology-driven path with both SWIM gates exactly as before,
+    /// until `AetherNode` wires the FSM-backed supplier post-construction.
+    private volatile Supplier<Option<Collection<NodeInfo>>> desiredConnections = Option::none;
+
     /// Minimal cross-module shape for the follower's observed epoch — keeps the
     /// consensus module free of `aether/slice` types. Upper layers translate.
     public interface ObservedEpochSupplier {
@@ -349,6 +367,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
         this.broadcastMembership = membershipView == null
                                   ? Option::none
                                   : () -> Option.option(membershipView.get());
+    }
+
+    /// Attach the FSM-published desired-connection supplier. When present, the missing-peer
+    /// reconciler reconciles actual connections against THIS FSM core-member set instead of the
+    /// static topology, and skips the legacy SWIM membership/health gates (the set already
+    /// encodes them). When absent (default), the legacy topology-driven path runs unchanged.
+    /// A `null` argument (or a supplier returning `null`) restores the default unwired behaviour.
+    @Contract public void setDesiredConnections(Supplier<Collection<NodeInfo>> supplier) {
+        this.desiredConnections = supplier == null
+                                 ? Option::none
+                                 : () -> Option.option(supplier.get());
     }
 
     /// Attach a QUIC-disconnect listener post-construction. Higher layers (e.g.
@@ -1233,6 +1262,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private Unit reconcileMissingPeersUnsafe() {
         var connected = connectedPeers();
         var nowMs = wallClockMs.getAsLong();
+        // ADD-only Wave 2: when the FSM-published desired-connection set is wired, reconcile
+        // against it (gate-free — the set already encodes membership+health). Otherwise run the
+        // legacy topology-driven path with both SWIM gates, byte-identical to the prior behaviour.
+        return desiredConnections.get()
+                                 .fold(() -> reconcileAgainstTopology(connected, nowMs),
+                                       desired -> reconcileAgainstDesired(desired, connected, nowMs));
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") // Iterate, gate, dispatch
+    private Unit reconcileAgainstTopology(Set<NodeId> connected, long nowMs) {
         for (var peerId : topologyManager.topology()) {
             if (peerId.equals(self.id())) {continue;}
             if (connected.contains(peerId)) {
@@ -1263,6 +1302,32 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 continue;
             }
             considerPeerForReconcile(peerId, nowMs);
+        }
+        return unit();
+    }
+
+    /// FSM-wired reconciler body (Wave 2). Reconciles actual connections against the FSM's
+    /// desired core-member set. The set already encodes membership+health (MEMBER+SUSPECT
+    /// core members, DEAD/worker excluded), so this path DROPS the legacy SWIM
+    /// membership/health gates. Single-dialer ordering, higher-id grace, and per-peer
+    /// reconcile backoff stay mechanical and apply unchanged.
+    @SuppressWarnings("JBCT-PAT-01") // Iterate desired set, gate, dispatch
+    private Unit reconcileAgainstDesired(Collection<NodeInfo> desired, Set<NodeId> connected, long nowMs) {
+        for (var nodeInfo : desired) {
+            var peerId = nodeInfo.id();
+            if (peerId.equals(self.id())) {continue;}
+            if (connected.contains(peerId)) {
+                firstObservedMissingMs.remove(peerId);
+                continue;
+            }
+            // Defensive: the FSM desired-set already excludes workers; skip any PASSIVE that slips in.
+            if (nodeInfo.role() == NodeRole.PASSIVE) {continue;}
+            firstObservedMissingMs.putIfAbsent(peerId, nowMs);
+            if (!ConnectionDirection.shouldInitiate(self.id(), peerId)
+                && !higherIdGracePeriodElapsed(peerId, nowMs)) {
+                continue;
+            }
+            considerDesiredPeerForReconcile(nodeInfo, nowMs);
         }
         return unit();
     }
@@ -1318,6 +1383,36 @@ public class QuicClusterNetwork implements ClusterNetwork {
         topologyManager.get(peerId)
                        .onPresent(this::reconcileDialPeer)
                        .onEmpty(() -> log.debug("Missing-peer reconciler: no NodeInfo for {} — topology lookup empty", peerId));
+    }
+
+    /// Gate-free counterpart of [considerPeerForReconcile] for the FSM-wired path. The peer's
+    /// presence in the FSM desired-set IS the membership authority, so this performs NO
+    /// `swimMembershipAllows` and NO `swimHealthAllows` check. A REMOVED desired peer is
+    /// readmitted unconditionally (presence in the desired-set is the incarnation-fenced
+    /// re-admit authority). Per-peer reconcile backoff and the CONNECTING-in-flight skip are
+    /// retained. Dials via `reconcileDialPeer` with the FSM-carried `NodeInfo` (no topology lookup).
+    private void considerDesiredPeerForReconcile(NodeInfo nodeInfo, long nowMs) {
+        var peerId = nodeInfo.id();
+        var existing = peers.get(peerId);
+        if (existing != null) {
+            var phase = existing.phase();
+            if (phase == PeerState.Phase.CONNECTING) {
+                return;
+            }
+            if (phase == PeerState.Phase.REMOVED) {
+                if (existing.readmit(System.nanoTime())) {
+                    resetReconnectBackoff(peerId);
+                    log.info("Missing-peer reconciler: re-admitting REMOVED peer {} — present in FSM desired-set; REMOVED->INIT", peerId);
+                }
+            }
+        }
+        var state = existing == null ? getOrCreatePeer(peerId) : existing;
+        if (!state.reconcileBackoffAllows(nowMs, RECONCILE_BACKOFF_INITIAL_MS,
+                                          RECONCILE_BACKOFF_CAP_MS, this::reconcileJitter)) {
+            log.trace("Missing-peer reconciler suppressed by per-peer backoff for {}", peerId);
+            return;
+        }
+        reconcileDialPeer(nodeInfo);
     }
 
     /// Default jitter for the missing-peer reconciler. Light bands (0.8x–1.2x) — peers

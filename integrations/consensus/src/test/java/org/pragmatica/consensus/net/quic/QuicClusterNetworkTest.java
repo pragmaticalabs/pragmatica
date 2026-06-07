@@ -261,6 +261,135 @@ class QuicClusterNetworkTest {
         }
     }
 
+    /// Wave 2 ADD-only FSM-wired reconciler. When `setDesiredConnections` is wired the
+    /// missing-peer reconciler reconciles against the FSM desired core-member set instead of
+    /// static topology, dropping the legacy SWIM membership/health gates. These tests drive
+    /// `reconcileMissingPeersTick()` directly against seeded `PeerState`s on a started network
+    /// (live client) and assert via the dial seam: `connectPeer` calls `PeerState.beginConnecting`,
+    /// so a considered-for-dial peer transitions INIT → CONNECTING. The async `client.connect`
+    /// to an unroutable test address fails later and does not affect the seeded phase. Peers are
+    /// seeded in INIT (the fresh `PeerState` phase) so no live QUIC connection is needed to
+    /// reach the observable transition.
+    @Nested
+    class FsmWiredReconciler {
+
+        @Test
+        void reconcileTick_wiredPath_dialsMissingDesiredPeer() {
+            var self = new NodeId("aaa-self");
+            var network = createAndStartNetwork(self, List.of(), MessageRouter.mutable());
+
+            var peerId = new NodeId("zzz-peer");
+            var seeded = network.seedPeerForTests(peerId, initPeer(peerId));
+            network.setDesiredConnections(() -> List.of(desiredNodeInfo(peerId, NodeRole.ACTIVE)));
+
+            network.reconcileMissingPeersTick();
+
+            assertThat(seeded.phase())
+                .as("Wired reconciler dials a missing (not-connected) desired peer: INIT -> CONNECTING")
+                .isEqualTo(PeerState.Phase.CONNECTING);
+        }
+
+        @Test
+        void reconcileTick_wiredPath_ignoresTopologyUsesDesiredSet() {
+            var self = new NodeId("aaa-self");
+            // topologyPeer is present in topology() but absent from the desired set.
+            var topologyPeer = new NodeId("mmm-topology");
+            var topologyInfo = topologyNodeInfo(topologyPeer);
+            var network = createAndStartNetwork(self, List.of(topologyInfo), MessageRouter.mutable());
+
+            // desiredPeer is absent from topology() but present in the desired set.
+            var desiredPeer = new NodeId("zzz-desired");
+            var topologySeed = network.seedPeerForTests(topologyPeer, initPeer(topologyPeer));
+            var desiredSeed = network.seedPeerForTests(desiredPeer, initPeer(desiredPeer));
+            network.setDesiredConnections(() -> List.of(desiredNodeInfo(desiredPeer, NodeRole.ACTIVE)));
+
+            network.reconcileMissingPeersTick();
+
+            assertThat(desiredSeed.phase())
+                .as("Desired peer absent from topology IS considered for dial: INIT -> CONNECTING")
+                .isEqualTo(PeerState.Phase.CONNECTING);
+            assertThat(topologySeed.phase())
+                .as("Topology peer absent from desired set is NOT considered: stays INIT")
+                .isEqualTo(PeerState.Phase.INIT);
+        }
+
+        @Test
+        void reconcileTick_wiredPath_readmitsRemovedDesiredPeerWithoutSwimGate() {
+            var self = new NodeId("aaa-self");
+            var network = createAndStartNetwork(self, List.of(), MessageRouter.mutable());
+
+            var peerId = new NodeId("zzz-removed");
+            var removed = PeerState.peerState(peerId, System.nanoTime());
+            removed.authoritativeRemove(System.nanoTime());
+            var seeded = network.seedPeerForTests(peerId, removed);
+            // No SWIM membership gate wired — presence in the desired set is the re-admit authority.
+            network.setDesiredConnections(() -> List.of(desiredNodeInfo(peerId, NodeRole.ACTIVE)));
+
+            network.reconcileMissingPeersTick();
+
+            assertThat(seeded.phase())
+                .as("REMOVED desired peer is readmitted then dialled: REMOVED -> INIT -> CONNECTING")
+                .isEqualTo(PeerState.Phase.CONNECTING);
+        }
+
+        @Test
+        void reconcileTick_wiredPath_higherSelfIdSkipsDesiredPeerUntilGrace() {
+            // self id is HIGHER than the peer id, so ConnectionDirection.shouldInitiate is false
+            // and the grace window has not elapsed (peer just observed missing) — skip the dial.
+            var self = new NodeId("zzz-self");
+            var network = createAndStartNetwork(self, List.of(), MessageRouter.mutable());
+
+            var peerId = new NodeId("aaa-peer");
+            var seeded = network.seedPeerForTests(peerId, initPeer(peerId));
+            network.setDesiredConnections(() -> List.of(desiredNodeInfo(peerId, NodeRole.ACTIVE)));
+
+            network.reconcileMissingPeersTick();
+
+            assertThat(ConnectionDirection.shouldInitiate(self, peerId))
+                .as("Higher self id does not initiate to a lower peer id")
+                .isFalse();
+            assertThat(seeded.phase())
+                .as("Single-dialer honoured in wired path: higher-self skips dial before grace, stays INIT")
+                .isEqualTo(PeerState.Phase.INIT);
+        }
+
+        @Test
+        void reconcileTick_unwiredDefault_usesLegacyTopologyPath() {
+            var self = new NodeId("aaa-self");
+            var peerId = new NodeId("zzz-legacy");
+            var peerInfo = topologyNodeInfo(peerId);
+            // Peer is in topology() and (via the default coreNodes()) in the SWIM-membership set,
+            // so the legacy path considers it. No desiredConnections wired → legacy branch taken.
+            var network = createAndStartNetwork(self, List.of(peerInfo), MessageRouter.mutable());
+
+            var seeded = network.seedPeerForTests(peerId, initPeer(peerId));
+
+            network.reconcileMissingPeersTick();
+
+            assertThat(seeded.phase())
+                .as("Unwired default runs the legacy topology-driven reconciler: INIT -> CONNECTING")
+                .isEqualTo(PeerState.Phase.CONNECTING);
+        }
+
+        private PeerState initPeer(NodeId peerId) {
+            // Fresh PeerState is in INIT — the dial seam (connectPeer -> beginConnecting) drives
+            // INIT -> CONNECTING, observable without standing up a live QUIC connection.
+            return PeerState.peerState(peerId, System.nanoTime());
+        }
+
+        private NodeInfo desiredNodeInfo(NodeId peerId, NodeRole role) {
+            var address = NodeAddress.nodeAddress("127.0.0.1", 1)
+                                     .fold(_ -> fail("Invalid address"), addr -> addr);
+            return NodeInfo.nodeInfo(peerId, address, role, Map.of());
+        }
+
+        private NodeInfo topologyNodeInfo(NodeId peerId) {
+            var address = NodeAddress.nodeAddress("127.0.0.1", 1)
+                                     .fold(_ -> fail("Invalid address"), addr -> addr);
+            return NodeInfo.nodeInfo(peerId, address, NodeRole.ACTIVE, Map.of());
+        }
+    }
+
     // --- Helper methods ---
 
     private QuicClusterNetwork createAndStartNetwork(NodeId nodeId, List<NodeInfo> peers, MessageRouter router) {
