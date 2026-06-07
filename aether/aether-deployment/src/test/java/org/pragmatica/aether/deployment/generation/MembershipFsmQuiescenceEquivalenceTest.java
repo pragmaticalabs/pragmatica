@@ -22,15 +22,18 @@ import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// Behavior-preservation harness for the membership-FSM unification (Wave D, consumer #4).
+/// SHAPE-regression guard on [`MembershipFsm#healthHints`] (Wave D, consumer #4).
 ///
-/// The cluster-quiescence gate ([`ClusterGenerationProjector#deriveClusterQuiescence`]) is #68-critical
-/// and must NOT change semantics when its health source migrates from the SWIM-hints registry to the
-/// authoritative [`MembershipFsm`]. These tests drive a real FSM into representative states, take its
-/// [`MembershipFsm#healthHints`] projection, and assert the projector yields the SAME
-/// DEGRADED / QUIESCED verdict it would have produced from an equivalent hand-built swimHints map —
-/// proving the migration is verdict-equivalent for the states the gate distinguishes (FAULTY,
-/// SUSPECTED, healthy).
+/// The cluster-quiescence gate ([`ClusterGenerationProjector#deriveClusterQuiescence`]) is #68-critical.
+/// These tests drive a real FSM into representative states, take its [`MembershipFsm#healthHints`]
+/// downgrade-only projection, and assert the projector yields the SAME DEGRADED / QUIESCED verdict it
+/// would have produced from an equivalent hand-built swimHints map — pinning the SHAPE of the
+/// downgrade-only mapping (DEAD→FAULTY, SUSPECT→SUSPECTED, healthy→omitted) onto the projector verdict.
+///
+/// This is NOT a full legacy-path equivalence proof. The FSM has no TTL expiry, whereas the legacy
+/// [`SwimHintsRegistry#currentTtlFiltered`] aged hints out: a long-SUSPECT member therefore stays
+/// DEGRADED longer under the FSM than under the TTL-filtered legacy path. That TTL divergence is
+/// intentionally untested here and tracked under #68.
 class MembershipFsmQuiescenceEquivalenceTest {
     private static final NodeId A = new NodeId("node-a");
     private static final NodeId B = new NodeId("node-b");
@@ -40,7 +43,7 @@ class MembershipFsmQuiescenceEquivalenceTest {
     private static final ClusterGenerationProjector PROJECTOR = ClusterGenerationProjector.clusterGenerationProjector();
 
     @Test
-    void allHealthyMembers_fsmHints_quiesce_matchingEmptySwimHints() {
+    void healthHints_allHealthyMembers_quiesceEqualsEmptySwimHints() {
         var manager = activeManager();
         promoteToMember(manager, A);
         promoteToMember(manager, B);
@@ -51,7 +54,7 @@ class MembershipFsmQuiescenceEquivalenceTest {
     }
 
     @Test
-    void faultyMember_fsmHints_degrade_matchingFaultySwimHints() {
+    void healthHints_faultyMember_degradeEqualsFaultySwimHints() {
         var manager = activeManager();
         promoteToMember(manager, A);
         driveToDead(manager, B, 4L);
@@ -60,7 +63,7 @@ class MembershipFsmQuiescenceEquivalenceTest {
     }
 
     @Test
-    void suspectMember_fsmHints_degrade_matchingSuspectedSwimHints() {
+    void healthHints_suspectMember_degradeEqualsSuspectedSwimHints() {
         var manager = activeManager();
         promoteToMember(manager, A);
         promoteToMember(manager, B);
@@ -70,7 +73,7 @@ class MembershipFsmQuiescenceEquivalenceTest {
     }
 
     @Test
-    void mixedFaultyAndSuspect_fsmHints_degrade_matchingMixedSwimHints() {
+    void healthHints_mixedFaultyAndSuspect_degradeEqualsMixedSwimHints() {
         var manager = activeManager();
         promoteToMember(manager, A);
         manager.onSwimSuspect(B, 2L);
