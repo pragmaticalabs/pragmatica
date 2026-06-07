@@ -101,7 +101,13 @@ public final class NodeTopologyTracker {
     /// (mirrors `onReconcileNeeded`). Routes the crossing to the membership FSM; defaults
     /// to a no-op so callers/tests that don't supply it are unaffected. Additive to — not a
     /// replacement for — the presence-sensor `stableMembers.remove(node)` at that edge.
-    private final Consumer<NodeId> onDownHysteresisCrossing;
+    ///
+    /// `volatile` (not `final`): the [`MembershipFsm`] is constructed AFTER this tracker (it
+    /// needs the tracker), so production cannot pass `membershipFsm::onDownHysteresisMet` into
+    /// the constructor — it installs the listener post-construction via
+    /// [`#onDownHysteresisCrossing(Consumer)`]. The constructor param + no-op default remain for
+    /// tests that have the callback at construction time.
+    private volatile Consumer<NodeId> onDownHysteresisCrossing;
 
     /// Per-node consecutive-sample counters. Positive = up-streak, negative = down-streak.
     /// A node not present here has never been sampled.
@@ -287,6 +293,16 @@ public final class NodeTopologyTracker {
     @Contract
     public void onQuicDisconnect(NodeId peer) {
         biasAbsent(peer);
+    }
+
+    /// Post-construction installer for the DOWN-hysteresis crossing listener (routes the crossing
+    /// edge to the membership FSM). Required because the [`MembershipFsm`] is built AFTER this
+    /// tracker (it needs the tracker), so production cannot supply `membershipFsm::onDownHysteresisMet`
+    /// at construction time. `null` resets to the no-op default. No behavior change to the firing
+    /// logic in [`#crossDownHysteresis`] — only which listener it dispatches to.
+    @Contract
+    public void onDownHysteresisCrossing(Consumer<NodeId> listener) {
+        onDownHysteresisCrossing = listener == null ? NOOP_DOWN_CROSSING : listener;
     }
 
     @Contract
