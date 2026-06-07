@@ -92,6 +92,17 @@ both the `effective=4` oscillation and the provision↔flap churn.
 identity's state. `ProvisionFailed`/`ProvisionDispatched` mutate only the cluster-aggregate
 provisioning sub-state (§3.4), never a member's lifecycle state.
 
+> **Implementation note — Phase 2 cutover (2026-06-07).** `SUSPECT → DEPARTING` has two sources:
+> (a) **co-confirmation** — SWIM-FAULTY ∧ liveness-gone, the fast path (`maybeConfirmDeparture`); and
+> (b) **sustained-absence down-hysteresis** — `NodeTopologyTracker`'s debounced down-streak crossing is
+> now routed *into* the FSM as `DownHysteresisMet` (`MembershipFsm.onDownHysteresisMet`), rather than NTT
+> independently removing the node from its own set. Path (b) is what **bounds SUSPECT (I4)** once the
+> reconciler counts the FSM: a node that goes SUSPECT via liveness-gone but never earns a SWIM-FAULTY
+> verdict still departs on sustained absence. The down-streak resets on a flap, so only *sustained*
+> absence crosses — the churn cure (a brief flap stays `MEMBER ⇄ SUSPECT`, still counted) is preserved.
+> This slightly relaxes the original "DownHysteresis **+ co-confirmed**" qualifier in the table above:
+> the debounced down-hysteresis crossing is itself sufficient as the SUSPECT timeout/co-signal.
+
 ### 3.4 Cluster aggregate → CTM (pure function of member states)
 
 ```
@@ -139,6 +150,16 @@ SWIM snapshot + lifecycle atoms.
 ### 5.3 Hysteresis placement
 Keep up/down streaks as the **guards** on `OBSERVED→MEMBER` and `MEMBER→SUSPECT→DEPARTING`, but as
 named transition guards, not free-standing counters owned elsewhere.
+
+> **Realized (Phase 2 cutover, 2026-06-07).** NTT's down-streak crossing now fires `DownHysteresisMet`
+> into the FSM (via an injected `onDownHysteresisCrossing` callback → `MembershipFsm.onDownHysteresisMet`)
+> — the streak is a *guard on the FSM transition*, no longer an independent membership mutator. NTT keeps
+> maintaining its own `stableMembers` presence set, but that set is now a **sensor** (forward-routing
+> `keepOnlyAccessible`, quorum-liveness) — it is no longer the authority the reconciler *counts*.
+> `LeaderReconciler` counts `MembershipFsm.countedMembers()` (the MEMBER+SUSPECT set, §3.4), satisfying
+> **I2** (effective is a pure function of FSM member states) and **I3** (one authority for the
+> provisioning count). `QuorumLossDetector` deliberately stays on NTT presence — it answers a different
+> question (am I in a live quorum *now*?) for which the faster, stricter presence drop is correct.
 
 ### 5.4 Composition
 Must compose with — not duplicate — the SWIM per-member FSM (below it), the leader-election FSM
