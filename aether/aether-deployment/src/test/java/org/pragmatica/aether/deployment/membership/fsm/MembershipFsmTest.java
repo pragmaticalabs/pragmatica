@@ -14,6 +14,7 @@ import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
+import org.pragmatica.statemachine.FsmObserver;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.SwimHealth;
 
@@ -822,6 +823,42 @@ class MembershipFsmTest {
 
             assertThat(manager.reachableMembers(List.of(A))).isEmpty();
         }
+
+        @Test
+        void reachableMembers_includesObservedAndDeparting_excludesOnlyDead() {
+            var manager = activeManager();
+
+            // observed: bare descriptor links the FSM in OBSERVED without promoting.
+            var observed = new NodeId("observed");
+            manager.onMemberDescriptor(coreInfo(observed, "10.0.0.9", 7000));
+            assertThat(manager.memberStates()).containsEntry(observed, "Observed");
+
+            // member: promoted MEMBER.
+            var member = new NodeId("member");
+            promoteToMember(manager, member);
+
+            // suspect: MEMBER then a bare SWIM-suspect.
+            var suspect = new NodeId("suspect");
+            promoteToMember(manager, suspect);
+            manager.onSwimSuspect(suspect, 2L);
+            assertThat(manager.memberStates()).containsEntry(suspect, "Suspect");
+
+            // departing: MEMBER then SWIM-faulty + down-hysteresis → DEPARTING (still UP, draining).
+            var departing = new NodeId("departing");
+            promoteToMember(manager, departing);
+            manager.onSwimFaulty(departing, 3L);
+            manager.onDownHysteresisMet(departing);
+            assertThat(manager.memberStates()).containsEntry(departing, "Departing");
+
+            // dead: co-confirmed.
+            var dead = new NodeId("dead");
+            driveToDead(manager, dead, 4L);
+            assertThat(manager.memberStates()).containsEntry(dead, "Dead");
+
+            assertThat(manager.reachableMembers(List.of(observed, member, suspect, departing, dead)))
+                    .as("best-effort serving set is NOT-DEAD: OBSERVED + DEPARTING serve too, only DEAD is excluded")
+                    .containsExactly(observed, member, suspect, departing);
+        }
     }
 
     @Nested
@@ -989,6 +1026,68 @@ class MembershipFsmTest {
             assertThat(hints).doesNotContainKey(A);
             assertThat(hints).containsEntry(B, HealthHint.SUSPECTED);
             assertThat(hints).containsEntry(C, HealthHint.FAULTY);
+        }
+    }
+
+    /// #68 — the quiesce SUSPECTED health-hint ages out after a TTL of no fresh doubt (parity with the
+    /// legacy `SwimHintsRegistry#currentTtlFiltered`), while the member STAYS in FSM SUSPECT and in
+    /// `countedMembers` (membership unaffected). The default factory uses TTL = `Long.MAX_VALUE`
+    /// (never decay), so this is exercised only via the clock-injecting factory overload.
+    @Nested
+    class SuspectHintTtlDecay {
+        private static final long TTL_MS = 1000L;
+
+        @Test
+        void suspectHint_freshDoubt_isSuspected() {
+            var clock = new long[]{10_000L};
+            var manager = ttlManager(clock);
+
+            promoteToMember(manager, A);
+            manager.onSwimFaulty(A, 2L);
+            assertThat(manager.memberStates()).containsEntry(A, "Suspect");
+
+            assertThat(manager.healthHints()).containsEntry(A, HealthHint.SUSPECTED);
+        }
+
+        @Test
+        void suspectHint_pastTtl_decaysToHealthyButStillCounts() {
+            var clock = new long[]{10_000L};
+            var manager = ttlManager(clock);
+
+            promoteToMember(manager, A);
+            manager.onSwimFaulty(A, 2L);
+
+            clock[0] = 10_000L + TTL_MS + 1L;
+
+            assertThat(manager.healthHints())
+                    .as("a stale one-shot SWIM-suspect decays OUT of the quiesce hint after the TTL")
+                    .doesNotContainKey(A);
+            assertThat(manager.memberStates())
+                    .as("membership is unaffected — the member stays in FSM SUSPECT")
+                    .containsEntry(A, "Suspect");
+            assertThat(manager.countedMembers())
+                    .as("a decayed-hint SUSPECT still counts toward effective membership")
+                    .contains(A);
+        }
+
+        @Test
+        void suspectHint_freshDoubtAfterDecay_reStampsToSuspected() {
+            var clock = new long[]{10_000L};
+            var manager = ttlManager(clock);
+
+            promoteToMember(manager, A);
+            manager.onSwimFaulty(A, 2L);
+
+            clock[0] = 10_000L + TTL_MS + 1L;
+            assertThat(manager.healthHints()).doesNotContainKey(A);
+
+            // A fresh doubt re-stamps the doubt time → SUSPECTED again.
+            manager.onSwimSuspect(A, 3L);
+            assertThat(manager.healthHints()).containsEntry(A, HealthHint.SUSPECTED);
+        }
+
+        private static MembershipFsm ttlManager(long[] clock) {
+            return MembershipFsm.membershipFsm(emptySampler(), FsmObserver.noop(), () -> clock[0], TTL_MS);
         }
     }
 

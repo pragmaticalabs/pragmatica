@@ -614,16 +614,20 @@ public interface AetherNode extends ManageableNode {
             @Override
             public Set<NodeId> livePeers() {
                 // Membership-FSM unification (Wave D, consumer #3): the DHT live-peer set is sourced
-                // from the authoritative MembershipFsm.countedMembers() (MEMBER + SUSPECT) plus self,
-                // rather than the raw transport connectedPeers(). The FSM is the single membership-live
-                // authority; co-confirmed-DEAD peers are absent from countedMembers() so the DHT routes
-                // around them (the ring still holds them as owners; quorum is the live intersection),
-                // and the data-path retains its per-op timeout as the safety net. Self is always
-                // included (it handles local replicas directly). Before the FSM is published (early
-                // boot / non-cluster worker paths) this degrades to the prior transport view
-                // (connectedPeers + self), preserving back-compat.
+                // from the authoritative MembershipFsm.broadcastEligibleMembers() (NOT-DEAD =
+                // OBSERVED + MEMBER + SUSPECT + DEPARTING) plus self, rather than the raw transport
+                // connectedPeers(). The DHT data-path is best-effort and carries a per-op timeout, so
+                // it routes to NOT-DEAD replicas: an OBSERVED joining replacement and a DEPARTING
+                // drainer are still UP and can serve reads, so they must NOT be narrowed out (the
+                // narrower counted set — MEMBER + SUSPECT — is the membership/quorum count, not the
+                // serving set). Only a co-confirmed-DEAD peer is excluded (absent from
+                // broadcastEligibleMembers) so the DHT routes around it (the ring still holds it as an
+                // owner; quorum is the live intersection), and the per-op timeout is the safety net.
+                // Self is always included (it handles local replicas directly). Before the FSM is
+                // published (early boot / non-cluster worker paths) this degrades to the prior
+                // transport view (connectedPeers + self), preserving back-compat.
                 var live = Option.option(membershipFsmRef.get())
-                                 .map(fsm -> new HashSet<>(fsm.countedMembers()))
+                                 .map(MembershipFsm::broadcastEligibleMembers)
                                  .or(() -> new HashSet<>(clusterNode.network().connectedPeers()));
                 live.add(config.self());
 
@@ -1717,7 +1721,13 @@ public interface AetherNode extends ManageableNode {
         // delta. The FSM emits no event directly. It is injected with the SAME `presenceSampler` instance and is
         // constructed BEFORE the reconciler because the reconciler now COUNTS this FSM's countedMembers()
         // (MEMBER + SUSPECT) as its base membership set (#68/#94 churn cutover).
-        var membershipFsm = MembershipFsm.membershipFsm(presenceSampler);
+        // #68 — restores the TTL the FSM migration dropped: the quiesce SUSPECTED health-hint now
+        // ages out after the auto-heal SWIM-hints TTL (config.autoHeal().swimHintsTtl(), the SAME
+        // value the legacy SwimHintsRegistry uses below; .millis() is milliseconds). A stale one-shot
+        // SWIM-suspect on a still-present node (load/churn false positive, no SwimHealthy recovery
+        // edge, present so no co-confirmed DEAD) decays out of the quiesce gate after the TTL instead
+        // of sticking the cluster DEGRADED forever. Default System clock.
+        var membershipFsm = MembershipFsm.membershipFsm(presenceSampler, config.autoHeal().swimHintsTtl().millis());
         // Publish the FSM into the deferred holder so the membership consumers wired earlier (DHT
         // livePeers, accessibility filter, quorum-count propagation) read the authoritative FSM set.
         membershipFsmRef.set(membershipFsm);

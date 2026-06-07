@@ -37,6 +37,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 
 /// Per-member membership FSM manager (membership v2, **Phase 2 LIVE** — the authoritative
@@ -114,6 +115,19 @@ public final class MembershipFsm {
     private final PresenceSampler presenceSampler;
     private final Map<NodeId, MemberTracking> members = new ConcurrentHashMap<>();
 
+    /// Wall-clock source (ms) used to stamp every fresh SUSPECT-inducing doubt and to age the
+    /// quiesce SUSPECTED health-hint out after [`#suspectHintTtlMs`]. Injectable so tests can drive a
+    /// controllable clock; production defaults to `System::currentTimeMillis`.
+    private final LongSupplier wallClockMs;
+
+    /// TTL (ms) after which a stale one-shot SWIM-suspect decays OUT of the quiesce health-hint
+    /// (#68 — restores the parity the FSM migration dropped vs the legacy
+    /// [`org.pragmatica.aether.deployment.generation.SwimHintsRegistry#currentTtlFiltered`]). The
+    /// member STAYS in FSM SUSPECT and in [`#countedMembers`] — only the quiesce HINT decays.
+    /// `Long.MAX_VALUE` (the default-factory value) means NEVER decay, byte-identical to the
+    /// pre-#68 behaviour; AetherNode wires the real auto-heal SWIM-hints TTL.
+    private final long suspectHintTtlMs;
+
     /// Confirmed-departure listener invoked ONCE per fresh edge into DEAD — at the SAME central
     /// chokepoint ([`MemberTracking#dispatch`]) as the presence-sampler eviction, for ALL three DEAD
     /// paths (co-confirmed death, graceful departure, join-grace expiry). Default no-op
@@ -122,19 +136,44 @@ public final class MembershipFsm {
     /// time the link out. Reset to the no-op by passing `null` to [`#onConfirmedDeparture`].
     private volatile Consumer<NodeId> onConfirmedDeparture = ignored -> {};
 
-    private MembershipFsm(PresenceSampler presenceSampler, FsmObserver<MembershipState, MembershipEvent> observer) {
+    private MembershipFsm(PresenceSampler presenceSampler,
+                          FsmObserver<MembershipState, MembershipEvent> observer,
+                          LongSupplier wallClockMs,
+                          long suspectHintTtlMs) {
         this.presenceSampler = presenceSampler;
         this.observer = observer;
+        this.wallClockMs = wallClockMs;
+        this.suspectHintTtlMs = suspectHintTtlMs;
     }
 
-    /// Factory with the default no-op transition observer.
+    /// Factory with the default no-op transition observer, the system wall clock, and NO hint decay
+    /// (TTL = `Long.MAX_VALUE`) — byte-identical to the pre-#68 behaviour for every existing
+    /// caller/fixture.
     public static MembershipFsm membershipFsm(PresenceSampler presenceSampler) {
         return membershipFsm(presenceSampler, FsmObserver.noop());
     }
 
-    /// Factory with an explicit transition observer (transition logging / metrics).
+    /// Factory with an explicit transition observer (transition logging / metrics), the system wall
+    /// clock, and NO hint decay (TTL = `Long.MAX_VALUE`).
     public static MembershipFsm membershipFsm(PresenceSampler presenceSampler, FsmObserver<MembershipState, MembershipEvent> observer) {
-        return new MembershipFsm(presenceSampler, observer);
+        return new MembershipFsm(presenceSampler, observer, System::currentTimeMillis, Long.MAX_VALUE);
+    }
+
+    /// Factory with an explicit SUSPECTED-hint decay TTL (ms) on the system wall clock and the
+    /// default no-op observer. AetherNode uses this overload to wire the auto-heal SWIM-hints TTL so
+    /// a stale one-shot SWIM-suspect on a still-present node decays out of the quiesce gate (#68).
+    public static MembershipFsm membershipFsm(PresenceSampler presenceSampler, long suspectHintTtlMs) {
+        return new MembershipFsm(presenceSampler, FsmObserver.noop(), System::currentTimeMillis, suspectHintTtlMs);
+    }
+
+    /// Full factory: explicit observer, injectable wall clock (ms), and SUSPECTED-hint decay TTL
+    /// (ms). The clock injection lets tests advance time deterministically to exercise the #68 hint
+    /// decay; a TTL of `Long.MAX_VALUE` disables decay.
+    public static MembershipFsm membershipFsm(PresenceSampler presenceSampler,
+                                              FsmObserver<MembershipState, MembershipEvent> observer,
+                                              LongSupplier wallClockMs,
+                                              long suspectHintTtlMs) {
+        return new MembershipFsm(presenceSampler, observer, wallClockMs, suspectHintTtlMs);
     }
 
     /// Register the confirmed-departure listener invoked ONCE per fresh edge into DEAD — at the SAME
@@ -217,10 +256,12 @@ public final class MembershipFsm {
         withMember(id, tracking -> tracking.dispatch(new PeerConnected()));
     }
 
-    /// Transport reported a peer connection dropped for `id`.
+    /// Transport reported a peer connection dropped for `id`. Drives MEMBER→SUSPECT, so it is also a
+    /// fresh-doubt edge: stamp the doubt time so the resulting SUSPECT's quiesce hint ages out under
+    /// the same TTL as the SWIM-driven doubts (#68 — no path into SUSPECT leaves an unstamped member).
     @Contract
     public void onPeerDisconnected(NodeId id) {
-        withMember(id, tracking -> tracking.dispatch(new PeerDisconnected()));
+        withMember(id, this::peerDisconnected);
     }
 
     /// Composite liveness signal for `id` lost (no probe-ack within the liveness window). Moves toward
@@ -293,13 +334,16 @@ public final class MembershipFsm {
     /// ([`org.pragmatica.aether.deployment.generation.ClusterGenerationProjector#deriveClusterQuiescence`]).
     /// Mirrors the semantics of the SWIM-hints map it replaces: only a downgrade is carried, a
     /// HEALTHY member is OMITTED (the projector's `deriveHealthHint` defaults an absent entry to
-    /// HEALTHY). DEAD → [`HealthHint#FAULTY`], SUSPECT → [`HealthHint#SUSPECTED`]; every other state
+    /// HEALTHY). DEAD → [`HealthHint#FAULTY`], SUSPECT → [`HealthHint#SUSPECTED`] ONLY while the last
+    /// doubt is within [`#suspectHintTtlMs`] — a stale one-shot SWIM-suspect decays to healthy after
+    /// the TTL (#68 parity with the legacy `SwimHintsRegistry#currentTtlFiltered`); every other state
     /// (OBSERVED / MEMBER / DEPARTING) is healthy-by-construction and contributes no entry.
     /// Insertion-ordered ([`LinkedHashMap`]) for stable iteration, matching [`#memberStates`].
     public Map<NodeId, HealthHint> healthHints() {
         var snapshot = new LinkedHashMap<NodeId, HealthHint>();
+        var nowMs = wallClockMs.getAsLong();
 
-        members.forEach((id, tracking) -> tracking.healthHint().onPresent(hint -> snapshot.put(id, hint)));
+        members.forEach((id, tracking) -> tracking.healthHint(nowMs, suspectHintTtlMs).onPresent(hint -> snapshot.put(id, hint)));
         return snapshot;
     }
 
@@ -370,14 +414,18 @@ public final class MembershipFsm {
                       .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
-    /// Filter `candidates` to those that currently COUNT (MEMBER + SUSPECT) per [`#countedMembers`].
-    /// Used by the forward-routing consumer migration to drop candidates the FSM no longer considers
-    /// live. Preserves the caller's candidate order.
+    /// Filter `candidates` to the best-effort SERVING set: every candidate that is NOT terminally
+    /// DEAD per [`#broadcastEligibleMembers`] (NOT-DEAD = OBSERVED + MEMBER + SUSPECT + DEPARTING).
+    /// This answers "can this node hand a request to that target right now", which is DISTINCT from
+    /// [`#countedMembers`] (the membership/quorum count, MEMBER + SUSPECT). An OBSERVED joining
+    /// replacement or a DEPARTING drainer is still UP and may serve a forward/DHT op, and the
+    /// best-effort callers retry on failure (forward-router) / carry a per-op timeout (DHT), so only
+    /// a genuinely co-confirmed-DEAD target is excluded. Preserves the caller's candidate order.
     public List<NodeId> reachableMembers(List<NodeId> candidates) {
-        var counted = countedMembers();
+        var notDead = broadcastEligibleMembers();
 
         return candidates.stream()
-                         .filter(counted::contains)
+                         .filter(notDead::contains)
                          .toList();
     }
 
@@ -393,11 +441,13 @@ public final class MembershipFsm {
 
     private void suspect(MemberTracking tracking, long incarnation) {
         tracking.resetHealthyStreak();
+        tracking.stampDoubt(wallClockMs.getAsLong());
         tracking.dispatch(new SwimSuspect(incarnation));
     }
 
     private void faulty(MemberTracking tracking, long incarnation) {
         tracking.resetHealthyStreak();
+        tracking.stampDoubt(wallClockMs.getAsLong());
         tracking.dispatch(new SwimFaulty(incarnation));
         tracking.markSwimFaulty();
         maybeConfirmDeparture(tracking);
@@ -410,9 +460,18 @@ public final class MembershipFsm {
     }
 
     private void livenessGone(MemberTracking tracking) {
+        tracking.stampDoubt(wallClockMs.getAsLong());
         tracking.dispatch(new LivenessGone());
         tracking.markLivenessGone();
         maybeConfirmDeparture(tracking);
+    }
+
+    /// Transport-disconnect doubt path (MEMBER→SUSPECT on [`PeerDisconnected`]): stamp the doubt
+    /// time so the SUSPECT's quiesce hint decays under the #68 TTL, then dispatch. A no-op in any
+    /// state with no MEMBER→SUSPECT edge — the stamp is harmless there (the hint stays `none()`).
+    private void peerDisconnected(MemberTracking tracking) {
+        tracking.stampDoubt(wallClockMs.getAsLong());
+        tracking.dispatch(new PeerDisconnected());
     }
 
     /// Seed-promote a single id (the one-time formation bootstrap). The (lazily-created) tracking is
@@ -488,6 +547,7 @@ public final class MembershipFsm {
         private int healthyStreak = 0;
         private boolean swimFaultySeen = false;
         private boolean livenessGoneSeen = false;
+        private long lastDoubtAtMs = 0L;
         private MemberDescriptor descriptor = MemberDescriptor.UNKNOWN;
 
         private MemberTracking(NodeId id, Fsm<MembershipState, MembershipEvent> fsm, Consumer<NodeId> onEnteredDead) {
@@ -530,6 +590,13 @@ public final class MembershipFsm {
 
         synchronized void resetHealthyStreak() {
             healthyStreak = 0;
+        }
+
+        /// Stamp the wall-clock time (ms) of the latest fresh doubt that drives / keeps this member in
+        /// SUSPECT. Every fresh doubt re-stamps (matching the legacy `observedAt` semantics), so the
+        /// quiesce SUSPECTED hint ages out only after `suspectHintTtlMs` of NO new doubt.
+        synchronized void stampDoubt(long nowMs) {
+            lastDoubtAtMs = nowMs;
         }
 
         synchronized void markSwimFaulty() {
@@ -606,15 +673,27 @@ public final class MembershipFsm {
             return fsm.current().getClass().getSimpleName();
         }
 
-        /// FSM-state → quiescence health-hint projection. DEAD → FAULTY, SUSPECT → SUSPECTED;
-        /// every other state is healthy-by-construction and yields `none()` (the projector
-        /// defaults an absent entry to HEALTHY). Pure read of the current FSM state.
-        synchronized Option<HealthHint> healthHint() {
+        /// FSM-state → quiescence health-hint projection. DEAD → FAULTY (unconditional); SUSPECT →
+        /// SUSPECTED ONLY while the last doubt is within `ttlMs` (`nowMs - lastDoubtAtMs <= ttlMs`),
+        /// else `none()` — the stale one-shot doubt has decayed to healthy (#68 parity with the
+        /// legacy `SwimHintsRegistry#currentTtlFiltered`; the member STAYS in FSM SUSPECT and in
+        /// `countedMembers`, only this quiesce HINT decays). Every other state is
+        /// healthy-by-construction and yields `none()` (the projector defaults an absent entry to
+        /// HEALTHY). Pure read of the current FSM state under the per-member monitor.
+        synchronized Option<HealthHint> healthHint(long nowMs, long ttlMs) {
             return switch (fsm.current()) {
                 case MembershipState.Dead _ -> Option.some(HealthHint.FAULTY);
-                case MembershipState.Suspect _ -> Option.some(HealthHint.SUSPECTED);
+                case MembershipState.Suspect _ -> suspectHint(nowMs, ttlMs);
                 case MembershipState.Observed _, MembershipState.Member _, MembershipState.Departing _ -> Option.none();
             };
+        }
+
+        /// SUSPECTED iff the last doubt is still fresh (within `ttlMs`); otherwise the doubt has aged
+        /// out and the member projects healthy (omitted hint).
+        private Option<HealthHint> suspectHint(long nowMs, long ttlMs) {
+            return (nowMs - lastDoubtAtMs) <= ttlMs
+                   ? Option.some(HealthHint.SUSPECTED)
+                   : Option.none();
         }
     }
 }

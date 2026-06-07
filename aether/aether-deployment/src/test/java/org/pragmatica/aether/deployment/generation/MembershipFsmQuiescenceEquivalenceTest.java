@@ -30,10 +30,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// would have produced from an equivalent hand-built swimHints map — pinning the SHAPE of the
 /// downgrade-only mapping (DEAD→FAULTY, SUSPECT→SUSPECTED, healthy→omitted) onto the projector verdict.
 ///
-/// This is NOT a full legacy-path equivalence proof. The FSM has no TTL expiry, whereas the legacy
-/// [`SwimHintsRegistry#currentTtlFiltered`] aged hints out: a long-SUSPECT member therefore stays
-/// DEGRADED longer under the FSM than under the TTL-filtered legacy path. That TTL divergence is
-/// intentionally untested here and tracked under #68.
+/// This is NOT a full legacy-path equivalence proof. The FSM's SUSPECTED-hint TTL is now
+/// CONFIGURABLE ([`MembershipFsm`] `suspectHintTtlMs`): it defaults to `Long.MAX_VALUE` (no decay)
+/// for the factory these tests use, so here a long-SUSPECT member stays DEGRADED indefinitely —
+/// matching the pre-#68 behaviour these SHAPE assertions pin. In production AetherNode wires the
+/// auto-heal SWIM-hints TTL, restoring the legacy [`SwimHintsRegistry#currentTtlFiltered`] decay so a
+/// stale one-shot SWIM-suspect ages out of the quiesce gate (#68). That TTL decay is covered by
+/// `MembershipFsmTest.SuspectHintTtlDecay` and intentionally left out of these no-decay SHAPE tests.
 class MembershipFsmQuiescenceEquivalenceTest {
     private static final NodeId A = new NodeId("node-a");
     private static final NodeId B = new NodeId("node-b");
