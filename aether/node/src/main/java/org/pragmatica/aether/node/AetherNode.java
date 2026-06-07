@@ -423,8 +423,14 @@ public interface AetherNode extends ManageableNode {
         // filter, the NTT-reconcile quorum-count propagation). They deref this holder at request time
         // and degrade to their pre-FSM source while it is still null — populated at FSM construction.
         var membershipFsmRef = new AtomicReference<MembershipFsm>();
-        Supplier<Set<NodeId>> presenceMemberSupplier = () -> Option.option(presenceSamplerRef.get())
-                                                                   .map(PresenceSampler::currentMembers)
+        // #110: generation-snapshot membership source feeding PresenceGenerationSnapshotSource's
+        // BOOTING→NORMAL quorum latch + member projection. Sourced from the authoritative FSM
+        // (MEMBER + SUSPECT) instead of the NTT's debounced presence set — SUSPECT-inclusive and
+        // edge-driven (the latch fires on the first quorum-many counted members). The `.or(Set.of())`
+        // guards the pre-FSM-published boot window (lazy supplier; the FSM holder is populated before
+        // any snapshot is taken).
+        Supplier<Set<NodeId>> presenceMemberSupplier = () -> Option.option(membershipFsmRef.get())
+                                                                   .map(MembershipFsm::countedMembers)
                                                                    .or(Set.of());
         IntSupplier presenceCoreSizeSupplier = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT)
                                                             .filter(v -> v instanceof AetherValue.ClusterConfigValue)
@@ -1893,7 +1899,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                   kvStore,
                                                                                                   clusterNode,
                                                                                                   publisherExecutor,
-                                                                                                  presenceSampler::currentMembers,
+                                                                                                  // #110: snapshot membership now FSM-counted (MEMBER + SUSPECT, SUSPECT-inclusive).
+                                                                                                  membershipFsm::countedMembers,
                                                                                                   ((TopologyObserver) clusterNode.topologyManager())::get);
         publisherRef.set(generationSnapshotPublisher);
         var bootstrapModule = BootstrapModule.bootstrapModule(isLeaderSupplier,

@@ -485,7 +485,9 @@ public final class PresenceSampler {
         onReconcileNeeded.run();
     }
 
-    /// Count of currently-tracked cluster members (includes self).
+    /// Count of currently-tracked cluster members (includes self). Boot-fallback-only presence-count
+    /// sensor: `propagateMemberCount` reads this until the authoritative MembershipFsm is published
+    /// (#110 migrated the steady-state member count + snapshot membership to the FSM).
     public int currentMemberCount() {
         return stableMembers.size();
     }
@@ -500,9 +502,10 @@ public final class PresenceSampler {
         }
     }
 
-    /// Read-only snapshot of the currently-tracked cluster member set (includes self).
-    /// Used by the leader reconciler for the seed-PEERS list when provisioning
-    /// replacements and for drain-victim selection.
+    /// Read-only snapshot of the currently-tracked stable member set (includes self). #110 migrated
+    /// the production consumers (generation-snapshot membership + steady-state member count) to the
+    /// authoritative MembershipFsm; this now serves the NTT debounce-semantics tests as the
+    /// observable stable-set surface (K_UP / K_DOWN hysteresis assertions).
     public Set<NodeId> currentMembers() {
         return Set.copyOf(stableMembers);
     }
