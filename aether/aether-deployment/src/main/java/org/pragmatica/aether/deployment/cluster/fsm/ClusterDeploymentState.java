@@ -503,7 +503,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             for (var slice : expanded.loadOrder()) {
                 var artifact = slice.artifact();
-                if (shouldSuppressActivation(artifact, registerOnly)) {
+                if (shouldSuppressActivation(registerOnly)) {
                     log.trace("Restore: register-only blueprint {} — skipping in-memory blueprints.put for slice {} (existing SliceTargetValue present)",
                               expanded.id().asString(),
                               artifact);
@@ -854,7 +854,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                          nodes.size());
                 permanentlyFailed.remove(artifact);
 
-                if (shouldSuppressActivation(artifact, registerOnly)) {
+                if (shouldSuppressActivation(registerOnly)) {
                     log.info("Blueprint {} registered-only — skipping SliceTargetValue Put for slice {} (existing currentVersion preserved)",
                              expanded.id().asString(),
                              artifact);
@@ -879,17 +879,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             trackInFlightBlueprint(expanded, previousExpanded);
         }
 
-        /// Returns `true` when the per-slice `SliceTargetValue` Put MUST be suppressed because:
-        /// the publishing blueprint was registered via `/api/blueprints/publish` (`registerOnly=true`),
-        /// AND an existing `SliceTargetValue` already pins this slice base to an active version.
-        /// First-ever publishes (no existing `SliceTargetValue`) always proceed — register-only
-        /// cannot suppress fresh-slice bootstrap, otherwise the slice would have no target at all.
-        private boolean shouldSuppressActivation(Artifact artifact, boolean registerOnly) {
-            if (!registerOnly) {return false;}
-            return ctx.kvStore()
-                      .get(SliceTargetKey.sliceTargetKey(artifact.base()))
-                      .filter(SliceTargetValue.class::isInstance)
-                      .isPresent();
+        /// Returns `true` exactly when the publishing blueprint was registered via
+        /// `/api/blueprints/publish` (`registerOnly=true`). A register-only publish registers the
+        /// blueprint but NEVER writes or advances a `SliceTargetValue` — activation is performed
+        /// exclusively by `/api/deploy`. Suppression is unconditional: it does not depend on whether
+        /// an existing `SliceTargetValue` is present. (The former "first-ever publish bootstraps a
+        /// fresh slice" exception was removed because it caused register-only to wrongly activate.)
+        private boolean shouldSuppressActivation(boolean registerOnly) {
+            return registerOnly;
         }
 
         private boolean hasConflictingOwnership(ExpandedBlueprint expanded) {
