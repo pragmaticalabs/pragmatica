@@ -16,7 +16,6 @@ import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
-import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
@@ -355,7 +354,7 @@ public interface NodeDeploymentManager {
                                                                    Option<SliceInvokerFacade> sliceInvokerFacade,
                                                                    TimeSpan activationChainTimeout,
                                                                    TimeSpan transitionRetryDelay,
-                                                                   Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier) {
+                                                                   Supplier<Epoch> observedEpochSupplier) {
         return nodeDeploymentManager(self,
                                      selfAddress,
                                      router,
@@ -369,8 +368,7 @@ public interface NodeDeploymentManager {
                                      sliceInvokerFacade,
                                      activationChainTimeout,
                                      transitionRetryDelay,
-                                     () -> snapshotSupplier.get()
-                                                           .map(ClusterGenerationSnapshot::epoch));
+                                     () -> Option.some(observedEpochSupplier.get()));
     }
 
     private static NodeDeploymentContext buildContext(NodeId self,

@@ -17,8 +17,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
-import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
-import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
@@ -128,52 +126,10 @@ public final class ClusterTopologyRoutes implements RouteSource {
     }
 
     private Promise<ClusterTopologyStatusResponse> buildTopologyStatus() {
-        var node = nodeSupplier.get();
-
-        return Promise.success(node.currentGenerationSnapshot()
-                                   .map(snapshot -> assembleTopologyStatus(node, snapshot))
-                                   .or(() -> assembleFromTopologyManager(node)));
+        return Promise.success(assembleTopologyStatus(nodeSupplier.get()));
     }
 
-    private static ClusterTopologyStatusResponse assembleFromTopologyManager(ManageableNode node) {
-        var topologyConfig = node.topologyConfig();
-        var topologyManager = node.topologyManager();
-        var connectedPeers = node.connectedPeerIds();
-        var allNodeIds = topologyManager.topology();
-        var membershipView = node.membershipView();
-        // Filter out STOPPED / UNTRACKED entries — these are peers
-        // whose containers no longer exist but whose KV topology entry hasn't been GC'd
-        // yet. Without this filter, killed-then-replaced peers leak into the topology
-        // response as ACTIVE/HEALTHY, breaking `pick_non_leader` and any consumer that
-        // counts on-duty cores from the topology projection (12-network, 02-chaos).
-        var coreNodeIds = allNodeIds.stream().filter(id -> !topologyManager.isPassive(id)).filter(id -> isHealthy(topologyManager,
-                                                                                                                  id)).filter(id -> isLiveLifecycle(membershipView,
-                                                                                                                                                    id)).map(NodeId::id).toList();
-        // §6 D1 slot-derived headcount: coreCount is the number of provisioning slots whose
-        // occupant is present, capped at clusterSize by construction (one occupant per slot,
-        // |slots| == clusterSize). MembershipView supplies the per-occupant lifecycle+health
-        // classification input. Cold-start (no slots seeded in KV yet) falls back to the
-        // SWIM-derived count so self-bootstrap still reports.
-        var coreCount = slotDerivedCoreCount(node, membershipView);
-        var workerCount = Math.max(0, connectedPeers.size() - coreCount);
-        var nodeDetails = allNodeIds.stream().filter(id -> isLiveLifecycle(membershipView, id)).map(id -> buildNodeDetail(topologyManager,
-                                                                                                                          id,
-                                                                                                                          connectedPeers.contains(id))).toList();
-
-        return new ClusterTopologyStatusResponse(coreCount,
-                                                 topologyConfig.coreMax(),
-                                                 topologyConfig.coreMin(),
-                                                 workerCount,
-                                                 topologyConfig.clusterSize(),
-                                                 coreNodeIds,
-                                                 connectedPeers.size(),
-                                                 nodeDetails,
-                                                 Option.<String> none(),
-                                                 topologyMode(topologyManager));
-    }
-
-    private static ClusterTopologyStatusResponse assembleTopologyStatus(ManageableNode node,
-                                                                        ClusterGenerationSnapshot snapshot) {
+    private static ClusterTopologyStatusResponse assembleTopologyStatus(ManageableNode node) {
         var topologyConfig = node.topologyConfig();
         var topologyManager = node.topologyManager();
         var connectedPeers = node.connectedPeerIds();
@@ -182,17 +138,14 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var coreNodeIds = allNodeIds.stream().filter(id -> !topologyManager.isPassive(id)).filter(id -> isHealthy(topologyManager,
                                                                                                                   id)).filter(id -> isLiveLifecycle(membershipView,
                                                                                                                                                     id)).map(NodeId::id).toList();
-        // H.2 (spec §H): prefer the MembershipView-derived count; fall back to the snapshot
-        // helper if the view is empty (e.g., during very-early bootstrap before SWIM has
-        // admitted self). The snapshot helper also now honours SWIM-derived presence via the
-        // healthHint check (no KV entry required) so both paths converge.
         // §6 D1: slot-derived headcount, capped at clusterSize. Cold-start (no slots yet) →
-        // SWIM-derived count → generation snapshot, preserving the prior fallback ladder.
+        // SWIM-derived count. The FSM `countedMembers` count is the post-#110 source the snapshot
+        // `coreMembers` was derived from; used as the final fallback when no slots/view present.
         var viewCount = slotDerivedCoreCount(node, membershipView);
         var coreCount = viewCount > 0
                         ? viewCount
-                        : snapshotCoreCount(snapshot);
-        var epoch = Option.some(snapshot.epoch().toString());
+                        : node.membershipFsm().countedMembers().size();
+        var epoch = Option.some(node.metricsCollector().observedEpoch().toString());
         var workerCount = Math.max(0, connectedPeers.size() - coreCount);
         var nodeDetails = allNodeIds.stream().filter(id -> isLiveLifecycle(membershipView, id)).map(id -> buildNodeDetail(topologyManager,
                                                                                                                           id,
@@ -259,21 +212,6 @@ public final class ClusterTopologyRoutes implements RouteSource {
                ? observer.topologyMode()
                          .name()
                : TopologyObserver.TopologyMode.NORMAL.name();
-    }
-
-    private static int snapshotCoreCount(ClusterGenerationSnapshot snapshot) {
-        // Membership-v2 finale: presence IS membership — every snapshot member is a current
-        // core node. Count members whose SWIM-derived `healthHint` keeps them in the
-        // operational set (HEALTHY).
-        return (int) snapshot.coreMembers()
-                             .values()
-                             .stream()
-                             .filter(member -> isEffectiveOnDuty(member))
-                             .count();
-    }
-
-    private static boolean isEffectiveOnDuty(org.pragmatica.aether.slice.generation.CoreMember member) {
-        return member.healthHint() == HealthHint.HEALTHY;
     }
 
     private static boolean isHealthy(TopologyManager tm, NodeId id) {

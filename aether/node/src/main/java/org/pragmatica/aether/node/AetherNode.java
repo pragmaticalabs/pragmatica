@@ -79,7 +79,6 @@ import org.pragmatica.aether.metrics.ComprehensiveSnapshotCollector;
 import org.pragmatica.aether.deployment.generation.ClusterGenerationProjector;
 import org.pragmatica.aether.deployment.generation.BootstrapModule;
 import org.pragmatica.aether.deployment.generation.GenerationSnapshotPublisher;
-import org.pragmatica.aether.deployment.generation.KvBackedGenerationSnapshotSource;
 import org.pragmatica.aether.deployment.generation.PresenceGenerationSnapshotSource;
 import org.pragmatica.aether.deployment.generation.SwimHintsRegistry;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
@@ -403,7 +402,6 @@ public interface AetherNode extends ManageableNode {
                                                                                       LeaderValue.class)
                                                                             .map(LeaderValue::leader);
         var hlcClock = HlcClock.hlcClock(config.self());
-        var rawSnapshotSource = KvBackedGenerationSnapshotSource.kvBackedGenerationSnapshotSource(kvStore);
         // Membership/placement split (spec §4.1–4.2, step 2): TopologyObserver's membership
         // (publishMembershipDeltas) and quorum eval now read LOCAL NTT presence, not the
         // committed GenerationSnapshot — so NodeRemoved/NodeJoined fire decoupled from
@@ -413,9 +411,7 @@ public interface AetherNode extends ManageableNode {
         // yields none() → TopologyObserver falls back to its legacy BOOTING quorum path
         // (CRITICAL for cold-start formation). desiredCoreSize is supplied from
         // ClusterConfigKey.CURRENT (fallback: topology core count) — NTT doesn't carry it.
-        // ctmProvisioned + observedRabiaTerm delegate to the retained KV source / leader term.
-        // rawSnapshotSource (KV-backed) stays alive — it is the ctmProvisioned delegate
-        // below, and the committed placement snapshot it reads still backs BootstrapModule.
+        // ctmProvisioned + observedRabiaTerm delegate to the FSM-backed snapshotSource / leader term.
         var presenceSamplerRef = new AtomicReference<PresenceSampler>();
         // Membership-FSM unification (Wave D): deferred holder for the authoritative MembershipFsm.
         // The FSM is constructed later in createNode (after NTT), but several membership CONSUMERS are
@@ -436,13 +432,20 @@ public interface AetherNode extends ManageableNode {
                                                             .filter(v -> v instanceof AetherValue.ClusterConfigValue)
                                                             .map(v -> ((AetherValue.ClusterConfigValue) v).coreCount())
                                                             .or(() -> config.topology().coreNodes().size());
-        Supplier<Set<NodeId>> ctmProvisionedSupplier = () -> rawSnapshotSource.currentMembershipView()
-                                                                              .map(org.pragmatica.consensus.topology.MembershipView::ctmProvisionedNodeIds)
-                                                                              .or(Set.of());
+        // #110 finale: ctmProvisioned now reads the FSM-backed snapshotSource (built just below)
+        // instead of the retired KV-backed source. The source is constructed after this
+        // supplier (it consumes ctmProvisionedSupplier), so the supplier dereferences a holder
+        // populated immediately after construction; degrades to Set.of() in the construction window.
+        var snapshotSourceRef = new AtomicReference<GenerationSnapshotSource>();
+        Supplier<Set<NodeId>> ctmProvisionedSupplier = () -> Option.option(snapshotSourceRef.get())
+                                                                   .flatMap(GenerationSnapshotSource::currentMembershipView)
+                                                                   .map(org.pragmatica.consensus.topology.MembershipView::ctmProvisionedNodeIds)
+                                                                   .or(Set.of());
         var snapshotSource = PresenceGenerationSnapshotSource.presenceGenerationSnapshotSource(presenceMemberSupplier,
                                                                                                presenceCoreSizeSupplier,
                                                                                                ctmProvisionedSupplier,
                                                                                                rabiaTermSupplier);
+        snapshotSourceRef.set(snapshotSource);
         // Membership v2 — `syncHoldRegistry` is consulted by the leader reconciler to skip nodes
         // that are legitimately syncing KV state. The KVSyncResponse signal no longer drives a
         // readiness candidate; the v2 control-heartbeat carries node-reported readiness instead.
@@ -1454,7 +1457,7 @@ public interface AetherNode extends ManageableNode {
                                                                                             Option.some(sliceInvoker),
                                                                                             config.timeouts().deployment().activationChain(),
                                                                                             config.timeouts().deployment().transitionRetryDelay(),
-                                                                                            snapshotSupplier);
+                                                                                            metricsCollector::observedEpoch);
         var serverBossGroup = clusterNode.network().server().map(Server::bossGroup);
         var serverWorkerGroup = clusterNode.network().server().map(Server::workerGroup);
         // #231 Step 3: every control-plane TaskGroup is leader-pinned, so the owner of any group is
