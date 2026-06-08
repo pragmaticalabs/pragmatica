@@ -6,8 +6,6 @@ package org.pragmatica.aether.deployment.generation;
 
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.ClusterMode;
-import org.pragmatica.aether.slice.generation.ClusterQuiescence;
-import org.pragmatica.aether.slice.generation.CommunityQuiescence;
 import org.pragmatica.aether.slice.generation.CommunitySummary;
 import org.pragmatica.aether.slice.generation.CoreMember;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -22,7 +20,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
@@ -255,7 +252,7 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
         var healthyMembers = announcement.dissolved()
                              ? 0
                              : announcement.memberCount();
-        var quiescence = deriveCommunityQuiescence(announcement, lastAck, 0, 0);
+        var quiescence = deriveCommunityQuiescence(announcement, lastAck);
 
         return CommunitySummary.communitySummary(communityId,
                                                  announcement.governorId(),
@@ -281,20 +278,8 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
                          .collect(Collectors.toUnmodifiableSet());
     }
 
-    private static CommunityResult deriveCommunityQuiescence(GovernorAnnouncementValue announcement,
-                                                             Epoch lastAckAtCore,
-                                                             int suspected,
-                                                             int faulty) {
-        if (announcement.dissolved()) {return new CommunityResult(CommunityQuiescence.DISSOLVING, "community dissolved");}
-        if (suspected > 0 || faulty > 0) {
-            return new CommunityResult(CommunityQuiescence.DEGRADED, suspected + " suspected, " + faulty + " faulty");
-        }
-        if (lastAckAtCore.compareTo(announcement.communityEpoch()) <0) {
-            return new CommunityResult(CommunityQuiescence.CONVERGING,
-                                       "governor has not acked epoch " + announcement.communityEpoch());
-        }
-
-        return new CommunityResult(CommunityQuiescence.QUIESCED, "");
+    private static ClusterQuiescenceEvaluator.CommunityResult deriveCommunityQuiescence(GovernorAnnouncementValue announcement, Epoch lastAckAtCore) {
+        return ClusterQuiescenceEvaluator.evaluateCommunity(announcement, lastAckAtCore);
     }
 
     private static Map<String, PartitionOwner> projectPartitions(ProjectionInput input) {
@@ -325,93 +310,18 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
                                 .count();
     }
 
-    private static ClusterResult deriveClusterQuiescence(Map<NodeId, CoreMember> coreMembers,
+    private static ClusterQuiescenceEvaluator.ClusterResult deriveClusterQuiescence(Map<NodeId, CoreMember> coreMembers,
                                                          Map<String, CommunitySummary> communities,
                                                          int pendingRebalanceCount) {
-        var memberSnapshot = summarizeMembers(coreMembers);
-        var communitySnapshot = summarizeCommunities(communities);
+        var memberHealths = coreMembers.values()
+                                       .stream()
+                                       .map(CoreMember::healthHint)
+                                       .toList();
+        var communityStates = communities.values()
+                                         .stream()
+                                         .map(CommunitySummary::quiescence)
+                                         .toList();
 
-        if (memberSnapshot.hasFaulty() || memberSnapshot.hasSuspected() || communitySnapshot.hasDegraded()) {
-            return new ClusterResult(ClusterQuiescence.DEGRADED, buildDegradedDetail(memberSnapshot, communitySnapshot));
-        }
-        if (communitySnapshot.hasConverging() || pendingRebalanceCount > 0) {
-            return new ClusterResult(ClusterQuiescence.CONVERGING,
-                                     buildConvergingDetail(communitySnapshot, pendingRebalanceCount));
-        }
-
-        return new ClusterResult(ClusterQuiescence.QUIESCED, "");
-    }
-
-    private static MemberSnapshot summarizeMembers(Map<NodeId, CoreMember> coreMembers) {
-        var faulty = 0;
-        var suspected = 0;
-
-        for (var member : coreMembers.values()) {
-            if (member.healthHint() == HealthHint.FAULTY) {faulty++;}
-            if (member.healthHint() == HealthHint.SUSPECTED) {suspected++;}
-        }
-
-        return new MemberSnapshot(faulty, suspected);
-    }
-
-    private static CommunityStatusSnapshot summarizeCommunities(Map<String, CommunitySummary> communities) {
-        var degraded = 0;
-        var converging = 0;
-        var dissolving = 0;
-
-        for (var community : communities.values()) {
-            switch (community.quiescence()) {
-                case DEGRADED -> degraded++;
-                case CONVERGING -> converging++;
-                case DISSOLVING -> dissolving++;
-                case QUIESCED -> {}
-            }
-        }
-
-        return new CommunityStatusSnapshot(degraded, converging, dissolving);
-    }
-
-    private static String buildDegradedDetail(MemberSnapshot members, CommunityStatusSnapshot communities) {
-        var parts = new ArrayList<String>();
-
-        if (members.faulty() > 0) {parts.add(members.faulty() + " members FAULTY");}
-        if (members.suspected() > 0) {parts.add(members.suspected() + " members SUSPECTED");}
-        if (communities.degraded() > 0) {parts.add(communities.degraded() + " communities DEGRADED");}
-        if (communities.dissolving() > 0) {parts.add(communities.dissolving() + " communities DISSOLVING");}
-
-        return String.join("; ", parts);
-    }
-
-    private static String buildConvergingDetail(CommunityStatusSnapshot communities, int pendingRebalance) {
-        var parts = new ArrayList<String>();
-
-        if (communities.converging() > 0) {parts.add(communities.converging() + " communities CONVERGING");}
-        if (pendingRebalance > 0) {parts.add(pendingRebalance + " communities awaiting spokesman");}
-
-        return String.join("; ", parts);
-    }
-
-    private record CommunityResult(CommunityQuiescence state, String detail) {}
-
-    private record ClusterResult(ClusterQuiescence quiescence, String detail) {}
-
-    private record MemberSnapshot(int faulty, int suspected) {
-        boolean hasFaulty() {
-            return faulty > 0;
-        }
-
-        boolean hasSuspected() {
-            return suspected > 0;
-        }
-    }
-
-    private record CommunityStatusSnapshot(int degraded, int converging, int dissolving) {
-        boolean hasDegraded() {
-            return degraded > 0;
-        }
-
-        boolean hasConverging() {
-            return converging > 0 || dissolving > 0;
-        }
+        return ClusterQuiescenceEvaluator.evaluateCluster(memberHealths, communityStates, pendingRebalanceCount);
     }
 }
