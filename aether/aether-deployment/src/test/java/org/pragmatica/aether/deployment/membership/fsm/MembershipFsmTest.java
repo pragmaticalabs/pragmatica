@@ -1005,16 +1005,20 @@ class MembershipFsmTest {
         }
 
         @Test
-        void dead_mapsToFaulty() {
+        void dead_isOmitted_soTombstoneNeverPoisonsQuiescence() {
             var manager = activeManager();
 
             driveToDead(manager, A, 4L);
-            assertThat(manager.memberStates()).containsEntry(A, "Dead");
-            assertThat(manager.healthHints()).containsEntry(A, HealthHint.FAULTY);
+            assertThat(manager.memberStates())
+                    .as("the member is retained in the map as a DEAD tombstone for incarnation-fenced rejoin")
+                    .containsEntry(A, "Dead");
+            assertThat(manager.healthHints())
+                    .as("#68 — a terminally-DEAD tombstone must NOT emit a FAULTY quiesce hint")
+                    .doesNotContainKey(A);
         }
 
         @Test
-        void mixedCluster_carriesOnlyDowngrades() {
+        void mixedCluster_carriesSuspectButNotDead() {
             var manager = activeManager();
 
             promoteToMember(manager, A);
@@ -1023,9 +1027,44 @@ class MembershipFsmTest {
             driveToDead(manager, C, 4L);
 
             var hints = manager.healthHints();
-            assertThat(hints).doesNotContainKey(A);
-            assertThat(hints).containsEntry(B, HealthHint.SUSPECTED);
-            assertThat(hints).containsEntry(C, HealthHint.FAULTY);
+            assertThat(hints)
+                    .as("a HEALTHY member is omitted (projector defaults it to HEALTHY)")
+                    .doesNotContainKey(A);
+            assertThat(hints)
+                    .as("a SUSPECT member is carried — a real in-progress death still blocks quiescence")
+                    .containsEntry(B, HealthHint.SUSPECTED);
+            assertThat(hints)
+                    .as("#68 — a co-confirmed-DEAD ghost is filtered out, so it cannot pin DEGRADED")
+                    .doesNotContainKey(C);
+        }
+
+        /// #68 core regression: a SUSPECT (real in-progress death) STILL blocks quiescence while a
+        /// terminally-DEAD ghost does NOT — only terminal DEAD is filtered, the SUSPECT window is
+        /// preserved so genuine deaths are not masked.
+        @Test
+        void healthHints_suspectPresentDeadAbsent_onlyTerminalDeadIsFiltered() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);   // healthy MEMBER
+            promoteToMember(manager, B);
+            manager.onSwimSuspect(B, 2L);  // SUSPECT — real in-progress death
+            driveToDead(manager, C, 4L);   // co-confirmed terminally DEAD ghost
+
+            assertThat(manager.memberStates())
+                    .containsEntry(A, "Member")
+                    .containsEntry(B, "Suspect")
+                    .containsEntry(C, "Dead");
+
+            var hints = manager.healthHints();
+            assertThat(hints)
+                    .as("a genuinely co-confirmed-DEAD member is absent (its FAULTY tombstone is filtered)")
+                    .doesNotContainKey(C);
+            assertThat(hints)
+                    .as("a SUSPECT member is still present, so real deaths block quiescence during the SUSPECT window")
+                    .containsEntry(B, HealthHint.SUSPECTED);
+            assertThat(hints)
+                    .as("the healthy MEMBER is omitted (projector defaults it to HEALTHY)")
+                    .doesNotContainKey(A);
         }
     }
 

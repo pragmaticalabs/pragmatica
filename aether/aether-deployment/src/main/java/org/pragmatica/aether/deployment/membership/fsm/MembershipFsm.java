@@ -334,17 +334,34 @@ public final class MembershipFsm {
     /// ([`org.pragmatica.aether.deployment.generation.ClusterQuiescenceEvaluator#evaluateCluster`]).
     /// Mirrors the semantics of the SWIM-hints map it replaces: only a downgrade is carried, a
     /// HEALTHY member is OMITTED (the evaluator defaults an absent entry to
-    /// HEALTHY). DEAD → [`HealthHint#FAULTY`], SUSPECT → [`HealthHint#SUSPECTED`] ONLY while the last
-    /// doubt is within [`#suspectHintTtlMs`] — a stale one-shot SWIM-suspect decays to healthy after
-    /// the TTL (#68 parity with the legacy `SwimHintsRegistry#currentTtlFiltered`); every other state
+    /// HEALTHY). SUSPECT → [`HealthHint#SUSPECTED`] ONLY while the last doubt is within
+    /// [`#suspectHintTtlMs`] — a stale one-shot SWIM-suspect decays to healthy after the TTL (#68
+    /// parity with the legacy `SwimHintsRegistry#currentTtlFiltered`); every other live state
     /// (OBSERVED / MEMBER / DEPARTING) is healthy-by-construction and contributes no entry.
-    /// Insertion-ordered ([`LinkedHashMap`]) for stable iteration, matching [`#memberStates`].
+    ///
+    /// Terminally-DEAD members are EXCLUDED from this projection (same [`MemberTracking#notDead`]
+    /// predicate as [`#countedMembers`] / [`#broadcastEligibleMembers`]): a DEAD member is retained
+    /// in the map only for incarnation-fenced rejoin, is already OUT of the membership count, and
+    /// its unconditional DEAD → FAULTY per-member hint would otherwise pin cluster quiescence at
+    /// DEGRADED forever once chaos-killed ghosts accumulate (#68). The per-member DEAD → FAULTY
+    /// projection itself ([`MemberTracking#healthHint`]) is unchanged — only this iteration skips
+    /// DEAD members. Insertion-ordered ([`LinkedHashMap`]) for stable iteration, matching
+    /// [`#memberStates`].
     public Map<NodeId, HealthHint> healthHints() {
         var snapshot = new LinkedHashMap<NodeId, HealthHint>();
         var nowMs = wallClockMs.getAsLong();
 
-        members.forEach((id, tracking) -> tracking.healthHint(nowMs, suspectHintTtlMs).onPresent(hint -> snapshot.put(id, hint)));
+        members.forEach((id, tracking) -> projectLiveHint(snapshot, id, tracking, nowMs));
         return snapshot;
+    }
+
+    /// Add `tracking`'s downgrade hint to `snapshot` iff it is still live (NOT terminally DEAD) and
+    /// projects a present hint. A terminally-DEAD member contributes nothing — its retained
+    /// (incarnation-fenced) tombstone must not poison cluster quiescence (#68). Side-effecting
+    /// accumulator step for [`#healthHints`].
+    @Contract
+    private void projectLiveHint(Map<NodeId, HealthHint> snapshot, NodeId id, MemberTracking tracking, long nowMs) {
+        tracking.liveHealthHint(nowMs, suspectHintTtlMs).onPresent(hint -> snapshot.put(id, hint));
     }
 
     /// The stored last-wins network descriptor (address + role + source) for `id`, or `none()` if the
@@ -686,6 +703,18 @@ public final class MembershipFsm {
                 case MembershipState.Suspect _ -> suspectHint(nowMs, ttlMs);
                 case MembershipState.Observed _, MembershipState.Member _, MembershipState.Departing _ -> Option.none();
             };
+        }
+
+        /// Quiescence-gate variant of [`#healthHint`]: a terminally-DEAD member projects `none()`
+        /// (NOT FAULTY), so its retained incarnation-fenced tombstone never poisons cluster
+        /// quiescence (#68). For every live state this is identical to [`#healthHint`]. The
+        /// not-DEAD gate uses the same [`#notDead`] predicate as [`#countedMembers`] /
+        /// [`#broadcastEligibleMembers`], keeping the projections consistent. Pure read under the
+        /// per-member monitor.
+        synchronized Option<HealthHint> liveHealthHint(long nowMs, long ttlMs) {
+            return notDead()
+                   ? healthHint(nowMs, ttlMs)
+                   : Option.none();
         }
 
         /// SUSPECTED iff the last doubt is still fresh (within `ttlMs`); otherwise the doubt has aged
