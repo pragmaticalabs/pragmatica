@@ -5,6 +5,7 @@
 package org.pragmatica.aether.slice.blueprint;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
@@ -20,11 +21,19 @@ import org.pragmatica.serialization.Codec;
                                 .map(BlueprintId::new);
     }
 
+    public static BlueprintId blueprintId(Artifact artifact) {
+        return new BlueprintId(artifact);
+    }
+
     @Override public String toString() {
         return asString();
     }
 
     public String asString() {
         return artifact.asString();
+    }
+
+    public ArtifactBase base() {
+        return artifact().base();
     }
 }

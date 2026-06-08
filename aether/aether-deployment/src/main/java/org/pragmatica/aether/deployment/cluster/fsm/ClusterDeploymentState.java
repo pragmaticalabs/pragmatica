@@ -895,7 +895,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 for (var bp : blueprints.values()) {
                     if (!artifactBase.equals(bp.artifact().base())) {continue;}
 
-                    var conflict = bp.owner().filter(o -> !o.equals(expanded.id()));
+                    var conflict = bp.owner().filter(o -> !o.base().equals(expanded.id().base()));
 
                     if (!conflict.isEmpty()) {
                         logConflict(expanded, slice.artifact(), conflict);
@@ -954,7 +954,35 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private Option<ExpandedBlueprint> capturePreviousBlueprint(ExpandedBlueprint expanded) {
             if (ctx.atomicity() != DeploymentAtomicity.ALL_OR_NOTHING || restoringBlueprints.contains(expanded.id())) {return Option.empty();}
-            return Option.option(inFlightBlueprints.get(expanded.id())).map(InFlightBlueprint::expanded);
+            return Option.option(inFlightBlueprints.get(expanded.id()))
+                         .map(InFlightBlueprint::expanded)
+                         .orElse(() -> capturePriorActiveBlueprint(expanded));
+        }
+
+        private Option<ExpandedBlueprint> capturePriorActiveBlueprint(ExpandedBlueprint expanded) {
+            return firstSliceBase(expanded).flatMap(sliceBase -> capturePriorActiveBlueprint(expanded, sliceBase));
+        }
+
+        private Option<ExpandedBlueprint> capturePriorActiveBlueprint(ExpandedBlueprint expanded, ArtifactBase sliceBase) {
+            return ctx.kvStore()
+                      .get(SliceTargetKey.sliceTargetKey(sliceBase))
+                      .filter(v -> v instanceof SliceTargetValue)
+                      .map(v -> ((SliceTargetValue) v).currentVersion())
+                      .filter(priorVersion -> !priorVersion.equals(expanded.id().artifact().version()))
+                      .flatMap(priorVersion -> lookupPreviousBlueprint(expanded, priorVersion));
+        }
+
+        private Option<ExpandedBlueprint> lookupPreviousBlueprint(ExpandedBlueprint expanded, Version priorVersion) {
+            var priorId = BlueprintId.blueprintId(expanded.id().base().withVersion(priorVersion));
+            return ctx.kvStore()
+                      .get(AppBlueprintKey.appBlueprintKey(priorId))
+                      .filter(v -> v instanceof AppBlueprintValue)
+                      .map(v -> ((AppBlueprintValue) v).blueprint());
+        }
+
+        private Option<ArtifactBase> firstSliceBase(ExpandedBlueprint expanded) {
+            return Option.option(expanded.loadOrder().isEmpty() ? null : expanded.loadOrder().getFirst())
+                         .map(slice -> slice.artifact().base());
         }
 
         private void trackInFlightBlueprint(ExpandedBlueprint expanded, Option<ExpandedBlueprint> previousExpanded) {
@@ -1946,7 +1974,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                          blueprintId.asString());
                 inFlightBlueprints.remove(blueprintId);
                 inflight.previousBlueprint().apply(() -> unloadBlueprintSlices(inflight),
-                                                   previous -> restorePreviousBlueprint(blueprintId, previous));
+                                                   previous -> restorePreviousBlueprint(previous));
                 break;
             }
         }
@@ -1970,16 +1998,16 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             submitBatch(consensusCommands);
         }
 
-        private void restorePreviousBlueprint(BlueprintId blueprintId, ExpandedBlueprint previous) {
-            restoringBlueprints.add(blueprintId);
+        private void restorePreviousBlueprint(ExpandedBlueprint previous) {
+            restoringBlueprints.add(previous.id());
             log.info("ALL_OR_NOTHING: Restoring previous blueprint {} with {} slices",
-                     blueprintId.asString(),
+                     previous.id().asString(),
                      previous.loadOrder().size());
-            var bpKey = AppBlueprintKey.appBlueprintKey(blueprintId);
+            var bpKey = AppBlueprintKey.appBlueprintKey(previous.id());
             var bpValue = AppBlueprintValue.appBlueprintValue(previous);
             var command = new KVCommand.Put<AetherKey, AetherValue>(bpKey, bpValue);
-            ctx.cluster().apply(List.of(command)).onSuccess(_ -> SharedScheduler.schedule(() -> restoringBlueprints.remove(blueprintId),
-                                                                                          timeSpan(5).seconds())).onFailure(cause -> handleBlueprintRestoreFailure(blueprintId,
+            ctx.cluster().apply(List.of(command)).onSuccess(_ -> SharedScheduler.schedule(() -> restoringBlueprints.remove(previous.id()),
+                                                                                          timeSpan(5).seconds())).onFailure(cause -> handleBlueprintRestoreFailure(previous.id(),
                                                                                                                                                                    cause));
         }
 
@@ -1988,6 +2016,20 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       blueprintId.asString(),
                       cause.message());
             restoringBlueprints.remove(blueprintId);
+        }
+
+        // --- package-private test seams (exercise the private transactional/isolation logic) ---
+
+        boolean hasConflictingOwnershipForTest(ExpandedBlueprint expanded) {
+            return hasConflictingOwnership(expanded);
+        }
+
+        Option<ExpandedBlueprint> capturePreviousBlueprintForTest(ExpandedBlueprint expanded) {
+            return capturePreviousBlueprint(expanded);
+        }
+
+        void restorePreviousBlueprintForTest(ExpandedBlueprint previous) {
+            restorePreviousBlueprint(previous);
         }
 
         public record InFlightBlueprint(BlueprintId id,
