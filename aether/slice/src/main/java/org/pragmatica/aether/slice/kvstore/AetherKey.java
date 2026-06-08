@@ -1293,30 +1293,6 @@ import static org.pragmatica.lang.Result.success;
 
     Fn1<Cause, String> CLUSTER_PHASE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-phase key format: %s");
 
-    record GenerationSnapshotKey() implements AetherKey {
-        private static final String KEY = "generation-snapshot";
-
-        @SuppressWarnings("JBCT-VO-02") public static final GenerationSnapshotKey SINGLETON = new GenerationSnapshotKey();
-
-        @Override public String asString() {
-            return KEY;
-        }
-
-        @Override public String toString() {
-            return asString();
-        }
-
-        @SuppressWarnings("JBCT-VO-02") public static GenerationSnapshotKey generationSnapshotKey() {
-            return SINGLETON;
-        }
-
-        public static Result<GenerationSnapshotKey> generationSnapshotKey(String key) {
-            if (!KEY.equals(key)) {return GENERATION_SNAPSHOT_KEY_FORMAT_ERROR.apply(key).result();}
-            return success(SINGLETON);
-        }
-    }
-
-    Fn1<Cause, String> GENERATION_SNAPSHOT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid generation-snapshot key format: %s");
 
     record ConsumerGroupKey(String groupId, String streamName, int partition) implements AetherKey {
         private static final String PREFIX = "consumer-group/";

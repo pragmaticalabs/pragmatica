@@ -76,9 +76,7 @@ import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.metrics.ComprehensiveSnapshotCollector;
-import org.pragmatica.aether.deployment.generation.ClusterGenerationProjector;
 import org.pragmatica.aether.deployment.generation.BootstrapModule;
-import org.pragmatica.aether.deployment.generation.GenerationSnapshotPublisher;
 import org.pragmatica.aether.deployment.generation.PresenceGenerationSnapshotSource;
 import org.pragmatica.aether.deployment.generation.SwimHintsRegistry;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
@@ -86,9 +84,7 @@ import org.pragmatica.aether.metrics.ClusterSyncPongSignalFan;
 import org.pragmatica.aether.metrics.ClusterSyncScheduler;
 import org.pragmatica.aether.metrics.MinuteAggregator;
 import org.pragmatica.aether.metrics.PeriodicObservationConfig;
-import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.GenerationChangedSink;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.metrics.artifact.ArtifactMetricsCollector;
@@ -251,7 +247,6 @@ import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -519,19 +514,14 @@ public interface AetherNode extends ManageableNode {
     /// NTT reconcile fan-out (membership v2). Fired exactly once per stable membership
     /// transition (hysteresis flip OR hard-evict — both gated by `emitIfChanged`/`evictLocked`
     /// so an already-absent re-evict is a no-op and never re-triggers). Propagates the new
-    /// member count to the quorum-loss detector, nudges the leader reconciler, AND marks the
-    /// generation-snapshot publisher dirty so the membership delta re-projects within one
-    /// reproject cycle (→ TopologyObserver NodeRemoved → ClusterEventAggregator NODE_FAILED),
-    /// instead of waiting for an unrelated dirty trigger.
+    /// member count to the quorum-loss detector and nudges the leader reconciler.
     @Contract
     private static void onNttReconcile(AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
                                        AtomicReference<PresenceSampler> presenceSamplerRef,
                                        AtomicReference<MembershipFsm> membershipFsmRef,
-                                       AtomicReference<LeaderReconciler> leaderReconcilerRef,
-                                       AtomicReference<GenerationSnapshotPublisher> publisherRef) {
+                                       AtomicReference<LeaderReconciler> leaderReconcilerRef) {
         Option.option(presenceSamplerRef.get()).onPresent(sampler -> propagateMemberCount(quorumLossDetectorRef, membershipFsmRef, sampler));
         Option.option(leaderReconcilerRef.get()).onPresent(LeaderReconciler::onTopologyUnhealthy);
-        Option.option(publisherRef.get()).onPresent(GenerationSnapshotPublisher::markDirty);
     }
 
     /// Feed the quorum-loss detector the current member count. Membership-FSM unification (Wave D,
@@ -716,8 +706,6 @@ public interface AetherNode extends ManageableNode {
                           PresenceSampler presenceSampler,
                           MembershipFsm membershipFsm,
                           Runnable startSwimTrigger,
-                          Supplier<Option<ClusterGenerationSnapshot>> generationSnapshotSupplier,
-                          Runnable refreshGenerationSnapshot,
                           Option<ManagementServer> managementServer,
                           Option<DiscoveryProvider> discoveryProvider,
                           Option<CertificateRenewalScheduler> certRenewalScheduler,
@@ -747,18 +735,8 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
-            public Option<ClusterGenerationSnapshot> currentGenerationSnapshot() {
-                return generationSnapshotSupplier.get();
-            }
-
-            @Override
             public Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver() {
                 return group -> clusterNode.leaderManager().leader().toResult(TaskAssignmentError.notAssigned(group));
-            }
-
-            @Override
-            public void requestGenerationSnapshotRefresh() {
-                refreshGenerationSnapshot.run();
             }
 
             @Override
@@ -1220,11 +1198,6 @@ public interface AetherNode extends ManageableNode {
         SharedScheduler.scheduleAtFixedRate(() -> bumpGenerationIfLeader(isLeaderSupplier, generationCounter),
                                             config.timeouts().cluster().pingInterval(),
                                             config.timeouts().cluster().pingInterval());
-        var projectorEarly = ClusterGenerationProjector.clusterGenerationProjector();
-        var generationChangedSink = buildGenerationChangedSink(delegateRouter);
-        Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier = () -> kvStore.getTyped(AetherKey.GenerationSnapshotKey.SINGLETON,
-                                                                                              AetherValue.GenerationSnapshotValue.class)
-                                                                                    .map(AetherValue.GenerationSnapshotValue::snapshot);
         // B4 (membership v2 §7.5): bind the CDM readiness supplier now that the pong fan + self-state
         // holder exist (READY peers from the leader view + self when locally READY).
         cdmReadyNodesRef.set(() -> nodesReporting(pongSignalFan, nodeReportedStateHolder, config.self(), NodeReportedState.READY));
@@ -1708,8 +1681,7 @@ public interface AetherNode extends ManageableNode {
                                .or(() -> config.topology().coreNodes().size());
         var leaderReconcilerRef = new AtomicReference<LeaderReconciler>();
         var quorumLossDetectorRef = new AtomicReference<QuorumLossDetector>();
-        var publisherRef = new AtomicReference<GenerationSnapshotPublisher>();
-        Runnable nttReconcileTrigger = () -> onNttReconcile(quorumLossDetectorRef, presenceSamplerRef, membershipFsmRef, leaderReconcilerRef, publisherRef);
+        Runnable nttReconcileTrigger = () -> onNttReconcile(quorumLossDetectorRef, presenceSamplerRef, membershipFsmRef, leaderReconcilerRef);
         Supplier<HealthSnapshot> nttHealthSupplier =
             () -> swimHealthDetector.currentHealth()
                                     .or(() -> HealthSnapshot.healthSnapshot(Map.of()));
@@ -1904,30 +1876,13 @@ public interface AetherNode extends ManageableNode {
                                                                          .onPresent(swimHealthDetector::onNodeConnected)
                                                                          .onEmpty(() -> swimHealthDetector.onNodeConnected(connection.nodeId()))));
         Supplier<BootstrapModule.ClusterConfigBaseline> configBaselineSupplier = () -> clusterConfigBaseline(config.topology());
-        var publisherExecutor = Executors.newSingleThreadExecutor(runnable -> daemonThread(runnable, "generation-snapshot-publisher"));
         // Membership-FSM unification (Wave D, consumer #4): the cluster-quiescence gate's health
-        // source is migrated from the SWIM-hints registry to the authoritative MembershipFsm. The
-        // FSM's DEAD→FAULTY / SUSPECT→SUSPECTED projection (healthHints()) is behavior-preserving —
-        // it carries the exact same downgrade-only HealthHint map the registry produced, so the
-        // projector's deriveClusterQuiescence verdict (DEGRADED on any FAULTY/SUSPECTED) is
-        // unchanged. The SwimHintsRegistry tap stays wired (peer-health observability) but no longer
-        // feeds the publisher; the FSM is the single membership-health authority.
+        // source is the authoritative MembershipFsm (healthHints()). The SwimHintsRegistry tap stays
+        // wired (peer-health observability) but no longer feeds any consumer; the FSM is the single
+        // membership-health authority.
         var swimHints = SwimHintsRegistry.swimHintsRegistry(java.time.Duration.ofMillis(config.autoHeal().swimHintsTtl().millis()),
-                                                            () -> Option.option(publisherRef.get()).onPresent(GenerationSnapshotPublisher::markDirty));
+                                                            () -> {});
         peerObservationStore.subscribeHealth(swimHints::onPeerHealth);
-        var generationSnapshotPublisher = GenerationSnapshotPublisher.generationSnapshotPublisher(isLeaderSupplier,
-                                                                                                  rabiaTermSupplier,
-                                                                                                  hlcClock,
-                                                                                                  projectorEarly,
-                                                                                                  membershipFsm::healthHints,
-                                                                                                  kvStore::snapshot,
-                                                                                                  kvStore,
-                                                                                                  clusterNode,
-                                                                                                  publisherExecutor,
-                                                                                                  // #110: snapshot membership now FSM-counted (MEMBER + SUSPECT, SUSPECT-inclusive).
-                                                                                                  membershipFsm::countedMembers,
-                                                                                                  ((TopologyObserver) clusterNode.topologyManager())::get);
-        publisherRef.set(generationSnapshotPublisher);
         var bootstrapModule = BootstrapModule.bootstrapModule(isLeaderSupplier,
                                                               rabiaTermSupplier,
                                                               () -> isLeaderSupplier.getAsBoolean()
@@ -1939,11 +1894,6 @@ public interface AetherNode extends ManageableNode {
                                                               config::self,
                                                               configBaselineSupplier,
                                                               clusterNode);
-        var publisherTickExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> daemonThread(runnable, "generation-publisher-tick"));
-        publisherTickExecutor.scheduleAtFixedRate(generationSnapshotPublisher::markDirty,
-                                                  1,
-                                                  1,
-                                                  TimeUnit.SECONDS);
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
         attachQuicConnectivityReporter(clusterNode.network(),
                                        isLeaderSupplier,
@@ -1956,46 +1906,19 @@ public interface AetherNode extends ManageableNode {
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForPublisher(change,
                                                                                       leaderTerm,
-                                                                                      generationSnapshotPublisher,
                                                                                       bootstrapModule)));
-        // RC1 Step 2: snapshot-then-tail wiring. GSP and BootstrapModule already
-        // consume the current KV snapshot via their `kvSnapshotSupplier` at the time
-        // of `projectFromKv` / `projectFromCommittedAtoms`. The routes attached below
-        // provide the "tail" — every MembershipDecision variant routed by TopologyObserver
-        // (single canonical emitter) signals dirty + bootstrap retry. Membership is
-        // presence-derived (SWIM/QUIC via NTT); there is no node-state KV listener.
-        wireMembershipDecisionTail(allEntries, generationSnapshotPublisher::onMembershipDecision);
+        // RC1 Step 2: snapshot-then-tail wiring. BootstrapModule consumes the current KV snapshot
+        // via its `kvSnapshotSupplier` at the time of `projectFromCommittedAtoms`. The route attached
+        // below provides the "tail" — every MembershipDecision variant routed by TopologyObserver
+        // (single canonical emitter) signals bootstrap retry. Membership is presence-derived
+        // (SWIM/QUIC via NTT); there is no node-state KV listener.
         wireMembershipDecisionTail(allEntries, bootstrapModule::onMembershipDecision);
-        var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.GovernorAnnouncementKey.class,
-                                                                                                          _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.GovernorAnnouncementKey.class,
-                                                                                                                                                                 _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.SpokesmanKey.class,
-                                                                                                                                                                                                                     _ -> {
-                                                                                                                                                                                                                         generationSnapshotPublisher.markDirty();
-                                                                                                                                                                                                                         bootstrapModule.retryIfNeeded();
-                                                                                                                                                                                                                     }).onRemove(AetherKey.SpokesmanKey.class,
-                                                                                                                                                                                                                                 _ -> generationSnapshotPublisher.markDirty())
-        // Membership dirty signal arrives via the MembershipDecision route attached
-        // below (TopologyObserver emits one decision per membership change, with
-        // snapshot-then-tail semantics for GSP + BootstrapModule). Membership is
-        // presence-derived; there is no node-state KV listener.
-        .onPut(AetherKey.ClusterConfigKey.class,
-                                                                                                        _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.ClusterConfigKey.class,
-                                                                                                                                                               _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.ClusterConfigKey.class,
-                                                                                                                                                                                                                   (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue>_) -> clusterTopologyManager.onClusterConfigChanged()).onPut(AetherKey.VersionRoutingKey.class,
-                                                                                                                                                                                                                                                                                                                                                                         _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.VersionRoutingKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.NodeArtifactKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.NodeArtifactKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.SliceTargetKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.SliceTargetKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.SliceNodeKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.SliceNodeKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.AppBlueprintKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.AppBlueprintKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.DhtPartitionOwnershipKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.DhtPartitionOwnershipKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  _ -> generationSnapshotPublisher.markDirty()).build();
+        var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                .onPut(AetherKey.SpokesmanKey.class, _ -> bootstrapModule.retryIfNeeded())
+                .onPut(AetherKey.ClusterConfigKey.class,
+                       (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue>_) -> clusterTopologyManager.onClusterConfigChanged())
+                .build();
         allEntries.addAll(healthKvRouter.asRouteEntries());
-        Supplier<Option<ClusterGenerationSnapshot>> spokesmanSnapshotSupplier = snapshotSupplier;
         var spokesmanPingLoop = org.pragmatica.aether.worker.metrics.SpokesmanPingLoop.spokesmanPingLoop(config.self(),
                                                                                                          clusterNode.network(),
                                                                                                          config.timeouts().cluster().pingInterval(),
@@ -2296,8 +2219,6 @@ public interface AetherNode extends ManageableNode {
                                   presenceSampler,
                                   membershipFsm,
                                   startSwimTrigger,
-                                  spokesmanSnapshotSupplier,
-                                  generationSnapshotPublisher::markDirty,
                                   Option.empty(),
                                   discoveryProvider,
                                   certRenewalScheduler,
@@ -2399,8 +2320,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                       presenceSampler,
                                                                                                       membershipFsm,
                                                                                                       startSwimTrigger,
-                                                                                                      spokesmanSnapshotSupplier,
-                                                                                                      generationSnapshotPublisher::markDirty,
                                                                                                       Option.some(managementServer),
                                                                                                       discoveryProvider,
                                                                                                       certRenewalScheduler,
@@ -2713,23 +2632,14 @@ public interface AetherNode extends ManageableNode {
         return new BootstrapModule.ClusterConfigBaseline(topology.clusterSize(), topology.coreMin(), topology.coreMax());
     }
 
-    private static GenerationChangedSink buildGenerationChangedSink(MessageRouter router) {
-        return notice -> router.route(OperationalEvent.GenerationChanged.generationChanged(notice.oldEpoch().toString(),
-                                                                                           notice.newEpoch().toString(),
-                                                                                           notice.reason().name()));
-    }
-
     private static void onLeaderChangeForPublisher(LeaderNotification.LeaderChange change,
                                                    AtomicLong leaderTerm,
-                                                   GenerationSnapshotPublisher publisher,
                                                    BootstrapModule bootstrap) {
         if (change.localNodeIsLeader()) {
             leaderTerm.incrementAndGet();
             bootstrap.onLeaderGained();
-            publisher.onLeaderGained();
         } else {
             bootstrap.onLeaderLost();
-            publisher.onLeaderLost();
         }
     }
 

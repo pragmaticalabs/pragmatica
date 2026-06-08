@@ -25,7 +25,6 @@ import java.util.Set;
                                                                  DhtPartitionOwnershipKey.class,
                                                                  SpokesmanKey.class,
                                                                  ProvisioningSlotKey.class,
-                                                                 GenerationSnapshotKey.class,
                                                                  ClusterPhaseKey.class);
 
     Set<String> EPHEMERAL_SECTIONS = Set.of("node-artifact",
@@ -43,7 +42,6 @@ import java.util.Set;
                                             "dht-partition-ownership",
                                             "spokesman",
                                             "provisioning-slot",
-                                            "generation-snapshot",
                                             "cluster-phase");
 
     static boolean isEphemeral(AetherKey key) {

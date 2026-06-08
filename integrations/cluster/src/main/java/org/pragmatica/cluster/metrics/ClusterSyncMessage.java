@@ -22,8 +22,9 @@ import java.util.Set;
 /// state, and observed epoch.
 ///
 /// Carries Rabia-term / epoch fencing, observed lifecycle state, and per-community
-/// `CommunityReport` piggybacks. Cluster-generation snapshots are delivered via the
-/// KV-Store (`GenerationSnapshotKey`); the metrics ping channel is metrics-only.
+/// `CommunityReport` piggybacks. The metrics ping channel is metrics-only; cluster
+/// membership/generation state is derived live from the per-node membership FSM, not
+/// carried on this channel.
 ///
 /// See `aether/docs/specs/cluster-generation-spec.md` §7.
 @Codec

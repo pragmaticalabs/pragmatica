@@ -15,7 +15,6 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
-import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
@@ -1335,12 +1334,6 @@ import static org.pragmatica.lang.Option.none;
 
         public ProvisioningSlotValue withAssignedNode(NodeId nodeId) {
             return new ProvisioningSlotValue(spawnedAtMs, Option.option(nodeId), occupantEpoch, supersededNodeId);
-        }
-    }
-
-    record GenerationSnapshotValue(ClusterGenerationSnapshot snapshot) implements AetherValue {
-        public static GenerationSnapshotValue generationSnapshotValue(ClusterGenerationSnapshot snapshot) {
-            return new GenerationSnapshotValue(snapshot);
         }
     }
 

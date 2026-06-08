@@ -960,7 +960,7 @@ class MembershipFsmTest {
     }
 
     /// Membership-FSM unification (Wave D, consumer #4): the FSM-state → quiescence `HealthHint`
-    /// projection that replaces the SWIM-hints map feeding `ClusterGenerationProjector`. Downgrade-only
+    /// projection that replaces the SWIM-hints map feeding `ClusterQuiescenceEvaluator`. Downgrade-only
     /// (DEAD → FAULTY, SUSPECT → SUSPECTED); every healthy-by-construction state is OMITTED so the
     /// projector defaults it to HEALTHY — reproducing the swimHints semantics exactly.
     @Nested

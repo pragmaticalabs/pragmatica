@@ -331,9 +331,9 @@ public final class MembershipFsm {
     }
 
     /// FSM-derived health-hint projection for the cluster-quiescence gate
-    /// ([`org.pragmatica.aether.deployment.generation.ClusterGenerationProjector#deriveClusterQuiescence`]).
+    /// ([`org.pragmatica.aether.deployment.generation.ClusterQuiescenceEvaluator#evaluateCluster`]).
     /// Mirrors the semantics of the SWIM-hints map it replaces: only a downgrade is carried, a
-    /// HEALTHY member is OMITTED (the projector's `deriveHealthHint` defaults an absent entry to
+    /// HEALTHY member is OMITTED (the evaluator defaults an absent entry to
     /// HEALTHY). DEAD → [`HealthHint#FAULTY`], SUSPECT → [`HealthHint#SUSPECTED`] ONLY while the last
     /// doubt is within [`#suspectHintTtlMs`] — a stale one-shot SWIM-suspect decays to healthy after
     /// the TTL (#68 parity with the legacy `SwimHintsRegistry#currentTtlFiltered`); every other state

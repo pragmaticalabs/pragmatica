@@ -31,7 +31,7 @@ public record EffectiveMembership(Set<NodeId> coreMemberIds, Source source) {
     }
 
     public enum Source {
-        /// Read served from a live `ClusterGenerationSnapshot` projection.
+        /// Read served from a live membership-FSM projection.
         SNAPSHOT,
         /// Read served from `TopologyObserver`'s in-memory `nodeStatesById` map.
         LEGACY

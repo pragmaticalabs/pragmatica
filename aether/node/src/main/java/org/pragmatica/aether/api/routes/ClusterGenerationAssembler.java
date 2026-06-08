@@ -44,8 +44,8 @@ import java.util.stream.Stream;
 
 /// Live assembler for the cluster-generation STATUS view. Builds [`ClusterGenerationResponse`]
 /// directly from the per-node [`MembershipFsm`], the KV snapshot and the observed ping epoch —
-/// no KV-persisted `ClusterGenerationSnapshot` is read. Replicates the wire-shape semantics of the
-/// former `ClusterGenerationProjector` + snapshot-route mappers: members from FSM core set, health
+/// no KV-persisted generation snapshot is read. Replicates the wire-shape semantics of the
+/// former generation projector + snapshot-route mappers: members from FSM core set, health
 /// from TTL-decayed hints (defaulting HEALTHY), communities/partitions/desiredSize from KV, and
 /// cluster/community quiescence from the pure [`ClusterQuiescenceEvaluator`]. Pure w.r.t. inputs.
 public sealed interface ClusterGenerationAssembler {

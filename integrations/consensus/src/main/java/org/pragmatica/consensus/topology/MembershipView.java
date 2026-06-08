@@ -25,8 +25,8 @@ import java.util.Set;
 ///
 /// Intentionally narrow: only the node-id / count fields that `TopologyObserver` needs
 /// are exposed. This keeps `integrations/consensus` free of any dependency on
-/// `aether/slice` types (`ClusterGenerationSnapshot`, `Epoch`, `CoreMember`), while still
-/// letting downstream modules adapt their richer snapshot types into this view.
+/// `aether/slice` types (`Epoch`, `CoreMember`), while still
+/// letting downstream modules adapt their richer membership types into this view.
 ///
 /// Snapshot adapters (e.g. in `aether/node`) are responsible for translating
 /// per-member lifecycle / health hints into the two buckets defined here:

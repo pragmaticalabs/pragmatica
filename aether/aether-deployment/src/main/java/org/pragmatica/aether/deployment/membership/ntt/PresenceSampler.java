@@ -72,10 +72,9 @@ import static org.pragmatica.lang.Option.some;
 /// **Internal presence set is NOT a membership authority.** The `stableMembers` set is this
 /// sampler's OWN debounced presence state — it drives the reconcile trigger and the peak. It
 /// is no longer exposed as a count anyone treats as cluster membership. The one remaining
-/// presence-view read ([`#currentMembers`]) still backs the **generation-snapshot path**
-/// (`PresenceGenerationSnapshotSource` BOOTING→NORMAL latch + `GenerationSnapshotPublisher`
-/// membership source); migrating that path off this presence view onto the FSM is a
-/// deliberately-deferred separate step (behavior-affecting on the #68-critical generation path).
+/// presence-view read ([`#currentMembers`]) still backs the **generation-snapshot source**
+/// (`PresenceGenerationSnapshotSource` BOOTING→NORMAL latch); migrating that path off this
+/// presence view onto the FSM is a deliberately-deferred separate step.
 ///
 /// **Inputs.**
 /// - [`#onSwimObservation`] — biases the NEXT sample only: `HealthyObserved` PRESENT,

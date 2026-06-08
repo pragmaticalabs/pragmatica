@@ -24,7 +24,6 @@ import org.pragmatica.aether.metrics.artifact.ArtifactMetricsCollector;
 import org.pragmatica.aether.metrics.deployment.DeploymentMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
-import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
@@ -102,11 +101,6 @@ public interface ManageableNode {
     /// inferring it from the `renewalStatus` placeholder. See
     /// `aether/docs/internal/audits/integration-test-audit-2026-05-21.md` §2.2.
     boolean tlsEnabled();
-
-    Option<ClusterGenerationSnapshot> currentGenerationSnapshot();
-
-    @SuppressWarnings("JBCT-RET-01")
-    void requestGenerationSnapshotRefresh();
 
     int connectedNodeCount();
     Map<String, Number> transportMetrics();
