@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -239,7 +240,6 @@ class BootstrapModuleTest {
 
     private static Fixture newFixture(BootstrapModule.ClusterConfigBaseline baseline) {
         var hlcClock = HlcClock.hlcClock(new NodeId("test-self"));
-        var projector = ClusterGenerationProjector.clusterGenerationProjector();
         Map<AetherKey, AetherValue> kv = new HashMap<>();
         var isLeader = new AtomicBoolean(true);
         var cluster = new RecordingClusterNode();
@@ -247,7 +247,7 @@ class BootstrapModuleTest {
                                                       () -> 1L,
                                                       () -> Option.<Long>none(),
                                                       hlcClock,
-                                                      projector,
+                                                      () -> Set.<NodeId>of(),
                                                       () -> Map.copyOf(kv),
                                                       () -> SELF,
                                                       () -> baseline,
@@ -300,9 +300,9 @@ class BootstrapModuleTest {
         }
     }
 
-    /// Minimal SWIM/NTT-free topology stub. Membership-v2 finale: the bootstrap cold-start
-    /// fallback seeds initial core members from `topologyManager().coreNodes()`; these tests
-    /// exercise DHT/config/callback paths only and need an empty topology (no core members).
+    /// Minimal SWIM/NTT-free topology stub. Membership-v2 finale: the bootstrap now sources
+    /// core members from the per-node `MembershipFsm` counted-members supplier (empty here);
+    /// these tests exercise DHT/config/callback paths only and need an empty topology.
     private static TopologyManager emptyTopologyManager() {
         return new TopologyManager() {
             @Override public NodeInfo self() {return NodeInfo.nodeInfo(SELF, new NodeAddress("localhost", 9000));}

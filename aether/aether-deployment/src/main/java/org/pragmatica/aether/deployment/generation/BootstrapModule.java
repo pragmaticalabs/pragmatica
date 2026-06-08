@@ -4,27 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.generation;
 
-import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.GenerationReason;
-import org.pragmatica.aether.slice.generation.PartitionOwner;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.GenerationSnapshotKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.SpokesmanKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.GenerationSnapshotValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
@@ -72,9 +61,9 @@ public interface BootstrapModule {
 
     /// RC1 Step 2: tail `MembershipDecision` events from `TopologyObserver` so the
     /// bootstrap module retries its core-partition seeding whenever the membership
-    /// projection changes. The committed-atom KV snapshot supplier remains the source
-    /// for actual seeding work — the subscription is the dirty signal
-    /// (snapshot-then-tail).
+    /// changes. The per-node `MembershipFsm` counted-members supplier (plus KV) is the
+    /// source for actual seeding work — the subscription is the dirty signal
+    /// (read-then-tail).
     @Contract
     void onMembershipDecision(MembershipDecision decision);
 
@@ -82,7 +71,7 @@ public interface BootstrapModule {
                                            Supplier<Long> rabiaTermSupplier,
                                            Supplier<Option<Long>> leaderEpochSupplier,
                                            HlcClock hlcClock,
-                                           ClusterGenerationProjector projector,
+                                           Supplier<Set<NodeId>> coreMembersSupplier,
                                            Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier,
                                            Supplier<NodeId> selfSupplier,
                                            Supplier<ClusterConfigBaseline> configBaselineSupplier,
@@ -91,7 +80,7 @@ public interface BootstrapModule {
                                          rabiaTermSupplier,
                                          leaderEpochSupplier,
                                          hlcClock,
-                                         projector,
+                                         coreMembersSupplier,
                                          kvSnapshotSupplier,
                                          selfSupplier,
                                          configBaselineSupplier,
@@ -106,7 +95,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                              Supplier<Long> rabiaTermSupplier,
                              Supplier<Option<Long>> leaderEpochSupplier,
                              HlcClock hlcClock,
-                             ClusterGenerationProjector projector,
+                             Supplier<Set<NodeId>> coreMembersSupplier,
                              Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier,
                              Supplier<NodeId> selfSupplier,
                              Supplier<BootstrapModule.ClusterConfigBaseline> configBaselineSupplier,
@@ -121,11 +110,10 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     @Contract
     @Override
     public void onLeaderGained() {
-        log.info("BootstrapModule becoming leader — projecting from committed atoms, then planning bootstrap");
+        log.info("BootstrapModule becoming leader — reading core members from membership FSM, then planning bootstrap");
         bootstrapComplete.set(false);
         bootstrapAttempts.set(0);
-        var seeded = currentMembershipSnapshot();
-        performLeaderChangeBootstrap(seeded);
+        performLeaderChangeBootstrap(coreMembersSupplier.get());
     }
 
     @Contract
@@ -158,17 +146,17 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     }
 
     @Contract
-    private void performLeaderChangeBootstrap(ClusterGenerationSnapshot seeded) {
-        cluster.onPresent(clusterNode -> applyLeaderChangeBootstrapBatch(clusterNode, seeded));
+    private void performLeaderChangeBootstrap(Set<NodeId> coreMembers) {
+        cluster.onPresent(clusterNode -> applyLeaderChangeBootstrapBatch(clusterNode, coreMembers));
         if (cluster.isEmpty()) {fireBootstrapCommitted();}
     }
 
     @Contract
     private void applyLeaderChangeBootstrapBatch(ClusterNode<KVCommand<AetherKey>> clusterNode,
-                                                 ClusterGenerationSnapshot seeded) {
+                                                 Set<NodeId> coreMembers) {
         var capturedEpoch = leaderEpochSupplier.get();
         var batch = new ArrayList<KVCommand<AetherKey>>();
-        var corePlan = planCoreBootstrap(seeded);
+        var corePlan = planCoreBootstrap(coreMembers);
         var configPlan = planClusterConfigSeed();
         corePlan.onPresent(plan -> batch.add(plan.command()));
         configPlan.onPresent(plan -> batch.add(plan.command()));
@@ -229,24 +217,25 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     }
 
     @Contract
-    private void attemptBootstrap(ClusterGenerationSnapshot seeded) {
+    private void attemptBootstrap(Set<NodeId> coreMembers) {
         if (bootstrapComplete.get()) {return;}
-        cluster.onPresent(clusterNode -> applyCoreBootstrapRetry(clusterNode, seeded));
+        cluster.onPresent(clusterNode -> applyCoreBootstrapRetry(clusterNode, coreMembers));
     }
 
     @Contract
     private void applyCoreBootstrapRetry(ClusterNode<KVCommand<AetherKey>> clusterNode,
-                                         ClusterGenerationSnapshot seeded) {
-        planCoreBootstrap(seeded).onPresent(plan -> writeCoreBootstrap(clusterNode, plan));
+                                         Set<NodeId> coreMembers) {
+        planCoreBootstrap(coreMembers).onPresent(plan -> writeCoreBootstrap(clusterNode, plan));
     }
 
-    private Option<CoreBootstrapPlan> planCoreBootstrap(ClusterGenerationSnapshot seeded) {
+    private Option<CoreBootstrapPlan> planCoreBootstrap(Set<NodeId> coreMembers) {
         if (bootstrapComplete.get()) {return Option.none();}
 
         var self = selfSupplier.get();
-        var existing = Option.option(seeded.partitions().get(BootstrapModule.CORE_PARTITION_ID));
+        var partitions = collectPartitions(kvSnapshotSupplier.get());
+        var existing = Option.option(partitions.get(BootstrapModule.CORE_PARTITION_ID));
 
-        return decideCoreOwnership(existing, seeded, self).map(command -> new CoreBootstrapPlan(command, existing, self));
+        return decideCoreOwnership(existing, coreMembers, self).map(command -> new CoreBootstrapPlan(command, existing, self));
     }
 
     private Option<ClusterConfigSeedPlan> planClusterConfigSeed() {
@@ -324,7 +313,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     private void retryBootstrapIfNeeded() {
         if (!isLeaderSupplier.getAsBoolean()) {return;}
         if (!bootstrapComplete.get() && bootstrapAttempts.get() <BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS) {
-            attemptBootstrap(currentMembershipSnapshot());
+            attemptBootstrap(coreMembersSupplier.get());
         }
 
         retryConfigSeedIfNeeded();
@@ -341,42 +330,44 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                                                                            }));
     }
 
-    private Option<KVCommand<AetherKey>> decideCoreOwnership(Option<PartitionOwner> existing,
-                                                             ClusterGenerationSnapshot seeded,
+    private Option<KVCommand<AetherKey>> decideCoreOwnership(Option<DhtPartitionOwnershipValue> existing,
+                                                             Set<NodeId> coreMembers,
                                                              NodeId self) {
-        return existing.fold(() -> Option.some(buildInitialCorePartition(seeded, self)),
-                             owner -> rewriteIfOwnerStale(owner, seeded, self));
+        return existing.fold(() -> Option.some(buildInitialCorePartition(self)),
+                             owner -> rewriteIfOwnerStale(owner, coreMembers, self));
     }
 
-    private Option<KVCommand<AetherKey>> rewriteIfOwnerStale(PartitionOwner owner,
-                                                             ClusterGenerationSnapshot seeded,
+    private Option<KVCommand<AetherKey>> rewriteIfOwnerStale(DhtPartitionOwnershipValue owner,
+                                                             Set<NodeId> coreMembers,
                                                              NodeId self) {
-        return shouldRewriteCoreOwnership(owner, seeded, self)
-               ? Option.some(buildRewrittenCorePartition(owner, seeded, self))
+        return shouldRewriteCoreOwnership(owner, coreMembers, self)
+               ? Option.some(buildRewrittenCorePartition(owner, self))
                : Option.none();
     }
 
-    private static boolean shouldRewriteCoreOwnership(PartitionOwner owner,
-                                                      ClusterGenerationSnapshot seeded,
+    private static boolean shouldRewriteCoreOwnership(DhtPartitionOwnershipValue owner,
+                                                      Set<NodeId> coreMembers,
                                                       NodeId self) {
         var recordedOwner = owner.ownerNodeId();
 
         if (recordedOwner.equals(self)) {return false;}
 
         // Presence-derived (membership-v2 finale): rewrite ownership when the recorded owner is
-        // no longer a current core member. Absence from the presence set IS the stale signal —
-        // there is no synthetic STOPPED/DRAINING lifecycle state to consult anymore.
-        return !seeded.coreMembers().containsKey(recordedOwner);
+        // no longer a current core member. Absence from the FSM counted-members set IS the stale
+        // signal — there is no synthetic STOPPED/DRAINING lifecycle state to consult anymore.
+        return !coreMembers.contains(recordedOwner);
     }
 
-    private KVCommand<AetherKey> buildInitialCorePartition(ClusterGenerationSnapshot seeded, NodeId self) {
-        return buildCorePartitionCommand(self, seeded.epoch(), 1L);
+    private KVCommand<AetherKey> buildInitialCorePartition(NodeId self) {
+        return buildCorePartitionCommand(self, currentEpoch(), 1L);
     }
 
-    private KVCommand<AetherKey> buildRewrittenCorePartition(PartitionOwner owner,
-                                                             ClusterGenerationSnapshot seeded,
-                                                             NodeId self) {
-        return buildCorePartitionCommand(self, seeded.epoch(), owner.ownershipTerm() + 1L);
+    private KVCommand<AetherKey> buildRewrittenCorePartition(DhtPartitionOwnershipValue owner, NodeId self) {
+        return buildCorePartitionCommand(self, currentEpoch(), owner.ownershipTerm() + 1L);
+    }
+
+    private Epoch currentEpoch() {
+        return Epoch.epoch(rabiaTermSupplier.get(), 0L);
     }
 
     private KVCommand<AetherKey> buildCorePartitionCommand(NodeId owner, Epoch epoch, long ownershipTerm) {
@@ -408,95 +399,6 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                                                                                cause.message())).onSuccess(_ -> bootstrapComplete.set(true));
     }
 
-    /// RC1 membership-v2 finale: prefer the already-published NTT-derived generation snapshot
-    /// (stored under `GenerationSnapshotKey.SINGLETON`) as the source of membership /
-    /// `desiredCoreSize` / stale-owner inputs for DHT core-partition bootstrap. The snapshot's
-    /// `coreMembers` are NTT/SWIM-derived as of the generation pipeline.
-    /// Only when no snapshot has been published yet (cold formation, before the first
-    /// generation commit) do we fall back to projecting from committed atoms, which seeds the
-    /// very first core partition from the committed consensus topology (the node-lifecycle atom
-    /// is gone — see {@link #collectLifecycles()}).
-    private ClusterGenerationSnapshot currentMembershipSnapshot() {
-        var kv = kvSnapshotSupplier.get();
-
-        return readPublishedSnapshot(kv).or(() -> projectFromCommittedAtoms(kv));
-    }
-
-    private static Option<ClusterGenerationSnapshot> readPublishedSnapshot(Map<AetherKey, AetherValue> kv) {
-        return Option.option(kv.get(GenerationSnapshotKey.SINGLETON))
-                     .filter(value -> value instanceof GenerationSnapshotValue)
-                     .map(value -> ((GenerationSnapshotValue) value).snapshot());
-    }
-
-    private ClusterGenerationSnapshot projectFromCommittedAtoms(Map<AetherKey, AetherValue> kv) {
-        var lifecycles = collectLifecycles();
-        var governors = collectGovernors(kv);
-        var partitions = collectPartitions(kv);
-        var spokesmen = collectSpokesmen(kv);
-        var nodesWithArtifacts = collectNodesWithArtifacts(kv);
-        var term = rabiaTermSupplier.get();
-        var desiredCoreSize = collectDesiredCoreSize(kv).or(lifecycles.size());
-        var input = ClusterGenerationProjector.ProjectionInput.projectionInput(term,
-                                                                               0L,
-                                                                               desiredCoreSize,
-                                                                               GenerationReason.LEADER_ELECTED,
-                                                                               hlcClock.now(),
-                                                                               lifecycles,
-                                                                               governors,
-                                                                               partitions,
-                                                                               spokesmen,
-                                                                               Map.<NodeId, Epoch> of(),
-                                                                               Map.<String, Epoch> of(),
-                                                                               Map.of(),
-                                                                               nodesWithArtifacts,
-                                                                               Map.of());
-
-        return projector.project(input);
-    }
-
-    private static Option<Integer> collectDesiredCoreSize(Map<AetherKey, AetherValue> kv) {
-        return Option.option(kv.get(ClusterConfigKey.CURRENT))
-                     .filter(v -> v instanceof ClusterConfigValue)
-                     .map(v -> ((ClusterConfigValue) v).coreCount());
-    }
-
-    /// RC1 membership-v2 finale: the node-lifecycle KV atom is deleted, so the cold-start
-    /// fallback seeds the initial core members from the COMMITTED CONSENSUS TOPOLOGY instead
-    /// of scanning the (now-absent) lifecycle atoms. Every committed core node is a member by
-    /// presence; host/port come from the topology's `NodeInfo` if known, else `"" / 0`.
-    /// When no cluster handle is present (test fixtures) the map is empty — the published
-    /// generation snapshot is the steady-state source and this path is the boot-only fallback.
-    private Map<NodeId, MemberLifecycle> collectLifecycles() {
-        return cluster.map(BootstrapModuleRecord::seedFromTopology).or(Map.of());
-    }
-
-    private static Map<NodeId, MemberLifecycle> seedFromTopology(ClusterNode<KVCommand<AetherKey>> clusterNode) {
-        var topology = clusterNode.topologyManager();
-
-        return topology.coreNodes()
-                       .stream()
-                       .collect(Collectors.toUnmodifiableMap(nodeId -> nodeId,
-                                                             nodeId -> toMemberLifecycle(topology.get(nodeId))));
-    }
-
-    private static MemberLifecycle toMemberLifecycle(Option<NodeInfo> info) {
-        return info.map(BootstrapModuleRecord::memberLifecycleFromInfo)
-                   .or(MemberLifecycle.memberLifecycle("", 0));
-    }
-
-    private static MemberLifecycle memberLifecycleFromInfo(NodeInfo info) {
-        return MemberLifecycle.memberLifecycle(info.address().host(),
-                                               info.address().port());
-    }
-
-    private static Map<String, GovernorAnnouncementValue> collectGovernors(Map<AetherKey, AetherValue> kv) {
-        return kv.entrySet()
-                 .stream()
-                 .filter(entry -> entry.getKey() instanceof GovernorAnnouncementKey && entry.getValue() instanceof GovernorAnnouncementValue)
-                 .collect(Collectors.toUnmodifiableMap(entry -> ((GovernorAnnouncementKey) entry.getKey()).communityId(),
-                                                       entry -> (GovernorAnnouncementValue) entry.getValue()));
-    }
-
     private static Map<String, DhtPartitionOwnershipValue> collectPartitions(Map<AetherKey, AetherValue> kv) {
         return kv.entrySet()
                  .stream()
@@ -505,23 +407,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                                                        entry -> (DhtPartitionOwnershipValue) entry.getValue()));
     }
 
-    private static Map<NodeId, SpokesmanValue> collectSpokesmen(Map<AetherKey, AetherValue> kv) {
-        return kv.entrySet()
-                 .stream()
-                 .filter(entry -> entry.getKey() instanceof SpokesmanKey && entry.getValue() instanceof SpokesmanValue)
-                 .collect(Collectors.toUnmodifiableMap(entry -> ((SpokesmanKey) entry.getKey()).coreNodeId(),
-                                                       entry -> (SpokesmanValue) entry.getValue()));
-    }
-
-    private static Set<NodeId> collectNodesWithArtifacts(Map<AetherKey, AetherValue> kv) {
-        return kv.entrySet()
-                 .stream()
-                 .filter(entry -> entry.getKey() instanceof NodeArtifactKey)
-                 .map(entry -> ((NodeArtifactKey) entry.getKey()).nodeId())
-                 .collect(Collectors.toUnmodifiableSet());
-    }
-
-    private record CoreBootstrapPlan(KVCommand<AetherKey> command, Option<PartitionOwner> existing, NodeId self) {}
+    private record CoreBootstrapPlan(KVCommand<AetherKey> command, Option<DhtPartitionOwnershipValue> existing, NodeId self) {}
 
     private record ClusterConfigSeedPlan(KVCommand<AetherKey> command, int coreCount, int coreMin, int coreMax) {}
 }

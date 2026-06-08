@@ -1931,7 +1931,7 @@ public interface AetherNode extends ManageableNode {
                                                                     ? Option.some(leaderTerm.get())
                                                                     : Option.<Long> none(),
                                                               hlcClock,
-                                                              projectorEarly,
+                                                              membershipFsm::countedMembers,
                                                               kvStore::snapshot,
                                                               config::self,
                                                               configBaselineSupplier,
