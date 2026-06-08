@@ -1151,6 +1151,28 @@ slices_active_instances() {
     echo "${count:-0}"
 }
 
+# Assert that the currently ACTIVE slice routing is at the version embedded in a
+# blueprint coordinate (group:artifact:VERSION). Used by 06-deployment strategy
+# tests to verify the v1 baseline is genuinely ACTIVE before a v1→v2 strategy
+# `deploy_start` — the strategy `/api/deploy` path has no redeployment escape
+# hatch, so re-deploying the already-active version returns SameVersionDeployment
+# (HTTP 500) and the response carries no deploymentId. Reuses the same
+# `aether_json slices --state ACTIVE` + version-grep contract already inlined in
+# the blue-green rollback verification.
+assert_active_version() {
+    local coords="$1" desc="$2"
+    local version="${coords##*:}"  # extract "1.0.0" from group:artifact:1.0.0
+    local slices_json active_count
+    slices_json=$(aether_json slices --state ACTIVE)
+    active_count=$(printf '%s' "$slices_json" | grep -oc "\"version\"[[:space:]]*:[[:space:]]*\"${version}\"" || true)
+    if [ "${active_count:-0}" -ge 1 ]; then
+        log_pass "${desc} (${active_count} ACTIVE slice(s) at ${version})"
+        return 0
+    fi
+    log_fail "${desc}: no ACTIVE slice at version ${version}. slices: $(printf '%s' "$slices_json" | head -c 500)"
+    return 1
+}
+
 slices_target_total() {
     local slices
     slices=$(cluster_slices)

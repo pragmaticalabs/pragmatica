@@ -22,11 +22,20 @@ test_cluster_ready() {
 
 test_canary_start() {
     deploy_cleanup
-    # Baseline v1 must be active for canary upgrade to v2
+    # Baseline v1 must be active for canary upgrade to v2. A prior strategy test
+    # (blue-green / rolling) can leave v1.0.1 ACTIVE — `deploy_cleanup` only aborts
+    # NON-terminal deployments, so a COMPLETED v2 stays active. `deploy_blueprint v1`
+    # is the redeployment-safe downgrade that restores v1 ACTIVE; without a verified
+    # v1 baseline the canary `deploy_start v2` hits SameVersionDeployment (500) and
+    # the response carries no deploymentId.
     push_blueprint "$BLUEPRINT_V1"
     deploy_blueprint "$BLUEPRINT_V1"
-    # ClusterGeneration barrier replaces sleep 3 (registry propagation race).
-    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "v1 deploy did not quiesce"
+    # Barrier on "current" (not "current+1"): when v1 is already active the redeploy
+    # is a no-op that does NOT advance the generation, so a "current+1" target never
+    # quiesces and silently warn-times-out. "current" settles in both the no-op and
+    # the genuine v1.0.1→v1.0.0 downgrade branch.
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 30 || log_warn "v1 baseline did not quiesce"
+    assert_active_version "$BLUEPRINT_V1" "Baseline v1 ACTIVE before canary upgrade"
     push_blueprint "$BLUEPRINT_V2"
     publish_blueprint "$BLUEPRINT_V2"
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "v2 publish did not quiesce"

@@ -17,10 +17,15 @@ test_cluster_ready() {
 
 test_blue_green_start() {
     deploy_cleanup
-    # v1 must be currently active, v2 must be registered (but not active) for the upgrade
+    # v1 must be currently active, v2 must be registered (but not active) for the upgrade.
+    # A prior strategy test can leave v1.0.1 ACTIVE (deploy_cleanup only aborts NON-terminal
+    # deployments); deploy_blueprint v1 is the redeployment-safe downgrade. Barrier on
+    # "current" — a no-op redeploy of the already-active v1 never advances the generation,
+    # so "current+1" would warn-time-out without verifying the baseline.
     push_blueprint "$BLUEPRINT_V1"
     deploy_blueprint "$BLUEPRINT_V1"
-    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "v1 deploy did not quiesce"
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 30 || log_warn "v1 baseline did not quiesce"
+    assert_active_version "$BLUEPRINT_V1" "Baseline v1 ACTIVE before blue-green upgrade"
     push_blueprint "$BLUEPRINT_V2"
     publish_blueprint "$BLUEPRINT_V2"
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "v2 publish did not quiesce"
@@ -69,10 +74,15 @@ test_blue_green_rollback() {
     deploy_cleanup
     push_blueprint "$BLUEPRINT_V1"
     deploy_blueprint "$BLUEPRINT_V1"
-    if ! await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30; then
+    # Barrier on "current": the preceding test_blue_green_complete + cleanup() may have
+    # already restored v1 ACTIVE, making this redeploy a no-op that does not advance the
+    # generation — "current+1" would never quiesce. Verify v1 is the active baseline
+    # before starting the fresh v2 deploy that this rollback scenario will reverse.
+    if ! await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 30; then
         log_fail "Rollback setup: v1 baseline deploy did not quiesce"
         return 1
     fi
+    assert_active_version "$BLUEPRINT_V1" "Rollback setup: v1 ACTIVE before fresh blue-green deploy"
     push_blueprint "$BLUEPRINT_V2"
     publish_blueprint "$BLUEPRINT_V2"
     if ! await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30; then

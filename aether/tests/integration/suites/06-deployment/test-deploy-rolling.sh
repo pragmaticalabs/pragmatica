@@ -17,9 +17,15 @@ test_cluster_ready() {
 
 test_rolling_start() {
     deploy_cleanup
+    # Establish a verified v1 baseline. A prior strategy test can leave v1.0.1 ACTIVE
+    # (deploy_cleanup only aborts NON-terminal deployments, so a COMPLETED v2 stays
+    # active); `deploy_blueprint v1` is the redeployment-safe downgrade. Barrier on
+    # "current" — when v1 is already active the redeploy is a no-op that never advances
+    # the generation, so "current+1" would warn-time-out without guaranteeing anything.
     push_blueprint "$BLUEPRINT_V1"
     deploy_blueprint "$BLUEPRINT_V1"
-    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "v1 deploy did not quiesce"
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 30 || log_warn "v1 baseline did not quiesce"
+    assert_active_version "$BLUEPRINT_V1" "Baseline v1 ACTIVE before rolling upgrade"
     push_blueprint "$BLUEPRINT_V2"
     publish_blueprint "$BLUEPRINT_V2"
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "v2 publish did not quiesce"
