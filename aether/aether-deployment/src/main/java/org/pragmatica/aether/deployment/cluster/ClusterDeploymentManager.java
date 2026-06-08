@@ -24,7 +24,6 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Vers
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
-import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
@@ -201,7 +200,7 @@ public interface ClusterDeploymentManager {
                                         DEFAULT_RECONCILE_INTERVAL,
                                         schemaOrchestrator,
                                         HealthSignalSink.noop(),
-                                        Option::none,
+                                        Set::of,
                                         Set::of);
     }
 
@@ -226,7 +225,7 @@ public interface ClusterDeploymentManager {
                                         reconcileInterval,
                                         schemaOrchestrator,
                                         HealthSignalSink.noop(),
-                                        Option::none,
+                                        Set::of,
                                         Set::of);
     }
 
@@ -252,7 +251,7 @@ public interface ClusterDeploymentManager {
                                         reconcileInterval,
                                         schemaOrchestrator,
                                         healthSignalSink,
-                                        Option::none,
+                                        Set::of,
                                         Set::of);
     }
 
@@ -267,7 +266,7 @@ public interface ClusterDeploymentManager {
                                                              TimeSpan reconcileInterval,
                                                              SchemaOrchestratorService schemaOrchestrator,
                                                              HealthSignalSink healthSignalSink,
-                                                             Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
+                                                             Supplier<Set<NodeId>> countedMembersSupplier,
                                                              Supplier<Set<NodeId>> readyNodesSupplier) {
         return clusterDeploymentManager(self,
                                         cluster,
@@ -280,7 +279,7 @@ public interface ClusterDeploymentManager {
                                         reconcileInterval,
                                         schemaOrchestrator,
                                         healthSignalSink,
-                                        snapshotSupplier,
+                                        countedMembersSupplier,
                                         readyNodesSupplier,
                                         Set::of);
     }
@@ -296,7 +295,7 @@ public interface ClusterDeploymentManager {
                                                              TimeSpan reconcileInterval,
                                                              SchemaOrchestratorService schemaOrchestrator,
                                                              HealthSignalSink healthSignalSink,
-                                                             Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
+                                                             Supplier<Set<NodeId>> countedMembersSupplier,
                                                              Supplier<Set<NodeId>> readyNodesSupplier,
                                                              Supplier<Set<NodeId>> drainingNodesSupplier) {
         var ctx = buildContext(self,
@@ -310,7 +309,7 @@ public interface ClusterDeploymentManager {
                                reconcileInterval,
                                schemaOrchestrator,
                                healthSignalSink,
-                               snapshotSupplier,
+                               countedMembersSupplier,
                                readyNodesSupplier,
                                drainingNodesSupplier);
         return new ClusterDeploymentManagerAdapter(ctx);
@@ -327,7 +326,7 @@ public interface ClusterDeploymentManager {
                                                          TimeSpan reconcileInterval,
                                                          SchemaOrchestratorService schemaOrchestrator,
                                                          HealthSignalSink healthSignalSink,
-                                                         Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
+                                                         Supplier<Set<NodeId>> countedMembersSupplier,
                                                          Supplier<Set<NodeId>> readyNodesSupplier,
                                                          Supplier<Set<NodeId>> drainingNodesSupplier) {
         var ctxHolder = new AtomicReference<ClusterDeploymentContext>();
@@ -344,7 +343,7 @@ public interface ClusterDeploymentManager {
                                                                                                                                            reconcileInterval,
                                                                                                                                            schemaOrchestrator,
                                                                                                                                            healthSignalSink,
-                                                                                                                                           snapshotSupplier,
+                                                                                                                                           countedMembersSupplier,
                                                                                                                                            readyNodesSupplier,
                                                                                                                                            drainingNodesSupplier);
         var _fsm = Fsm.fsm("cluster-deployment", self.id(), initialStateFactory);
@@ -365,7 +364,7 @@ public interface ClusterDeploymentManager {
                                                                  TimeSpan reconcileInterval,
                                                                  SchemaOrchestratorService schemaOrchestrator,
                                                                  HealthSignalSink healthSignalSink,
-                                                                 Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
+                                                                 Supplier<Set<NodeId>> countedMembersSupplier,
                                                                  Supplier<Set<NodeId>> readyNodesSupplier,
                                                                  Supplier<Set<NodeId>> drainingNodesSupplier) {
         var ctx = new ClusterDeploymentContext(fsm,
@@ -376,7 +375,7 @@ public interface ClusterDeploymentManager {
                                                topologyManager,
                                                schemaOrchestrator,
                                                healthSignalSink,
-                                               snapshotSupplier,
+                                               countedMembersSupplier,
                                                readyNodesSupplier,
                                                drainingNodesSupplier,
                                                seedNodes,

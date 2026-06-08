@@ -12,13 +12,6 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Deploym
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
-import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
-import org.pragmatica.aether.slice.generation.ClusterMode;
-import org.pragmatica.aether.slice.generation.ClusterQuiescence;
-import org.pragmatica.aether.slice.generation.CoreMember;
-import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.GenerationReason;
-import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
@@ -31,7 +24,6 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManager;
-import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -46,9 +38,7 @@ import org.pragmatica.statemachine.FsmTestHarness;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
@@ -74,7 +64,7 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
 
     private RecordingClusterNode cluster;
     private InMemoryKvStore kvStore;
-    private AtomicReference<Option<ClusterGenerationSnapshot>> snapshotRef;
+    private AtomicReference<Set<NodeId>> countedMembersRef;
     private Set<NodeId> readyNodes;
     private FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness;
     private ClusterDeploymentContext ctx;
@@ -84,7 +74,7 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
         var router = MessageRouter.mutable();
         kvStore = new InMemoryKvStore(router);
         cluster = new RecordingClusterNode(SELF);
-        snapshotRef = new AtomicReference<>(Option.none());
+        countedMembersRef = new AtomicReference<>(Set.of());
         readyNodes = ConcurrentHashMap.newKeySet();
 
         var ctxHolder = new AtomicReference<ClusterDeploymentContext>();
@@ -98,7 +88,7 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
                                                                 stubTopologyManager(SELF),
                                                                 stubSchemaOrchestrator(),
                                                                 HealthSignalSink.noop(),
-                                                                snapshotRef::get,
+                                                                countedMembersRef::get,
                                                                 () -> readyNodes,
                                                                 Set::of,
                                                                 Set.of(SELF),
@@ -119,26 +109,7 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
     }
 
     private void publishSnapshot(List<NodeId> coreMembers) {
-        var members = new LinkedHashMap<NodeId, CoreMember>();
-        for (var id : coreMembers) {
-            members.put(id, CoreMember.coreMember(id,
-                                                    "localhost",
-                                                    9000,
-                                                    HealthHint.HEALTHY,
-                                                    Epoch.epoch(1L, 0L),
-                                                    Epoch.epoch(1L, 0L)));
-        }
-        var snapshot = ClusterGenerationSnapshot.clusterGenerationSnapshot(Epoch.epoch(1L, 0L),
-                                                                            HlcTimestamp.ZERO,
-                                                                            GenerationReason.LEADER_ELECTED,
-                                                                            coreMembers.size(),
-                                                                            members,
-                                                                            Map.of(),
-                                                                            Map.of(),
-                                                                            ClusterMode.CORE_ONLY,
-                                                                            ClusterQuiescence.QUIESCED,
-                                                                            "");
-        snapshotRef.set(Option.some(snapshot));
+        countedMembersRef.set(Set.copyOf(coreMembers));
     }
 
     private ClusterDeploymentState.Active activeState() {

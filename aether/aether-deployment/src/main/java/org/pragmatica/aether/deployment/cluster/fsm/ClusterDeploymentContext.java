@@ -6,7 +6,6 @@ package org.pragmatica.aether.deployment.cluster.fsm;
 
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
-import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -17,7 +16,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
@@ -40,7 +38,7 @@ public final class ClusterDeploymentContext {
     private final TopologyManager topologyManager;
     private final SchemaOrchestratorService schemaOrchestrator;
     private final HealthSignalSink healthSignalSink;
-    private final Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier;
+    private final Supplier<Set<NodeId>> countedMembersSupplier;
     private final Supplier<Set<NodeId>> readyNodesSupplier;
     private final Supplier<Set<NodeId>> drainingNodesSupplier;
     private final Set<NodeId> seedNodes;
@@ -59,7 +57,7 @@ public final class ClusterDeploymentContext {
                                     TopologyManager topologyManager,
                                     SchemaOrchestratorService schemaOrchestrator,
                                     HealthSignalSink healthSignalSink,
-                                    Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
+                                    Supplier<Set<NodeId>> countedMembersSupplier,
                                     Supplier<Set<NodeId>> readyNodesSupplier,
                                     Supplier<Set<NodeId>> drainingNodesSupplier,
                                     Set<NodeId> seedNodes,
@@ -74,7 +72,7 @@ public final class ClusterDeploymentContext {
              topologyManager,
              schemaOrchestrator,
              healthSignalSink,
-             snapshotSupplier,
+             countedMembersSupplier,
              readyNodesSupplier,
              drainingNodesSupplier,
              seedNodes,
@@ -92,7 +90,7 @@ public final class ClusterDeploymentContext {
                                     TopologyManager topologyManager,
                                     SchemaOrchestratorService schemaOrchestrator,
                                     HealthSignalSink healthSignalSink,
-                                    Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
+                                    Supplier<Set<NodeId>> countedMembersSupplier,
                                     Supplier<Set<NodeId>> readyNodesSupplier,
                                     Supplier<Set<NodeId>> drainingNodesSupplier,
                                     Set<NodeId> seedNodes,
@@ -108,7 +106,7 @@ public final class ClusterDeploymentContext {
         this.topologyManager = topologyManager;
         this.schemaOrchestrator = schemaOrchestrator;
         this.healthSignalSink = healthSignalSink;
-        this.snapshotSupplier = snapshotSupplier;
+        this.countedMembersSupplier = countedMembersSupplier;
         this.readyNodesSupplier = readyNodesSupplier;
         this.drainingNodesSupplier = drainingNodesSupplier;
         this.seedNodes = seedNodes;
@@ -187,8 +185,8 @@ public final class ClusterDeploymentContext {
         return healthSignalSink;
     }
 
-    public Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier() {
-        return snapshotSupplier;
+    public Supplier<Set<NodeId>> countedMembersSupplier() {
+        return countedMembersSupplier;
     }
 
     public Supplier<Set<NodeId>> readyNodesSupplier() {

@@ -14,10 +14,6 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
-import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
-import org.pragmatica.aether.slice.generation.CoreMember;
-import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
@@ -47,7 +43,6 @@ import org.pragmatica.messaging.MessageRouter;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -100,28 +95,10 @@ class ClusterDeploymentManagerTest {
     }
 
     // Membership-v2 finale: the node-lifecycle KV atom is deleted and presence IS membership.
-    // Tests seed present members into `memberSeed`; the snapshot-derived activeNodes() reads from
-    // that in-memory set (drainingNodes() now reads the dedicated draining supplier, not the snapshot).
-    private Supplier<Option<ClusterGenerationSnapshot>> kvBackedSnapshotSupplier() {
-        return this::snapshotFromSeed;
-    }
-
-    private Option<ClusterGenerationSnapshot> snapshotFromSeed() {
-        var members = new LinkedHashMap<NodeId, CoreMember>();
-        memberSeed.forEach(nodeId -> members.put(nodeId, seedMember(nodeId)));
-        if (members.isEmpty()) {return Option.none();}
-
-        return Option.some(ClusterGenerationSnapshot.empty(1L).withDesiredCoreSize(members.size())
-                                                              .withCoreMembers(members));
-    }
-
-    private static CoreMember seedMember(NodeId nodeId) {
-        return CoreMember.coreMember(nodeId,
-                                     "host",
-                                     9000,
-                                     HealthHint.HEALTHY,
-                                     Epoch.epoch(1L, 0L),
-                                     Epoch.epoch(1L, 0L));
+    // Tests seed present members into `memberSeed`; activeNodes() reads from that in-memory counted
+    // set (drainingNodes() reads the dedicated draining supplier).
+    private Supplier<java.util.Set<NodeId>> countedMembersSupplier() {
+        return () -> java.util.Set.copyOf(memberSeed);
     }
 
     private ClusterDeploymentManager buildManager(List<NodeId> initialTopology,
@@ -137,7 +114,7 @@ class ClusterDeploymentManagerTest {
                                                                   ClusterDeploymentManager.DEFAULT_RECONCILE_INTERVAL,
                                                                   NO_OP_SCHEMA,
                                                                   HealthSignalSink.noop(),
-                                                                  kvBackedSnapshotSupplier(),
+                                                                  countedMembersSupplier(),
                                                                   () -> Set.copyOf(initialTopology),
                                                                   Set::of);
     }

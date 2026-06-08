@@ -12,13 +12,6 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Deploym
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
-import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
-import org.pragmatica.aether.slice.generation.ClusterMode;
-import org.pragmatica.aether.slice.generation.ClusterQuiescence;
-import org.pragmatica.aether.slice.generation.CoreMember;
-import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.GenerationReason;
-import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -29,7 +22,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
-import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -52,12 +44,9 @@ import org.pragmatica.statemachine.FsmTestHarness;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 
@@ -79,12 +68,10 @@ class ClusterDeploymentStateActiveTest {
     private RecordingClusterNode cluster;
     private FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness;
     private AtomicLong injectedClock;
-    private AtomicReference<Option<ClusterGenerationSnapshot>> snapshotRef;
 
     @BeforeEach
     void setUp() {
         injectedClock = new AtomicLong(10_000_000L);
-        snapshotRef = new AtomicReference<>(Option.some(buildSnapshot(List.of(SELF, NODE_A))));
         var router = MessageRouter.mutable();
         kvStore = new InMemoryKvStore(router);
         cluster = new RecordingClusterNode(SELF);
@@ -99,7 +86,7 @@ class ClusterDeploymentStateActiveTest {
                                                     stubTopologyManager(SELF),
                                                     stubSchemaOrchestrator(),
                                                     HealthSignalSink.noop(),
-                                                    snapshotRef::get,
+                                                    () -> Set.of(SELF, NODE_A),
                                                     () -> Set.of(SELF, NODE_A),
                                                     Set::of,
                                                     Set.of(SELF, NODE_A),
@@ -108,28 +95,6 @@ class ClusterDeploymentStateActiveTest {
                                                     timeSpan(300).seconds(),
                                                     clock).dormant();
         harness = FsmTestHarness.harness("active-rederive-test-" + SELF.id(), factory);
-    }
-
-    private static ClusterGenerationSnapshot buildSnapshot(List<NodeId> coreMembers) {
-        var members = new LinkedHashMap<NodeId, CoreMember>();
-        for (var id : coreMembers) {
-            members.put(id, CoreMember.coreMember(id,
-                                                   "localhost",
-                                                   9000,
-                                                   HealthHint.HEALTHY,
-                                                   Epoch.epoch(1L, 0L),
-                                                   Epoch.epoch(1L, 0L)));
-        }
-        return ClusterGenerationSnapshot.clusterGenerationSnapshot(Epoch.epoch(1L, 0L),
-                                                                    HlcTimestamp.ZERO,
-                                                                    GenerationReason.LEADER_ELECTED,
-                                                                    coreMembers.size(),
-                                                                    members,
-                                                                    Map.of(),
-                                                                    Map.of(),
-                                                                    ClusterMode.CORE_ONLY,
-                                                                    ClusterQuiescence.QUIESCED,
-                                                                    "");
     }
 
     private ClusterDeploymentState.Active activeState() {

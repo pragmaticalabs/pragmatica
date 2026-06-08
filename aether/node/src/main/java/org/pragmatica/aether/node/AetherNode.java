@@ -1110,12 +1110,15 @@ public interface AetherNode extends ManageableNode {
         var healthSinkRef = new AtomicReference<HealthSignalSink>(HealthSignalSink.noop());
         HealthSignalSink stableHealthSink = signal -> healthSinkRef.get()
                                                                    .emit(signal);
-        var cdmSnapshotSupplierRef = new AtomicReference<Supplier<Option<ClusterGenerationSnapshot>>>(Option::none);
-        Supplier<Option<ClusterGenerationSnapshot>> stableCdmSnapshotSupplier = () -> cdmSnapshotSupplierRef.get()
-                                                                                                            .get();
+        // #114 W2c: CDM counted-members source is the per-node MembershipFsm (lazy deref — the FSM
+        // holder is populated before the CDM reconcile loop first runs), replacing the removed
+        // generation-snapshot supplier.
+        Supplier<Set<NodeId>> cdmCountedMembersSupplier = () -> Option.option(membershipFsmRef.get())
+                                                                     .map(MembershipFsm::countedMembers)
+                                                                     .or(Set.of());
         // B4 (membership v2 §7.5): the CDM allocatable-gate reads the leader readiness view (READY
         // peers + self) instead of a KV lifecycle atom. Late-bound — the pong fan + self-state holder are
-        // constructed further below; this ref mirrors the cdmSnapshotSupplierRef pattern.
+        // constructed further below; this ref mirrors the late-bound supplier pattern.
         var cdmReadyNodesRef = new AtomicReference<Supplier<Set<NodeId>>>(Set::of);
         Supplier<Set<NodeId>> stableCdmReadyNodesSupplier = () -> cdmReadyNodesRef.get().get();
         // Membership-v2: CDM DRAINING set sourced from the real node-authoritative
@@ -1134,7 +1137,7 @@ public interface AetherNode extends ManageableNode {
                                                                                          config.timeouts().deployment().reconciliationInterval(),
                                                                                          schemaOrchestrator,
                                                                                          stableHealthSink,
-                                                                                         stableCdmSnapshotSupplier,
+                                                                                         cdmCountedMembersSupplier,
                                                                                          stableCdmReadyNodesSupplier,
                                                                                          stableCdmDrainingNodesSupplier);
         var loadBalancerManager = config.environment().flatMap(EnvironmentIntegration::loadBalancer).map(provider -> LoadBalancerManager.loadBalancerManager(config.self(),
@@ -1219,7 +1222,6 @@ public interface AetherNode extends ManageableNode {
         Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier = () -> kvStore.getTyped(AetherKey.GenerationSnapshotKey.SINGLETON,
                                                                                               AetherValue.GenerationSnapshotValue.class)
                                                                                     .map(AetherValue.GenerationSnapshotValue::snapshot);
-        cdmSnapshotSupplierRef.set(snapshotSupplier);
         // B4 (membership v2 §7.5): bind the CDM readiness supplier now that the pong fan + self-state
         // holder exist (READY peers from the leader view + self when locally READY).
         cdmReadyNodesRef.set(() -> nodesReporting(pongSignalFan, nodeReportedStateHolder, config.self(), NodeReportedState.READY));

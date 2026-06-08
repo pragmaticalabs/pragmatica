@@ -9,10 +9,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
-import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
-import org.pragmatica.aether.slice.generation.CoreMember;
-import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -37,7 +33,6 @@ import org.pragmatica.consensus.topology.NodeState;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -79,7 +74,7 @@ class ClusterDeploymentManagerTest {
         private ClusterDeploymentManager cdm;
         private final List<KVCommand<AetherKey>> capturedCommands = new ArrayList<>();
         private final CopyOnWriteArrayList<HealthSignal> capturedSignals = new CopyOnWriteArrayList<>();
-        private final AtomicReference<Option<ClusterGenerationSnapshot>> snapshotRef = new AtomicReference<>(Option.none());
+        private final AtomicReference<java.util.Set<NodeId>> countedMembersRef = new AtomicReference<>(Set.of());
         private final AtomicReference<java.util.Set<NodeId>> drainingRef = new AtomicReference<>(Set.of());
 
         @BeforeEach
@@ -88,7 +83,7 @@ class ClusterDeploymentManagerTest {
             capturedSignals.clear();
             // Membership-v2: presence IS membership. The draining set is the real
             // NodeReportedState.DRAINING source, fed via drainingRef (mutated by the test).
-            snapshotRef.set(Option.some(snapshotWithMembers(Set.of(NODE_1, NODE_2, NODE_3, DRAINING_NODE))));
+            countedMembersRef.set(Set.of(NODE_1, NODE_2, NODE_3, DRAINING_NODE));
             drainingRef.set(Set.of());
             var initialTopology = List.of(NODE_1, NODE_2, NODE_3, DRAINING_NODE);
             var router = MessageRouter.mutable();
@@ -100,7 +95,7 @@ class ClusterDeploymentManagerTest {
             TopologyManager topologyManager = stubTopologyManager(NODE_1, initialTopology);
 
             HealthSignalSink capturingSink = capturedSignals::add;
-            Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier = snapshotRef::get;
+            Supplier<java.util.Set<NodeId>> countedMembersSupplier = countedMembersRef::get;
 
             cdm = ClusterDeploymentManager.clusterDeploymentManager(NODE_1,
                                                                      clusterNode,
@@ -113,7 +108,7 @@ class ClusterDeploymentManagerTest {
                                                                      timeSpan(300).seconds(),
                                                                      NO_OP_SCHEMA_ORCHESTRATOR,
                                                                      capturingSink,
-                                                                     snapshotSupplier,
+                                                                     countedMembersSupplier,
                                                                      Set::of,
                                                                      drainingRef::get);
         }
@@ -148,14 +143,14 @@ class ClusterDeploymentManagerTest {
         private ClusterDeploymentManager cdm;
         private final List<KVCommand<AetherKey>> capturedCommands = new ArrayList<>();
         private final CopyOnWriteArrayList<HealthSignal> capturedSignals = new CopyOnWriteArrayList<>();
-        private final AtomicReference<Option<ClusterGenerationSnapshot>> snapshotRef = new AtomicReference<>(Option.none());
+        private final AtomicReference<java.util.Set<NodeId>> countedMembersRef = new AtomicReference<>(Set.of());
         private final AtomicReference<java.util.Set<NodeId>> drainingRef = new AtomicReference<>(Set.of());
 
         @BeforeEach
         void setUp() {
             capturedCommands.clear();
             capturedSignals.clear();
-            snapshotRef.set(Option.none());
+            countedMembersRef.set(Set.of());
             drainingRef.set(Set.of());
             var initialTopology = List.of(NODE_1, NODE_2, NODE_3, DRAINING_NODE);
             var router = MessageRouter.mutable();
@@ -163,7 +158,7 @@ class ClusterDeploymentManagerTest {
             ClusterNode<KVCommand<AetherKey>> clusterNode = stubClusterNode(NODE_1, capturedCommands);
             TopologyManager topologyManager = stubTopologyManager(NODE_1, initialTopology);
             HealthSignalSink capturingSink = capturedSignals::add;
-            Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier = snapshotRef::get;
+            Supplier<java.util.Set<NodeId>> countedMembersSupplier = countedMembersRef::get;
             cdm = ClusterDeploymentManager.clusterDeploymentManager(NODE_1,
                                                                      clusterNode,
                                                                      kvStore,
@@ -175,7 +170,7 @@ class ClusterDeploymentManagerTest {
                                                                      timeSpan(300).seconds(),
                                                                      NO_OP_SCHEMA_ORCHESTRATOR,
                                                                      capturingSink,
-                                                                     snapshotSupplier,
+                                                                     countedMembersSupplier,
                                                                      Set::of,
                                                                      drainingRef::get);
         }
@@ -183,7 +178,7 @@ class ClusterDeploymentManagerTest {
         @Test
         void drainingNodes_derived_from_reported_state() throws Exception {
             var active = activateAndGetActive();
-            snapshotRef.set(Option.some(snapshotWithMembers(Set.of(NODE_1, DRAINING_NODE))));
+            countedMembersRef.set(Set.of(NODE_1, DRAINING_NODE));
             drainingRef.set(Set.of(DRAINING_NODE));
             var draining = invokeDrainingNodes(active);
             assertThat(draining).containsExactly(DRAINING_NODE);
@@ -196,13 +191,13 @@ class ClusterDeploymentManagerTest {
         @Test
         void activeNodes_derived_from_snapshot_presence() throws Exception {
             var active = activateAndGetActive();
-            snapshotRef.set(Option.some(snapshotWithMembers(Set.of(NODE_1, NODE_2, NODE_3, DRAINING_NODE))));
+            countedMembersRef.set(Set.of(NODE_1, NODE_2, NODE_3, DRAINING_NODE));
             var activeIds = invokeActiveNodes(active);
             // Presence-derived: every present member is active (DRAINING is still tracked while
             // drain is in progress).
             assertThat(activeIds).containsExactlyInAnyOrder(NODE_1, NODE_2, NODE_3, DRAINING_NODE);
 
-            snapshotRef.set(Option.some(snapshotWithMembers(Set.of(NODE_1, NODE_2, NODE_3))));
+            countedMembersRef.set(Set.of(NODE_1, NODE_2, NODE_3));
             var activeIdsAfter = invokeActiveNodes(active);
             assertThat(activeIdsAfter).containsExactlyInAnyOrder(NODE_1, NODE_2, NODE_3);
         }
@@ -220,19 +215,6 @@ class ClusterDeploymentManagerTest {
         private java.util.Set<NodeId> invokeDrainingNodes(org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState.Active active) {
             return active.drainingNodes();
         }
-    }
-
-    private static ClusterGenerationSnapshot snapshotWithMembers(java.util.Set<NodeId> memberIds) {
-        var members = new LinkedHashMap<NodeId, CoreMember>();
-        memberIds.forEach(id -> members.put(id,
-                                            CoreMember.coreMember(id,
-                                                                  "host-" + id.id(),
-                                                                  9000,
-                                                                  HealthHint.HEALTHY,
-                                                                  Epoch.epoch(1L, 0L),
-                                                                  Epoch.epoch(1L, 0L))));
-        return ClusterGenerationSnapshot.empty(1L).withDesiredCoreSize(memberIds.size())
-                                                    .withCoreMembers(members);
     }
 
     @SuppressWarnings("unchecked")

@@ -35,7 +35,6 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.BlueprintParser;
 import org.pragmatica.aether.slice.blueprint.DeploymentConfig;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
-import org.pragmatica.aether.slice.generation.CoreMember;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -96,6 +95,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -630,16 +630,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         public List<NodeId> activeNodes() {
-            return ctx.snapshotSupplier()
+            return ctx.countedMembersSupplier()
                       .get()
-                      .map(snapshot -> snapshot.coreMembers()
-                                               .values()
-                                               .stream()
-                                               .map(CoreMember::nodeId)
-                                               .filter(id -> !ctx.topologyManager()
-                                                                 .isPassive(id))
-                                               .toList())
-                      .or(List::of);
+                      .stream()
+                      .filter(id -> !ctx.topologyManager()
+                                        .isPassive(id))
+                      .toList();
         }
 
         public Set<NodeId> drainingNodes() {
@@ -647,10 +643,13 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private Set<String> activeCommunityIds() {
-            return ctx.snapshotSupplier()
-                      .get()
-                      .map(snapshot -> Set.copyOf(snapshot.communities().keySet()))
-                      .or(Set::of);
+            var ids = new LinkedHashSet<String>();
+
+            ctx.kvStore().forEach(GovernorAnnouncementKey.class,
+                                  GovernorAnnouncementValue.class,
+                                  (key, value) -> ids.add(key.communityId()));
+
+            return Set.copyOf(ids);
         }
 
         private Option<GovernorAnnouncementValue> communityGovernor(String communityId) {
