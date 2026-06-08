@@ -26,6 +26,7 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
 import org.pragmatica.aether.slice.SliceStore;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -72,6 +73,12 @@ public interface ManageableNode {
     /// routes can read live membership (members/health/quiescence) directly, replacing reads
     /// of the generation snapshot. Additive accessor; snapshot accessors remain until a later wave.
     MembershipFsm membershipFsm();
+
+    /// #114 — the node's CURRENT generation epoch. On the leader this is the locally-minted
+    /// epoch (`leaderTerm`:`generationCounter`); on followers it is the observed ping epoch.
+    /// The leader never receives its own pings, so its `metricsCollector().observedEpoch()`
+    /// stays at `0:0` forever — gen-route, await-quiesced and NDM MUST read this instead.
+    Epoch currentGenerationEpoch();
 
     InvocationMetricsCollector invocationMetrics();
     DeploymentManager deploymentManager();

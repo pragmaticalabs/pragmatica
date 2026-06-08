@@ -56,7 +56,7 @@ public sealed interface ClusterGenerationAssembler {
 
     static ClusterGenerationResponse assemble(ManageableNode node) {
         var fsm = node.membershipFsm();
-        var epoch = node.metricsCollector().observedEpoch();
+        var epoch = node.currentGenerationEpoch();
         var kvStore = node.kvStore();
 
         return isEmpty(fsm, epoch)

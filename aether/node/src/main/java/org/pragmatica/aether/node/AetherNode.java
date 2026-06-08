@@ -713,8 +713,14 @@ public interface AetherNode extends ManageableNode {
                           Option<DHTClient> dhtClient,
                           Option<DHTNode> dhtNode,
                           Supplier<AetherValue.ClusterPhase> clusterPhaseSupplier,
+                          Supplier<Epoch> currentGenerationEpochSupplier,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
+
+            @Override
+            public Epoch currentGenerationEpoch() {
+                return currentGenerationEpochSupplier.get();
+            }
 
             @Override
             public NodeId self() {
@@ -1221,6 +1227,12 @@ public interface AetherNode extends ManageableNode {
                                                            clusterNode.topologyManager().topology().size() * 4));
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
         metricsScheduler.setDrainTargets(drainCommandRegistry::drainTargets);
+        // #114 — the leader never pings itself, so metricsCollector.observedEpoch() (follower-style,
+        // updated only by RECEIVED pings) stays at 0:0 on the leader forever. The CURRENT generation
+        // epoch is therefore the leader-minted epoch on the leader and the observed ping epoch elsewhere.
+        // gen-route + await-quiesced + NDM read this supplier so deploy barriers see current+1.
+        Supplier<Epoch> currentGenerationEpochSupplier =
+            () -> isLeaderSupplier.getAsBoolean() ? leaderEpochSupplier.get() : metricsCollector.observedEpoch();
         // E2 Phase 2a (2026-05-28): leader-side φ-accrual (#231) is removed. SWIM owns the
         // liveness decision directly; the v2 NTT path is the replacement debounce.
         // P3 (membership unification): the leader/spokesman-gated ReachabilityAggregator
@@ -1427,7 +1439,7 @@ public interface AetherNode extends ManageableNode {
                                                                                             Option.some(sliceInvoker),
                                                                                             config.timeouts().deployment().activationChain(),
                                                                                             config.timeouts().deployment().transitionRetryDelay(),
-                                                                                            metricsCollector::observedEpoch);
+                                                                                            currentGenerationEpochSupplier);
         var serverBossGroup = clusterNode.network().server().map(Server::bossGroup);
         var serverWorkerGroup = clusterNode.network().server().map(Server::workerGroup);
         // #231 Step 3: every control-plane TaskGroup is leader-pinned, so the owner of any group is
@@ -2226,6 +2238,7 @@ public interface AetherNode extends ManageableNode {
                                   dhtClientOption,
                                   Option.some(dhtNode),
                                   effectivePhaseSupplier,
+                                  currentGenerationEpochSupplier,
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
         nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReady(nodeLifecycle::signalReady, nodeReportedStateHolder));
@@ -2327,6 +2340,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                       dhtClientOption,
                                                                                                       Option.some(dhtNode),
                                                                                                       effectivePhaseSupplier,
+                                                                                                      currentGenerationEpochSupplier,
                                                                                                       startTimeMs);
                                                                             }
                                                                                 return node;

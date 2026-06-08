@@ -123,7 +123,7 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
                                                                    long deadlineNanos,
                                                                    int pollCount) {
         var node = nodeSupplier.get();
-        var observed = node.metricsCollector().observedEpoch();
+        var observed = node.currentGenerationEpoch();
         var quiescence = ClusterGenerationAssembler.clusterQuiescence(node).quiescence();
 
         if (pollCount > 0 && pollCount % LOG_EVERY_N_POLLS == 0) {logProgress(requested, observed, quiescence, pollCount, startNanos);}
@@ -170,7 +170,7 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
                  pollCount,
                  elapsedMs,
                  requested,
-                 node.metricsCollector().observedEpoch(),
+                 node.currentGenerationEpoch(),
                  ClusterGenerationAssembler.clusterQuiescence(node).quiescence());
     }
 
