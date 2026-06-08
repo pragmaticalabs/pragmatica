@@ -33,14 +33,14 @@ public class CommentsExtended {
     public void methodWithBlockBeforeFor() {
         // Comment before a for-loop.
         // Should be preserved exactly.
-        for (int i = 0;i <counter;i++) {
+        for (int i = 0;i < counter;i++) {
             System.out.println(i);
         }
     }
 
     public void methodWithMultiStatementForBody() {
         // Multi-statement for-body — covers the Stmt-wraps-Block parser shape (B4 regression).
-        for (int i = 0;i <counter;i++) {
+        for (int i = 0;i < counter;i++) {
             var doubled = i * 2;
             System.out.println(doubled);
         }

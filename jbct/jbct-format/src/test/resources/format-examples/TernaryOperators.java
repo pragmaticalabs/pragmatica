@@ -24,7 +24,7 @@ public class TernaryOperators {
     }
 
     String nestedTernary(int value) {
-        return value <0
+        return value < 0
                ? "negative"
                : value == 0
                  ? "zero"

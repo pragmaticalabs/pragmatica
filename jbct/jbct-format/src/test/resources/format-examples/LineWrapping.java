@@ -43,7 +43,7 @@ public class LineWrapping {
         return value != null
                && !value.isEmpty()
                && value.length() > 5
-               && value.length() <100
+               && value.length() < 100
                && isValid(value);
     }
 

@@ -43,6 +43,11 @@ final class FlowPrinter {
     private char lastChar;
     private char prevChar;
     private String lastWord = "";
+    /// >0 while emitting tokens inside a TYPE_ARGS / TYPE_PARAMS node. Disambiguates a generic
+    /// '<'/'>' (glued punctuation) from a relational/shift operator '<'/'>' (spaced) — the parser
+    /// already separates them into distinct rules, so we key spacing off that rather than guessing
+    /// from characters (which cannot tell `static <T>` from `a < b`).
+    private int typeContextDepth = 0;
 
     // Measurement mode
     private boolean measuringMode;
@@ -114,6 +119,7 @@ final class FlowPrinter {
         char oldLastChar = lastChar;
         char oldPrevChar = prevChar;
         String oldLastWord = lastWord;
+        int oldTypeContextDepth = typeContextDepth;
         measuringMode = true;
         measureBuffer = 0;
         printNode(node);
@@ -123,6 +129,7 @@ final class FlowPrinter {
         lastChar = oldLastChar;
         prevChar = oldPrevChar;
         lastWord = oldLastWord;
+        typeContextDepth = oldTypeContextDepth;
         return width;
     }
 
@@ -141,6 +148,7 @@ final class FlowPrinter {
                               char lastChar,
                               char prevChar,
                               String lastWord,
+                              int typeContextDepth,
                               boolean measuringMode,
                               int measureBuffer,
                               int tokenIndex,
@@ -157,6 +165,7 @@ final class FlowPrinter {
                               lastChar,
                               prevChar,
                               lastWord,
+                              typeContextDepth,
                               measuringMode,
                               measureBuffer,
                               tokenIndex,
@@ -174,6 +183,7 @@ final class FlowPrinter {
         lastChar = saved.lastChar();
         prevChar = saved.prevChar();
         lastWord = saved.lastWord();
+        typeContextDepth = saved.typeContextDepth();
         measuringMode = saved.measuringMode();
         measureBuffer = saved.measureBuffer();
         tokenIndex = saved.tokenIndex();
@@ -229,10 +239,41 @@ final class FlowPrinter {
     /// causing whitespace bleed into the output.
     private void emitLeafTokens(Cursor.Leaf leaf) {
         var tokens = leaf.cst().tokens();
+        // Position of the last `}` token in this leaf (or -1). Orphan line comments are emitted
+        // ONLY when they sit BEFORE a `}` within the leaf — the bodyless `{ // note }` empty-body
+        // case, where the comment is trivia on the bare `}` leaf and no node's leadingTrivia owns
+        // it. A comment AFTER the `}` is the leading trivia of the FOLLOWING declaration and is
+        // emitted by emitLeadingComments; re-emitting it here would re-place it (idempotency break).
+        int lastBrace = -1;
+        for (int t = leaf.firstTokenIdx(); t <= leaf.lastTokenIdx(); t++) {
+            if (!tokens.isTrivia(t) && "}".contentEquals(tokens.textAt(t))) {
+                lastBrace = t;
+            }
+        }
         for (int t = leaf.firstTokenIdx(); t <= leaf.lastTokenIdx(); t++) {
             if (!tokens.isTrivia(t)) {
                 emitToken(tokens.textAt(t).toString());
+                continue;
             }
+            int kind = tokens.kindAt(t);
+            if (measuringMode || (kind != 1 && kind != 3) || t >= lastBrace || emittedTriviaTokens.contains(t)) {
+                continue;
+            }
+            // Orphan line comment enclosed before a `}` in this bare-leaf body — emit so it is not
+            // silently deleted (bug B2).
+            var text = tokens.textAt(t).toString().stripTrailing();
+            if (precedingContentOnSameLine(tokens.startAt(t)) && currentColumn > 0) {
+                emit("  " + text);
+            } else {
+                if (currentColumn > 0) {
+                    newline();
+                }
+                printIndent();
+                emit(text);
+                newline();
+                printIndent();
+            }
+            emittedTriviaTokens.add(t);
         }
     }
 
@@ -779,9 +820,49 @@ final class FlowPrinter {
                 indentLevel--;
                 printIndent();
             }
+        } else {
+            emitEmptyBlockComments(block);
         }
 
         emitBare("}");
+    }
+
+    /// Preserve line comments that are the sole content of an otherwise-empty block — emit each
+    /// on its own indented line so a comment-only body (`{ // note }`) is not collapsed to `{}`
+    /// (bug B2). No-op (leaves `{}`) when the block carries no un-emitted comments.
+    private void emitEmptyBlockComments(Cursor.Branch block) {
+        if (measuringMode) {
+            return;
+        }
+        var tokens = block.cst().tokens();
+        int open = block.firstTokenIdx();
+        int close = block.lastTokenIdx();
+        boolean any = false;
+        for (int t = open + 1; t < close; t++) {
+            if (!tokens.isTrivia(t)) {
+                continue;
+            }
+            int kind = tokens.kindAt(t);
+            if (kind != 1 && kind != 3) { // LINE_COMMENT or DOC_LINE_COMMENT only
+                continue;
+            }
+            if (emittedTriviaTokens.contains(t)) {
+                continue;
+            }
+            if (!any) {
+                indentLevel++;
+            }
+            newline();
+            printIndent();
+            emit(tokens.textAt(t).toString().stripTrailing());
+            emittedTriviaTokens.add(t);
+            any = true;
+        }
+        if (any) {
+            indentLevel--;
+            newline();
+            printIndent();
+        }
     }
 
     /// Emit trailing line comments that sit in the last stmt's trailing trivia region
@@ -798,14 +879,26 @@ final class FlowPrinter {
         for (int t = lastNonTrivia + 1; t <= closingBrace; t++) {
             if (!tokens.isTrivia(t)) break;
             int kind = tokens.kindAt(t);
-            if (kind == 1 || kind == 3) { // LINE_COMMENT or DOC_LINE_COMMENT
-                int commentStart = tokens.startAt(t);
-                if (!precedingContentOnSameLine(commentStart)) break;
-                if (!emittedTriviaTokens.contains(t)) {
-                    emit("  " + tokens.textAt(t).toString().stripTrailing());
-                    emittedTriviaTokens.add(t);
-                }
+            if (kind != 1 && kind != 3) { // LINE_COMMENT or DOC_LINE_COMMENT only
+                continue;
             }
+            if (emittedTriviaTokens.contains(t)) {
+                continue;
+            }
+            int commentStart = tokens.startAt(t);
+            var text = tokens.textAt(t).toString().stripTrailing();
+            if (precedingContentOnSameLine(commentStart) && currentColumn > 0) {
+                // Trailing comment on the same source line as the preceding stmt.
+                emit("  " + text);
+            } else {
+                // Comment on its OWN line before `}` — emit it on a fresh indented line instead
+                // of dropping it. The `}` is emitted via emitBare, which never runs the
+                // leading-comment path, so without this the comment is lost (bug B2).
+                newline();
+                printIndent();
+                emit(text);
+            }
+            emittedTriviaTokens.add(t);
         }
     }
 
@@ -1789,11 +1882,15 @@ final class FlowPrinter {
     // ===== Type generics =====
 
     private void printTypeArgs(Cursor.Branch typeArgs) {
+        typeContextDepth++;
         walkTokens(typeArgs);
+        typeContextDepth--;
     }
 
     private void printTypeParams(Cursor.Branch typeParams) {
+        typeContextDepth++;
         walkTokens(typeParams);
+        typeContextDepth--;
     }
 
     // ===== Method declarations =====
@@ -2246,10 +2343,14 @@ final class FlowPrinter {
             return true;
         }
         if (lastChar == '<') {
-            return true;
-        }
-        if (firstChar == '?' && lastChar == '<') {
-            return true;
+            // Generic '<' (inside TYPE_ARGS / TYPE_PARAMS) glues to the type argument that follows
+            // (`List<String`, `static <T`). A relational/shift operator '<' (any non-type context)
+            // glues only a following '<' to form '<<'; before an operand it takes a space, added in
+            // checkSpaceRules (e.g. `a < 0`, `v << n`).
+            if (typeContextDepth > 0) {
+                return true;
+            }
+            return firstChar == '<';
         }
         if (firstChar == '>' && lastChar == '?') {
             return true;
@@ -2340,6 +2441,13 @@ final class FlowPrinter {
         // Angle bracket rules
         if (text.equals("<") || text.equals(">")) {
             return checkAngleBracketRules(text, firstChar);
+        }
+        // Relational/shift operator '<' (outside any TYPE_ARGS / TYPE_PARAMS context) before its
+        // operand. '<' is not in BINARY_OP_CHARS, so it needs this explicit rule; a generic-open
+        // '<' (typeContextDepth > 0) was already suppressed in mustNotHaveSpaceBefore and never
+        // reaches here. The symmetric '>' operand is handled by checkGenericClosing.
+        if (lastChar == '<' && typeContextDepth == 0) {
+            return true;
         }
         // Binary operators
         if (BINARY_OPS.contains(text) || isBinaryOpLastChar()) {
