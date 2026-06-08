@@ -1203,7 +1203,16 @@ public interface AetherNode extends ManageableNode {
                                             config.timeouts().cluster().pingInterval(),
                                             config.timeouts().cluster().pingInterval());
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
-        Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.get(), 0L);
+        // #114 W1: the cluster-sync ping carries a monotonic generation counter. Each node bumps its
+        // OWN counter only while it is leader (leader-gated, per-ping-interval). The supplier merely
+        // READS it (it is consumed in four contexts; incrementing inside would over-count). No reset
+        // is needed: Epoch ordering is term-dominant, so on a leader change leaderTerm increments and
+        // a new leader's lower local counter still orders strictly after the prior epoch via the term.
+        var generationCounter = new AtomicLong(0L);
+        Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.get(), generationCounter.get());
+        SharedScheduler.scheduleAtFixedRate(() -> bumpGenerationIfLeader(isLeaderSupplier, generationCounter),
+                                            config.timeouts().cluster().pingInterval(),
+                                            config.timeouts().cluster().pingInterval());
         var projectorEarly = ClusterGenerationProjector.clusterGenerationProjector();
         var generationChangedSink = buildGenerationChangedSink(delegateRouter);
         Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier = () -> kvStore.getTyped(AetherKey.GenerationSnapshotKey.SINGLETON,
@@ -2456,6 +2465,13 @@ public interface AetherNode extends ManageableNode {
     private static void addIfMatching(Set<NodeId> matching, NodeId nodeId, NodeReportedState state, NodeReportedState target) {
         if (state == target) {
             matching.add(nodeId);
+        }
+    }
+
+    @Contract
+    private static void bumpGenerationIfLeader(BooleanSupplier isLeader, AtomicLong generationCounter) {
+        if (isLeader.getAsBoolean()) {
+            generationCounter.incrementAndGet();
         }
     }
 
