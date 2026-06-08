@@ -427,20 +427,17 @@ public interface AetherNode extends ManageableNode {
                                                             .filter(v -> v instanceof AetherValue.ClusterConfigValue)
                                                             .map(v -> ((AetherValue.ClusterConfigValue) v).coreCount())
                                                             .or(() -> config.topology().coreNodes().size());
-        // #110 finale: ctmProvisioned now reads the FSM-backed snapshotSource (built just below)
-        // instead of the retired KV-backed source. The source is constructed after this
-        // supplier (it consumes ctmProvisionedSupplier), so the supplier dereferences a holder
-        // populated immediately after construction; degrades to Set.of() in the construction window.
-        var snapshotSourceRef = new AtomicReference<GenerationSnapshotSource>();
-        Supplier<Set<NodeId>> ctmProvisionedSupplier = () -> Option.option(snapshotSourceRef.get())
-                                                                   .flatMap(GenerationSnapshotSource::currentMembershipView)
-                                                                   .map(org.pragmatica.consensus.topology.MembershipView::ctmProvisionedNodeIds)
+        // #114: ctmProvisioned = members whose FSM descriptor source label is "ctm" (CTM
+        // auto-provisioned, as opposed to seed/manual). Read DIRECTLY from the FSM. The prior wiring
+        // read it from snapshotSource, which itself consumes this supplier to build its membership
+        // view — so the first call recursed infinitely (StackOverflowError at boot, no leader elected).
+        Supplier<Set<NodeId>> ctmProvisionedSupplier = () -> Option.option(membershipFsmRef.get())
+                                                                   .map(AetherNode::ctmProvisionedFromFsm)
                                                                    .or(Set.of());
         var snapshotSource = PresenceGenerationSnapshotSource.presenceGenerationSnapshotSource(presenceMemberSupplier,
                                                                                                presenceCoreSizeSupplier,
                                                                                                ctmProvisionedSupplier,
                                                                                                rabiaTermSupplier);
-        snapshotSourceRef.set(snapshotSource);
         // Membership v2 — `syncHoldRegistry` is consulted by the leader reconciler to skip nodes
         // that are legitimately syncing KV state. The KVSyncResponse signal no longer drives a
         // readiness candidate; the v2 control-heartbeat carries node-reported readiness instead.
@@ -2400,6 +2397,15 @@ public interface AetherNode extends ManageableNode {
         if (isLeader.getAsBoolean()) {
             generationCounter.incrementAndGet();
         }
+    }
+
+    private static Set<NodeId> ctmProvisionedFromFsm(MembershipFsm fsm) {
+        return fsm.memberDescriptors()
+                  .entrySet()
+                  .stream()
+                  .filter(entry -> "ctm".equalsIgnoreCase(entry.getValue().source()))
+                  .map(Map.Entry::getKey)
+                  .collect(Collectors.toUnmodifiableSet());
     }
 
     @Contract
