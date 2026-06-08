@@ -23,6 +23,7 @@ import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -250,16 +251,42 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                                                   SliceLoadingContext loadingContext,
                                                                                   Set<String> resolutionPath) {
         return loadClass(manifest.sliceClassName(), sharedResult.sliceClassLoader())
-            .onSuccess(_ -> loadingContext.materializeComposite(sharedResult.sliceClassLoader()))
-            .flatMap(sliceClass -> resolveSliceDependenciesWithContext(manifest.artifact(),
-                                                                                                                                               sliceClass,
-                                                                                                                                               depFile.slices(),
-                                                                                                                                               sharedResult.sliceClassLoader(),
-                                                                                                                                               repository,
-                                                                                                                                               registry,
-                                                                                                                                               sharedLibraryLoader,
-                                                                                                                                               loadingContext,
-                                                                                                                                               resolutionPath));
+            .flatMap(sliceClass -> materializeThenResolve(manifest,
+                                                          depFile,
+                                                          sharedResult,
+                                                          sliceClass,
+                                                          repository,
+                                                          registry,
+                                                          sharedLibraryLoader,
+                                                          loadingContext,
+                                                          resolutionPath));
+    }
+
+    /// Materializes the slice's intrinsic config composite synchronously (happens-before the
+    /// factory invoke reached via [#resolveSliceDependenciesWithContext]) so the factory resolves
+    /// `@ResourceQualifier` config against the slice-composite, not the global node-composite. This
+    /// must NOT be an async `onSuccess` side-channel: that races the synchronous `flatMap`
+    /// continuation and intermittently leaves the composite unset at invoke time.
+    @Contract
+    private static Promise<ResolvedSlice> materializeThenResolve(SliceManifestInfo manifest,
+                                                                 DependencyFile depFile,
+                                                                 SharedDependencyLoader.SharedDependencyResult sharedResult,
+                                                                 Class<?> sliceClass,
+                                                                 Repository repository,
+                                                                 SliceRegistry registry,
+                                                                 SharedLibraryClassLoader sharedLibraryLoader,
+                                                                 SliceLoadingContext loadingContext,
+                                                                 Set<String> resolutionPath) {
+        loadingContext.materializeComposite(sharedResult.sliceClassLoader());
+        return resolveSliceDependenciesWithContext(manifest.artifact(),
+                                                   sliceClass,
+                                                   depFile.slices(),
+                                                   sharedResult.sliceClassLoader(),
+                                                   repository,
+                                                   registry,
+                                                   sharedLibraryLoader,
+                                                   loadingContext,
+                                                   resolutionPath);
     }
 
     private static Promise<ResolvedSlice> resolveSliceDependenciesWithContext(Artifact artifact,
