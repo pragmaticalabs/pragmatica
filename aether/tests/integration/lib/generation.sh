@@ -25,7 +25,7 @@ source "${LIB_DIR_GENERATION}/common.sh"
 # endpoint defaults to ${CLUSTER_ENDPOINT} (per-suite scoped mgmt endpoint).
 # ---------------------------------------------------------------------------
 generation_current() {
-    local endpoint="${1:-${CLUSTER_ENDPOINT}}"
+    local endpoint="${1:-$(_resolve_live_endpoint)}"
     local response
     response=$(curl -sf -m 5 -H "X-API-Key: ${API_KEY}" \
         "${endpoint}/api/cluster/generation" 2>/dev/null) || return 1
@@ -55,14 +55,22 @@ generation_current() {
 #   1 — server returned 408 timeout or network error
 # ---------------------------------------------------------------------------
 await_generation_quiesced() {
-    local endpoint="${1:-${CLUSTER_ENDPOINT}}"
+    local endpoint="${1:-$(_resolve_live_endpoint)}"
     local epoch="${2:-current+1}"
     local timeout="${3:-30}"
     # Same scaling as wait_for — cloud's higher inter-node latency stretches consensus rounds.
     timeout=$((timeout * ${TIMEOUT_SCALE:-1}))
 
     local target_epoch
-    target_epoch=$(_resolve_epoch "$endpoint" "$epoch") || return 1
+    if ! target_epoch=$(_resolve_epoch "$endpoint" "$epoch"); then
+        # rc=2 (distinct from the 408-timeout rc=1): we could not even READ the
+        # current generation epoch — the endpoint is unreachable/unable to serve the
+        # leader-bound /api/cluster/generation route. Callers must NOT report this as
+        # "did not quiesce" (the #126 misdiagnosis): the cluster may be perfectly
+        # quiesced on a live node we never reached.
+        log_warn "await_generation_quiesced: could not read generation epoch from ${endpoint} (cluster unreachable — NOT a quiescence failure)"
+        return 2
+    fi
 
     local host_port="${endpoint#http://}"
     host_port="${host_port#https://}"
@@ -114,7 +122,7 @@ await_generation_quiesced() {
 # captured at call time, so membership churn committed since then is fenced.
 # ---------------------------------------------------------------------------
 generation_quiesce_now() {
-    local endpoint="${1:-${CLUSTER_ENDPOINT}}"
+    local endpoint="${1:-$(_resolve_live_endpoint)}"
     local timeout="${2:-30}"
     await_generation_quiesced "$endpoint" "current+1" "$timeout"
 }

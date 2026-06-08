@@ -1836,8 +1836,9 @@ seed_cluster_config() {
         | head -1 \
         | grep -oE '[0-9]+' | head -1)
 
-    local body status
-    body=$(curl -sk -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/api/cluster/config" \
+    local body status _cfg_ep
+    _cfg_ep=$(_resolve_live_endpoint)
+    body=$(curl -sk -H "X-API-Key: ${API_KEY}" "${_cfg_ep}/api/cluster/config" \
         -w $'\n__STATUS__:%{http_code}' 2>/dev/null || true)
     status="${body##*__STATUS__:}"
     body="${body%$'\n'__STATUS__:*}"
@@ -1887,9 +1888,10 @@ seed_cluster_config() {
 # (i.e., CTM may be circuit-tripped from prior provisioning failures).
 # Hard 15s timeout — call is a single KV-side reset, not a provisioning op.
 reset_provisioning_circuit() {
-    local result rc
+    local result rc ep
+    ep=$(_resolve_live_endpoint)
     result=$(curl -sk -m 15 -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-                  -d '{}' "${CLUSTER_ENDPOINT}/api/cluster/topology/circuit-breaker/reset" 2>&1)
+                  -d '{}' "${ep}/api/cluster/topology/circuit-breaker/reset" 2>&1)
     rc=$?
     if [ "$rc" -ne 0 ]; then
         log_warn "reset_provisioning_circuit: POST failed rc=${rc}: $(printf '%s' "$result" | head -c 200)"
@@ -2044,6 +2046,17 @@ restore_cluster_baseline() {
         log_info "restore_cluster_baseline: docker compose cycle recovered the cluster — continuing restore"
     fi
 
+    # 0b. Re-pin the management endpoint to a LIVE core. Chaos may have killed the
+    # node CLUSTER_ENDPOINT was pinned to (cluster B is restart:"no" → it stays dead),
+    # while CTM provisions replacements on fresh host ports. The leader-bound helpers
+    # below (reset_provisioning_circuit, scale_cluster, await_generation_quiesced →
+    # generation_current) target ${CLUSTER_ENDPOINT}; without this refresh they hit the
+    # dead port and fail with curl rc=7 — which restore historically misreported as
+    # "generation did not quiesce within 180s" (the #126 misdiagnosis: the cluster was
+    # quiesced and healthy on a live node we simply never reached). _resolve_live_endpoint
+    # rotates to any live seed or CTM replacement; it preserves the pin when it is up.
+    _refresh_mgmt_entry_point || log_warn "restore_cluster_baseline: no live endpoint to re-pin (proceeding with ${CLUSTER_ENDPOINT})"
+
     # 1. Auto-heal — tests that ran disruption-budget or manual-only-recovery
     # scenarios may have disabled it. Idempotent: enabling an already-enabled
     # toggle is a no-op on the server side.
@@ -2122,7 +2135,12 @@ restore_cluster_baseline() {
     # is correctly DEGRADED while any core carries a non-HEALTHY SWIM hint
     # (ClusterGenerationProjector) — correct product behavior, not a bug. Consensus
     # catch-up for the fresh replacements is the dominant cost.
-    if ! await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 180; then
+    local _quiesce_rc=0
+    await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 180 || _quiesce_rc=$?
+    if [ "$_quiesce_rc" -eq 2 ]; then
+        log_fail "restore_cluster_baseline: cluster unreachable from ${CLUSTER_ENDPOINT} — could not read generation epoch (transport failure, NOT a quiescence timeout)"
+        return 1
+    elif [ "$_quiesce_rc" -ne 0 ]; then
         log_fail "restore_cluster_baseline: generation did not quiesce within 180s"
         return 1
     fi
@@ -2176,7 +2194,9 @@ scale_cluster() {
         http_status=$(printf '%s\n' "$combined" | head -n1)
         printf '%s\n' "$combined" | tail -n +2 > "$body_file"
     else
-        url="${CLUSTER_ENDPOINT}/api/cluster/scale"
+        local scale_ep
+        scale_ep=$(_resolve_live_endpoint)
+        url="${scale_ep}/api/cluster/scale"
         http_status=$(curl -sk -m 90 -o "$body_file" -w '%{http_code}' \
                           -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
                           -d "{\"coreCount\":${target},\"expectedVersion\":0}" "$url")
