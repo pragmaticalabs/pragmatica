@@ -7,7 +7,6 @@ package org.pragmatica.aether.api.routes;
 import org.pragmatica.aether.api.ManagementApiResponses.AwaitQuiescedResponse;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
-import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.ClusterQuiescence;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.http.routing.HttpError;
@@ -16,6 +15,7 @@ import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -114,7 +114,6 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
         var startNanos = System.nanoTime();
         var deadlineNanos = startNanos + timeout.nanos();
         log.debug("await-quiesced: requested={}, timeout={}ms", requested, timeout.millis());
-        nodeSupplier.get().requestGenerationSnapshotRefresh();
 
         return pollUntilReadyOrTimeout(requested, startNanos, deadlineNanos, 0);
     }
@@ -123,13 +122,15 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
                                                                    long startNanos,
                                                                    long deadlineNanos,
                                                                    int pollCount) {
-        var snapshot = nodeSupplier.get().currentGenerationSnapshot();
+        var node = nodeSupplier.get();
+        var observed = node.metricsCollector().observedEpoch();
+        var quiescence = ClusterGenerationAssembler.clusterQuiescence(node).quiescence();
 
-        if (pollCount > 0 && pollCount % LOG_EVERY_N_POLLS == 0) {logProgress(requested, snapshot, pollCount, startNanos);}
+        if (pollCount > 0 && pollCount % LOG_EVERY_N_POLLS == 0) {logProgress(requested, observed, quiescence, pollCount, startNanos);}
 
-        return snapshot.filter(s -> matchesQuiesced(s, requested))
-                       .map(s -> Promise.success(buildResponse(s, startNanos)))
-                       .or(() -> waitOrTimeout(requested, startNanos, deadlineNanos, pollCount));
+        return matchesQuiesced(observed, quiescence, requested)
+               ? Promise.success(buildResponse(observed, quiescence, startNanos))
+               : waitOrTimeout(requested, startNanos, deadlineNanos, pollCount);
     }
 
     private Promise<AwaitQuiescedResponse> waitOrTimeout(Epoch requested,
@@ -146,46 +147,42 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
                       .flatMap(_ -> pollUntilReadyOrTimeout(requested, startNanos, deadlineNanos, pollCount + 1));
     }
 
+    @Contract
     private static void logProgress(Epoch requested,
-                                    Option<ClusterGenerationSnapshot> snapshot,
+                                    Epoch observed,
+                                    ClusterQuiescence quiescence,
                                     int pollCount,
                                     long startNanos) {
         var elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
-        snapshot.onPresent(s -> log.info("await-quiesced still waiting (poll={}, elapsed={}ms): requested={}, observed=epoch={} quiescence={}",
-                                         pollCount,
-                                         elapsedMs,
-                                         requested,
-                                         s.epoch(),
-                                         s.quiescence())).onEmpty(() -> log.info("await-quiesced still waiting (poll={}, elapsed={}ms): requested={}, observed=NO_SNAPSHOT",
-                                                                                 pollCount,
-                                                                                 elapsedMs,
-                                                                                 requested));
+        log.info("await-quiesced still waiting (poll={}, elapsed={}ms): requested={}, observed=epoch={} quiescence={}",
+                 pollCount,
+                 elapsedMs,
+                 requested,
+                 observed,
+                 quiescence);
     }
 
+    @Contract
     private void logTimeout(Epoch requested, int pollCount, long startNanos) {
         var elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
-        var snapshot = nodeSupplier.get().currentGenerationSnapshot();
-        snapshot.onPresent(s -> log.warn("await-quiesced TIMEOUT (polls={}, elapsed={}ms): requested={}, final=epoch={} quiescence={}",
-                                         pollCount,
-                                         elapsedMs,
-                                         requested,
-                                         s.epoch(),
-                                         s.quiescence())).onEmpty(() -> log.warn("await-quiesced TIMEOUT (polls={}, elapsed={}ms): requested={}, final=NO_SNAPSHOT",
-                                                                                 pollCount,
-                                                                                 elapsedMs,
-                                                                                 requested));
+        var node = nodeSupplier.get();
+        log.warn("await-quiesced TIMEOUT (polls={}, elapsed={}ms): requested={}, final=epoch={} quiescence={}",
+                 pollCount,
+                 elapsedMs,
+                 requested,
+                 node.metricsCollector().observedEpoch(),
+                 ClusterGenerationAssembler.clusterQuiescence(node).quiescence());
     }
 
-    private static boolean matchesQuiesced(ClusterGenerationSnapshot snapshot, Epoch requested) {
-        return snapshot.epoch()
-                       .isAtLeast(requested) && snapshot.quiescence() == ClusterQuiescence.QUIESCED;
+    private static boolean matchesQuiesced(Epoch observed, ClusterQuiescence quiescence, Epoch requested) {
+        return observed.isAtLeast(requested) && quiescence == ClusterQuiescence.QUIESCED;
     }
 
-    private static AwaitQuiescedResponse buildResponse(ClusterGenerationSnapshot snapshot, long startNanos) {
+    private static AwaitQuiescedResponse buildResponse(Epoch observed, ClusterQuiescence quiescence, long startNanos) {
         var waitedMs = (System.nanoTime() - startNanos) / 1_000_000L;
 
-        return new AwaitQuiescedResponse(snapshot.epoch().toString(),
-                                         snapshot.quiescence().name(),
+        return new AwaitQuiescedResponse(observed.toString(),
+                                         quiescence.name(),
                                          waitedMs);
     }
 

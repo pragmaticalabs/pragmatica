@@ -30,10 +30,12 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.net.tcp.NodeAddress;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -55,11 +57,11 @@ public sealed interface ClusterGenerationAssembler {
     static ClusterGenerationResponse assemble(ManageableNode node) {
         var fsm = node.membershipFsm();
         var epoch = node.metricsCollector().observedEpoch();
-        var kv = node.kvStore().snapshot();
+        var kvStore = node.kvStore();
 
         return isEmpty(fsm, epoch)
                ? emptyResponse()
-               : buildResponse(fsm, epoch, kv);
+               : buildResponse(fsm, epoch, kvStore);
     }
 
     private static boolean isEmpty(MembershipFsm fsm, Epoch epoch) {
@@ -79,10 +81,10 @@ public sealed interface ClusterGenerationAssembler {
 
     private static ClusterGenerationResponse buildResponse(MembershipFsm fsm,
                                                            Epoch epoch,
-                                                           Map<AetherKey, AetherValue> kv) {
-        var governors = collectGovernors(kv);
-        var partitionValues = collectPartitions(kv);
-        var spokesmanIndex = buildSpokesmanIndex(collectSpokesmen(kv));
+                                                           KVStore<AetherKey, AetherValue> kvStore) {
+        var governors = collectGovernors(kvStore);
+        var partitionValues = collectPartitions(kvStore);
+        var spokesmanIndex = buildSpokesmanIndex(collectSpokesmen(kvStore));
         var communities = buildCommunities(governors, partitionValues, spokesmanIndex);
         var cluster = evaluateCluster(fsm, governors, spokesmanIndex);
 
@@ -91,17 +93,31 @@ public sealed interface ClusterGenerationAssembler {
                                              deriveMode(governors.keySet()),
                                              cluster.quiescence().name(),
                                              cluster.detail(),
-                                             buildCore(fsm, kv),
+                                             buildCore(fsm, kvStore),
                                              communities,
                                              buildPartitions(partitionValues));
     }
 
+    /// Narrow LIVE cluster-quiescence computation for the hot poll path (avoids full response assembly).
+    /// Reads only the inputs that drive cluster quiescence: FSM health hints, per-community quiescence
+    /// states from KV governor announcements, and the count of communities with no assigned spokesman
+    /// (pending rebalance). Uses typed KV scans (no full-store copy) — for a core-only cluster with zero
+    /// governors this reduces to FSM health + epoch only. Identical semantics to the cluster-quiescence
+    /// fields of [`#assemble`].
+    static ClusterQuiescenceEvaluator.ClusterResult clusterQuiescence(ManageableNode node) {
+        var kvStore = node.kvStore();
+        var governors = collectGovernors(kvStore);
+        var spokesmanIndex = buildSpokesmanIndex(collectSpokesmen(kvStore));
+
+        return evaluateCluster(node.membershipFsm(), governors, spokesmanIndex);
+    }
+
     // --- Members / core ---
 
-    private static ClusterGenerationCore buildCore(MembershipFsm fsm, Map<AetherKey, AetherValue> kv) {
+    private static ClusterGenerationCore buildCore(MembershipFsm fsm, KVStore<AetherKey, AetherValue> kvStore) {
         var members = buildMembers(fsm);
 
-        return new ClusterGenerationCore(collectDesiredCoreSize(kv).or(members.size()), members);
+        return new ClusterGenerationCore(collectDesiredCoreSize(kvStore).or(members.size()), members);
     }
 
     private static List<ClusterGenerationMember> buildMembers(MembershipFsm fsm) {
@@ -231,30 +247,31 @@ public sealed interface ClusterGenerationAssembler {
                : ClusterMode.CORE_ONLY.name();
     }
 
-    // --- KV enumeration ---
+    // --- KV enumeration (typed scans, no full-store copy) ---
 
-    private static Map<String, GovernorAnnouncementValue> collectGovernors(Map<AetherKey, AetherValue> kv) {
-        return kv.entrySet()
-                 .stream()
-                 .filter(entry -> entry.getKey() instanceof GovernorAnnouncementKey && entry.getValue() instanceof GovernorAnnouncementValue)
-                 .collect(Collectors.toUnmodifiableMap(entry -> ((GovernorAnnouncementKey) entry.getKey()).communityId(),
-                                                       entry -> (GovernorAnnouncementValue) entry.getValue()));
+    private static Map<String, GovernorAnnouncementValue> collectGovernors(KVStore<AetherKey, AetherValue> kvStore) {
+        var result = new LinkedHashMap<String, GovernorAnnouncementValue>();
+
+        kvStore.forEach(GovernorAnnouncementKey.class,
+                        GovernorAnnouncementValue.class,
+                        (key, value) -> result.put(key.communityId(), value));
+        return result;
     }
 
-    private static Map<String, DhtPartitionOwnershipValue> collectPartitions(Map<AetherKey, AetherValue> kv) {
-        return kv.entrySet()
-                 .stream()
-                 .filter(entry -> entry.getKey() instanceof DhtPartitionOwnershipKey && entry.getValue() instanceof DhtPartitionOwnershipValue)
-                 .collect(Collectors.toUnmodifiableMap(entry -> ((DhtPartitionOwnershipKey) entry.getKey()).partitionId(),
-                                                       entry -> (DhtPartitionOwnershipValue) entry.getValue()));
+    private static Map<String, DhtPartitionOwnershipValue> collectPartitions(KVStore<AetherKey, AetherValue> kvStore) {
+        var result = new LinkedHashMap<String, DhtPartitionOwnershipValue>();
+
+        kvStore.forEach(DhtPartitionOwnershipKey.class,
+                        DhtPartitionOwnershipValue.class,
+                        (key, value) -> result.put(key.partitionId(), value));
+        return result;
     }
 
-    private static Map<NodeId, SpokesmanValue> collectSpokesmen(Map<AetherKey, AetherValue> kv) {
-        return kv.entrySet()
-                 .stream()
-                 .filter(entry -> entry.getKey() instanceof SpokesmanKey && entry.getValue() instanceof SpokesmanValue)
-                 .collect(Collectors.toUnmodifiableMap(entry -> ((SpokesmanKey) entry.getKey()).coreNodeId(),
-                                                       entry -> (SpokesmanValue) entry.getValue()));
+    private static Map<NodeId, SpokesmanValue> collectSpokesmen(KVStore<AetherKey, AetherValue> kvStore) {
+        var result = new LinkedHashMap<NodeId, SpokesmanValue>();
+
+        kvStore.forEach(SpokesmanKey.class, SpokesmanValue.class, (key, value) -> result.put(key.coreNodeId(), value));
+        return result;
     }
 
     private static Map<String, NodeId> buildSpokesmanIndex(Map<NodeId, SpokesmanValue> spokesmen) {
@@ -268,10 +285,8 @@ public sealed interface ClusterGenerationAssembler {
         return value.communities().stream().map(community -> Map.entry(community, nodeId));
     }
 
-    private static Option<Integer> collectDesiredCoreSize(Map<AetherKey, AetherValue> kv) {
-        return Option.option(kv.get(ClusterConfigKey.CURRENT))
-                     .filter(v -> v instanceof ClusterConfigValue)
-                     .map(v -> ((ClusterConfigValue) v).coreCount());
+    private static Option<Integer> collectDesiredCoreSize(KVStore<AetherKey, AetherValue> kvStore) {
+        return kvStore.getTyped(ClusterConfigKey.CURRENT, ClusterConfigValue.class).map(ClusterConfigValue::coreCount);
     }
 
     private static EpochInfo toEpochInfo(Epoch epoch) {
