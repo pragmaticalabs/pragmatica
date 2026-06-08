@@ -11,6 +11,7 @@ import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.lang.Functions.Fn1;
@@ -67,6 +68,12 @@ public interface ManageableNode {
     MavenProtocolHandler mavenProtocolHandler();
     ArtifactStore artifactStore();
     TopologyManager topologyManager();
+
+    /// #114 W2.0 — exposes the per-node authoritative `MembershipFsm` so management HTTP
+    /// routes can read live membership (members/health/quiescence) directly, replacing reads
+    /// of the generation snapshot. Additive accessor; snapshot accessors remain until a later wave.
+    MembershipFsm membershipFsm();
+
     InvocationMetricsCollector invocationMetrics();
     DeploymentManager deploymentManager();
     AbTestManager abTestManager();
