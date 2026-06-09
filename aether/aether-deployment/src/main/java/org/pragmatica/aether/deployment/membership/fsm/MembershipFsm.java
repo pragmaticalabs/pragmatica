@@ -16,12 +16,15 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.SwimHealt
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.SwimSuspect;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.SwimUnknown;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.UpHysteresisMet;
+import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.deployment.membership.ntt.PresenceSampler;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmObserver;
@@ -35,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
@@ -111,6 +115,12 @@ public final class MembershipFsm {
     /// transition.
     public static final int UP_HYSTERESIS = 1;
 
+    /// Default terminal-eviction backstop window (#131 Model C) for the legacy factory overloads that
+    /// predate the configured value: the membership-config `quorumLossDrainThreshold` (8s) — the SAME
+    /// value the minority's quorum-loss self-drain uses, kept as a single source of truth. AetherNode
+    /// wires the live `MembershipConfig.quorumLossDrainThreshold()` through the dedicated overload.
+    private static final TimeSpan DEFAULT_EVICTION_BACKSTOP = MembershipConfig.membershipConfig().quorumLossDrainThreshold();
+
     private final FsmObserver<MembershipState, MembershipEvent> observer;
     private final PresenceSampler presenceSampler;
     private final Map<NodeId, MemberTracking> members = new ConcurrentHashMap<>();
@@ -136,14 +146,27 @@ public final class MembershipFsm {
     /// time the link out. Reset to the no-op by passing `null` to [`#onConfirmedDeparture`].
     private volatile Consumer<NodeId> onConfirmedDeparture = ignored -> {};
 
+    /// Terminal-eviction backstop window (#131 Model C). When BOTH death planes confirm
+    /// (`swimFaulty ∧ livenessGone`) the member is NO LONGER marched straight to DEAD; instead a
+    /// per-member backstop timer is armed for this window and the member stays SUSPECT (counted,
+    /// recoverable). Terminal DEAD is reached only when this backstop fires OR via the existing
+    /// confirmed-departure paths (graceful `SwimDeparted`, join-grace expiry). A network partition
+    /// shorter than this window heals while the node is SUSPECT (a `SwimHealthy` recovery edge cancels
+    /// the backstop via `clearConfirmedDeath`), so the node rejoins via SUSPECT→MEMBER and is never
+    /// fenced. Sourced from `MembershipConfig.quorumLossDrainThreshold` — the SAME value the minority's
+    /// quorum-loss self-drain uses (single source of truth); defaults to 8s for the legacy factories.
+    private final TimeSpan evictionBackstop;
+
     private MembershipFsm(PresenceSampler presenceSampler,
                           FsmObserver<MembershipState, MembershipEvent> observer,
                           LongSupplier wallClockMs,
-                          long suspectHintTtlMs) {
+                          long suspectHintTtlMs,
+                          TimeSpan evictionBackstop) {
         this.presenceSampler = presenceSampler;
         this.observer = observer;
         this.wallClockMs = wallClockMs;
         this.suspectHintTtlMs = suspectHintTtlMs;
+        this.evictionBackstop = evictionBackstop;
     }
 
     /// Factory with the default no-op transition observer, the system wall clock, and NO hint decay
@@ -156,24 +179,46 @@ public final class MembershipFsm {
     /// Factory with an explicit transition observer (transition logging / metrics), the system wall
     /// clock, and NO hint decay (TTL = `Long.MAX_VALUE`).
     public static MembershipFsm membershipFsm(PresenceSampler presenceSampler, FsmObserver<MembershipState, MembershipEvent> observer) {
-        return new MembershipFsm(presenceSampler, observer, System::currentTimeMillis, Long.MAX_VALUE);
+        return new MembershipFsm(presenceSampler, observer, System::currentTimeMillis, Long.MAX_VALUE, DEFAULT_EVICTION_BACKSTOP);
     }
 
     /// Factory with an explicit SUSPECTED-hint decay TTL (ms) on the system wall clock and the
     /// default no-op observer. AetherNode uses this overload to wire the auto-heal SWIM-hints TTL so
     /// a stale one-shot SWIM-suspect on a still-present node decays out of the quiesce gate (#68).
     public static MembershipFsm membershipFsm(PresenceSampler presenceSampler, long suspectHintTtlMs) {
-        return new MembershipFsm(presenceSampler, FsmObserver.noop(), System::currentTimeMillis, suspectHintTtlMs);
+        return new MembershipFsm(presenceSampler, FsmObserver.noop(), System::currentTimeMillis, suspectHintTtlMs, DEFAULT_EVICTION_BACKSTOP);
+    }
+
+    /// Factory with an explicit SUSPECTED-hint decay TTL (ms) AND the terminal-eviction backstop
+    /// window (#131 Model C) on the system wall clock and the default no-op observer. AetherNode uses
+    /// this overload to wire BOTH the auto-heal SWIM-hints TTL (#68) and the configured
+    /// `MembershipConfig.quorumLossDrainThreshold` as the co-confirmed-death backstop (single source
+    /// of truth shared with the minority self-drain).
+    public static MembershipFsm membershipFsm(PresenceSampler presenceSampler, long suspectHintTtlMs, TimeSpan evictionBackstop) {
+        return new MembershipFsm(presenceSampler, FsmObserver.noop(), System::currentTimeMillis, suspectHintTtlMs, evictionBackstop);
     }
 
     /// Full factory: explicit observer, injectable wall clock (ms), and SUSPECTED-hint decay TTL
     /// (ms). The clock injection lets tests advance time deterministically to exercise the #68 hint
-    /// decay; a TTL of `Long.MAX_VALUE` disables decay.
+    /// decay; a TTL of `Long.MAX_VALUE` disables decay. The terminal-eviction backstop (#131) defaults
+    /// to `quorumLossDrainThreshold` (8s) — use [`#membershipFsm(PresenceSampler,FsmObserver,LongSupplier,long,TimeSpan)`]
+    /// to override it.
     public static MembershipFsm membershipFsm(PresenceSampler presenceSampler,
                                               FsmObserver<MembershipState, MembershipEvent> observer,
                                               LongSupplier wallClockMs,
                                               long suspectHintTtlMs) {
-        return new MembershipFsm(presenceSampler, observer, wallClockMs, suspectHintTtlMs);
+        return new MembershipFsm(presenceSampler, observer, wallClockMs, suspectHintTtlMs, DEFAULT_EVICTION_BACKSTOP);
+    }
+
+    /// Full factory with an explicit terminal-eviction backstop window (#131 Model C): explicit
+    /// observer, injectable wall clock (ms), SUSPECTED-hint decay TTL (ms), and the co-confirmed-death
+    /// backstop window. Lets tests drive the backstop deterministically alongside the injected clock.
+    public static MembershipFsm membershipFsm(PresenceSampler presenceSampler,
+                                              FsmObserver<MembershipState, MembershipEvent> observer,
+                                              LongSupplier wallClockMs,
+                                              long suspectHintTtlMs,
+                                              TimeSpan evictionBackstop) {
+        return new MembershipFsm(presenceSampler, observer, wallClockMs, suspectHintTtlMs, evictionBackstop);
     }
 
     /// Register the confirmed-departure listener invoked ONCE per fresh edge into DEAD — at the SAME
@@ -500,15 +545,21 @@ public final class MembershipFsm {
         trackingFor(id).promoteIfObserved();
     }
 
-    /// Co-confirmation gate: only when BOTH planes confirm death (SWIM-FAULTY ∧ liveness-gone) drive the
-    /// confirmed-eviction edge Suspect→Departing→Dead via [`DownHysteresisMet`] then [`Stopped`]. A
-    /// single-plane signal leaves the member in SUSPECT (still counts) — the churn cure against a
-    /// single-plane false positive.
+    /// Co-confirmation gate (#131 Model C — DEFERRED terminal). When BOTH planes confirm death
+    /// (SWIM-FAULTY ∧ liveness-gone) the member is NO LONGER marched straight to DEAD. Instead a
+    /// per-member terminal-eviction backstop timer is armed for [`#evictionBackstop`]; the member stays
+    /// SUSPECT (still counts toward effective, still recoverable) for the window. If a brief network
+    /// partition heals within the window, a `SwimHealthy` recovery edge fires
+    /// [`MemberTracking#clearConfirmedDeath`] which cancels the backstop and the node rejoins via
+    /// SUSPECT→MEMBER — never fenced. Only if the backstop FIRES does the terminal march run, and even
+    /// then only if the member is STILL co-confirmed dead at firing time
+    /// ([`MemberTracking#evictIfStillConfirmedDead`], re-checked under the per-member monitor to close
+    /// the `cancel(false)`-cannot-stop-a-running-task race). IDEMPOTENT: re-entered on every
+    /// SwimFaulty/livenessGone while co-confirmed, but [`MemberTracking#armEvictionBackstop`] no-ops
+    /// while a backstop is already armed.
     private void maybeConfirmDeparture(MemberTracking tracking) {
         if (tracking.coConfirmedDead()) {
-            tracking.dispatch(new DownHysteresisMet());
-            tracking.dispatch(new Stopped());
-            tracking.clearConfirmedDeath();
+            tracking.armEvictionBackstop(tracking::evictIfStillConfirmedDead, evictionBackstop);
         }
     }
 
@@ -567,6 +618,13 @@ public final class MembershipFsm {
         private long lastDoubtAtMs = 0L;
         private MemberDescriptor descriptor = MemberDescriptor.UNKNOWN;
 
+        /// Pending terminal-eviction backstop (#131 Model C). `Some(future)` while a co-confirmed-death
+        /// backstop is armed and not yet fired/cancelled; `none()` otherwise. Held null-safe via
+        /// [`Option`] and mutated only under the per-member monitor (consistent with the rest of this
+        /// class). Cancelled on recovery ([`#clearConfirmedDeath`]) and on any fresh edge into DEAD
+        /// ([`#dispatch`]).
+        private Option<ScheduledFuture<?>> evictionBackstopHandle = Option.none();
+
         private MemberTracking(NodeId id, Fsm<MembershipState, MembershipEvent> fsm, Consumer<NodeId> onEnteredDead) {
             this.id = id;
             this.fsm = fsm;
@@ -582,6 +640,7 @@ public final class MembershipFsm {
 
             fsm.dispatch(event);
             if (!wasDead && isDead()) {
+                cancelEvictionBackstop();
                 onEnteredDead.accept(id);
             }
         }
@@ -631,6 +690,47 @@ public final class MembershipFsm {
         synchronized void clearConfirmedDeath() {
             swimFaultySeen = false;
             livenessGoneSeen = false;
+            cancelEvictionBackstop();
+        }
+
+        /// Arm the terminal-eviction backstop (#131 Model C). IDEMPOTENT: if a backstop is already
+        /// armed and not yet fired, this is a no-op — so re-entry on every SwimFaulty/livenessGone
+        /// while co-confirmed never re-schedules. Otherwise schedules `terminalAction` after `window`
+        /// via [`SharedScheduler#schedule`] and retains the handle for later cancellation. Guarded by
+        /// the per-member monitor, consistent with the rest of this class.
+        synchronized void armEvictionBackstop(Runnable terminalAction, TimeSpan window) {
+            if (evictionBackstopHandle.filter(future -> !future.isDone()).isPresent()) {
+                return;
+            }
+            evictionBackstopHandle = Option.some(SharedScheduler.schedule(terminalAction, window));
+        }
+
+        /// Cancel the pending terminal-eviction backstop (#131 Model C) if armed, and clear the handle.
+        /// Idempotent — a no-op when no backstop is armed, and harmless when the timer has already
+        /// fired (cancelling a completed future is a no-op). Called on recovery
+        /// ([`#clearConfirmedDeath`]) and on any fresh edge into DEAD ([`#dispatch`]) so a terminal
+        /// reached via another path (graceful `SwimDeparted`, join-grace expiry) never leaks a pending
+        /// backstop.
+        synchronized void cancelEvictionBackstop() {
+            evictionBackstopHandle.onPresent(future -> future.cancel(false));
+            evictionBackstopHandle = Option.none();
+        }
+
+        /// Backstop firing under the per-member monitor (#131 Model C): terminal-evict ONLY if the
+        /// member is STILL co-confirmed dead. A `SwimHealthy` recovery between timer-fire and
+        /// monitor-acquire runs `clearConfirmedDeath` (flags false + cancel), so `coConfirmedDead()` is
+        /// false here and we no-op — closing the `cancel(false)`-cannot-stop-a-running-task race. When
+        /// it does proceed, the terminal march (Suspect→Departing→Dead via `DownHysteresisMet` then
+        /// `Stopped`) runs through `dispatch` (already synchronized/reentrant on this monitor); the
+        /// fresh-edge-into-DEAD branch there cancels the now-fired handle and fires `onEnteredDead`
+        /// exactly once.
+        synchronized void evictIfStillConfirmedDead() {
+            if (!coConfirmedDead()) {
+                return;
+            }
+            dispatch(new DownHysteresisMet());
+            dispatch(new Stopped());
+            clearConfirmedDeath();
         }
 
         /// Last-wins upsert of the network descriptor from a NodeInfo observation. Orthogonal to the

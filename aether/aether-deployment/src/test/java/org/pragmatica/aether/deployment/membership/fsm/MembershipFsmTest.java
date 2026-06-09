@@ -23,10 +23,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.deployment.membership.ntt.PresenceSampler.presenceSampler;
 
 /// Verifies the LIVE membership manager ([`MembershipFsm`]) drives the per-member FSM faithfully from
@@ -46,8 +48,37 @@ class MembershipFsmTest {
     private static final int K_UP = 2;
     private static final int K_DOWN = 3;
 
+    /// Short terminal-eviction backstop (#131 Model C) for the existing co-confirmation tests that
+    /// assert the TERMINAL DEAD outcome: with a near-zero window the deferred backstop fires almost
+    /// immediately, so a co-confirmed-dead member reaches DEAD quickly and those tests poll for it via
+    /// [`#awaitDead`]. The Model C nested tests use their own explicit windows (LONG to prove the
+    /// SUSPECT hold, SHORT to prove the backstop fires / a recovery cancels it).
+    private static final TimeSpan SHORT_BACKSTOP = TimeSpan.timeSpan(40).millis();
+    /// Default suspect-hint TTL for the short-backstop factory used by [`#activeManager`] — never
+    /// decay (byte-identical to the default factory), matching the pre-#131 behaviour for every hint
+    /// assertion.
+    private static final long NO_HINT_DECAY = Long.MAX_VALUE;
+
     private static MembershipFsm activeManager() {
-        return MembershipFsm.membershipFsm(emptySampler());
+        return shortBackstopManager(emptySampler());
+    }
+
+    /// Manager wired with the short Model C backstop so co-confirmed death reaches terminal DEAD
+    /// promptly (polled via [`#awaitDead`]). Used by every legacy co-confirmation test; the deferral
+    /// itself (the SUSPECT hold) is exercised separately by the [`ModelCBackstop`] nested tests with a
+    /// LONG window.
+    private static MembershipFsm shortBackstopManager(PresenceSampler sampler) {
+        return MembershipFsm.membershipFsm(sampler, FsmObserver.noop(), System::currentTimeMillis, NO_HINT_DECAY, SHORT_BACKSTOP);
+    }
+
+    /// Poll until `id` has reached terminal DEAD in `manager` (the Model C backstop has fired). Real
+    /// SharedScheduler time drives the backstop, so the terminal outcome is asynchronous — every
+    /// legacy co-confirmation assertion that previously read DEAD synchronously now awaits it here. The
+    /// 2s ceiling is comfortably above the 40ms [`#SHORT_BACKSTOP`]; widen the ceiling (not the
+    /// backstop) if real-time scheduling ever makes it flaky.
+    private static void awaitDead(MembershipFsm manager, NodeId id) {
+        await().atMost(2, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(id, "Dead"));
     }
 
     /// A real [`PresenceSampler`] with no live members — eviction of an absent id is a harmless
@@ -102,6 +133,7 @@ class MembershipFsmTest {
             assertThat(manager.effective()).isEqualTo(1);
 
             manager.onLivenessGone(A);
+            awaitDead(manager, A);
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(manager.effective()).isZero();
             assertThat(manager.wouldProvision(5)).isEqualTo(5);
@@ -148,11 +180,12 @@ class MembershipFsmTest {
             sampleTimes(presenceSampler, K_UP);
             assertThat(presenceSampler.currentMembers()).contains(A);
 
-            var manager = MembershipFsm.membershipFsm(presenceSampler);
+            var manager = shortBackstopManager(presenceSampler);
             manager.seed(Set.of(A));
             manager.onSwimFaulty(A, 4L);
             manager.onLivenessGone(A);
 
+            awaitDead(manager, A);
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(presenceSampler.currentMembers()).doesNotContain(A);
         }
@@ -218,6 +251,7 @@ class MembershipFsmTest {
             manager.onSwimFaulty(A, 4L);
             manager.onLivenessGone(A);
 
+            awaitDead(manager, A);
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(fired).containsExactly(A);
         }
@@ -298,13 +332,14 @@ class MembershipFsmTest {
             }
             assertThat(presenceSampler.currentMembers()).contains(A);
 
-            var manager = MembershipFsm.membershipFsm(presenceSampler);
+            var manager = shortBackstopManager(presenceSampler);
             var fired = new ArrayList<NodeId>();
             manager.onConfirmedDeparture(fired::add);
             manager.seed(Set.of(A));
             manager.onSwimFaulty(A, 4L);
             manager.onLivenessGone(A);
 
+            awaitDead(manager, A);
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(presenceSampler.currentMembers()).doesNotContain(A);
             assertThat(fired).containsExactly(A);
@@ -421,6 +456,7 @@ class MembershipFsmTest {
             promoteToMember(manager, B);
             manager.onSwimFaulty(A, 4L);
             manager.onLivenessGone(A);
+            awaitDead(manager, A);
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
 
             assertThat(manager.countedMembers()).doesNotContain(A);
@@ -520,6 +556,7 @@ class MembershipFsmTest {
 
             manager.onSwimFaulty(A, 4L);
             manager.onLivenessGone(A);
+            awaitDead(manager, A);
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(manager.effective()).isEqualTo(1);
 
@@ -663,6 +700,7 @@ class MembershipFsmTest {
             manager.onMemberDescriptor(coreInfo(C, "10.0.0.3", 7000));
             manager.onSwimFaulty(C, 4L);
             manager.onLivenessGone(C);
+            awaitDead(manager, C);
             assertThat(manager.memberStates()).containsEntry(C, "Dead");
 
             assertThat(manager.desiredConnections()).isEmpty();
@@ -892,6 +930,7 @@ class MembershipFsmTest {
 
             manager.onSwimFaulty(A, 4L);
             manager.onLivenessGone(A);
+            awaitDead(manager, A);
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
 
             assertThat(descriptorOf(manager, A).source()).isEqualTo("replacement");
@@ -1130,10 +1169,121 @@ class MembershipFsmTest {
         }
     }
 
+    /// #131 Model C — DEFERRED terminal eviction. A node co-confirmed dead (SWIM-FAULTY ∧
+    /// liveness-gone) during a brief network partition stays SUSPECT (counted, recoverable) instead of
+    /// marching straight to DEAD. Terminal DEAD is reached only when the per-member backstop timer
+    /// (= `quorumLossDrainThreshold`) fires OR via the existing confirmed-departure paths. A partition
+    /// shorter than the backstop heals while the node is SUSPECT (a `SwimHealthy` recovery edge cancels
+    /// the backstop) → it rejoins via SUSPECT→MEMBER and is never fenced. These tests drive the
+    /// real-time backstop through the explicit-window factory overload: a LONG window proves the
+    /// SUSPECT hold, a SHORT window proves the backstop fires and that a recovery cancels it.
+    @Nested
+    class ModelCBackstop {
+        /// 30s window — long enough that the backstop CANNOT fire during the synchronous assertion, so
+        /// the member is observed in its deferred SUSPECT hold.
+        private static final TimeSpan LONG_BACKSTOP = TimeSpan.timeSpan(30).seconds();
+        /// 150ms window — short enough to fire promptly when no recovery cancels it.
+        private static final TimeSpan FIRING_BACKSTOP = TimeSpan.timeSpan(150).millis();
+
+        /// Co-confirmed death (both planes) NO LONGER marches straight to DEAD: with a long backstop
+        /// the member is held in SUSPECT and still counts immediately after co-confirmation.
+        @Test
+        void coConfirmedDead_dualSignal_staysSuspectAndCountedNotDead() {
+            var manager = backstopManager(LONG_BACKSTOP);
+
+            promoteToMember(manager, A);
+            manager.onSwimFaulty(A, 4L);
+            manager.onLivenessGone(A);
+
+            assertThat(manager.memberStates())
+                    .as("co-confirmed death is DEFERRED — the member is held SUSPECT, not DEAD")
+                    .containsEntry(A, "Suspect");
+            assertThat(manager.countedMembers())
+                    .as("a held-SUSPECT co-confirmed member still counts (recoverable)")
+                    .contains(A);
+        }
+
+        /// The core anti-#131 property: a `SwimHealthy` recovery within the backstop window cancels the
+        /// pending terminal, recovers SUSPECT→MEMBER, and the member is STILL not DEAD after the window
+        /// has comfortably elapsed (the timer was cancelled, not merely outrun).
+        @Test
+        void coConfirmedDead_recoveryBeforeBackstop_cancelsBackstopAndRecoversToMember() {
+            var manager = backstopManager(FIRING_BACKSTOP);
+
+            promoteToMember(manager, A);
+            manager.onSwimFaulty(A, 4L);
+            manager.onLivenessGone(A);
+            // Recovery lands inside the window: higher incarnation drives SUSPECT→MEMBER and clears the
+            // co-confirmation flags, cancelling the armed backstop.
+            manager.onSwimHealthy(A, 5L);
+
+            assertThat(manager.memberStates())
+                    .as("a recovery edge within the window recovers the member SUSPECT→MEMBER")
+                    .containsEntry(A, "Member");
+            assertThat(manager.countedMembers()).contains(A);
+
+            // Wait WELL beyond the backstop window: a cancelled timer must never fire.
+            await().pollDelay(FIRING_BACKSTOP.millis() * 3, TimeUnit.MILLISECONDS)
+                   .atMost(2, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(manager.memberStates())
+                           .as("the cancelled backstop must NOT later evict the recovered member")
+                           .containsEntry(A, "Member"));
+        }
+
+        /// No recovery: the backstop fires after the window and performs the original terminal march —
+        /// the member reaches DEAD and drops out of the count.
+        @Test
+        void coConfirmedDead_backstopExpires_evictsToDead() {
+            var manager = backstopManager(FIRING_BACKSTOP);
+
+            promoteToMember(manager, A);
+            manager.onSwimFaulty(A, 4L);
+            manager.onLivenessGone(A);
+
+            await().atMost(2, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Dead"));
+            assertThat(manager.countedMembers())
+                    .as("a backstop-evicted member is no longer counted")
+                    .doesNotContain(A);
+        }
+
+        /// Regression guard: ONE plane alone (bare SWIM-FAULTY, no liveness-gone) never arms the
+        /// backstop and never reaches DEAD — it stays SUSPECT and counted even after the window.
+        @Test
+        void singleSignal_swimFaultyOnly_staysSuspectNoBackstopTerminal() {
+            var manager = backstopManager(FIRING_BACKSTOP);
+
+            promoteToMember(manager, A);
+            manager.onSwimFaulty(A, 4L);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Suspect");
+            assertThat(manager.countedMembers()).contains(A);
+
+            // Past the window a single-plane signal still must not have evicted.
+            await().pollDelay(FIRING_BACKSTOP.millis() * 3, TimeUnit.MILLISECONDS)
+                   .atMost(2, TimeUnit.SECONDS)
+                   .untilAsserted(() -> {
+                       assertThat(manager.memberStates())
+                               .as("a single death plane never arms the backstop, never evicts")
+                               .containsEntry(A, "Suspect");
+                       assertThat(manager.countedMembers()).contains(A);
+                   });
+        }
+
+        private static MembershipFsm backstopManager(TimeSpan backstop) {
+            return MembershipFsm.membershipFsm(emptySampler(), FsmObserver.noop(), System::currentTimeMillis, NO_HINT_DECAY, backstop);
+        }
+    }
+
+    /// Drive `id` to terminal DEAD via co-confirmation (SWIM-FAULTY ∧ liveness-gone) and AWAIT the
+    /// Model C backstop firing. Callers built with [`#activeManager`] / [`#shortBackstopManager`] use
+    /// the 40ms [`#SHORT_BACKSTOP`], so DEAD lands within the [`#awaitDead`] ceiling. The deferral
+    /// behaviour itself (the SUSPECT hold before the backstop) is covered by [`ModelCBackstop`].
     private static void driveToDead(MembershipFsm manager, NodeId id, long incarnation) {
         promoteToMember(manager, id);
         manager.onSwimFaulty(id, incarnation);
         manager.onLivenessGone(id);
+        awaitDead(manager, id);
     }
 
     private static NodeId[] fivePromotedMembers(MembershipFsm manager) {

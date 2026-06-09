@@ -1731,7 +1731,9 @@ public interface AetherNode extends ManageableNode {
         // SWIM-suspect on a still-present node (load/churn false positive, no SwimHealthy recovery
         // edge, present so no co-confirmed DEAD) decays out of the quiesce gate after the TTL instead
         // of sticking the cluster DEGRADED forever. Default System clock.
-        var membershipFsm = MembershipFsm.membershipFsm(presenceSampler, config.autoHeal().swimHintsTtl().millis());
+        var membershipFsm = MembershipFsm.membershipFsm(presenceSampler,
+                                                        config.autoHeal().swimHintsTtl().millis(),
+                                                        membershipConfig.quorumLossDrainThreshold());
         // Publish the FSM into the deferred holder so the membership consumers wired earlier (DHT
         // livePeers, accessibility filter, quorum-count propagation) read the authoritative FSM set.
         membershipFsmRef.set(membershipFsm);
