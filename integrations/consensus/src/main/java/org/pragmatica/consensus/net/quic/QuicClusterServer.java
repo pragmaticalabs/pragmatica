@@ -242,6 +242,9 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             .initialMaxStreamDataBidirectionalLocal(INITIAL_MAX_STREAM_DATA)
             .initialMaxStreamDataBidirectionalRemote(INITIAL_MAX_STREAM_DATA)
             .initialMaxStreamsBidirectional(INITIAL_MAX_STREAMS)
+            // Enables QUIC connection migration so a path change (not a socket teardown)
+            // survives without a reconnect.
+            .activeMigration(true)
             .tokenHandler(InsecureQuicTokenHandler.INSTANCE)
             .handler(new ServerConnectionInitializer())
             .streamHandler(new ServerStreamInitializer())

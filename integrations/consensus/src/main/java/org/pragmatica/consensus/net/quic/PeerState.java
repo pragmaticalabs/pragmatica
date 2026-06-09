@@ -20,6 +20,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.function.LongUnaryOperator;
 
 import org.pragmatica.consensus.NodeId;
@@ -70,6 +71,12 @@ import static org.pragmatica.lang.Unit.unit;
 public final class PeerState {
     public static final int OFFLINE_BUFFER_MAX = 10_000;
 
+    /// Minimum age of a still-`isActive()` CONNECTED incumbent before a fresh inbound handshake
+    /// is allowed to supersede it (adopt-newer). 3s comfortably separates a sub-millisecond
+    /// dual-dial race during formation (kept as DUPLICATE) from a post-partition reconnect
+    /// (adopted) where `isActive()` lies indefinitely on a partition-orphaned link.
+    private static final long SUPERSEDE_MIN_AGE_NANOS = TimeUnit.SECONDS.toNanos(3);
+
     public enum Phase {
         INIT,
         CONNECTING,
@@ -95,16 +102,25 @@ public final class PeerState {
         /// Caller should drain the offline buffer and emit a fresh `nodeAdded` view-change.
         ACCEPTED,
         /// Reconnection accepted; peer transitioned EVICTED → CONNECTED, OR replaced a stale
-        /// (already-dead) CONNECTED link with a fresh one. The peer is already known to upstream
+        /// (already-dead) CONNECTED link with a fresh one, OR superseded a still-`isActive()` but
+        /// aged incumbent with a fresh handshake. The peer is already known to upstream
         /// consumers — caller should drain the offline buffer but MUST NOT emit a duplicate
         /// `nodeAdded` view-change. Closes the flap-loop where eviction-then-handshake fires
-        /// `processViewChange(ADD)` against a peer that never left the topology.
+        /// `processViewChange(ADD)` against a peer that never left the topology. When the result
+        /// arrives via [AttachOutcome], its `superseded` may carry an OLD connection the caller
+        /// must close.
         RECONNECTED,
-        /// Peer already has a live CONNECTED link. Caller should close the new connection.
+        /// Peer already has a live CONNECTED link too young to safely supersede. Caller should
+        /// close the new connection.
         DUPLICATE,
         /// Peer is REMOVED. Caller should close the new connection.
         REJECTED
     }
+
+    /// Outcome of [attach]: the [AttachResult] plus, when a still-`isActive()` incumbent
+    /// connection was displaced by a fresh handshake (the adopt-newer path), the `superseded`
+    /// OLD connection the caller MUST close. Empty `superseded` for every other branch.
+    public record AttachOutcome(AttachResult result, Option<QuicPeerConnection> superseded) {}
 
     private final NodeId peerId;
     private Phase phase = Phase.INIT;
@@ -176,34 +192,53 @@ public final class PeerState {
     }
 
     /// Transitions CONNECTING (or INIT/EVICTED — accepted inbound before explicit connect) → CONNECTED.
-    /// Returns ACCEPTED on first-time success, RECONNECTED when transitioning from EVICTED or
-    /// replacing a stale CONNECTED link (peer was already known to upstream consumers),
-    /// DUPLICATE if a live link already exists, REJECTED if REMOVED.
-    public synchronized AttachResult attach(QuicPeerConnection newConnection, long nowNanos) {
+    /// Returns ACCEPTED on first-time success, RECONNECTED when transitioning from EVICTED,
+    /// replacing a stale CONNECTED link, or superseding an aged-but-active incumbent (the
+    /// adopt-newer path, whose [AttachOutcome.superseded] carries the displaced OLD connection),
+    /// DUPLICATE if a live, too-young link already exists, REJECTED if REMOVED.
+    public synchronized AttachOutcome attach(QuicPeerConnection newConnection, long nowNanos) {
         return switch (phase) {
-            case REMOVED -> AttachResult.REJECTED;
-            case CONNECTED -> {
-                if (connection != null && connection.isActive()) {
-                    yield AttachResult.DUPLICATE;
-                }
-                // Stale CONNECTED link replaced — peer is already known upstream.
-                this.connection = newConnection;
-                this.phaseChangedAtNanos = nowNanos;
-                yield AttachResult.RECONNECTED;
-            }
+            case REMOVED -> new AttachOutcome(AttachResult.REJECTED, Option.empty());
+            case CONNECTED -> attachOverConnected(newConnection, nowNanos);
             case EVICTED -> {
                 // Reconnect after eviction — peer never left topology, suppress duplicate ADD.
                 this.connection = newConnection;
                 changePhase(Phase.CONNECTED, nowNanos);
-                yield AttachResult.RECONNECTED;
+                yield new AttachOutcome(AttachResult.RECONNECTED, Option.empty());
             }
             case INIT, CONNECTING -> {
                 // First-time accept (no prior CONNECTED link).
                 this.connection = newConnection;
                 changePhase(Phase.CONNECTED, nowNanos);
-                yield AttachResult.ACCEPTED;
+                yield new AttachOutcome(AttachResult.ACCEPTED, Option.empty());
             }
         };
+    }
+
+    /// CONNECTED-branch of [attach]. An incumbent that is null or reports `!isActive()` is a
+    /// stale link and is transparently replaced (RECONNECTED, no superseded). An incumbent that
+    /// still reports `isActive()` is normally a duplicate — UNLESS it is older than
+    /// [SUPERSEDE_MIN_AGE_NANOS], in which case the fresh handshake adopts-newer and the OLD
+    /// connection is handed back for the caller to close. Rationale: a completed Hello handshake
+    /// is a current liveness proof, whereas `isActive()` can lie indefinitely on a
+    /// partition-orphaned link (QUIC idle timeout disabled). `ConnectionDirection.shouldInitiate`
+    /// guarantees exactly one dialer per pair, so a fresh inbound handshake means the designated
+    /// dialer detected death and re-dialed — defer to it. The age guard preserves the existing
+    /// protection against a sub-millisecond dual-dial race during formation.
+    private AttachOutcome attachOverConnected(QuicPeerConnection newConnection, long nowNanos) {
+        if (connection != null && connection.isActive()) {
+            if (phaseAgeNanos(nowNanos) <= SUPERSEDE_MIN_AGE_NANOS) {
+                return new AttachOutcome(AttachResult.DUPLICATE, Option.empty());
+            }
+            var superseded = connection;
+            this.connection = newConnection;
+            this.phaseChangedAtNanos = nowNanos;
+            return new AttachOutcome(AttachResult.RECONNECTED, option(superseded));
+        }
+        // Stale CONNECTED link replaced — peer is already known upstream.
+        this.connection = newConnection;
+        this.phaseChangedAtNanos = nowNanos;
+        return new AttachOutcome(AttachResult.RECONNECTED, Option.empty());
     }
 
     /// Transitions CONNECTED → EVICTED. Preserves offline buffer for reconnect drain.

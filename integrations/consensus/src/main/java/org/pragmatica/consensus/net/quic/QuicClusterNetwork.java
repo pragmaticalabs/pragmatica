@@ -596,6 +596,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                connection.peerId(), cause.message()));
     }
 
+    /// Close an incumbent connection superseded by a fresh adopt-newer handshake. Routes through
+    /// the same close path evictStaleConnection uses: counts the close in metrics, then closes.
+    private void closeSupersededConnection(QuicPeerConnection superseded) {
+        quicMetrics.onConnectionClosed();
+        closeDroppedConnection(superseded);
+    }
+
     @Override
     public <M extends ProtocolMessage> Unit send(NodeId peerId, M message) {
         if (blackholed) {
@@ -826,8 +833,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
 
         var outcome = state.attach(connection, System.nanoTime());
+        // Adopt-newer: a still-active but aged incumbent was displaced by this fresh handshake.
+        // Close the displaced OLD link through the same path evictStaleConnection uses.
+        outcome.superseded().onPresent(this::closeSupersededConnection);
         boolean isReconnect;
-        switch (outcome) {
+        switch (outcome.result()) {
             case PeerState.AttachResult.REJECTED -> {
                 log.debug("Rejecting connection from REMOVED peer {}", peerId);
                 connection.close();

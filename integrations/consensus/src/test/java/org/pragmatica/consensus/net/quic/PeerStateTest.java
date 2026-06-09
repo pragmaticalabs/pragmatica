@@ -19,6 +19,8 @@ import org.pragmatica.consensus.net.quic.PeerState.Phase;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.StreamType;
 
+import java.util.concurrent.TimeUnit;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -73,17 +75,18 @@ class PeerStateTest {
     void attach_fromCONNECTING_transitions_to_CONNECTED_and_returns_ACCEPTED() {
         var s = state();
         s.beginConnecting(T0 + 1);
-        assertThat(s.attach(liveConnection(), T0 + 2)).isEqualTo(AttachResult.ACCEPTED);
+        assertThat(s.attach(liveConnection(), T0 + 2).result()).isEqualTo(AttachResult.ACCEPTED);
         assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
         assertThat(s.activeConnection().isPresent()).isTrue();
     }
 
     @Test
-    void attach_duplicate_on_active_CONNECTED_returns_DUPLICATE() {
+    void attach_duplicate_on_young_active_CONNECTED_returns_DUPLICATE() {
         var s = state();
         s.beginConnecting(T0 + 1);
         s.attach(liveConnection(), T0 + 2);
-        assertThat(s.attach(liveConnection(), T0 + 3)).isEqualTo(AttachResult.DUPLICATE);
+        // Incumbent younger than SUPERSEDE_MIN_AGE (T0+3 is ~1ns after T0+2) — stays a duplicate.
+        assertThat(s.attach(liveConnection(), T0 + 3).result()).isEqualTo(AttachResult.DUPLICATE);
         assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
     }
 
@@ -91,7 +94,7 @@ class PeerStateTest {
     void attach_on_REMOVED_returns_REJECTED() {
         var s = state();
         s.authoritativeRemove(T0 + 1);
-        assertThat(s.attach(liveConnection(), T0 + 2)).isEqualTo(AttachResult.REJECTED);
+        assertThat(s.attach(liveConnection(), T0 + 2).result()).isEqualTo(AttachResult.REJECTED);
         assertThat(s.phase()).isEqualTo(Phase.REMOVED);
     }
 
@@ -107,8 +110,9 @@ class PeerStateTest {
         assertThat(s.phase()).isEqualTo(Phase.EVICTED);
 
         var result = s.attach(liveConnection(), T0 + 4);
-        assertThat(result).as("attach from EVICTED is a reconnect, not a fresh accept")
+        assertThat(result.result()).as("attach from EVICTED is a reconnect, not a fresh accept")
                           .isEqualTo(AttachResult.RECONNECTED);
+        assertThat(result.superseded().isEmpty()).isTrue();
         assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
     }
 
@@ -126,7 +130,46 @@ class PeerStateTest {
         // Now the peer is CONNECTED but the held connection reports !isActive — replacing
         // it must return RECONNECTED, not a duplicate-rejection or fresh ACCEPTED.
         var result = s.attach(liveConnection(), T0 + 3);
-        assertThat(result).isEqualTo(AttachResult.RECONNECTED);
+        assertThat(result.result()).isEqualTo(AttachResult.RECONNECTED);
+        assertThat(result.superseded().isEmpty()).as("a dead incumbent is not handed back to close").isTrue();
+        assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
+    }
+
+    @Test
+    void attach_freshHandshakeOverOldActiveIncumbent_supersedesAndReturnsOldForClose() {
+        // Post-partition reconnect: incumbent still reports isActive() (idle timeout disabled,
+        // never learned its peer died), but it is older than SUPERSEDE_MIN_AGE (3s). The fresh
+        // inbound handshake is a current liveness proof and must adopt-newer, handing back the
+        // stale OLD connection for the caller to close.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        var oldActive = liveConnection();
+        s.attach(oldActive, T0 + 2);
+        var fresh = liveConnection();
+        var threeSecondsOneNano = TimeUnit.SECONDS.toNanos(3) + 1L;
+        var result = s.attach(fresh, T0 + 2 + threeSecondsOneNano);
+        assertThat(result.result()).isEqualTo(AttachResult.RECONNECTED);
+        assertThat(result.superseded().isPresent()).as("old active incumbent is handed back to close").isTrue();
+        assertThat(result.superseded().or((QuicPeerConnection) null)).isSameAs(oldActive);
+        assertThat(s.activeConnection().or((QuicPeerConnection) null))
+            .as("bound connection is now the fresh one").isSameAs(fresh);
+        assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
+    }
+
+    @Test
+    void attach_freshHandshakeOverYoungActiveIncumbent_isDuplicate() {
+        // Formation dual-dial race: incumbent is active AND younger than SUPERSEDE_MIN_AGE.
+        // The fresh handshake must NOT supersede — it stays a duplicate and the incumbent is kept.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        var young = liveConnection();
+        s.attach(young, T0 + 2);
+        var oneSecond = TimeUnit.SECONDS.toNanos(1);
+        var result = s.attach(liveConnection(), T0 + 2 + oneSecond);
+        assertThat(result.result()).isEqualTo(AttachResult.DUPLICATE);
+        assertThat(result.superseded().isEmpty()).as("young incumbent is not displaced").isTrue();
+        assertThat(s.activeConnection().or((QuicPeerConnection) null))
+            .as("incumbent connection unchanged").isSameAs(young);
         assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
     }
 
