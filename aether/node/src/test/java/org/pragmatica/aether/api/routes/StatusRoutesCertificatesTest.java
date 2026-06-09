@@ -38,6 +38,26 @@ class StatusRoutesCertificatesTest {
             assertThat(response.lastRenewalAt()).isEqualTo("N/A");
             assertThat(response.secondsUntilExpiry()).isZero();
         }
+
+        @Test
+        void certificateStatus_tlsOffSchedulerPresent_returnsNotConfiguredIgnoringScheduler() {
+            // Real runtime case: the QUIC cluster transport always wires a (healthy) scheduler
+            // for its self-signed cert even when app-TLS is off. app-TLS posture is keyed on
+            // tlsEnabled, so the response must report NOT_CONFIGURED regardless of scheduler health.
+            var notAfter = Instant.now().plus(30, ChronoUnit.DAYS);
+            var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(new StubProvider(),
+                                                                                    "node-1",
+                                                                                    "host-1",
+                                                                                    _ -> {},
+                                                                                    notAfter);
+            var response = StatusRoutes.certificateStatus(false, Option.some(scheduler));
+
+            assertThat(response.tlsEnabled()).isFalse();
+            assertThat(response.renewalStatus()).isEqualTo("NOT_CONFIGURED");
+            assertThat(response.expiresAt()).isEqualTo("N/A");
+            assertThat(response.lastRenewalAt()).isEqualTo("N/A");
+            assertThat(response.secondsUntilExpiry()).isZero();
+        }
     }
 
     @Nested

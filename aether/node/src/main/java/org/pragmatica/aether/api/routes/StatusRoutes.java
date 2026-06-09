@@ -377,6 +377,11 @@ public final class StatusRoutes implements RouteSource {
 
     private static CertificateStatusResponse toCertificateStatus(boolean tlsEnabled,
                                                                  CertificateRenewalScheduler scheduler) {
+        // app-TLS NOT_CONFIGURED is a presentation-layer fact keyed on tlsEnabled;
+        // the scheduler legitimately renews the cluster-transport cert regardless.
+        if (!tlsEnabled) {
+            return new CertificateStatusResponse(false, "N/A", 0, "N/A", "NOT_CONFIGURED");
+        }
         return new CertificateStatusResponse(tlsEnabled,
                                              scheduler.currentNotAfter().toString(),
                                              scheduler.secondsUntilExpiry(),

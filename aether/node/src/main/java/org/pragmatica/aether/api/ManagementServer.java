@@ -56,6 +56,8 @@ import org.pragmatica.serialization.Serializer;
 import org.pragmatica.aether.http.handler.security.RoleEnforcer;
 import org.pragmatica.aether.http.handler.security.RoutePermission;
 import org.pragmatica.aether.http.handler.security.RoutePermissionRegistry;
+import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.http.security.SecurityError;
@@ -687,11 +689,29 @@ class ManagementServerImpl implements ManagementServer {
 
             return;
         }
-        if (securityEnabled && !validateManagementSecurity(ctx, instrumented, path, method)) {
-            recordRequestMetrics(methodName, path, instrumented, startTime);
+        if (securityEnabled) {
+            var auth = validateManagementSecurity(ctx, instrumented, path, method);
+
+            if (auth.isFailure()) {
+                recordRequestMetrics(methodName, path, instrumented, startTime);
+
+                return;
+            }
+            auth.onSuccess(sc -> ScopedValue.where(SecurityContextHolder.scopedValue(), sc)
+                                            .run(() -> dispatchManagementRequest(ctx, instrumented, methodName, startTime)));
 
             return;
         }
+
+        dispatchManagementRequest(ctx, instrumented, methodName, startTime);
+    }
+
+    private void dispatchManagementRequest(RequestContext ctx,
+                                           InstrumentedResponseWriter instrumented,
+                                           String methodName,
+                                           long startTime) {
+        var path = ctx.path();
+
         if (tryForwardToRouteOwner(ctx, instrumented, methodName, startTime)) {return;}
         if (router.handle(ctx, instrumented)) {
             recordRequestMetrics(methodName, path, instrumented, startTime);
@@ -966,7 +986,7 @@ class ManagementServerImpl implements ManagementServer {
 
                 return;
             }
-            if (!validateManagementSecurity(serverCtx, responseCapture, context.path(), method.unwrap())) {
+            if (validateManagementSecurity(serverCtx, responseCapture, context.path(), method.unwrap()).isFailure()) {
                 responseCapture.completion().onSuccess(responseData -> sendManagementForwardSuccess(network,
                                                                                                     request,
                                                                                                     ser,
@@ -1141,11 +1161,10 @@ class ManagementServerImpl implements ManagementServer {
     private static final String SYSTEM_NAMESPACE_COLON =
             org.pragmatica.aether.slice.resource.ResourceAddress.SYSTEM_NAMESPACE + ":";
 
-    @SuppressWarnings("JBCT-PAT-01")
-    private boolean validateManagementSecurity(RequestContext ctx,
-                                               ResponseWriter response,
-                                               String path,
-                                               HttpMethod method) {
+    private Result<SecurityContext> validateManagementSecurity(RequestContext ctx,
+                                                               ResponseWriter response,
+                                                               String path,
+                                                               HttpMethod method) {
         var httpContext = toManagementRequestContext(ctx, path);
         var policy = SecurityPolicy.apiKeyRequired();
         var methodName = method.name();
@@ -1158,18 +1177,17 @@ class ManagementServerImpl implements ManagementServer {
                                                                                     path,
                                                                                     methodName,
                                                                                     ctx.requestId()))
-                                .onSuccess(sc -> logManagementAccess(sc, methodName, path))
-                                .isSuccess();
+                                .onSuccess(sc -> logManagementAccess(sc, methodName, path));
     }
 
-    private Result<org.pragmatica.aether.http.handler.security.SecurityContext> enforceAndAuditDenial(org.pragmatica.aether.http.handler.security.SecurityContext sc,
-                                                                                                      RoutePermission permission,
-                                                                                                      String method,
-                                                                                                      String path) {
+    private Result<SecurityContext> enforceAndAuditDenial(SecurityContext sc,
+                                                          RoutePermission permission,
+                                                          String method,
+                                                          String path) {
         return RoleEnforcer.enforce(sc, permission).onFailure(_ -> auditAccessDenied(sc, method, path, permission));
     }
 
-    private void auditAccessDenied(org.pragmatica.aether.http.handler.security.SecurityContext sc,
+    private void auditAccessDenied(SecurityContext sc,
                                    String method,
                                    String path,
                                    RoutePermission permission) {
@@ -1186,7 +1204,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                             requiredRole));
     }
 
-    private static void logManagementAccess(org.pragmatica.aether.http.handler.security.SecurityContext securityContext,
+    private static void logManagementAccess(SecurityContext securityContext,
                                             String method,
                                             String path) {
         var principal = securityContext.isAuthenticated()
