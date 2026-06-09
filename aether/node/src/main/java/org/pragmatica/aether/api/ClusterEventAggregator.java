@@ -394,7 +394,7 @@ public final class ClusterEventAggregator {
     /// QUIC handshake), so this is the surface tests asserting replacement-NODE_JOINED depend on.
     @Contract public void onPeerJoined(TransportObservation.PeerJoined event) {
         nodeJoinTimes.put(event.nodeId().id(), System.currentTimeMillis());
-        emit(new NodeJoined(hlcClock.now(),
+        emitAsLeader(new NodeJoined(hlcClock.now(),
                             Severity.INFO,
                             "Node " + event.nodeId().id() + " joined cluster (now " + event.topology().size() + " nodes)",
                             Map.of("nodeId", event.nodeId().id(),
@@ -406,11 +406,11 @@ public final class ClusterEventAggregator {
     @Contract public void onSwimObservation(@SuppressWarnings("unused") org.pragmatica.swim.SwimObservation observation) {}
 
     @Contract public void onLeaderChange(LeaderNotification.LeaderChange event) {
-        event.leaderId().onPresent(leaderId -> emit(new LeaderElected(hlcClock.now(),
+        event.leaderId().onPresent(leaderId -> emitAsLeader(new LeaderElected(hlcClock.now(),
                                                                       Severity.INFO,
                                                                       "Node " + leaderId.id() + " elected as leader",
                                                                       Map.of("leaderId", leaderId.id()))))
-             .onEmpty(() -> emit(new LeaderLost(hlcClock.now(),
+             .onEmpty(() -> emitAsLeader(new LeaderLost(hlcClock.now(),
                                                 Severity.WARNING,
                                                 "Leadership lost, election in progress",
                                                 Map.of())));
@@ -419,11 +419,11 @@ public final class ClusterEventAggregator {
     @Contract public void onQuorumStateChange(ClusterStateNotification event) {
         if (!event.advanceSequence(quorumSequence)) {return;}
         switch (event.state()) {
-            case ACTIVE -> emit(new QuorumEstablished(hlcClock.now(),
+            case ACTIVE -> emitAsLeader(new QuorumEstablished(hlcClock.now(),
                                                       Severity.INFO,
                                                       "Quorum established",
                                                       Map.of()));
-            case PASSIVE -> emit(new QuorumLost(hlcClock.now(),
+            case PASSIVE -> emitAsLeader(new QuorumLost(hlcClock.now(),
                                                 Severity.CRITICAL,
                                                 "Quorum lost",
                                                 Map.of()));
@@ -453,6 +453,12 @@ public final class ClusterEventAggregator {
                                                                                        Severity.WARNING,
                                                                                        "Node " + draining.nodeId().id() + " draining",
                                                                                        Map.of("nodeId", draining.nodeId().id())));
+            // NODE_JOINED is NOT sourced from the membership delta: a JOINING replacement is not yet
+            // a counted core member, so publishCoreMembershipDelta emits no `added` edge for it. The
+            // authoritative join surface is the transport `PeerJoined` handshake (onPeerJoined), now
+            // LEADER-gated (the leader dials every core member, so it observes the replacement's
+            // handshake). Departures differ — the delta DOES fire on the dead node leaving the counted
+            // set — which is why NodeRemoved/Decommissioned/Draining above emit from here.
             case MembershipDecision.NodeJoined ignored -> {}
             case MembershipDecision.NodeJoining ignored -> {}
             case MembershipDecision.NodeFailedDrain ignored -> {}
@@ -564,7 +570,7 @@ public final class ClusterEventAggregator {
     }
 
     @Contract public void onNodeLifecycleChanged(OperationalEvent.NodeLifecycleChanged event) {
-        emit(new NodeLifecycleChanged(hlcClock.now(),
+        emitAsLeader(new NodeLifecycleChanged(hlcClock.now(),
                                       Severity.INFO,
                                       "Node " + event.nodeId() + " lifecycle: " + event.transition(),
                                       Map.of("nodeId", event.nodeId(),
@@ -611,7 +617,7 @@ public final class ClusterEventAggregator {
     }
 
     @Contract public void onGenerationChanged(OperationalEvent.GenerationChanged event) {
-        emit(new GenerationChanged(hlcClock.now(),
+        emitAsLeader(new GenerationChanged(hlcClock.now(),
                                    Severity.INFO,
                                    "Generation epoch advanced " + event.oldEpoch() + " -> " + event.newEpoch() + " (" + event.reason() + ")",
                                    Map.of("oldEpoch", event.oldEpoch(),

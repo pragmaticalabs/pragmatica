@@ -187,21 +187,22 @@ class ClusterEventAggregatorTest {
                                      .containsEntry("requestedBy", "operator-x");
     }
 
-    // --- owner-gated emit (folds B3) ------------------------------------------------------------
+    // --- owner-gated emit (operational events: config/deploy/scale/blueprint stay owner-gated) -----
 
     @Test
     void owner_emits() {
         var h = Harness.create(Harness.defaultRetention(), OWNER);
-        h.aggregator().onPeerJoined(peerJoined("peer-owner", List.of(SELF)));
+        h.aggregator().onConfigChanged(OperationalEvent.ConfigChanged.configChanged("retention", "node", "update", "op"));
         assertThat(h.events()).hasSize(1);
     }
 
     @Test
     void nonOwner_suppressesEmit() {
         var h = Harness.create(Harness.defaultRetention(), NOT_OWNER);
-        h.aggregator().onPeerJoined(peerJoined("peer-x", List.of(SELF)));
-        // Non-owner publishes nothing for OWNER-gated events — the partition stays empty.
-        // (Membership DEPARTURES are LEADER-gated, not owner-gated — covered by the leader-gate tests below.)
+        h.aggregator().onConfigChanged(OperationalEvent.ConfigChanged.configChanged("retention", "node", "update", "op"));
+        // Non-owner publishes nothing for OWNER-gated operational events — the partition stays empty.
+        // (Cluster-canonical events — membership/leader/quorum/generation/lifecycle — are LEADER-gated;
+        //  covered by the leader-gate tests below.)
         assertThat(h.events()).isEmpty();
     }
 
@@ -228,6 +229,45 @@ class ClusterEventAggregatorTest {
         var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, NOT_LEADER);
         h.aggregator().onMembershipDecision(MembershipDecision.nodeRemoved(new NodeId("dead"), List.of(SELF)));
         assertThat(h.events()).isEmpty();
+    }
+
+    /// NODE_JOINED is now LEADER-gated too (the join analog of the departure fix). The transport
+    /// `PeerJoined` handshake is the source (the membership delta does not fire for a not-yet-counted
+    /// JOINING replacement), but a replacement's join must not be lost just because the cluster-events
+    /// partition owner did not observe its handshake — the leader (which dials every core member) emits.
+    @Test
+    void leader_emitsNodeJoined_evenWhenNotOwner() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, LEADER);
+        h.aggregator().onPeerJoined(peerJoined("replacement", List.of(SELF, new NodeId("replacement"))));
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.NodeJoined.class);
+        assertThat(events.getFirst().details()).containsEntry("nodeId", "replacement");
+    }
+
+    @Test
+    void nonLeader_suppressesNodeJoinedEmit() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onPeerJoined(peerJoined("replacement", List.of(SELF, new NodeId("replacement"))));
+        assertThat(h.events()).isEmpty();
+    }
+
+    /// Lifecycle (and leader/quorum/generation) events are cluster-canonical and LEADER-gated: a
+    /// non-leader (even when partition owner) must not advertise them.
+    @Test
+    void nonLeader_suppressesCanonicalEvent() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onNodeLifecycleChanged(OperationalEvent.NodeLifecycleChanged.nodeLifecycleChanged("n1", "READY", "op"));
+        assertThat(h.events()).isEmpty();
+    }
+
+    /// And the same lifecycle event DOES emit on the leader even when it is not the partition owner.
+    @Test
+    void leader_emitsCanonicalEvent_evenWhenNotOwner() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, LEADER);
+        h.aggregator().onNodeLifecycleChanged(OperationalEvent.NodeLifecycleChanged.nodeLifecycleChanged("n1", "READY", "op"));
+        assertThat(h.events()).hasSize(1);
+        assertThat(h.events().getFirst()).isInstanceOf(ClusterEvent.NodeLifecycleChanged.class);
     }
 
     // --- budget exhaustion (per-node, NOT owner-gated; reconciliation #13/#15) ------------------
