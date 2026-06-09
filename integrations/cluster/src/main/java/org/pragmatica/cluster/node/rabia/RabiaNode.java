@@ -246,12 +246,19 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               SyncHoldRegistry syncHoldRegistry,
                                                               SyncHoldConfig syncHoldConfig,
                                                               Runnable onSyncResponseReceived) {
+        // Dedicated single-subscriber channel carrying the quorum established/lost
+        // ClusterStateNotification edge from TopologyObserver to RabiaEngine ONLY. Its delegate
+        // is wired AFTER `consensus` exists (in assembleNode) — TopologyObserver is built here,
+        // before `consensus`, so it must receive a DelegateRouter whose delegate is replaced once
+        // the single-route table { ClusterStateNotification -> consensus::clusterState } is known.
+        var quorumPresenceRouter = DelegateRouter.delegate();
         return Result.all(
-            TopologyObserver.topologyObserver(config.topology(), delegateRouter, snapshotSource, isDecommissioned, hlcSupplier),
+            TopologyObserver.topologyObserver(config.topology(), delegateRouter, snapshotSource, isDecommissioned, hlcSupplier, quorumPresenceRouter),
             QuicTlsProvider.serverContext(tlsConfig),
             QuicTlsProvider.clientContext(tlsConfig)
         ).map((topologyManager, serverSsl, clientSsl) -> assembleNode(config,
                                                                        delegateRouter,
+                                                                       quorumPresenceRouter,
                                                                        stateMachine,
                                                                        serializer,
                                                                        deserializer,
@@ -271,6 +278,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     @SuppressWarnings("unchecked")
     private static <C extends Command> RabiaNode<C> assembleNode(NodeConfig config,
                                                                  DelegateRouter delegateRouter,
+                                                                 DelegateRouter quorumPresenceRouter,
                                                                  StateMachine<C> stateMachine,
                                                                  Serializer serializer,
                                                                  Deserializer deserializer,
@@ -303,6 +311,14 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                           persistence,
                                           RabiaEngine.DEFAULT_PHASE_STALL_CHECK,
                                           consensusBridge);
+        // Wire the dedicated quorum-presence channel: TopologyObserver delivers the quorum
+        // established/lost ClusterStateNotification edge to RabiaEngine ONLY, via this private
+        // single-subscriber router (NOT the shared bus). Built here because `consensus` only
+        // now exists. A one-entry table cannot have a duplicate-route conflict, but the Result
+        // is handled (not swallowed) per the codebase idiom — a validation failure is logged.
+        buildAndWireRouter(quorumPresenceRouter,
+                           List.of(route(ClusterStateNotification.class, consensus::clusterState)))
+            .onFailure(cause -> log.error("Failed to wire quorum-presence channel: {}", cause));
         // Create leader manager - for consensus mode, we wire the proposal handler
         // Extract expected cluster members for deterministic leader selection
         var expectedCluster = config.topology()
@@ -389,10 +405,15 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         allEntries.add(transportObservationRoutes);
         allEntries.add(syncRoutes);
         allEntries.add(asyncRoutes);
-        // IMPORTANT: Order matters! Consensus must activate BEFORE LeaderManager emits LeaderChange.
-        // LeaderChange handlers (e.g., ClusterDeploymentManager) may immediately call cluster.apply(),
-        // which requires the consensus engine to be active.
-        allEntries.add(route(ClusterStateNotification.class, consensus::clusterState));
+        // Quorum-signal flow is now strictly unidirectional:
+        //   TopologyObserver --(private quorumPresenceRouter)--> RabiaEngine
+        //   RabiaEngine --> ConsensusBridge --(shared bus ClusterStateNotification)--> consumers.
+        // RabiaEngine is NO LONGER on the shared-bus ClusterStateNotification route — it receives
+        // its established/lost activation trigger via the private quorumPresenceRouter wired above.
+        // LeaderManager stays on the shared bus and receives ConsensusBridge's ACTIVE there. The
+        // old "consensus must activate before LeaderManager emits LeaderChange" ordering invariant
+        // is now structurally guaranteed by that chain (TopologyObserver -> Rabia -> ConsensusBridge
+        // -> LeaderManager), not by route-registration order.
         allEntries.add(route(ClusterStateNotification.class, leaderManager::watchClusterState));
         // NOTE: Leader election commit handling (ValuePut<LeaderKey, LeaderValue> -> onLeaderCommitted)
         // is done by AetherNode.handleLeaderCommit(), not here. RabiaNode only provides the consensus

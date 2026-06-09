@@ -198,12 +198,33 @@ public interface TopologyObserver extends TopologyManager {
     /// RC1 Step 2 production overload: accepts an `hlcSupplier` that stamps every
     /// `MembershipDecision` emission with the current local HLC timestamp. Subscribers
     /// rely on `stampedAt` for cross-node causal ordering.
+    ///
+    /// Backward-compatible quorum-presence default: the established/lost
+    /// `ClusterStateNotification` signal is routed through `router` (the shared bus),
+    /// preserving pre-rewiring behaviour for every caller that does not supply a
+    /// dedicated `quorumPresenceRouter`.
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
                                                      MessageRouter router,
                                                      GenerationSnapshotSource snapshotSource,
                                                      Predicate<NodeId> isDecommissioned,
                                                      Supplier<HlcTimestamp> hlcSupplier) {
-        return topologyObserver(config, router, TimeSource.system(), snapshotSource, isDecommissioned, hlcSupplier);
+        return topologyObserver(config, router, TimeSource.system(), snapshotSource, isDecommissioned, hlcSupplier, router);
+    }
+
+    /// Quorum-presence rewiring overload: accepts an explicit `quorumPresenceRouter` that
+    /// carries the quorum established/lost `ClusterStateNotification` signal to a dedicated
+    /// single-subscriber channel (RabiaEngine ONLY), instead of the cluster-wide shared bus
+    /// `router`. Production (`RabiaNode`) calls this so the established/lost edge feeds
+    /// consensus privately while `ConsensusBridge` remains the sole shared-bus emitter of
+    /// Rabia's active status. All OTHER emissions (`MembershipDecision`, transport service
+    /// messages) continue to use `router`.
+    static Result<TopologyObserver> topologyObserver(TopologyConfig config,
+                                                     MessageRouter router,
+                                                     GenerationSnapshotSource snapshotSource,
+                                                     Predicate<NodeId> isDecommissioned,
+                                                     Supplier<HlcTimestamp> hlcSupplier,
+                                                     MessageRouter quorumPresenceRouter) {
+        return topologyObserver(config, router, TimeSource.system(), snapshotSource, isDecommissioned, hlcSupplier, quorumPresenceRouter);
     }
 
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
@@ -212,6 +233,19 @@ public interface TopologyObserver extends TopologyManager {
                                                      GenerationSnapshotSource snapshotSource,
                                                      Predicate<NodeId> isDecommissioned,
                                                      Supplier<HlcTimestamp> hlcSupplier) {
+        return topologyObserver(config, router, timeSource, snapshotSource, isDecommissioned, hlcSupplier, router);
+    }
+
+    /// Deepest builder: constructs the `Manager` record. `quorumPresenceRouter` carries the
+    /// quorum established/lost `ClusterStateNotification` edge; callers default it to `router`
+    /// for shared-bus behaviour or pass a dedicated single-subscriber channel.
+    static Result<TopologyObserver> topologyObserver(TopologyConfig config,
+                                                     MessageRouter router,
+                                                     TimeSource timeSource,
+                                                     GenerationSnapshotSource snapshotSource,
+                                                     Predicate<NodeId> isDecommissioned,
+                                                     Supplier<HlcTimestamp> hlcSupplier,
+                                                     MessageRouter quorumPresenceRouter) {
         // Validate that self node is in coreNodes - required for self() to work
         var selfInCoreNodes = config.coreNodes()
                                     .stream()
@@ -223,6 +257,7 @@ public interface TopologyObserver extends TopologyManager {
         record Manager(Map<NodeId, NodeState> nodeStatesById,
                        Map<NodeAddress, NodeId> nodeIdsByAddress,
                        MessageRouter router,
+                       MessageRouter quorumPresenceRouter,
                        TopologyConfig config,
                        TimeSource timeSource,
                        AtomicBoolean active,
@@ -243,6 +278,7 @@ public interface TopologyObserver extends TopologyManager {
             Manager(Map<NodeId, NodeState> nodeStatesById,
                     Map<NodeAddress, NodeId> nodeIdsByAddress,
                     MessageRouter router,
+                    MessageRouter quorumPresenceRouter,
                     TopologyConfig config,
                     TimeSource timeSource,
                     AtomicBoolean active,
@@ -260,6 +296,7 @@ public interface TopologyObserver extends TopologyManager {
                     Supplier<HlcTimestamp> hlcSupplier) {
                 this.config = config;
                 this.router = router;
+                this.quorumPresenceRouter = quorumPresenceRouter;
                 this.nodeStatesById = nodeStatesById;
                 this.nodeIdsByAddress = nodeIdsByAddress;
                 this.timeSource = timeSource;
@@ -569,6 +606,17 @@ public interface TopologyObserver extends TopologyManager {
             /// active (the bridge echo), so the bridge can keep owning steady-state transitions
             /// for downstream `ClusterStateNotification` consumers without conflict.
             ///
+            /// Quorum-presence rewiring: the established/lost edge is now delivered ONLY to
+            /// `RabiaEngine`, via the dedicated single-subscriber `quorumPresenceRouter`
+            /// channel — NOT the cluster-wide shared bus. This makes the quorum signal flow
+            /// strictly unidirectional (`TopologyObserver → RabiaEngine → ConsensusBridge →
+            /// everyone else`): consensus receives its activation trigger privately, while
+            /// `ConsensusBridge` remains the SOLE shared-bus emitter of Rabia's active status
+            /// to all public `ClusterStateNotification` consumers and `LeaderManager`. Only the
+            /// two lines below use `quorumPresenceRouter`; every other `router.route(...)` in
+            /// this class (`MembershipDecision`, transport service messages) stays on the
+            /// shared `router`.
+            ///
             /// Idempotent: only fires on `false → true` (active) or `true → false`
             /// (passive) edge transitions via CAS. SWIM filters transient flap upstream via
             /// its suspect-window so the observer sees only post-filtered membership
@@ -594,13 +642,13 @@ public interface TopologyObserver extends TopologyManager {
                 var haveQuorum = haveQuorum();
                 if (haveQuorum) {
                     if (quorumEstablished.compareAndSet(false, true)) {
-                        log.info("Quorum established (local view) — routing ClusterStateNotification.ACTIVE (cold-start/resume originator)");
-                        router.route(ClusterStateNotification.active());
+                        log.info("Quorum established (local view) — routing ClusterStateNotification.ACTIVE to RabiaEngine via private quorum-presence channel");
+                        quorumPresenceRouter.route(ClusterStateNotification.active());
                     }
                 } else {
                     if (quorumEstablished.compareAndSet(true, false)) {
-                        log.warn("Quorum lost (local view) — routing ClusterStateNotification.PASSIVE");
-                        router.route(ClusterStateNotification.passive());
+                        log.warn("Quorum lost (local view) — routing ClusterStateNotification.PASSIVE to RabiaEngine via private quorum-presence channel");
+                        quorumPresenceRouter.route(ClusterStateNotification.passive());
                     }
                 }
                 publishMembershipDeltas();
@@ -892,6 +940,7 @@ public interface TopologyObserver extends TopologyManager {
         return Result.success(new Manager(new ConcurrentHashMap<>(),
                                           new ConcurrentHashMap<>(),
                                           router,
+                                          quorumPresenceRouter,
                                           config,
                                           timeSource,
                                           new AtomicBoolean(false),

@@ -973,10 +973,15 @@ public class RabiaEngine<C extends Command> {
             return;
         }
         if (nowActive) {
-            log.debug("Node {}: emitting ConsensusActive", self);
+            // Single authority for downstream ClusterStateNotification: TopologyObserver feeds the
+            // quorum edge to this engine privately, and this emission (via ConsensusBridge) is now
+            // the sole shared-bus producer of Rabia's active status. CAS-latch above stays as
+            // belt-and-suspenders: notifyConsensusStateTransition runs off several state-mutation
+            // sites that are not all on the single apply executor, so the edge guard is load-bearing.
+            log.info("Node {}: emitting ConsensusActive (cluster active)", self);
             consensusEventListener.accept(new ConsensusActive(self));
         } else {
-            log.debug("Node {}: emitting ConsensusPassive", self);
+            log.info("Node {}: emitting ConsensusPassive (cluster passive)", self);
             consensusEventListener.accept(new ConsensusPassive(self));
         }
     }

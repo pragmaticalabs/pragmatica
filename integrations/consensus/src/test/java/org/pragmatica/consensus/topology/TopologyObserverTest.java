@@ -272,6 +272,98 @@ class TopologyObserverTest {
             assertThat(notifications.getFirst().state())
                 .isEqualTo(ClusterStateNotification.State.ACTIVE);
         }
+
+        /// Quorum-presence rewiring: a router carrying ONLY the dedicated quorum-presence
+        /// channel (RabiaEngine stand-in). Records `ClusterStateNotification`s but, unlike
+        /// the shared bus, intentionally does NOT route `ListConnectedNodes`.
+        private static MessageRouter.MutableRouter quorumPresenceCapturing(List<ClusterStateNotification> sink) {
+            var router = MessageRouter.mutable();
+            router.addRoute(ClusterStateNotification.class, sink::add);
+            return router;
+        }
+
+        /// Stateful snapshot for driving quorum gain then loss without inventing new
+        /// membership plumbing (mirrors `MembershipDecisionEmission.StatefulSnapshotSource`).
+        private static final class MutableSnapshotSource implements GenerationSnapshotSource {
+            private final AtomicReference<Option<MembershipView>> viewRef = new AtomicReference<>(Option.none());
+
+            void set(MembershipView view) {
+                viewRef.set(Option.some(view));
+            }
+
+            @Override public Option<MembershipView> currentMembershipView() {
+                return viewRef.get();
+            }
+
+            @Override public long observedRabiaTerm() {
+                return 0L;
+            }
+        }
+
+        private static MembershipView viewOf(Set<NodeId> members) {
+            record StubView(Set<NodeId> coreMemberIds, Set<NodeId> onDutyMemberIds,
+                            int healthyOnDutyCount, int desiredCoreSize) implements MembershipView {}
+            return new StubView(members, members, members.size(), members.size());
+        }
+
+        @Test
+        void evaluateQuorumState_quorumReached_routesClusterStateNotificationOnlyToQuorumPresenceChannel() {
+            // Channel isolation: the new 6-arg overload delivers the quorum established/lost
+            // ClusterStateNotification edge ONLY to the dedicated quorumPresenceRouter
+            // (RabiaEngine stand-in) — never to a shared-bus public consumer. Conversely the
+            // shared bus still carries a ClusterStateNotification routed on it directly
+            // (ConsensusBridge's stand-in path).
+            var publicBus = new CopyOnWriteArrayList<ClusterStateNotification>();
+            var quorumChannel = new CopyOnWriteArrayList<ClusterStateNotification>();
+            var sharedRouter = routerCapturing(publicBus);
+            var quorumPresenceRouter = quorumPresenceCapturing(quorumChannel);
+
+            var snapshot = new MutableSnapshotSource();
+            snapshot.set(viewOf(Set.of(SELF, PEER_A, PEER_B)));
+
+            var observer = TopologyObserver.topologyObserver(baseConfig(),
+                                                             sharedRouter,
+                                                             snapshot,
+                                                             TopologyObserver.NEVER_DECOMMISSIONED,
+                                                             TopologyObserver.ZERO_HLC_SUPPLIER,
+                                                             quorumPresenceRouter)
+                                           .unwrap();
+
+            // Drive the quorum-established edge.
+            observer.start().await();
+
+            assertThat(quorumChannel)
+                .as("quorum-established edge must reach ONLY the dedicated quorum-presence channel")
+                .hasSize(1);
+            assertThat(quorumChannel.getFirst().state())
+                .isEqualTo(ClusterStateNotification.State.ACTIVE);
+            assertThat(publicBus)
+                .as("the shared bus must receive NO quorum edge from TopologyObserver")
+                .isEmpty();
+
+            // Drive the quorum-lost edge: shrink the view below quorum (1 < 2) and re-evaluate.
+            snapshot.set(viewOf(Set.of(SELF)));
+            observer.handleSetClusterSize(new TopologyManagementMessage.SetClusterSize(3));
+
+            assertThat(quorumChannel)
+                .as("quorum-lost edge must also reach ONLY the dedicated quorum-presence channel")
+                .hasSize(2);
+            assertThat(quorumChannel.getLast().state())
+                .isEqualTo(ClusterStateNotification.State.PASSIVE);
+            assertThat(publicBus)
+                .as("the shared bus must still receive NO quorum edge from TopologyObserver")
+                .isEmpty();
+
+            // ConsensusBridge stand-in: a ClusterStateNotification routed directly on the shared
+            // bus must still reach the public consumer — the shared path is intact.
+            sharedRouter.route(ClusterStateNotification.active());
+
+            assertThat(publicBus)
+                .as("shared-bus ClusterStateNotification (ConsensusBridge path) still reaches public consumer")
+                .hasSize(1);
+            assertThat(publicBus.getFirst().state())
+                .isEqualTo(ClusterStateNotification.State.ACTIVE);
+        }
     }
 
     /// RC1 Step 2: `publishMembershipDeltas` is the sole emitter of `MembershipDecision`
