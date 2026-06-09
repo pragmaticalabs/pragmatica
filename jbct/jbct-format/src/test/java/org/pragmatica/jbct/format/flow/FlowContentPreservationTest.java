@@ -94,4 +94,89 @@ class FlowContentPreservationTest {
         assertThat(twice).as("lambda if-body formatting is idempotent").isEqualTo(once);
         assertThat(once).doesNotContain("                            if");  // no ~28-col over-indent
     }
+
+    // --- Residual comment-deletion bugs (post-PR#242, 2026-06-09) -------------------------------
+    // Each asserts the comment survives AND that formatting is idempotent. The exhaustive guard is
+    // FlowCodebaseCheckTest#formatEntireCodebase_preservesAllComments (whole-repo, @Disabled).
+
+    private void assertPreservedAndIdempotent(String src, String... comments) {
+        var once = format(src);
+        for (var c : comments) {
+            assertThat(once).as("comment preserved: " + c).contains(c);
+        }
+        var twice = fmt.format(new SourceFile(Path.of("Test.java"), once)).unwrap().content();
+        assertThat(twice).as("idempotent").isEqualTo(once);
+    }
+
+    @Test void s1_docComment_betweenEnumConstantsAndFirstMethod_preserved() {
+        assertPreservedAndIdempotent(
+            "enum E {\n    A, B;\n\n    /// parse the wire value\n    public static E fromWire(String w) { return A; }\n}\n",
+            "/// parse the wire value");
+    }
+
+    @Test void s3_lineComment_beforeFirstSwitchCase_preserved() {
+        assertPreservedAndIdempotent(
+            "class X {\n    int f(Object o) {\n        return switch (o) {\n            // first-case rationale\n            case String s -> 1;\n            default -> 0;\n        };\n    }\n}\n",
+            "// first-case rationale");
+    }
+
+    @Test void s4_lineComment_betweenCaseArms_preserved() {
+        assertPreservedAndIdempotent(
+            "class X {\n    void f(Object o) {\n        switch (o) {\n            case Integer i -> g(i);\n            // why the next arm is special\n            case String s -> h();\n            default -> {}\n        }\n    }\n    void g(int x) {}\n    void h() {}\n}\n",
+            "// why the next arm is special");
+    }
+
+    @Test void s5_lineComment_betweenChainedCalls_preserved() {
+        assertPreservedAndIdempotent(
+            "class X {\n    Object f() {\n        return a().flatMap(x -> b())\n                  // chain rationale\n                  .onSuccess(x -> c());\n    }\n    java.util.Optional<Object> a() { return null; }\n}\n",
+            "// chain rationale");
+    }
+
+    @Test void annotationTrailingComment_beforeMethod_preserved() {
+        assertPreservedAndIdempotent(
+            "class X {\n    @SuppressWarnings(\"x\") // netty future callback chain\n    void f() {}\n}\n",
+            "// netty future callback chain");
+    }
+
+    @Test void recordComponentLeadingComment_preserved() {
+        assertPreservedAndIdempotent(
+            "record R(\n    long startTime,\n    // T0: blueprint change\n    long loadTime\n) {}\n",
+            "// T0: blueprint change");
+    }
+
+    @Test void trailingCommentOnLastArgument_preserved() {
+        assertPreservedAndIdempotent(
+            "class X {\n    int f() {\n        return g(\n            aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n            bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb // trailing on last arg\n        );\n    }\n    int g(int a, int b) { return a; }\n}\n",
+            "// trailing on last arg");
+    }
+
+    @Test void ownLineCommentAsLastArgument_preserved() {
+        assertPreservedAndIdempotent(
+            "import java.util.Map;\nclass X {\n    Object f() {\n        return Map.of(\n            \"k\", \"v\"\n            // missing the other entries\n        );\n    }\n}\n",
+            "// missing the other entries");
+    }
+
+    @Test void blockComment_inEmptyArrowBody_preserved() {
+        assertPreservedAndIdempotent(
+            "class X {\n    void f(Object o) {\n        switch (o) {\n            case Integer i -> g(i);\n            default -> { /* ignore unknown */ }\n        }\n    }\n    void g(int x) {}\n}\n",
+            "/* ignore unknown */");
+    }
+
+    @Test void inlineBlockComment_midExpression_preserved() {
+        assertPreservedAndIdempotent(
+            "class X {\n    boolean f(int k) {\n        return k == 92 /* LB */ || k == 93 /* RB */;\n    }\n}\n",
+            "/* LB */", "/* RB */");
+    }
+
+    @Test void trailingCommentOnSwitchArmExpression_preserved() {
+        assertPreservedAndIdempotent(
+            "class X {\n    String f(int k) {\n        return switch (k) {\n            case 1 -> \"a\";\n            default -> null; // not reactive — interceptor\n        };\n    }\n}\n",
+            "// not reactive — interceptor");
+    }
+
+    @Test void danglingCommentsAtEndOfClassBody_preserved() {
+        assertPreservedAndIdempotent(
+            "class X {\n    void a() {}\n\n    // tail note line one\n    // tail note line two\n}\n",
+            "// tail note line one", "// tail note line two");
+    }
 }
