@@ -20,6 +20,7 @@ import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectionEstablished;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectionFailed;
 import org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
+import org.pragmatica.consensus.net.NetworkServiceMessage.ReevaluateMembership;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
 import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
 import org.pragmatica.consensus.net.quic.QuicTlsProvider;
@@ -124,6 +125,7 @@ public interface PassiveNode<K extends StructuredKey, V> {
 
         var networkServiceRoutes = SealedBuilder.from(NetworkServiceMessage.class)
                                                 .route(route(ConnectedNodesList.class, topologyManager::reconcile),
+                                                       route(ReevaluateMembership.class, topologyManager::handleReevaluateMembership),
                                                        route(ConnectNode.class, network::connect),
                                                        route(DisconnectNode.class, network::disconnect),
                                                        route(ListConnectedNodes.class, network::listNodes),

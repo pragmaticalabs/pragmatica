@@ -124,6 +124,12 @@ public final class ClusterEventAggregator {
     /// this account — preserves the prior unconditional-emit behaviour for test / non-gated callers.
     private static final BooleanSupplier NEVER_REPLAYING = () -> false;
 
+    /// Default leader-check used by the legacy factory overloads (tests / call sites that don't gate
+    /// on leadership): always-leader, preserving prior unconditional-emit behaviour through
+    /// {@link #emitAsLeader} for those callers. The production factory used by `AetherNode` supplies
+    /// the real leader check.
+    private static final BooleanSupplier LEADER_ALWAYS = () -> true;
+
     /// Read window for `events()`. Must stay >= the stream's retention `maxCount` so a single fetch
     /// always covers the full retained window (no newest-event truncation) — the B5a/#239 fix. The
     /// stream's retention is now config-driven in [org.pragmatica.aether.node.AetherNode]; this is the
@@ -137,6 +143,7 @@ public final class ClusterEventAggregator {
     private final Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier;
     private final BooleanSupplier ownerCheck;
     private final BooleanSupplier replayingCheck;
+    private final BooleanSupplier leaderCheck;
     private final HlcClock hlcClock;
     private final NodeId selfNode;
 
@@ -164,7 +171,8 @@ public final class ClusterEventAggregator {
                                    NodeId selfNode,
                                    HlcClock hlcClock,
                                    IntSupplier clusterSizeSupplier,
-                                   BooleanSupplier replayingCheck) {
+                                   BooleanSupplier replayingCheck,
+                                   BooleanSupplier leaderCheck) {
         this.publisherSupplier = publisherSupplier;
         this.consumerSupplier = consumerSupplier;
         this.ownerCheck = ownerCheck;
@@ -172,13 +180,14 @@ public final class ClusterEventAggregator {
         this.hlcClock = hlcClock;
         this.clusterSizeSupplier = clusterSizeSupplier;
         this.replayingCheck = replayingCheck;
+        this.leaderCheck = leaderCheck;
     }
 
     public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
                                                                 Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
                                                                 NodeId selfNode,
                                                                 HlcClock hlcClock) {
-        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ALWAYS_OWNER, selfNode, hlcClock, UNKNOWN_CLUSTER_SIZE, NEVER_REPLAYING);
+        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ALWAYS_OWNER, selfNode, hlcClock, UNKNOWN_CLUSTER_SIZE, NEVER_REPLAYING, LEADER_ALWAYS);
     }
 
     public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
@@ -186,15 +195,13 @@ public final class ClusterEventAggregator {
                                                                 NodeId selfNode,
                                                                 HlcClock hlcClock,
                                                                 IntSupplier clusterSizeSupplier) {
-        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ALWAYS_OWNER, selfNode, hlcClock, clusterSizeSupplier, NEVER_REPLAYING);
+        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ALWAYS_OWNER, selfNode, hlcClock, clusterSizeSupplier, NEVER_REPLAYING, LEADER_ALWAYS);
     }
 
-    /// Production factory (B5b): emit is gated by `ownerCheck` — only the owner of
-    /// (`system:cluster-events:1.0.0`, partition 0) publishes; non-owners suppress. See class doc for
-    /// the owner-gating rationale and bootstrap-window behaviour. `replayingCheck` (7b) additionally
-    /// suppresses emit while this node is re-applying a snapshot/resync (e.g. `KVStore::isReplaying`),
-    /// so replaying committed history does not re-publish historical cluster-events or re-fire
-    /// outbound replication.
+    /// Legacy production factory (pre-leader-gate): owner-gated emit + replay-gate, with the
+    /// leader-gate defaulted to `LEADER_ALWAYS`. Retained for call sites / tests that do not exercise
+    /// the {@link #emitAsLeader} departure path. New production wiring should use the
+    /// `leaderCheck`-carrying overload below.
     public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
                                                                 Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
                                                                 BooleanSupplier ownerCheck,
@@ -202,7 +209,27 @@ public final class ClusterEventAggregator {
                                                                 HlcClock hlcClock,
                                                                 IntSupplier clusterSizeSupplier,
                                                                 BooleanSupplier replayingCheck) {
-        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ownerCheck, selfNode, hlcClock, clusterSizeSupplier, replayingCheck);
+        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ownerCheck, selfNode, hlcClock, clusterSizeSupplier, replayingCheck, LEADER_ALWAYS);
+    }
+
+    /// Production factory (B5b): emit is gated by `ownerCheck` — only the owner of
+    /// (`system:cluster-events:1.0.0`, partition 0) publishes; non-owners suppress. See class doc for
+    /// the owner-gating rationale and bootstrap-window behaviour. `replayingCheck` (7b) additionally
+    /// suppresses emit while this node is re-applying a snapshot/resync (e.g. `KVStore::isReplaying`),
+    /// so replaying committed history does not re-publish historical cluster-events or re-fire
+    /// outbound replication. `leaderCheck` gates {@link #emitAsLeader} — used for consensus-committed
+    /// membership-DEPARTURE facts whose authoritative emitter is the cluster leader, decoupling those
+    /// emits from partition-0 HRW ownership (which can name the just-removed node during the deferred
+    /// reconcile window).
+    public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
+                                                                Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
+                                                                BooleanSupplier ownerCheck,
+                                                                NodeId selfNode,
+                                                                HlcClock hlcClock,
+                                                                IntSupplier clusterSizeSupplier,
+                                                                BooleanSupplier replayingCheck,
+                                                                BooleanSupplier leaderCheck) {
+        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ownerCheck, selfNode, hlcClock, clusterSizeSupplier, replayingCheck, leaderCheck);
     }
 
     /// Read all events currently retained in the system stream's partition.
@@ -269,6 +296,30 @@ public final class ClusterEventAggregator {
         }
         if (!ownerCheck.getAsBoolean()) {
             LOG.debug("ClusterEventAggregator: not owner of cluster-events partition — suppressing emit of {}", event);
+            return;
+        }
+        Option.option(publisherSupplier.get())
+              .onPresent(publisher -> {
+                  Promise<?> ignored = publisher.publish(event);
+              })
+              .onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)", event));
+    }
+
+    /// Leader-gated emit for consensus-committed membership-DEPARTURE facts (NODE_FAILED / NODE_LEFT).
+    /// Identical to {@link #emit} except it consults `leaderCheck` instead of `ownerCheck`. A committed
+    /// membership decision's authoritative emitter is the cluster LEADER: the leader is never the
+    /// just-removed node for its own committed decision, and is unaffected by partition-0 HRW churn —
+    /// whereas the owner-gate sees the PRE-removal placement (the snapshot-updating reconcile is
+    /// deferred to an executor while this emit runs synchronously on the same dispatch), so when the
+    /// pre-removal owner is the removed node every survivor would suppress and the event is lost. Same
+    /// replay-gate and publisher-not-bound bootstrap-drop behaviour as {@link #emit}.
+    @Contract public void emitAsLeader(ClusterEvent event) {
+        if (replayingCheck.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing side-effect emit of {}", event);
+            return;
+        }
+        if (!leaderCheck.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: not leader — suppressing emit of {}", event);
             return;
         }
         Option.option(publisherSupplier.get())
@@ -382,22 +433,26 @@ public final class ClusterEventAggregator {
     /// Subscriber hook for `MembershipDecision` — re-sources NODE_FAILED / NODE_LEFT that
     /// previously came from the now-deleted node-lifecycle atom (membership-v2 finale).
     /// `NodeRemoved` → NODE_FAILED (CRITICAL); `NodeDecommissioned` / `NodeDraining` → NODE_LEFT
-    /// (WARNING). Published from every node: `MembershipDecision` is itself a consensus-committed,
-    /// cluster-wide fact.
+    /// (WARNING). LEADER-gated via {@link #emitAsLeader}: a committed membership departure's
+    /// authoritative emitter is the cluster leader. The owner-gate cannot be used here — for a
+    /// DEPARTURE the trigger IS the membership change, and the snapshot-updating reconcile is deferred
+    /// to an executor while this emit runs synchronously on the same `NodeRemoved` dispatch, so the
+    /// owner-check sees the PRE-removal placement; when the pre-removal owner is the removed node every
+    /// survivor suppresses and the event is lost with no replay.
     @Contract public void onMembershipDecision(MembershipDecision decision) {
         switch (decision) {
-            case MembershipDecision.NodeRemoved removed -> emit(new NodeFailed(hlcClock.now(),
-                                                                               Severity.CRITICAL,
-                                                                               "Node " + removed.nodeId().id() + " removed from membership",
-                                                                               Map.of("nodeId", removed.nodeId().id())));
-            case MembershipDecision.NodeDecommissioned decommissioned -> emit(new NodeLeft(hlcClock.now(),
-                                                                                           Severity.WARNING,
-                                                                                           "Node " + decommissioned.nodeId().id() + " decommissioned",
-                                                                                           Map.of("nodeId", decommissioned.nodeId().id())));
-            case MembershipDecision.NodeDraining draining -> emit(new NodeLeft(hlcClock.now(),
-                                                                               Severity.WARNING,
-                                                                               "Node " + draining.nodeId().id() + " draining",
-                                                                               Map.of("nodeId", draining.nodeId().id())));
+            case MembershipDecision.NodeRemoved removed -> emitAsLeader(new NodeFailed(hlcClock.now(),
+                                                                                       Severity.CRITICAL,
+                                                                                       "Node " + removed.nodeId().id() + " removed from membership",
+                                                                                       Map.of("nodeId", removed.nodeId().id())));
+            case MembershipDecision.NodeDecommissioned decommissioned -> emitAsLeader(new NodeLeft(hlcClock.now(),
+                                                                                                   Severity.WARNING,
+                                                                                                   "Node " + decommissioned.nodeId().id() + " decommissioned",
+                                                                                                   Map.of("nodeId", decommissioned.nodeId().id())));
+            case MembershipDecision.NodeDraining draining -> emitAsLeader(new NodeLeft(hlcClock.now(),
+                                                                                       Severity.WARNING,
+                                                                                       "Node " + draining.nodeId().id() + " draining",
+                                                                                       Map.of("nodeId", draining.nodeId().id())));
             case MembershipDecision.NodeJoined ignored -> {}
             case MembershipDecision.NodeJoining ignored -> {}
             case MembershipDecision.NodeFailedDrain ignored -> {}

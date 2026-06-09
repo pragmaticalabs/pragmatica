@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 
 import java.util.List;
@@ -53,6 +54,17 @@ public sealed interface ManagementApiResponses {
     record LivenessResponse(String status, String nodeId, String state, boolean ready) {}
 
     record WhoamiResponse(String principal, String authorizationRole, List<String> roles, boolean authenticated) {}
+
+    /// Self-describing wire shape for `GET /api/events`. Adds a `type` discriminator
+    /// (SCREAMING_SNAKE_CASE of the source {@link ClusterEvent} variant — e.g. `"NODE_FAILED"`)
+    /// alongside the existing event fields, since the `@Codec` serializes record components only and
+    /// `ClusterEvent.type()` is a default method. Backward-compatible: all prior fields keep their
+    /// names; `type` is purely additive.
+    record ClusterEventView(String type,
+                            HlcTimestamp at,
+                            ClusterEvent.Severity severity,
+                            String summary,
+                            Map<String, String> details) {}
 
     record ReadinessResponse(String status,
                              String nodeId,

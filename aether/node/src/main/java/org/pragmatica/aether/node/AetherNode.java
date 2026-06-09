@@ -1355,13 +1355,21 @@ public interface AetherNode extends ManageableNode {
                 () -> Option.option(clusterEventsControllerRef.get())
                             .map(replicaController -> replicaController.isOwner(clusterEventsStreamName, 0))
                             .or(false);
+        // Leader-gate for consensus-committed membership-DEPARTURE emits (NODE_FAILED / NODE_LEFT):
+        // the authoritative emitter of a committed membership decision is the cluster leader, which is
+        // never the just-removed node for its own committed decision and is unaffected by the
+        // partition-0 HRW churn the owner-gate suffers during the deferred membership reconcile window.
+        // Reuses the node's existing leadership signal (clusterNode.leaderManager()::isLeader, captured
+        // as isLeaderSupplier above).
+        java.util.function.BooleanSupplier clusterEventsLeaderCheck = isLeaderSupplier;
         var eventAggregator = ClusterEventAggregator.clusterEventAggregator(clusterEventsPublisherRef::get,
                                                                             clusterEventsConsumerRef::get,
                                                                             clusterEventsOwnerCheck,
                                                                             config.self(),
                                                                             clusterEventsHlcClock,
                                                                             clusterTopologyManager.observer()::clusterSize,
-                                                                            kvStore::isReplaying);
+                                                                            kvStore::isReplaying,
+                                                                            clusterEventsLeaderCheck);
         // Item-8 graft: best-effort SelfDrainInitiated emit on drain initiation. The aggregator is
         // forward-declared to DrainProcedure (constructed earlier) via this ref; the emitter lambda
         // resolves it lazily and no-ops until bound. NOT leader-gated — the draining node is the only
@@ -1871,7 +1879,16 @@ public interface AetherNode extends ManageableNode {
         // DepartedObserved. ADDITIVE — the graceful paths (NodeDecommissioned, DepartedObserved above)
         // already fire departurePermanent; this adds the co-confirmed-death edge. departurePermanent is
         // idempotent on an already-removed peer, so the overlap is harmless.
-        membershipFsm.onConfirmedDeparture(clusterNetworkRef::departurePermanent);
+        // The confirmed-departure edge drops the dead peer's QUIC link AND edge-triggers a
+        // TopologyObserver membership re-evaluation. The re-eval is routed (not called directly)
+        // so it dispatches on the router thread, mirroring the SwimObservation->DiscoveredNodes
+        // pattern above. Without it, a CTM replacement dying at steady core size has no following
+        // addNode to re-run the membership diff, so NodeRemoved never fires (no NODE_FAILED event
+        // + /api/nodes/status over-provision). Once-per-edge — per-tick re-eval regressed convergence.
+        membershipFsm.onConfirmedDeparture(nodeId -> {
+                                               clusterNetworkRef.departurePermanent(nodeId);
+                                               delegateRouter.route(new NetworkServiceMessage.ReevaluateMembership(nodeId));
+                                           });
         clusterNetworkRef.setDesiredConnections(() -> desiredDialTargets(membershipFsm));
         var topologyForSwim = clusterNode.topologyManager();
         // P1 fix: prefer the transport-supplied `NodeInfo` (QUIC/Netty Hello handshake)
@@ -2056,21 +2073,20 @@ public interface AetherNode extends ManageableNode {
                                                                           streamingConfig.publishForwardTimeout(),
                                                                           streamingConfig.readForwardTimeout(),
                                                                           streamReadForwardMetrics);
-        // Fix #3: wire the forward-capable cluster-events CONSUMER now that the replica registry,
-        // forward client, self id and read-forward metrics all exist. ANY_REPLICA read preference +
-        // replica registry + forward client mean a node OUTSIDE the (system:cluster-events:1.0.0,
-        // partition 0) replica set forwards observability reads to a caught-up replica (the owner)
-        // instead of reading its own empty local partition (which returned 200 []). Fail-soft to local
-        // during the bootstrap window (no caught-up replica visible yet).
+        // cluster-events CONSUMER: LOCAL read (governor/local preference). `/api/events` is a LEADER-bound
+        // route, and NODE_FAILED/NODE_LEFT are emitted leader-gated (ClusterEventAggregator.emitAsLeader),
+        // so reader and writer are the SAME node (the leader) by construction. The leader-gated emit
+        // publishes to the leader's LOCAL partition-0 buffer (DefaultStreamPublisher local-buffer branch);
+        // this local-read consumer reads that same buffer, so a leader-emitted event is immediately
+        // visible. The prior ANY_REPLICA forward-capable consumer forwarded the read AWAY to a remote HRW
+        // replica while deriving the fetch offset from leader-local metadata — mismatching the leader-local
+        // publish and returning 200 [] (the lost-NODE_FAILED root, #94/B5). Replica-forwarding was only
+        // needed in the OWNER-gated emit world (writer != reader); leader-gated emit makes it wrong.
         org.pragmatica.aether.stream.SystemStreamFactories.<ClusterEvent>systemStreamConsumer(org.pragmatica.aether.slice.stream.SystemStreams.CLUSTER_EVENTS,
                                                                                               streamPartitionManager,
                                                                                               serializer,
                                                                                               deserializer,
-                                                                                              clusterEventsStreamConfig,
-                                                                                              streamReplicaRegistry,
-                                                                                              Option.some(streamForwardClient),
-                                                                                              config.self(),
-                                                                                              streamReadForwardMetrics)
+                                                                                              clusterEventsStreamConfig)
                 .onSuccess(clusterEventsConsumerRef::set)
                 .onFailure(cause -> LOG.warn("cluster-events stream consumer wiring failed: {} — events reads return empty", cause.message()));
         var streamCatchupTransport = ForwardCatchupTransport.forwardCatchupTransport(streamForwardClient,

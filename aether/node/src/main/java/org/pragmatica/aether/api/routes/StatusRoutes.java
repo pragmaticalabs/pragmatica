@@ -7,6 +7,7 @@ package org.pragmatica.aether.api.routes;
 import org.pragmatica.aether.api.BuildInfo;
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ManagementApiResponses.CertificateStatusResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.ClusterEventView;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.ComponentHealth;
 import org.pragmatica.aether.api.ManagementApiResponses.EnrichedNodeInfo;
@@ -85,7 +86,7 @@ public final class StatusRoutes implements RouteSource {
                                          .withPath(PathParameter.aString())
                                          .to(__ -> Promise.success(buildReadinessResponse()))
                                          .asJson(),
-                         ManagementRoutes.<List<ClusterEvent>> route(ManagementRoute.EVENTS)
+                         ManagementRoutes.<List<ClusterEventView>> route(ManagementRoute.EVENTS)
                                          .withQuery(QueryParameter.aLong("sinceEpoch"),
                                                     QueryParameter.aLong("sinceSeq"))
                                          .to(this::buildEventsResponse)
@@ -103,11 +104,11 @@ public final class StatusRoutes implements RouteSource {
                                   ctx.isAuthenticated());
     }
 
-    private Promise<List<ClusterEvent>> buildEventsResponse(Option<Long> sinceEpochParam, Option<Long> sinceSeqParam) {
+    private Promise<List<ClusterEventView>> buildEventsResponse(Option<Long> sinceEpochParam, Option<Long> sinceSeqParam) {
         var aggregator = nodeSupplier.get().eventAggregator();
 
         if (sinceEpochParam.isEmpty() && sinceSeqParam.isEmpty()) {
-            return aggregator.events();
+            return aggregator.events().map(StatusRoutes::toEventViews);
         }
         // BEHAVIOR CHANGE (review C5): the `since` cursor is now an Instant in the namespace-stream
         // events API. The legacy `?sinceSeq=` cursor (an opaque sequence number in rc1) is remapped
@@ -116,7 +117,18 @@ public final class StatusRoutes implements RouteSource {
         // position. rc1 callers rarely passed sinceEpoch alone; operators should migrate to ISO-8601
         // timestamps. See CHANGELOG.
         var sinceMillis = sinceSeqParam.fold(() -> 0L, seq -> seq);
-        return aggregator.eventsSince(Instant.ofEpochMilli(sinceMillis));
+        return aggregator.eventsSince(Instant.ofEpochMilli(sinceMillis)).map(StatusRoutes::toEventViews);
+    }
+
+    /// Project the sealed {@link ClusterEvent} list onto the self-describing
+    /// {@link ClusterEventView} wire shape, surfacing each variant's `type()` discriminator
+    /// alongside the existing at/severity/summary/details fields.
+    private static List<ClusterEventView> toEventViews(List<ClusterEvent> events) {
+        return events.stream().map(StatusRoutes::toEventView).toList();
+    }
+
+    private static ClusterEventView toEventView(ClusterEvent event) {
+        return new ClusterEventView(event.type(), event.at(), event.severity(), event.summary(), event.details());
     }
 
     private StatusResponse buildStatusResponse() {

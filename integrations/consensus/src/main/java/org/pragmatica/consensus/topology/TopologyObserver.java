@@ -103,6 +103,18 @@ public interface TopologyObserver extends TopologyManager {
     @MessageReceiver
     void handleSetClusterSize(TopologyManagementMessage.SetClusterSize message);
 
+    /// Edge-triggered membership re-evaluation. Routed once per confirmed FSM departure
+    /// (`AetherNode.onConfirmedDeparture`) so the core-membership delta recomputes and
+    /// emits `NodeRemoved` for a departed peer that has no following `addNode` to re-run
+    /// the diff (a CTM replacement dying at steady core size). Once-per-edge cadence —
+    /// per reconcile-tick re-evaluation regressed READY-convergence.
+    ///
+    /// Default no-op so legacy / test-only stubs need not implement it (mirrors the
+    /// `topologyMode()` / `effectiveMembership()` defaults); the production observer
+    /// overrides this with the real `evaluateQuorumState()` re-poke.
+    @MessageReceiver
+    default void handleReevaluateMembership(NetworkServiceMessage.ReevaluateMembership message) {}
+
     /// Which membership source (`SNAPSHOT` vs `LEGACY`) the observer would serve reads
     /// from right now, plus the resulting core-id set. Lets tests and diagnostics verify
     /// that the snapshot-backed path is actually engaged.
@@ -327,6 +339,17 @@ public interface TopologyObserver extends TopologyManager {
                 connectedNodesList.connected()
                                   .forEach(snapshot::remove);
                 snapshot.forEach(this::requestConnectionIfEligible);
+            }
+
+            @Override
+            public void handleReevaluateMembership(NetworkServiceMessage.ReevaluateMembership message) {
+                // Confirmed-departure edge: re-run the quorum/delta evaluation so the dead peer
+                // (already dropped from the membership view) is diffed out and routed as
+                // NodeRemoved + pruned via removeNode. evaluateQuorumState is safe once-on-death
+                // (quorum notif is compareAndSet-gated, delta is previousCoreMembers.getAndSet-
+                // gated → idempotent); only PER-TICK frequency regresses convergence.
+                log.debug("Membership re-evaluation requested on departure of {}", message.departed());
+                evaluateQuorumState();
             }
 
             private void requestConnectionIfEligible(NodeId id) {
@@ -671,6 +694,14 @@ public interface TopologyObserver extends TopologyManager {
                 for (var removed : delta.removed()) {
                     log.debug("Membership delta: NodeRemoved {} (logIndex={}, stampedAt={})", removed, logIndex, stampedAt);
                     router.route(MembershipDecision.nodeRemoved(removed, topology, logIndex, stampedAt));
+                    // Prune the departed core node from nodeStatesById so topology()/clusterSize()
+                    // readers (StatusRoutes, CTM, dashboard, topology-route) stop reporting it. This
+                    // is the sole production caller of removeNode — without it departed nodes are
+                    // never pruned (over-provision: nodeCount stays 6 after a kill). Safe: the delta
+                    // fires only post-quorum-commit, so it cannot affect the pre-quorum BOOTING
+                    // fallback that also reads nodeStatesById; nodeStatesById is keyed per-node, so
+                    // pruning a removed node cannot drop a still-present one.
+                    removeNode(removed);
                 }
             }
 

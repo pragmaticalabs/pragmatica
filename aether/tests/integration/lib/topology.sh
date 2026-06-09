@@ -83,13 +83,16 @@ topology_events_since() {
 # Usage: topology_count_node_events "$events_json" NODE_LEFT node-3
 topology_count_node_events() {
     local events_json="$1" type="$2" node_id="$3"
-    # Event records are flat JSON objects. Match type AND nodeId in any order.
-    local pattern_a="\"type\":\"${type}\"[^}]*\"nodeId\":\"${node_id}\""
-    local pattern_b="\"nodeId\":\"${node_id}\"[^}]*\"type\":\"${type}\""
-    local count_a count_b
-    count_a=$(printf '%s' "$events_json" | grep -oE "$pattern_a" | wc -l | tr -d ' ')
-    count_b=$(printf '%s' "$events_json" | grep -oE "$pattern_b" | wc -l | tr -d ' ')
-    echo $((count_a + count_b))
+    # Events are objects in a JSON array. The ONLY top-level `},{` is the array
+    # boundary between events — nested `at`/`details` objects close with `}}`/`}`,
+    # never `},{` — so splitting on `},{` yields exactly one event per line. Count
+    # events carrying BOTH the requested `type` (self-describing field, added to the
+    # /api/events payload) AND the victim's flat `details.nodeId` (the emitter id is
+    # `"nodeId":{"id":...}` — an object — so `"nodeId":"<id>"` matches only details).
+    printf '%s' "$events_json" \
+        | sed 's/},{/}\n{/g' \
+        | grep -cE "\"type\":\"${type}\".*\"nodeId\":\"${node_id}\"|\"nodeId\":\"${node_id}\".*\"type\":\"${type}\"" \
+        | tr -d ' '
 }
 
 # Count events of a given type whose details.nodeId is NOT equal to exclude_id.
@@ -97,12 +100,16 @@ topology_count_node_events() {
 # Usage: topology_count_other_node_events "$events_json" NODE_JOINED node-3
 topology_count_other_node_events() {
     local events_json="$1" type="$2" exclude_id="$3"
-    # Extract every NODE_JOINED record's nodeId, then drop matches equal to exclude_id.
+    # Split events on the array boundary (see topology_count_node_events), keep only
+    # records of the requested type, extract each one's flat details.nodeId (the emitter
+    # id is an object `"nodeId":{"id":...}` so the `"nodeId":"<id>"` string form matches
+    # only details), drop the excluded id, count the rest.
     local all_ids
-    all_ids=$(printf '%s' "$events_json" | \
-        grep -oE "\"type\":\"${type}\"[^}]*\"nodeId\":\"[^\"]+\"|\"nodeId\":\"[^\"]+\"[^}]*\"type\":\"${type}\"" | \
-        grep -oE "\"nodeId\":\"[^\"]+\"" | \
-        sed 's/"nodeId":"\([^"]*\)"/\1/')
+    all_ids=$(printf '%s' "$events_json" \
+        | sed 's/},{/}\n{/g' \
+        | grep -E "\"type\":\"${type}\"" \
+        | grep -oE "\"nodeId\":\"[^\"]+\"" \
+        | sed 's/"nodeId":"\([^"]*\)"/\1/')
     if [ -z "$all_ids" ]; then
         echo "0"
         return

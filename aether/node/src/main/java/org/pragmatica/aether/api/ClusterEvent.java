@@ -67,6 +67,29 @@ public sealed interface ClusterEvent permits
         return at().nodeId();
     }
 
+    /// Discriminator string for management-API consumers: SCREAMING_SNAKE_CASE of the implementing
+    /// record's simple class name (e.g. `NodeFailed` → `"NODE_FAILED"`). The `@Codec` serializes
+    /// record components only, so this default is surfaced on the wire via a response DTO
+    /// (`ManagementApiResponses.ClusterEventView`), not by serializing the interface directly.
+    default String type() {
+        return screamingSnakeCase(getClass().getSimpleName());
+    }
+
+    /// Convert a camelCase simple-class-name to SCREAMING_SNAKE_CASE by inserting `_` before each
+    /// interior uppercase letter, then upper-casing the whole. `SelfDrainInitiated` →
+    /// `SELF_DRAIN_INITIATED`. No nulls: `getSimpleName()` of a non-anonymous record is always present.
+    private static String screamingSnakeCase(String simpleName) {
+        var builder = new StringBuilder(simpleName.length() + 8);
+        for (int i = 0; i < simpleName.length(); i++) {
+            char c = simpleName.charAt(i);
+            if (i > 0 && Character.isUpperCase(c)) {
+                builder.append('_');
+            }
+            builder.append(Character.toUpperCase(c));
+        }
+        return builder.toString();
+    }
+
     /// Severity bucket carried by every closed-set variant for management-API JSON.
     Severity severity();
 
