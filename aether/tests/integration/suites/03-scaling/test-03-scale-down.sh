@@ -13,6 +13,7 @@ LOAD_DURATION="${LOAD_DURATION:-180}"
 # Operational event tier — see aether/docs/specs/test-readiness-contract.md §4 (2.0%).
 # Single moderate disruption (one node drained); small percentage lost during cutover window.
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-2.0}"
+ECHO_BLUEPRINT="${ECHO_BLUEPRINT:-org.pragmatica.aether.test:test-echo:1.0.0}"
 
 # No-data-loss marker — pushed before scale-down, resolved after. Files are
 # shared across test_* functions via fixed paths (each run_test forks a subshell,
@@ -86,6 +87,17 @@ test_scale_down_under_load() {
     # deployed by suite harness) rather than the synthetic /health/live. Exercises
     # the slice routing table that gets republished on every generation advance
     # during a scale-down — masked by /health/live which is a node-local probe.
+    #
+    # Point APP_ENDPOINT at the node hosting the ACTIVE echo slice and probe
+    # /api/echo/health until routed (positive readiness). Without this the load hits
+    # the dead LB port (LB_PORT=9090, LB module removed) and EVERY request fails — a
+    # false 100% error rate that has nothing to do with scale-down drain. Mirrors
+    # 02-chaos/test-kill-under-load.sh. The 7->5 scale-down removes the two
+    # CTM-provisioned nodes (6,7), so a retarget to any surviving seed stays valid
+    # throughout the load window.
+    retarget_app_endpoint_to_active_slice "$ECHO_BLUEPRINT" 8080 "/api/echo/health" 90 \
+        || log_warn "scale-down-under-load: could not retarget APP_ENDPOINT to echo owner; load will probe ${APP_ENDPOINT}"
+
     start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/api/echo/health"
     sleep 5
 
