@@ -21,6 +21,7 @@ public class Lambdas {
     Function<String, String> blockMultiple = s -> {
         var trimmed = s.trim();
         var upper = trimmed.toUpperCase();
+
         return upper;
     };
 
@@ -32,6 +33,7 @@ public class Lambdas {
     Result<String> blockLambdaInCall(Result<String> input) {
         return input.map(s -> {
             var trimmed = s.trim();
+
             return trimmed.toUpperCase();
         });
     }
@@ -52,11 +54,13 @@ public class Lambdas {
                     .filter(s -> {
                                 // code is shifted by one tab from 's'
                                 var trimmed = s.trim();
+
                                 return ! trimmed.isEmpty() && trimmed.length() > 3;
                             })  // aligned to the 's'
                     .map(s -> {
                              // code is shifted by one tab from 's'
                              var upper = s.toUpperCase();
+
                              return "[" + upper + "]";
                          })
                     .toList();
@@ -70,10 +74,12 @@ public class Lambdas {
     Result<String> blockLambdasAsArgs(Result<String> input) {
         return input.fold(cause -> {
                               logError(cause);
+
                               return defaultValue;
                           },
                           value -> {
                               log(value);
+
                               return value.toUpperCase();
                           });
     }

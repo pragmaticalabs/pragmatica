@@ -13,7 +13,7 @@ public final class Java25Lexer {
 
     public static final String[] KIND_NAMES = {"WHITESPACE", "LINE_COMMENT", "BLOCK_COMMENT", "DOC_LINE_COMMENT", "DOC_BLOCK_COMMENT", "ClassKW", "InterfaceKW", "EnumKW", "RecordKW", "IfKW", "WhileKW", "ForKW", "DoKW", "TryKW", "SwitchKW", "SynchronizedKW", "ReturnKW", "ThrowKW", "BreakKW", "ContinueKW", "AssertKW", "YieldKW", "CatchKW", "FinallyKW", "WhenKW", "URShift", "RShift", "LShift", "URShiftAssign", "RShiftAssign", "LShiftAssign", "PrimType", "Identifier", "Modifier", "CharLit", "StringLit", "NumLit", "Keyword", "INLINE_transitive", "INLINE_implements", "INLINE_instanceof", "INLINE_interface", "INLINE_requires", "INLINE_provides", "INLINE_package", "INLINE_exports", "INLINE_extends", "INLINE_default", "INLINE_permits", "INLINE_import", "INLINE_module", "INLINE_static", "INLINE_throws", "INLINE_opens", "INLINE_while", "INLINE_class", "INLINE_super", "INLINE_false", "INLINE_open", "INLINE_uses", "INLINE_with", "INLINE_else", "INLINE_case", "INLINE_null", "INLINE_when", "INLINE_this", "INLINE_true", "INLINE__DOT_DOT_DOT", "INLINE_var", "INLINE_new", "INLINE_to", "INLINE__MINUS_GT", "INLINE__PLUS_EQ", "INLINE__MINUS_EQ", "INLINE__STAR_EQ", "INLINE__SLASH_EQ", "INLINE__PERCENT_EQ", "INLINE__AMP_EQ", "INLINE__PIPE_EQ", "INLINE__CARET_EQ", "INLINE__PIPE_PIPE", "INLINE__AMP_AMP", "INLINE__EQ_EQ", "INLINE__BANG_EQ", "INLINE__LT_EQ", "INLINE__GT_EQ", "INLINE__PLUS_PLUS", "INLINE__MINUS_MINUS", "INLINE__COLON_COLON", "INLINE__SEMI", "INLINE__DOT", "INLINE__STAR", "INLINE__LBRACE", "INLINE__RBRACE", "INLINE__COMMA", "INLINE__AT", "INLINE__LPAREN", "INLINE__RPAREN", "INLINE__LT", "INLINE__GT", "INLINE__AMP", "INLINE__EQ", "INLINE__COLON", "INLINE__PIPE", "INLINE__", "INLINE__QMARK", "INLINE__CARET", "INLINE__PLUS", "INLINE__MINUS", "INLINE__SLASH", "INLINE__PERCENT", "INLINE__BANG", "INLINE__TILDE", "INLINE__LBRACK", "INLINE__RBRACK", "INLINE_enum", "INLINE_record", "INLINE_if", "INLINE_for", "INLINE_do", "INLINE_try", "INLINE_switch", "INLINE_synchronized", "INLINE_return", "INLINE_throw", "INLINE_break", "INLINE_continue", "INLINE_assert", "INLINE_yield", "INLINE_catch", "INLINE_finally", "INLINE_boolean", "INLINE_byte", "INLINE_short", "INLINE_int", "INLINE_long", "INLINE_float", "INLINE_double", "INLINE_char", "INLINE_void", "INLINE_public", "INLINE_protected", "INLINE_private", "INLINE_final", "INLINE_abstract", "INLINE_native", "INLINE_transient", "INLINE_volatile", "INLINE_strictfp", "INLINE_sealed", "INLINE_non_MINUSsealed", "INLINE_const", "INLINE_goto", "ANY_CHAR"};
 
-    private static final int[] ACCEPT_KIND = new int[] {-1,153,0,111,153,32,110,100,153,96,97,91,107,94,108,90,109,36,36,102,89,98,101,99,105,95,113,114,106,104,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,92,103,93,112,0,83,-1,35,-1,32,76,81,77,-1,34,-1,74,86,72,87,73,71,-1,36,-1,0,75,36,36,-1,36,-1,-1,88,-1,84,82,85,-1,79,32,32,32,32,32,32,32,32,32,32,119,32,32,32,32,32,32,32,32,117,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,70,32,32,32,32,32,32,32,78,80,35,-1,-1,-1,67,36,-1,-1,-1,0,36,36,-1,36,36,30,29,-1,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,118,32,32,32,134,32,32,32,69,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,120,32,68,32,32,32,32,32,32,-1,-1,-1,36,0,36,36,28,32,32,32,32,132,62,32,138,32,32,32,32,32,61,115,32,32,32,32,32,152,32,32,32,32,135,32,32,-1,63,58,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,65,32,32,66,59,139,32,64,32,60,32,-1,32,32,32,125,129,55,151,32,32,32,32,32,57,143,136,32,32,32,32,32,32,-1,53,32,32,32,32,32,32,32,32,32,32,133,32,32,56,32,32,124,32,32,54,128,35,32,127,32,32,32,137,32,32,32,32,49,32,32,50,145,-1,32,32,32,32,32,140,116,32,123,149,51,32,121,32,52,32,32,32,131,32,47,45,46,130,32,32,32,-1,44,48,142,32,32,32,32,32,32,32,32,144,126,32,32,32,-1,32,43,42,148,32,32,32,147,32,32,41,-1,141,32,146,32,39,40,150,32,38,32,122};
+    private static final int[] ACCEPT_KIND = new int[] {-1,153,0,111,153,32,110,100,153,96,97,91,107,94,108,90,109,36,36,102,89,98,101,99,105,95,113,114,106,104,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,92,103,93,112,0,83,-1,35,-1,32,76,81,77,-1,34,-1,74,86,72,87,73,71,-1,36,-1,1,75,36,36,-1,36,-1,-1,88,-1,84,82,85,-1,79,32,32,32,32,32,32,32,32,32,32,119,32,32,32,32,32,32,32,32,117,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,70,32,32,32,32,32,32,32,78,80,35,-1,-1,-1,67,36,-1,-1,-1,1,36,36,-1,36,36,30,29,-1,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,118,32,32,32,134,32,32,32,69,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,120,32,68,32,32,32,32,32,32,-1,-1,-1,36,2,36,36,28,32,32,32,32,132,62,32,138,32,32,32,32,32,61,115,32,32,32,32,32,152,32,32,32,32,135,32,32,-1,63,58,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,65,32,32,66,59,139,32,64,32,60,32,-1,32,32,32,125,129,55,151,32,32,32,32,32,57,143,136,32,32,32,32,32,32,-1,53,32,32,32,32,32,32,32,32,32,32,133,32,32,56,32,32,124,32,32,54,128,35,32,127,32,32,32,137,32,32,32,32,49,32,32,50,145,-1,32,32,32,32,32,140,116,32,123,149,51,32,121,32,52,32,32,32,131,32,47,45,46,130,32,32,32,-1,44,48,142,32,32,32,32,32,32,32,32,144,126,32,32,32,-1,32,43,42,148,32,32,32,147,32,32,41,-1,141,32,146,32,39,40,150,32,38,32,122};
 
     private static final int[] TRANSITIONS = buildTransitions();
 
@@ -24889,59 +24889,59 @@ public final class Java25Lexer {
     private static final java.util.HashMap<String, Integer>[] RESOLVERS = new java.util.HashMap[154];
     static {
         java.util.HashMap<String, Integer> r0 = new java.util.HashMap<>();
-        r0.put("false", 57);
-        r0.put("double", 137);
-        r0.put("else", 61);
-        r0.put("byte", 132);
-        r0.put("return", 123);
-        r0.put("null", 63);
-        r0.put("void", 139);
-        r0.put("interface", 41);
-        r0.put("long", 135);
-        r0.put("throws", 52);
-        r0.put("transient", 146);
-        r0.put("continue", 126);
-        r0.put("native", 145);
-        r0.put("throw", 124);
-        r0.put("case", 62);
-        r0.put("if", 117);
-        r0.put("instanceof", 40);
-        r0.put("super", 56);
-        r0.put("extends", 46);
-        r0.put("import", 49);
-        r0.put("break", 125);
-        r0.put("default", 47);
-        r0.put("final", 143);
-        r0.put("short", 133);
-        r0.put("boolean", 131);
-        r0.put("catch", 129);
-        r0.put("new", 69);
-        r0.put("private", 142);
-        r0.put("synchronized", 122);
-        r0.put("char", 138);
-        r0.put("class", 55);
         r0.put("const", 151);
-        r0.put("strictfp", 148);
-        r0.put("float", 136);
-        r0.put("public", 140);
-        r0.put("static", 51);
-        r0.put("implements", 39);
-        r0.put("switch", 121);
-        r0.put("this", 65);
-        r0.put("protected", 141);
-        r0.put("goto", 152);
-        r0.put("true", 66);
-        r0.put("try", 120);
-        r0.put("int", 134);
-        r0.put("package", 44);
-        r0.put("enum", 115);
-        r0.put("for", 118);
-        r0.put("do", 119);
-        r0.put("finally", 130);
-        r0.put("volatile", 147);
-        r0.put("assert", 127);
-        r0.put("abstract", 144);
+        r0.put("class", 55);
+        r0.put("char", 138);
+        r0.put("synchronized", 122);
+        r0.put("private", 142);
+        r0.put("new", 69);
+        r0.put("catch", 129);
+        r0.put("boolean", 131);
+        r0.put("short", 133);
+        r0.put("final", 143);
+        r0.put("default", 47);
+        r0.put("break", 125);
+        r0.put("import", 49);
+        r0.put("extends", 46);
+        r0.put("super", 56);
+        r0.put("instanceof", 40);
+        r0.put("if", 117);
+        r0.put("case", 62);
+        r0.put("throw", 124);
+        r0.put("native", 145);
+        r0.put("continue", 126);
+        r0.put("transient", 146);
+        r0.put("throws", 52);
+        r0.put("long", 135);
+        r0.put("interface", 41);
+        r0.put("void", 139);
+        r0.put("null", 63);
+        r0.put("return", 123);
+        r0.put("byte", 132);
+        r0.put("else", 61);
+        r0.put("double", 137);
+        r0.put("false", 57);
         r0.put("while", 54);
+        r0.put("abstract", 144);
+        r0.put("assert", 127);
+        r0.put("volatile", 147);
+        r0.put("finally", 130);
+        r0.put("do", 119);
+        r0.put("for", 118);
+        r0.put("enum", 115);
+        r0.put("package", 44);
+        r0.put("int", 134);
+        r0.put("try", 120);
+        r0.put("true", 66);
+        r0.put("goto", 152);
+        r0.put("protected", 141);
+        r0.put("this", 65);
+        r0.put("switch", 121);
+        r0.put("implements", 39);
+        r0.put("static", 51);
+        r0.put("public", 140);
+        r0.put("float", 136);
+        r0.put("strictfp", 148);
         RESOLVERS[32] = r0;
     }
 
@@ -24983,7 +24983,10 @@ public final class Java25Lexer {
                     if (ovr != null) lastAcceptKind = ovr;
                 }
             }
-            if (lastAcceptKind == TokenArray.KIND_WHITESPACE && lastAcceptEnd > pos + 1) {
+            if ((lastAcceptKind == TokenArray.KIND_WHITESPACE
+                 || lastAcceptKind == TokenArray.KIND_LINE_COMMENT
+                 || lastAcceptKind == TokenArray.KIND_BLOCK_COMMENT)
+                && lastAcceptEnd > pos + 1) {
                 char c0 = input.charAt(pos);
                 char c1 = input.charAt(pos + 1);
                 if (c0 == '/') {

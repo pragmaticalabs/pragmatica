@@ -28,7 +28,7 @@ public class Records {
 
     record Password(String value) {
         public Password {
-            if (value.length() <8) {
+            if (value.length() < 8) {
                 throw new IllegalArgumentException("Password too short");
             }
         }

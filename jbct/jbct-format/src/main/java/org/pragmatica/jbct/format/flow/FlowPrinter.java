@@ -43,6 +43,11 @@ final class FlowPrinter {
     private char lastChar;
     private char prevChar;
     private String lastWord = "";
+    /// >0 while emitting tokens inside a TYPE_ARGS / TYPE_PARAMS node. Disambiguates a generic
+    /// '<'/'>' (glued punctuation) from a relational/shift operator '<'/'>' (spaced) — the parser
+    /// already separates them into distinct rules, so we key spacing off that rather than guessing
+    /// from characters (which cannot tell `static <T>` from `a < b`).
+    private int typeContextDepth = 0;
 
     // Measurement mode
     private boolean measuringMode;
@@ -114,6 +119,7 @@ final class FlowPrinter {
         char oldLastChar = lastChar;
         char oldPrevChar = prevChar;
         String oldLastWord = lastWord;
+        int oldTypeContextDepth = typeContextDepth;
         measuringMode = true;
         measureBuffer = 0;
         printNode(node);
@@ -123,6 +129,7 @@ final class FlowPrinter {
         lastChar = oldLastChar;
         prevChar = oldPrevChar;
         lastWord = oldLastWord;
+        typeContextDepth = oldTypeContextDepth;
         return width;
     }
 
@@ -141,6 +148,7 @@ final class FlowPrinter {
                               char lastChar,
                               char prevChar,
                               String lastWord,
+                              int typeContextDepth,
                               boolean measuringMode,
                               int measureBuffer,
                               int tokenIndex,
@@ -157,6 +165,7 @@ final class FlowPrinter {
                               lastChar,
                               prevChar,
                               lastWord,
+                              typeContextDepth,
                               measuringMode,
                               measureBuffer,
                               tokenIndex,
@@ -174,6 +183,7 @@ final class FlowPrinter {
         lastChar = saved.lastChar();
         prevChar = saved.prevChar();
         lastWord = saved.lastWord();
+        typeContextDepth = saved.typeContextDepth();
         measuringMode = saved.measuringMode();
         measureBuffer = saved.measureBuffer();
         tokenIndex = saved.tokenIndex();
@@ -184,30 +194,6 @@ final class FlowPrinter {
         emittedTriviaTokens.clear();
         emittedTriviaTokens.addAll(saved.emittedTriviaTokens());
         alignment.restore(saved.alignment());
-    }
-
-    /// True iff a single-statement block collapsed inline (`{ stmt }`) would render on a
-    /// single physical line. Used to keep inline-block collapse idempotent: a body that is
-    /// over-wide OR contains a force-broken method chain wraps when emitted inline, which
-    /// flips `isOnSingleSourceLine` next pass and re-expands the block. We decide by trial-
-    /// rendering the statement at the current column and checking for an emitted newline —
-    /// width alone underestimates, because chains break on structure, not just width.
-    ///
-    /// The trial mutates real render state (alignment scopes, cursor position, trivia
-    /// tracking), so we snapshot ALL of it up front and restore it afterwards. The
-    /// snapshot includes the alignment context so an unbalanced scope inside the trial
-    /// cannot corrupt subsequent layout.
-    private boolean inlineBlockFits(Cursor stmt) {
-        var saved = saveState();
-
-        output = new StringBuilder();
-        printNode(stmt);
-        emitBare("}");
-        boolean singleLine = currentColumn <= config.maxLineLength()
-                             && output.indexOf("\n") < 0;
-
-        restoreState(saved);
-        return singleLine;
     }
 
     // ===== Node dispatch =====
@@ -229,10 +215,41 @@ final class FlowPrinter {
     /// causing whitespace bleed into the output.
     private void emitLeafTokens(Cursor.Leaf leaf) {
         var tokens = leaf.cst().tokens();
+        // Position of the last `}` token in this leaf (or -1). Orphan line comments are emitted
+        // ONLY when they sit BEFORE a `}` within the leaf — the bodyless `{ // note }` empty-body
+        // case, where the comment is trivia on the bare `}` leaf and no node's leadingTrivia owns
+        // it. A comment AFTER the `}` is the leading trivia of the FOLLOWING declaration and is
+        // emitted by emitLeadingComments; re-emitting it here would re-place it (idempotency break).
+        int lastBrace = -1;
+        for (int t = leaf.firstTokenIdx(); t <= leaf.lastTokenIdx(); t++) {
+            if (!tokens.isTrivia(t) && "}".contentEquals(tokens.textAt(t))) {
+                lastBrace = t;
+            }
+        }
         for (int t = leaf.firstTokenIdx(); t <= leaf.lastTokenIdx(); t++) {
             if (!tokens.isTrivia(t)) {
                 emitToken(tokens.textAt(t).toString());
+                continue;
             }
+            int kind = tokens.kindAt(t);
+            if (measuringMode || (kind != 1 && kind != 3) || t >= lastBrace || emittedTriviaTokens.contains(t)) {
+                continue;
+            }
+            // Orphan line comment enclosed before a `}` in this bare-leaf body — emit so it is not
+            // silently deleted (bug B2).
+            var text = tokens.textAt(t).toString().stripTrailing();
+            if (precedingContentOnSameLine(tokens.startAt(t)) && currentColumn > 0) {
+                emit("  " + text);
+            } else {
+                if (currentColumn > 0) {
+                    newline();
+                }
+                printIndent();
+                emit(text);
+                newline();
+                printIndent();
+            }
+            emittedTriviaTokens.add(t);
         }
     }
 
@@ -710,25 +727,6 @@ final class FlowPrinter {
         var stmts = childrenByRule(block, RuleKind.BLOCK_STMT);
 
         if (!stmts.isEmpty()) {
-            // Preserve source-line layout: if the entire Block sits on a single source
-            // line (e.g. `if (x) {return y;}`), keep it inline. This mirrors the legacy
-            // formatter's same-line brace detection. Don't collapse if the stmt carries a
-            // leading comment — that's a signal the dev wants spacing.
-            // Only collapse when the inline form actually fits on the line: an over-wide
-            // inner statement gets wrapped across lines when emitted inline, which flips
-            // `isOnSingleSourceLine` on the next pass and re-expands the block — a
-            // non-idempotent oscillation. If it won't fit, fall through to the expanded form.
-            if (!measuringMode
-                && !useLambdaAlign
-                && !useChainAlign
-                && isOnSingleSourceLine(block)
-                && stmts.size() == 1
-                && !hasLeadingComment(stmts.get(0))
-                && inlineBlockFits(stmts.get(0))) {
-                printNode(stmts.get(0));
-                emitBare("}");
-                return;
-            }
             newline();
             if (useLambdaAlign) {
                 printAlignedBlockStatements(stmts, lambdaAlignCol);
@@ -738,29 +736,13 @@ final class FlowPrinter {
                 printAlignedTo(chainAlignCol);
             } else {
                 indentLevel++;
-                // Lambda body blocks pack tight — no blank lines inserted between stmts.
-                boolean isLambdaBody = isInsideLambda(block);
+                // Blank-line rules, applied uniformly in regular and lambda bodies (only the
+                // base indent differs): R1 blank after a block-shaped stmt; R2 blank after a
+                // local-var-decl run before a non-var stmt; R3 blank before a return/throw. A
+                // single newline() is emitted, so overlapping rules coalesce to one blank.
                 for (int i = 0; i < stmts.size(); i++) {
                     var stmt = stmts.get(i);
-                    // Blank line before a final return/throw when the block has at least
-                    // one simple (non-block) prior statement AND that prior statement is
-                    // visually packed on a single source line. A method body of only an
-                    // `if`/`try`/`while` + `return` packs tight; multi-line text-block
-                    // assignments visually separate themselves and need no blank.
-                    // In lambda bodies: only add blank before return when body has 4+ stmts
-                    // (3+ prior + 1 return), treating it as a substantial function body.
-                    boolean lambdaBodyAllowsBlank = !isLambdaBody || stmts.size() >= 4;
-                    if (lambdaBodyAllowsBlank && i >= 1 && i == stmts.size() - 1 && isReturnOrThrowStmt(stmt) && !hasLeadingComment(stmt)
-                        && hasSimpleSingleLinePriorStmt(stmts, i)) {
-                        newline();
-                    }
-                    // Blank line around block-shaped stmts (if/try/while/...) when the
-                    // method body has 3+ stmts: a section boundary appears either when
-                    // moving from a non-block stmt to a block stmt OR from a block stmt
-                    // to a non-block stmt.
-                    else if (!isLambdaBody && i >= 1 && !hasLeadingComment(stmt)
-                             && stmts.size() >= 3
-                             && (isBlockShapedStmt(stmts.get(i - 1)) ^ isBlockShapedStmt(stmt))) {
+                    if (i >= 1 && !hasLeadingComment(stmt) && needsBlankBeforeStmt(stmts.get(i - 1), stmt)) {
                         newline();
                     }
                     if (!hasUnEmittedLeadingComment(stmt)) {
@@ -779,9 +761,49 @@ final class FlowPrinter {
                 indentLevel--;
                 printIndent();
             }
+        } else {
+            emitEmptyBlockComments(block);
         }
 
         emitBare("}");
+    }
+
+    /// Preserve line comments that are the sole content of an otherwise-empty block — emit each
+    /// on its own indented line so a comment-only body (`{ // note }`) is not collapsed to `{}`
+    /// (bug B2). No-op (leaves `{}`) when the block carries no un-emitted comments.
+    private void emitEmptyBlockComments(Cursor.Branch block) {
+        if (measuringMode) {
+            return;
+        }
+        var tokens = block.cst().tokens();
+        int open = block.firstTokenIdx();
+        int close = block.lastTokenIdx();
+        boolean any = false;
+        for (int t = open + 1; t < close; t++) {
+            if (!tokens.isTrivia(t)) {
+                continue;
+            }
+            int kind = tokens.kindAt(t);
+            if (kind != 1 && kind != 3) { // LINE_COMMENT or DOC_LINE_COMMENT only
+                continue;
+            }
+            if (emittedTriviaTokens.contains(t)) {
+                continue;
+            }
+            if (!any) {
+                indentLevel++;
+            }
+            newline();
+            printIndent();
+            emit(tokens.textAt(t).toString().stripTrailing());
+            emittedTriviaTokens.add(t);
+            any = true;
+        }
+        if (any) {
+            indentLevel--;
+            newline();
+            printIndent();
+        }
     }
 
     /// Emit trailing line comments that sit in the last stmt's trailing trivia region
@@ -798,14 +820,26 @@ final class FlowPrinter {
         for (int t = lastNonTrivia + 1; t <= closingBrace; t++) {
             if (!tokens.isTrivia(t)) break;
             int kind = tokens.kindAt(t);
-            if (kind == 1 || kind == 3) { // LINE_COMMENT or DOC_LINE_COMMENT
-                int commentStart = tokens.startAt(t);
-                if (!precedingContentOnSameLine(commentStart)) break;
-                if (!emittedTriviaTokens.contains(t)) {
-                    emit("  " + tokens.textAt(t).toString().stripTrailing());
-                    emittedTriviaTokens.add(t);
-                }
+            if (kind != 1 && kind != 3) { // LINE_COMMENT or DOC_LINE_COMMENT only
+                continue;
             }
+            if (emittedTriviaTokens.contains(t)) {
+                continue;
+            }
+            int commentStart = tokens.startAt(t);
+            var text = tokens.textAt(t).toString().stripTrailing();
+            if (precedingContentOnSameLine(commentStart) && currentColumn > 0) {
+                // Trailing comment on the same source line as the preceding stmt.
+                emit("  " + text);
+            } else {
+                // Comment on its OWN line before `}` — emit it on a fresh indented line instead
+                // of dropping it. The `}` is emitted via emitBare, which never runs the
+                // leading-comment path, so without this the comment is lost (bug B2).
+                newline();
+                printIndent();
+                emit(text);
+            }
+            emittedTriviaTokens.add(t);
         }
     }
 
@@ -858,58 +892,22 @@ final class FlowPrinter {
         return false;
     }
 
-    /// True if `block` is the body of a lambda — i.e. it has a LAMBDA ancestor whose
-    /// closest enclosing BLOCK is this one. Walks parents up; stops at any BLOCK/METHOD_DECL
-    /// boundary except this block itself.
-    private static boolean isInsideLambda(Cursor.Branch block) {
-        var parent = block.parent().orElse(null);
-        while (parent != null) {
-            if (parent.kindIs(RuleKind.LAMBDA)) {
-                return true;
-            }
-            if (parent.kindIs(RuleKind.METHOD_DECL) || parent.kindIs(RuleKind.MEMBER)) {
-                return false;
-            }
-            parent = parent.parent().orElse(null);
-        }
-        return false;
+    /// Whether a blank line is required between `prev` and `cur` per the uniform rules:
+    /// R1 — blank after a block-shaped statement; R2 — blank after a local-variable-declaration
+    /// run, before a non-var statement; R3 — blank before a return/throw. Overlapping rules
+    /// coalesce because the caller emits a single newline.
+    private static boolean needsBlankBeforeStmt(Cursor prev, Cursor cur) {
+        return isBlockShapedStmt(prev)
+               || (isLocalVarDecl(prev) && !isLocalVarDecl(cur))
+               || isReturnOrThrowStmt(cur);
     }
 
-    /// True if any of the statements at index < returnIdx is a "simple" statement
-    /// (not a block-stmt — i.e. not `if`/`try`/`while`/`for`/`do`/`switch`/`synchronized`/`{ ... }`).
-    private static boolean hasSimplePriorStmt(List<Cursor> stmts, int returnIdx) {
-        for (int i = 0; i < returnIdx; i++) {
-            if (!isBlockShapedStmt(stmts.get(i))) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /// True if any simple prior stmt (non-block) sits on a single source line. Multi-line
-    /// simple stmts (e.g. `var x = """text block""";`) visually separate themselves and
-    /// don't require a blank line before the final return.
-    private boolean hasSimpleSingleLinePriorStmt(List<Cursor> stmts, int returnIdx) {
-        for (int i = 0; i < returnIdx; i++) {
-            var s = stmts.get(i);
-            if (isBlockShapedStmt(s)) continue;
-            // Keep the original Branch-only restriction; only the single-line test changed
-            // from a SOURCE-line check to the FORMATTED-layout check for idempotency.
-            if (s instanceof Cursor.Branch && rendersOnSingleLine(s)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /// True iff the statement would render on a single line at the current block indent.
-    /// This must reflect the FORMATTED layout, not the source layout: a method-chain
-    /// statement written across several source lines is reflowed onto one line when it
-    /// fits, so a source-`\n` check would flip the blank-before-return decision between
-    /// passes and break idempotency.
-    private boolean rendersOnSingleLine(Cursor stmt) {
-        int indentCol = indentLevel * config.indentSize();
-        return indentCol + measureWidth(stmt) <= config.maxLineLength();
+    /// True iff the statement is a local-variable declaration. In the v6 CST a var-decl
+    /// statement uniquely presents as a BLOCK_STMT whose direct child is a LOCAL_VAR (other
+    /// statements wrap an intermediate STMT or a leaf).
+    private static boolean isLocalVarDecl(Cursor stmt) {
+        return stmt instanceof Cursor.Branch br
+               && br.children().anyMatch(c -> c.kindIs(RuleKind.LOCAL_VAR) || c.kindIs(RuleKind.LOCAL_VAR_NO_SEMI));
     }
 
     /// True if a stmt is one of the block-shaped control-flow constructs.
@@ -944,38 +942,18 @@ final class FlowPrinter {
         return false;
     }
 
-    /// True iff the entire token range of the node covers exactly one source line
-    /// (no '\n' in any token between the first and last non-trivia tokens, exclusive
-    /// of trailing trivia past the last non-trivia token — that trailing trivia is the
-    /// transition to the next sibling and shouldn't count).
-    private boolean isOnSingleSourceLine(Cursor.Branch node) {
-        var tokens = node.cst().tokens();
-        // Find the last non-trivia token index within the range.
-        int lastNonTrivia = -1;
-        for (int t = node.lastTokenIdx(); t >= node.firstTokenIdx(); t--) {
-            if (!tokens.isTrivia(t)) {
-                lastNonTrivia = t;
-                break;
-            }
-        }
-        if (lastNonTrivia < 0) {
-            return true;
-        }
-        for (int t = node.firstTokenIdx(); t <= lastNonTrivia; t++) {
-            if (tokens.textAt(t).toString().indexOf('\n') >= 0) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     private void printAlignedBlockStatements(List<Cursor> stmts, int alignCol) {
         int bodyCol = alignCol + config.indentSize();
         // Use forcedIndentCol so emitLeadingComments uses printAlignedTo(bodyCol)
         // instead of printIndent() (which uses indentLevel and may round incorrectly).
         int savedForcedIndent = forcedIndentCol;
         forcedIndentCol = bodyCol;
-        for (var stmt : stmts) {
+        for (int i = 0; i < stmts.size(); i++) {
+            var stmt = stmts.get(i);
+            // Same uniform blank-line rules as the non-aligned body path (R1/R2/R3).
+            if (i >= 1 && !hasLeadingComment(stmt) && needsBlankBeforeStmt(stmts.get(i - 1), stmt)) {
+                newline();
+            }
             // Skip printAlignedTo for stmts with leading comments: currentColumn is
             // already 0 from the preceding newline, so emitLeadingComments won't add
             // an extra blank line (it only newlines when currentColumn > 0).
@@ -1513,40 +1491,52 @@ final class FlowPrinter {
 
     private void printBrokenArgs(Cursor.Branch args) {
         int alignCol = currentColumn;
+        // A single argument at statement level (no enclosing broken method chain) has no commas
+        // to align, and its block-lambda body should indent from the statement, not the deep arg
+        // column (bug B3). Inside a broken chain the body aligns to the lambda parameter, so keep
+        // lambda-align there. Multi-argument calls always align.
+        if (childrenByRule(args, RuleKind.EXPR).size() < 2 && alignment.chainColumn() < 0) {
+            printBrokenArgsBody(args, alignCol);
+            return;
+        }
         try (var scope = alignment.pushLambdaAlign(alignCol)) {
-            walkTokensWith(args, new TokenWalker() {
-                @Override
-                public void onChild(Cursor child) {
-                    if (child.kindIs(RuleKind.EXPR)) {
-                        // If this single arg fits on its own line, render its inner
-                        // chains/expressions inline. The args layout already broke at
-                        // commas; an individual arg-expression should not force further
-                        // vertical breaks unless its own width demands it.
-                        int width = measureWidth(child);
-                        if (currentColumn + width <= config.maxLineLength()) {
-                            try (var inlineScope = alignment.enterInlineExpression()) {
-                                printNodeContent(child);
-                            }
-                        } else {
+            printBrokenArgsBody(args, alignCol);
+        }
+    }
+
+    private void printBrokenArgsBody(Cursor.Branch args, int alignCol) {
+        walkTokensWith(args, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) {
+                if (child.kindIs(RuleKind.EXPR)) {
+                    // If this single arg fits on its own line, render its inner
+                    // chains/expressions inline. The args layout already broke at
+                    // commas; an individual arg-expression should not force further
+                    // vertical breaks unless its own width demands it.
+                    int width = measureWidth(child);
+                    if (currentColumn + width <= config.maxLineLength()) {
+                        try (var inlineScope = alignment.enterInlineExpression()) {
                             printNodeContent(child);
                         }
                     } else {
-                        printNode(child);
+                        printNodeContent(child);
                     }
+                } else {
+                    printNode(child);
                 }
+            }
 
-                @Override
-                public void onToken(int kind, String text) {
-                    if (",".equals(text)) {
-                        emit(",");
-                        newline();
-                        printAlignedTo(alignCol);
-                    } else {
-                        emitToken(text);
-                    }
+            @Override
+            public void onToken(int kind, String text) {
+                if (",".equals(text)) {
+                    emit(",");
+                    newline();
+                    printAlignedTo(alignCol);
+                } else {
+                    emitToken(text);
                 }
-            });
-        }
+            }
+        });
     }
 
     // ===== Lambda =====
@@ -1789,11 +1779,15 @@ final class FlowPrinter {
     // ===== Type generics =====
 
     private void printTypeArgs(Cursor.Branch typeArgs) {
+        typeContextDepth++;
         walkTokens(typeArgs);
+        typeContextDepth--;
     }
 
     private void printTypeParams(Cursor.Branch typeParams) {
+        typeContextDepth++;
         walkTokens(typeParams);
+        typeContextDepth--;
     }
 
     // ===== Method declarations =====
@@ -2246,10 +2240,14 @@ final class FlowPrinter {
             return true;
         }
         if (lastChar == '<') {
-            return true;
-        }
-        if (firstChar == '?' && lastChar == '<') {
-            return true;
+            // Generic '<' (inside TYPE_ARGS / TYPE_PARAMS) glues to the type argument that follows
+            // (`List<String`, `static <T`). A relational/shift operator '<' (any non-type context)
+            // glues only a following '<' to form '<<'; before an operand it takes a space, added in
+            // checkSpaceRules (e.g. `a < 0`, `v << n`).
+            if (typeContextDepth > 0) {
+                return true;
+            }
+            return firstChar == '<';
         }
         if (firstChar == '>' && lastChar == '?') {
             return true;
@@ -2305,6 +2303,11 @@ final class FlowPrinter {
         if (lastChar == ',') {
             return true;
         }
+        // Semicolon separator in a `for` header. A statement-terminating `;` is followed by a
+        // newline (lastChar would be '\n'), so this only fires mid-line — between for-clauses.
+        if (lastChar == ';') {
+            return true;
+        }
         // Closing brace keyword
         if (lastChar == '}' && SPACE_AFTER_BRACE_KEYWORDS.contains(text)) {
             return true;
@@ -2340,6 +2343,13 @@ final class FlowPrinter {
         // Angle bracket rules
         if (text.equals("<") || text.equals(">")) {
             return checkAngleBracketRules(text, firstChar);
+        }
+        // Relational/shift operator '<' (outside any TYPE_ARGS / TYPE_PARAMS context) before its
+        // operand. '<' is not in BINARY_OP_CHARS, so it needs this explicit rule; a generic-open
+        // '<' (typeContextDepth > 0) was already suppressed in mustNotHaveSpaceBefore and never
+        // reaches here. The symmetric '>' operand is handled by checkGenericClosing.
+        if (lastChar == '<' && typeContextDepth == 0) {
+            return true;
         }
         // Binary operators
         if (BINARY_OPS.contains(text) || isBinaryOpLastChar()) {

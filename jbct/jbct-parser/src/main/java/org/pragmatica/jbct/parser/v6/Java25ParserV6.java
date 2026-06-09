@@ -226,11 +226,11 @@ public final class Java25ParserV6 {
     private static final int KIND_INLINE__BANG = 111;
     private static final int KIND_INLINE__TILDE = 112;
     private static final int KIND_INLINE_THIS = 65;
+    private static final int KIND_INLINE_SUPER = 56;
     private static final int KIND_INLINE__LBRACK = 113;
     private static final int KIND_INLINE__RBRACK = 114;
     private static final int KIND_INLINE__COLON_COLON = 88;
     private static final int KIND_INLINE_NEW = 69;
-    private static final int KIND_INLINE_SUPER = 56;
     private static final int KIND_INLINE_BOOLEAN = 131;
     private static final int KIND_INLINE_BYTE = 132;
     private static final int KIND_INLINE_SHORT = 133;
@@ -5787,6 +5787,19 @@ public final class Java25ParserV6 {
                     if (peek() != KIND_INLINE__DOT) { fail("'.'", RULE_PostOp_KIND); break; }
                     advance();
                     if (peek() != KIND_INLINE_THIS) { fail("'this'", RULE_PostOp_KIND); break; }
+                    advance();
+                    matched_alt_0 = true;
+                } while (false);
+                if (!matched_alt_0) {
+                    pos = savedPos_alt_0;
+                    cst.truncate(savedNodes_alt_0);
+                }
+            }
+            if (!matched_alt_0 && !cutHit_alt_0) {
+                do {
+                    if (peek() != KIND_INLINE__DOT) { fail("'.'", RULE_PostOp_KIND); break; }
+                    advance();
+                    if (peek() != KIND_INLINE_SUPER) { fail("'super'", RULE_PostOp_KIND); break; }
                     advance();
                     matched_alt_0 = true;
                 } while (false);
