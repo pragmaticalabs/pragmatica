@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.utils.TimeSource;
@@ -71,6 +72,12 @@ class TopologyObserverTest {
         };
     }
 
+    private static MessageRouter.MutableRouter quietRouter() {
+        var router = MessageRouter.mutable();
+        router.addRoute(NetworkServiceMessage.ListConnectedNodes.class, _ -> {});
+        return router;
+    }
+
     /// v2-architecture §5.4: the QUIC dial set (`nodeStatesById`, exposed via `topology()`)
     /// is populated by SWIM discovery (`handleDiscoveredNodes`) + self ONLY. Static
     /// `config.coreNodes()` is NOT seeded into the dial set — it only feeds SWIM's seed/
@@ -82,7 +89,7 @@ class TopologyObserverTest {
         void construction_dialSetIsSelfOnly_notPrePopulatedFromConfig() {
             // No discovery yet: the dial set must contain ONLY self, never the static
             // configured peers PEER_A / PEER_B.
-            var observer = TopologyObserver.topologyObserver(baseConfig(), MessageRouter.mutable()).unwrap();
+            var observer = TopologyObserver.topologyObserver(baseConfig(), quietRouter()).unwrap();
 
             assertThat(observer.topology())
                 .as("dial set at construction must be self-only (no static config pre-population)")
@@ -95,7 +102,7 @@ class TopologyObserverTest {
         void start_dialSetStillSelfOnly_noStaticReseed() {
             // `start()` triggers `initReconcile`, which no longer re-seeds from config.
             // The dial set stays self-only until SWIM discovery lands.
-            var observer = TopologyObserver.topologyObserver(baseConfig(), MessageRouter.mutable()).unwrap();
+            var observer = TopologyObserver.topologyObserver(baseConfig(), quietRouter()).unwrap();
             observer.start().await();
 
             assertThat(observer.topology())
@@ -108,6 +115,7 @@ class TopologyObserverTest {
             // SWIM discovery is the sole writer of the dial set (besides self). A discovered
             // peer must enter `nodeStatesById` (→ topology()) and become dialable.
             var router = MessageRouter.mutable();
+            router.addRoute(NetworkServiceMessage.ListConnectedNodes.class, _ -> {});
             var observer = TopologyObserver.topologyObserver(baseConfig(), router).unwrap();
             observer.start().await();
 
@@ -130,7 +138,7 @@ class TopologyObserverTest {
             // discovery-derived dial set. With only self discovered, clusterSize/quorumSize
             // still reflect `config` (3 configured → quorum 2), and `coreNodes()` (the
             // identity fallback) still reflects the configured core set.
-            var observer = TopologyObserver.topologyObserver(baseConfig(), MessageRouter.mutable()).unwrap();
+            var observer = TopologyObserver.topologyObserver(baseConfig(), quietRouter()).unwrap();
 
             assertThat(observer.clusterSize())
                 .as("quorum denominator (clusterSize) must stay config-derived")
@@ -156,7 +164,7 @@ class TopologyObserverTest {
                 @Override public Option<MembershipView> currentMembershipView() { return Option.some(view); }
                 @Override public long observedRabiaTerm() { return 0L; }
             };
-            var observer = TopologyObserver.topologyObserver(baseConfig(), MessageRouter.mutable(), snapshot).unwrap();
+            var observer = TopologyObserver.topologyObserver(baseConfig(), quietRouter(), snapshot).unwrap();
             observer.start().await();
 
             assertThat(observer.topology())
@@ -174,6 +182,7 @@ class TopologyObserverTest {
     class QuorumStatePublishing {
         private static MessageRouter.MutableRouter routerCapturing(List<ClusterStateNotification> sink) {
             var router = MessageRouter.mutable();
+            router.addRoute(NetworkServiceMessage.ListConnectedNodes.class, _ -> {});
             router.addRoute(ClusterStateNotification.class, sink::add);
             return router;
         }
@@ -297,6 +306,7 @@ class TopologyObserverTest {
 
         private static MessageRouter.MutableRouter routerCapturing(List<MembershipDecision> sink) {
             var router = MessageRouter.mutable();
+            router.addRoute(NetworkServiceMessage.ListConnectedNodes.class, _ -> {});
             router.addRoute(MembershipDecision.NodeJoined.class, sink::add);
             router.addRoute(MembershipDecision.NodeRemoved.class, sink::add);
             router.addRoute(MembershipDecision.NodeDecommissioned.class, sink::add);

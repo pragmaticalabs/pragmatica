@@ -49,6 +49,8 @@ class ClusterEventAggregatorTest {
 
     private static final BooleanSupplier OWNER = () -> true;
     private static final BooleanSupplier NOT_OWNER = () -> false;
+    private static final BooleanSupplier LEADER = () -> true;
+    private static final BooleanSupplier NOT_LEADER = () -> false;
 
     private record Harness(ClusterEventAggregator aggregator, HlcClock hlc, StreamPartitionManager manager) {
         static Harness create(RetentionPolicy retention, BooleanSupplier ownerCheck) {
@@ -56,6 +58,13 @@ class ClusterEventAggregatorTest {
         }
 
         static Harness create(RetentionPolicy retention, BooleanSupplier ownerCheck, BooleanSupplier replayingCheck) {
+            return create(retention, ownerCheck, replayingCheck, LEADER);
+        }
+
+        static Harness create(RetentionPolicy retention,
+                              BooleanSupplier ownerCheck,
+                              BooleanSupplier replayingCheck,
+                              BooleanSupplier leaderCheck) {
             // Generous memory budget so calculateStreamBytes (64 + 24*maxCount + maxBytes) fits.
             var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
             var config = StreamConfig.streamConfig(SystemStreams.CLUSTER_EVENTS.asString(),
@@ -83,7 +92,8 @@ class ClusterEventAggregatorTest {
                                                                            SELF,
                                                                            hlc,
                                                                            () -> 1,
-                                                                           replayingCheck);
+                                                                           replayingCheck,
+                                                                           leaderCheck);
             return new Harness(aggregator, hlc, manager);
         }
 
@@ -190,8 +200,33 @@ class ClusterEventAggregatorTest {
     void nonOwner_suppressesEmit() {
         var h = Harness.create(Harness.defaultRetention(), NOT_OWNER);
         h.aggregator().onPeerJoined(peerJoined("peer-x", List.of(SELF)));
+        // Non-owner publishes nothing for OWNER-gated events — the partition stays empty.
+        // (Membership DEPARTURES are LEADER-gated, not owner-gated — covered by the leader-gate tests below.)
+        assertThat(h.events()).isEmpty();
+    }
+
+    // --- leader-gated departure emit (#94: NODE_FAILED delivery for replacement deaths) ----------
+
+    /// Membership DEPARTURES route through {@link ClusterEventAggregator#emitAsLeader}, gated on
+    /// `leaderCheck` rather than `ownerCheck`. The just-removed node is frequently the cluster-events
+    /// partition owner, so owner-gating would suppress its own `NODE_FAILED`. The leader — never the
+    /// removed node for its own committed decision — MUST emit even when it is NOT the partition owner.
+    @Test
+    void leader_emitsDeparture_evenWhenNotOwner() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, LEADER);
         h.aggregator().onMembershipDecision(MembershipDecision.nodeRemoved(new NodeId("dead"), List.of(SELF)));
-        // Non-owner publishes nothing — the partition stays empty.
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.NodeFailed.class);
+        assertThat(events.getFirst().details()).containsEntry("nodeId", "dead");
+    }
+
+    /// The leader-gate is a real gate: a non-leader observer must NOT advertise a membership departure
+    /// (the leader owns that cluster-canonical statement), even when it IS the partition owner.
+    @Test
+    void nonLeader_suppressesDepartureEmit() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onMembershipDecision(MembershipDecision.nodeRemoved(new NodeId("dead"), List.of(SELF)));
         assertThat(h.events()).isEmpty();
     }
 

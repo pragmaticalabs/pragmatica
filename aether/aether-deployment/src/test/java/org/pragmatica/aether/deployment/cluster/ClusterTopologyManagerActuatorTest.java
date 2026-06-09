@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.MembershipView;
@@ -81,7 +82,7 @@ class ClusterTopologyManagerActuatorTest {
                                         timeSpan(60).seconds(),
                                         timeSpan(1).seconds(),
                                         List.of(INFO_SELF, INFO_A, INFO_B, INFO_C, INFO_D));
-        observer = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
+        observer = TopologyObserver.topologyObserver(config, quietRouter(), snapshotSource).unwrap();
         lifecycleManager = new RecordingLifecycleManager();
         clusterStore = new RecordingClusterStore();
         clusterStore.seed(5);
@@ -173,6 +174,12 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(ctm.isAutoHealEnabled()).isFalse();
         assertThat(ctm.setAutoHealEnabled(true, "test-enable")).isFalse();
         assertThat(ctm.isAutoHealEnabled()).isTrue();
+    }
+
+    private static MessageRouter.MutableRouter quietRouter() {
+        var router = MessageRouter.mutable();
+        router.addRoute(NetworkServiceMessage.ListConnectedNodes.class, _ -> {});
+        return router;
     }
 
     private static final class StubSnapshotSource implements GenerationSnapshotSource {

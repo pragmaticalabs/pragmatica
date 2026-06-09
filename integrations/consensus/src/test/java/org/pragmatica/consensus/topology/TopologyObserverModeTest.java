@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyObserver.TopologyMode;
 import org.pragmatica.lang.Option;
@@ -59,8 +60,14 @@ class TopologyObserverModeTest {
                                   List.of(INFO_SELF, INFO_A, INFO_B, INFO_C, INFO_D));
     }
 
+    private static MessageRouter.MutableRouter quietRouter() {
+        var router = MessageRouter.mutable();
+        router.addRoute(NetworkServiceMessage.ListConnectedNodes.class, _ -> {});
+        return router;
+    }
+
     private static TopologyObserver observerWith(TopologyConfig config, GenerationSnapshotSource source) {
-        return TopologyObserver.topologyObserver(config, MessageRouter.mutable(), source)
+        return TopologyObserver.topologyObserver(config, quietRouter(), source)
                                .unwrap();
     }
 
