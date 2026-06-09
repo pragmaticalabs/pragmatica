@@ -40,7 +40,12 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 
 
 public final class NodeLifecycleRoutes implements RouteSource {
-    private static final Cause LIFECYCLE_NOT_FOUND = Causes.cause("Node lifecycle not found");
+    /// 404 (not 500) when the target node has no reported lifecycle state. A plain `Causes.cause`
+    /// is not `HttpStatusAware`, so the management error funnel (`ProblemResponses.resolveStatus`)
+    /// defaults it to 500; wrapping in `HttpError.httpError(NOT_FOUND, ...)` makes the status
+    /// explicit — mirroring the readiness-503 pattern (`readinessUnavailableError`) in this file.
+    private static final Cause LIFECYCLE_NOT_FOUND = HttpError.httpError(HttpStatus.NOT_FOUND,
+                                                                         Causes.cause("Node lifecycle not found"));
 
     /// Display/audit label for the operator-initiated shutdown terminal state. `NodeReportedState`
     /// has no terminal value (a halting node simply stops reporting), so the shutdown route uses
