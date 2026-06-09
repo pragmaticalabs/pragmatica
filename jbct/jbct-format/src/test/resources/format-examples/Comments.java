@@ -43,7 +43,10 @@ public class Comments<T> {
     // Method with comment
     public void methodWithComment() {
         var x = 1;
-        if (x > 0) {process(x);}
+
+        if (x > 0) {
+            process(x);
+        }
     }
 
     /*

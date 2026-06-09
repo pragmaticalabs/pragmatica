@@ -196,30 +196,6 @@ final class FlowPrinter {
         alignment.restore(saved.alignment());
     }
 
-    /// True iff a single-statement block collapsed inline (`{ stmt }`) would render on a
-    /// single physical line. Used to keep inline-block collapse idempotent: a body that is
-    /// over-wide OR contains a force-broken method chain wraps when emitted inline, which
-    /// flips `isOnSingleSourceLine` next pass and re-expands the block. We decide by trial-
-    /// rendering the statement at the current column and checking for an emitted newline —
-    /// width alone underestimates, because chains break on structure, not just width.
-    ///
-    /// The trial mutates real render state (alignment scopes, cursor position, trivia
-    /// tracking), so we snapshot ALL of it up front and restore it afterwards. The
-    /// snapshot includes the alignment context so an unbalanced scope inside the trial
-    /// cannot corrupt subsequent layout.
-    private boolean inlineBlockFits(Cursor stmt) {
-        var saved = saveState();
-
-        output = new StringBuilder();
-        printNode(stmt);
-        emitBare("}");
-        boolean singleLine = currentColumn <= config.maxLineLength()
-                             && output.indexOf("\n") < 0;
-
-        restoreState(saved);
-        return singleLine;
-    }
-
     // ===== Node dispatch =====
 
     private void printNode(Cursor node) {
@@ -751,25 +727,6 @@ final class FlowPrinter {
         var stmts = childrenByRule(block, RuleKind.BLOCK_STMT);
 
         if (!stmts.isEmpty()) {
-            // Preserve source-line layout: if the entire Block sits on a single source
-            // line (e.g. `if (x) {return y;}`), keep it inline. This mirrors the legacy
-            // formatter's same-line brace detection. Don't collapse if the stmt carries a
-            // leading comment — that's a signal the dev wants spacing.
-            // Only collapse when the inline form actually fits on the line: an over-wide
-            // inner statement gets wrapped across lines when emitted inline, which flips
-            // `isOnSingleSourceLine` on the next pass and re-expands the block — a
-            // non-idempotent oscillation. If it won't fit, fall through to the expanded form.
-            if (!measuringMode
-                && !useLambdaAlign
-                && !useChainAlign
-                && isOnSingleSourceLine(block)
-                && stmts.size() == 1
-                && !hasLeadingComment(stmts.get(0))
-                && inlineBlockFits(stmts.get(0))) {
-                printNode(stmts.get(0));
-                emitBare("}");
-                return;
-            }
             newline();
             if (useLambdaAlign) {
                 printAlignedBlockStatements(stmts, lambdaAlignCol);
@@ -779,29 +736,13 @@ final class FlowPrinter {
                 printAlignedTo(chainAlignCol);
             } else {
                 indentLevel++;
-                // Lambda body blocks pack tight — no blank lines inserted between stmts.
-                boolean isLambdaBody = isInsideLambda(block);
+                // Blank-line rules, applied uniformly in regular and lambda bodies (only the
+                // base indent differs): R1 blank after a block-shaped stmt; R2 blank after a
+                // local-var-decl run before a non-var stmt; R3 blank before a return/throw. A
+                // single newline() is emitted, so overlapping rules coalesce to one blank.
                 for (int i = 0; i < stmts.size(); i++) {
                     var stmt = stmts.get(i);
-                    // Blank line before a final return/throw when the block has at least
-                    // one simple (non-block) prior statement AND that prior statement is
-                    // visually packed on a single source line. A method body of only an
-                    // `if`/`try`/`while` + `return` packs tight; multi-line text-block
-                    // assignments visually separate themselves and need no blank.
-                    // In lambda bodies: only add blank before return when body has 4+ stmts
-                    // (3+ prior + 1 return), treating it as a substantial function body.
-                    boolean lambdaBodyAllowsBlank = !isLambdaBody || stmts.size() >= 4;
-                    if (lambdaBodyAllowsBlank && i >= 1 && i == stmts.size() - 1 && isReturnOrThrowStmt(stmt) && !hasLeadingComment(stmt)
-                        && hasSimpleSingleLinePriorStmt(stmts, i)) {
-                        newline();
-                    }
-                    // Blank line around block-shaped stmts (if/try/while/...) when the
-                    // method body has 3+ stmts: a section boundary appears either when
-                    // moving from a non-block stmt to a block stmt OR from a block stmt
-                    // to a non-block stmt.
-                    else if (!isLambdaBody && i >= 1 && !hasLeadingComment(stmt)
-                             && stmts.size() >= 3
-                             && (isBlockShapedStmt(stmts.get(i - 1)) ^ isBlockShapedStmt(stmt))) {
+                    if (i >= 1 && !hasLeadingComment(stmt) && needsBlankBeforeStmt(stmts.get(i - 1), stmt)) {
                         newline();
                     }
                     if (!hasUnEmittedLeadingComment(stmt)) {
@@ -951,58 +892,22 @@ final class FlowPrinter {
         return false;
     }
 
-    /// True if `block` is the body of a lambda — i.e. it has a LAMBDA ancestor whose
-    /// closest enclosing BLOCK is this one. Walks parents up; stops at any BLOCK/METHOD_DECL
-    /// boundary except this block itself.
-    private static boolean isInsideLambda(Cursor.Branch block) {
-        var parent = block.parent().orElse(null);
-        while (parent != null) {
-            if (parent.kindIs(RuleKind.LAMBDA)) {
-                return true;
-            }
-            if (parent.kindIs(RuleKind.METHOD_DECL) || parent.kindIs(RuleKind.MEMBER)) {
-                return false;
-            }
-            parent = parent.parent().orElse(null);
-        }
-        return false;
+    /// Whether a blank line is required between `prev` and `cur` per the uniform rules:
+    /// R1 — blank after a block-shaped statement; R2 — blank after a local-variable-declaration
+    /// run, before a non-var statement; R3 — blank before a return/throw. Overlapping rules
+    /// coalesce because the caller emits a single newline.
+    private static boolean needsBlankBeforeStmt(Cursor prev, Cursor cur) {
+        return isBlockShapedStmt(prev)
+               || (isLocalVarDecl(prev) && !isLocalVarDecl(cur))
+               || isReturnOrThrowStmt(cur);
     }
 
-    /// True if any of the statements at index < returnIdx is a "simple" statement
-    /// (not a block-stmt — i.e. not `if`/`try`/`while`/`for`/`do`/`switch`/`synchronized`/`{ ... }`).
-    private static boolean hasSimplePriorStmt(List<Cursor> stmts, int returnIdx) {
-        for (int i = 0; i < returnIdx; i++) {
-            if (!isBlockShapedStmt(stmts.get(i))) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /// True if any simple prior stmt (non-block) sits on a single source line. Multi-line
-    /// simple stmts (e.g. `var x = """text block""";`) visually separate themselves and
-    /// don't require a blank line before the final return.
-    private boolean hasSimpleSingleLinePriorStmt(List<Cursor> stmts, int returnIdx) {
-        for (int i = 0; i < returnIdx; i++) {
-            var s = stmts.get(i);
-            if (isBlockShapedStmt(s)) continue;
-            // Keep the original Branch-only restriction; only the single-line test changed
-            // from a SOURCE-line check to the FORMATTED-layout check for idempotency.
-            if (s instanceof Cursor.Branch && rendersOnSingleLine(s)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /// True iff the statement would render on a single line at the current block indent.
-    /// This must reflect the FORMATTED layout, not the source layout: a method-chain
-    /// statement written across several source lines is reflowed onto one line when it
-    /// fits, so a source-`\n` check would flip the blank-before-return decision between
-    /// passes and break idempotency.
-    private boolean rendersOnSingleLine(Cursor stmt) {
-        int indentCol = indentLevel * config.indentSize();
-        return indentCol + measureWidth(stmt) <= config.maxLineLength();
+    /// True iff the statement is a local-variable declaration. In the v6 CST a var-decl
+    /// statement uniquely presents as a BLOCK_STMT whose direct child is a LOCAL_VAR (other
+    /// statements wrap an intermediate STMT or a leaf).
+    private static boolean isLocalVarDecl(Cursor stmt) {
+        return stmt instanceof Cursor.Branch br
+               && br.children().anyMatch(c -> c.kindIs(RuleKind.LOCAL_VAR) || c.kindIs(RuleKind.LOCAL_VAR_NO_SEMI));
     }
 
     /// True if a stmt is one of the block-shaped control-flow constructs.
@@ -1037,38 +942,18 @@ final class FlowPrinter {
         return false;
     }
 
-    /// True iff the entire token range of the node covers exactly one source line
-    /// (no '\n' in any token between the first and last non-trivia tokens, exclusive
-    /// of trailing trivia past the last non-trivia token — that trailing trivia is the
-    /// transition to the next sibling and shouldn't count).
-    private boolean isOnSingleSourceLine(Cursor.Branch node) {
-        var tokens = node.cst().tokens();
-        // Find the last non-trivia token index within the range.
-        int lastNonTrivia = -1;
-        for (int t = node.lastTokenIdx(); t >= node.firstTokenIdx(); t--) {
-            if (!tokens.isTrivia(t)) {
-                lastNonTrivia = t;
-                break;
-            }
-        }
-        if (lastNonTrivia < 0) {
-            return true;
-        }
-        for (int t = node.firstTokenIdx(); t <= lastNonTrivia; t++) {
-            if (tokens.textAt(t).toString().indexOf('\n') >= 0) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     private void printAlignedBlockStatements(List<Cursor> stmts, int alignCol) {
         int bodyCol = alignCol + config.indentSize();
         // Use forcedIndentCol so emitLeadingComments uses printAlignedTo(bodyCol)
         // instead of printIndent() (which uses indentLevel and may round incorrectly).
         int savedForcedIndent = forcedIndentCol;
         forcedIndentCol = bodyCol;
-        for (var stmt : stmts) {
+        for (int i = 0; i < stmts.size(); i++) {
+            var stmt = stmts.get(i);
+            // Same uniform blank-line rules as the non-aligned body path (R1/R2/R3).
+            if (i >= 1 && !hasLeadingComment(stmt) && needsBlankBeforeStmt(stmts.get(i - 1), stmt)) {
+                newline();
+            }
             // Skip printAlignedTo for stmts with leading comments: currentColumn is
             // already 0 from the preceding newline, so emitLeadingComments won't add
             // an extra blank line (it only newlines when currentColumn > 0).
@@ -1606,40 +1491,52 @@ final class FlowPrinter {
 
     private void printBrokenArgs(Cursor.Branch args) {
         int alignCol = currentColumn;
+        // A single argument at statement level (no enclosing broken method chain) has no commas
+        // to align, and its block-lambda body should indent from the statement, not the deep arg
+        // column (bug B3). Inside a broken chain the body aligns to the lambda parameter, so keep
+        // lambda-align there. Multi-argument calls always align.
+        if (childrenByRule(args, RuleKind.EXPR).size() < 2 && alignment.chainColumn() < 0) {
+            printBrokenArgsBody(args, alignCol);
+            return;
+        }
         try (var scope = alignment.pushLambdaAlign(alignCol)) {
-            walkTokensWith(args, new TokenWalker() {
-                @Override
-                public void onChild(Cursor child) {
-                    if (child.kindIs(RuleKind.EXPR)) {
-                        // If this single arg fits on its own line, render its inner
-                        // chains/expressions inline. The args layout already broke at
-                        // commas; an individual arg-expression should not force further
-                        // vertical breaks unless its own width demands it.
-                        int width = measureWidth(child);
-                        if (currentColumn + width <= config.maxLineLength()) {
-                            try (var inlineScope = alignment.enterInlineExpression()) {
-                                printNodeContent(child);
-                            }
-                        } else {
+            printBrokenArgsBody(args, alignCol);
+        }
+    }
+
+    private void printBrokenArgsBody(Cursor.Branch args, int alignCol) {
+        walkTokensWith(args, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) {
+                if (child.kindIs(RuleKind.EXPR)) {
+                    // If this single arg fits on its own line, render its inner
+                    // chains/expressions inline. The args layout already broke at
+                    // commas; an individual arg-expression should not force further
+                    // vertical breaks unless its own width demands it.
+                    int width = measureWidth(child);
+                    if (currentColumn + width <= config.maxLineLength()) {
+                        try (var inlineScope = alignment.enterInlineExpression()) {
                             printNodeContent(child);
                         }
                     } else {
-                        printNode(child);
+                        printNodeContent(child);
                     }
+                } else {
+                    printNode(child);
                 }
+            }
 
-                @Override
-                public void onToken(int kind, String text) {
-                    if (",".equals(text)) {
-                        emit(",");
-                        newline();
-                        printAlignedTo(alignCol);
-                    } else {
-                        emitToken(text);
-                    }
+            @Override
+            public void onToken(int kind, String text) {
+                if (",".equals(text)) {
+                    emit(",");
+                    newline();
+                    printAlignedTo(alignCol);
+                } else {
+                    emitToken(text);
                 }
-            });
-        }
+            }
+        });
     }
 
     // ===== Lambda =====
@@ -2404,6 +2301,11 @@ final class FlowPrinter {
     private boolean checkSpaceRules(String text, char firstChar) {
         // Comma rule
         if (lastChar == ',') {
+            return true;
+        }
+        // Semicolon separator in a `for` header. A statement-terminating `;` is followed by a
+        // newline (lastChar would be '\n'), so this only fires mid-line — between for-clauses.
+        if (lastChar == ';') {
             return true;
         }
         // Closing brace keyword

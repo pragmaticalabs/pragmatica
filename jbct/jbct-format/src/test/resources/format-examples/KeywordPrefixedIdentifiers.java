@@ -8,6 +8,7 @@ public class KeywordPrefixedIdentifiers {
 
     void test(State newState, State oldState) {
         var x = process(newState);
+
         if (oldState != newState) {
             switch (newState) {
                 case OPEN -> handle(newState);

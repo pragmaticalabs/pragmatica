@@ -19,6 +19,7 @@ public class FlowEdgeCases {
         if (x > 0) {
             return x;
         }
+
         return -x;
     }
 
@@ -32,6 +33,7 @@ public class FlowEdgeCases {
     // Pure side-effect method (no return/throw) — no trailing blank.
     void sideEffectOnly(String s) {
         var trimmed = s.trim();
+
         System.out.println(trimmed);
     }
 

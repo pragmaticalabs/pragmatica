@@ -76,4 +76,22 @@ class FlowContentPreservationTest {
         assertThat(twice).as("if-body formatting is idempotent").isEqualTo(once);
         assertThat(once).doesNotContain("                            if");  // no ~28-col over-indent
     }
+
+    @Test void singleLineIfBody_insideLambda_stableIndentation() {
+        // Bug 3 (B3/B4): a single-line `if` inside a lambda body over-indented (~28 cols) + split.
+        var src = "import java.util.Map;\n"
+                  + "class X {\n"
+                  + "    void f(Map<String, Integer> byAlias) {\n"
+                  + "        byAlias.forEach((alias, count) -> {\n"
+                  + "            if (count <= 1) {return;}\n"
+                  + "            process(alias);\n"
+                  + "        });\n"
+                  + "    }\n"
+                  + "    void process(String s) {}\n"
+                  + "}\n";
+        var once = format(src);
+        var twice = fmt.format(new SourceFile(Path.of("Test.java"), once)).unwrap().content();
+        assertThat(twice).as("lambda if-body formatting is idempotent").isEqualTo(once);
+        assertThat(once).doesNotContain("                            if");  // no ~28-col over-indent
+    }
 }

@@ -45,13 +45,28 @@ final class BlankLineRules {
         return true;
     }
 
-    /// A simple declaration: ends with semicolon, no block body, AND no annotation.
+    /// A simple declaration: ends with semicolon, no block body, AND no annotation. Examines the
+    /// member's non-trivia tokens (not `text()`, which bleeds trailing trivia such as a following
+    /// member's leading comment into this member and would otherwise hide the terminating `;`).
     private static boolean isSimpleNoBodyDeclaration(Cursor member) {
         if (hasAnnotationChild(member)) {
             return false;
         }
-        var trimmed = text(member).trim();
-        return trimmed.endsWith(";") && !trimmed.contains("{");
+        if (!(member instanceof Cursor.Branch br)) {
+            return false;
+        }
+        var tokens = br.cst().tokens();
+        int lastNonTrivia = -1;
+        for (int t = br.firstTokenIdx(); t <= br.lastTokenIdx(); t++) {
+            if (tokens.isTrivia(t)) {
+                continue;
+            }
+            if ("{".contentEquals(tokens.textAt(t))) {
+                return false;
+            }
+            lastNonTrivia = t;
+        }
+        return lastNonTrivia >= 0 && ";".contentEquals(tokens.textAt(lastNonTrivia));
     }
 
     /// True if any token's text contains a `\n` (text blocks, multi-line strings) OR if

@@ -51,6 +51,7 @@ public class MultilineArguments {
     Result<String> lambdaArg() {
         return input.map(value -> {
             var trimmed = value.trim();
+
             return trimmed.toUpperCase();
         });
     }
@@ -58,10 +59,12 @@ public class MultilineArguments {
     Result<String> multipleLambdaArgs() {
         return input.fold(cause -> {
                               logError(cause);
+
                               return defaultValue;
                           },
                           value -> {
                               log(value);
+
                               return value.toUpperCase();
                           });
     }

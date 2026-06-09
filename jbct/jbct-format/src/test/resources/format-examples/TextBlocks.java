@@ -41,6 +41,7 @@ public class TextBlocks {
                 WHERE active = true
                 ORDER BY created_at DESC
                 """.formatted(table);
+
         return query;
     }
 
