@@ -6,6 +6,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
+# Drain targets are selected dynamically (live READY non-leaders) in test_cluster_ready
+# and persisted here — run_test forks a subshell per function, so the selection cannot
+# live in memory. Hardcoding node-5/4/3 broke in the full destructive chain: an upstream
+# suite (02-chaos/12-network) terminal-removes those seeds and CTM replaces them with ULID
+# nodes, so the drain endpoint 404'd ("Node lifecycle not found") on names that were gone.
+DRAIN_NODES_FILE="${TMPDIR:-/tmp}/aether-13-drain-nodes-$$.txt"
+
 test_cluster_ready() {
     wait_for_cluster_ready 60
     # ClusterGeneration barrier: inherit-from-predecessor churn is committed to a stable
@@ -28,6 +35,19 @@ test_cluster_ready() {
         return 1
     fi
     log_pass "Initial: ${count} nodes (>= 3 quorum); CTM auto-heal disabled for duration of suite"
+
+    # Select 3 distinct LIVE READY non-leader nodes for the drain sequence and persist them
+    # (subshell-per-test). Robust to the destructive chain, where the original seed names may
+    # already be terminal-removed + replaced by ULID nodes. Mirrors the sibling
+    # test-stale-route-cleanup.sh, which discovers its target the same way.
+    local leader
+    leader=$(cluster_leader)
+    if ! pick_non_leader "$leader" 3 > "$DRAIN_NODES_FILE" \
+            || [ "$(grep -cve '^$' "$DRAIN_NODES_FILE" 2>/dev/null || echo 0)" -lt 3 ]; then
+        log_fail "Cluster ready: need 3 distinct live READY non-leader nodes for the drain sequence; got [$(tr '\n' ' ' < "$DRAIN_NODES_FILE" 2>/dev/null)]"
+        return 1
+    fi
+    log_pass "Drain targets selected (live READY non-leaders): $(tr '\n' ' ' < "$DRAIN_NODES_FILE")"
 }
 
 # Re-enable CTM auto-heal on any exit path (test pass, test fail, set -e abort).
@@ -35,18 +55,17 @@ test_cluster_ready() {
 # every downstream cluster B suite that relies on CTM provisioning replacements
 # after kill_node.
 _reactivate_auto_heal_trap() {
+    rm -f "$DRAIN_NODES_FILE"
     enable_auto_heal || log_warn "EXIT trap: enable_auto_heal returned non-zero — operator must manually re-enable via 'aether cluster topology auto-heal enable' or cluster will not self-heal"
 }
 trap _reactivate_auto_heal_trap EXIT
 
 test_drain_first_node_allowed() {
-    # node-5 is the friendly fixture id; to_node_id translates to the runtime form
-    # — `aether-b-node-5` on docker (NodeId == container_name) and
-    # `${CLOUD_SOURCE_NAME}-core-4` on cloud. The runtime stores NodeLifecycleKey
-    # under the actual node id, so the drain endpoint path parameter must use the
-    # translated form or it returns 500 (no such lifecycle).
+    # Drain target #1 of 3, selected in test_cluster_ready (live READY non-leaders,
+    # persisted to DRAIN_NODES_FILE). The runtime stores NodeLifecycleKey under the actual
+    # node id, so the drain endpoint path parameter must use it (a stale/gone name 404s).
     local node1
-    node1=$(to_node_id "node-5")
+    node1=$(sed -n '1p' "$DRAIN_NODES_FILE")
     log_info "Draining first node: ${node1}"
 
     # Diagnostic: surface auto-heal state and current ON_DUTY count so a 503
@@ -82,7 +101,7 @@ test_drain_first_node_allowed() {
 
 test_drain_second_node_allowed() {
     local node2
-    node2=$(to_node_id "node-4")
+    node2=$(sed -n '2p' "$DRAIN_NODES_FILE")
     log_info "Draining second node: ${node2}"
     local status
     status=$(http_status "${CLUSTER_ENDPOINT}/api/nodes/drain/${node2}" -X POST -H "X-API-Key: ${API_KEY}")
@@ -103,7 +122,7 @@ test_drain_second_node_allowed() {
 
 test_drain_beyond_budget_rejected() {
     local node3
-    node3=$(to_node_id "node-3")
+    node3=$(sed -n '3p' "$DRAIN_NODES_FILE")
     log_info "Attempting to drain third node: ${node3}"
     # Capture status AND body so a non-409 surface includes a debuggable payload —
     # http_status_with_body warns and prints the body to the log when the response
