@@ -180,8 +180,8 @@ class CoreSwimHealthDetectorHintEmissionTest {
         @Test
         void onNodeConnected_promotesMembershipWithoutSinkHint() {
             // Two-plane liveness (commit e69f57a4b): in Running, a real QUIC connection no
-            // longer routes HEALTHY through the detector sink. PeerConnected promotes membership
-            // inside SwimProtocol (markAliveFromTransport / addSeedMember, tombstone-gated) and
+            // longer routes HEALTHY through the detector sink. PeerConnected acquires membership
+            // inside SwimProtocol (addSeedMember for an unknown peer, tombstone-gated) and
             // HEALTHY flows via SwimProtocol.recordHealthyAndEmit → the SwimObservation stream,
             // NOT ctx.reportHint. The detector sink therefore stays empty on connect; the
             // observable contract is that the peer becomes a tracked SWIM member.

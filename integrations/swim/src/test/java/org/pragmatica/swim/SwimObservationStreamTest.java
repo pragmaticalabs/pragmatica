@@ -204,7 +204,7 @@ class SwimObservationStreamTest {
         }
 
         @Test
-        void transportHint_reachable_acceleratesRecovery() {
+        void transportHint_reachable_isNoOp_swimRemainsAuthoritative() {
             // Bring NODE_A to HEALTHY then to SUSPECT
             var aliveUpdate = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
@@ -217,8 +217,8 @@ class SwimObservationStreamTest {
                 .as("NODE_A should have a recorded suspect timestamp after SUSPECT transition")
                 .isTrue();
 
-            // Apply reachable hint while peer is in SUSPECT — should backdate the suspect
-            // timestamp so the next tick re-evaluates within the floor window.
+            // PeerReachable is a NO-OP: transport may report death, never life. SWIM probe-ack
+            // is the sole recovery path, so the suspect window must be untouched.
             protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
 
             var postReachableTs = protocol.suspectTimestampForTest(NODE_A);
@@ -226,8 +226,11 @@ class SwimObservationStreamTest {
             long preTs = preReachableTs.fold(() -> 0L, l -> l);
             long postTs = postReachableTs.fold(() -> Long.MAX_VALUE, l -> l);
             assertThat(postTs)
-                .as("Reachable hint must backdate the SUSPECT timestamp to accelerate evaluation")
-                .isLessThan(preTs);
+                .as("PeerReachable no longer touches the suspect window — SWIM probe-ack is the sole recovery path")
+                .isEqualTo(preTs);
+            assertThat(protocol.members().get(NODE_A).state())
+                .as("PeerReachable must leave the member SUSPECT — SWIM gossip/probe is authoritative")
+                .isEqualTo(MemberState.SUSPECT);
         }
     }
 

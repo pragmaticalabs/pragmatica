@@ -536,53 +536,6 @@ class SwimProtocolTombstoneTest {
             .isEqualTo(MemberState.ALIVE);
     }
 
-    // -- markAliveFromTransport (#34 cold-start formation): transport-plane liveness --
-    //
-    // A completed QUIC channel to a KNOWN member is reachability proof. markAliveFromTransport
-    // promotes a never-tombstoned member to ALIVE (closing the startupDelay≈suspectTimeout
-    // race) but is refused for a proven-healthy-then-FAULTY tombstoned id (#231).
-
-    @Test
-    void markAliveFromTransport_suspectNonTombstonedMember_promotesToAlive() {
-        // NODE_A enters as SUSPECT via gossip, NEVER observed HEALTHY => not tombstoned.
-        var suspectA = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
-        protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectA)));
-        assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.SUSPECT);
-        assertThat(protocol.everSeenHealthyForTest(NODE_A)).isFalse();
-        assertThat(protocol.tombstonedForTest(NODE_A)).isFalse();
-        observations.all.clear();
-
-        // Transport-plane liveness proof (completed QUIC channel) promotes it ALIVE.
-        protocol.markAliveFromTransport(NODE_A);
-
-        assertThat(protocol.members().get(NODE_A).state())
-            .as("A completed QUIC channel must promote a never-tombstoned SUSPECT member to ALIVE")
-            .isEqualTo(MemberState.ALIVE);
-        assertThat(observations.byType(SwimObservation.HealthyObserved.class))
-            .as("markAliveFromTransport must emit HealthyObserved for the promoted member")
-            .isNotEmpty();
-    }
-
-    @Test
-    void markAliveFromTransport_provenHealthyThenFaultyTombstoned_refusesPromotion() {
-        driveProvenHealthyToFaultyResident();
-        observations.all.clear();
-
-        // Transport-plane liveness proof for a tombstoned (proven-healthy-then-dead) id:
-        // the tombstone gate must refuse the flip — no resurrection off a stale/reopened channel.
-        protocol.markAliveFromTransport(NODE_A);
-
-        assertThat(protocol.members().get(NODE_A).state())
-            .as("Tombstoned proven-healthy id must NOT be promoted to ALIVE off transport liveness")
-            .isEqualTo(MemberState.FAULTY);
-        assertThat(protocol.tombstonedForTest(NODE_A))
-            .as("Tombstone must survive a refused transport promotion")
-            .isTrue();
-        assertThat(observations.byType(SwimObservation.HealthyObserved.class))
-            .as("No HealthyObserved may be emitted for a refused transport promotion")
-            .isEmpty();
-    }
-
     // -- Test infrastructure --
 
     static class RecordingTransport implements SwimTransport {

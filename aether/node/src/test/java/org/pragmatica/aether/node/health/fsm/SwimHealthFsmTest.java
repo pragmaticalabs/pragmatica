@@ -318,12 +318,12 @@ class SwimHealthFsmTest {
         }
 
         @Test
-        void peerConnected_inRunning_promotesMembershipToHealthy() {
-            // Formation safety, two-plane liveness (commit e69f57a4b): a REAL connection
-            // (PeerConnected) for a KNOWN member promotes it ALIVE via
-            // SwimProtocol.markAliveFromTransport (tombstone-gated). It ALSO emits a HEALTHY hint
-            // to the detector sink, clearing any stale SUSPECTED/FAULTY entry the leader's
-            // SwimHintsRegistry still holds for the recovered peer (symmetry with Stopped/Starting).
+        void peerConnected_inRunning_emitsHealthyHint_butDoesNotPromoteMembership() {
+            // Death-ward-only layering: a completed QUIC channel (PeerConnected) for a KNOWN
+            // member must NOT promote SWIM membership. SWIM membership goes ALIVE exclusively via
+            // a probe-ack — transport may report death, never life. PeerConnected only emits a
+            // HEALTHY hint to the detector sink, clearing any stale SUSPECTED/FAULTY entry the
+            // leader's SwimHintsRegistry still holds (leader-side hint hygiene, not promotion).
             buildHarness(false);
             harness.dispatch(new SwimHealthEvents.StartRequested());
             var swim = swimWithSeeds(PEER_A);
@@ -335,10 +335,10 @@ class SwimHealthFsmTest {
             harness.dispatch(new SwimHealthEvents.PeerConnected(PEER_A, Option.none()));
 
             assertThat(swim.healthOf(PEER_A))
-                .as("PeerConnected (real reachability) promotes a known member to HEALTHY in SWIM membership — formation depends on it")
-                .isEqualTo(SwimHealth.HEALTHY);
+                .as("PeerConnected must NOT promote a known member's SWIM membership to HEALTHY — SWIM probe-ack is the sole recovery authority")
+                .isNotEqualTo(SwimHealth.HEALTHY);
             assertThat(hintsFor(PEER_A))
-                .as("PeerConnected for a known member also emits a HEALTHY hint to clear stale suspicion")
+                .as("PeerConnected for a known member emits a HEALTHY hint to clear stale leader-side suspicion")
                 .contains(org.pragmatica.aether.slice.generation.HealthHint.HEALTHY);
         }
 

@@ -188,9 +188,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// emission (P5 idempotent edge transitions): same-state re-entries do NOT
     /// produce a new observation.
     private final Map<NodeId, SwimHealth> lastEmittedHealth = new ConcurrentHashMap<>();
-    /// Per-peer transport-hint state. PeerUnreachable shortens the suspect
-    /// window for the peer toward [`#TRANSPORT_HINT_SUSPECT_FLOOR_MS`];
-    /// PeerReachable removes the bias.
+    /// Per-peer transport-hint state. `PeerUnreachable` biases the suspect
+    /// window for the peer toward the [`#TRANSPORT_HINT_SUSPECT_FLOOR_MS`] floor;
+    /// `PeerReachable` is ignored — SWIM gossip/probe state is the sole authority
+    /// on liveness/recovery. Transport may report death, never life.
     private final Map<NodeId, TransportHintState> transportHints = new ConcurrentHashMap<>();
     private final List<Consumer<SwimObservation>> observationListeners = new CopyOnWriteArrayList<>();
     /// Cluster-wide `TransportObservation` emitters. SWIM-internal `SwimObservation`
@@ -375,18 +376,18 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     /// Record a transport-level hint from Layer 0 (QUIC). Advisory only —
-    /// SWIM remains authoritative. `PeerUnreachable` biases this peer's
-    /// suspect-window timer toward the [`#TRANSPORT_HINT_SUSPECT_FLOOR_MS`]
-    /// floor; `PeerReachable` removes the bias.
-    /// SWIM never blindly adopts QUIC's verdict — its own gossip-aggregated
-    /// state remains the source of truth.
+    /// SWIM remains authoritative and is the sole authority on liveness/recovery.
+    /// `PeerUnreachable` biases this peer's suspect-window timer toward the
+    /// [`#TRANSPORT_HINT_SUSPECT_FLOOR_MS`] floor; `PeerReachable` is ignored —
+    /// SWIM gossip/probe-ack state is the sole authority on liveness and recovery.
+    /// Transport may report death, never life.
     @Contract public void recordTransportHint(NodeId peer, TransportObservation hint) {
         if (selfId.equals(peer)) {
             return;
         }
 
         switch (hint) {
-            case TransportObservation.PeerReachable _ -> applyReachableHint(peer);
+            case TransportObservation.PeerReachable _ -> { /* no-op: SWIM probe-ack is the sole recovery authority; transport may report death, never life */ }
             case TransportObservation.PeerUnreachable _ -> applyUnreachableHint(peer);
         }
     }
@@ -395,39 +396,6 @@ public final class SwimProtocol implements SwimMessageHandler {
         transportHints.put(peer, new TransportHintState(true, System.currentTimeMillis()));
         LOG.debug("SWIM transport hint: peer {} reported unreachable; suspect window biased to {}ms floor",
                   peer.id(), TRANSPORT_HINT_SUSPECT_FLOOR_MS);
-    }
-
-    private void applyReachableHint(NodeId peer) {
-        transportHints.put(peer, new TransportHintState(false, System.currentTimeMillis()));
-        // Accelerate exit-from-SUSPECT if the peer is currently SUSPECT and the
-        // bias would expire its suspect window earlier than the default.
-        // SWIM remains authoritative: this only nudges timers, never overrides
-        // gossip state directly.
-        option(members.get(peer))
-            .filter(m -> m.state() == MemberState.SUSPECT)
-            .onPresent(_ -> shortenSuspectExpiry(peer));
-        LOG.debug("SWIM transport hint: peer {} reported reachable; bias removed", peer.id());
-    }
-
-    private void shortenSuspectExpiry(NodeId peer) {
-        // Backdate the suspect timestamp so the next tick re-evaluates within
-        // the floor window. Authoritative state is unchanged — only the timer
-        // shifts forward (i.e., timestamp moves earlier in time).
-        option(suspectTimestamps.get(peer)).onPresent(ts -> shortenSuspectExpiryWith(peer, ts));
-    }
-
-    private void shortenSuspectExpiryWith(NodeId peer, long ts) {
-        var defaultMs = config.suspectTimeout().millis();
-        if (defaultMs <= TRANSPORT_HINT_SUSPECT_FLOOR_MS) {
-            return;
-        }
-        // Apparent age becomes (default - floor); only `floor` ms remain before
-        // the next expiry check. Only backdate (never push timestamp forward).
-        var biasedTs = System.currentTimeMillis() - (defaultMs - TRANSPORT_HINT_SUSPECT_FLOOR_MS);
-        if (biasedTs >= ts) {
-            return;
-        }
-        suspectTimestamps.put(peer, biasedTs);
     }
 
     private SwimHealth classify(NodeId peer, SwimMember member) {
@@ -1034,28 +1002,6 @@ public final class SwimProtocol implements SwimMessageHandler {
         transport.send(target.address(), ping);
     }
 
-    /// Transport-plane liveness promotion for a KNOWN member, driven by a completed QUIC
-    /// connection (`PeerConnected`).
-    ///
-    /// (a) Cold-start formation race: a follower completes its QUIC Hello (consensus-ACTIVE)
-    /// in ~1s, but the first SWIM probe only fires after `startupDelay` (≈ the suspect
-    /// timeout). The seeded member's SUSPECT window can therefore expire SUSPECT→FAULTY
-    /// before any probe-ack arrives, evicting a node that is provably reachable.
-    ///
-    /// (b) A completed QUIC channel to a known member IS transport-plane reachability proof.
-    /// Promoting it ALIVE resets the suspect window so it survives until the first probe-ack.
-    ///
-    /// (c) Tombstone-gated (#231): `markAliveIfNeeded` refuses promotion of a
-    /// proven-healthy-then-silently-dead id (tombstoned), so a black-holed peer is NOT
-    /// resurrected off a stale/reopened channel. Only never-tombstoned members
-    /// (cold-start seeds / live-flapping) are promoted — the tombstone is the discriminator.
-    ///
-    /// (d) This is the dual of two-plane death confirmation: the transport plane confirms
-    /// life here just as it confirms death elsewhere.
-    @Contract public void markAliveFromTransport(NodeId nodeId) {
-        markAliveIfNeeded(nodeId);
-    }
-
     /// Bump incarnation when marking alive via Ack — prevents stale SUSPECT piggyback from overriding.
     ///
     /// Tombstone gate (#231): an Ack relayed for a FAULTY-resident tombstoned id is NOT
@@ -1268,6 +1214,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// so future FAULTY transitions are no longer cold-boot suppressed.
     private void recordHealthyAndEmit(NodeId peer, long incarnation) {
         everSeenHealthy.add(peer);
+        // SWIM's own healthy evidence supersedes any stale transport unreachable-bias.
+        transportHints.remove(peer);
         emitObservationOnEdge(peer, SwimHealth.HEALTHY, () -> new SwimObservation.HealthyObserved(peer, incarnation));
     }
 

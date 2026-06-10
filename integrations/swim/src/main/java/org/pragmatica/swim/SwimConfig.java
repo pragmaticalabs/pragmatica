@@ -63,13 +63,13 @@ public record SwimConfig(TimeSpan period,
     /// SLO without inviting false-positive FAULTY transitions under transient
     /// packet loss (the chain still requires a successful indirect-probe round
     /// to fail before SUSPECT is entered).
-    /// Default join-grace window. `period`=1s, the leader's round-robin probe cycle reaches
-    /// a freshly-joined member within a few periods; the observed premature FAULTY-eviction
-    /// of an unconfirmed CTM replacement fires at ~3.7s. 5s comfortably exceeds that ~3.7s
-    /// AND covers ~5 probe periods so the leader can reach + confirm the new member, while
-    /// keeping a genuinely-dead just-joined node detected only `joinGrace` later (its FAULTY
-    /// + tombstone is merely deferred by this window, not skipped).
-    public static final TimeSpan DEFAULT_JOIN_GRACE = timeSpan(5).seconds();
+    /// Default join-grace window. Must exceed `startupDelay` (10s) by ~2 probe periods
+    /// (`period`=1s) so the SUSPECT→FAULTY join-grace defer in `expireSuspectIfOverdue` is
+    /// the SOLE sufficient guard against premature eviction of a freshly-joined-but-not-yet-
+    /// probed reachable member — now that transport no longer promotes liveness (SWIM probe-ack
+    /// is the sole recovery authority). Cost: a genuinely dead-on-arrival joiner is detected
+    /// `joinGrace` later (its FAULTY is merely deferred by this window, never skipped).
+    public static final TimeSpan DEFAULT_JOIN_GRACE = timeSpan(12).seconds();
 
     public static final SwimConfig DEFAULT = swimConfig(
         timeSpan(1).seconds(),

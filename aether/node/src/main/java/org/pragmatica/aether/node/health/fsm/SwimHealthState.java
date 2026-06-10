@@ -145,18 +145,15 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         }
 
         private void handlePeerConnected(PeerConnected event) {
-            // A completed QUIC channel IS transport-plane liveness proof. For a KNOWN SWIM
-            // member we promote it ALIVE via `markAliveFromTransport`, which is tombstone-gated
-            // inside SwimProtocol: only a proven-healthy-then-silently-dead ("black-holed")
-            // id is refused (#231 — not resurrected off a stale/reopened channel). A
-            // never-tombstoned member (cold-start seed / live flap) is promoted so its SUSPECT
-            // window survives until the first probe-ack — closing the formation race where
-            // startupDelay ≈ suspectTimeout would otherwise evict a reachable follower.
+            // A completed QUIC channel is NOT membership-liveness proof. SWIM membership goes
+            // ALIVE exclusively via a probe-ack — transport may report death, never life. For a
+            // KNOWN SWIM member we only emit a HEALTHY hint to clear any stale leader-side
+            // suspicion; the member's SWIM state is left to SWIM's own probe.
             // A GENUINELY-UNKNOWN peer is re-added so it can be probed.
             var peer = event.peer();
 
             if (swim.members().containsKey(peer)) {
-                promoteKnownMember(peer);
+                clearStaleHintForKnownMember(peer);
 
                 return;
             }
@@ -164,19 +161,16 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
             event.info().onPresent(info -> addSeedAndLog(peer, addressOf(info))).onEmpty(() -> readdUnknownFromTopology(peer));
         }
 
-        private void promoteKnownMember(NodeId peer) {
-            // Transport-plane liveness proof for a CURRENT SWIM member (this branch is reached
-            // only when `swim.members().containsKey(peer)` — a tombstoned/removed dead node
-            // cannot reach here; it falls to the addSeedAndLog/readdUnknownFromTopology branch,
-            // which is tombstone-gated). markAliveFromTransport promotes membership ALIVE.
-            // We ALSO emit a HEALTHY hint to clear any stale SUSPECTED/FAULTY entry the leader's
-            // SwimHintsRegistry still holds for this recovered peer (restoring symmetry with the
-            // Stopped/Starting states, which both report HEALTHY on PeerConnected). Without this,
-            // a transient SWIM-SUSPECT during kill turbulence would keep the generation projector
-            // DEGRADED until the hint's TTL expires, even after the peer demonstrably recovered.
-            swim.markAliveFromTransport(peer);
+        private void clearStaleHintForKnownMember(NodeId peer) {
+            // A completed QUIC channel is NOT membership-liveness proof. SWIM membership goes
+            // ALIVE exclusively via a probe-ack. For a KNOWN member we only emit a HEALTHY hint
+            // to clear any stale SUSPECTED/FAULTY entry the leader's SwimHintsRegistry still holds
+            // for this peer — leader-side hint hygiene, NOT membership promotion. The member's
+            // SWIM state is left to SWIM's own probe. Without this hint, a transient SWIM-SUSPECT
+            // during kill turbulence would keep the generation projector DEGRADED until the hint's
+            // TTL expires, even after the peer demonstrably recovered.
             ctx.reportHint(peer, HealthHint.HEALTHY);
-            LOG.debug("PeerConnected for known SWIM member {} — transport liveness proof, markAliveFromTransport (tombstone-gated) + HEALTHY hint clears stale suspicion",
+            LOG.debug("PeerConnected for known SWIM member {} — HEALTHY hint clears stale leader-side suspicion (membership left to SWIM probe)",
                       peer.id());
         }
 
