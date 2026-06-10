@@ -253,6 +253,23 @@ public final class PeerState {
         return option(evicted);
     }
 
+    /// Transitions CONNECTING → EVICTED for a dial that neither completed nor failed (a hung
+    /// `client.connect(...)` that never invoked `completePeerConnection` nor `onConnectFailed`).
+    /// Without this, such a peer is pinned in CONNECTING forever and the reconciler's in-flight
+    /// dedup (`considerPeerForReconcile`'s `CONNECTING → return`) silently skips it on every tick,
+    /// so it is never re-dialed and never counted as CONNECTED. Returns `true` only on a real
+    /// CONNECTING → EVICTED transition so the caller emits diagnostics / re-dials exactly once.
+    /// No-op (returns `false`) from any other phase — distinct from [#evict], which only handles
+    /// the CONNECTED → EVICTED stale-link path. EVICTED is dial-eligible via [#beginConnecting].
+    public synchronized boolean evictStaleConnecting(long nowNanos) {
+        if (phase != Phase.CONNECTING) {
+            return false;
+        }
+        this.connection = null;
+        changePhase(Phase.EVICTED, nowNanos);
+        return true;
+    }
+
     /// Authoritative removal — any → REMOVED. Caller owns contract that this peer is truly gone
     /// (`departurePermanent`: co-confirmed-death verdict / DECOMMISSIONED / SWIM DepartedObserved,
     /// shutdown). Clears offline buffer and drops any held connection. Returns the dropped

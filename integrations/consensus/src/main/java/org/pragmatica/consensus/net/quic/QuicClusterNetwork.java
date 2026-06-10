@@ -163,6 +163,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private static final TimeSpan RECONCILE_TICK = TimeSpan.timeSpan(5L).seconds();
     private static final long RECONCILE_BACKOFF_INITIAL_MS = 5_000L;
     private static final long RECONCILE_BACKOFF_CAP_MS = 60_000L;
+    /// Multiple of the QUIC hello/handshake timeout after which a peer pinned in CONNECTING is
+    /// treated as a hung dial and force-evicted by the reconciler so a fresh re-dial can proceed.
+    /// A dial that neither completes (`onPeerConnected`) nor fails (`onConnectFailed`) — e.g. a
+    /// `client.connect(...)` that hangs with no resolution — otherwise wedges the peer in
+    /// CONNECTING forever, and the in-flight dedup guard in `considerPeerForReconcile` /
+    /// `considerDesiredPeerForReconcile` silently skips it on every tick. The `* 3` factor matches
+    /// the protection-window precedent in `disconnect` (`helloTimeout().nanos() * 3`): wide enough
+    /// that a legitimately-slow handshake under load is NOT aborted, tight enough that a hung dial
+    /// clears within a few reconciler ticks.
+    private static final long CONNECTING_STALENESS_HELLO_TIMEOUT_FACTOR = 3L;
     private final CancellableTask reconcilerTask = CancellableTask.cancellableTask();
 
     private volatile QuicDisconnectListener disconnectListener;
@@ -511,7 +521,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // link is still up — otherwise a peer pruned by SWIM but with a still-alive
         // (zombie) QUIC connection would stay in coreNodes forever.
         if (peer != null && peer.phase() == PeerState.Phase.CONNECTED) {
-            var protectionNanos = topologyManager.helloTimeout().nanos() * 3;
+            var protectionNanos = topologyManager.helloTimeout().nanos() * CONNECTING_STALENESS_HELLO_TIMEOUT_FACTOR;
             if (peer.phaseAgeNanos(System.nanoTime()) < protectionNanos) {
                 log.debug("DisconnectNode for {} ignored: connection is fresh (protection window)", nodeId);
                 return;
@@ -784,18 +794,35 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // it defaults to peer.address() for non-SWIM-discovered peers, so behavior is unchanged
         // there. peer.address() remains the identity/reporting address everywhere below.
         var address = new InetSocketAddress(peer.resolvedAddress().host(), peer.resolvedAddress().port());
+        // Per-dial timeout escape hatch (root cause): a `client.connect(...)` that hangs with no
+        // success/failure callback would otherwise pin the peer in CONNECTING forever. Arm a
+        // timeout sized at `helloTimeout * CONNECTING_STALENESS_HELLO_TIMEOUT_FACTOR` so a hung
+        // dial deterministically fails and routes to `onConnectFailed` (which flips
+        // CONNECTING → EVICTED), instead of relying solely on the reconciler staleness sweep.
         client.connect(peerId, address)
+              .timeout(connectTimeout())
               .onSuccess(conn -> onPeerConnected(conn, peer.role(), peer.address(), peer.labels()))
               .onFailure(cause -> onConnectFailed(peer, cause));
+    }
+
+    /// Per-dial connect timeout: a safe multiple of the QUIC hello/handshake timeout (same factor
+    /// as the reconciler CONNECTING-staleness window), so a legitimately-slow handshake under load
+    /// is not aborted while a genuinely hung dial still resolves to failure deterministically.
+    private TimeSpan connectTimeout() {
+        return TimeSpan.timeSpan(topologyManager.helloTimeout().nanos() * CONNECTING_STALENESS_HELLO_TIMEOUT_FACTOR)
+                       .nanos();
     }
 
     private void onConnectFailed(NodeInfo peer, Cause cause) {
         quicMetrics.onHandshakeFailure();
         log.warn("Failed to connect from {} to {}: {}", self, peer, cause.message());
-        // Reset phase to EVICTED so a subsequent retry (via topology reconciler) can re-enter CONNECTING.
+        // Reset phase to EVICTED so a subsequent retry (via topology reconciler) can re-enter
+        // CONNECTING. The dial failed from CONNECTING, so use `evictStaleConnecting`
+        // (CONNECTING → EVICTED); the plain `evict()` only handles CONNECTED → EVICTED and would
+        // be a silent no-op here, re-wedging the peer in CONNECTING.
         var state = peers.get(peer.id());
         if (state != null && state.phase() == PeerState.Phase.CONNECTING) {
-            state.evict(System.nanoTime());
+            var _ = state.evictStaleConnecting(System.nanoTime());
         }
         router.route(new NetworkServiceMessage.ConnectionFailed(
             peer.id(), ConnectionError.networkError(peer.address().asString(), cause.message())));
@@ -1403,6 +1430,31 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return firstMissed != null && (nowMs - firstMissed) >= RECONCILE_BACKOFF_CAP_MS;
     }
 
+    /// Staleness escape hatch for the in-flight-dial dedup guard. A peer is normally skipped while
+    /// CONNECTING (a dial is genuinely in flight). But a `client.connect(...)` that hangs with no
+    /// success/failure callback wedges the peer in CONNECTING forever, and the dedup short-circuit
+    /// then silently skips it on every tick. When the peer has been CONNECTING longer than
+    /// `helloTimeout * CONNECTING_STALENESS_HELLO_TIMEOUT_FACTOR`, treat the in-flight dial as dead:
+    /// force CONNECTING → EVICTED so a fresh re-dial proceeds THIS tick. Returns `true` only on a
+    /// real eviction (i.e. the caller should fall through and re-dial); `false` means the dial is
+    /// still within the protection window (genuinely in flight) and the dedup guard must hold.
+    private boolean evictStaleConnecting(NodeId peerId, PeerState state) {
+        var stalenessNanos = topologyManager.helloTimeout().nanos() * CONNECTING_STALENESS_HELLO_TIMEOUT_FACTOR;
+        if (state.phaseAgeNanos(System.nanoTime()) < stalenessNanos) {
+            return false;
+        }
+        if (!state.evictStaleConnecting(System.nanoTime())) {
+            return false;
+        }
+        log.warn("Missing-peer reconciler: peer {} pinned in CONNECTING beyond staleness window ({}ms) — "
+                 + "force-evicting hung dial for re-dial", peerId, stalenessNanos / 1_000_000L);
+        var clientRef = client;
+        if (clientRef != null) {
+            clientRef.closeDatagramChannel(peerId);
+        }
+        return true;
+    }
+
     private void considerPeerForReconcile(NodeId peerId, long nowMs) {
         var existing = peers.get(peerId);
         // CONNECTING means a dial is already in flight — the reconciler must NOT fire (see commit
@@ -1411,7 +1463,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (existing != null) {
             var phase = existing.phase();
             if (phase == PeerState.Phase.CONNECTING) {
-                return;
+                if (!evictStaleConnecting(peerId, existing)) {
+                    return;
+                }
+                // Hung dial force-evicted (CONNECTING → EVICTED): fall through so a fresh
+                // re-dial is dispatched THIS tick instead of waiting another tick.
             }
             if (phase == PeerState.Phase.REMOVED) {
                 // Incarnation-gated resurrection: a REMOVED peer that SWIM has RE-ADMITTED to the
@@ -1463,7 +1519,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (existing != null) {
             var phase = existing.phase();
             if (phase == PeerState.Phase.CONNECTING) {
-                return;
+                if (!evictStaleConnecting(peerId, existing)) {
+                    return;
+                }
+                // Hung dial force-evicted (CONNECTING → EVICTED): fall through so a fresh
+                // re-dial is dispatched THIS tick instead of waiting another tick.
             }
             if (phase == PeerState.Phase.REMOVED) {
                 if (existing.readmit(System.nanoTime())) {

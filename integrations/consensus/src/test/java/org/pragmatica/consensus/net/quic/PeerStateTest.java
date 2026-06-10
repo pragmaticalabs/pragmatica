@@ -373,4 +373,58 @@ class PeerStateTest {
         s.beginConnecting(T0 + 1_000);
         assertThat(s.phaseAgeNanos(T0 + 1_200)).isEqualTo(200L);
     }
+
+    @Test
+    void evictStaleConnecting_fromCONNECTING_transitions_to_EVICTED_returnsTrue() {
+        // A hung dial: beginConnecting moved the peer to CONNECTING but neither attach nor a
+        // connect-failure ever resolved it. evictStaleConnecting must break the wedge so the
+        // reconciler can re-dial (EVICTED is dial-eligible via beginConnecting).
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        assertThat(s.phase()).isEqualTo(Phase.CONNECTING);
+
+        assertThat(s.evictStaleConnecting(T0 + 2))
+            .as("a CONNECTING peer must be force-evictable to clear a hung dial")
+            .isTrue();
+        assertThat(s.phase()).isEqualTo(Phase.EVICTED);
+        assertThat(s.activeConnection().isEmpty()).isTrue();
+    }
+
+    @Test
+    void evictStaleConnecting_afterEviction_peerIsDialEligibleAgain() {
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        s.evictStaleConnecting(T0 + 2);
+
+        assertThat(s.beginConnecting(T0 + 3))
+            .as("after force-evicting a hung dial, the peer can re-enter CONNECTING")
+            .isTrue();
+        assertThat(s.phase()).isEqualTo(Phase.CONNECTING);
+    }
+
+    @Test
+    void evictStaleConnecting_fromINIT_isNoop_returnsFalse() {
+        var s = state();
+        assertThat(s.evictStaleConnecting(T0 + 1)).isFalse();
+        assertThat(s.phase()).isEqualTo(Phase.INIT);
+    }
+
+    @Test
+    void evictStaleConnecting_fromCONNECTED_isNoop_returnsFalse() {
+        // Distinct from evict(): the CONNECTED → EVICTED stale-link path is evict()'s job, not this.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        s.attach(liveConnection(), T0 + 2);
+        assertThat(s.evictStaleConnecting(T0 + 3)).isFalse();
+        assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
+        assertThat(s.activeConnection().isPresent()).isTrue();
+    }
+
+    @Test
+    void evictStaleConnecting_fromREMOVED_isNoop_returnsFalse() {
+        var s = state();
+        s.authoritativeRemove(T0 + 1);
+        assertThat(s.evictStaleConnecting(T0 + 2)).isFalse();
+        assertThat(s.phase()).isEqualTo(Phase.REMOVED);
+    }
 }
