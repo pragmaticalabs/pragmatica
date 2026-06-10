@@ -220,6 +220,54 @@ class UserDataTemplateTest {
     }
 
     @Test
+    void render_coreRole_stampsRoleLabelAndAetherRoleEnv() {
+        // Wave 2 / W4 (cluster-topology-overhaul spec): the node's INTENDED role is threaded
+        // explicitly — the aether-role label and the AETHER_ROLE env are sourced from the role
+        // param, never hardcoded to core nor inherited from the bootstrapping host's env.
+        var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var script = UserDataTemplate.render(config,
+                                             source,
+                                             NodeRole.CORE,
+                                             "node-1",
+                                             0,
+                                             "secret",
+                                             "prod-cluster",
+                                             TomlDocument.EMPTY);
+
+        assertTrue(script.contains("-l aether-role=core"),
+                   "container label must carry the threaded role");
+        assertTrue(script.contains("-e AETHER_ROLE=\"core\""),
+                   "AETHER_ROLE env must be sourced from the threaded role, not host env");
+    }
+
+    @Test
+    void render_workerRole_stampsWorkerLabelAndAetherRoleEnv() {
+        // Wave 2 / W4: a WORKER intent flows through end-to-end — the provisioned node
+        // self-asserts role=worker via its AETHER_ROLE, so every role-scoped projection
+        // (coreCountedMembers / quorum / heal / CORE_ONLY placement) classifies it correctly.
+        var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var script = UserDataTemplate.render(config,
+                                             source,
+                                             NodeRole.WORKER,
+                                             "node-w1",
+                                             0,
+                                             "secret",
+                                             "prod-cluster",
+                                             TomlDocument.EMPTY);
+
+        assertTrue(script.contains("-l aether-role=worker"),
+                   "container label must carry the threaded worker role");
+        assertTrue(script.contains("-e AETHER_ROLE=\"worker\""),
+                   "AETHER_ROLE env must carry the threaded worker role");
+        assertFalse(script.contains("-l aether-role=core"),
+                    "the legacy hardcoded core label must be gone");
+    }
+
+    @Test
     void render_devModeLine_presentOnlyWhenEnvSet() {
         // Real assertion when the bootstrapping host exports AETHER_INSECURE_DEV_MODE; a
         // negative assertion otherwise (env unset => no dev-mode line). System.getenv cannot

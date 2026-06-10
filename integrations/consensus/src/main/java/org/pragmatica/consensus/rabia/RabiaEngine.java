@@ -163,6 +163,12 @@ public class RabiaEngine<C extends Command> {
     /// and notifies; recovery design is explicitly deferred (RC2). Default no-op; AetherNode
     /// wires the per-node transition journal.
     private volatile BiConsumer<Long, Long> onBootFutureHistory = (persisted, cluster) -> {};
+    /// Listener invoked after EVERY successful sync restore, once the restored state has been
+    /// applied and the state machine content is queryable (and the engine re-activated).
+    /// Late-joiner seam: state distributed via live notifications (e.g. KV `ValuePut`-derived
+    /// state such as the cluster gossip-encryption key) is re-readable from the restored store
+    /// at this point. Default no-op; see [#onStateRestored(Runnable)].
+    private volatile Runnable onStateRestored = () -> {};
 
     //--------------------------------- Node State End
     /// Creates a new Rabia consensus engine without metrics or activation gating.
@@ -902,11 +908,13 @@ public class RabiaEngine<C extends Command> {
         if (state.snapshot().length == 0) {
             applyRestoredState(state);
             activate();
+            notifyStateRestored();
             return;
         }
         stateMachine.restoreSnapshot(state.snapshot())
                     .onSuccess(_ -> applyRestoredState(state))
                     .onSuccessRun(this::activate)
+                    .onSuccessRun(this::notifyStateRestored)
                     .onFailure(cause -> log.error("Node {} failed to restore state: {}", self, cause));
     }
 
@@ -949,6 +957,26 @@ public class RabiaEngine<C extends Command> {
         this.onBootFutureHistory = listener == null
                                    ? (persisted, cluster) -> {}
                                    : listener;
+    }
+
+    /// Install the post-restore listener, invoked after EVERY successful sync restore once the
+    /// restored state has been applied and the state-machine content is queryable (and the
+    /// engine re-activated). Restore can run more than once per process (initial join sync,
+    /// later re-syncs), so listeners must be idempotent. Fires on the thread `restoreState`
+    /// completes on (the consensus apply executor); listeners must be cheap and thread-safe.
+    /// Default no-op; a `null` argument resets to the no-op. AetherNode wires the late-joiner
+    /// gossip-key-rotation replay here.
+    @Contract
+    public void onStateRestored(Runnable listener) {
+        this.onStateRestored = listener == null
+                               ? () -> {}
+                               : listener;
+    }
+
+    /// Invoke the post-restore listener. Runs on the consensus apply thread.
+    @Contract
+    private void notifyStateRestored() {
+        onStateRestored.run();
     }
 
     private void applyRestoredState(SavedState<C> state) {

@@ -46,6 +46,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -472,6 +473,39 @@ class RabiaEngineTest {
             // After sync, the engine should be able to process proposals
             // (no exception thrown and active remains true)
             assertThat(engine.isActive()).isTrue();
+        }
+
+        @Test
+        void onStateRestored_fires_after_empty_snapshot_restore() throws InterruptedException {
+            // The listener captures engine.isActive() at fire time, proving the callback runs
+            // AFTER the restored state is applied and the engine has activated.
+            var activeAtFire = new AtomicBoolean(false);
+            engine.onStateRestored(() -> activeAtFire.set(engine.isActive()));
+
+            activateEngine();
+
+            assertThat(activeAtFire.get())
+                .as("onStateRestored must fire after restore completes and the engine activates")
+                .isTrue();
+        }
+
+        @Test
+        void onStateRestored_fires_after_nonempty_snapshot_restore() throws InterruptedException {
+            // Non-empty snapshot path: restore goes through stateMachine.restoreSnapshot's
+            // success continuation, so the state-machine content is queryable when it fires.
+            var activeAtFire = new AtomicBoolean(false);
+            engine.onStateRestored(() -> activeAtFire.set(engine.isActive()));
+
+            engine.clusterState(ClusterStateNotification.active());
+            Thread.sleep(150); // Allow sync request to be sent
+            var state = RabiaPersistence.SavedState.<TestCommand>savedState(new byte[]{42}, Phase.ZERO, List.of());
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, state));
+            engine.processSyncResponse(new SyncResponse<>(NODE_3, state));
+            Thread.sleep(50); // Allow activation to complete
+
+            assertThat(activeAtFire.get())
+                .as("onStateRestored must fire after a non-empty snapshot restore")
+                .isTrue();
         }
 
         @Test

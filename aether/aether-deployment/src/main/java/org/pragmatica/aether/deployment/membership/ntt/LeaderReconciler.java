@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.ntt;
 
+import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
@@ -17,6 +18,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
 
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
@@ -37,14 +39,14 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Leader-pinned reconciler (membership v2 spec §7.4 — E2 Phase 1.6: state-derived
-/// reconciliation sourcing membership from presence sampler). All trigger paths converge on a
+/// reconciliation). All trigger paths converge on a
 /// single CAS-debounced `triggerReconcile(trigger)` entry point; the periodic tick
 /// has been removed (the previous tick existed only because surplus had no event
 /// signal — now SWIM `HealthyObserved` provides it symmetrically with presence sampler for
 /// shortage). `clusterMembershipCount` and the current member set are both sourced
-/// from [`PresenceSampler#currentMembers`] / [`PresenceSampler#currentMemberCount`],
-/// the single SWIM-fed membership source (freshest "who is in the cluster" signal). The
-/// member set always includes `self`.
+/// from the authoritative [`MembershipFsm#coreCountedMembers`] (MEMBER + SUSPECT, CORE-role
+/// only — cluster-topology-overhaul spec Wave 2 / W2; see the [`#membershipFsm`] field doc).
+/// The member set always includes `self`.
 ///
 /// **Five trigger paths.**
 /// 1. [`#activate()`] on leader gain — schedules a single one-shot delayed
@@ -132,15 +134,34 @@ public final class LeaderReconciler {
     private final TimeSpan leaderActivationDelay;
     private final TimeSpan provisioningGraceWindow;
     private final TimeSpan deficitDebounceWindow;
+    /// Drain-safety grace window = `nttDepartureTimeout × 2` (30s at the 15s default; Wave 2
+    /// defense in depth at the drain authority). A surplus-drain victim whose membership is
+    /// YOUNGER than this window is NEVER selected: a freshly-joined node's self-asserted role
+    /// may still be propagating (it travels in the join ANNOUNCE and the QUIC Hello descriptor;
+    /// gossip-rebuilt `MembershipUpdate` carries no labels), so a just-joined worker can
+    /// transiently read as a blank-role core and open a phantom core-surplus that drains the
+    /// joiner. AGE-based and deliberately role-agnostic — an all-blank-role (all-core) cluster
+    /// stays drainable once members age past the window. Sizing: ≥ the deficit debounce (×1, the
+    /// other reconciler decision gate) and comfortably above the worst-case role-propagation
+    /// time (ANNOUNCE → gossip → Hello descriptor, seconds); ×2 keeps it tied to the single
+    /// membership timing constant (`nttDepartureTimeout`) rather than introducing a new literal.
+    /// Age source: [`MembershipFsm#memberAgeMs`] (first-tracked stamp on the FSM's wall clock).
+    private final TimeSpan drainSafetyGraceWindow;
     private final TimeSpan inFlightExpiry;
     private final PresenceSampler presenceSampler;
-    /// Authoritative membership-count source (membership v2 cutover, #68/#94). The reconciler
-    /// COUNTS this FSM's [`MembershipFsm#countedMembers`] (MEMBER + SUSPECT) as its base membership
-    /// set — NOT presence sampler's presence set. A SUSPECT member still counts here, so a single-plane false
-    /// positive no longer opens a phantom deficit that over-provisions; a genuinely-gone node drops
-    /// from the count via co-confirmed death or the routed down-hysteresis crossing. presence sampler is retained
-    /// for its monotonic [`PresenceSampler#peakMembershipCount`] cold-start latch and trigger
-    /// wiring.
+    /// Authoritative membership-count source (membership v2 cutover, #68/#94; role-scoped per
+    /// cluster-topology-overhaul Wave 2 / W2). The reconciler COUNTS this FSM's
+    /// [`MembershipFsm#coreCountedMembers`] (MEMBER + SUSPECT, CORE-role only — a worker never
+    /// fills a core deficit, never trips the quorum-safety gate, and is never a core-surplus
+    /// drain victim) as its base membership set — NOT presence sampler's presence set. A SUSPECT
+    /// member still counts here, so a single-plane false positive no longer opens a phantom
+    /// deficit that over-provisions; a genuinely-gone node drops from the count via co-confirmed
+    /// death or the routed down-hysteresis crossing. presence sampler is retained for its
+    /// monotonic [`PresenceSampler#peakMembershipCount`] cold-start latch and trigger wiring.
+    /// Known residual (Wave 7 scope): `peakMembershipCount` is role-blind, so workers present
+    /// during initial formation can latch [`#reachedFullMembership`] early — bounded by the
+    /// deficit-debounce + quorum-safety gates, and resolved when PresenceSampler is demoted to a
+    /// pure debounce sensor (overhaul spec Wave 7).
     private final MembershipFsm membershipFsm;
     private final IntSupplier configuredCoreCountSupplier;
     /// Leader-term supplier (monotonic, incremented once per election). A value `> 1` on
@@ -181,6 +202,13 @@ public final class LeaderReconciler {
     /// schedule a second are deduped (a non-null ref short-circuits the schedule), and the ref is
     /// nulled when the follow-up fires so the next debounce window can arm a fresh one.
     private final AtomicReference<ScheduledFuture<?>> debounceReEvalFutureRef = new AtomicReference<>();
+    /// At most one pending drain-grace re-evaluation follow-up (drain-safety grace, Wave 2). A
+    /// pass that DEFERS part of a surplus drain because every remaining candidate is younger than
+    /// [`#drainSafetyGraceWindow`] schedules one follow-up reconcile after the oldest young
+    /// candidate matures — surplus is stable-state (no SWIM edge re-fires the reconciler while
+    /// membership sits unchanged in surplus), so without this the deferred drain would silently
+    /// never re-evaluate. Same dedupe/CAS-arm discipline as [`#debounceReEvalFutureRef`].
+    private final AtomicReference<ScheduledFuture<?>> drainGraceReEvalFutureRef = new AtomicReference<>();
 
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
 
@@ -219,6 +247,9 @@ public final class LeaderReconciler {
         // away. Reusing nttDepartureTimeout keeps the debounce consistent with the single
         // membership-timing constant rather than introducing a new literal.
         this.deficitDebounceWindow = membershipConfig.nttDepartureTimeout();
+        // Drain-safety grace = nttDepartureTimeout × 2 — see the field doc for the full rationale
+        // (role-propagation race window; ≥ deficit debounce; single timing constant).
+        this.drainSafetyGraceWindow = computeDrainSafetyGrace(membershipConfig.nttDepartureTimeout());
         this.inFlightExpiry = computeInFlightExpiry(membershipConfig.nttDepartureTimeout());
         this.presenceSampler = presenceSampler;
         this.membershipFsm = membershipFsm;
@@ -315,7 +346,9 @@ public final class LeaderReconciler {
         }
 
         var now = timeSource.nanoTime();
-        var currentMembers = membershipFsm.countedMembers();
+        // Core-scoped (Wave 2 / W2): a retained dispatch is fulfilled only by a CORE member —
+        // matches the fulfillment-clear in runReconcileBody, which also reads coreCountedMembers().
+        var currentMembers = membershipFsm.coreCountedMembers();
 
         for (var id : retained) {
             if (currentMembers.contains(id)) {
@@ -342,6 +375,7 @@ public final class LeaderReconciler {
         cancelPendingActivation();
         cancelInFlightSweep();
         cancelDebounceReEval();
+        cancelDrainGraceReEval();
         inFlightProvisioning.clear();
         deficitSinceNanos = UNSET_NANOS;
         reachedFullMembership.set(false);
@@ -467,6 +501,13 @@ public final class LeaderReconciler {
         return deficitDebounceWindow;
     }
 
+    /// Observability — the drain-safety grace window (`nttDepartureTimeout × 2`). A surplus-drain
+    /// victim whose membership age ([`MembershipFsm#memberAgeMs`]) is below this window is never
+    /// selected; an all-young candidate pool defers the drain (WARN + one follow-up reconcile).
+    public TimeSpan drainSafetyGraceWindow() {
+        return drainSafetyGraceWindow;
+    }
+
     /// Observability — read-only snapshot of the in-flight provisioning map. Stage 6
     /// will surface this through metrics.
     public Map<NodeId, Long> inFlightProvisioningSnapshot() {
@@ -526,7 +567,11 @@ public final class LeaderReconciler {
         var now = timeSource.nanoTime();
 
         evictExpiredInFlightEntries(now);
-        var currentMembers = membershipFsm.countedMembers();
+        // Core-scoped membership (Wave 2 / W2): only CORE-role counted members enter every
+        // count below (deficit vs configuredCoreCount, quorum-safety, drain-victim pool,
+        // in-flight fulfillment). A worker can neither fill a core deficit arithmetically nor
+        // be drained to resolve a core surplus.
+        var currentMembers = membershipFsm.coreCountedMembers();
         // Identity-match clear (provision-fulfillment signal). With the completed
         // "boot under the leader-supplied id" contract, the in-flight provisioning key is the
         // EXACT id the replacement boots under, so once that id appears in `currentMembers` the
@@ -825,7 +870,14 @@ public final class LeaderReconciler {
     /// `effective` is inflated above the confirmed-member count by in-flight provisioning
     /// placeholders (a replacement that was requested but has not joined), the floor binds
     /// and the drain set shrinks — down to nothing if confirmed members are already at or
-    /// below the configured floor. Internal — observers see only the count via
+    /// below the configured floor.
+    ///
+    /// Drain-safety grace (Wave 2 defense in depth): victims are selected ONLY from members
+    /// whose membership age is at least [`#drainSafetyGraceWindow`] — a just-joined member
+    /// whose role labels may still be propagating is never drained as core-surplus. When the
+    /// mature pool cannot cover the surplus, the shortfall is DEFERRED (WARN with the young
+    /// ages + one scheduled follow-up reconcile via [`#armDrainGraceReEval`]) rather than
+    /// silently dropped. Internal — observers see only the count via
     /// [`ReconcileIntent#drainCount`].
     private Set<NodeId> computePeersToDrain(Set<NodeId> currentMembers, int configuredCoreCount, int effective) {
         if (effective <= configuredCoreCount) {
@@ -840,11 +892,123 @@ public final class LeaderReconciler {
             return Set.of();
         }
 
+        var victims = selectMatureDrainVictims(currentMembers, drainCount);
+
+        if (victims.size() < drainCount) {
+            deferYoungSurplusDrain(currentMembers, drainCount - victims.size());
+        }
+
+        return victims;
+    }
+
+    /// Victim selection over the MATURE candidate pool only: members whose age has passed the
+    /// drain-safety grace, in the same stable reversed-id iteration order as before, capped at
+    /// `drainCount`. A member with no readable age (untracked — cannot normally happen, the
+    /// candidate set is projected from the same FSM) is treated as mature, preserving the
+    /// legacy behaviour and keeping all-blank-role clusters drainable.
+    private Set<NodeId> selectMatureDrainVictims(Set<NodeId> currentMembers, int drainCount) {
         var ordered = new LinkedHashSet<NodeId>();
 
-        currentMembers.stream().sorted(Comparator.comparing(NodeId::id).reversed()).limit(drainCount).forEach(ordered::add);
+        currentMembers.stream()
+                      .filter(this::pastDrainSafetyGrace)
+                      .sorted(Comparator.comparing(NodeId::id).reversed())
+                      .limit(drainCount)
+                      .forEach(ordered::add);
 
         return Set.copyOf(ordered);
+    }
+
+    /// Whether `id`'s membership age has reached the drain-safety grace window. Unknown age
+    /// (untracked id) counts as mature — see [`#selectMatureDrainVictims`].
+    private boolean pastDrainSafetyGrace(NodeId id) {
+        return membershipFsm.memberAgeMs(id)
+                            .map(ageMs -> ageMs >= drainSafetyGraceWindow.millis())
+                            .or(true);
+    }
+
+    /// Deferral of the un-covered surplus shortfall: WARN with the young candidates' ages (the
+    /// operator-facing trace of WHY the surplus was not fully drained) and arm a single
+    /// follow-up reconcile for when the oldest young candidate matures. Never silently drops
+    /// the surplus state — surplus is stable-state, so no SWIM edge would re-fire the
+    /// reconciler on its own.
+    @Contract
+    private void deferYoungSurplusDrain(Set<NodeId> currentMembers, int deferredCount) {
+        log.warn("LeaderReconciler deferring surplus drain of {} member(s): remaining candidates are younger than the drain-safety grace ({} ms) — role propagation may still be in flight; youngAgesMs={}",
+                 deferredCount,
+                 drainSafetyGraceWindow.millis(),
+                 youngMemberAgesMs(currentMembers));
+        armDrainGraceReEval(currentMembers);
+    }
+
+    /// Ages (ms) of the still-young members in `currentMembers` (age readable AND below the
+    /// drain-safety grace). Insertion-ordered for stable logging. Pure read.
+    private Map<NodeId, Long> youngMemberAgesMs(Set<NodeId> currentMembers) {
+        var ages = new LinkedHashMap<NodeId, Long>();
+
+        currentMembers.forEach(id -> recordYoungAge(ages, id));
+
+        return ages;
+    }
+
+    /// Accumulator step for [`#youngMemberAgesMs`]: record `id`'s age iff it is readable and
+    /// below the drain-safety grace.
+    @Contract
+    private void recordYoungAge(Map<NodeId, Long> ages, NodeId id) {
+        membershipFsm.memberAgeMs(id)
+                     .filter(ageMs -> ageMs < drainSafetyGraceWindow.millis())
+                     .onPresent(ageMs -> ages.put(id, ageMs));
+    }
+
+    /// Arm a single drain-grace re-evaluation follow-up (deferred-surplus re-trigger). Deduped:
+    /// a non-null [`#drainGraceReEvalFutureRef`] short-circuits (at most one pending), the
+    /// CAS-arm cancels a lost race — same discipline as [`#scheduleDebounceReEvalIfNeeded`] /
+    /// [`#armInFlightSweep`]; no new timer machinery, the shared scheduler is reused.
+    @Contract
+    private void armDrainGraceReEval(Set<NodeId> currentMembers) {
+        if (drainGraceReEvalFutureRef.get() != null) {
+            return;
+        }
+
+        var future = scheduler.schedule(this::runDrainGraceReEval, drainGraceReEvalDelay(currentMembers));
+
+        if (!drainGraceReEvalFutureRef.compareAndSet(null, future)) {
+            future.cancel(false);
+        }
+    }
+
+    /// Remaining grace for the OLDEST still-young candidate (it matures first, unblocking at
+    /// least one deferred drain), plus the short debounce margin so the follow-up pass observes
+    /// the gate already cleared. Falls back to the full grace window (+margin) when no young age
+    /// is readable.
+    private TimeSpan drainGraceReEvalDelay(Set<NodeId> currentMembers) {
+        var oldestYoungAgeMs = youngMemberAgesMs(currentMembers).values()
+                                                                .stream()
+                                                                .reduce(0L, Math::max);
+        var remainingMs = Math.max(drainSafetyGraceWindow.millis() - oldestYoungAgeMs, 0L);
+
+        return timeSpan(remainingMs + DEBOUNCE_DELAY.millis()).millis();
+    }
+
+    /// Drain-grace follow-up tick: clear the pending ref and re-trigger a reconcile so the
+    /// deferred surplus is re-evaluated now that the youngest victims have aged. Non-leader
+    /// nodes no-op (a deposed leader's follow-up must not act).
+    @Contract
+    private void runDrainGraceReEval() {
+        drainGraceReEvalFutureRef.set(null);
+        if (!isLeader.get()) {
+            return;
+        }
+
+        triggerReconcile(ReconcileTrigger.NTT_FIRE);
+    }
+
+    @Contract
+    private void cancelDrainGraceReEval() {
+        var prev = drainGraceReEvalFutureRef.getAndSet(null);
+
+        if (prev != null) {
+            prev.cancel(false);
+        }
     }
 
     @Contract
@@ -866,7 +1030,9 @@ public final class LeaderReconciler {
         // node boots under exactly this id (CTM threads it into ProvisionContext.nodeId()), so the
         // in-flight key equals the booted node's id and membership presence is the authoritative
         // fulfillment signal (cleared in runReconcileBody when the id appears in currentMembers).
-        ctm.provisionReplacement(placeholder, none(), currentMembers).onFailure(cause -> inFlightProvisioning.remove(placeholder));
+        // Auto-heal replaces CORE members only, so the intended role is explicitly CORE
+        // (Wave 2 / W4 — never inherited from the provisioning host's env).
+        ctm.provisionReplacement(placeholder, none(), currentMembers, NodeRole.CORE).onFailure(cause -> inFlightProvisioning.remove(placeholder));
     }
 
     @Contract
@@ -1022,6 +1188,13 @@ public final class LeaderReconciler {
     /// replacement — the auto-heal provisioning storm this expiry exists to prevent.
     private static TimeSpan computeInFlightExpiry(TimeSpan nttDepartureTimeout) {
         return timeSpan(nttDepartureTimeout.nanos() * 3).nanos();
+    }
+
+    /// Drain-safety grace = `nttDepartureTimeout × 2` — see the [`#drainSafetyGraceWindow`]
+    /// field doc for the sizing rationale (role-propagation race window; ≥ the ×1 deficit
+    /// debounce; single membership timing constant).
+    private static TimeSpan computeDrainSafetyGrace(TimeSpan nttDepartureTimeout) {
+        return timeSpan(nttDepartureTimeout.nanos() * 2).nanos();
     }
 
     /// Observability — the [`MembershipConfig`] this reconciler was constructed with.

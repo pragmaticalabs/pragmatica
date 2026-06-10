@@ -329,6 +329,29 @@ class DockerComputeProviderTest {
         }
 
         @Test
+        void buildRunCommand_emitsRoleFromContext_equalsLabel_notHostEnv() {
+            // Wave 2 / W4 (cluster-topology-overhaul spec): AETHER_ROLE is AUTHORITATIVE from
+            // ProvisionContext.role() — the SAME source as the aether.role label — and emitted
+            // exactly once (the dedupe guard drops the IDENTITY_VARS host-env inherit). A
+            // worker-intent provision yields role=worker end-to-end; the provisioning host's
+            // own AETHER_ROLE can never leak onto a node it mints.
+            testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+            var ctx = ProvisionContext.provisionContext("test-cluster", "worker", "default",
+                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "worker-pool", ctx).unwrap();
+
+            provider.provision(spec).await()
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            var command = testRunner.allCommands.getFirst();
+            assertThat(command).contains("AETHER_ROLE=worker");
+            assertThat(command).contains("aether.role=worker");
+            var roleCount = command.stream().filter(arg -> arg.startsWith("AETHER_ROLE=")).count();
+            assertThat(roleCount).isEqualTo(1);
+        }
+
+        @Test
         void buildRunCommand_emptyCluster_noLongerYieldsDefault() {
             // ctx with an empty cluster name + bootstrap origin (passes preflight). The old
             // clusterOrDefault returned literal "default"; now it returns "" so the minted name

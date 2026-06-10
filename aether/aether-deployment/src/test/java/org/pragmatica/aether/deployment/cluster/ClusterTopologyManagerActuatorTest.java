@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.InstanceId;
@@ -109,7 +110,7 @@ class ClusterTopologyManagerActuatorTest {
     @Test
     void provisionReplacement_invokesProvisionNodeOnce_withThreePartPeers() {
         ctm.activate();
-        var result = ctm.provisionReplacement(NodeId.randomNodeId(), Option.some(PEER_C), Set.of(SELF, PEER_A, PEER_B)).await();
+        var result = ctm.provisionReplacement(NodeId.randomNodeId(), Option.some(PEER_C), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
         assertThat(result.isSuccess()).isTrue();
         assertThat(lifecycleManager.provisionCount.get())
                 .as("non-empty topology yields a single provisionNode call")
@@ -123,6 +124,32 @@ class ClusterTopologyManagerActuatorTest {
                     .as("each PEERS entry is a 3-part id:host:port tuple")
                     .hasSize(3);
         }
+    }
+
+    /// Wave 2 / W4 (cluster-topology-overhaul spec): the intended role passed to
+    /// `provisionReplacement` is stamped into the `ProvisionContext` verbatim — the provider
+    /// boundary derives `AETHER_ROLE` / the `aether.role` label from it, never from a hardcode
+    /// or the provisioning host's environment.
+    @Test
+    void provisionReplacement_stampsIntendedRole_intoProvisionContext() {
+        ctm.activate();
+        var result = ctm.provisionReplacement(NodeId.randomNodeId(), Option.some(PEER_C), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(lifecycleManager.lastSpec().context().role())
+                .as("ProvisionContext carries the caller's intended role")
+                .isEqualTo("core");
+    }
+
+    /// Wave 2 / W4: a WORKER intent flows through unchanged — when worker provisioning lands
+    /// (#241), the same path stamps `worker` end-to-end.
+    @Test
+    void provisionReplacement_workerIntent_stampsWorkerRole() {
+        ctm.activate();
+        var result = ctm.provisionReplacement(NodeId.randomNodeId(), Option.some(PEER_C), Set.of(SELF, PEER_A, PEER_B), NodeRole.WORKER).await();
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(lifecycleManager.lastSpec().context().role())
+                .as("ProvisionContext carries the caller's intended worker role")
+                .isEqualTo("worker");
     }
 
     @Test

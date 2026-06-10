@@ -2,7 +2,7 @@
 
 **Test-ID convention:** `TC-13-EDGE-CASES-NNN` — zero-padded 3-digit, stable across reorgs.
 
-**Scope:** Operational edge cases — concurrent deploys racing each other, the disruption-budget gate blocking unsafe drains, and stale-route cleanup after a routes-hosting node dies. These are the "what happens when the user does something awkward" tests.
+**Scope:** Operational edge cases — concurrent deploys racing each other, the disruption-budget gate blocking unsafe drains, stale-route cleanup after a routes-hosting node dies, and worker-join accounting (a 6th node past coreMax must be invisible to every core denominator). These are the "what happens when the user does something awkward" tests.
 
 ---
 
@@ -19,6 +19,10 @@
 | C7 | Killing a node that hosts active routes triggers a generation advance (slice-routing state turnover) | `aether/docs/specs/slice-lifecycle.md §3` (route generation); `unified-deploy-spec.md §3` |
 | C8 | After route cleanup, app routes return ZERO 502/504 over a 10-probe window — the killed node's stale entries are pruned from the route table | `aether/docs/specs/slice-lifecycle.md §3`; `aether/docs/specs/membership-architecture-v2-spec.md §3.3` (reconciler) |
 | C9 | After kill-and-reconverge, cluster returns to N=5 nodes (CTM provisions replacement) | `membership-architecture-v2-spec.md §3.3`; `quic-transport-spec.md §3.7` |
+| C10 | A 6th node joining past coreMax with `AETHER_ROLE=worker` is classified WORKER (FSM descriptor role) and reaches FSM Member | `aether/docs/specs/cluster-topology-overhaul-spec.md §5 Wave 2 (A8, W3, W4, Q3)` |
+| C11 | Worker presence does not perturb the CORE quorum domain: generation core membership stays 5, cluster stays quorate/healthy | `cluster-topology-overhaul-spec.md Wave 2 (W1)` |
+| C12 | A core-kill with a worker present still heals to 5 COREs — the worker never fills the deficit; the replacement is assigned CORE (explicit role stamping end-to-end) | `cluster-topology-overhaul-spec.md Wave 2 (W2, W3, W4)` |
+| C13 | CORE_ONLY slice placement never lands an instance on a worker-role node | `cluster-topology-overhaul-spec.md Wave 2 (W6)` |
 
 **Contract gaps surfaced by this audit:**
 - `[CONTRACT-GAP-13.A]` — **No dedicated disruption-budget spec** exists. Contract C5 is pinned only by the management-api reference page and inferred from the FSM `OperatorDecommission` row. The 2xx-or-409 dual-acceptance behaviour on the second drain (TC-13-EDGE-CASES-006) cannot be formally validated against a spec — needs a `disruption-budget-spec.md` clarifying: (a) is `disable_auto_heal` synchronous? (b) what window admits the race-tolerant 409? (c) is the budget calculated against `cluster_member_count` or against `desiredSize`?
@@ -51,6 +55,13 @@
 | TC-13-EDGE-CASES-018 | `test_no_502_504_after_cleanup` | `test-stale-route-cleanup.sh:83` | C8 | core | 10 × `http_status` on `/api/echo/health`; `assert_eq count 0` for 502/504. Prior wrong-endpoint RESOLVED, audit §1.15. 10 polls @ 1Hz may miss a brief window — adequate for catch-stale, weak for catch-flaky. |
 | TC-13-EDGE-CASES-019 | `test_kv_store_routes_clean` | `test-stale-route-cleanup.sh:102` | C8 | regression-net | Audit §1.15 WEAK — `assert_ne slices ""` only; doesn't verify the killed-node's slice records are pruned. Title overpromises. Tracked as `[CONTRACT-GAP-13.C]`. |
 | TC-13-EDGE-CASES-020 | `test_recovery_complete` | `test-stale-route-cleanup.sh:109` | C9 | core | `wait_for_node_count 5 90` + `assert_cluster_healthy`. SOUND. |
+| TC-13-EDGE-CASES-021 | `test_cluster_ready` | `test-worker-join-accounting.sh` | C1 | smoke | Baseline 5-core cluster; re-enables auto-heal if a prior suite left it off. Docker-mode only (skip_test in CLOUD_MODE). |
+| TC-13-EDGE-CASES-022 | `test_worker_joins_as_worker` | `test-worker-join-accounting.sh` | C10 | core | Raw `docker run` of a 6th node with `AETHER_ROLE=worker` + 3-part PEERS from live core ids; polls topology fsmMembers for role=worker + FSM Member. |
+| TC-13-EDGE-CASES-023 | `test_quorum_unchanged_by_worker` | `test-worker-join-accounting.sh` | C11 | core | `cluster_member_count == 5` (generation member set is FSM coreMembers-derived, worker excluded) + quorate + healthy. |
+| TC-13-EDGE-CASES-024 | `test_core_kill_heals_to_five_cores` | `test-worker-join-accounting.sh` | C12 | core | Kills a non-leader CORE (worker excluded from victim pool); `wait_for_node_count 5`; asserts the worker is still role=worker post-heal. |
+| TC-13-EDGE-CASES-025 | `test_replacement_assigned_core` | `test-worker-join-accounting.sh` | C12 | core | Finds the `aether.provisioned-by=ctm` container; asserts FSM descriptor role=core AND `aether.role=core` label (the W4 explicit-role chain). |
+| TC-13-EDGE-CASES-026 | `test_core_only_placement_excludes_worker` | `test-worker-join-accounting.sh` | C13 | core | Deploys test-echo (default CORE_ONLY); asserts no slice instance carries the worker's nodeId. |
+| TC-13-EDGE-CASES-027 | `test_cleanup_baseline` | `test-worker-join-accounting.sh` | — | cleanup | Removes the worker container + `restore_cluster_baseline` (warn-on-failure cleanup-class step). |
 
 ---
 
@@ -83,3 +94,4 @@
 | Date | Author | Change |
 |---|---|---|
 | 2026-05-21 | charter pass | Initial charter — 20 tests catalogued from audit §1.15 |
+| 2026-06-10 | wave-2 worker accounting | Added `test-worker-join-accounting.sh` (TC-021–027, contracts C10–C13) — the cluster-topology-overhaul spec Wave 2 Docker gate (worker invisible to quorum/heal/role-assignment/CORE_ONLY denominators). Docker-mode only; skips in CLOUD_MODE. |

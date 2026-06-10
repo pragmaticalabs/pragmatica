@@ -119,6 +119,15 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// Diagnostic-only; default no-op for implementations without a Rabia engine.
     default void onBootFutureHistory(BiConsumer<Long, Long> listener) {}
 
+    /// Post-restore listener pass-through: installs the listener on the wrapped [RabiaEngine]
+    /// (`RabiaEngine#onStateRestored`), invoked after every successful sync restore once the
+    /// restored state has been applied and is queryable. Late-joiner seam for state derived
+    /// from KV notifications (e.g. the cluster gossip-key rotation): a node that syncs after
+    /// the originating `ValuePut` must re-read it from the restored store. Restore can run
+    /// more than once per process, so listeners must be idempotent. Default no-op for
+    /// implementations without a Rabia engine.
+    default void onStateRestored(Runnable listener) {}
+
     /// Get the route entries for RabiaNode's internal components.
     /// These should be combined with other entries when building the final router.
     List<Entry<?>> routeEntries();
@@ -479,6 +488,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public void onBootFutureHistory(BiConsumer<Long, Long> listener) {
                 consensus().onBootFutureHistory(listener);
+            }
+
+            @Override
+            public void onStateRestored(Runnable listener) {
+                consensus().onStateRestored(listener);
             }
 
             @Override

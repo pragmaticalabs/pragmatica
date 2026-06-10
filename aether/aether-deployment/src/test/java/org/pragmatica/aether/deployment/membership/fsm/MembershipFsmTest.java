@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.ntt.PresenceSampler;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Option;
@@ -683,8 +684,8 @@ class MembershipFsmTest {
 
         @Test
         void onMemberDescriptor_emptyAddressUpdate_stillAppliesRoleLastWins() {
-            // The guard retains only the ADDRESS; role/source still follow last-wins so a worker
-            // re-label (which excludes the member from the core dial-set) still takes effect even
+            // The guard retains only what the update LACKS; a non-blank incoming role still wins, so
+            // a worker re-label (which excludes the member from the core dial-set) takes effect even
             // when the re-label observation carries no address.
             var manager = activeManager();
 
@@ -695,6 +696,180 @@ class MembershipFsmTest {
             assertThat(manager.desiredConnections())
                     .as("an address-less worker re-label still excludes the member from the core dial-set")
                     .isEmpty();
+        }
+
+        @Test
+        void onMemberDescriptor_blankIncomingRole_keepsKnownRole() {
+            // Wave 2 / audit M9: a label-less observation (e.g. a gossip-rebuilt peer NodeInfo) must
+            // NOT wipe the member's self-asserted role to blank — blank role counts as core, so the
+            // erase would silently re-classify a worker as core.
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onMemberDescriptor(workerInfo(A, "10.0.0.1", 7000));
+            manager.onMemberDescriptor(unlabeledInfo(A, "10.0.0.1", 7000));
+
+            assertThat(descriptorOf(manager, A).role())
+                    .as("a blank incoming role must not erase a known role")
+                    .isEqualTo("worker");
+        }
+
+        @Test
+        void onMemberDescriptor_nonBlankIncomingRole_replacesRole() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
+            manager.onMemberDescriptor(workerInfo(A, "10.0.0.1", 7000));
+
+            assertThat(descriptorOf(manager, A).role())
+                    .as("a non-blank incoming role still wins (re-label works)")
+                    .isEqualTo("worker");
+        }
+
+        @Test
+        void onMemberDescriptor_blankIncomingSource_keepsKnownSource() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.1", 7000, "core", "seed"));
+            manager.onMemberDescriptor(unlabeledInfo(A, "10.0.0.1", 7000));
+
+            assertThat(descriptorOf(manager, A).source())
+                    .as("a blank incoming source must not erase a known source")
+                    .isEqualTo("seed");
+        }
+
+        @Test
+        void onMemberDescriptor_nonBlankIncomingSource_replacesSource() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.1", 7000, "core", "seed"));
+            manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.1", 7000, "core", "replacement"));
+
+            assertThat(descriptorOf(manager, A).source())
+                    .as("a non-blank incoming source still wins")
+                    .isEqualTo("replacement");
+        }
+
+        @Test
+        void onMemberDescriptor_addresslessUnlabeledUpdate_keepsAddressRoleAndSource() {
+            // Combined per-field guard: an observation carrying NO address and NO labels (the
+            // degenerate gossip-rebuilt NodeInfo) erases NOTHING previously known.
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.1", 7000, "worker", "scale-up"));
+            manager.onMemberDescriptor(addresslessUnlabeledInfo(A));
+
+            var descriptor = descriptorOf(manager, A);
+            assertThat(descriptor.address()).isEqualTo(Option.some(address("10.0.0.1", 7000)));
+            assertThat(descriptor.role()).isEqualTo("worker");
+            assertThat(descriptor.source()).isEqualTo("scale-up");
+        }
+    }
+
+    /// Wave 2 role-reach (cluster-topology-overhaul): the `ConnectionEstablished`-driven descriptor
+    /// feed. The QUIC transport now supplies the Hello NodeInfo for ALL peers (known + unknown) and
+    /// AetherNode routes `connection.nodeInfo().onPresent(membershipFsm::onMemberDescriptor)`, so a
+    /// directly-dialed peer's self-asserted role/source labels land in the member descriptor on the
+    /// FIRST handshake — independent of SWIM seed lists or label-less gossip MembershipUpdate. These
+    /// tests exercise that exact feed expression against the real FSM, including the
+    /// blank-downgrade-guard interplay (a label-less Hello erases nothing).
+    @Nested
+    class HelloDescriptorReach {
+        @Test
+        void connectionEstablishedHello_withLabels_landsRoleSourceAndAddressInDescriptor() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+
+            var hello = NetworkServiceMessage.ConnectionEstablished.connectionEstablished(A,
+                                                                                          sourcedInfo(A, "10.0.0.7", 7000, "worker", "docker"));
+            hello.nodeInfo().onPresent(manager::onMemberDescriptor);
+
+            var descriptor = descriptorOf(manager, A);
+            assertThat(descriptor.role())
+                    .as("the Hello role label must land in the descriptor on first handshake")
+                    .isEqualTo("worker");
+            assertThat(descriptor.source()).isEqualTo("docker");
+            assertThat(descriptor.address()).isEqualTo(Option.some(address("10.0.0.7", 7000)));
+        }
+
+        @Test
+        void connectionEstablishedHello_labelLess_erasesNothing() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.7", 7000, "worker", "docker"));
+
+            var labelLessHello = NetworkServiceMessage.ConnectionEstablished.connectionEstablished(A,
+                                                                                                   unlabeledInfo(A, "10.0.0.7", 7000));
+            labelLessHello.nodeInfo().onPresent(manager::onMemberDescriptor);
+
+            var descriptor = descriptorOf(manager, A);
+            assertThat(descriptor.role())
+                    .as("a label-less Hello must not erase the known role (blank-downgrade guard)")
+                    .isEqualTo("worker");
+            assertThat(descriptor.source()).isEqualTo("docker");
+        }
+
+        @Test
+        void connectionEstablishedWithoutInfo_feedsNothing() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.7", 7000, "worker", "docker"));
+
+            var bare = NetworkServiceMessage.ConnectionEstablished.connectionEstablished(A);
+            bare.nodeInfo().onPresent(manager::onMemberDescriptor);
+
+            assertThat(descriptorOf(manager, A).role())
+                    .as("an info-less ConnectionEstablished feeds nothing — the descriptor is untouched")
+                    .isEqualTo("worker");
+        }
+    }
+
+    /// Drain-safety grace age source ([`MembershipFsm#memberAgeMs`], cluster-topology-overhaul
+    /// Wave 2): wall-clock age since the member's FIRST observation (tracking creation), on the
+    /// manager's injected clock; `none()` for an untracked id; retained across DEAD/rejoin (the
+    /// descriptor is retained too, so the role-propagation race the consumer guards against does
+    /// not re-open on rejoin).
+    @Nested
+    class MemberAge {
+        @Test
+        void memberAgeMs_trackedMember_isClockDeltaFromFirstObservation() {
+            var clock = new AtomicLong(1_000L);
+            var manager = MembershipFsm.membershipFsm(emptySampler(), FsmObserver.noop(), clock::get, NO_HINT_DECAY, SHORT_BACKSTOP);
+
+            promoteToMember(manager, A);
+            clock.set(31_000L);
+
+            assertThat(manager.memberAgeMs(A)).isEqualTo(Option.some(30_000L));
+        }
+
+        @Test
+        void memberAgeMs_untrackedId_isNone() {
+            var manager = activeManager();
+
+            assertThat(manager.memberAgeMs(A).isEmpty()).isTrue();
+        }
+
+        @Test
+        void memberAgeMs_retainedAcrossDeadRejoin_keepsOriginalStamp() {
+            var clock = new AtomicLong(1_000L);
+            var manager = MembershipFsm.membershipFsm(emptySampler(), FsmObserver.noop(), clock::get, NO_HINT_DECAY, SHORT_BACKSTOP);
+
+            promoteToMember(manager, A);
+            manager.onSwimDeparted(A, 2L);
+            clock.set(5_000L);
+            // Higher-incarnation recovery re-arms the SAME tracking (DEAD entries are retained).
+            manager.onSwimHealthy(A, 3L);
+
+            assertThat(manager.memberAgeMs(A))
+                    .as("rejoin re-arms the same tracking — the first-observation stamp is retained")
+                    .isEqualTo(Option.some(4_000L));
         }
     }
 
@@ -1051,10 +1226,16 @@ class MembershipFsmTest {
                                  Map.of(NodeInfo.LABEL_ROLE, "core"), null);
     }
 
-    /// Address-less observation that ALSO re-labels the member as a worker (role last-wins).
+    /// Address-less observation that ALSO re-labels the member as a worker (non-blank role wins).
     private static NodeInfo addresslessWorkerInfo(NodeId id) {
         return NodeInfo.nodeInfo(id, address("0.0.0.0", 1), NodeRole.ACTIVE,
                                  Map.of(NodeInfo.LABEL_ROLE, "worker"), null);
+    }
+
+    /// An observation with NO resolved address and NO labels — the degenerate gossip-rebuilt
+    /// NodeInfo. Exercises the combined per-field downgrade guard (Wave 2 / audit M9).
+    private static NodeInfo addresslessUnlabeledInfo(NodeId id) {
+        return NodeInfo.nodeInfo(id, address("0.0.0.0", 1), NodeRole.ACTIVE, Map.of(), null);
     }
 
     private static void promoteToMember(MembershipFsm manager, NodeId id) {

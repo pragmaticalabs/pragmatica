@@ -38,7 +38,7 @@ public final class ClusterDeploymentContext {
     private final TopologyManager topologyManager;
     private final SchemaOrchestratorService schemaOrchestrator;
     private final HealthSignalSink healthSignalSink;
-    private final Supplier<Set<NodeId>> countedMembersSupplier;
+    private final Supplier<Set<NodeId>> coreCountedMembersSupplier;
     private final Supplier<Set<NodeId>> readyNodesSupplier;
     private final Supplier<Set<NodeId>> drainingNodesSupplier;
     private final Set<NodeId> seedNodes;
@@ -57,7 +57,7 @@ public final class ClusterDeploymentContext {
                                     TopologyManager topologyManager,
                                     SchemaOrchestratorService schemaOrchestrator,
                                     HealthSignalSink healthSignalSink,
-                                    Supplier<Set<NodeId>> countedMembersSupplier,
+                                    Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                     Supplier<Set<NodeId>> readyNodesSupplier,
                                     Supplier<Set<NodeId>> drainingNodesSupplier,
                                     Set<NodeId> seedNodes,
@@ -72,7 +72,7 @@ public final class ClusterDeploymentContext {
              topologyManager,
              schemaOrchestrator,
              healthSignalSink,
-             countedMembersSupplier,
+             coreCountedMembersSupplier,
              readyNodesSupplier,
              drainingNodesSupplier,
              seedNodes,
@@ -90,7 +90,7 @@ public final class ClusterDeploymentContext {
                                     TopologyManager topologyManager,
                                     SchemaOrchestratorService schemaOrchestrator,
                                     HealthSignalSink healthSignalSink,
-                                    Supplier<Set<NodeId>> countedMembersSupplier,
+                                    Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                     Supplier<Set<NodeId>> readyNodesSupplier,
                                     Supplier<Set<NodeId>> drainingNodesSupplier,
                                     Set<NodeId> seedNodes,
@@ -106,7 +106,7 @@ public final class ClusterDeploymentContext {
         this.topologyManager = topologyManager;
         this.schemaOrchestrator = schemaOrchestrator;
         this.healthSignalSink = healthSignalSink;
-        this.countedMembersSupplier = countedMembersSupplier;
+        this.coreCountedMembersSupplier = coreCountedMembersSupplier;
         this.readyNodesSupplier = readyNodesSupplier;
         this.drainingNodesSupplier = drainingNodesSupplier;
         this.seedNodes = seedNodes;
@@ -185,8 +185,8 @@ public final class ClusterDeploymentContext {
         return healthSignalSink;
     }
 
-    public Supplier<Set<NodeId>> countedMembersSupplier() {
-        return countedMembersSupplier;
+    public Supplier<Set<NodeId>> coreCountedMembersSupplier() {
+        return coreCountedMembersSupplier;
     }
 
     public Supplier<Set<NodeId>> readyNodesSupplier() {

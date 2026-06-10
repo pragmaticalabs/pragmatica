@@ -418,14 +418,20 @@ public interface AetherNode extends ManageableNode {
         // filter, the NTT-reconcile quorum-count propagation). They deref this holder at request time
         // and degrade to their pre-FSM source while it is still null — populated at FSM construction.
         var membershipFsmRef = new AtomicReference<MembershipFsm>();
-        // #110: generation-snapshot membership source feeding PresenceGenerationSnapshotSource's
-        // BOOTING→NORMAL quorum latch + member projection. Sourced from the authoritative FSM
-        // (MEMBER + SUSPECT) instead of the NTT's debounced presence set — SUSPECT-inclusive and
-        // edge-driven (the latch fires on the first quorum-many counted members). The `.or(Set.of())`
-        // guards the pre-FSM-published boot window (lazy supplier; the FSM holder is populated before
-        // any snapshot is taken).
+        // #110 + Wave 2 / W1 (cluster-topology-overhaul spec): generation-snapshot membership
+        // source feeding PresenceGenerationSnapshotSource's BOOTING→NORMAL quorum latch + member
+        // projection (PresenceMembershipView.coreMemberIds()/healthyOnDutyCount() →
+        // TopologyObserver.haveQuorum). Sourced from the authoritative FSM's CORE-SCOPED counting
+        // projection (MEMBER + SUSPECT, role=worker excluded; unknown role counts as core) — a
+        // worker must never inflate the quorum numerator (1 core + 2 workers is NOT quorum 2 of a
+        // 3-core config; Rabia has no voter majority). Role filtering happens HERE, on the aether
+        // side of the supplier seam: integrations/consensus cannot name aether roles, so the view
+        // and TopologyObserver stay role-agnostic consumers of an already-scoped set. SUSPECT is
+        // included and the latch stays edge-driven, as before. The `.or(Set.of())` guards the
+        // pre-FSM-published boot window (lazy supplier; the FSM holder is populated before any
+        // snapshot is taken).
         Supplier<Set<NodeId>> presenceMemberSupplier = () -> Option.option(membershipFsmRef.get())
-                                                                   .map(MembershipFsm::countedMembers)
+                                                                   .map(MembershipFsm::coreCountedMembers)
                                                                    .or(Set.of());
         IntSupplier presenceCoreSizeSupplier = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT)
                                                             .filter(v -> v instanceof AetherValue.ClusterConfigValue)
@@ -530,20 +536,23 @@ public interface AetherNode extends ManageableNode {
         Option.option(leaderReconcilerRef.get()).onPresent(LeaderReconciler::onTopologyUnhealthy);
     }
 
-    /// Feed the quorum-loss detector the current member count. Membership-FSM unification (Wave D,
-    /// consumer #1): the count is sourced from the authoritative [`MembershipFsm#countedMembers`]
-    /// (MEMBER + SUSPECT) rather than NTT's `currentMemberCount`. SUSPECT is INCLUDED deliberately —
-    /// a SUSPECT node is still a Rabia voter, and NTT's `currentMemberCount` was hysteresis-debounced,
-    /// so counting MEMBER-only would be MORE aggressive than today and risk a premature self-drain on
-    /// a transient SUSPECT. `countedMembers().size()` ≈ NTT's debounced stable set, so this is a
-    /// no-regression migration. Before the FSM is published (early boot), it degrades to NTT's
-    /// `currentMemberCount`.
+    /// Feed the quorum-loss detector the current member count. Wave 2 / W1 of the
+    /// cluster-topology-overhaul spec (adopting membership-fsm-unification §6): the numerator is
+    /// the FSM's STRICT CORE count ([`MembershipFsm#strictCoreMemberCount`] — state exactly
+    /// MEMBER, role=core; SUSPECT excluded, workers excluded). A worker must never hold the
+    /// quorum-loss detector above threshold (1 core + 2 workers is NOT a quorum of a 3-core
+    /// config — Rabia has no voter majority). The strict MEMBER-only numerator is safe against
+    /// premature self-drain on a transient SUSPECT because the detector only fires after the
+    /// `quorumLossDrainThreshold` window elapses below threshold — a flap that recovers within
+    /// the window cancels the pending intent. Before the FSM is published (early boot), it
+    /// degrades to NTT's role-blind `currentMemberCount`.
     @Contract
     private static void propagateMemberCount(AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
                                              AtomicReference<MembershipFsm> membershipFsmRef,
                                              PresenceSampler sampler) {
-        var memberCount = Option.option(membershipFsmRef.get()).map(fsm -> fsm.countedMembers()
-                                                                              .size()).or(sampler::currentMemberCount);
+        var memberCount = Option.option(membershipFsmRef.get())
+                                .map(MembershipFsm::strictCoreMemberCount)
+                                .or(sampler::currentMemberCount);
 
         Option.option(quorumLossDetectorRef.get()).onPresent(detector -> detector.onMemberCountChanged(memberCount));
     }
@@ -1122,12 +1131,15 @@ public interface AetherNode extends ManageableNode {
         var healthSinkRef = new AtomicReference<HealthSignalSink>(HealthSignalSink.noop());
         HealthSignalSink stableHealthSink = signal -> healthSinkRef.get()
                                                                    .emit(signal);
-        // #114 W2c: CDM counted-members source is the per-node MembershipFsm (lazy deref — the FSM
-        // holder is populated before the CDM reconcile loop first runs), replacing the removed
-        // generation-snapshot supplier.
-        Supplier<Set<NodeId>> cdmCountedMembersSupplier = () -> Option.option(membershipFsmRef.get())
-                                                                      .map(MembershipFsm::countedMembers)
-                                                                      .or(Set.of());
+        // #114 W2c + Wave 2 / W3+W6: CDM membership source is the per-node MembershipFsm's
+        // CORE-SCOPED counting projection (lazy deref — the FSM holder is populated before the
+        // CDM reconcile loop first runs). Core-scoping at THIS seam makes role assignment count
+        // cores only (W3 — a would-be core below coreMax is never mis-assigned WORKER because
+        // workers inflated the count) and keeps workers out of activeNodes()/allocatableNodes()/
+        // AllocationPool.coreNodes, so CORE_ONLY placement can never land on a worker (W6).
+        Supplier<Set<NodeId>> cdmCoreCountedMembersSupplier = () -> Option.option(membershipFsmRef.get())
+                                                                          .map(MembershipFsm::coreCountedMembers)
+                                                                          .or(Set.of());
         // B4 (membership v2 §7.5): the CDM allocatable-gate reads the leader readiness view (READY
         // peers + self) instead of a KV lifecycle atom. Late-bound — the pong fan + self-state holder are
         // constructed further below; this ref mirrors the late-bound supplier pattern.
@@ -1151,7 +1163,7 @@ public interface AetherNode extends ManageableNode {
                                                                                          config.timeouts().deployment().reconciliationInterval(),
                                                                                          schemaOrchestrator,
                                                                                          stableHealthSink,
-                                                                                         cdmCountedMembersSupplier,
+                                                                                         cdmCoreCountedMembersSupplier,
                                                                                          stableCdmReadyNodesSupplier,
                                                                                          stableCdmDrainingNodesSupplier);
         var loadBalancerManager = config.environment().flatMap(EnvironmentIntegration::loadBalancer).map(provider -> LoadBalancerManager.loadBalancerManager(config.self(),
@@ -1668,6 +1680,15 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                                                   sliceInvoker,
                                                                                                                                                                                                                                   growthLog)).onPut(AetherKey.GossipKeyRotationKey.class,
                                                                                                                                                                                                                                                     gossipKeyRotationHandler::onGossipKeyRotationPut).build();
+        // Late-joiner gossip-key replay (live-cluster proven): a node that joins AFTER the
+        // GossipKeyRotationKey PUT never receives the live ValuePut notification, so it stays
+        // on its boot-time per-node key and every SWIM datagram it sends is rejected by the
+        // cluster ("Unknown gossip key ID") — it can never join SWIM membership. Re-read the
+        // rotation directly from the synced KV store once consensus state restore completes.
+        // Fires on every restore (initial join sync + later re-syncs); the replay is
+        // idempotent. Wired at assembly time — clusterNode.start() (and thus the first sync
+        // restore) happens later, in startClusterAsync.
+        clusterNode.onStateRestored(() -> gossipKeyRotationHandler.replayFromStore(kvStore));
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
 
         allEntries.addAll(aetherEntries);
@@ -1989,8 +2010,17 @@ public interface AetherNode extends ManageableNode {
         // absent from `topologyForSwim`, so the legacy NodeId-only path produced a SWIM
         // `PeerConnected(id, none())` that the FSM's `resolveSwimAddress` could not
         // resolve — leaving the peer permanently UNKNOWN and rejected by the gate.
+        // Wave 2 role-reach (cluster-topology-overhaul): the QUIC transport now supplies the
+        // Hello NodeInfo for ALL peers (known + unknown), so feed it to the membership FSM's
+        // descriptor FIRST — every node a worker dials (workers dial all cores, always
+        // including the leader) learns the worker's self-asserted role/source on the first
+        // handshake, independent of SWIM seed lists or label-less gossip MembershipUpdate.
+        // The descriptor upsert is blank-downgrade-guarded, so a label-less Hello never
+        // erases a known role. Runs on the router dispatch thread like the SWIM feed below;
+        // `onMemberDescriptor` is thread-safe (concurrent map + per-member monitor).
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> connection.nodeInfo()
+                                                                         .onPresent(membershipFsm::onMemberDescriptor)
                                                                          .orElse(() -> topologyForSwim.get(connection.nodeId()))
                                                                          .onPresent(swimHealthDetector::onNodeConnected)
                                                                          .onEmpty(() -> swimHealthDetector.onNodeConnected(connection.nodeId()))));
@@ -2003,13 +2033,17 @@ public interface AetherNode extends ManageableNode {
                                                             () -> {});
 
         peerObservationStore.subscribeHealth(swimHints::onPeerHealth);
+        // Wave 2 call-site audit: BootstrapModule's `coreMembersSupplier` seeds the DHT "core"
+        // partition — core-scoped by NAME and intent, so it reads coreCountedMembers() (the
+        // role-blind countedMembers() previously wired here could seed a worker as a DHT core
+        // partition member).
         var bootstrapModule = BootstrapModule.bootstrapModule(isLeaderSupplier,
                                                               rabiaTermSupplier,
                                                               () -> isLeaderSupplier.getAsBoolean()
                                                                     ? Option.some(leaderTerm.get())
                                                                     : Option.<Long> none(),
                                                               hlcClock,
-                                                              membershipFsm::countedMembers,
+                                                              membershipFsm::coreCountedMembers,
                                                               kvStore::snapshot,
                                                               config::self,
                                                               configBaselineSupplier,

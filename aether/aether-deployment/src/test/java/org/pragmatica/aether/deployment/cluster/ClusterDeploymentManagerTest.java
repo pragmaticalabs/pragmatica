@@ -217,6 +217,96 @@ class ClusterDeploymentManagerTest {
         }
     }
 
+    /// Wave 2 / W3 (cluster-topology-overhaul spec): role assignment counts CORES only. The
+    /// `currentCoreCount` denominator is `activeNodes()`, which reads the CORE-SCOPED supplier
+    /// verbatim (workers excluded at the `MembershipFsm.coreCountedMembers()` seam) — so a
+    /// would-be core below `coreMax` is never mis-assigned WORKER because workers inflated the
+    /// count, and a join at `coreMax` cores is assigned WORKER.
+    @Nested
+    class RoleAssignmentTests {
+        private static final NodeId NEW_NODE = new NodeId("node-new");
+
+        private ClusterDeploymentManager cdm;
+        private final List<KVCommand<AetherKey>> capturedCommands = new ArrayList<>();
+        private final AtomicReference<java.util.Set<NodeId>> coreCountedRef = new AtomicReference<>(Set.of());
+
+        @BeforeEach
+        void setUp() {
+            capturedCommands.clear();
+            coreCountedRef.set(Set.of());
+            var initialTopology = List.of(NODE_1, NODE_2, NODE_3);
+            var router = MessageRouter.mutable();
+            var kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
+            ClusterNode<KVCommand<AetherKey>> clusterNode = stubClusterNode(NODE_1, capturedCommands);
+            TopologyManager topologyManager = stubTopologyManager(NODE_1, initialTopology);
+
+            cdm = ClusterDeploymentManager.clusterDeploymentManager(NODE_1,
+                                                                     clusterNode,
+                                                                     kvStore,
+                                                                     router,
+                                                                     initialTopology,
+                                                                     topologyManager,
+                                                                     ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING,
+                                                                     3,
+                                                                     timeSpan(300).seconds(),
+                                                                     NO_OP_SCHEMA_ORCHESTRATOR,
+                                                                     capturedSignals::add,
+                                                                     coreCountedRef::get,
+                                                                     Set::of,
+                                                                     Set::of);
+        }
+
+        private final CopyOnWriteArrayList<HealthSignal> capturedSignals = new CopyOnWriteArrayList<>();
+
+        @Test
+        void nodeJoined_belowCoreMax_assignedCoreDirective() {
+            cdm.activate().await();
+            coreCountedRef.set(Set.of(NODE_1, NODE_2));
+
+            cdm.onMembershipDecision(MembershipDecision.nodeJoined(NEW_NODE, List.of(NODE_1, NODE_2, NEW_NODE)));
+
+            assertThat(directivesFor(NEW_NODE)).containsExactly(AetherValue.ActivationDirectiveValue.core());
+        }
+
+        @Test
+        void nodeJoined_atCoreMax_assignedWorkerDirective() {
+            cdm.activate().await();
+            coreCountedRef.set(Set.of(NODE_1, NODE_2, NODE_3));
+
+            cdm.onMembershipDecision(MembershipDecision.nodeJoined(NEW_NODE, List.of(NODE_1, NODE_2, NODE_3, NEW_NODE)));
+
+            assertThat(directivesFor(NEW_NODE)).containsExactly(AetherValue.ActivationDirectiveValue.worker());
+        }
+
+        /// The W3 regression shape: 2 cores + 2 workers in a role-BLIND count (4 ≥ coreMax 3)
+        /// would mis-assign the joiner as WORKER. The core-scoped supplier sees 2 cores, so the
+        /// joiner is correctly promoted to CORE.
+        @Test
+        void nodeJoined_workersDoNotInflateCoreCount_joinerStillPromotedToCore() {
+            cdm.activate().await();
+            // Core-scoped supplier: the two workers in the cluster are NOT in this set.
+            coreCountedRef.set(Set.of(NODE_1, NODE_2));
+
+            cdm.onMembershipDecision(MembershipDecision.nodeJoined(NEW_NODE, List.of(NODE_1, NODE_2, NEW_NODE)));
+
+            assertThat(directivesFor(NEW_NODE)).containsExactly(AetherValue.ActivationDirectiveValue.core());
+        }
+
+        @SuppressWarnings("unchecked")
+        private List<AetherValue.ActivationDirectiveValue> directivesFor(NodeId node) {
+            var key = AetherKey.ActivationDirectiveKey.activationDirectiveKey(node);
+
+            return capturedCommands.stream()
+                                   .filter(KVCommand.Put.class::isInstance)
+                                   .map(cmd -> (KVCommand.Put<AetherKey, AetherValue>) cmd)
+                                   .filter(put -> put.key().equals(key))
+                                   .map(KVCommand.Put::value)
+                                   .filter(AetherValue.ActivationDirectiveValue.class::isInstance)
+                                   .map(AetherValue.ActivationDirectiveValue.class::cast)
+                                   .toList();
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private static ClusterNode<KVCommand<AetherKey>> stubClusterNode(NodeId self,
                                                                       List<KVCommand<AetherKey>> capturedCommands) {

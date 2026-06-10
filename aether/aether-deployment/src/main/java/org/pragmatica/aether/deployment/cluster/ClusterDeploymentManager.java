@@ -270,7 +270,7 @@ public interface ClusterDeploymentManager {
                                                              TimeSpan reconcileInterval,
                                                              SchemaOrchestratorService schemaOrchestrator,
                                                              HealthSignalSink healthSignalSink,
-                                                             Supplier<Set<NodeId>> countedMembersSupplier,
+                                                             Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                              Supplier<Set<NodeId>> readyNodesSupplier) {
         return clusterDeploymentManager(self,
                                         cluster,
@@ -283,7 +283,7 @@ public interface ClusterDeploymentManager {
                                         reconcileInterval,
                                         schemaOrchestrator,
                                         healthSignalSink,
-                                        countedMembersSupplier,
+                                        coreCountedMembersSupplier,
                                         readyNodesSupplier,
                                         Set::of);
     }
@@ -299,7 +299,7 @@ public interface ClusterDeploymentManager {
                                                              TimeSpan reconcileInterval,
                                                              SchemaOrchestratorService schemaOrchestrator,
                                                              HealthSignalSink healthSignalSink,
-                                                             Supplier<Set<NodeId>> countedMembersSupplier,
+                                                             Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                              Supplier<Set<NodeId>> readyNodesSupplier,
                                                              Supplier<Set<NodeId>> drainingNodesSupplier) {
         var ctx = buildContext(self,
@@ -313,7 +313,7 @@ public interface ClusterDeploymentManager {
                                reconcileInterval,
                                schemaOrchestrator,
                                healthSignalSink,
-                               countedMembersSupplier,
+                               coreCountedMembersSupplier,
                                readyNodesSupplier,
                                drainingNodesSupplier);
 
@@ -331,7 +331,7 @@ public interface ClusterDeploymentManager {
                                                          TimeSpan reconcileInterval,
                                                          SchemaOrchestratorService schemaOrchestrator,
                                                          HealthSignalSink healthSignalSink,
-                                                         Supplier<Set<NodeId>> countedMembersSupplier,
+                                                         Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                          Supplier<Set<NodeId>> readyNodesSupplier,
                                                          Supplier<Set<NodeId>> drainingNodesSupplier) {
         var ctxHolder = new AtomicReference<ClusterDeploymentContext>();
@@ -348,7 +348,7 @@ public interface ClusterDeploymentManager {
                                                                                                                                            reconcileInterval,
                                                                                                                                            schemaOrchestrator,
                                                                                                                                            healthSignalSink,
-                                                                                                                                           countedMembersSupplier,
+                                                                                                                                           coreCountedMembersSupplier,
                                                                                                                                            readyNodesSupplier,
                                                                                                                                            drainingNodesSupplier);
         var _fsm = Fsm.fsm("cluster-deployment", self.id(), initialStateFactory);
@@ -369,7 +369,7 @@ public interface ClusterDeploymentManager {
                                                                  TimeSpan reconcileInterval,
                                                                  SchemaOrchestratorService schemaOrchestrator,
                                                                  HealthSignalSink healthSignalSink,
-                                                                 Supplier<Set<NodeId>> countedMembersSupplier,
+                                                                 Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                                  Supplier<Set<NodeId>> readyNodesSupplier,
                                                                  Supplier<Set<NodeId>> drainingNodesSupplier) {
         var ctx = new ClusterDeploymentContext(fsm,
@@ -380,7 +380,7 @@ public interface ClusterDeploymentManager {
                                                topologyManager,
                                                schemaOrchestrator,
                                                healthSignalSink,
-                                               countedMembersSupplier,
+                                               coreCountedMembersSupplier,
                                                readyNodesSupplier,
                                                drainingNodesSupplier,
                                                seedNodes,

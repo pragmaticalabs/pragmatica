@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.membership.ntt;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.cluster.NodeReconcilerState;
@@ -24,7 +25,9 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.TimeSource;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.statemachine.FsmObserver;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.SwimHealth;
 
@@ -70,6 +73,10 @@ class LeaderReconcilerTest {
     private static final TimeSpan EXPECTED_GRACE_WINDOW =
         timeSpan(membershipConfig().nttDepartureTimeout().nanos() * 3 / 2).nanos();
     private static final TimeSpan EXPECTED_DEBOUNCE_WINDOW = membershipConfig().nttDepartureTimeout();
+    /// Drain-safety grace window (Wave 2 defense in depth) = nttDepartureTimeout × 2 — a
+    /// surplus-drain victim younger than this is never selected.
+    private static final TimeSpan EXPECTED_DRAIN_GRACE =
+        timeSpan(membershipConfig().nttDepartureTimeout().nanos() * 2).nanos();
     private static final TimeSpan DEBOUNCE_DELAY = timeSpan(100L).millis();
 
     private TestTimeSource timeSource;
@@ -81,6 +88,11 @@ class LeaderReconcilerTest {
     private MutableHealthSource health;
     private PresenceSampler sampler;
     private MembershipFsm membershipFsm;
+    /// Controllable wall clock (ms) injected into the FSM — drives the drain-safety grace member
+    /// ages deterministically. The seeding helpers advance it past the grace window after every
+    /// seed so helper-seeded members are MATURE (drainable), preserving every pre-grace drain
+    /// expectation; the [`DrainSafetyGrace`] tests seed young members without the advance.
+    private AtomicLong fsmWallClockMs;
     /// Monotonic SWIM incarnation for FSM drives. Every promote/kill uses a strictly increasing
     /// incarnation so a re-seed after death always clears the DEAD incarnation fence (rejoin) and a
     /// kill always carries a fresh incarnation.
@@ -109,7 +121,10 @@ class LeaderReconcilerTest {
         // gate) and is driven in lockstep with the presence sampler helpers so countedMembers() mirrors the
         // presence sampler-intended membership at every step. SELF is promoted to MEMBER here to match presence sampler's self-seed
         // (sampler.currentMembers() always includes SELF), so the FSM count and the presence sampler-era count agree.
-        membershipFsm = membershipFsm(sampler);
+        // The FSM wall clock is injected (controllable) so the drain-safety grace member ages are
+        // deterministic — see the [`#fsmWallClockMs`] field doc.
+        fsmWallClockMs = new AtomicLong(0L);
+        membershipFsm = membershipFsm(sampler, FsmObserver.noop(), fsmWallClockMs::get, Long.MAX_VALUE);
         membershipFsm.onSwimHealthy(SELF, fsmIncarnation.getAndIncrement());
         reconciler = leaderReconciler(membershipConfig(),
                                       sampler,
@@ -135,6 +150,10 @@ class LeaderReconcilerTest {
             membershipFsm.onSwimHealthy(peer, fsmIncarnation.getAndIncrement());
         }
         sampler.sample();
+        // Mature every tracked member past the drain-safety grace, so helper-seeded members are
+        // immediately drainable — preserving every pre-grace drain expectation. Young-member
+        // behaviour is exercised explicitly by the DrainSafetyGrace tests.
+        agePastDrainSafetyGrace();
     }
 
     /// Mark peers absent in the presence sampler health snapshot (simulates a departure) and sample so the
@@ -149,6 +168,40 @@ class LeaderReconcilerTest {
             membershipFsm.onLivenessGone(peer);
         }
         sampler.sample();
+    }
+
+    /// Wave 2 (cluster-topology-overhaul spec): feed N WORKER-labeled peers — healthy in the
+    /// sampler, promoted to MEMBER in the FSM, descriptor-labeled `role=worker` so the
+    /// role-scoped [`MembershipFsm#coreCountedMembers`] projection excludes them while the
+    /// role-blind `countedMembers()` still counts them.
+    @Contract
+    private void seedWorkers(NodeId... workers) {
+        for (var worker : workers) {
+            health.markHealthy(worker);
+            membershipFsm.onSwimHealthy(worker, fsmIncarnation.getAndIncrement());
+            membershipFsm.onMemberDescriptor(workerInfo(worker));
+        }
+        sampler.sample();
+        agePastDrainSafetyGrace();
+    }
+
+    /// Advance the FSM wall clock past the drain-safety grace window so every CURRENTLY-tracked
+    /// member is mature (eligible for surplus-drain victim selection). Members tracked AFTER this
+    /// call stay young until the next advance.
+    @Contract
+    private void agePastDrainSafetyGrace() {
+        fsmWallClockMs.addAndGet(EXPECTED_DRAIN_GRACE.millis() + 1);
+    }
+
+    /// A NodeInfo carrying the explicit `role=worker` label. The transport-role slot is filled
+    /// from the default factory's value (it is vestigial — never PASSIVE in production — and
+    /// reusing it avoids importing the transport `NodeRole`, which would clash with the config
+    /// `NodeRole` this test already imports).
+    private static NodeInfo workerInfo(NodeId id) {
+        var address = NodeAddress.nodeAddress("worker-host", 6000).unwrap();
+        var transportRole = NodeInfo.nodeInfo(id, address).role();
+
+        return NodeInfo.nodeInfo(id, address, transportRole, Map.of(NodeInfo.LABEL_ROLE, "worker"));
     }
 
     /// Drive the post-activation reconcile path: fire the queued debounced reconcile that
@@ -556,6 +609,127 @@ class LeaderReconcilerTest {
         }
     }
 
+    /// Drain-safety grace (Wave 2 defense in depth at the drain authority): surplus-drain victim
+    /// selection never picks a member whose membership age ([`MembershipFsm#memberAgeMs`]) is
+    /// below `nttDepartureTimeout × 2` — the role-propagation race window in which a just-joined
+    /// worker whose labels have not yet reached the leader reads as a blank-role core surplus.
+    /// AGE-based and role-agnostic: mature blank-role members stay drainable. An all-young
+    /// candidate pool DEFERS the drain (WARN + exactly one armed follow-up reconcile) instead of
+    /// silently dropping the surplus.
+    @Nested
+    class DrainSafetyGrace {
+        /// The follow-up delay armed when deferral happens at age 0 for every young candidate:
+        /// full grace remaining + the debounce margin (mirrors `drainGraceReEvalDelay`).
+        private static final TimeSpan FULL_GRACE_FOLLOW_UP_DELAY =
+            timeSpan(EXPECTED_DRAIN_GRACE.millis() + DEBOUNCE_DELAY.millis()).millis();
+
+        /// Seed peers WITHOUT the post-seed maturity advance: the members are tracked at the
+        /// current FSM wall clock and stay YOUNG (inside the drain-safety grace) until the
+        /// clock advances.
+        @Contract
+        private void seedYoungPeers(NodeId... peers) {
+            for (var peer : peers) {
+                health.markHealthy(peer);
+                membershipFsm.onSwimHealthy(peer, fsmIncarnation.getAndIncrement());
+            }
+            sampler.sample();
+        }
+
+        @Test
+        void surplusDrain_youngVictimSkipped_matureVictimSelected() {
+            configuredCoreCount.set(3);
+            // SELF + two mature peers (the seeding helper matures every tracked member)...
+            seedClusterWithPeers(PEER_A, PEER_B);
+            // ...plus one just-joined member whose id sorts FIRST under the reversed-id victim
+            // heuristic — the pre-grace selection would have drained exactly this joiner.
+            var youngJoiner = new NodeId("zzz-young-joiner");
+            seedYoungPeers(youngJoiner);
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            // Surplus = 4 - 3 = 1: one MATURE victim is drained; the young joiner is never selected.
+            assertThat(ctm.drainNodeCalls())
+                .as("the surplus drain must skip the young joiner and select a mature victim")
+                .hasSize(1)
+                .doesNotContain(youngJoiner);
+        }
+
+        @Test
+        void surplusDrain_allCandidatesYoung_defersWithFollowUp_noDrainDispatched() {
+            configuredCoreCount.set(1);
+            // SELF was tracked at clock 0 and the clock never advances — EVERY candidate is young.
+            seedYoungPeers(PEER_A, PEER_B);
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            var intent = listener.events().getFirst();
+            assertThat(intent.drainCount())
+                .as("an all-young candidate pool must defer the surplus drain entirely")
+                .isZero();
+            assertThat(ctm.drainNodeCalls()).isEmpty();
+            // The deferral armed EXACTLY ONE follow-up reconcile at (remaining grace + margin).
+            assertThat(scheduler.tasksByDelay(FULL_GRACE_FOLLOW_UP_DELAY))
+                .as("a deferred drain must arm one re-evaluation follow-up — never silently dropped")
+                .hasSize(1);
+        }
+
+        @Test
+        void deferredSurplusDrain_firesAfterGraceElapses_viaArmedFollowUp() {
+            configuredCoreCount.set(1);
+            seedYoungPeers(PEER_A, PEER_B);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(ctm.drainNodeCalls()).isEmpty();
+
+            // The young members mature past the grace window...
+            agePastDrainSafetyGrace();
+            // ...and the armed follow-up re-enters the reconcile path (follow-up → debounced pass).
+            scheduler.tasksByDelay(FULL_GRACE_FOLLOW_UP_DELAY).getFirst().runIfLive();
+            fireDebouncedReconcile();
+
+            // Surplus = 3 - 1 = 2: the deferred drain now fires against the matured candidates.
+            assertThat(ctm.drainNodeCalls())
+                .as("the deferred surplus drain must fire once the candidates mature")
+                .hasSize(2);
+        }
+
+        @Test
+        void surplusDrain_partialMaturePool_drainsMatureAndDefersShortfall() {
+            configuredCoreCount.set(1);
+            // SELF (tracked in setUp at clock 0) matures; the two peers seeded afterwards stay young.
+            agePastDrainSafetyGrace();
+            seedYoungPeers(PEER_A, PEER_B);
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            // Surplus = 2; mature pool = {SELF} → one mature victim drained, the shortfall deferred.
+            assertThat(ctm.drainNodeCalls())
+                .as("the mature part of the surplus is drained immediately")
+                .containsExactly(SELF);
+            assertThat(scheduler.tasksByDelay(FULL_GRACE_FOLLOW_UP_DELAY))
+                .as("the young shortfall arms one re-evaluation follow-up")
+                .hasSize(1);
+        }
+
+        @Test
+        void surplusDrain_matureBlankRoleMembers_stillDrained_roleAgnostic() {
+            configuredCoreCount.set(1);
+            // All members carry BLANK roles (no descriptor labels) — the grace is age-based, so
+            // a mature all-core cluster drains its genuine surplus exactly as before.
+            seedClusterWithPeers(PEER_A, PEER_B);
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            var intent = listener.events().getFirst();
+            assertThat(intent.drainCount()).isEqualTo(2);
+            assertThat(ctm.drainNodeCalls()).hasSize(2);
+        }
+    }
+
     @Nested
     class InFlightExpiry {
         @Test
@@ -689,6 +863,77 @@ class LeaderReconcilerTest {
             assertThat(reconciler.isArmedForProvisioning()).isTrue();
             assertThat(ctm.provisionReplacementCalls()).hasSize(2);
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
+        }
+    }
+
+    /// Wave 2 (cluster-topology-overhaul spec) — worker accounting hygiene. The reconciler's
+    /// base set is the CORE-SCOPED [`MembershipFsm#coreCountedMembers`] (W2): workers never fill
+    /// a core deficit arithmetically, never manufacture a phantom core surplus, and a dispatched
+    /// replacement carries an explicit CORE intent (W4).
+    @Nested
+    class WorkerAccounting {
+        private final NodeId worker1 = NodeId.randomNodeId();
+        private final NodeId worker2 = NodeId.randomNodeId();
+        private final NodeId worker3 = NodeId.randomNodeId();
+
+        /// W2 — the headline bug: configured 5 cores; 4 cores + 3 workers is a REAL deficit of 1
+        /// (the role-blind count of 7 would have hidden it forever — a dead core never replaced
+        /// once workers exist). Auto-heal provisions exactly one replacement. The deficit exists
+        /// from activation (re-election pre-latch, term > 1) so the assertion does not depend on
+        /// the FSM's deferred SUSPECT→DEAD backstop timing.
+        @Test
+        void coreDeficitWithWorkersPresent_provisionsExactlyOneReplacement() {
+            configuredCoreCount.set(5);
+            leaderTerm.set(2L);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+            seedWorkers(worker1, worker2, worker3);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(reconciler.isArmedForProvisioning()).isTrue();
+
+            advancePastProvisioningGates();
+            listener.clear();
+            triggerAndFireReconcile();
+
+            var intent = listener.events().getFirst();
+            assertThat(intent.clusterMembershipCount()).as("membership count is core-scoped, workers excluded").isEqualTo(4);
+            assertThat(intent.provisionCount()).isEqualTo(1);
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
+        /// W4 — the dispatched replacement carries the explicit CORE intent (never inherited or
+        /// implied), so the provider boundary stamps `AETHER_ROLE=core` end-to-end.
+        @Test
+        void provisionDispatch_passesExplicitCoreRole() {
+            configuredCoreCount.set(5);
+            leaderTerm.set(2L);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementRoles()).containsExactly(NodeRole.CORE);
+        }
+
+        /// W2 symmetric half — 5 cores + 3 workers vs configured 5 is NOT a surplus. The
+        /// role-blind count (8) would have drained three healthy nodes; the core-scoped count
+        /// sees exactly the configured size: no drain, no provision.
+        @Test
+        void fullCoreMembershipWithWorkers_noPhantomSurplusDrain() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            seedWorkers(worker1, worker2, worker3);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            var intent = listener.events().getFirst();
+            assertThat(intent.clusterMembershipCount()).as("membership count is core-scoped, workers excluded").isEqualTo(5);
+            assertThat(intent.provisionCount()).isZero();
+            assertThat(intent.drainCount()).isZero();
+            assertThat(ctm.drainNodeCalls()).isEmpty();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
         }
     }
 
@@ -1486,6 +1731,7 @@ class LeaderReconcilerTest {
     private static final class RecordingCtm implements ClusterTopologyManager {
         private final List<NodeId> drainNodeCalls = new CopyOnWriteArrayList<>();
         private final List<NodeId> provisionReplacementCalls = new CopyOnWriteArrayList<>();
+        private final List<NodeRole> provisionReplacementRoles = new CopyOnWriteArrayList<>();
         private final List<DrainReason> drainReasons = new CopyOnWriteArrayList<>();
         private final AtomicInteger reconcileCount = new AtomicInteger(0);
 
@@ -1497,11 +1743,16 @@ class LeaderReconcilerTest {
         void clear() {
             drainNodeCalls.clear();
             provisionReplacementCalls.clear();
+            provisionReplacementRoles.clear();
             drainReasons.clear();
         }
 
         List<NodeId> provisionReplacementCalls() {
             return List.copyOf(provisionReplacementCalls);
+        }
+
+        List<NodeRole> provisionReplacementRoles() {
+            return List.copyOf(provisionReplacementRoles);
         }
 
         List<DrainReason> drainReasons() {
@@ -1513,8 +1764,12 @@ class LeaderReconcilerTest {
         }
 
         @Override
-        public Promise<Unit> provisionReplacement(NodeId newNodeId, Option<NodeId> failedPeer, Set<NodeId> clusterMembers) {
+        public Promise<Unit> provisionReplacement(NodeId newNodeId,
+                                                  Option<NodeId> failedPeer,
+                                                  Set<NodeId> clusterMembers,
+                                                  NodeRole intendedRole) {
             provisionReplacementCalls.add(newNodeId);
+            provisionReplacementRoles.add(intendedRole);
             return Promise.success(unit());
         }
 

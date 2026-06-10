@@ -297,6 +297,13 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
             command.add("-e");
             command.add("AETHER_PROVISIONED_BY=" + provisionedBy);
         }
+        // Wave 2 / W4 (cluster-topology-overhaul spec): the provisioned node's AETHER_ROLE is
+        // AUTHORITATIVE from the caller's intent (roleOrDefault(ctx) — the SAME source as the
+        // `aether.role` label above), NOT inherited from the provisioning host's process env.
+        // Emitted BEFORE the IDENTITY_VARS loop so alreadyEmitted() dedupes the host-env
+        // AETHER_ROLE out — a leader's own role can never leak onto a node it mints.
+        command.add("-e");
+        command.add("AETHER_ROLE=" + role);
         // Single source of truth: propagate the full cluster-identity allow-list
         // (AETHER_CLUSTER_NAME/SECRET/PROVISIONED_BY/API_KEY) then the Docker-infra
         // allow-list (AETHER_DOCKER_NETWORK/DOCKER_GID). A provider-minted replacement

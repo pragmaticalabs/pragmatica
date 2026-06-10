@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.InstanceType;
@@ -452,12 +453,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// QUIC NPE). If `clusterMembers` is empty (cold paths), the seed falls back to
     /// `buildProvisionContext`'s topology-derived peers. `failedPeer` is observability-only.
     @Override
-    public Promise<Unit> provisionReplacement(NodeId newNodeId, Option<NodeId> failedPeer, Set<NodeId> clusterMembers) {
-        log.info("CTM v2: provisionReplacement requested (newNodeId={}, failedPeer={}, clusterMembers.size={})",
+    public Promise<Unit> provisionReplacement(NodeId newNodeId,
+                                              Option<NodeId> failedPeer,
+                                              Set<NodeId> clusterMembers,
+                                              NodeRole intendedRole) {
+        log.info("CTM v2: provisionReplacement requested (newNodeId={}, failedPeer={}, clusterMembers.size={}, intendedRole={})",
                  newNodeId,
                  failedPeer,
-                 clusterMembers.size());
-        var contextBase = buildProvisionContext(newNodeId);
+                 clusterMembers.size(),
+                 intendedRole.value());
+        var contextBase = buildProvisionContext(newNodeId, intendedRole);
         var memberPeers = liveMemberPeers(clusterMembers);
         var contextSeeded = memberPeers.isEmpty()
                             ? contextBase
@@ -748,7 +753,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         inFlightSlotIndices.clear();
     }
 
-    private ProvisionContext buildProvisionContext(NodeId newNodeId) {
+    private ProvisionContext buildProvisionContext(NodeId newNodeId, NodeRole intendedRole) {
         // Always include self as a fallback bootstrap target — the CTM runs on the leader, which
         // is alive by definition. Without this fallback, transient "no healthy remote peers"
         // windows during chaos (e.g., a leader has just decommissioned several SWIM-faulty peers
@@ -764,8 +769,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // Thread the leader-minted identity through so the provisioned node boots under exactly
         // this id (provider injects it as AETHER_NODE_ID / Docker container name; the node adopts
         // it as `self`). NodeId.id() is `node-<lowercase-ULID>` — alphanumeric + hyphen, a valid
-        // Docker container name and cluster boot identity.
-        return ProvisionContext.forReplacement(clusterName, newNodeId.id(), peers, snapshotDesiredCoreSize());
+        // Docker container name and cluster boot identity. The intended role (Wave 2 / W4) rides
+        // the same context so the provider stamps AETHER_ROLE / aether.role explicitly instead of
+        // inheriting the provisioning host's env.
+        return ProvisionContext.forReplacement(clusterName, intendedRole.value(), newNodeId.id(), peers, snapshotDesiredCoreSize());
     }
 
     private boolean isHealthyPeer(NodeId nodeId) {

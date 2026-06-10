@@ -114,7 +114,7 @@ sealed interface UserDataTemplate {
         if (isContainer) {
             appendDockerInstall(sb);
             appendComposedConfig(sb, composedConfig);
-            appendContainerRun(sb, clusterName, nodeId);
+            appendContainerRun(sb, clusterName, nodeId, role);
         } else {
             appendJvmInstall(sb,
                              resolveJarUrl(runtimeProfile,
@@ -122,6 +122,7 @@ sealed interface UserDataTemplate {
             appendComposedConfig(sb, composedConfig);
             appendJvmRun(sb,
                          clusterName,
+                         role,
                          runtimeProfile.flatMap(RuntimeProfile::jvmArgs).or(""));
         }
 
@@ -213,7 +214,7 @@ sealed interface UserDataTemplate {
         sb.append("chmod 644 /opt/aether/config/aether.toml\n\n");
     }
 
-    private static void appendContainerRun(StringBuilder sb, String clusterName, String nodeId) {
+    private static void appendContainerRun(StringBuilder sb, String clusterName, String nodeId, NodeRole role) {
         sb.append("# --- Pull and run ---\n");
         sb.append("if ! docker image inspect \"${AETHER_IMAGE}\" >/dev/null 2>&1; then\n");
         sb.append("    docker pull \"${AETHER_IMAGE}\"\n");
@@ -224,29 +225,32 @@ sealed interface UserDataTemplate {
         sb.append("    --network host \\\n");
         sb.append("    -l aether-cluster=").append(clusterName).append(" \\\n");
         sb.append("    -l aether-node-id=").append(nodeId).append(" \\\n");
-        sb.append("    -l aether-role=core \\\n");
+        sb.append("    -l aether-role=").append(role.value()).append(" \\\n");
         sb.append("    -v /opt/aether/config/aether.toml:/app/aether.toml:ro \\\n");
         sb.append("    -e NODE_ID=\"${AETHER_NODE_ID}\" \\\n");
         sb.append("    -e CLUSTER_PORT=\"${AETHER_CLUSTER_PORT}\" \\\n");
         sb.append("    -e MANAGEMENT_PORT=\"${AETHER_MANAGEMENT_PORT}\" \\\n");
         sb.append("    -e PEERS=\"${AETHER_PEERS}\" \\\n");
-        appendEnv(sb, clusterName, true);
+        appendEnv(sb, clusterName, role, true);
         sb.append("    \"${AETHER_IMAGE}\"\n\n");
     }
 
     /// Bake the cluster-identity allow-list ([ClusterIdentityEnv#IDENTITY_VARS]) into the
     /// cloud-init script so a provider-minted replacement inherits the same identity its
     /// compose-fixed siblings receive. AETHER_CLUSTER_NAME is sourced from the threaded
-    /// `clusterName` param (the bootstrap-known cluster name); the rest are read from the
-    /// bootstrapping host's env and emitted only when non-empty. AETHER_CLUSTER_SECRET is
-    /// emitted HERE (single source of truth), not separately, so the allow-list is the only
-    /// place identity vars are listed.
+    /// `clusterName` param (the bootstrap-known cluster name); AETHER_ROLE is sourced from the
+    /// threaded `role` param (the node's INTENDED role — Wave 2 / W4 of the
+    /// cluster-topology-overhaul spec: never inherited from the bootstrapping host's env, which
+    /// carries the HOST's role, not this node's); the rest are read from the bootstrapping
+    /// host's env and emitted only when non-empty. AETHER_CLUSTER_SECRET is emitted HERE
+    /// (single source of truth), not separately, so the allow-list is the only place identity
+    /// vars are listed.
     ///
     /// `dockerRun==true` emits `-e VAR="value" \` (a `docker run` line-continuation form);
     /// `false` emits `export VAR="value"` for the JVM-run path.
-    private static void appendEnv(StringBuilder sb, String clusterName, boolean dockerRun) {
+    private static void appendEnv(StringBuilder sb, String clusterName, NodeRole role, boolean dockerRun) {
         for (var name : ClusterIdentityEnv.IDENTITY_VARS) {
-            appendEnvVar(sb, name, resolveEnvValue(name, clusterName), dockerRun);
+            appendEnvVar(sb, name, resolveEnvValue(name, clusterName, role), dockerRun);
         }
         // --- Dev-mode (ISOLATED — never part of IDENTITY_VARS) ---
         // Emit AETHER_INSECURE_DEV_MODE only when present in the bootstrapping host's env so
@@ -258,10 +262,13 @@ sealed interface UserDataTemplate {
                      dockerRun);
     }
 
-    private static Option<String> resolveEnvValue(String name, String clusterName) {
+    private static Option<String> resolveEnvValue(String name, String clusterName, NodeRole role) {
         return switch (name) {
             // Sourced from the threaded bootstrap cluster name, not host env.
             case "AETHER_CLUSTER_NAME" -> Option.option(clusterName).filter(s -> !s.isBlank());
+            // Sourced from the threaded INTENDED role, not host env (Wave 2 / W4 — the
+            // bootstrapping host's AETHER_ROLE is the host's own role, not this node's).
+            case "AETHER_ROLE" -> Option.some(role.value());
             // Sourced from the script's own AETHER_CLUSTER_SECRET shell variable (set in
             // appendVariables from the clusterSecret param) — keep the shell-ref form so the
             // operator-supplied secret flows in without leaking into the host env read.
@@ -305,11 +312,11 @@ sealed interface UserDataTemplate {
         sb.append("fi\n\n");
     }
 
-    private static void appendJvmRun(StringBuilder sb, String clusterName, String jvmArgs) {
+    private static void appendJvmRun(StringBuilder sb, String clusterName, NodeRole role, String jvmArgs) {
         sb.append("# --- Start Aether ---\n");
         // Export the cluster-identity allow-list (and isolated dev-mode) so the JVM picks
         // up the same identity a containerized sibling receives via -e flags.
-        appendEnv(sb, clusterName, false);
+        appendEnv(sb, clusterName, role, false);
         sb.append("PEERS_ARG=\"\"\n");
         sb.append("if [ -n \"${AETHER_PEERS}\" ]; then PEERS_ARG=\"--peers=${AETHER_PEERS}\"; fi\n");
         sb.append("AETHER_CLUSTER_SECRET=\"${AETHER_CLUSTER_SECRET}\" java ");

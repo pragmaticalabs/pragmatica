@@ -657,13 +657,16 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       .or(ctx.coreMax());
         }
 
+        /// The CORE membership the CDM allocates/counts over (cluster-topology-overhaul spec,
+        /// Wave 2 / W3+W6). The supplier is core-scoped at the wiring seam
+        /// (`MembershipFsm.coreCountedMembers()` — descriptor-role-based, worker excluded), so a
+        /// worker can never enter the role-assignment denominator, `allocatableNodes()`, or the
+        /// `AllocationPool.coreNodes` / CORE_ONLY placement pool. The former transport
+        /// `isPassive` filter was structurally always false (transport PASSIVE is never
+        /// produced) and is gone — role filtering lives at the descriptor seam.
         public List<NodeId> activeNodes() {
-            return ctx.countedMembersSupplier()
-                      .get()
-                      .stream()
-                      .filter(id -> !ctx.topologyManager()
-                                        .isPassive(id))
-                      .toList();
+            return List.copyOf(ctx.coreCountedMembersSupplier()
+                                  .get());
         }
 
         public Set<NodeId> drainingNodes() {

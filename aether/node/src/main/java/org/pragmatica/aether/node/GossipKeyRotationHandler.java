@@ -4,9 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GossipKeyRotationKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GossipKeyRotationValue;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.swim.AesGcmGossipEncryptor;
 import org.pragmatica.swim.RotatingGossipEncryptor;
 
@@ -37,6 +41,32 @@ public final class GossipKeyRotationHandler {
                  value.currentKeyId(),
                  value.previousKeyId());
         applyRotation(value);
+    }
+
+    /// Replays the cluster gossip-key rotation from an already-synced KV store. A late joiner
+    /// never receives the live `ValuePut` that distributed the rotation (the PUT happened
+    /// before it joined), so after consensus state restore the rotation must be re-read from
+    /// the restored store — otherwise the node keeps its boot-time per-node key and every SWIM
+    /// datagram it sends is rejected by the cluster ("Unknown gossip key ID"), permanently
+    /// locking it out of SWIM membership. Absent value → debug-logged no-op. Idempotent by
+    /// construction: re-applying the same key is harmless.
+    @Contract
+    public void replayFromStore(KVStore<AetherKey, AetherValue> store) {
+        store.getTyped(GossipKeyRotationKey.gossipKeyRotationKey(), GossipKeyRotationValue.class)
+             .onPresent(this::replayRotation)
+             .onEmpty(GossipKeyRotationHandler::logRotationAbsent);
+    }
+
+    @Contract
+    private void replayRotation(GossipKeyRotationValue value) {
+        log.info("Replaying gossip key rotation from synced store: currentKeyId={}, previousKeyId={}",
+                 value.currentKeyId(),
+                 value.previousKeyId());
+        applyRotation(value);
+    }
+
+    private static void logRotationAbsent() {
+        log.debug("No gossip key rotation present in synced store — keeping boot-time gossip key");
     }
 
     @SuppressWarnings("JBCT-RET-01")

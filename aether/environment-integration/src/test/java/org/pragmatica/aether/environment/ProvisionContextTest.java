@@ -70,7 +70,7 @@ class ProvisionContextTest {
 
         @Test
         void forReplacement_validInputs_givenPeersAndGivenCoreMax() {
-            var ctx = ProvisionContext.forReplacement("prod", "node-abc", "n1:h1:6000,n2:h2:6000", 5);
+            var ctx = ProvisionContext.forReplacement("prod", "core", "node-abc", "n1:h1:6000,n2:h2:6000", 5);
 
             assertThat(ctx.clusterName()).isEqualTo("prod");
             assertThat(ctx.role()).isEqualTo("core");

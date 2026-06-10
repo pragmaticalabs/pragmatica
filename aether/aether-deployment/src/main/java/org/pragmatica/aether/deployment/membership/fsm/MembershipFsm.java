@@ -289,11 +289,13 @@ public final class MembershipFsm {
     }
 
     // --- Ingress (live taps feed these; always-on) ---
-    /// Upsert the last-wins network descriptor (address + role + source) for `info.id()` from a
+    /// Upsert the network descriptor (address + role + source) for `info.id()` from a
     /// NodeInfo-bearing SWIM observation (JoinAnnounced / MemberDiscovered). Leader-gate-free and
     /// orthogonal to the lifecycle FSM: it lazily creates the member's tracking via [`#trackingFor`]
     /// (leaving its state in OBSERVED) and overwrites only the descriptor, so the address/role/source
-    /// become known the moment the first NodeInfo lands and a later observation replaces them.
+    /// become known the moment the first NodeInfo lands. Field-level updates are guarded against
+    /// blank-downgrade ([`MemberTracking#updateDescriptor`]): an information-less observation never
+    /// erases a known address / role / source, while a non-blank incoming value still replaces it.
     @Contract
     public void onMemberDescriptor(NodeInfo info) {
         trackingFor(info.id()).updateDescriptor(MemberDescriptor.fromNodeInfo(info));
@@ -388,6 +390,10 @@ public final class MembershipFsm {
     /// [`MembershipState#countsTowardEffective`] is true (MEMBER + SUSPECT). Insertion-ordered
     /// (a [`LinkedHashSet`], matching [`#memberStates`]) for stable iteration. Its size always
     /// equals [`#effective`].
+    ///
+    /// ROLE-BLIND (includes workers). Quorum / heal-deficit / role-assignment consumers must NOT
+    /// count this set — they read the role-scoped [`#coreCountedMembers`] instead
+    /// (cluster-topology-overhaul spec, Wave 2 / invariant A8: one core denominator).
     public Set<NodeId> countedMembers() {
         return members.entrySet()
                       .stream()
@@ -397,12 +403,15 @@ public final class MembershipFsm {
                       .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
-    /// Provisioning deficit: `max(0, configuredCoreCount - effective())`.
+    /// Provisioning deficit: `max(0, configuredCoreCount - effective())`. ROLE-BLIND aggregate —
+    /// no production heal consumer reads it (the `LeaderReconciler` deficit reads
+    /// [`#coreCountedMembers`], Wave 2 / W2); retained for FSM-level observability and tests.
     public int wouldProvision(int configuredCoreCount) {
         return Math.max(0, configuredCoreCount - effective());
     }
 
-    /// Drain surplus: `max(0, effective() - configuredCoreCount)`.
+    /// Drain surplus: `max(0, effective() - configuredCoreCount)`. ROLE-BLIND aggregate — same
+    /// status as [`#wouldProvision`] (observability/tests only).
     public int wouldDrain(int configuredCoreCount) {
         return Math.max(0, effective() - configuredCoreCount);
     }
@@ -481,6 +490,21 @@ public final class MembershipFsm {
         return snapshot;
     }
 
+    /// Age (ms) of `id`'s membership tracking: wall-clock time since this manager FIRST began
+    /// tracking the member (its [`MemberTracking`] creation on first observation), on the
+    /// manager's injected wall clock — `none()` for an untracked id. The creation stamp is
+    /// retained across DEAD/rejoin (the tracking is never recreated), which is deliberate: the
+    /// descriptor is retained too, so a rejoining member's role is already known and the
+    /// role-propagation race this age guards against does not re-open. Consumer: the
+    /// `LeaderReconciler` drain-safety grace (cluster-topology-overhaul Wave 2) — a surplus-drain
+    /// victim younger than the grace window is never selected, closing the window where a
+    /// just-joined worker whose role labels are still propagating reads as a blank-role core
+    /// surplus and is drained.
+    public Option<Long> memberAgeMs(NodeId id) {
+        return Option.option(members.get(id))
+                     .map(tracking -> wallClockMs.getAsLong() - tracking.firstTrackedAtMs());
+    }
+
     // --- Projections (desired connection-set for the transport executor) ---
     /// The core membership set the transport executor should keep mesh-connected: counted members
     /// (MEMBER + SUSPECT) that are NOT explicitly role=worker. An unknown / absent role counts as
@@ -493,6 +517,34 @@ public final class MembershipFsm {
                                             .isCoreCountedMember())
                       .map(Map.Entry::getKey)
                       .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    /// The role-scoped COUNTING projection (cluster-topology-overhaul spec, Wave 2 / invariant
+    /// A8 — one core denominator): counted members (MEMBER + SUSPECT) whose descriptor role is
+    /// not the explicit literal `worker`. An unknown / absent role counts as core (conservative,
+    /// matching [`#coreMembers`]'s documented rule), so an all-core cluster with no role labels
+    /// yields every counted member.
+    ///
+    /// Built on — and today identical to — [`#coreMembers`], but deliberately a SEPARATE name:
+    /// [`#coreMembers`] is the transport dial-set projection (what the executor keeps
+    /// mesh-connected), this is the counting denominator for quorum / heal-deficit /
+    /// role-assignment consumers. If the dial-set ever diverges (e.g. worker dial topology,
+    /// #241), counting consumers stay pinned to this projection. Insertion-ordered.
+    public Set<NodeId> coreCountedMembers() {
+        return coreMembers();
+    }
+
+    /// The strict quorum numerator for the `QuorumLossDetector` (membership-fsm-unification §6,
+    /// adopted by cluster-topology-overhaul Wave 2 / W1): members whose current state is exactly
+    /// MEMBER (SUSPECT excluded — strict) AND whose descriptor role is core (unknown / absent
+    /// role counts as core, same conservative rule as [`#coreCountedMembers`]). The detector's
+    /// `quorumLossDrainThreshold` window debounces a transient SUSPECT dip, so the strict
+    /// numerator does not cause premature self-drain on a single flap.
+    public int strictCoreMemberCount() {
+        return (int) members.values()
+                            .stream()
+                            .filter(MemberTracking::isStrictCoreMember)
+                            .count();
     }
 
     /// The consensus-broadcast target set: every tracked member whose current state is NOT
@@ -650,7 +702,7 @@ public final class MembershipFsm {
     private MemberTracking newTracking(NodeId id) {
         var fsm = Fsm.fsm(FSM_KIND, id.id(), initialStateFactory(id), observer);
 
-        return new MemberTracking(id, fsm, this::onEnteredDead, this::emitTransition);
+        return new MemberTracking(id, fsm, this::onEnteredDead, this::emitTransition, wallClockMs.getAsLong());
     }
 
     /// Explicitly-typed initial-state factory so the [`Fsm#fsm`] constructor-driven overload is
@@ -672,6 +724,11 @@ public final class MembershipFsm {
         /// Wave-1 transition journal sink — receives one [`MembershipTransitionRecord`] per
         /// ACTUAL state change from [`#dispatch`]. Diagnostic-only (default no-op upstream).
         private final Consumer<MembershipTransitionRecord> transitionSink;
+        /// Wall-clock stamp (ms, the manager's injected clock) of this tracking's creation —
+        /// the member's first observation. Immutable: retained across DEAD/rejoin (the tracking
+        /// is never recreated), matching the descriptor-retention rationale documented on
+        /// [`MembershipFsm#memberAgeMs`]. Final → safe to read without the per-member monitor.
+        private final long firstTrackedAtMs;
         private int healthyStreak = 0;
         private boolean swimFaultySeen = false;
         private boolean livenessGoneSeen = false;
@@ -687,11 +744,19 @@ public final class MembershipFsm {
         private MemberTracking(NodeId id,
                                Fsm<MembershipState, MembershipEvent> fsm,
                                Consumer<NodeId> onEnteredDead,
-                               Consumer<MembershipTransitionRecord> transitionSink) {
+                               Consumer<MembershipTransitionRecord> transitionSink,
+                               long firstTrackedAtMs) {
             this.id = id;
             this.fsm = fsm;
             this.onEnteredDead = onEnteredDead;
             this.transitionSink = transitionSink;
+            this.firstTrackedAtMs = firstTrackedAtMs;
+        }
+
+        /// Creation stamp (ms) of this tracking — the member's first observation on the
+        /// manager's wall clock. Final field; monitor-free read.
+        long firstTrackedAtMs() {
+            return firstTrackedAtMs;
         }
 
         /// Dispatch `event` to the FSM and, on a FRESH edge into DEAD (was not Dead before, is Dead
@@ -814,20 +879,29 @@ public final class MembershipFsm {
             clearConfirmedDeath();
         }
 
-        /// Last-wins upsert of the network descriptor from a NodeInfo observation. Orthogonal to the
+        /// Guarded upsert of the network descriptor from a NodeInfo observation. Orthogonal to the
         /// lifecycle FSM — never touches the FSM state.
         ///
-        /// Address-downgrade guard: a descriptor update that would replace a KNOWN non-empty address
-        /// with an empty/absent one is IGNORED for the address field — the previously-known address is
-        /// retained while the rest of the descriptor (role / source) is taken from `next`. A
-        /// degraded-but-present hostname is handled by dial-time re-resolution (transport Step 1); the
-        /// only hazard this guard closes is a null/empty ERASE that would silently drop the member out
-        /// of `desiredConnections` (which skips address-unknown members), wedging it in a never-dialed
-        /// state. Role/source still follow last-wins so a worker re-label still takes effect.
+        /// Per-field downgrade guard: a descriptor update never ERASES previously-known information.
+        /// A KNOWN non-empty address is retained when the update carries none, and a KNOWN non-blank
+        /// role / source is retained when the update carries a blank one (Wave 2 worker accounting /
+        /// audit M9: a label-less observation — e.g. a gossip-rebuilt peer NodeInfo — must not wipe a
+        /// member's self-asserted role to blank, silently re-classifying a worker as core). A
+        /// non-blank incoming value still wins, so a genuine re-label (core → worker) takes effect.
+        /// For the address, a degraded-but-present hostname is handled by dial-time re-resolution
+        /// (transport Step 1); the hazard the address guard closes is a null/empty ERASE that would
+        /// silently drop the member out of `desiredConnections` (which skips address-unknown
+        /// members), wedging it in a never-dialed state.
         synchronized void updateDescriptor(MemberDescriptor next) {
-            descriptor = next.address().isEmpty() && descriptor.address().isPresent()
-                         ? new MemberDescriptor(descriptor.address(), next.role(), next.source())
-                         : next;
+            descriptor = mergedDescriptor(descriptor, next);
+        }
+
+        /// Per-field downgrade-guard merge: each field takes `next` when it carries information
+        /// (non-empty address, non-blank role / source), otherwise the stored value is retained.
+        private static MemberDescriptor mergedDescriptor(MemberDescriptor prev, MemberDescriptor next) {
+            return new MemberDescriptor(next.address().isEmpty() ? prev.address() : next.address(),
+                                        next.role().isBlank() ? prev.role() : next.role(),
+                                        next.source().isBlank() ? prev.source() : next.source());
         }
 
         /// The stored last-wins descriptor (address + role + source). Retained across DEAD so a dead
@@ -853,6 +927,14 @@ public final class MembershipFsm {
         /// AND its descriptor role is not the explicit literal `worker` (unknown role = included).
         synchronized boolean isCoreCountedMember() {
             return countsTowardEffective() && descriptor.isCore();
+        }
+
+        /// Strict quorum-numerator predicate ([`MembershipFsm#strictCoreMemberCount`], Wave 2 /
+        /// W1): current state is exactly MEMBER (SUSPECT excluded) AND the descriptor role is
+        /// core (unknown role = included). Single monitor acquisition pairs the state read with
+        /// the role read atomically.
+        synchronized boolean isStrictCoreMember() {
+            return fsm.current() instanceof MembershipState.Member && descriptor.isCore();
         }
 
         /// The [`PeerTarget`] for this member iff its descriptor has a known address; empty otherwise

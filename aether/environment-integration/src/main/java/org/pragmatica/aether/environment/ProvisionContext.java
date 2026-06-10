@@ -125,12 +125,14 @@ public record ProvisionContext(String clusterName,
 
     /// Auto-heal (CTM) replacement provisioning context. The cluster has formed, so the
     /// caller threads the live-member-derived [#peers] list and the snapshot-desired
-    /// [#coreMax]. Role/source are fixed to `core`/`default` and [#provisionedBy] to
-    /// [#PROVISIONED_BY_CTM]. Shared with the bootstrap path ([#forBootstrap]) so both
-    /// intents are minted through one preparation path.
-    public static ProvisionContext forReplacement(String clusterName, String nodeId, String peers, int coreMax) {
+    /// [#coreMax]. The caller supplies the INTENDED role explicitly (Wave 2 / W4 of the
+    /// cluster-topology-overhaul spec — the provisioned node's role is stamped end-to-end,
+    /// never hardcoded here nor inherited from the provisioning host's environment); source is
+    /// fixed to `default` and [#provisionedBy] to [#PROVISIONED_BY_CTM]. Shared with the
+    /// bootstrap path ([#forBootstrap]) so both intents are minted through one preparation path.
+    public static ProvisionContext forReplacement(String clusterName, String role, String nodeId, String peers, int coreMax) {
         return new ProvisionContext(clusterName,
-                                    "core",
+                                    role,
                                     "default",
                                     Option.some(nodeId),
                                     Option.some(peers),

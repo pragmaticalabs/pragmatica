@@ -147,12 +147,12 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                                                                                                   id)).filter(id -> isLiveLifecycle(membershipView,
                                                                                                                                                     id)).map(NodeId::id).toList();
         // §6 D1: slot-derived headcount, capped at clusterSize. Cold-start (no slots yet) →
-        // SWIM-derived count. The FSM `countedMembers` count is the post-#110 source the snapshot
-        // `coreMembers` was derived from; used as the final fallback when no slots/view present.
+        // SWIM-derived count. The fallback is the FSM's CORE-SCOPED count (Wave 2 call-site
+        // audit — the field is named coreCount, so a worker must not inflate it).
         var viewCount = slotDerivedCoreCount(node, membershipView);
         var coreCount = viewCount > 0
                         ? viewCount
-                        : node.membershipFsm().countedMembers().size();
+                        : node.membershipFsm().coreCountedMembers().size();
         var epoch = Option.some(node.metricsCollector().observedEpoch().toString());
         var workerCount = Math.max(0, connectedPeers.size() - coreCount);
         var nodeDetails = allNodeIds.stream().filter(id -> isLiveLifecycle(membershipView, id)).map(id -> buildNodeDetail(topologyManager,

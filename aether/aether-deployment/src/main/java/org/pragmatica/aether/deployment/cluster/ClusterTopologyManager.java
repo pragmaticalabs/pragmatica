@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -69,7 +70,17 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// At Phase 1 this delegates to the existing slot-reconcile path
     /// (`NodeLifecycleManager.provisionNode(ProvisionSpec)`). The `failedPeer` argument is
     /// observability-only at this layer.
-    Promise<Unit> provisionReplacement(NodeId newNodeId, Option<NodeId> failedPeer, Set<NodeId> clusterMembers);
+    ///
+    /// `intendedRole` (cluster-topology-overhaul spec, Wave 2 / W4) is the role the provisioned
+    /// node is MEANT to carry, stamped explicitly end-to-end (ProvisionContext role → provider
+    /// `AETHER_ROLE` env + `aether.role` label → the node's self-asserted SWIM role label →
+    /// `MemberDescriptor.role`), never inherited from the provisioning host's environment or
+    /// hardcoded provider-side. Auto-heal replacements pass `NodeRole.CORE`; worker-pool
+    /// provisioning (#241) will pass `WORKER` when it lands.
+    Promise<Unit> provisionReplacement(NodeId newNodeId,
+                                       Option<NodeId> failedPeer,
+                                       Set<NodeId> clusterMembers,
+                                       NodeRole intendedRole);
 
     /// Membership v2 / E2 — drain a specific node. Targets either the operator/scale-down
     /// flow or the overprovision-drain path. `reason` is observability-only at this layer.
