@@ -32,6 +32,7 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
 
                 return;
             }
+
             tx.ignore();
         }
     }

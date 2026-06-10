@@ -11,13 +11,20 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public record ArtifactBase(GroupId groupId, ArtifactId artifactId) {
+@Codec
+public record ArtifactBase(GroupId groupId, ArtifactId artifactId) {
     private static final Fn1<Cause, String> INVALID_FORMAT = Causes.forOneValue("Invalid artifact base format %s");
 
     public static Result<ArtifactBase> artifactBase(String artifactBaseString) {
         var parts = artifactBaseString.split(":", 2);
-        if (parts.length != 2) {return INVALID_FORMAT.apply(artifactBaseString).result();}
-        return Result.all(GroupId.groupId(parts[0]), ArtifactId.artifactId(parts[1])).map(ArtifactBase::new);
+
+        if (parts.length != 2) {
+            return INVALID_FORMAT.apply(artifactBaseString).result();
+        }
+
+        return Result.all(GroupId.groupId(parts[0]),
+                          ArtifactId.artifactId(parts[1]))
+                     .map(ArtifactBase::new);
     }
 
     public static ArtifactBase artifactBase(GroupId groupId, ArtifactId artifactId) {
@@ -36,7 +43,8 @@ import org.pragmatica.serialization.Codec;
         return groupId.equals(artifact.groupId()) && artifactId.equals(artifact.artifactId());
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return asString();
     }
 

@@ -20,35 +20,38 @@ public interface ClusterController {
                           Map<Artifact, Blueprint> blueprints,
                           List<NodeId> activeNodes) {
         public double avgMetric(String metricName) {
-            var values = metrics.values().stream()
-                                       .map(m -> m.get(metricName))
-                                       .flatMap(v -> Option.option(v).stream())
-                                       .mapToDouble(Double::doubleValue)
-                                       .toArray();
-            if (values.length == 0) {return 0.0;}
-            return java.util.Arrays.stream(values).average()
-                                          .orElse(0.0);
+            var values = metrics.values().stream().map(m -> m.get(metricName)).flatMap(v -> Option.option(v).stream()).mapToDouble(Double::doubleValue).toArray();
+
+            if (values.length == 0) {
+                return 0.0;
+            }
+
+            return java.util.Arrays.stream(values)
+                                   .average()
+                                   .orElse(0.0);
         }
 
         public double maxMetric(String metricName) {
-            return metrics.values().stream()
-                                 .map(m -> m.get(metricName))
-                                 .flatMap(v -> Option.option(v).stream())
-                                 .mapToDouble(Double::doubleValue)
-                                 .max()
-                                 .orElse(0.0);
+            return metrics.values()
+                          .stream()
+                          .map(m -> m.get(metricName))
+                          .flatMap(v -> Option.option(v).stream())
+                          .mapToDouble(Double::doubleValue)
+                          .max()
+                          .orElse(0.0);
         }
 
         public double totalCalls(String methodName) {
-            return metrics.values().stream()
-                                 .map(m -> m.get("method." + methodName + ".calls"))
-                                 .flatMap(v -> Option.option(v).stream())
-                                 .mapToDouble(Double::doubleValue)
-                                 .sum();
+            return metrics.values()
+                          .stream()
+                          .map(m -> m.get("method." + methodName + ".calls"))
+                          .flatMap(v -> Option.option(v).stream())
+                          .mapToDouble(Double::doubleValue)
+                          .sum();
         }
     }
 
-    record Blueprint(Artifact artifact, int instances, int minInstances){}
+    record Blueprint(Artifact artifact, int instances, int minInstances) {}
 
     record ControlDecisions(List<BlueprintChange> changes) {
         public static ControlDecisions none() {
@@ -63,8 +66,8 @@ public interface ClusterController {
     sealed interface BlueprintChange {
         Artifact artifact();
 
-        record ScaleUp(Artifact artifact, int additionalInstances) implements BlueprintChange{}
+        record ScaleUp(Artifact artifact, int additionalInstances) implements BlueprintChange {}
 
-        record ScaleDown(Artifact artifact, int reduceBy) implements BlueprintChange{}
+        record ScaleDown(Artifact artifact, int reduceBy) implements BlueprintChange {}
     }
 }

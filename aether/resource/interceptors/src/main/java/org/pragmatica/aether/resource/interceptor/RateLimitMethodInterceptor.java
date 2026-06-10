@@ -11,7 +11,8 @@ import org.pragmatica.lang.utils.RateLimiter;
 
 
 public record RateLimitMethodInterceptor(RateLimiter limiter) implements MethodInterceptor {
-    @Override public <R, T> Fn1<Promise<R>, T> intercept(Fn1<Promise<R>, T> method) {
+    @Override
+    public <R, T> Fn1<Promise<R>, T> intercept(Fn1<Promise<R>, T> method) {
         return request -> limiter.execute(() -> method.apply(request));
     }
 }

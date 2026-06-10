@@ -32,7 +32,9 @@ public record ProvisioningContext(List<TypeToken<?>> typeTokens,
 
     public ProvisioningContext withTypeToken(TypeToken<?> token) {
         var tokens = new ArrayList<>(typeTokens);
+
         tokens.add(token);
+
         return new ProvisioningContext(List.copyOf(tokens), keyExtractor, extensions);
     }
 
@@ -40,13 +42,16 @@ public record ProvisioningContext(List<TypeToken<?>> typeTokens,
         return new ProvisioningContext(typeTokens, some(extractor), extensions);
     }
 
-    @SuppressWarnings("unchecked") public <T> Result<T> extension(Class<T> type) {
+    @SuppressWarnings("unchecked")
+    public <T> Result<T> extension(Class<T> type) {
         return option((T) extensions.get(type)).toResult(MISSING_EXTENSION.apply(type.getSimpleName()));
     }
 
     public <T> ProvisioningContext withExtension(Class<T> type, T value) {
         var newExtensions = new HashMap<>(extensions);
+
         newExtensions.put(type, value);
+
         return new ProvisioningContext(typeTokens, keyExtractor, Map.copyOf(newExtensions));
     }
 }

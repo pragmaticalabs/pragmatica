@@ -11,13 +11,14 @@ import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public record CommunityScalingRequest(String communityId,
-                                             NodeId governorId,
-                                             Artifact artifact,
-                                             String direction,
-                                             int currentInstances,
-                                             int requestedInstances,
-                                             ScalingEvidence evidence) implements Message.Wired {
+@Codec
+public record CommunityScalingRequest(String communityId,
+                                      NodeId governorId,
+                                      Artifact artifact,
+                                      String direction,
+                                      int currentInstances,
+                                      int requestedInstances,
+                                      ScalingEvidence evidence) implements Message.Wired {
     @Override
     public StreamType streamType() {
         return StreamType.METRICS;

@@ -49,6 +49,7 @@ public interface LoadBalancerManager {
     Promise<Unit> activate();
     Promise<Unit> deactivate();
     boolean isActive();
+
     @MessageReceiver
     void onMembershipDecision(MembershipDecision decision);
 
@@ -106,9 +107,12 @@ public interface LoadBalancerManager {
                 }
 
                 activationLock.lock();
-
                 try {
-                    if (activated.get()) {applyPut(valuePut);} else {pendingEvents.add(new PendingRouteEvent.Put(valuePut));}
+                    if (activated.get()) {
+                        applyPut(valuePut);
+                    } else {
+                        pendingEvents.add(new PendingRouteEvent.Put(valuePut));
+                    }
                 } finally {
                     activationLock.unlock();
                 }
@@ -123,9 +127,12 @@ public interface LoadBalancerManager {
                 }
 
                 activationLock.lock();
-
                 try {
-                    if (activated.get()) {applyRemove(valueRemove);} else {pendingEvents.add(new PendingRouteEvent.Remove(valueRemove));}
+                    if (activated.get()) {
+                        applyRemove(valueRemove);
+                    } else {
+                        pendingEvents.add(new PendingRouteEvent.Remove(valueRemove));
+                    }
                 } finally {
                     activationLock.unlock();
                 }
@@ -137,9 +144,12 @@ public interface LoadBalancerManager {
                 var nodeId = key.nodeId();
 
                 for (var route : value.routes()) {
-                    if (!route.isRoutable()) {continue;}
+                    if (!route.isRoutable()) {
+                        continue;
+                    }
 
                     var routeIdentity = route.httpMethod() + ":" + route.pathPrefix();
+
                     routeNodes.computeIfAbsent(routeIdentity, _ -> new HashSet<>()).add(nodeId);
                     handleRouteChange(route.httpMethod(), route.pathPrefix(), routeNodes.get(routeIdentity));
                 }
@@ -153,13 +163,16 @@ public interface LoadBalancerManager {
 
                 for (var routeIdentity : affectedRoutes) {
                     var nodes = routeNodes.get(routeIdentity);
+
                     nodes.remove(nodeId);
                     var parts = routeIdentity.split(":", 2);
 
                     if (nodes.isEmpty()) {
                         routeNodes.remove(routeIdentity);
                         handleRouteRemoval(parts[0], parts[1]);
-                    } else {handleRouteChange(parts[0], parts[1], nodes);}
+                    } else {
+                        handleRouteChange(parts[0], parts[1], nodes);
+                    }
                 }
             }
 
@@ -167,6 +180,7 @@ public interface LoadBalancerManager {
                 activationLock.lock();
                 try {
                     var aggregated = new HashMap<String, Set<NodeId>>();
+
                     kvStore.forEach(NodeRoutesKey.class,
                                     NodeRoutesValue.class,
                                     (key, value) -> aggregateNodeRoutes(key, value, aggregated));
@@ -176,6 +190,7 @@ public interface LoadBalancerManager {
                     activated.set(true);
                     var allNodeIps = new HashSet<String>();
                     var routes = new ArrayList<RouteChange>();
+
                     routeNodes.forEach((identity, nodeIds) -> collectRouteForReconciliation(identity,
                                                                                             nodeIds,
                                                                                             allNodeIps,
@@ -193,7 +208,10 @@ public interface LoadBalancerManager {
 
             private void replayPendingEvents() {
                 PendingRouteEvent event;
-                while ((event = pendingEvents.poll()) != null) {dispatchPending(event);}
+
+                while ((event = pendingEvents.poll()) != null) {
+                    dispatchPending(event);
+                }
             }
 
             private void dispatchPending(PendingRouteEvent event) {
@@ -214,8 +232,8 @@ public interface LoadBalancerManager {
                                                        List<RouteChange> routes) {
                 var parts = routeIdentity.split(":", 2);
                 var nodeIps = resolveNodeIps(nodeIds);
-                allNodeIps.addAll(nodeIps);
 
+                allNodeIps.addAll(nodeIps);
                 if (!nodeIps.isEmpty()) {
                     routeChange(parts[0], parts[1], nodeIps).onSuccess(routes::add).onFailure(cause -> log.warn("Failed to create route change for {}: {}",
                                                                                                                 routeIdentity,
@@ -237,6 +255,7 @@ public interface LoadBalancerManager {
 
             private void handleRouteChange(String httpMethod, String pathPrefix, Set<NodeId> nodeIds) {
                 var nodeIps = resolveNodeIps(nodeIds);
+
                 trackedNodeIps.addAll(nodeIps);
                 log.debug("Route changed: {} {} -> {} nodes",
                           httpMethod,
@@ -278,9 +297,12 @@ public interface LoadBalancerManager {
                                                     NodeRoutesValue value,
                                                     Map<String, Set<NodeId>> aggregated) {
                 for (var route : value.routes()) {
-                    if (!route.isRoutable()) {continue;}
+                    if (!route.isRoutable()) {
+                        continue;
+                    }
 
                     var routeIdentity = route.httpMethod() + ":" + route.pathPrefix();
+
                     aggregated.computeIfAbsent(routeIdentity, _ -> new HashSet<>()).add(key.nodeId());
                 }
             }
@@ -318,6 +340,7 @@ public interface LoadBalancerManager {
                                                                       new AtomicBoolean(false),
                                                                       new ConcurrentLinkedDeque<>(),
                                                                       new ReentrantLock());
+
                 state.set(activeState);
                 activeState.reconcile();
 
@@ -357,6 +380,7 @@ public interface LoadBalancerManager {
                 state.get().onNodeRoutesRemove(valueRemove);
             }
         }
+
         return new loadBalancerManager(self,
                                        kvStore,
                                        topologyManager,

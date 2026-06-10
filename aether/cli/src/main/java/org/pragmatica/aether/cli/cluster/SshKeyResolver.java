@@ -32,7 +32,9 @@ public sealed interface SshKeyResolver {
                                               Fn1<String, String> envLookup) {
         var paths = resolvePaths(config, cliPublicKeyPath, envLookup);
 
-        if (paths.isEmpty()) {return Result.success(List.of());}
+        if (paths.isEmpty()) {
+            return Result.success(List.of());
+        }
 
         return readAndParse(paths);
     }
@@ -50,8 +52,13 @@ public sealed interface SshKeyResolver {
 
     private static Result<List<SshPublicKey>> guardCloudHasKeys(ClusterBootstrapConfig config,
                                                                 List<SshPublicKey> keys) {
-        if (!keys.isEmpty()) {return Result.success(keys);}
-        if (!hasCloudSource(config)) {return Result.success(keys);}
+        if (!keys.isEmpty()) {
+            return Result.success(keys);
+        }
+
+        if (!hasCloudSource(config)) {
+            return Result.success(keys);
+        }
 
         return new MissingSshKey().result();
     }
@@ -68,11 +75,15 @@ public sealed interface SshKeyResolver {
                                              Fn1<String, String> envLookup) {
         var fromCli = cliPublicKeyPath.filter(s -> !s.isBlank()).map(s -> List.of(s));
 
-        if (fromCli.isPresent()) {return fromCli.unwrap();}
+        if (fromCli.isPresent()) {
+            return fromCli.unwrap();
+        }
 
         var fromToml = config.infrastructure().ssh().map(s -> s.publicKeyFiles()).filter(list -> !list.isEmpty());
 
-        if (fromToml.isPresent()) {return fromToml.unwrap();}
+        if (fromToml.isPresent()) {
+            return fromToml.unwrap();
+        }
 
         return envFallback(envLookup);
     }
@@ -80,7 +91,9 @@ public sealed interface SshKeyResolver {
     private static List<String> envFallback(Fn1<String, String> envLookup) {
         var envValue = envLookup.apply(AETHER_SSH_KEY_ENV);
 
-        if (envValue == null || envValue.isBlank()) {return List.of();}
+        if (envValue == null || envValue.isBlank()) {
+            return List.of();
+        }
 
         return List.of(envValue + ".pub");
     }
@@ -92,7 +105,9 @@ public sealed interface SshKeyResolver {
         for (var p : paths) {
             var read = readPublicKeyFile(p);
 
-            if (read.isFailure()) {return read.map(_ -> List.<SshPublicKey> of());}
+            if (read.isFailure()) {
+                return read.map(_ -> List.<SshPublicKey> of());
+            }
 
             var _ = read.onSuccess(lines::add);
         }
@@ -107,7 +122,10 @@ public sealed interface SshKeyResolver {
     }
 
     private static String expandHome(String path) {
-        if (path.startsWith("~/")) {return System.getProperty("user.home") + path.substring(1);}
+        if (path.startsWith("~/")) {
+            return System.getProperty("user.home") + path.substring(1);
+        }
+
         return path;
     }
 

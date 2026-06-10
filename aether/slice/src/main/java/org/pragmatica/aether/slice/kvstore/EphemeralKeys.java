@@ -9,7 +9,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import java.util.Set;
 
 
-@SuppressWarnings("JBCT-UTIL-02") public sealed interface EphemeralKeys {
+@SuppressWarnings("JBCT-UTIL-02")
+public sealed interface EphemeralKeys {
     Set<Class<? extends AetherKey>> EPHEMERAL_KEY_TYPES = Set.of(NodeArtifactKey.class,
                                                                  NodeRoutesKey.class,
                                                                  JoinDeadlineKey.class,
@@ -52,5 +53,5 @@ import java.util.Set;
         return EPHEMERAL_SECTIONS.contains(section);
     }
 
-    record unused() implements EphemeralKeys{}
+    record unused() implements EphemeralKeys {}
 }

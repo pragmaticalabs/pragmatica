@@ -30,6 +30,7 @@ sealed interface BootstrapStateJson {
 
     static String toJson(BootstrapState state) {
         var sb = new StringBuilder(512);
+
         sb.append("{\n");
         appendStringField(sb, "clusterName", state.clusterName());
         sb.append(",\n");
@@ -85,7 +86,9 @@ sealed interface BootstrapStateJson {
     }
 
     private static Map<String, SourceCleanupHandle> parseSources(JsonNode node) {
-        if (node.isMissingNode() || node.isNull() || !node.isObject()) {return Map.of();}
+        if (node.isMissingNode() || node.isNull() || !node.isObject()) {
+            return Map.of();
+        }
 
         var sources = new LinkedHashMap<String, SourceCleanupHandle>();
 
@@ -97,7 +100,9 @@ sealed interface BootstrapStateJson {
     }
 
     private static Option<SourceCleanupHandle> parseSourceCleanupHandle(JsonNode node) {
-        if (node.isMissingNode() || node.isNull() || !node.isObject()) {return Option.none();}
+        if (node.isMissingNode() || node.isNull() || !node.isObject()) {
+            return Option.none();
+        }
 
         var provider = node.path("provider").asText("");
         var regionText = node.path("region").asText("");
@@ -110,7 +115,9 @@ sealed interface BootstrapStateJson {
     }
 
     private static Map<String, String> parseStringMap(JsonNode node) {
-        if (node.isMissingNode() || node.isNull() || !node.isObject()) {return Map.of();}
+        if (node.isMissingNode() || node.isNull() || !node.isObject()) {
+            return Map.of();
+        }
 
         var map = new LinkedHashMap<String, String>();
 
@@ -125,8 +132,13 @@ sealed interface BootstrapStateJson {
     private static Map<BootstrapPhase, PhaseStatus> parsePhases(JsonNode node) {
         var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
 
-        for (var phase : BootstrapPhase.values()) {phases.put(phase, PhaseStatus.PENDING);}
-        if (node.isMissingNode() || node.isNull()) {return Map.copyOf(phases);}
+        for (var phase : BootstrapPhase.values()) {
+            phases.put(phase, PhaseStatus.PENDING);
+        }
+
+        if (node.isMissingNode() || node.isNull()) {
+            return Map.copyOf(phases);
+        }
 
         var fieldNames = node.properties();
 
@@ -134,7 +146,9 @@ sealed interface BootstrapStateJson {
             var phase = parsePhaseEnum(entry.getKey());
             var status = parseStatusEnum(entry.getValue().asText());
 
-            if (phase != null && status != null) {phases.put(phase, status);}
+            if (phase != null && status != null) {
+                phases.put(phase, status);
+            }
         }
 
         return Map.copyOf(phases);
@@ -149,13 +163,18 @@ sealed interface BootstrapStateJson {
     }
 
     private static List<CreatedResource> parseResources(JsonNode node) {
-        if (node.isMissingNode() || node.isNull() || !node.isArray()) {return List.of();}
+        if (node.isMissingNode() || node.isNull() || !node.isArray()) {
+            return List.of();
+        }
 
         var resources = new ArrayList<CreatedResource>();
 
         for (var element : node) {
             var resource = parseSingleResourceNode(element);
-            if (resource != null) {resources.add(resource);}
+
+            if (resource != null) {
+                resources.add(resource);
+            }
         }
 
         return List.copyOf(resources);
@@ -190,11 +209,15 @@ sealed interface BootstrapStateJson {
     }
 
     private static List<String> parseStringList(JsonNode node) {
-        if (node.isMissingNode() || node.isNull() || !node.isArray()) {return List.of();}
+        if (node.isMissingNode() || node.isNull() || !node.isArray()) {
+            return List.of();
+        }
 
         var result = new ArrayList<String>();
 
-        for (var element : node) {result.add(element.asText());}
+        for (var element : node) {
+            result.add(element.asText());
+        }
 
         return List.copyOf(result);
     }
@@ -210,7 +233,9 @@ sealed interface BootstrapStateJson {
         for (var phase : BootstrapPhase.values()) {
             var status = phases.getOrDefault(phase, PhaseStatus.PENDING);
 
-            if (!first) {sb.append(',');}
+            if (!first) {
+                sb.append(',');
+            }
 
             sb.append("\n    \"").append(phase.name()).append("\": \"").append(status.name()).append('"');
             first = false;
@@ -221,14 +246,18 @@ sealed interface BootstrapStateJson {
 
     private static void appendResources(StringBuilder sb, List<CreatedResource> resources) {
         sb.append("  \"createdResources\": [");
-
-        for (int i = 0;i <resources.size();i++) {
-            if (i > 0) {sb.append(',');}
+        for (int i = 0; i < resources.size(); i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
 
             sb.append("\n    ");
             appendResourceJson(sb, resources.get(i));
         }
-        if (!resources.isEmpty()) {sb.append('\n');}
+
+        if (!resources.isEmpty()) {
+            sb.append('\n');
+        }
 
         sb.append("  ]");
     }
@@ -275,13 +304,18 @@ sealed interface BootstrapStateJson {
         var first = true;
 
         for (var entry : sources.entrySet()) {
-            if (!first) {sb.append(',');}
+            if (!first) {
+                sb.append(',');
+            }
 
             sb.append("\n    \"").append(escapeJson(entry.getKey())).append("\": ");
             appendSourceCleanupHandle(sb, entry.getValue());
             first = false;
         }
-        if (!sources.isEmpty()) {sb.append("\n  ");}
+
+        if (!sources.isEmpty()) {
+            sb.append("\n  ");
+        }
 
         sb.append('}');
     }
@@ -291,7 +325,9 @@ sealed interface BootstrapStateJson {
         var first = true;
 
         for (var entry : handle.credentialEnvVars().entrySet()) {
-            if (!first) {sb.append(", ");}
+            if (!first) {
+                sb.append(", ");
+            }
 
             sb.append('"').append(escapeJson(entry.getKey())).append("\": \"").append(escapeJson(entry.getValue())).append('"');
             first = false;
@@ -302,9 +338,11 @@ sealed interface BootstrapStateJson {
 
     private static void appendStringList(StringBuilder sb, String key, List<String> values) {
         sb.append("  \"").append(escapeJson(key)).append("\": [");
+        for (int i = 0; i < values.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
 
-        for (int i = 0;i <values.size();i++) {
-            if (i > 0) {sb.append(", ");}
             sb.append('"').append(escapeJson(values.get(i))).append('"');
         }
 
@@ -312,7 +350,10 @@ sealed interface BootstrapStateJson {
     }
 
     private static String escapeJson(String value) {
-        if (value == null) {return "";}
+        if (value == null) {
+            return "";
+        }
+
         return value.replace("\\", "\\\\")
                     .replace("\"", "\\\"")
                     .replace("\n", "\\n")

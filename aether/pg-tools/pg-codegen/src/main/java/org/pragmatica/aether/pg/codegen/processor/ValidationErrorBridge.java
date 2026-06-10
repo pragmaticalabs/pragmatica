@@ -14,13 +14,15 @@ import javax.tools.Diagnostic;
 
 
 public sealed interface ValidationErrorBridge {
-    @Contract static void emit(Messager messager, Element element, ValidationError err) {
+    @Contract
+    static void emit(Messager messager, Element element, ValidationError err) {
         messager.printMessage(Diagnostic.Kind.ERROR, formatMessage(err), element);
     }
 
     static String formatMessage(ValidationError err) {
         var span = err.span();
-        return switch (err){
+
+        return switch (err) {
             case ValidationError.TableNotFound e -> ProcessorError.tableNotFoundInQuery(e.tableName(),
                                                                                         line(span),
                                                                                         column(span));
@@ -38,12 +40,14 @@ public sealed interface ValidationErrorBridge {
     }
 
     private static int line(SourceSpan span) {
-        return span.start().line();
+        return span.start()
+                   .line();
     }
 
     private static int column(SourceSpan span) {
-        return span.start().column();
+        return span.start()
+                   .column();
     }
 
-    record unused() implements ValidationErrorBridge{}
+    record unused() implements ValidationErrorBridge {}
 }

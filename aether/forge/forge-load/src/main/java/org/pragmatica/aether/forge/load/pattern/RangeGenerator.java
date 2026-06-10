@@ -32,22 +32,32 @@ public record RangeGenerator(int min, int max) implements PatternGenerator {
 
     public static Result<PatternGenerator> rangeGenerator(String rangeSpec) {
         var matcher = RANGE_PATTERN.matcher(rangeSpec.trim());
-        if (!matcher.matches()) {return INVALID_RANGE.apply(rangeSpec).result();}
+
+        if (!matcher.matches()) {
+            return INVALID_RANGE.apply(rangeSpec).result();
+        }
+
         var parsedValues = all(Number.parseInt(matcher.group(1)),
                                Number.parseInt(matcher.group(2)));
+
         return parsedValues.flatMap(RangeGenerator::ensureMinNotGreaterThanMax);
     }
 
     private static Result<PatternGenerator> ensureMinNotGreaterThanMax(int min, int max) {
-        if (min > max) {return MIN_GREATER_THAN_MAX.result();}
+        if (min > max) {
+            return MIN_GREATER_THAN_MAX.result();
+        }
+
         return rangeGenerator(min, max).map(gen -> gen);
     }
 
-    @Override public String generate() {
+    @Override
+    public String generate() {
         return String.valueOf(ThreadLocalRandom.current().nextInt(min, max + 1));
     }
 
-    @Override public String pattern() {
+    @Override
+    public String pattern() {
         return "${range:" + min + "-" + max + "}";
     }
 }

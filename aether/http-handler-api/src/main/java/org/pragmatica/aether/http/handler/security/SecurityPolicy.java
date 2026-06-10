@@ -9,13 +9,16 @@ import org.pragmatica.http.routing.security.RequestSecurityContext;
 import org.pragmatica.http.routing.security.RouteSecurityPolicy;
 
 
-@SuppressWarnings("JBCT-NAM-01") public sealed interface SecurityPolicy extends RouteSecurityPolicy {
+@SuppressWarnings("JBCT-NAM-01")
+public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     System.Logger log = System.getLogger(SecurityPolicy.class.getName());
 
-    @SuppressWarnings("JBCT-NAM-01") record Public() implements SecurityPolicy {
+    @SuppressWarnings("JBCT-NAM-01")
+    record Public() implements SecurityPolicy {
         private static final Public INSTANCE = new Public();
 
-        @Override public <T extends RequestSecurityContext> Access canAccess(T context) {
+        @Override
+        public <T extends RequestSecurityContext> Access canAccess(T context) {
             return Access.ALLOW;
         }
     }
@@ -23,7 +26,8 @@ import org.pragmatica.http.routing.security.RouteSecurityPolicy;
     record Authenticated() implements SecurityPolicy {
         private static final Authenticated INSTANCE = new Authenticated();
 
-        @Override public <T extends RequestSecurityContext> Access canAccess(T context) {
+        @Override
+        public <T extends RequestSecurityContext> Access canAccess(T context) {
             return checkAuthenticated(context);
         }
     }
@@ -31,7 +35,8 @@ import org.pragmatica.http.routing.security.RouteSecurityPolicy;
     record ApiKeyRequired() implements SecurityPolicy {
         private static final ApiKeyRequired INSTANCE = new ApiKeyRequired();
 
-        @Override public <T extends RequestSecurityContext> Access canAccess(T context) {
+        @Override
+        public <T extends RequestSecurityContext> Access canAccess(T context) {
             return checkApiKey(context);
         }
     }
@@ -39,18 +44,21 @@ import org.pragmatica.http.routing.security.RouteSecurityPolicy;
     record BearerTokenRequired() implements SecurityPolicy {
         private static final BearerTokenRequired INSTANCE = new BearerTokenRequired();
 
-        @Override public <T extends RequestSecurityContext> Access canAccess(T context) {
+        @Override
+        public <T extends RequestSecurityContext> Access canAccess(T context) {
             return checkBearerToken(context);
         }
     }
 
     record RoleRequired(String roleName) implements SecurityPolicy {
-        @Override public <T extends RequestSecurityContext> Access canAccess(T context) {
+        @Override
+        public <T extends RequestSecurityContext> Access canAccess(T context) {
             return checkRole(context, roleName);
         }
     }
 
-    @SuppressWarnings("unused") record unused() implements SecurityPolicy{}
+    @SuppressWarnings("unused")
+    record unused() implements SecurityPolicy {}
 
     static SecurityPolicy publicRoute() {
         return Public.INSTANCE;
@@ -73,7 +81,7 @@ import org.pragmatica.http.routing.security.RouteSecurityPolicy;
     }
 
     static SecurityPolicy fromString(String value) {
-        return switch (value){
+        return switch (value) {
             case "PUBLIC" -> publicRoute();
             case "AUTHENTICATED" -> authenticated();
             case "API_KEY" -> apiKeyRequired();
@@ -83,7 +91,7 @@ import org.pragmatica.http.routing.security.RouteSecurityPolicy;
     }
 
     default String asString() {
-        return switch (this){
+        return switch (this) {
             case Public() -> "PUBLIC";
             case Authenticated() -> "AUTHENTICATED";
             case ApiKeyRequired() -> "API_KEY";
@@ -94,7 +102,7 @@ import org.pragmatica.http.routing.security.RouteSecurityPolicy;
     }
 
     default int strength() {
-        return switch (this){
+        return switch (this) {
             case Public() -> 0;
             case Authenticated() -> 10;
             case ApiKeyRequired() -> 20;
@@ -105,7 +113,8 @@ import org.pragmatica.http.routing.security.RouteSecurityPolicy;
     }
 
     static SecurityPolicy fromBlueprintString(String value) {
-        return switch (value.toLowerCase().strip()){
+        return switch (value.toLowerCase()
+                            .strip()) {
             case "public" -> publicRoute();
             case "authenticated" -> authenticated();
             case "api_key" -> apiKeyRequired();
@@ -115,45 +124,68 @@ import org.pragmatica.http.routing.security.RouteSecurityPolicy;
     }
 
     private static <T extends RequestSecurityContext> Access checkAuthenticated(T context) {
-        if (context instanceof SecurityContext sc) {return sc.isAuthenticated()
-                                                          ? Access.ALLOW
-                                                          : Access.DENY;}
+        if (context instanceof SecurityContext sc) {
+            return sc.isAuthenticated()
+                   ? Access.ALLOW
+                   : Access.DENY;
+        }
+
         return Access.DENY;
     }
 
     private static <T extends RequestSecurityContext> Access checkApiKey(T context) {
-        if (context instanceof SecurityContext sc) {return sc.isAuthenticated() && sc.principal().isApiKey()
-                                                          ? Access.ALLOW
-                                                          : Access.DENY;}
+        if (context instanceof SecurityContext sc) {
+            return sc.isAuthenticated() && sc.principal()
+                                             .isApiKey()
+                   ? Access.ALLOW
+                   : Access.DENY;
+        }
+
         return Access.DENY;
     }
 
     private static <T extends RequestSecurityContext> Access checkBearerToken(T context) {
-        if (context instanceof SecurityContext sc) {return sc.isAuthenticated() && sc.principal().isUser()
-                                                          ? Access.ALLOW
-                                                          : Access.DENY;}
+        if (context instanceof SecurityContext sc) {
+            return sc.isAuthenticated() && sc.principal()
+                                             .isUser()
+                   ? Access.ALLOW
+                   : Access.DENY;
+        }
+
         return Access.DENY;
     }
 
     private static <T extends RequestSecurityContext> Access checkRole(T context, String roleName) {
-        if (context instanceof SecurityContext sc) {return sc.isAuthenticated() && sc.hasRole(roleName)
-                                                          ? Access.ALLOW
-                                                          : Access.DENY;}
+        if (context instanceof SecurityContext sc) {
+            return sc.isAuthenticated() && sc.hasRole(roleName)
+                   ? Access.ALLOW
+                   : Access.DENY;
+        }
+
         return Access.DENY;
     }
 
     private static SecurityPolicy parseRoleOrDefault(String value) {
-        if (value.startsWith("ROLE:")) {return roleRequired(value.substring(5));}
+        if (value.startsWith("ROLE:")) {
+            return roleRequired(value.substring(5));
+        }
+
         log.log(System.Logger.Level.WARNING, "Unrecognized security policy ''{0}'', defaulting to API_KEY", value);
+
         return apiKeyRequired();
     }
 
     private static SecurityPolicy parseBlueprintRoleOrDefault(String value) {
         var stripped = value.strip().toLowerCase();
-        if (stripped.startsWith("role:")) {return roleRequired(value.strip().substring(5));}
+
+        if (stripped.startsWith("role:")) {
+            return roleRequired(value.strip().substring(5));
+        }
+
         log.log(System.Logger.Level.WARNING,
                 "Unrecognized blueprint security policy ''{0}'', defaulting to API_KEY",
                 value);
+
         return apiKeyRequired();
     }
 }

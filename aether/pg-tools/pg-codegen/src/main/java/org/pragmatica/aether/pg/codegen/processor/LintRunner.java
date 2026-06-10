@@ -30,8 +30,12 @@ public sealed interface LintRunner {
         WARNING,
         ERROR;
         public static Severity parse(String raw, Severity fallback) {
-            if (raw == null || raw.isBlank()) {return fallback;}
-            return switch (raw.trim().toUpperCase()){
+            if (raw == null || raw.isBlank()) {
+                return fallback;
+            }
+
+            return switch (raw.trim()
+                              .toUpperCase()) {
                 case "OFF" -> OFF;
                 case "WARNING", "WARN" -> WARNING;
                 case "ERROR" -> ERROR;
@@ -54,34 +58,53 @@ public sealed interface LintRunner {
         }
     }
 
-    @Contract static void runOnMigrations(Messager messager, List<String> migrationScripts, LintOptions options) {
-        if (options.isOff()) {return;}
+    @Contract
+    static void runOnMigrations(Messager messager, List<String> migrationScripts, LintOptions options) {
+        if (options.isOff()) {
+            return;
+        }
+
         var events = collectEvents(messager, migrationScripts);
-        if (events.isEmpty()) {return;}
+
+        if (events.isEmpty()) {
+            return;
+        }
+
         var diagnostics = LintEngine.create(options.toConfig()).lint(events);
-        for (var diag : diagnostics) {emitDiagnostic(messager, diag, options.severity());}
+
+        for (var diag : diagnostics) {
+            emitDiagnostic(messager, diag, options.severity());
+        }
     }
 
-    @Contract static void runOnQuery(Messager messager, Element element, CstNode cst, LintOptions options) {}
+    @Contract
+    static void runOnQuery(Messager messager, Element element, CstNode cst, LintOptions options) {}
 
     private static List<SchemaEvent> collectEvents(Messager messager, List<String> migrationScripts) {
         var parser = PostgresParser.create();
         var events = new ArrayList<SchemaEvent>();
-        for (var script : migrationScripts) {parser.parseCst(script).flatMap(DdlAnalyzer::analyze)
-                                                            .onSuccess(events::addAll)
-                                                            .onFailure(cause -> messager.printMessage(Diagnostic.Kind.WARNING,
-                                                                                                      "pg-lint: failed to parse migration: " + cause.message()));}
+
+        for (var script : migrationScripts) {
+            parser.parseCst(script).flatMap(DdlAnalyzer::analyze).onSuccess(events::addAll).onFailure(cause -> messager.printMessage(Diagnostic.Kind.WARNING,
+                                                                                                                                     "pg-lint: failed to parse migration: " + cause.message()));
+        }
+
         return events;
     }
 
-    @Contract private static void emitDiagnostic(Messager messager, LintDiagnostic diag, Severity severity) {
+    @Contract
+    private static void emitDiagnostic(Messager messager, LintDiagnostic diag, Severity severity) {
         var message = ProcessorError.lintFinding(diag.ruleId(), diag.message(), line(diag.span()), column(diag.span()));
+
         messager.printMessage(toKind(severity, diag.severity()), message);
     }
 
     private static Diagnostic.Kind toKind(Severity optionSeverity, LintDiagnostic.Severity diagSeverity) {
-        if (optionSeverity == Severity.ERROR) {return Diagnostic.Kind.ERROR;}
-        return switch (diagSeverity){
+        if (optionSeverity == Severity.ERROR) {
+            return Diagnostic.Kind.ERROR;
+        }
+
+        return switch (diagSeverity) {
             case ERROR -> Diagnostic.Kind.WARNING;
             case WARNING -> Diagnostic.Kind.WARNING;
             case INFO -> Diagnostic.Kind.NOTE;
@@ -89,14 +112,16 @@ public sealed interface LintRunner {
     }
 
     private static int line(SourceSpan span) {
-        return span.start().line();
+        return span.start()
+                   .line();
     }
 
     private static int column(SourceSpan span) {
-        return span.start().column();
+        return span.start()
+                   .column();
     }
 
-    record unused() implements LintRunner{}
+    record unused() implements LintRunner {}
 
     final class OptionsReader {
         private OptionsReader() {}
@@ -105,16 +130,25 @@ public sealed interface LintRunner {
             var severity = Severity.parse(options.get("pg.lint.severity"), Severity.WARNING);
             var disabledRaw = options.get("pg.lint.disabled");
             var disabled = parseDisabled(disabledRaw);
+
             return new LintOptions(severity, disabled);
         }
 
         private static Set<String> parseDisabled(String raw) {
-            if (raw == null || raw.isBlank()) {return DEFAULT_DISABLED;}
+            if (raw == null || raw.isBlank()) {
+                return DEFAULT_DISABLED;
+            }
+
             var set = new HashSet<String>(DEFAULT_DISABLED);
+
             for (var id : raw.split(",")) {
                 var trimmed = id.trim();
-                if (!trimmed.isEmpty()) {set.add(trimmed);}
+
+                if (!trimmed.isEmpty()) {
+                    set.add(trimmed);
+                }
             }
+
             return Set.copyOf(set);
         }
 

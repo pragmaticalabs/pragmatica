@@ -5,7 +5,6 @@
 package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.aether.slice.resource.ResourceAddress;
-
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.serialization.Codec;
 
@@ -24,12 +23,14 @@ import java.time.Instant;
 /// `registeredAt` is exposed as a millisecond epoch on the codec wire form
 /// (`registeredAtEpochMillis`) so the compile-time codec processor doesn't need a
 /// `java.time.Instant` codec; the API surface retains the [Instant] convenience accessor.
-@Codec public record StreamRegistryEntry(ResourceAddress address,
-                                          RetentionPolicy retention,
-                                          long registeredAtEpochMillis,
-                                          RegisteredByKind registeredBy,
-                                          int refCount) {
-    @Codec public enum RegisteredByKind {
+@Codec
+public record StreamRegistryEntry(ResourceAddress address,
+                                  RetentionPolicy retention,
+                                  long registeredAtEpochMillis,
+                                  RegisteredByKind registeredBy,
+                                  int refCount) {
+    @Codec
+    public enum RegisteredByKind {
         /// Framework-internal streams (system namespace) registered at cluster bootstrap.
         FRAMEWORK,
         /// Application streams registered by blueprint deploy.
@@ -41,14 +42,14 @@ import java.time.Instant;
     }
 
     public static StreamRegistryEntry framework(ResourceAddress address,
-                                                 RetentionPolicy retention,
-                                                 Instant registeredAt) {
+                                                RetentionPolicy retention,
+                                                Instant registeredAt) {
         return new StreamRegistryEntry(address, retention, registeredAt.toEpochMilli(), RegisteredByKind.FRAMEWORK, 1);
     }
 
     public static StreamRegistryEntry blueprint(ResourceAddress address,
-                                                 RetentionPolicy retention,
-                                                 Instant registeredAt) {
+                                                RetentionPolicy retention,
+                                                Instant registeredAt) {
         return new StreamRegistryEntry(address, retention, registeredAt.toEpochMilli(), RegisteredByKind.BLUEPRINT, 1);
     }
 

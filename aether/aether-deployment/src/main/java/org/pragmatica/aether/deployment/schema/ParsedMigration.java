@@ -29,7 +29,9 @@ public record ParsedMigration(MigrationEntry entry, MigrationType type, int vers
     }
 
     private static Result<ParsedMigration> parseFilename(MigrationEntry entry, String filename) {
-        if (!filename.endsWith(".sql")) {return invalidMigrationFormat(filename, "must end with .sql").result();}
+        if (!filename.endsWith(".sql")) {
+            return invalidMigrationFormat(filename, "must end with .sql").result();
+        }
 
         var prefix = filename.charAt(0);
 
@@ -45,11 +47,15 @@ public record ParsedMigration(MigrationEntry entry, MigrationType type, int vers
     private static Result<ParsedMigration> parseRepeatable(MigrationEntry entry, String filename) {
         var separatorIndex = filename.indexOf("__");
 
-        if (separatorIndex <0) {return invalidMigrationFormat(filename, "missing '__' separator").result();}
+        if (separatorIndex < 0) {
+            return invalidMigrationFormat(filename, "missing '__' separator").result();
+        }
 
         var description = filename.substring(separatorIndex + SEPARATOR_LENGTH, filename.length() - 4);
 
-        if (description.isEmpty()) {return invalidMigrationFormat(filename, "description is empty").result();}
+        if (description.isEmpty()) {
+            return invalidMigrationFormat(filename, "description is empty").result();
+        }
 
         return Result.success(new ParsedMigration(entry, MigrationType.REPEATABLE, 0, description));
     }
@@ -57,7 +63,9 @@ public record ParsedMigration(MigrationEntry entry, MigrationType type, int vers
     private static Result<ParsedMigration> parseVersioned(MigrationEntry entry, String filename, MigrationType type) {
         var separatorIndex = filename.indexOf("__");
 
-        if (separatorIndex <1) {return invalidMigrationFormat(filename, "missing '__' separator or version number").result();}
+        if (separatorIndex < 1) {
+            return invalidMigrationFormat(filename, "missing '__' separator or version number").result();
+        }
 
         var versionStr = filename.substring(1, separatorIndex);
 
@@ -70,7 +78,10 @@ public record ParsedMigration(MigrationEntry entry, MigrationType type, int vers
     }
 
     private static Result<Integer> parseVersion(String filename, String versionStr) {
-        if (versionStr.isEmpty()) {return invalidMigrationFormat(filename, "version number is empty").result();}
+        if (versionStr.isEmpty()) {
+            return invalidMigrationFormat(filename, "version number is empty").result();
+        }
+
         return Result.lift(cause -> invalidMigrationFormat(filename, "invalid version number '" + versionStr + "'"),
                            () -> Integer.parseInt(versionStr));
     }
@@ -80,7 +91,10 @@ public record ParsedMigration(MigrationEntry entry, MigrationType type, int vers
     }
 
     private static Result<String> validateDescription(String filename, String description) {
-        if (description.isEmpty()) {return invalidMigrationFormat(filename, "description is empty").result();}
+        if (description.isEmpty()) {
+            return invalidMigrationFormat(filename, "description is empty").result();
+        }
+
         return Result.success(description);
     }
 

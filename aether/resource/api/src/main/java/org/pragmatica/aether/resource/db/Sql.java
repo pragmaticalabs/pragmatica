@@ -12,4 +12,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 
-@ResourceQualifier(type = SqlConnector.class, config = "database") @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.PARAMETER) public@interface Sql {}
+@ResourceQualifier(type = SqlConnector.class, config = "database")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+public @interface Sql {}

@@ -43,6 +43,7 @@ public interface AnalyticsService {
 
         private Map<String, Long> buildCountSnapshot() {
             Map<String, Long> snapshot = new HashMap<>();
+
             senderCounts.forEach((key, counter) -> snapshot.put(key, counter.get()));
 
             return Map.copyOf(snapshot);

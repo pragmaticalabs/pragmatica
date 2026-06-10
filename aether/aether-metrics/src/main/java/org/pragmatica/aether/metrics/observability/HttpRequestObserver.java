@@ -10,7 +10,8 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Timer;
 
 
-@SuppressWarnings("JBCT-RET-01") public final class HttpRequestObserver {
+@SuppressWarnings("JBCT-RET-01")
+public final class HttpRequestObserver {
     private final ObservabilityRegistry registry;
 
     private HttpRequestObserver(ObservabilityRegistry registry) {
@@ -35,8 +36,9 @@ import io.micrometer.core.instrument.Timer;
     }
 
     private Timer requestTimer(String method, String routePattern) {
-        return Timer.builder("aether_http_request_duration_seconds").tags("method", method, "route", routePattern)
-                            .register(registry.registry());
+        return Timer.builder("aether_http_request_duration_seconds")
+                    .tags("method", method, "route", routePattern)
+                    .register(registry.registry());
     }
 
     private Counter securityDenialCounter(String type, String method, String routePattern) {

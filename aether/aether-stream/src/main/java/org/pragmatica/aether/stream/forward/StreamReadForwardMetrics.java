@@ -9,7 +9,8 @@ import org.pragmatica.lang.Contract;
 import java.util.concurrent.atomic.AtomicLong;
 
 
-@Contract public interface StreamReadForwardMetrics {
+@Contract
+public interface StreamReadForwardMetrics {
     void recordAttempt();
     void recordSuccess();
     void recordRetry();
@@ -17,15 +18,20 @@ import java.util.concurrent.atomic.AtomicLong;
     void recordTruncated();
 
     StreamReadForwardMetrics NOOP = new StreamReadForwardMetrics() {
-        @Override public void recordAttempt() {}
+        @Override
+        public void recordAttempt() {}
 
-        @Override public void recordSuccess() {}
+        @Override
+        public void recordSuccess() {}
 
-        @Override public void recordRetry() {}
+        @Override
+        public void recordRetry() {}
 
-        @Override public void recordTimeout() {}
+        @Override
+        public void recordTimeout() {}
 
-        @Override public void recordTruncated() {}
+        @Override
+        public void recordTruncated() {}
     };
 
     static StreamReadForwardMetrics inMemory() {
@@ -33,34 +39,36 @@ import java.util.concurrent.atomic.AtomicLong;
     }
 }
 
-@Contract final class InMemoryStreamReadForwardMetrics implements StreamReadForwardMetrics {
+@Contract
+final class InMemoryStreamReadForwardMetrics implements StreamReadForwardMetrics {
     private final AtomicLong attempts = new AtomicLong();
-
     private final AtomicLong success = new AtomicLong();
-
     private final AtomicLong retry = new AtomicLong();
-
     private final AtomicLong timeout = new AtomicLong();
-
     private final AtomicLong truncated = new AtomicLong();
 
-    @Override public void recordAttempt() {
+    @Override
+    public void recordAttempt() {
         attempts.incrementAndGet();
     }
 
-    @Override public void recordSuccess() {
+    @Override
+    public void recordSuccess() {
         success.incrementAndGet();
     }
 
-    @Override public void recordRetry() {
+    @Override
+    public void recordRetry() {
         retry.incrementAndGet();
     }
 
-    @Override public void recordTimeout() {
+    @Override
+    public void recordTimeout() {
         timeout.incrementAndGet();
     }
 
-    @Override public void recordTruncated() {
+    @Override
+    public void recordTruncated() {
         truncated.incrementAndGet();
     }
 

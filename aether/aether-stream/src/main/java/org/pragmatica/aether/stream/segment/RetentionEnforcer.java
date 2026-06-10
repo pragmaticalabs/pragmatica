@@ -25,15 +25,12 @@ import static org.pragmatica.lang.Option.option;
 
 public final class RetentionEnforcer implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(RetentionEnforcer.class);
-
     private static final TimeSpan DEFAULT_INTERVAL = TimeSpan.timeSpan(5 * 60 * 1000L).millis();
 
     private final StorageInstance storage;
     private final SegmentIndex index;
     private final RetentionPolicy retentionPolicy;
-
     private final AtomicBoolean closed = new AtomicBoolean(false);
-
     private volatile ScheduledFuture<?> scheduledFuture;
 
     private RetentionEnforcer(StorageInstance storage, SegmentIndex index, RetentionPolicy retentionPolicy) {
@@ -54,62 +51,82 @@ public final class RetentionEnforcer implements AutoCloseable {
                                      RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, retentionMs));
     }
 
-    @Contract public void start() {
+    @Contract
+    public void start() {
         start(DEFAULT_INTERVAL);
     }
 
-    @Contract public void start(TimeSpan interval) {
-        if (closed.get()) {return;}
+    @Contract
+    public void start(TimeSpan interval) {
+        if (closed.get()) {
+            return;
+        }
+
         scheduledFuture = SharedScheduler.scheduleAtFixedRate(this::enforce, interval);
         log.info("RetentionEnforcer started with interval={}ms, policy={}", interval.millis(), retentionPolicy);
     }
 
-    @Contract@Override public void close() {
+    @Contract
+    @Override
+    public void close() {
         if (closed.compareAndSet(false, true)) {
             option(scheduledFuture).onPresent(f -> f.cancel(false));
             log.info("RetentionEnforcer stopped");
         }
     }
 
-    @Contract void enforce() {
-        if (closed.get()) {return;}
+    @Contract
+    void enforce() {
+        if (closed.get()) {
+            return;
+        }
+
         var now = System.currentTimeMillis();
         var partitionKeys = index.listPartitionKeys();
         var totalRemoved = partitionKeys.stream().mapToInt(key -> enforcePartition(key.streamName(),
                                                                                    key.partition(),
-                                                                                   now))
-                                               .sum();
-        if (totalRemoved > 0) {log.info("Retention enforcement removed {} expired segment(s)", totalRemoved);}
+                                                                                   now)).sum();
+
+        if (totalRemoved > 0) {
+            log.info("Retention enforcement removed {} expired segment(s)", totalRemoved);
+        }
     }
 
     private int enforcePartition(String streamName, int partition, long now) {
         var expired = findExpiredSegments(streamName, partition, now);
+
         expired.forEach(ref -> removeSegment(streamName, partition, ref));
+
         return expired.size();
     }
 
     private List<SegmentIndex.SegmentRef> findExpiredSegments(String streamName, int partition, long now) {
         var segments = index.listSegments(streamName, partition);
         var segmentCount = segments.size();
-        var totalBytes = segments.stream().mapToLong(SegmentIndex.SegmentRef::originalSize)
-                                        .sum();
-        return segments.stream().filter(ref -> isSegmentExpired(ref, now, segmentCount, totalBytes))
-                              .toList();
+        var totalBytes = segments.stream().mapToLong(SegmentIndex.SegmentRef::originalSize).sum();
+
+        return segments.stream()
+                       .filter(ref -> isSegmentExpired(ref, now, segmentCount, totalBytes))
+                       .toList();
     }
 
     private boolean isSegmentExpired(SegmentIndex.SegmentRef ref, long now, long segmentCount, long totalBytes) {
-        if (ref.maxTimestamp() <= 0) {return false;}
+        if (ref.maxTimestamp() <= 0) {
+            return false;
+        }
+
         var ageMs = now - ref.maxTimestamp();
+
         return retentionPolicy.shouldEvict(segmentCount, totalBytes, ageMs);
     }
 
     private void removeSegment(String streamName, int partition, SegmentIndex.SegmentRef ref) {
         var refName = SegmentIndex.buildRefName(streamName, partition, ref);
-        storage.resolveRef(refName).map(blockId -> deleteBlockAndRef(refName, blockId))
-                          .onPresent(promise -> promise.onFailure(cause -> logDeleteFailure(streamName,
-                                                                                            partition,
-                                                                                            ref,
-                                                                                            cause)));
+
+        storage.resolveRef(refName).map(blockId -> deleteBlockAndRef(refName, blockId)).onPresent(promise -> promise.onFailure(cause -> logDeleteFailure(streamName,
+                                                                                                                                                         partition,
+                                                                                                                                                         ref,
+                                                                                                                                                         cause)));
         index.removeSegment(streamName, partition, ref.startOffset());
         log.debug("Removed expired segment {}/{}:[{}-{}] maxTimestamp={}",
                   streamName,
@@ -120,7 +137,8 @@ public final class RetentionEnforcer implements AutoCloseable {
     }
 
     private Promise<Unit> deleteBlockAndRef(String refName, BlockId blockId) {
-        return storage.deleteRef(refName).flatMap(_ -> storage.delete(blockId));
+        return storage.deleteRef(refName)
+                      .flatMap(_ -> storage.delete(blockId));
     }
 
     private static void logDeleteFailure(String streamName,

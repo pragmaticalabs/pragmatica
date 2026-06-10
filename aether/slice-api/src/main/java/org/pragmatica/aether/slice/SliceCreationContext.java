@@ -25,8 +25,7 @@ public interface SliceCreationContext {
         return DefaultSliceCreationContext.defaultSliceCreationContext(invoker,
                                                                        resources,
                                                                        none(),
-                                                                       NoOpConfigFacade.INSTANCE)
-        .unwrap();
+                                                                       NoOpConfigFacade.INSTANCE).unwrap();
     }
 
     static SliceCreationContext sliceCreationContext(SliceInvokerFacade invoker,
@@ -35,19 +34,14 @@ public interface SliceCreationContext {
         return DefaultSliceCreationContext.defaultSliceCreationContext(invoker,
                                                                        resources,
                                                                        some(sliceId),
-                                                                       NoOpConfigFacade.INSTANCE)
-        .unwrap();
+                                                                       NoOpConfigFacade.INSTANCE).unwrap();
     }
 
     static SliceCreationContext sliceCreationContext(SliceInvokerFacade invoker,
                                                      ResourceProviderFacade resources,
                                                      String sliceId,
                                                      ConfigFacade config) {
-        return DefaultSliceCreationContext.defaultSliceCreationContext(invoker,
-                                                                       resources,
-                                                                       some(sliceId),
-                                                                       config)
-        .unwrap();
+        return DefaultSliceCreationContext.defaultSliceCreationContext(invoker, resources, some(sliceId), config).unwrap();
     }
 
     static SliceCreationContext sliceCreationContext(SliceInvokerFacade invoker,

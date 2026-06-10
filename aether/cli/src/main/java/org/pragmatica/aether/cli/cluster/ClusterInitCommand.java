@@ -151,10 +151,11 @@ class ClusterInitCommand implements Callable<Integer> {
         var effectiveTarget = target != null
                               ? target
                               : "docker";
+
         return parseTarget(effectiveTarget).flatMap(t -> InputValidators.validateClusterName(name == null
-                                                                                    ? ""
-                                                                                    : name).flatMap(validName -> buildAnswersForTarget(validName,
-                                                                                                                                       t)));
+                                                                                             ? ""
+                                                                                             : name).flatMap(validName -> buildAnswersForTarget(validName,
+                                                                                                                                                t)));
     }
 
     private Result<ClusterConfigAnswers> buildAnswersForTarget(String clusterName, SourceType t) {
@@ -167,9 +168,13 @@ class ClusterInitCommand implements Callable<Integer> {
 
     private Result<ClusterConfigAnswers> buildCloudAnswers(String clusterName) {
         if (provider == null) return new ClusterInitError.MissingField("--provider").result();
+
         if (region == null) return new ClusterInitError.MissingField("--region").result();
+
         if (instanceType == null) return new ClusterInitError.MissingField("--instance-type").result();
+
         if (credentialEnv == null) return new ClusterInitError.MissingField("--credential-env").result();
+
         if (nodes == null) return new ClusterInitError.MissingField("--nodes").result();
 
         return parseCloudProvider(provider).flatMap(p -> InputValidators.validateEnvVarName(credentialEnv).flatMap(envOk -> TopologyDeriver.derive(nodes).flatMap(split -> assembleAnswers(clusterName,
@@ -184,10 +189,14 @@ class ClusterInitCommand implements Callable<Integer> {
 
     private Result<ClusterConfigAnswers> buildSshAnswers(String clusterName) {
         if (hosts == null || hosts.isEmpty()) return new ClusterInitError.MissingField("--hosts").result();
+
         if (sshUser == null) return new ClusterInitError.MissingField("--ssh-user").result();
+
         if (sshKey == null) return new ClusterInitError.MissingField("--ssh-key").result();
+
         for (var host : hosts) {
             var validation = InputValidators.validateHostnameOrIp(host);
+
             if (validation.isFailure()) {
                 var cause = validation.fold(c -> c, _ -> null);
 
@@ -207,6 +216,7 @@ class ClusterInitCommand implements Callable<Integer> {
 
     private Result<ClusterConfigAnswers> buildLocalAnswers(String clusterName, SourceType t) {
         if (nodes == null) return new ClusterInitError.MissingField("--nodes").result();
+
         return TopologyDeriver.derive(nodes).flatMap(split -> assembleAnswers(clusterName,
                                                                               t,
                                                                               org.pragmatica.lang.Option.none(),
@@ -236,8 +246,11 @@ class ClusterInitCommand implements Callable<Integer> {
 
     private Result<org.pragmatica.lang.Option<DatabaseAnswers>> buildDatabase() {
         if (dbHost == null) return Result.success(org.pragmatica.lang.Option.none());
+
         if (dbName == null) return new ClusterInitError.MissingField("--db-name (--db-host given)").result();
+
         if (dbUser == null) return new ClusterInitError.MissingField("--db-user (--db-host given)").result();
+
         if (dbPasswordEnv == null) return new ClusterInitError.MissingField("--db-password-env (--db-host given)").result();
 
         return InputValidators.validateHostnameOrIp(dbHost).flatMap(host -> InputValidators.validateEnvVarName(dbPasswordEnv).map(envVar -> org.pragmatica.lang.Option.some(new DatabaseAnswers(host,
@@ -261,32 +274,38 @@ class ClusterInitCommand implements Callable<Integer> {
         var preset = parseFirewallPreset(firewall == null
                                          ? "standard"
                                          : firewall);
+
         return preset.flatMap(p -> {
-                                  if (p == FirewallPreset.RESTRICTIVE) {
-                                  var admin = adminCidr != null
-                                              ? adminCidr
-                                              : IpDetector.suggestAdminCidr();
-                                  var internal = internalCidr != null
-                                                 ? internalCidr
-                                                 : "10.0.0.0/8";
-                                  return InputValidators.validateCidr(admin)
-                                                        .flatMap(_ -> InputValidators.validateCidr(internal))
-                                                        .map(_ -> new FirewallChoice(p,
-                                                                                     org.pragmatica.lang.Option.some(admin),
-                                                                                     org.pragmatica.lang.Option.some(internal)));
-                              }
-                                  return Result.success(new FirewallChoice(p,
-                                                                           org.pragmatica.lang.Option.none(),
-                                                                           org.pragmatica.lang.Option.none()));
-                              });
+            if (p == FirewallPreset.RESTRICTIVE) {
+                var admin = adminCidr != null
+                            ? adminCidr
+                            : IpDetector.suggestAdminCidr();
+                var internal = internalCidr != null
+                               ? internalCidr
+                               : "10.0.0.0/8";
+
+                return InputValidators.validateCidr(admin)
+                                      .flatMap(_ -> InputValidators.validateCidr(internal))
+                                      .map(_ -> new FirewallChoice(p,
+                                                                   org.pragmatica.lang.Option.some(admin),
+                                                                   org.pragmatica.lang.Option.some(internal)));
+            }
+
+            return Result.success(new FirewallChoice(p,
+                                                     org.pragmatica.lang.Option.none(),
+                                                     org.pragmatica.lang.Option.none()));
+        });
     }
 
     private Result<TlsAnswers> buildTls(SourceType t) {
-        if (t == SourceType.DOCKER || t == SourceType.FORGE) {return Result.success(new TlsAnswers.Skipped());}
+        if (t == SourceType.DOCKER || t == SourceType.FORGE) {
+            return Result.success(new TlsAnswers.Skipped());
+        }
 
         var mode = tls == null
                    ? "auto"
                    : tls.toLowerCase();
+
         return switch (mode) {
             case "auto" -> Result.success(new TlsAnswers.AutoGenerate());
             case "env" -> buildTlsFromEnv();
@@ -295,19 +314,27 @@ class ClusterInitCommand implements Callable<Integer> {
     }
 
     private Result<TlsAnswers> buildTlsFromEnv() {
-        if (tlsCertEnv == null) {return new ClusterInitError.MissingField("--tls-cert-env (--tls=env)").result();}
-        if (tlsKeyEnv == null) {return new ClusterInitError.MissingField("--tls-key-env (--tls=env)").result();}
+        if (tlsCertEnv == null) {
+            return new ClusterInitError.MissingField("--tls-cert-env (--tls=env)").result();
+        }
+
+        if (tlsKeyEnv == null) {
+            return new ClusterInitError.MissingField("--tls-key-env (--tls=env)").result();
+        }
 
         return InputValidators.validateEnvVarName(tlsCertEnv).flatMap(certOk -> InputValidators.validateEnvVarName(tlsKeyEnv).map(keyOk -> new TlsAnswers.Manual(certOk,
                                                                                                                                                                  keyOk)));
     }
 
     private Result<SecretAnswers> buildSecret(SourceType t) {
-        if (t == SourceType.DOCKER || t == SourceType.FORGE) {return Result.success(new SecretAnswers.Skipped());}
+        if (t == SourceType.DOCKER || t == SourceType.FORGE) {
+            return Result.success(new SecretAnswers.Skipped());
+        }
 
         var mode = secret == null
                    ? "auto"
                    : secret.toLowerCase();
+
         return switch (mode) {
             case "auto" -> Result.success(new SecretAnswers.AutoGenerate());
             case "env" -> buildSecretFromEnv();
@@ -316,13 +343,17 @@ class ClusterInitCommand implements Callable<Integer> {
     }
 
     private Result<SecretAnswers> buildSecretFromEnv() {
-        if (secretEnv == null) {return new ClusterInitError.MissingField("--secret-env (--secret=env)").result();}
+        if (secretEnv == null) {
+            return new ClusterInitError.MissingField("--secret-env (--secret=env)").result();
+        }
+
         return InputValidators.validateEnvVarName(secretEnv).map(SecretAnswers.FromEnv::new);
     }
 
     private static Result<SourceType> parseTarget(String raw) {
         var match = Arrays.stream(SourceType.values()).filter(t -> t.name()
                                                                     .equalsIgnoreCase(raw)).findFirst();
+
         return match.map(Result::success)
                     .orElseGet(() -> new ClusterInitError.InvalidValue("--target",
                                                                        raw,
@@ -332,6 +363,7 @@ class ClusterInitCommand implements Callable<Integer> {
     private static Result<CloudProviderName> parseCloudProvider(String raw) {
         var match = Arrays.stream(CloudProviderName.values()).filter(p -> p.name()
                                                                            .equalsIgnoreCase(raw)).findFirst();
+
         return match.map(Result::success)
                     .orElseGet(() -> new ClusterInitError.InvalidValue("--provider",
                                                                        raw,
@@ -341,6 +373,7 @@ class ClusterInitCommand implements Callable<Integer> {
     private static Result<FirewallPreset> parseFirewallPreset(String raw) {
         var match = Arrays.stream(FirewallPreset.values()).filter(p -> p.name()
                                                                         .equalsIgnoreCase(raw)).findFirst();
+
         return match.map(Result::success)
                     .orElseGet(() -> new ClusterInitError.InvalidValue("--firewall",
                                                                        raw,
@@ -351,11 +384,18 @@ class ClusterInitCommand implements Callable<Integer> {
         if (Files.exists(output) && !force) {
             if (!isBatchMode()) {
                 var prompt = new Prompt();
-                if (!prompt.confirm("Output file " + output + " exists. Overwrite?", false)) {return new ClusterInitError.OutputExists(output.toString()).result();}
-            } else {return new ClusterInitError.OutputExists(output.toString()).result();}
+
+                if (!prompt.confirm("Output file " + output + " exists. Overwrite?", false)) {
+                    return new ClusterInitError.OutputExists(output.toString()).result();
+                }
+            } else {
+                return new ClusterInitError.OutputExists(output.toString()).result();
+            }
         }
+
         try {
             var toml = ClusterConfigGenerator.generate(answers);
+
             Files.writeString(output, toml);
 
             return Result.success(output);

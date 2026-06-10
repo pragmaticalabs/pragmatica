@@ -54,6 +54,7 @@ public interface OrderSlice {
                 return base.productsWithTag(tag);
             }
         }
+
         return new orderSlice(base, crud, analytics);
     }
 }

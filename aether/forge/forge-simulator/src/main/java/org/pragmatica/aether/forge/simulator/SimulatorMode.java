@@ -48,15 +48,21 @@ public enum SimulatorMode {
         return rateMultiplier;
     }
     public BackendSimulation defaultBackendSimulation() {
-        if (!realisticLatency) {return BackendSimulation.NoOp.noOp().unwrap();}
-        return BackendSimulation.LatencySimulation.latencySimulation(10, 5, 0.01, 100).map(sim -> (BackendSimulation) sim)
-                                                                    .unwrap();
+        if (!realisticLatency) {
+            return BackendSimulation.NoOp.noOp().unwrap();
+        }
+
+        return BackendSimulation.LatencySimulation.latencySimulation(10, 5, 0.01, 100)
+                                                  .map(sim -> (BackendSimulation) sim)
+                                                  .unwrap();
     }
     public SimulatorConfig applyTo(SimulatorConfig template) {
-        return template.withLoadGeneratorEnabled(loadGeneratorEnabled).withGlobalMultiplier(rateMultiplier);
+        return template.withLoadGeneratorEnabled(loadGeneratorEnabled)
+                       .withGlobalMultiplier(rateMultiplier);
     }
     public String toJson() {
-        return String.format("{\"mode\":\"%s\",\"displayName\":\"%s\",\"loadGeneratorEnabled\":%b," + "\"realisticLatency\":%b,\"chaosEnabled\":%b,\"rateMultiplier\":%.2f}",
+        return String.format("{\"mode\":\"%s\",\"displayName\":\"%s\",\"loadGeneratorEnabled\":%b,"
+                            + "\"realisticLatency\":%b,\"chaosEnabled\":%b,\"rateMultiplier\":%.2f}",
                              name(),
                              displayName,
                              loadGeneratorEnabled,
@@ -65,16 +71,17 @@ public enum SimulatorMode {
                              rateMultiplier);
     }
     public static Result<SimulatorMode> simulatorMode(String value) {
-        return ensureNotBlank(value).map(SimulatorMode::normalizeModeName).flatMap(SimulatorMode::normalizedMode);
+        return ensureNotBlank(value).map(SimulatorMode::normalizeModeName)
+                             .flatMap(SimulatorMode::normalizedMode);
     }
     private static Result<String> ensureNotBlank(String value) {
-        return Verify.ensure(value, Verify.Is::notNull, ModeError.Empty.INSTANCE)
-                            .filter(ModeError.Empty.INSTANCE,
-                                    v -> !v.isBlank());
+        return Verify.ensure(value, Verify.Is::notNull, ModeError.Empty.INSTANCE).filter(ModeError.Empty.INSTANCE,
+                                                                                         v -> !v.isBlank());
     }
     private static String normalizeModeName(String value) {
-        return value.toUpperCase().replace("-", "_")
-                                .replace(" ", "_");
+        return value.toUpperCase()
+                    .replace("-", "_")
+                    .replace(" ", "_");
     }
     private static Result<SimulatorMode> normalizedMode(String normalized) {
         try {
@@ -86,12 +93,18 @@ public enum SimulatorMode {
     public static String allModesJson() {
         var sb = new StringBuilder("[");
         var first = true;
+
         for (var mode : values()) {
-            if (!first) {sb.append(",");}
+            if (!first) {
+                sb.append(",");
+            }
+
             first = false;
             sb.append(mode.toJson());
         }
+
         sb.append("]");
+
         return sb.toString();
     }
     public sealed interface ModeError extends Cause {
@@ -102,7 +115,8 @@ public enum SimulatorMode {
                 return success(new Empty());
             }
 
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Mode name cannot be empty";
             }
         }
@@ -112,13 +126,15 @@ public enum SimulatorMode {
                 return success(new Unknown(value));
             }
 
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Unknown simulator mode: " + value;
             }
         }
 
         record unused() implements ModeError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "";
             }
         }

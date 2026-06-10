@@ -12,13 +12,13 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /// Fix #1 — LEVEL-TRIGGERED, self-healing registration of the system streams the observability READ
@@ -56,14 +56,12 @@ import java.util.function.Supplier;
 /// scheduler without a live cluster.
 public final class SystemStreamRegistrar {
     private static final Logger LOG = LoggerFactory.getLogger(SystemStreamRegistrar.class);
-
     static final TimeSpan INITIAL_BACKOFF = TimeSpan.timeSpan(500L).millis();
     static final TimeSpan MAX_BACKOFF = TimeSpan.timeSpan(30L).seconds();
 
     private final Supplier<Result<?>> createStreamLeg;
     private final Supplier<Result<?>> bootstrapLeg;
     private final RetryScheduler scheduler;
-
     private final AtomicBoolean leader = new AtomicBoolean(false);
     private final AtomicBoolean createStreamDone = new AtomicBoolean(false);
     private final AtomicBoolean bootstrapDone = new AtomicBoolean(false);
@@ -72,7 +70,8 @@ public final class SystemStreamRegistrar {
 
     /// Pluggable one-shot scheduler seam (production = [`SharedScheduler#schedule`]); a test injects a
     /// deterministic scheduler that captures the runnable instead of timing it.
-    @FunctionalInterface public interface RetryScheduler {
+    @FunctionalInterface
+    public interface RetryScheduler {
         ScheduledFuture<?> schedule(Runnable runnable, TimeSpan delay);
     }
 
@@ -100,7 +99,8 @@ public final class SystemStreamRegistrar {
     /// `LeaderChange` route hook. On leader-gain arm the retry loop and run the first pass immediately;
     /// on leader-loss disarm (cancel the pending retry) — only the leader can commit, so a deposed
     /// leader must stop attempting.
-    @Contract public void onLeaderChange(LeaderNotification.LeaderChange change) {
+    @Contract
+    public void onLeaderChange(LeaderNotification.LeaderChange change) {
         if (change.localNodeIsLeader()) {
             activate();
         } else {
@@ -108,7 +108,8 @@ public final class SystemStreamRegistrar {
         }
     }
 
-    @Contract void activate() {
+    @Contract
+    void activate() {
         if (!leader.compareAndSet(false, true)) {
             return;
         }
@@ -119,10 +120,12 @@ public final class SystemStreamRegistrar {
         runPass();
     }
 
-    @Contract void deactivate() {
+    @Contract
+    void deactivate() {
         if (!leader.compareAndSet(true, false)) {
             return;
         }
+
         cancelPendingRetry();
     }
 
@@ -138,27 +141,32 @@ public final class SystemStreamRegistrar {
     /// Single registration pass: attempt each not-yet-DONE leg; if work remains and we are still
     /// leader, schedule the next bounded-backoff retry (deduped to one outstanding future). Stops
     /// scheduling once both legs are DONE or leadership is lost.
-    @Contract private void runPass() {
+    @Contract
+    private void runPass() {
         if (!leader.get()) {
             return;
         }
+
         attemptLeg("system:cluster-events createStream", createStreamLeg, createStreamDone);
         if (!leader.get()) {
             return;
         }
-        attemptLeg("system-stream bootstrap", bootstrapLeg, bootstrapDone);
 
+        attemptLeg("system-stream bootstrap", bootstrapLeg, bootstrapDone);
         if (isComplete()) {
             LOG.info("SystemStreamRegistrar: all system streams registered");
             cancelPendingRetry();
+
             return;
         }
+
         scheduleRetry();
     }
 
     /// Attempt one leg if it is not already DONE. Latches DONE on success or a TERMINAL (config) cause;
     /// leaves it pending on a TRANSIENT (commit-timeout / not-quorate) cause so the next pass retries.
-    @Contract private void attemptLeg(String name, Supplier<Result<?>> leg, AtomicBoolean done) {
+    @Contract
+    private void attemptLeg(String name, Supplier<Result<?>> leg, AtomicBoolean done) {
         // Re-check leadership immediately before the consensus write: deactivate() may land on the
         // dispatch thread between runPass's leader.get() and here. The residual check-then-write window
         // is irreducible without a lock, but at most yields one idempotent (STREAM_ALREADY_EXISTS) Put,
@@ -166,24 +174,28 @@ public final class SystemStreamRegistrar {
         if (done.get() || !leader.get()) {
             return;
         }
-        leg.get()
-           .onSuccess(_ -> latchSuccess(name, done))
-           .onFailure(cause -> classifyFailure(name, cause, done));
+
+        leg.get().onSuccess(_ -> latchSuccess(name, done)).onFailure(cause -> classifyFailure(name, cause, done));
     }
 
-    @Contract private void latchSuccess(String name, AtomicBoolean done) {
+    @Contract
+    private void latchSuccess(String name, AtomicBoolean done) {
         if (done.compareAndSet(false, true)) {
             LOG.info("SystemStreamRegistrar: {} committed", name);
         }
     }
 
-    @Contract private void classifyFailure(String name, Cause cause, AtomicBoolean done) {
+    @Contract
+    private void classifyFailure(String name, Cause cause, AtomicBoolean done) {
         if (isTerminal(cause)) {
             LOG.warn("SystemStreamRegistrar: {} failed with a terminal (non-retryable) cause: {} — not retrying",
-                     name, cause.message());
+                     name,
+                     cause.message());
             done.set(true);
+
             return;
         }
+
         LOG.debug("SystemStreamRegistrar: {} transient failure: {} — will retry", name, cause.message());
     }
 
@@ -195,36 +207,42 @@ public final class SystemStreamRegistrar {
     /// Everything else — consensus commit timeout, "Node is inactive", not-yet-quorate — is TRANSIENT
     /// and retried. Matched by stable enum identity, not message text.
     private static boolean isTerminal(Cause cause) {
-        return cause == StreamError.General.STREAM_ALREADY_EXISTS
-               || cause == StreamError.General.STREAM_MEMORY_EXCEEDED
-               || cause == StreamError.General.AHSE_REQUIRED_FOR_STRONG;
+        return cause == StreamError.General.STREAM_ALREADY_EXISTS || cause == StreamError.General.STREAM_MEMORY_EXCEEDED || cause == StreamError.General.AHSE_REQUIRED_FOR_STRONG;
     }
 
-    @Contract private void scheduleRetry() {
+    @Contract
+    private void scheduleRetry() {
         if (pendingRetry.get() != null) {
             return;
         }
+
         var delay = nextBackoff.get();
         var future = scheduler.schedule(this::onRetryFire, delay);
 
         if (!pendingRetry.compareAndSet(null, future)) {
             future.cancel(false);
+
             return;
         }
+
         if (!leader.get()) {
             future.cancel(false);
             pendingRetry.compareAndSet(future, null);
+
             return;
         }
+
         nextBackoff.set(nextBackoffAfter(delay));
     }
 
-    @Contract private void onRetryFire() {
+    @Contract
+    private void onRetryFire() {
         pendingRetry.set(null);
         runPass();
     }
 
-    @Contract private void cancelPendingRetry() {
+    @Contract
+    private void cancelPendingRetry() {
         var prev = pendingRetry.getAndSet(null);
 
         if (prev != null) {
@@ -239,6 +257,7 @@ public final class SystemStreamRegistrar {
         if (doubled >= MAX_BACKOFF.nanos()) {
             return MAX_BACKOFF;
         }
+
         return TimeSpan.timeSpan(doubled).nanos();
     }
 }

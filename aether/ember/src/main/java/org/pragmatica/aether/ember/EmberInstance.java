@@ -18,7 +18,6 @@ public final class EmberInstance {
 
     private final EmberConfig config;
     private final EmberCluster cluster;
-
     private volatile Option<EmberH2Server> h2Server = Option.empty();
 
     private EmberInstance(EmberConfig config) {
@@ -35,24 +34,25 @@ public final class EmberInstance {
 
     static EmberInstance emberInstance(EmberConfig config) {
         var instance = new EmberInstance(config);
+
         instance.startH2();
-        instance.cluster.start().await(TimeSpan.timeSpan(60).seconds())
-                              .onFailure(cause -> log.error("Failed to start cluster: {}",
-                                                            cause.message()));
+        instance.cluster.start().await(TimeSpan.timeSpan(60).seconds()).onFailure(cause -> log.error("Failed to start cluster: {}",
+                                                                                                     cause.message()));
+
         return instance;
     }
 
     private void startH2() {
-        if (!config.h2Config().enabled()) {return;}
+        if (!config.h2Config().enabled()) {
+            return;
+        }
+
         var server = EmberH2Server.emberH2Server(config.h2Config());
-        server.start().await(TimeSpan.timeSpan(10).seconds())
-                    .onSuccess(_ -> {
-                                   h2Server = Option.some(server);
-                                   log.info("H2 database available at: {}",
-                                            server.jdbcUrl());
-                               })
-                    .onFailure(cause -> log.error("Failed to start H2 server: {}",
-                                                  cause.message()));
+
+        server.start().await(TimeSpan.timeSpan(10).seconds()).onSuccess(_ -> {
+            h2Server = Option.some(server);
+            log.info("H2 database available at: {}", server.jdbcUrl());
+        }).onFailure(cause -> log.error("Failed to start H2 server: {}", cause.message()));
     }
 
     public EmberCluster cluster() {
@@ -64,14 +64,17 @@ public final class EmberInstance {
     }
 
     public Option<String> h2JdbcUrl() {
-        return h2Server.filter(EmberH2Server::isRunning).map(EmberH2Server::jdbcUrl);
+        return h2Server.filter(EmberH2Server::isRunning)
+                       .map(EmberH2Server::jdbcUrl);
     }
 
     public Promise<Unit> stop() {
-        return cluster.stop().flatMap(_ -> stopH2());
+        return cluster.stop()
+                      .flatMap(_ -> stopH2());
     }
 
     private Promise<Unit> stopH2() {
-        return h2Server.map(EmberH2Server::stop).or(Promise.success(Unit.unit()));
+        return h2Server.map(EmberH2Server::stop)
+                       .or(Promise.success(Unit.unit()));
     }
 }

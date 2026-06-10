@@ -62,11 +62,12 @@ public final class SystemStreamFactories {
                                                                                 Serializer serializer,
                                                                                 StreamConfig config) {
         ensureLocalPartition(partitionManager, config);
-        var transport = DefaultStreamPublisher.<T>streamPublisher(partitionManager,
-                                                                  serializer,
-                                                                  config.name(),
-                                                                  config.partitions(),
-                                                                  Option.none());
+        var transport = DefaultStreamPublisher.<T> streamPublisher(partitionManager,
+                                                                   serializer,
+                                                                   config.name(),
+                                                                   config.partitions(),
+                                                                   Option.none());
+
         return FrameworkStreamPublishers.systemStreamPublisher(address, transport);
     }
 
@@ -80,12 +81,13 @@ public final class SystemStreamFactories {
                                                                               Deserializer deserializer,
                                                                               StreamConfig config) {
         ensureLocalPartition(partitionManager, config);
-        var transport = PartitionedStreamAccess.<T>streamAccess(partitionManager,
-                                                                serializer,
-                                                                deserializer,
-                                                                config.name(),
-                                                                config.partitions(),
-                                                                Option.none());
+        var transport = PartitionedStreamAccess.<T> streamAccess(partitionManager,
+                                                                 serializer,
+                                                                 deserializer,
+                                                                 config.name(),
+                                                                 config.partitions(),
+                                                                 Option.none());
+
         return FrameworkStreamConsumers.systemStreamConsumer(address, transport);
     }
 
@@ -109,17 +111,18 @@ public final class SystemStreamFactories {
                                                                               NodeId self,
                                                                               StreamReadForwardMetrics metrics) {
         ensureLocalPartition(partitionManager, config);
-        var transport = PartitionedStreamAccess.<T>streamAccess(partitionManager,
-                                                                serializer,
-                                                                deserializer,
-                                                                config.name(),
-                                                                config.partitions(),
-                                                                Option.none(),
-                                                                ReadPreference.ANY_REPLICA,
-                                                                replicaRegistry,
-                                                                forwardClient,
-                                                                self,
-                                                                metrics);
+        var transport = PartitionedStreamAccess.<T> streamAccess(partitionManager,
+                                                                 serializer,
+                                                                 deserializer,
+                                                                 config.name(),
+                                                                 config.partitions(),
+                                                                 Option.none(),
+                                                                 ReadPreference.ANY_REPLICA,
+                                                                 replicaRegistry,
+                                                                 forwardClient,
+                                                                 self,
+                                                                 metrics);
+
         return FrameworkStreamConsumers.systemStreamConsumer(address, transport);
     }
 
@@ -134,11 +137,12 @@ public final class SystemStreamFactories {
                                                                                 int partitions,
                                                                                 RetentionPolicy retention) {
         ensureLocalPartition(address, partitionManager, partitions, retention);
-        var transport = DefaultStreamPublisher.<T>streamPublisher(partitionManager,
-                                                                  serializer,
-                                                                  address.asString(),
-                                                                  partitions,
-                                                                  Option.none());
+        var transport = DefaultStreamPublisher.<T> streamPublisher(partitionManager,
+                                                                   serializer,
+                                                                   address.asString(),
+                                                                   partitions,
+                                                                   Option.none());
+
         return FrameworkStreamPublishers.systemStreamPublisher(address, transport);
     }
 
@@ -153,12 +157,13 @@ public final class SystemStreamFactories {
                                                                               int partitions,
                                                                               RetentionPolicy retention) {
         ensureLocalPartition(address, partitionManager, partitions, retention);
-        var transport = PartitionedStreamAccess.<T>streamAccess(partitionManager,
-                                                                serializer,
-                                                                deserializer,
-                                                                address.asString(),
-                                                                partitions,
-                                                                Option.none());
+        var transport = PartitionedStreamAccess.<T> streamAccess(partitionManager,
+                                                                 serializer,
+                                                                 deserializer,
+                                                                 address.asString(),
+                                                                 partitions,
+                                                                 Option.none());
+
         return FrameworkStreamConsumers.systemStreamConsumer(address, transport);
     }
 
@@ -169,8 +174,7 @@ public final class SystemStreamFactories {
     /// quiet) and the budget-exhaustion cluster event is emitted by the manager's own exhaustion sink
     /// inside `createStream` (per-node `StreamMemoryExceeded`), so the soft failure is visible.
     private static void ensureLocalPartition(StreamPartitionManager partitionManager, StreamConfig config) {
-        partitionManager.createStream(config)
-                        .onFailure(cause -> logSystemStreamCreateFailure(config.name(), cause));
+        partitionManager.createStream(config).onFailure(cause -> logSystemStreamCreateFailure(config.name(), cause));
     }
 
     /// WARN for genuine create failures (memory, bad config); DEBUG for the benign idempotent
@@ -179,8 +183,10 @@ public final class SystemStreamFactories {
     private static void logSystemStreamCreateFailure(String streamName, Cause cause) {
         if (cause == StreamError.General.STREAM_ALREADY_EXISTS) {
             LOG.debug("system stream {} already exists — reusing", streamName);
+
             return;
         }
+
         LOG.warn("system stream {} local-partition create FAILED (fail-soft; SystemStreamRegistrar will retry): {}",
                  streamName,
                  cause.message());
@@ -195,7 +201,7 @@ public final class SystemStreamFactories {
                                              StreamPartitionManager partitionManager,
                                              int partitions,
                                              RetentionPolicy retention) {
-        partitionManager.createStream(StreamConfig.streamConfig(address.asString(), partitions, retention, "earliest"))
-                        .onFailure(cause -> logSystemStreamCreateFailure(address.asString(), cause));
+        partitionManager.createStream(StreamConfig.streamConfig(address.asString(), partitions, retention, "earliest")).onFailure(cause -> logSystemStreamCreateFailure(address.asString(),
+                                                                                                                                                                        cause));
     }
 }

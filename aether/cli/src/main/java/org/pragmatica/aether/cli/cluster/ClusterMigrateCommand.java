@@ -70,10 +70,10 @@ class ClusterMigrateCommand implements Callable<Integer> {
 
     private String buildRequestJson(String validStrategy) {
         var sb = new StringBuilder(128);
+
         sb.append("{\"targetProvider\":\"").append(escapeJson(targetProvider)).append('"');
         sb.append(",\"targetZone\":\"").append(escapeJson(targetZone)).append('"');
         sb.append(",\"strategy\":\"").append(escapeJson(validStrategy)).append('"');
-
         if (dnsHostname != null && !dnsHostname.isEmpty()) {
             sb.append(",\"dnsHostname\":\"").append(escapeJson(dnsHostname)).append('"');
         }
@@ -92,6 +92,7 @@ class ClusterMigrateCommand implements Callable<Integer> {
         var label = dryRun
                     ? "Migration plan generated."
                     : "Migration initiated.";
+
         return OutputFormatter.printAction(json, parent.outputOptions(), label);
     }
 

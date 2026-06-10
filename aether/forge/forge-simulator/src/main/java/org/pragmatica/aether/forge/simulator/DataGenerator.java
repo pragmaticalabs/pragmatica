@@ -32,13 +32,16 @@ public sealed interface DataGenerator {
         private static final Cause MIN_GREATER_THAN_MAX = Causes.cause("min must be <= max");
 
         public int random(Random random) {
-            if (min == max) {return min;}
+            if (min == max) {
+                return min;
+            }
+
             return min + random.nextInt(max - min + 1);
         }
 
         public static Result<IntRange> intRange(int min, int max) {
-            return Verify.ensure(min, Verify.Is::lessThanOrEqualTo, max, MIN_GREATER_THAN_MAX)
-                                .map(m -> new IntRange(m, max));
+            return Verify.ensure(min, Verify.Is::lessThanOrEqualTo, max, MIN_GREATER_THAN_MAX).map(m -> new IntRange(m,
+                                                                                                                     max));
         }
 
         public static IntRange intRange(int value) {
@@ -51,18 +54,20 @@ public sealed interface DataGenerator {
 
         public ProductIdGenerator(List<String> productIds) {
             this.productIds = productIds == null
-                             ? List.of()
-                             : List.copyOf(productIds);
+                              ? List.of()
+                              : List.copyOf(productIds);
         }
 
-        @Override public String generate(Random random) {
+        @Override
+        public String generate(Random random) {
             return productIds.get(random.nextInt(productIds.size()));
         }
 
         public static Result<ProductIdGenerator> productIdGenerator(List<String> productIds) {
-            return Verify.ensure(productIds, Verify.Is::notNull, PRODUCT_IDS_EMPTY).filter(PRODUCT_IDS_EMPTY,
-                                                                                           list -> !list.isEmpty())
-                                .map(ProductIdGenerator::new);
+            return Verify.ensure(productIds, Verify.Is::notNull, PRODUCT_IDS_EMPTY)
+                         .filter(PRODUCT_IDS_EMPTY,
+                                 list -> !list.isEmpty())
+                         .map(ProductIdGenerator::new);
         }
 
         public static ProductIdGenerator productIdGenerator() {
@@ -72,18 +77,17 @@ public sealed interface DataGenerator {
 
     record CustomerIdGenerator(String prefix, int maxId) implements DataGenerator {
         private static final Cause PREFIX_NULL = Causes.cause("prefix cannot be null");
-
         private static final Cause MAX_ID_NOT_POSITIVE = Causes.cause("maxId must be positive");
 
-        @Override public String generate(Random random) {
+        @Override
+        public String generate(Random random) {
             return String.format("%s%08d", prefix, random.nextInt(maxId));
         }
 
         public static Result<CustomerIdGenerator> customerIdGenerator(String prefix, int maxId) {
-            return Verify.ensure(prefix, Verify.Is::notNull, PREFIX_NULL).flatMap(_ -> Verify.ensure(maxId,
-                                                                                                     Verify.Is::positive,
-                                                                                                     MAX_ID_NOT_POSITIVE))
-                                .map(_ -> new CustomerIdGenerator(prefix, maxId));
+            return Verify.ensure(prefix, Verify.Is::notNull, PREFIX_NULL)
+                         .flatMap(_ -> Verify.ensure(maxId, Verify.Is::positive, MAX_ID_NOT_POSITIVE))
+                         .map(_ -> new CustomerIdGenerator(prefix, maxId));
         }
 
         public static CustomerIdGenerator customerIdGenerator() {
@@ -96,11 +100,12 @@ public sealed interface DataGenerator {
                                  IntRange quantityRange) implements DataGenerator {
         private static final Cause GENERATORS_NULL = Causes.cause("All generators must be non-null");
 
-        @Override public OrderRequestData generate(Random random) {
+        @Override
+        public OrderRequestData generate(Random random) {
             return OrderRequestData.orderRequestData(customerGenerator.generate(random),
                                                      productGenerator.generate(random),
                                                      quantityRange.random(random))
-            .unwrap();
+                                   .unwrap();
         }
 
         public static Result<OrderRequestGenerator> orderRequestGenerator(ProductIdGenerator productGenerator,
@@ -114,10 +119,9 @@ public sealed interface DataGenerator {
         private static Result<IntRange> ensureGeneratorsNotNull(ProductIdGenerator productGenerator,
                                                                 CustomerIdGenerator customerGenerator,
                                                                 IntRange quantityRange) {
-            return Verify.ensure(productGenerator, Verify.Is::notNull, GENERATORS_NULL).flatMap(_ -> Verify.ensure(customerGenerator,
-                                                                                                                   Verify.Is::notNull,
-                                                                                                                   GENERATORS_NULL))
-                                .flatMap(_ -> Verify.ensure(quantityRange, Verify.Is::notNull, GENERATORS_NULL));
+            return Verify.ensure(productGenerator, Verify.Is::notNull, GENERATORS_NULL)
+                         .flatMap(_ -> Verify.ensure(customerGenerator, Verify.Is::notNull, GENERATORS_NULL))
+                         .flatMap(_ -> Verify.ensure(quantityRange, Verify.Is::notNull, GENERATORS_NULL));
         }
 
         public static OrderRequestGenerator orderRequestGenerator() {
@@ -142,15 +146,14 @@ public sealed interface DataGenerator {
 
     record OrderIdGenerator(Queue<String> orderIdPool, int maxPoolSize) implements DataGenerator {
         private static final Queue<String> SHARED_POOL = new ConcurrentLinkedQueue<>();
-
         private static final int DEFAULT_MAX_POOL_SIZE = 1000;
-
         private static final Cause POOL_NULL = Causes.cause("orderIdPool cannot be null");
-
         private static final Cause MAX_POOL_NOT_POSITIVE = Causes.cause("maxPoolSize must be positive");
 
-        @Override public String generate(Random random) {
-            return option(orderIdPool.poll()).onPresent(orderIdPool::offer).or(syntheticOrderId(random));
+        @Override
+        public String generate(Random random) {
+            return option(orderIdPool.poll()).onPresent(orderIdPool::offer)
+                         .or(syntheticOrderId(random));
         }
 
         private static String syntheticOrderId(Random random) {
@@ -158,15 +161,17 @@ public sealed interface DataGenerator {
         }
 
         public Result<Unit> addOrderId(String orderId) {
-            if (orderIdPool.size() <maxPoolSize) {orderIdPool.offer(orderId);}
+            if (orderIdPool.size() < maxPoolSize) {
+                orderIdPool.offer(orderId);
+            }
+
             return unitResult();
         }
 
         public static Result<OrderIdGenerator> orderIdGenerator(Queue<String> orderIdPool, int maxPoolSize) {
-            return Verify.ensure(orderIdPool, Verify.Is::notNull, POOL_NULL).flatMap(_ -> Verify.ensure(maxPoolSize,
-                                                                                                        Verify.Is::positive,
-                                                                                                        MAX_POOL_NOT_POSITIVE))
-                                .map(_ -> new OrderIdGenerator(orderIdPool, maxPoolSize));
+            return Verify.ensure(orderIdPool, Verify.Is::notNull, POOL_NULL)
+                         .flatMap(_ -> Verify.ensure(maxPoolSize, Verify.Is::positive, MAX_POOL_NOT_POSITIVE))
+                         .map(_ -> new OrderIdGenerator(orderIdPool, maxPoolSize));
         }
 
         public static OrderIdGenerator orderIdGenerator() {
@@ -178,7 +183,10 @@ public sealed interface DataGenerator {
         }
 
         public static Result<Unit> trackOrderId(String orderId) {
-            if (SHARED_POOL.size() <DEFAULT_MAX_POOL_SIZE) {SHARED_POOL.offer(orderId);}
+            if (SHARED_POOL.size() < DEFAULT_MAX_POOL_SIZE) {
+                SHARED_POOL.offer(orderId);
+            }
+
             return unitResult();
         }
     }
@@ -186,7 +194,8 @@ public sealed interface DataGenerator {
     record StockCheckGenerator(ProductIdGenerator productGenerator) implements DataGenerator {
         private static final Cause GENERATOR_NULL = Causes.cause("productGenerator cannot be null");
 
-        @Override public StockCheckData generate(Random random) {
+        @Override
+        public StockCheckData generate(Random random) {
             return StockCheckData.stockCheckData(productGenerator.generate(random)).unwrap();
         }
 
@@ -208,7 +217,8 @@ public sealed interface DataGenerator {
     record PriceCheckGenerator(ProductIdGenerator productGenerator) implements DataGenerator {
         private static final Cause GENERATOR_NULL = Causes.cause("productGenerator cannot be null");
 
-        @Override public PriceCheckData generate(Random random) {
+        @Override
+        public PriceCheckData generate(Random random) {
             return PriceCheckData.priceCheckData(productGenerator.generate(random)).unwrap();
         }
 
@@ -228,7 +238,8 @@ public sealed interface DataGenerator {
     }
 
     record unused() implements DataGenerator {
-        @Override public Object generate(Random random) {
+        @Override
+        public Object generate(Random random) {
             return "";
         }
     }

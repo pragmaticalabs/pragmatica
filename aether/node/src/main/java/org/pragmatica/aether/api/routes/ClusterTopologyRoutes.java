@@ -69,6 +69,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
     private Promise<CircuitBreakerStatusResponse> buildCircuitBreakerStatus() {
         return ctmOpt().map(ctm -> {
                                 var state = ctm.circuitBreakerState();
+
                                 return new CircuitBreakerStatusResponse(state.consecutiveFailures(),
                                                                         state.trippedAt(),
                                                                         state.nextAllowedMs(),
@@ -80,6 +81,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
     private Promise<CircuitBreakerResetResponse> resetCircuitBreaker() {
         return ctmOpt().map(ctm -> {
                                 var prior = ctm.resetCircuitBreaker("/api/cluster/topology/circuit-breaker/reset");
+
                                 return new CircuitBreakerResetResponse("reset", prior);
                             })
                      .async(CTM_UNAVAILABLE);
@@ -110,6 +112,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
     private GovernorsResponse buildGovernorsResponse() {
         var node = nodeSupplier.get();
         var governors = new ArrayList<GovernorInfo>();
+
         node.kvStore().forEach(GovernorAnnouncementKey.class,
                                GovernorAnnouncementValue.class,
                                (key, value) -> governors.add(toGovernorInfo(key, value)));
@@ -119,6 +122,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
 
     private static GovernorInfo toGovernorInfo(GovernorAnnouncementKey key, GovernorAnnouncementValue value) {
         var memberIds = value.members().stream().map(NodeId::id).toList();
+
         return new GovernorInfo(value.governorId().id(),
                                 key.communityId(),
                                 value.memberCount(),
@@ -174,18 +178,19 @@ public final class ClusterTopologyRoutes implements RouteSource {
     /// self-only formation), there are no slots in KV. Counting zero would under-report the
     /// freshly-bootstrapped leader; fall back to the SWIM-derived `reachableOnDutyCount` so
     /// self-bootstrap still converges. Once slots exist, the slot map is authoritative.
-    static int slotDerivedCoreCount(ManageableNode node,
-                                    MembershipView view) {
+    static int slotDerivedCoreCount(ManageableNode node, MembershipView view) {
         var occupants = new ArrayList<NodeId>();
+
         node.kvStore().forEach(ProvisioningSlotKey.class,
                                ProvisioningSlotValue.class,
-                               (_, value) -> value.assignedNodeId().onPresent(occupants::add));
-
+                               (_, value) -> value.assignedNodeId()
+                                                  .onPresent(occupants::add));
         if (occupants.isEmpty()) {
             return reachableOnDutyCount(view);
         }
 
         int count = 0;
+
         for (var occupant : occupants) {
             if (isHealthyOccupant(view, occupant)) {
                 count++;
@@ -204,7 +209,8 @@ public final class ClusterTopologyRoutes implements RouteSource {
     /// Cluster-canonical reachable-and-present count. Reads `MembershipView.presentMembers()`
     /// (KV-canonical); self is always included (SWIM does not observe self locally).
     private static int reachableOnDutyCount(MembershipView view) {
-        return view.presentMembers().size();
+        return view.presentMembers()
+                   .size();
     }
 
     private static String topologyMode(TopologyManager tm) {

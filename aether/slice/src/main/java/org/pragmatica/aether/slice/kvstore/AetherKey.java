@@ -9,7 +9,6 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
-import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -26,17 +25,22 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-@Codec@CodecFor(MethodName.class) @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-NAM-01"}) public sealed interface AetherKey extends StructuredKey {
+@Codec
+@CodecFor(MethodName.class)
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-NAM-01"})
+public sealed interface AetherKey extends StructuredKey {
     String asString();
 
     record SliceTargetKey(ArtifactBase artifactBase) implements AetherKey {
         private static final String PREFIX = "slice-target/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + artifactBase.asString();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -45,8 +49,12 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<SliceTargetKey> sliceTargetKey(String key) {
-            if (!key.startsWith(PREFIX)) {return SLICE_TARGET_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return SLICE_TARGET_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var artifactBasePart = key.substring(PREFIX.length());
+
             return ArtifactBase.artifactBase(artifactBasePart).map(SliceTargetKey::new);
         }
     }
@@ -54,17 +62,23 @@ import static org.pragmatica.lang.Result.success;
     record AppBlueprintKey(BlueprintId blueprintId) implements AetherKey {
         private static final String PREFIX = "app-blueprint/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + blueprintId.asString();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
         public static Result<AppBlueprintKey> appBlueprintKey(String key) {
-            if (!key.startsWith(PREFIX)) {return APP_BLUEPRINT_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return APP_BLUEPRINT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var blueprintIdPart = key.substring(PREFIX.length());
+
             return BlueprintId.blueprintId(blueprintIdPart).map(AppBlueprintKey::new);
         }
 
@@ -78,11 +92,13 @@ import static org.pragmatica.lang.Result.success;
             return this.nodeId.equals(nodeId);
         }
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return "slices/" + nodeId.id() + "/" + artifact.asString();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -92,50 +108,78 @@ import static org.pragmatica.lang.Result.success;
 
         public static Result<SliceNodeKey> sliceNodeKey(String key) {
             var parts = key.split("/");
-            if (parts.length != 3) {return SLICE_KEY_FORMAT_ERROR.apply(key).result();}
-            if (!"slices".equals(parts[0])) {return SLICE_KEY_FORMAT_ERROR.apply(key).result();}
-            if (parts[1].isEmpty()) {return SLICE_KEY_FORMAT_ERROR.apply(key).result();}
-            return Result.all(Artifact.artifact(parts[2]), NodeId.nodeId(parts[1])).map(SliceNodeKey::new);
+
+            if (parts.length != 3) {
+                return SLICE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            if (!"slices".equals(parts[0])) {
+                return SLICE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            if (parts[1].isEmpty()) {
+                return SLICE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return Result.all(Artifact.artifact(parts[2]),
+                              NodeId.nodeId(parts[1]))
+                         .map(SliceNodeKey::new);
         }
     }
 
     record EndpointKey(Artifact artifact, MethodName methodName, int instanceNumber) implements AetherKey {
         private static final String PREFIX = "endpoints/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + artifact.asString() + "/" + methodName.name() + ":" + instanceNumber;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
         public static Result<EndpointKey> endpointKey(String key) {
-            if (!key.startsWith(PREFIX)) {return ENDPOINT_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return ENDPOINT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var content = key.substring(PREFIX.length());
             var slashIndex = content.indexOf('/');
-            if (slashIndex == - 1) {return ENDPOINT_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (slashIndex == -1) {
+                return ENDPOINT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var artifactPart = content.substring(0, slashIndex);
             var endpointPart = content.substring(slashIndex + 1);
             var colonIndex = endpointPart.lastIndexOf(':');
-            if (colonIndex == - 1) {return ENDPOINT_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (colonIndex == -1) {
+                return ENDPOINT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var methodNamePart = endpointPart.substring(0, colonIndex);
             var instancePart = endpointPart.substring(colonIndex + 1);
+
             return Result.all(Artifact.artifact(artifactPart),
                               MethodName.methodName(methodNamePart),
                               Number.parseInt(instancePart))
-            .map(EndpointKey::new);
+                         .map(EndpointKey::new);
         }
     }
 
     record VersionRoutingKey(ArtifactBase artifactBase) implements AetherKey {
         private static final String PREFIX = "version-routing/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + artifactBase.asString();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -144,8 +188,12 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<VersionRoutingKey> versionRoutingKey(String key) {
-            if (!key.startsWith(PREFIX)) {return VERSION_ROUTING_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return VERSION_ROUTING_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var artifactBasePart = key.substring(PREFIX.length());
+
             return ArtifactBase.artifactBase(artifactBasePart).map(VersionRoutingKey::new);
         }
     }
@@ -153,11 +201,13 @@ import static org.pragmatica.lang.Result.success;
     record DeploymentKey(String deploymentId) implements AetherKey {
         private static final String PREFIX = "deployment/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + deploymentId;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -166,9 +216,16 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<DeploymentKey> parseDeploymentKey(String key) {
-            if (!key.startsWith(PREFIX)) {return DEPLOYMENT_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return DEPLOYMENT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var id = key.substring(PREFIX.length());
-            if (id.isEmpty()) {return DEPLOYMENT_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (id.isEmpty()) {
+                return DEPLOYMENT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return success(new DeploymentKey(id));
         }
     }
@@ -176,11 +233,13 @@ import static org.pragmatica.lang.Result.success;
     record PreviousVersionKey(ArtifactBase artifactBase) implements AetherKey {
         private static final String PREFIX = "previous-version/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + artifactBase.asString();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -189,8 +248,12 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<PreviousVersionKey> previousVersionKey(String key) {
-            if (!key.startsWith(PREFIX)) {return PREVIOUS_VERSION_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return PREVIOUS_VERSION_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var artifactBasePart = key.substring(PREFIX.length());
+
             return ArtifactBase.artifactBase(artifactBasePart).map(PreviousVersionKey::new);
         }
     }
@@ -198,11 +261,13 @@ import static org.pragmatica.lang.Result.success;
     record HttpNodeRouteKey(String httpMethod, String pathPrefix, NodeId nodeId) implements AetherKey {
         private static final String PREFIX = "http-node-routes/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + httpMethod + ":" + pathPrefix + ":" + nodeId.id();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -215,25 +280,44 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<HttpNodeRouteKey> httpNodeRouteKey(String key) {
-            if (!key.startsWith(PREFIX)) {return HTTP_NODE_ROUTE_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return HTTP_NODE_ROUTE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var content = key.substring(PREFIX.length());
             var firstColon = content.indexOf(':');
             var lastColon = content.lastIndexOf(':');
-            if (firstColon == - 1 || lastColon == - 1 || firstColon == lastColon) {return HTTP_NODE_ROUTE_KEY_FORMAT_ERROR.apply(key)
-                                                                                                                                .result();}
+
+            if (firstColon == -1 || lastColon == -1 || firstColon == lastColon) {
+                return HTTP_NODE_ROUTE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var httpMethod = content.substring(0, firstColon);
             var pathPrefix = content.substring(firstColon + 1, lastColon);
             var nodeIdPart = content.substring(lastColon + 1);
-            if (httpMethod.isEmpty() || pathPrefix.isEmpty() || nodeIdPart.isEmpty()) {return HTTP_NODE_ROUTE_KEY_FORMAT_ERROR.apply(key)
-                                                                                                                                    .result();}
+
+            if (httpMethod.isEmpty() || pathPrefix.isEmpty() || nodeIdPart.isEmpty()) {
+                return HTTP_NODE_ROUTE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return NodeId.nodeId(nodeIdPart).map(nodeId -> new HttpNodeRouteKey(httpMethod, pathPrefix, nodeId));
         }
 
         private static String normalizePrefix(String path) {
-            if (path == null || path.isBlank()) {return "/";}
+            if (path == null || path.isBlank()) {
+                return "/";
+            }
+
             var normalized = path.strip();
-            if (!normalized.startsWith("/")) {normalized = "/" + normalized;}
-            if (!normalized.endsWith("/")) {normalized = normalized + "/";}
+
+            if (!normalized.startsWith("/")) {
+                normalized = "/" + normalized;
+            }
+
+            if (!normalized.endsWith("/")) {
+                normalized = normalized + "/";
+            }
+
             return normalized;
         }
     }
@@ -241,11 +325,13 @@ import static org.pragmatica.lang.Result.success;
     record LogLevelKey(String loggerName) implements AetherKey {
         private static final String PREFIX = "log-level/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + loggerName;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -254,9 +340,16 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<LogLevelKey> logLevelKey(String key) {
-            if (!key.startsWith(PREFIX)) {return LOG_LEVEL_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return LOG_LEVEL_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var loggerName = key.substring(PREFIX.length());
-            if (loggerName.isEmpty()) {return LOG_LEVEL_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (loggerName.isEmpty()) {
+                return LOG_LEVEL_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return success(new LogLevelKey(loggerName));
         }
     }
@@ -264,11 +357,13 @@ import static org.pragmatica.lang.Result.success;
     record ObservabilityDepthKey(String artifactBase, String methodName) implements AetherKey {
         private static final String PREFIX = "obs-depth/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + artifactBase + "/" + methodName;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -277,13 +372,20 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<ObservabilityDepthKey> observabilityDepthKey(String key) {
-            if (!key.startsWith(PREFIX)) {return OBSERVABILITY_DEPTH_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return OBSERVABILITY_DEPTH_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var content = key.substring(PREFIX.length());
             var slashIndex = content.indexOf('/');
-            if (slashIndex == - 1 || slashIndex == 0 || slashIndex == content.length() - 1) {return OBSERVABILITY_DEPTH_KEY_FORMAT_ERROR.apply(key)
-                                                                                                                                              .result();}
+
+            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                return OBSERVABILITY_DEPTH_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var artifactBase = content.substring(0, slashIndex);
             var methodName = content.substring(slashIndex + 1);
+
             return success(new ObservabilityDepthKey(artifactBase, methodName));
         }
     }
@@ -291,18 +393,27 @@ import static org.pragmatica.lang.Result.success;
     record AlertThresholdKey(String metricName) implements AetherKey {
         private static final String PREFIX = "alert-threshold/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + metricName;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
         public static Result<AlertThresholdKey> alertThresholdKey(String key) {
-            if (!key.startsWith(PREFIX)) {return ALERT_THRESHOLD_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return ALERT_THRESHOLD_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var metricName = key.substring(PREFIX.length());
-            if (metricName.isEmpty()) {return ALERT_THRESHOLD_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (metricName.isEmpty()) {
+                return ALERT_THRESHOLD_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return success(new AlertThresholdKey(metricName));
         }
     }
@@ -317,19 +428,28 @@ import static org.pragmatica.lang.Result.success;
     record TopicSubscriptionKey(ResourceAddress address, Artifact artifact, MethodName methodName) implements AetherKey {
         private static final String PREFIX = "topic-sub/";
 
-        @Override public String asString() {
-            return PREFIX + address.namespace().value() + "/" + address.name().value() + "/" + address.version().asString()
-                   + "/" + artifact.asString() + "/" + methodName.name();
+        @Override
+        public String asString() {
+            return PREFIX + address.namespace()
+                                   .value()
+                 + "/" + address.name()
+                                .value()
+                 + "/" + address.version()
+                                .asString()
+                 + "/" + artifact.asString()
+                 + "/" + methodName.name();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
         /// Bare topic name — the runtime routing identity, kept for back-compat with publishers that
         /// route on the un-namespaced name.
         public String topicName() {
-            return address.name().value();
+            return address.name()
+                          .value();
         }
 
         public static TopicSubscriptionKey topicSubscriptionKey(ResourceAddress address,
@@ -339,40 +459,65 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<TopicSubscriptionKey> topicSubscriptionKey(String key) {
-            if (!key.startsWith(PREFIX)) {return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var content = key.substring(PREFIX.length());
             var firstSlash = content.indexOf('/');
-            if (firstSlash <= 0) {return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (firstSlash <= 0) {
+                return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var namespace = content.substring(0, firstSlash);
             var rest = content.substring(firstSlash + 1);
             var secondSlash = rest.indexOf('/');
-            if (secondSlash <= 0) {return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (secondSlash <= 0) {
+                return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var topic = rest.substring(0, secondSlash);
             var rest2 = rest.substring(secondSlash + 1);
             var thirdSlash = rest2.indexOf('/');
-            if (thirdSlash <= 0) {return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (thirdSlash <= 0) {
+                return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var version = rest2.substring(0, thirdSlash);
             var rest3 = rest2.substring(thirdSlash + 1);
             var lastSlash = rest3.lastIndexOf('/');
-            if (lastSlash <= 0) {return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (lastSlash <= 0) {
+                return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var artifactPart = rest3.substring(0, lastSlash);
             var methodPart = rest3.substring(lastSlash + 1);
-            if (methodPart.isEmpty()) {return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (methodPart.isEmpty()) {
+                return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return Result.all(ResourceAddress.resourceAddress(namespace, topic, version),
                               Artifact.artifact(artifactPart),
                               MethodName.methodName(methodPart))
-            .map(TopicSubscriptionKey::new);
+                         .map(TopicSubscriptionKey::new);
         }
     }
 
     record ScheduledTaskKey(String configSection, Artifact artifact, MethodName methodName) implements AetherKey {
         private static final String PREFIX = "scheduled-task/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + configSection + "/" + artifact.asString() + "/" + methodName.name();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -383,32 +528,48 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<ScheduledTaskKey> scheduledTaskKey(String key) {
-            if (!key.startsWith(PREFIX)) {return SCHEDULED_TASK_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return SCHEDULED_TASK_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var content = key.substring(PREFIX.length());
             var firstSlash = content.indexOf('/');
-            if (firstSlash == - 1) {return SCHEDULED_TASK_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (firstSlash == -1) {
+                return SCHEDULED_TASK_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var configSection = content.substring(0, firstSlash);
             var rest = content.substring(firstSlash + 1);
             var lastSlash = rest.lastIndexOf('/');
-            if (lastSlash == - 1) {return SCHEDULED_TASK_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (lastSlash == -1) {
+                return SCHEDULED_TASK_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var artifactPart = rest.substring(0, lastSlash);
             var methodPart = rest.substring(lastSlash + 1);
-            if (configSection.isEmpty() || methodPart.isEmpty()) {return SCHEDULED_TASK_KEY_FORMAT_ERROR.apply(key)
-                                                                                                              .result();}
+
+            if (configSection.isEmpty() || methodPart.isEmpty()) {
+                return SCHEDULED_TASK_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return Result.all(Artifact.artifact(artifactPart),
                               MethodName.methodName(methodPart))
-            .map((artifact, method) -> new ScheduledTaskKey(configSection, artifact, method));
+                         .map((artifact, method) -> new ScheduledTaskKey(configSection, artifact, method));
         }
     }
 
     record ScheduledTaskStateKey(String configSection, Artifact artifact, MethodName methodName) implements AetherKey {
         private static final String PREFIX = "scheduled-task-state/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + configSection + "/" + artifact.asString() + "/" + methodName.name();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -419,21 +580,35 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<ScheduledTaskStateKey> scheduledTaskStateKey(String key) {
-            if (!key.startsWith(PREFIX)) {return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var content = key.substring(PREFIX.length());
             var firstSlash = content.indexOf('/');
-            if (firstSlash == - 1) {return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (firstSlash == -1) {
+                return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var configSection = content.substring(0, firstSlash);
             var rest = content.substring(firstSlash + 1);
             var lastSlash = rest.lastIndexOf('/');
-            if (lastSlash == - 1) {return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (lastSlash == -1) {
+                return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var artifactPart = rest.substring(0, lastSlash);
             var methodPart = rest.substring(lastSlash + 1);
-            if (configSection.isEmpty() || methodPart.isEmpty()) {return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(key)
-                                                                                                                    .result();}
+
+            if (configSection.isEmpty() || methodPart.isEmpty()) {
+                return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return Result.all(Artifact.artifact(artifactPart),
                               MethodName.methodName(methodPart))
-            .map((artifact, method) -> new ScheduledTaskStateKey(configSection, artifact, method));
+                         .map((artifact, method) -> new ScheduledTaskStateKey(configSection, artifact, method));
         }
     }
 
@@ -446,11 +621,13 @@ import static org.pragmatica.lang.Result.success;
     record JoinDeadlineKey(NodeId nodeId) implements AetherKey {
         private static final String PREFIX = "join-deadline/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + nodeId.id();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -459,9 +636,16 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<JoinDeadlineKey> joinDeadlineKey(String key) {
-            if (!key.startsWith(PREFIX)) {return JOIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return JOIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var nodeIdPart = key.substring(PREFIX.length());
-            if (nodeIdPart.isEmpty()) {return JOIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (nodeIdPart.isEmpty()) {
+                return JOIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return NodeId.nodeId(nodeIdPart).map(JoinDeadlineKey::new);
         }
     }
@@ -474,11 +658,13 @@ import static org.pragmatica.lang.Result.success;
     record DrainDeadlineKey(NodeId nodeId) implements AetherKey {
         private static final String PREFIX = "drain-deadline/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + nodeId.id();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -487,23 +673,32 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<DrainDeadlineKey> drainDeadlineKey(String key) {
-            if (!key.startsWith(PREFIX)) {return DRAIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return DRAIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var nodeIdPart = key.substring(PREFIX.length());
-            if (nodeIdPart.isEmpty()) {return DRAIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (nodeIdPart.isEmpty()) {
+                return DRAIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return NodeId.nodeId(nodeIdPart).map(DrainDeadlineKey::new);
         }
     }
 
     record ConfigKey(String key, Option<NodeId> nodeScope) implements AetherKey {
         private static final String CLUSTER_PREFIX = "config/";
-
         private static final String NODE_PREFIX = "config/node/";
 
-        @Override public String asString() {
-            return nodeScope.fold(() -> CLUSTER_PREFIX + key, nodeId -> NODE_PREFIX + nodeId.id() + "/" + key);
+        @Override
+        public String asString() {
+            return nodeScope.fold(() -> CLUSTER_PREFIX + key,
+                                  nodeId -> NODE_PREFIX + nodeId.id() + "/" + key);
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -523,17 +718,27 @@ import static org.pragmatica.lang.Result.success;
             if (raw.startsWith(NODE_PREFIX)) {
                 var content = raw.substring(NODE_PREFIX.length());
                 var slashIndex = content.indexOf('/');
-                if (slashIndex == - 1 || slashIndex == 0 || slashIndex == content.length() - 1) {return CONFIG_KEY_FORMAT_ERROR.apply(raw)
-                                                                                                                                     .result();}
+
+                if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                    return CONFIG_KEY_FORMAT_ERROR.apply(raw).result();
+                }
+
                 var nodeIdPart = content.substring(0, slashIndex);
                 var keyPart = content.substring(slashIndex + 1);
+
                 return NodeId.nodeId(nodeIdPart).map(nodeId -> new ConfigKey(keyPart, some(nodeId)));
             }
+
             if (raw.startsWith(CLUSTER_PREFIX)) {
                 var keyPart = raw.substring(CLUSTER_PREFIX.length());
-                if (keyPart.isEmpty()) {return CONFIG_KEY_FORMAT_ERROR.apply(raw).result();}
+
+                if (keyPart.isEmpty()) {
+                    return CONFIG_KEY_FORMAT_ERROR.apply(raw).result();
+                }
+
                 return success(new ConfigKey(keyPart, none()));
             }
+
             return CONFIG_KEY_FORMAT_ERROR.apply(raw).result();
         }
     }
@@ -541,11 +746,14 @@ import static org.pragmatica.lang.Result.success;
     record WorkerSliceDirectiveKey(Artifact artifact, Option<String> communityId) implements AetherKey {
         private static final String PREFIX = "worker-directive/";
 
-        @Override public String asString() {
-            return communityId.map(c -> PREFIX + c + "/" + artifact.asString()).or(PREFIX + artifact.asString());
+        @Override
+        public String asString() {
+            return communityId.map(c -> PREFIX + c + "/" + artifact.asString())
+                              .or(PREFIX + artifact.asString());
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -558,30 +766,39 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<WorkerSliceDirectiveKey> workerSliceDirectiveKey(String key) {
-            if (!key.startsWith(PREFIX)) {return WORKER_DIRECTIVE_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return WORKER_DIRECTIVE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var rest = key.substring(PREFIX.length());
             var slashIndex = rest.indexOf('/');
-            if (slashIndex >= 0) {return parseCommunityKey(rest, slashIndex);}
+
+            if (slashIndex >= 0) {
+                return parseCommunityKey(rest, slashIndex);
+            }
+
             return Artifact.artifact(rest).map(art -> new WorkerSliceDirectiveKey(art, Option.none()));
         }
 
         private static Result<WorkerSliceDirectiveKey> parseCommunityKey(String rest, int slashIndex) {
             var communityPart = rest.substring(0, slashIndex);
             var artifactPart = rest.substring(slashIndex + 1);
-            return Artifact.artifact(artifactPart)
-                                    .map(art -> new WorkerSliceDirectiveKey(art,
-                                                                            Option.some(communityPart)));
+
+            return Artifact.artifact(artifactPart).map(art -> new WorkerSliceDirectiveKey(art,
+                                                                                          Option.some(communityPart)));
         }
     }
 
     record ActivationDirectiveKey(NodeId nodeId) implements AetherKey {
         private static final String PREFIX = "activation/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + nodeId.id();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -590,9 +807,16 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<ActivationDirectiveKey> activationDirectiveKey(String key) {
-            if (!key.startsWith(PREFIX)) {return ACTIVATION_DIRECTIVE_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return ACTIVATION_DIRECTIVE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var nodeIdPart = key.substring(PREFIX.length());
-            if (nodeIdPart.isEmpty()) {return ACTIVATION_DIRECTIVE_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (nodeIdPart.isEmpty()) {
+                return ACTIVATION_DIRECTIVE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return NodeId.nodeId(nodeIdPart).map(ActivationDirectiveKey::new);
         }
     }
@@ -600,11 +824,13 @@ import static org.pragmatica.lang.Result.success;
     record SchemaVersionKey(String datasourceName) implements AetherKey {
         private static final String PREFIX = "schema-version/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + datasourceName;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -613,9 +839,16 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<SchemaVersionKey> schemaVersionKey(String key, boolean isKey) {
-            if (!key.startsWith(PREFIX)) {return SCHEMA_VERSION_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return SCHEMA_VERSION_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var name = key.substring(PREFIX.length());
-            if (name.isEmpty()) {return SCHEMA_VERSION_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (name.isEmpty()) {
+                return SCHEMA_VERSION_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return success(new SchemaVersionKey(name));
         }
     }
@@ -623,11 +856,13 @@ import static org.pragmatica.lang.Result.success;
     record SchemaMigrationLockKey(String datasourceName) implements AetherKey {
         private static final String PREFIX = "schema-lock/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + datasourceName;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -636,9 +871,16 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<SchemaMigrationLockKey> schemaMigrationLockKey(String key, boolean isKey) {
-            if (!key.startsWith(PREFIX)) {return SCHEMA_MIGRATION_LOCK_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return SCHEMA_MIGRATION_LOCK_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var name = key.substring(PREFIX.length());
-            if (name.isEmpty()) {return SCHEMA_MIGRATION_LOCK_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (name.isEmpty()) {
+                return SCHEMA_MIGRATION_LOCK_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return success(new SchemaMigrationLockKey(name));
         }
     }
@@ -646,11 +888,13 @@ import static org.pragmatica.lang.Result.success;
     record GossipKeyRotationKey() implements AetherKey {
         private static final String KEY = "gossip-key-rotation";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return KEY;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -659,7 +903,10 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<GossipKeyRotationKey> gossipKeyRotationKey(String key) {
-            if (!KEY.equals(key)) {return GOSSIP_KEY_ROTATION_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!KEY.equals(key)) {
+                return GOSSIP_KEY_ROTATION_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return success(new GossipKeyRotationKey());
         }
     }
@@ -667,11 +914,13 @@ import static org.pragmatica.lang.Result.success;
     record GovernorAnnouncementKey(String communityId) implements AetherKey {
         private static final String PREFIX = "governor-announcement/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + communityId;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -680,9 +929,16 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<GovernorAnnouncementKey> governorAnnouncementKey(String key) {
-            if (!key.startsWith(PREFIX)) {return GOVERNOR_ANNOUNCEMENT_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return GOVERNOR_ANNOUNCEMENT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var communityId = key.substring(PREFIX.length());
-            if (communityId.isEmpty()) {return GOVERNOR_ANNOUNCEMENT_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (communityId.isEmpty()) {
+                return GOVERNOR_ANNOUNCEMENT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return success(new GovernorAnnouncementKey(communityId));
         }
     }
@@ -690,18 +946,27 @@ import static org.pragmatica.lang.Result.success;
     record AbTestKey(String testId) implements AetherKey {
         private static final String PREFIX = "ab-test/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + testId;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
         public static Result<AbTestKey> abTestKey(String key) {
-            if (!key.startsWith(PREFIX)) {return AB_TEST_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return AB_TEST_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var id = key.substring(PREFIX.length());
-            if (id.isEmpty()) {return AB_TEST_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (id.isEmpty()) {
+                return AB_TEST_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return success(new AbTestKey(id));
         }
     }
@@ -709,11 +974,13 @@ import static org.pragmatica.lang.Result.success;
     record AbTestRoutingKey(ArtifactBase artifactBase) implements AetherKey {
         private static final String PREFIX = "ab-test-routing/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + artifactBase.asString();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -722,8 +989,12 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<AbTestRoutingKey> abTestRoutingKey(String key) {
-            if (!key.startsWith(PREFIX)) {return AB_TEST_ROUTING_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return AB_TEST_ROUTING_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var artifactBasePart = key.substring(PREFIX.length());
+
             return ArtifactBase.artifactBase(artifactBasePart).map(AbTestRoutingKey::new);
         }
     }
@@ -735,11 +1006,13 @@ import static org.pragmatica.lang.Result.success;
             return this.nodeId.equals(nodeId);
         }
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + nodeId.id() + "/" + artifact.asString();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -748,16 +1021,23 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<NodeArtifactKey> nodeArtifactKey(String key) {
-            if (!key.startsWith(PREFIX)) {return NODE_ARTIFACT_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return NODE_ARTIFACT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var content = key.substring(PREFIX.length());
             var slashIndex = content.indexOf('/');
-            if (slashIndex == - 1 || slashIndex == 0 || slashIndex == content.length() - 1) {return NODE_ARTIFACT_KEY_FORMAT_ERROR.apply(key)
-                                                                                                                                        .result();}
+
+            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                return NODE_ARTIFACT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var nodeIdPart = content.substring(0, slashIndex);
             var artifactPart = content.substring(slashIndex + 1);
+
             return Result.all(NodeId.nodeId(nodeIdPart),
                               Artifact.artifact(artifactPart))
-            .map((nid, art) -> new NodeArtifactKey(nid, art));
+                         .map((nid, art) -> new NodeArtifactKey(nid, art));
         }
     }
 
@@ -768,11 +1048,13 @@ import static org.pragmatica.lang.Result.success;
             return this.nodeId.equals(nodeId);
         }
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + nodeId.id() + "/" + artifact.asString();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -781,16 +1063,23 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<NodeRoutesKey> nodeRoutesKey(String key) {
-            if (!key.startsWith(PREFIX)) {return NODE_ROUTES_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return NODE_ROUTES_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var content = key.substring(PREFIX.length());
             var slashIndex = content.indexOf('/');
-            if (slashIndex == - 1 || slashIndex == 0 || slashIndex == content.length() - 1) {return NODE_ROUTES_KEY_FORMAT_ERROR.apply(key)
-                                                                                                                                      .result();}
+
+            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                return NODE_ROUTES_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var nodeIdPart = content.substring(0, slashIndex);
             var artifactPart = content.substring(slashIndex + 1);
+
             return Result.all(NodeId.nodeId(nodeIdPart),
                               Artifact.artifact(artifactPart))
-            .map((nid, art) -> new NodeRoutesKey(nid, art));
+                         .map((nid, art) -> new NodeRoutesKey(nid, art));
         }
     }
 
@@ -813,7 +1102,6 @@ import static org.pragmatica.lang.Result.success;
     Fn1<Cause, String> APP_BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid app-blueprint key format: %s");
 
     Fn1<Cause, String> SLICE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice key format: %s");
-
     Fn1<Cause, String> ENDPOINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid endpoint key format: %s");
 
     Fn1<Cause, String> VERSION_ROUTING_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid version-routing key format: %s");
@@ -867,11 +1155,13 @@ import static org.pragmatica.lang.Result.success;
     record StreamMetadataKey(String streamName) implements AetherKey {
         private static final String PREFIX = "stream-meta/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + streamName;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -880,9 +1170,16 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<StreamMetadataKey> streamMetadataKey(String key, boolean isKey) {
-            if (!key.startsWith(PREFIX)) {return STREAM_METADATA_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return STREAM_METADATA_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var name = key.substring(PREFIX.length());
-            if (name.isEmpty()) {return STREAM_METADATA_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (name.isEmpty()) {
+                return STREAM_METADATA_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return success(new StreamMetadataKey(name));
         }
     }
@@ -890,11 +1187,13 @@ import static org.pragmatica.lang.Result.success;
     record StreamPartitionAssignmentKey(String streamName, String consumerGroup) implements AetherKey {
         private static final String PREFIX = "stream-assign/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + streamName + "/" + consumerGroup;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -904,13 +1203,20 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<StreamPartitionAssignmentKey> streamPartitionAssignmentKey(String key) {
-            if (!key.startsWith(PREFIX)) {return STREAM_PARTITION_ASSIGNMENT_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return STREAM_PARTITION_ASSIGNMENT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var content = key.substring(PREFIX.length());
             var slashIndex = content.indexOf('/');
-            if (slashIndex == - 1 || slashIndex == 0 || slashIndex == content.length() - 1) {return STREAM_PARTITION_ASSIGNMENT_KEY_FORMAT_ERROR.apply(key)
-                                                                                                                                                      .result();}
+
+            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                return STREAM_PARTITION_ASSIGNMENT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var streamName = content.substring(0, slashIndex);
             var consumerGroup = content.substring(slashIndex + 1);
+
             return success(new StreamPartitionAssignmentKey(streamName, consumerGroup));
         }
     }
@@ -918,11 +1224,13 @@ import static org.pragmatica.lang.Result.success;
     record StreamCursorCheckpointKey(String streamName, int partitionIndex, String consumerGroup) implements AetherKey {
         private static final String PREFIX = "stream-cursor/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + streamName + "/" + partitionIndex + "/" + consumerGroup;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -933,23 +1241,33 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<StreamCursorCheckpointKey> streamCursorCheckpointKey(String key) {
-            if (!key.startsWith(PREFIX)) {return STREAM_CURSOR_CHECKPOINT_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return STREAM_CURSOR_CHECKPOINT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var content = key.substring(PREFIX.length());
             var parts = content.split("/");
-            if (parts.length != 3) {return STREAM_CURSOR_CHECKPOINT_KEY_FORMAT_ERROR.apply(key).result();}
-            return Number.parseInt(parts[1])
-                                  .map(partition -> new StreamCursorCheckpointKey(parts[0], partition, parts[2]));
+
+            if (parts.length != 3) {
+                return STREAM_CURSOR_CHECKPOINT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return Number.parseInt(parts[1]).map(partition -> new StreamCursorCheckpointKey(parts[0],
+                                                                                            partition,
+                                                                                            parts[2]));
         }
     }
 
     record StreamRegistrationKey(String streamName, String configSection, Artifact artifact, MethodName methodName) implements AetherKey {
         private static final String PREFIX = "stream-reg/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + streamName + "/" + configSection + "/" + artifact.asString() + "/" + methodName.name();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -961,36 +1279,59 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<StreamRegistrationKey> streamRegistrationKey(String key) {
-            if (!key.startsWith(PREFIX)) {return STREAM_REGISTRATION_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return STREAM_REGISTRATION_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var content = key.substring(PREFIX.length());
             var firstSlash = content.indexOf('/');
-            if (firstSlash == - 1) {return STREAM_REGISTRATION_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (firstSlash == -1) {
+                return STREAM_REGISTRATION_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var streamName = content.substring(0, firstSlash);
             var rest = content.substring(firstSlash + 1);
             var secondSlash = rest.indexOf('/');
-            if (secondSlash == - 1) {return STREAM_REGISTRATION_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (secondSlash == -1) {
+                return STREAM_REGISTRATION_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var configSection = rest.substring(0, secondSlash);
             var rest2 = rest.substring(secondSlash + 1);
             var lastSlash = rest2.lastIndexOf('/');
-            if (lastSlash == - 1) {return STREAM_REGISTRATION_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (lastSlash == -1) {
+                return STREAM_REGISTRATION_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var artifactPart = rest2.substring(0, lastSlash);
             var methodPart = rest2.substring(lastSlash + 1);
-            if (streamName.isEmpty() || configSection.isEmpty() || methodPart.isEmpty()) {return STREAM_REGISTRATION_KEY_FORMAT_ERROR.apply(key)
-                                                                                                                                           .result();}
+
+            if (streamName.isEmpty() || configSection.isEmpty() || methodPart.isEmpty()) {
+                return STREAM_REGISTRATION_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return Result.all(Artifact.artifact(artifactPart),
                               MethodName.methodName(methodPart))
-            .map((artifact, method) -> new StreamRegistrationKey(streamName, configSection, artifact, method));
+                         .map((artifact, method) -> new StreamRegistrationKey(streamName,
+                                                                              configSection,
+                                                                              artifact,
+                                                                              method));
         }
     }
 
     record StorageBlockKey(String instanceName, String blockIdHex) implements AetherKey {
         private static final String PREFIX = "storage-block/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + instanceName + "/" + blockIdHex;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -999,11 +1340,17 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<StorageBlockKey> storageBlockKey(String key) {
-            if (!key.startsWith(PREFIX)) {return STORAGE_BLOCK_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return STORAGE_BLOCK_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var content = key.substring(PREFIX.length());
             var slashIndex = content.indexOf('/');
-            if (slashIndex == - 1 || slashIndex == 0 || slashIndex == content.length() - 1) {return STORAGE_BLOCK_KEY_FORMAT_ERROR.apply(key)
-                                                                                                                                        .result();}
+
+            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                return STORAGE_BLOCK_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return success(new StorageBlockKey(content.substring(0, slashIndex), content.substring(slashIndex + 1)));
         }
     }
@@ -1011,11 +1358,13 @@ import static org.pragmatica.lang.Result.success;
     record StorageRefKey(String instanceName, String referenceName) implements AetherKey {
         private static final String PREFIX = "storage-ref/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + instanceName + "/" + referenceName;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -1024,11 +1373,17 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<StorageRefKey> storageRefKey(String key) {
-            if (!key.startsWith(PREFIX)) {return STORAGE_REF_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return STORAGE_REF_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var content = key.substring(PREFIX.length());
             var slashIndex = content.indexOf('/');
-            if (slashIndex == - 1 || slashIndex == 0 || slashIndex == content.length() - 1) {return STORAGE_REF_KEY_FORMAT_ERROR.apply(key)
-                                                                                                                                      .result();}
+
+            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                return STORAGE_REF_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return success(new StorageRefKey(content.substring(0, slashIndex), content.substring(slashIndex + 1)));
         }
     }
@@ -1040,11 +1395,13 @@ import static org.pragmatica.lang.Result.success;
             return this.nodeId.equals(nodeId);
         }
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + nodeId.id() + "/" + instanceName;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -1053,13 +1410,20 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<StorageStatusKey> storageStatusKey(String key) {
-            if (!key.startsWith(PREFIX)) {return STORAGE_STATUS_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return STORAGE_STATUS_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var content = key.substring(PREFIX.length());
             var slashIndex = content.indexOf('/');
-            if (slashIndex == - 1 || slashIndex == 0 || slashIndex == content.length() - 1) {return STORAGE_STATUS_KEY_FORMAT_ERROR.apply(key)
-                                                                                                                                         .result();}
+
+            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                return STORAGE_STATUS_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var nodeIdPart = content.substring(0, slashIndex);
             var instanceNamePart = content.substring(slashIndex + 1);
+
             return NodeId.nodeId(nodeIdPart).map(nid -> new StorageStatusKey(nid, instanceNamePart));
         }
     }
@@ -1067,26 +1431,34 @@ import static org.pragmatica.lang.Result.success;
     record ClusterConfigKey(long configVersion) implements AetherKey {
         private static final String PREFIX = "cluster-config/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + configVersion;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
         public static final ClusterConfigKey CURRENT = new ClusterConfigKey(0);
-
-        public static final ClusterConfigKey TEMPLATE = new ClusterConfigKey(- 1);
+        public static final ClusterConfigKey TEMPLATE = new ClusterConfigKey(-1);
 
         public static ClusterConfigKey clusterConfigKey(long configVersion) {
             return new ClusterConfigKey(configVersion);
         }
 
         public static Result<ClusterConfigKey> clusterConfigKey(String key) {
-            if (!key.startsWith(PREFIX)) {return CLUSTER_CONFIG_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return CLUSTER_CONFIG_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var versionPart = key.substring(PREFIX.length());
-            if (versionPart.isEmpty()) {return CLUSTER_CONFIG_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (versionPart.isEmpty()) {
+                return CLUSTER_CONFIG_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return Number.parseLong(versionPart).map(ClusterConfigKey::new);
         }
     }
@@ -1094,11 +1466,13 @@ import static org.pragmatica.lang.Result.success;
     record StreamConfigKey(String streamName) implements AetherKey {
         private static final String PREFIX = "stream-config/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + streamName;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -1107,9 +1481,16 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<StreamConfigKey> streamConfigKey(String key, boolean isKey) {
-            if (!key.startsWith(PREFIX)) {return STREAM_CONFIG_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return STREAM_CONFIG_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var name = key.substring(PREFIX.length());
-            if (name.isEmpty()) {return STREAM_CONFIG_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (name.isEmpty()) {
+                return STREAM_CONFIG_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return success(new StreamConfigKey(name));
         }
     }
@@ -1121,17 +1502,18 @@ import static org.pragmatica.lang.Result.success;
     Fn1<Cause, String> CONSUMER_GROUP_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid consumer-group key format: %s");
 
     Fn1<Cause, String> API_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid api-key key format: %s");
-
     Fn1<Cause, String> API_KEY_AUDIT_FORMAT_ERROR = Causes.forOneValue("Invalid api-key-audit key format: %s");
 
     record ApiKeyKey(String keyId) implements AetherKey {
         private static final String PREFIX = "api-key/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + keyId;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -1140,9 +1522,16 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<ApiKeyKey> parseApiKeyKey(String key) {
-            if (!key.startsWith(PREFIX)) {return API_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return API_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var id = key.substring(PREFIX.length());
-            if (id.isEmpty()) {return API_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (id.isEmpty()) {
+                return API_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return success(new ApiKeyKey(id));
         }
     }
@@ -1150,11 +1539,13 @@ import static org.pragmatica.lang.Result.success;
     record ApiKeyAuditKey(String entryId) implements AetherKey {
         private static final String PREFIX = "api-key-audit/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + entryId;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -1163,9 +1554,16 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<ApiKeyAuditKey> parseApiKeyAuditKey(String key) {
-            if (!key.startsWith(PREFIX)) {return API_KEY_AUDIT_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return API_KEY_AUDIT_FORMAT_ERROR.apply(key).result();
+            }
+
             var id = key.substring(PREFIX.length());
-            if (id.isEmpty()) {return API_KEY_AUDIT_FORMAT_ERROR.apply(key).result();}
+
+            if (id.isEmpty()) {
+                return API_KEY_AUDIT_FORMAT_ERROR.apply(key).result();
+            }
+
             return success(new ApiKeyAuditKey(id));
         }
     }
@@ -1173,11 +1571,13 @@ import static org.pragmatica.lang.Result.success;
     record CloudCredentialsKey(String provider) implements AetherKey {
         private static final String PREFIX = "cloud-credentials/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + provider;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -1186,9 +1586,16 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<CloudCredentialsKey> parseCloudCredentialsKey(String key) {
-            if (!key.startsWith(PREFIX)) {return CLOUD_CREDENTIALS_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return CLOUD_CREDENTIALS_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var provider = key.substring(PREFIX.length());
-            if (provider.isEmpty()) {return CLOUD_CREDENTIALS_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (provider.isEmpty()) {
+                return CLOUD_CREDENTIALS_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return success(new CloudCredentialsKey(provider));
         }
     }
@@ -1196,11 +1603,13 @@ import static org.pragmatica.lang.Result.success;
     record DhtPartitionOwnershipKey(String partitionId) implements AetherKey {
         private static final String PREFIX = "dht-partition-ownership/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + partitionId;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -1209,9 +1618,16 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<DhtPartitionOwnershipKey> parseDhtPartitionOwnershipKey(String key) {
-            if (!key.startsWith(PREFIX)) {return DHT_PARTITION_OWNERSHIP_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return DHT_PARTITION_OWNERSHIP_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var partitionPart = key.substring(PREFIX.length());
-            if (partitionPart.isEmpty()) {return DHT_PARTITION_OWNERSHIP_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (partitionPart.isEmpty()) {
+                return DHT_PARTITION_OWNERSHIP_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return success(new DhtPartitionOwnershipKey(partitionPart));
         }
     }
@@ -1219,11 +1635,13 @@ import static org.pragmatica.lang.Result.success;
     record SpokesmanKey(NodeId coreNodeId) implements AetherKey {
         private static final String PREFIX = "spokesman/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + coreNodeId.id();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -1232,9 +1650,16 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<SpokesmanKey> spokesmanKey(String key) {
-            if (!key.startsWith(PREFIX)) {return SPOKESMAN_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return SPOKESMAN_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var nodeIdPart = key.substring(PREFIX.length());
-            if (nodeIdPart.isEmpty()) {return SPOKESMAN_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (nodeIdPart.isEmpty()) {
+                return SPOKESMAN_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return NodeId.nodeId(nodeIdPart).map(SpokesmanKey::new);
         }
     }
@@ -1248,11 +1673,13 @@ import static org.pragmatica.lang.Result.success;
     record ProvisioningSlotKey(String slotId) implements AetherKey {
         private static final String PREFIX = "provisioning-slot/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + slotId;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -1261,9 +1688,16 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<ProvisioningSlotKey> provisioningSlotKey(String key, boolean isKey) {
-            if (!key.startsWith(PREFIX)) {return PROVISIONING_SLOT_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return PROVISIONING_SLOT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var id = key.substring(PREFIX.length());
-            if (id.isEmpty()) {return PROVISIONING_SLOT_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (id.isEmpty()) {
+                return PROVISIONING_SLOT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return success(new ProvisioningSlotKey(id));
         }
     }
@@ -1271,37 +1705,45 @@ import static org.pragmatica.lang.Result.success;
     record ClusterPhaseKey() implements AetherKey {
         private static final String KEY = "cluster-phase";
 
-        @SuppressWarnings("JBCT-VO-02") public static final ClusterPhaseKey SINGLETON = new ClusterPhaseKey();
+        @SuppressWarnings("JBCT-VO-02")
+        public static final ClusterPhaseKey SINGLETON = new ClusterPhaseKey();
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return KEY;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static ClusterPhaseKey clusterPhaseKey() {
+        @SuppressWarnings("JBCT-VO-02")
+        public static ClusterPhaseKey clusterPhaseKey() {
             return SINGLETON;
         }
 
         public static Result<ClusterPhaseKey> clusterPhaseKey(String key) {
-            if (!KEY.equals(key)) {return CLUSTER_PHASE_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!KEY.equals(key)) {
+                return CLUSTER_PHASE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return success(SINGLETON);
         }
     }
 
     Fn1<Cause, String> CLUSTER_PHASE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-phase key format: %s");
 
-
     record ConsumerGroupKey(String groupId, String streamName, int partition) implements AetherKey {
         private static final String PREFIX = "consumer-group/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + groupId + "/" + streamName + "/" + partition;
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -1310,10 +1752,17 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<ConsumerGroupKey> consumerGroupKey(String key) {
-            if (!key.startsWith(PREFIX)) {return CONSUMER_GROUP_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return CONSUMER_GROUP_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var content = key.substring(PREFIX.length());
             var parts = content.split("/");
-            if (parts.length != 3) {return CONSUMER_GROUP_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (parts.length != 3) {
+                return CONSUMER_GROUP_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             return Number.parseInt(parts[2]).map(partition -> new ConsumerGroupKey(parts[0], parts[1], partition));
         }
     }
@@ -1334,11 +1783,18 @@ import static org.pragmatica.lang.Result.success;
     record StreamRegistryKey(ResourceAddress address) implements AetherKey {
         private static final String PREFIX = "stream-registry/";
 
-        @Override public String asString() {
-            return PREFIX + address.namespace().value() + "/" + address.name().value() + "/" + address.version().asString();
+        @Override
+        public String asString() {
+            return PREFIX + address.namespace()
+                                   .value()
+                 + "/" + address.name()
+                                .value()
+                 + "/" + address.version()
+                                .asString();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -1347,18 +1803,28 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<StreamRegistryKey> streamRegistryKey(String key) {
-            if (!key.startsWith(PREFIX)) {return STREAM_REGISTRY_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return STREAM_REGISTRY_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var content = key.substring(PREFIX.length());
             var firstSlash = content.indexOf('/');
-            if (firstSlash <= 0) {return STREAM_REGISTRY_KEY_FORMAT_ERROR.apply(key).result();}
+
+            if (firstSlash <= 0) {
+                return STREAM_REGISTRY_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var namespace = content.substring(0, firstSlash);
             var rest = content.substring(firstSlash + 1);
             var secondSlash = rest.indexOf('/');
+
             if (secondSlash <= 0 || secondSlash == rest.length() - 1) {
                 return STREAM_REGISTRY_KEY_FORMAT_ERROR.apply(key).result();
             }
+
             var stream = rest.substring(0, secondSlash);
             var version = rest.substring(secondSlash + 1);
+
             return ResourceAddress.resourceAddress(namespace, stream, version).map(StreamRegistryKey::new);
         }
     }
@@ -1366,8 +1832,7 @@ import static org.pragmatica.lang.Result.success;
     // Stage 2 (stream-namespaces) additive graft: per-blueprint alias->ResourceAddress bindings.
     // Persistent/replicated deploy-time state (NOT ephemeral) — written by BlueprintService at
     // deploy and read by the per-slice runtime FSM to resolve refcount targets (spec §8.5).
-    Fn1<Cause, String> BLUEPRINT_STREAM_BINDINGS_KEY_FORMAT_ERROR =
-        Causes.forOneValue("Invalid blueprint-stream-bindings key format: %s");
+    Fn1<Cause, String> BLUEPRINT_STREAM_BINDINGS_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid blueprint-stream-bindings key format: %s");
 
     /// Per-blueprint alias→ResourceAddress map persisted at deploy time so per-slice runtime FSM
     /// transitions (ACTIVE entry / DEACTIVATING / UNLOADING exit) can resolve the slice manifest's
@@ -1379,11 +1844,13 @@ import static org.pragmatica.lang.Result.success;
     record BlueprintStreamBindingsKey(BlueprintId blueprintId) implements AetherKey {
         private static final String PREFIX = "blueprint-stream-bindings/";
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return PREFIX + blueprintId.asString();
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return asString();
         }
 
@@ -1392,8 +1859,12 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static Result<BlueprintStreamBindingsKey> blueprintStreamBindingsKey(String key) {
-            if (!key.startsWith(PREFIX)) {return BLUEPRINT_STREAM_BINDINGS_KEY_FORMAT_ERROR.apply(key).result();}
+            if (!key.startsWith(PREFIX)) {
+                return BLUEPRINT_STREAM_BINDINGS_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
             var idPart = key.substring(PREFIX.length());
+
             return BlueprintId.blueprintId(idPart).map(BlueprintStreamBindingsKey::new);
         }
     }

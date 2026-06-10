@@ -53,6 +53,7 @@ public final class ManagementRouter {
                                                       .isEmpty()).collect(Collectors.toMap(Route::name,
                                                                                            r -> r,
                                                                                            (a, _) -> a));
+
         return new ManagementRouter(RequestRouter.with(sources), JsonCodecAdapter.defaultCodec(), Map.copyOf(byName));
     }
 
@@ -85,12 +86,14 @@ public final class ManagementRouter {
                                        ctx.path())
                             .map(route -> {
                                 handleRoute(route, ctx, response);
+
                                 return true;
                             });
     }
 
     private void handleRoute(Route<?> route, RequestContext serverCtx, ResponseWriter response) {
         var routingCtx = adaptContext(serverCtx, route);
+
         route.handler().handle(routingCtx).onFailure(cause -> writeError(response, cause, serverCtx)).onSuccess(value -> writeSuccess(value,
                                                                                                                                       route.contentType(),
                                                                                                                                       response));
@@ -106,11 +109,13 @@ public final class ManagementRouter {
 
             return;
         }
+
         if (isTextContent(contentType)) {
             response.okText(value.toString());
 
             return;
         }
+
         if (value instanceof String json) {
             response.ok(json);
 
@@ -129,6 +134,7 @@ public final class ManagementRouter {
     private void extractAndRelease(io.netty.buffer.ByteBuf byteBuf, ResponseWriter response) {
         try {
             var bytes = new byte[byteBuf.readableBytes()];
+
             byteBuf.readBytes(bytes);
             response.ok(new String(bytes, StandardCharsets.UTF_8));
         } finally {
@@ -240,16 +246,25 @@ public final class ManagementRouter {
             var normalizedPath = PathUtils.normalize(serverCtx.path());
             var routePath = route.path();
 
-            if (normalizedPath.length() <= routePath.length()) {return List.of();}
+            if (normalizedPath.length() <= routePath.length()) {
+                return List.of();
+            }
 
             var remainder = normalizedPath.substring(routePath.length());
 
-            if (remainder.startsWith("/")) {remainder = remainder.substring(1);}
-            if (remainder.isEmpty()) {return List.of();}
+            if (remainder.startsWith("/")) {
+                remainder = remainder.substring(1);
+            }
+
+            if (remainder.isEmpty()) {
+                return List.of();
+            }
 
             var elements = remainder.split("/", 1024);
 
-            if (elements[elements.length - 1].isEmpty()) {return List.of(elements).subList(0, elements.length - 1);}
+            if (elements[elements.length - 1].isEmpty()) {
+                return List.of(elements).subList(0, elements.length - 1);
+            }
 
             return List.of(elements);
         }

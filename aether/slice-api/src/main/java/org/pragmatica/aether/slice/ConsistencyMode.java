@@ -6,7 +6,9 @@ package org.pragmatica.aether.slice;
 
 import org.pragmatica.serialization.Codec;
 
-@Codec public enum ConsistencyMode {
+
+@Codec
+public enum ConsistencyMode {
     EVENTUAL,
     STRONG
 }

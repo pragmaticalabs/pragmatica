@@ -11,7 +11,6 @@ import static org.pragmatica.lang.Result.success;
 
 public record KubernetesConfig(String namespace, String serviceType, String storageClass) {
     public static final String DEFAULT_NAMESPACE = "aether";
-
     public static final String DEFAULT_SERVICE_TYPE = "ClusterIP";
 
     public static Result<KubernetesConfig> kubernetesConfig(String namespace, String serviceType, String storageClass) {

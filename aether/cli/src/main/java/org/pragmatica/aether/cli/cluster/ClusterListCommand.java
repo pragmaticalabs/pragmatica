@@ -62,7 +62,9 @@ class ClusterListCommand implements Callable<Integer> {
         var first = true;
 
         for (var entry : registry.entries()) {
-            if (!first) {sb.append(',');}
+            if (!first) {
+                sb.append(',');
+            }
 
             first = false;
             appendEntryJson(sb, entry, currentName);
@@ -78,6 +80,7 @@ class ClusterListCommand implements Callable<Integer> {
                      ? "*"
                      : " ";
         var apiKeyEnv = entry.apiKeyEnv().or("-");
+
         sb.append("{\"marker\":\"").append(marker).append("\",\"name\":\"").append(entry.name()).append("\",\"endpoint\":\"").append(entry.endpoint()).append("\",\"apiKeyEnv\":\"").append(apiKeyEnv).append("\"}");
     }
 

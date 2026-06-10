@@ -16,11 +16,13 @@ import static org.pragmatica.aether.environment.docker.DockerEnvironmentIntegrat
 
 
 public record DockerEnvironmentIntegrationFactory() implements EnvironmentIntegrationFactory {
-    @Override public String providerName() {
+    @Override
+    public String providerName() {
         return "docker";
     }
 
-    @Override public Result<EnvironmentIntegration> create(CloudConfig config) {
+    @Override
+    public Result<EnvironmentIntegration> create(CloudConfig config) {
         return buildDockerConfig(config).flatMap(DockerEnvironmentIntegration::dockerEnvironmentIntegration)
                                 .map(EnvironmentIntegration.class::cast);
     }
@@ -29,8 +31,9 @@ public record DockerEnvironmentIntegrationFactory() implements EnvironmentIntegr
         var compute = config.compute();
         var envNetwork = System.getenv("AETHER_DOCKER_NETWORK");
         var networkName = envNetwork != null && !envNetwork.isBlank()
-                         ? envNetwork
-                         : compute.getOrDefault("network_name", "aether-network");
+                          ? envNetwork
+                          : compute.getOrDefault("network_name", "aether-network");
+
         return dockerConfig(compute.getOrDefault("image_name", "aether-node:local"),
                             networkName,
                             resolvePortBase(compute, "management_port_base", "AETHER_MGMT_PORT_BASE", 5150),
@@ -51,24 +54,29 @@ public record DockerEnvironmentIntegrationFactory() implements EnvironmentIntegr
     /// This lets per-cluster docker-compose files set `AETHER_MGMT_PORT_BASE=5150`
     /// (cluster A) vs. `5160` (cluster B) without baking the value into the image's
     /// `aether.toml`, and without forcing every caller to rewrite the TOML overlay.
-    private static int resolvePortBase(Map<String, String> compute,
-                                       String tomlKey,
-                                       String envVar,
-                                       int defaultValue) {
+    private static int resolvePortBase(Map<String, String> compute, String tomlKey, String envVar, int defaultValue) {
         var envValue = System.getenv(envVar);
+
         if (envValue != null && !envValue.isBlank()) {
             return parseIntOrDefault(envValue, defaultValue);
         }
+
         return parseIntOrDefault(compute.getOrDefault(tomlKey, ""), defaultValue);
     }
 
     private static int parseIntOrDefault(String value, int defaultValue) {
-        if (value.isEmpty()) {return defaultValue;}
+        if (value.isEmpty()) {
+            return defaultValue;
+        }
+
         return Result.lift(() -> Integer.parseInt(value)).or(defaultValue);
     }
 
     private static boolean parseBoolOrDefault(String value, boolean defaultValue) {
-        if (value.isEmpty()) {return defaultValue;}
+        if (value.isEmpty()) {
+            return defaultValue;
+        }
+
         return Boolean.parseBoolean(value);
     }
 }

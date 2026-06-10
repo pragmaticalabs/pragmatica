@@ -23,7 +23,8 @@ import org.pragmatica.serialization.Codec;
 ///
 /// This type owns the version grammar and ordering. It is the single, uniform version type
 /// reused directly by streams, topics, and any future addressable resource.
-@Codec public record ResourceVersion(int major, int minor, int patch) implements Comparable<ResourceVersion> {
+@Codec
+public record ResourceVersion(int major, int minor, int patch) implements Comparable<ResourceVersion> {
     public sealed interface ResourceVersionError extends Cause {
         enum General implements ResourceVersionError {
             NULL_VALUE("Resource version cannot be null"),
@@ -35,13 +36,16 @@ import org.pragmatica.serialization.Codec;
             General(String message) {
                 this.message = message;
             }
-            @Override public String message() {
+            @Override
+            public String message() {
                 return message;
             }
         }
 
-        @SuppressWarnings("unused") record unused() implements ResourceVersionError {
-            @Override public String message() {
+        @SuppressWarnings("unused")
+        record unused() implements ResourceVersionError {
+            @Override
+            public String message() {
                 return "";
             }
         }
@@ -64,7 +68,9 @@ import org.pragmatica.serialization.Codec;
         return Verify.ensure(value, Is::notNull, ResourceVersionError.General.NULL_VALUE)
                      .flatMap(notNull -> Verify.ensure(notNull, Is::notBlank, ResourceVersionError.General.BLANK_VALUE))
                      .map(blank -> blank.split("\\.", -1))
-                     .flatMap(parts -> Verify.ensure(parts, p -> p.length == 3, ResourceVersionError.General.WRONG_FORMAT))
+                     .flatMap(parts -> Verify.ensure(parts,
+                                                     p -> p.length == 3,
+                                                     ResourceVersionError.General.WRONG_FORMAT))
                      .all(parts -> parseComponent(parts[0]),
                           parts -> parseComponent(parts[1]),
                           parts -> parseComponent(parts[2]))
@@ -72,23 +78,28 @@ import org.pragmatica.serialization.Codec;
     }
 
     private static Result<Integer> parseComponent(String component) {
-        return Number.parseInt(component)
-                     .mapError(_ -> ResourceVersionError.General.NON_NUMERIC_COMPONENT);
+        return Number.parseInt(component).mapError(_ -> ResourceVersionError.General.NON_NUMERIC_COMPONENT);
     }
 
-    @Override public int compareTo(ResourceVersion other) {
+    @Override
+    public int compareTo(ResourceVersion other) {
         var majorDiff = Integer.compare(major, other.major);
+
         if (majorDiff != 0) {
             return majorDiff;
         }
+
         var minorDiff = Integer.compare(minor, other.minor);
+
         if (minorDiff != 0) {
             return minorDiff;
         }
+
         return Integer.compare(patch, other.patch);
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return asString();
     }
 

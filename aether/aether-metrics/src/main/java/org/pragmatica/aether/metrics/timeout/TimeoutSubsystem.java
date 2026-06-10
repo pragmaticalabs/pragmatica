@@ -33,13 +33,10 @@ public enum TimeoutSubsystem {
     SECURITY("security"),
     REPOSITORY("repository"),
     SCALING("scaling");
-
     private final String id;
-
     TimeoutSubsystem(String id) {
         this.id = id;
     }
-
     public String id() {
         return id;
     }

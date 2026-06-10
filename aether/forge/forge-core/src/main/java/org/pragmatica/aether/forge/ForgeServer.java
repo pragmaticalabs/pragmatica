@@ -41,30 +41,21 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) public final class ForgeServer {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+public final class ForgeServer {
     private static final Logger log = LoggerFactory.getLogger(ForgeServer.class);
-
     private static final int MAX_CONTENT_LENGTH = 65536;
-
     private static final JsonCodec CODEC = JsonCodecAdapter.defaultCodec();
 
     private final StartupConfig startupConfig;
     private final EmberConfig forgeConfig;
-
     private volatile Option<EmberCluster> cluster = Option.empty();
-
     private volatile Option<ConfigurableLoadRunner> configurableLoadRunner = Option.empty();
-
     private volatile Option<ForgeMetrics> metrics = Option.empty();
-
     private volatile Option<ForgeApiHandler> apiHandler = Option.empty();
-
     private volatile Option<StaticFileHandler> staticHandler = Option.empty();
-
     private volatile Option<HttpServer> httpServer = Option.empty();
-
     private volatile Option<ScheduledExecutorService> metricsScheduler = Option.empty();
-
     private volatile Option<StatusWebSocketPublisher> wsPublisher = Option.empty();
 
     private final StatusWebSocketHandler wsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.noOpValidator(),
@@ -77,9 +68,7 @@ import org.slf4j.LoggerFactory;
                                                                                                                                    false));
 
     private final HttpOperations http = JdkHttpOperations.jdkHttpOperations();
-
     private final long startTime = System.currentTimeMillis();
-
     private volatile String lastEventTimestamp = "";
 
     private ForgeServer(StartupConfig startupConfig, EmberConfig forgeConfig) {
@@ -92,22 +81,32 @@ import org.slf4j.LoggerFactory;
     public static void main(String[] args) {
         if (hasFlag(args, "--help", "-h")) {
             printHelp();
+
             return;
         }
+
         if (hasFlag(args, "--version", "-V")) {
             System.out.println(VERSION);
+
             return;
         }
+
         var startupConfigResult = StartupConfig.startupConfig(args);
+
         startupConfigResult.onFailure(cause -> {
             log.error("Configuration error: {}", cause.message());
             System.exit(1);
         });
-        if (startupConfigResult.isFailure()) {return;}
+        if (startupConfigResult.isFailure()) {
+            return;
+        }
+
         var startupConfig = startupConfigResult.unwrap();
         var forgeConfig = loadForgeConfig(startupConfig);
+
         printBanner(forgeConfig, startupConfig);
         var server = new ForgeServer(startupConfig, forgeConfig);
+
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             log.info("Shutting down...");
             server.stop();
@@ -120,8 +119,14 @@ import org.slf4j.LoggerFactory;
         }
     }
 
-    @SuppressWarnings("JBCT-SEQ-01") private static boolean hasFlag(String[] args, String longFlag, String shortFlag) {
-        for (var arg : args) {if (arg.equals(longFlag) || arg.equals(shortFlag)) {return true;}}
+    @SuppressWarnings("JBCT-SEQ-01")
+    private static boolean hasFlag(String[] args, String longFlag, String shortFlag) {
+        for (var arg : args) {
+            if (arg.equals(longFlag) || arg.equals(shortFlag)) {
+                return true;
+            }
+        }
+
         return false;
     }
 
@@ -151,18 +156,19 @@ import org.slf4j.LoggerFactory;
     }
 
     private static EmberConfig loadForgeConfig(StartupConfig startupConfig) {
-        return startupConfig.forgeConfig().map(EmberConfig::load)
-                                        .map(r -> r.onFailure(c -> log.error("Failed to load forge config: {}",
-                                                                             c.message()))
-        .or(EmberConfig.DEFAULT))
-                                        .or(createDefaultForgeConfig(startupConfig));
+        return startupConfig.forgeConfig()
+                            .map(EmberConfig::load)
+                            .map(r -> r.onFailure(c -> log.error("Failed to load forge config: {}",
+                                                                 c.message()))
+                                       .or(EmberConfig.DEFAULT))
+                            .or(createDefaultForgeConfig(startupConfig));
     }
 
     private static EmberConfig createDefaultForgeConfig(StartupConfig startupConfig) {
         return EmberConfig.emberConfig(startupConfig.clusterSize(),
                                        EmberConfig.DEFAULT_MANAGEMENT_PORT,
                                        startupConfig.port())
-        .or(EmberConfig.DEFAULT);
+                          .or(EmberConfig.DEFAULT);
     }
 
     private static void printBanner(EmberConfig forgeConfig, StartupConfig startupConfig) {
@@ -172,16 +178,23 @@ import org.slf4j.LoggerFactory;
         log.info("  Dashboard: http://localhost:{}", forgeConfig.dashboardPort());
         log.info("  Cluster size: {} nodes", forgeConfig.nodes());
         log.info("  App HTTP port: {} (load target)", forgeConfig.appHttpPort());
-        if (forgeConfig.lbEnabled()) {log.info("  Load balancer: http://localhost:{}", forgeConfig.lbPort());}
+        if (forgeConfig.lbEnabled()) {
+            log.info("  Load balancer: http://localhost:{}", forgeConfig.lbPort());
+        }
+
         startupConfig.blueprint().onPresent(coords -> log.info("  Blueprint: {}", coords));
         startupConfig.loadConfig().onPresent(p -> log.info("  Load config: {}", p));
-        if (startupConfig.autoStart()) {log.info("  Auto-start: enabled");}
+        if (startupConfig.autoStart()) {
+            log.info("  Auto-start: enabled");
+        }
+
         log.info("=".repeat(60));
     }
 
     public void start() {
         log.info("Starting Forge server...");
         var configProvider = buildConfigurationProvider();
+
         initializeComponents(configProvider);
         startCluster();
         startMetricsCollection();
@@ -206,14 +219,15 @@ import org.slf4j.LoggerFactory;
                                                         forgeConfig.coreMax());
         var entryPointMetrics = EntryPointMetrics.entryPointMetrics();
         Supplier<List<Integer>> portSupplier = forgeConfig.lbEnabled()
-                                              ? () -> List.of(forgeConfig.lbPort())
-                                              : clusterInstance::getAvailableAppHttpPorts;
+                                               ? () -> List.of(forgeConfig.lbPort())
+                                               : clusterInstance::getAvailableAppHttpPorts;
         var configurableLoadRunnerInstance = ConfigurableLoadRunner.configurableLoadRunner(portSupplier,
                                                                                            metricsInstance,
                                                                                            entryPointMetrics);
         var apiHandlerInstance = ForgeApiHandler.forgeApiHandler(clusterInstance,
                                                                  metricsInstance,
                                                                  configurableLoadRunnerInstance);
+
         metrics = Option.some(metricsInstance);
         cluster = Option.some(clusterInstance);
         configurableLoadRunner = Option.some(configurableLoadRunnerInstance);
@@ -224,6 +238,7 @@ import org.slf4j.LoggerFactory;
                                                                                                           metricsInstance,
                                                                                                           startTime,
                                                                                                           configurableLoadRunnerInstance));
+
         wsPublisher = Option.some(wsPublisherInstance);
     }
 
@@ -232,103 +247,129 @@ import org.slf4j.LoggerFactory;
                                           long startTime,
                                           ConfigurableLoadRunner loadRunner) {
         var status = StatusRoutes.buildFullStatus(cluster, metrics, startTime, loadRunner);
-        return CODEC.serialize(status).map(byteBuf -> {
-                                               try {
-                                                   var bytes = new byte[byteBuf.readableBytes()];
-                                                   byteBuf.readBytes(bytes);
-                                                   return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
-                                               } finally {
-                                                   byteBuf.release();
-                                               }
-                                           })
-                              .or("{}");
+
+        return CODEC.serialize(status)
+                    .map(byteBuf -> {
+                             try {
+                             var bytes = new byte[byteBuf.readableBytes()];
+
+                             byteBuf.readBytes(bytes);
+
+                             return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+                         } finally {
+                             byteBuf.release();
+                         }
+                         })
+                    .or("{}");
     }
 
     private void startCluster() {
         log.info("Starting {} node cluster...", forgeConfig.nodes());
-        cluster.onPresent(c -> c.start().await(TimeSpan.timeSpan(60).seconds())
-                                      .onFailure(cause -> {
-                                                     throw new IllegalStateException("Failed to start cluster: " + cause.message());
-                                                 }));
-        TimeSpan.timeSpan(2).seconds()
-                         .sleep();
+        cluster.onPresent(c -> c.start()
+                                .await(TimeSpan.timeSpan(60).seconds())
+                                .onFailure(cause -> {
+                                               throw new IllegalStateException("Failed to start cluster: " + cause.message());
+                                           }));
+        TimeSpan.timeSpan(2).seconds().sleep();
     }
 
     private void startMetricsCollection() {
         var scheduler = Executors.newSingleThreadScheduledExecutor();
+
         metrics.onPresent(m -> scheduler.scheduleAtFixedRate(m::snapshot, 500, 500, TimeUnit.MILLISECONDS));
         scheduler.scheduleAtFixedRate(this::pollNodeEvents, 2, 2, TimeUnit.SECONDS);
         metricsScheduler = Option.some(scheduler);
         wsPublisher.onPresent(StatusWebSocketPublisher::start);
     }
 
-    @Contract private void pollNodeEvents() {
+    @Contract
+    private void pollNodeEvents() {
         try {
             var port = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
             var uriStr = "http://localhost:" + port + "/api/events";
-            if (!lastEventTimestamp.isEmpty()) {uriStr += "?since=" + java.net.URLEncoder.encode(lastEventTimestamp,
-                                                                                                 java.nio.charset.StandardCharsets.UTF_8);}
-            var request = HttpRequest.newBuilder().uri(URI.create(uriStr))
-                                                .GET()
-                                                .timeout(java.time.Duration.ofSeconds(2))
-                                                .build();
-            http.sendString(request).await(TimeSpan.timeSpan(3).seconds())
-                           .flatMap(org.pragmatica.http.HttpResult::toResult)
-                           .onSuccess(this::parseAndMergeEvents);
+
+            if (!lastEventTimestamp.isEmpty()) {
+                uriStr += "?since=" + java.net.URLEncoder.encode(lastEventTimestamp,
+                                                                 java.nio.charset.StandardCharsets.UTF_8);
+            }
+
+            var request = HttpRequest.newBuilder().uri(URI.create(uriStr)).GET().timeout(java.time.Duration.ofSeconds(2)).build();
+
+            http.sendString(request).await(TimeSpan.timeSpan(3).seconds()).flatMap(org.pragmatica.http.HttpResult::toResult).onSuccess(this::parseAndMergeEvents);
         } catch (Exception e) {
             log.trace("Event polling failed: {}", e.getMessage());
         }
     }
 
     private void parseAndMergeEvents(String json) {
-        if (json == null || json.length() <3 || !json.startsWith("[")) {return;}
+        if (json == null || json.length() < 3 || !json.startsWith("[")) {
+            return;
+        }
+
         var content = json.substring(1, json.length() - 1).trim();
-        if (content.isEmpty()) {return;}
+
+        if (content.isEmpty()) {
+            return;
+        }
+
         var events = splitJsonObjects(content);
-        for (var eventJson : events) {mergeEvent(eventJson);}
+
+        for (var eventJson : events) {
+            mergeEvent(eventJson);
+        }
     }
 
     private void mergeEvent(String eventJson) {
         extractJsonString(eventJson, "timestamp").onPresent(timestamp -> extractJsonString(eventJson, "type").onPresent(type -> {
-                                                                                                                            var severity = extractJsonString(eventJson,
-                                                                                                                                                             "severity").or("INFO");
-                                                                                                                            var summary = extractJsonString(eventJson,
-                                                                                                                                                            "summary").or("");
-                                                                                                                            apiHandler.onPresent(h -> h.addNodeEvent(timestamp,
-                                                                                                                                                                     type,
-                                                                                                                                                                     severity,
-                                                                                                                                                                     summary));
-                                                                                                                            lastEventTimestamp = timestamp;
-                                                                                                                        }));
+            var severity = extractJsonString(eventJson, "severity").or("INFO");
+            var summary = extractJsonString(eventJson, "summary").or("");
+
+            apiHandler.onPresent(h -> h.addNodeEvent(timestamp, type, severity, summary));
+            lastEventTimestamp = timestamp;
+        }));
     }
 
     private static List<String> splitJsonObjects(String content) {
         var objects = new java.util.ArrayList<String>();
         var depth = 0;
-        var start = - 1;
-        for (int i = 0;i <content.length();i++) {
+        var start = -1;
+
+        for (int i = 0; i < content.length(); i++) {
             var ch = content.charAt(i);
+
             if (ch == '{') {
-                if (depth == 0) {start = i;}
+                if (depth == 0) {
+                    start = i;
+                }
+
                 depth++;
             } else if (ch == '}') {
                 depth--;
                 if (depth == 0 && start >= 0) {
                     objects.add(content.substring(start, i + 1));
-                    start = - 1;
+                    start = -1;
                 }
             }
         }
+
         return objects;
     }
 
     private static Option<String> extractJsonString(String json, String key) {
         var search = "\"" + key + "\":\"";
         var idx = json.indexOf(search);
-        if (idx <0) {return Option.empty();}
+
+        if (idx < 0) {
+            return Option.empty();
+        }
+
         var valStart = idx + search.length();
         var valEnd = json.indexOf("\"", valStart);
-        if (valEnd <0) {return Option.empty();}
+
+        if (valEnd < 0) {
+            return Option.empty();
+        }
+
         return Option.some(json.substring(valStart, valEnd));
     }
 
@@ -354,15 +395,14 @@ import org.slf4j.LoggerFactory;
         log.info("Deploying blueprint artifact: {}...", artifactCoords);
         var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
         var body = "{\"artifact\":\"" + artifactCoords + "\"}";
-        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + leaderPort + "/api/blueprints/deploy"))
-                                            .header("Content-Type", "application/json")
-                                            .POST(HttpRequest.BodyPublishers.ofString(body))
-                                            .build();
+        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + leaderPort
+                                                             + "/api/blueprints/deploy")).header("Content-Type",
+                                                                                                 "application/json").POST(HttpRequest.BodyPublishers.ofString(body)).build();
+
         log.info("Deploying blueprint by coordinates: POST /api/blueprints/deploy — {}", artifactCoords);
-        http.sendString(request).await(TimeSpan.timeSpan(10).seconds())
-                       .onSuccess(result -> handleDeployResponse(result, artifactCoords))
-                       .onFailure(cause -> log.error("Failed to deploy blueprint: {}",
-                                                     cause.message()));
+        http.sendString(request).await(TimeSpan.timeSpan(10).seconds()).onSuccess(result -> handleDeployResponse(result,
+                                                                                                                 artifactCoords)).onFailure(cause -> log.error("Failed to deploy blueprint: {}",
+                                                                                                                                                               cause.message()));
     }
 
     private void handleDeployResponse(org.pragmatica.http.HttpResult<String> result, String artifactCoords) {
@@ -370,72 +410,67 @@ import org.slf4j.LoggerFactory;
             log.info("Blueprint deployed from artifact: {}", artifactCoords);
             apiHandler.onPresent(h -> h.addEvent("BLUEPRINT_DEPLOYED",
                                                  "Blueprint deployed from artifact " + artifactCoords));
-            TimeSpan.timeSpan(1).seconds()
-                             .sleep();
-        } else {log.error("Blueprint deploy failed (HTTP {}): {}", result.statusCode(), result.body());}
+            TimeSpan.timeSpan(1).seconds().sleep();
+        } else {
+            log.error("Blueprint deploy failed (HTTP {}): {}", result.statusCode(), result.body());
+        }
     }
 
     private void loadLoadConfig(Path loadConfigPath) {
         log.info("Loading load configuration from {}...", loadConfigPath);
         LoadConfigLoader.load(loadConfigPath).onSuccess(config -> {
-                                                            configurableLoadRunner.onPresent(r -> r.applyConfig(config));
-                                                            log.info("Load configuration loaded: {} targets",
-                                                                     config.targets().size());
-                                                            apiHandler.onPresent(h -> h.addEvent("LOAD_CONFIG_LOADED",
-                                                                                                 "Loaded " + config.targets()
-                                                                                                                           .size() + " targets from " + loadConfigPath.getFileName()));
-                                                        })
-                             .onFailure(cause -> log.error("Failed to load configuration: {}",
-                                                           cause.message()));
+            configurableLoadRunner.onPresent(r -> r.applyConfig(config));
+            log.info("Load configuration loaded: {} targets",
+                     config.targets().size());
+            apiHandler.onPresent(h -> h.addEvent("LOAD_CONFIG_LOADED",
+                                                 "Loaded " + config.targets()
+                                                                   .size()
+                                                + " targets from " + loadConfigPath.getFileName()));
+        }).onFailure(cause -> log.error("Failed to load configuration: {}", cause.message()));
     }
 
     public void stop() {
         log.info("Stopping Forge server...");
         wsPublisher.onPresent(StatusWebSocketPublisher::stop);
         metricsScheduler.onPresent(ScheduledExecutorService::shutdownNow);
-        httpServer.onPresent(server -> server.stop().await(TimeSpan.timeSpan(10).seconds())
-                                                  .onFailure(cause -> log.warn("Error stopping HTTP server: {}",
-                                                                               cause.message())));
-        cluster.onPresent(c -> c.stop().await(TimeSpan.timeSpan(30).seconds())
-                                     .onFailure(cause -> log.warn("Error stopping cluster: {}",
-                                                                  cause.message())));
+        httpServer.onPresent(server -> server.stop()
+                                             .await(TimeSpan.timeSpan(10).seconds())
+                                             .onFailure(cause -> log.warn("Error stopping HTTP server: {}",
+                                                                          cause.message())));
+        cluster.onPresent(c -> c.stop()
+                                .await(TimeSpan.timeSpan(30).seconds())
+                                .onFailure(cause -> log.warn("Error stopping cluster: {}",
+                                                             cause.message())));
         log.info("Forge server stopped.");
     }
 
     private Option<ConfigurationProvider> buildConfigurationProvider() {
         var builder = ConfigurationProvider.builder();
-        startupConfig.forgeConfig().map(path -> path.resolveSibling("aether.toml"))
-                                 .filter(path -> path.toFile().exists())
-                                 .onPresent(builder::withTomlFile);
+
+        startupConfig.forgeConfig().map(path -> path.resolveSibling("aether.toml")).filter(path -> path.toFile()
+                                                                                                       .exists()).onPresent(builder::withTomlFile);
         startupConfig.forgeConfig().onPresent(builder::withTomlFile);
         builder.withSystemProperties("aether.").withEnvironment("AETHER_");
+
         return Option.some(builder.build());
     }
 
     private void startHttpServer() {
-        Option.all(apiHandler, staticHandler).map(ForgeRequestHandler::forgeRequestHandler)
-                  .onPresent(this::launchHttpServer);
+        Option.all(apiHandler, staticHandler).map(ForgeRequestHandler::forgeRequestHandler).onPresent(this::launchHttpServer);
     }
 
     private void launchHttpServer(ForgeRequestHandler requestHandler) {
         var wsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/status", wsHandler);
         var dashboardWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/dashboard", dashboardWsHandler);
         var eventWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/events", eventWsHandler);
-        var config = HttpServerConfig.httpServerConfig("forge-dashboard",
-                                                       forgeConfig.dashboardPort()).withMaxContentLength(MAX_CONTENT_LENGTH)
-                                                      .withChunkedWrite()
-                                                      .withWebSocket(wsEndpoint)
-                                                      .withWebSocket(dashboardWsEndpoint)
-                                                      .withWebSocket(eventWsEndpoint);
-        HttpServer.httpServer(config, requestHandler::handle).await(TimeSpan.timeSpan(10).seconds())
-                             .onSuccess(server -> {
-                                            httpServer = Option.some(server);
-                                            log.info("HTTP server started on port {}",
-                                                     server.port());
-                                        })
-                             .onFailure(cause -> {
-                                            throw new IllegalStateException("Failed to start HTTP server: " + cause.message());
-                                        });
+        var config = HttpServerConfig.httpServerConfig("forge-dashboard", forgeConfig.dashboardPort()).withMaxContentLength(MAX_CONTENT_LENGTH).withChunkedWrite().withWebSocket(wsEndpoint).withWebSocket(dashboardWsEndpoint).withWebSocket(eventWsEndpoint);
+
+        HttpServer.httpServer(config, requestHandler::handle).await(TimeSpan.timeSpan(10).seconds()).onSuccess(server -> {
+            httpServer = Option.some(server);
+            log.info("HTTP server started on port {}", server.port());
+        }).onFailure(cause -> {
+            throw new IllegalStateException("Failed to start HTTP server: " + cause.message());
+        });
     }
 
     private void openBrowser(String url) {
@@ -443,7 +478,9 @@ import org.slf4j.LoggerFactory;
             if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
                 Desktop.getDesktop().browse(new URI(url));
                 log.info("Opened browser to {}", url);
-            } else {log.info("Could not open browser automatically. Please navigate to: {}", url);}
+            } else {
+                log.info("Could not open browser automatically. Please navigate to: {}", url);
+            }
         } catch (Exception e) {
             log.info("Could not open browser automatically. Please navigate to: {}", url);
         }

@@ -33,6 +33,7 @@ public record GcpEnvironmentIntegration(GcpComputeProvider computeProvider,
                                         Option<CertificateProvider> certProvider) implements EnvironmentIntegration {
     public static Result<GcpEnvironmentIntegration> gcpEnvironmentIntegration(GcpEnvironmentConfig config) {
         var client = GcpClient.gcpClient(config.gcpConfig());
+
         return gcpEnvironmentIntegration(client, config);
     }
 
@@ -43,15 +44,19 @@ public record GcpEnvironmentIntegration(GcpComputeProvider computeProvider,
         var discovery = resolveDiscoveryProvider(client, config);
         var secrets = resolveSecretsProvider(client);
         var certProv = resolveCertificateProvider(client, config);
-        return Result.all(compute, lbProvider)
-                         .map((cp, lb) -> new GcpEnvironmentIntegration(cp, lb, discovery, secrets, certProv));
+
+        return Result.all(compute, lbProvider).map((cp, lb) -> new GcpEnvironmentIntegration(cp,
+                                                                                             lb,
+                                                                                             discovery,
+                                                                                             secrets,
+                                                                                             certProv));
     }
 
     private static Result<Option<LoadBalancerProvider>> resolveLbProvider(GcpClient client,
                                                                           GcpEnvironmentConfig config) {
         return config.networkEndpointGroup()
-                                          .fold(() -> success(Option.empty()),
-                                                negConfig -> toNegOption(client, negConfig));
+                     .fold(() -> success(Option.empty()),
+                           negConfig -> toNegOption(client, negConfig));
     }
 
     private static Result<Option<LoadBalancerProvider>> toNegOption(GcpClient client,
@@ -64,7 +69,8 @@ public record GcpEnvironmentIntegration(GcpComputeProvider computeProvider,
     }
 
     private static Option<DiscoveryProvider> resolveDiscoveryProvider(GcpClient client, GcpEnvironmentConfig config) {
-        return config.clusterName().map(name -> gcpDiscoveryProvider(client, config));
+        return config.clusterName()
+                     .map(name -> gcpDiscoveryProvider(client, config));
     }
 
     private static Option<SecretsProvider> resolveSecretsProvider(GcpClient client) {
@@ -72,34 +78,40 @@ public record GcpEnvironmentIntegration(GcpComputeProvider computeProvider,
                                                                   TimeSpan.timeSpan(5).minutes()));
     }
 
-    @Override public Option<ComputeProvider> compute() {
+    @Override
+    public Option<ComputeProvider> compute() {
         return some(computeProvider);
     }
 
-    @Override public Option<SecretsProvider> secrets() {
+    @Override
+    public Option<SecretsProvider> secrets() {
         return secretsProvider;
     }
 
-    @Override public Option<LoadBalancerProvider> loadBalancer() {
+    @Override
+    public Option<LoadBalancerProvider> loadBalancer() {
         return loadBalancerProvider;
     }
 
-    @Override public Option<DiscoveryProvider> discovery() {
+    @Override
+    public Option<DiscoveryProvider> discovery() {
         return discoveryProvider;
     }
 
-    @Override public Option<CertificateProvider> certificateProvider() {
+    @Override
+    public Option<CertificateProvider> certificateProvider() {
         return certProvider;
     }
 
-    @Override public Option<FloatingIpProvider> floatingIp() {
+    @Override
+    public Option<FloatingIpProvider> floatingIp() {
         return Option.empty();
     }
 
     private static Option<CertificateProvider> resolveCertificateProvider(GcpClient client,
                                                                           GcpEnvironmentConfig config) {
         return config.certificateSecretPrefix()
-                                             .flatMap(prefix -> gcpCertificateProvider(client, prefix).map(CertificateProvider.class::cast)
-                                                                                      .option());
+                     .flatMap(prefix -> gcpCertificateProvider(client, prefix).map(CertificateProvider.class::cast)
+                                                              .option());
     }
 }

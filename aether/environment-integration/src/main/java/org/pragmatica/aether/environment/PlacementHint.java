@@ -8,9 +8,9 @@ import java.util.Set;
 
 
 public sealed interface PlacementHint {
-    record ZoneHint(String zoneName) implements PlacementHint{}
+    record ZoneHint(String zoneName) implements PlacementHint {}
 
-    record HostGroupHint(String groupId) implements PlacementHint{}
+    record HostGroupHint(String groupId) implements PlacementHint {}
 
     record AffinityHint(Set<String> preferredZones) implements PlacementHint {
         public AffinityHint {

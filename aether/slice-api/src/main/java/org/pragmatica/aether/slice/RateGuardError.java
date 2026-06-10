@@ -13,7 +13,8 @@ public sealed interface RateGuardError extends Cause {
             return new LimitExceeded(retryAfterMs, limit, remaining, resetAtEpochMs);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Rate limit exceeded. Retry after " + retryAfterMs + "ms";
         }
 

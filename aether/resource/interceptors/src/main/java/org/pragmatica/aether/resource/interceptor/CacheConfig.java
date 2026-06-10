@@ -30,8 +30,7 @@ public record CacheConfig(String cacheName, CacheStrategy strategy, int ttlSecon
                           ensure(strategy, Verify.Is::notNull),
                           ensure(ttlSeconds, Verify.Is::positive),
                           ensure(maxEntries, Verify.Is::positive),
-                          ensure(mode, Verify.Is::notNull))
-        .map(CacheConfig::new);
+                          ensure(mode, Verify.Is::notNull)).map(CacheConfig::new);
     }
 
     public static Result<CacheConfig> cacheConfig(String cacheName, CacheStrategy strategy) {

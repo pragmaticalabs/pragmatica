@@ -11,13 +11,13 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 public final class ControlLoopEvents {
     private ControlLoopEvents() {}
 
-    public record Activate() implements ClusterFsmEvent{}
+    public record Activate() implements ClusterFsmEvent {}
 
-    public record Deactivate() implements ClusterFsmEvent{}
+    public record Deactivate() implements ClusterFsmEvent {}
 
-    public record ActivationTimeReached() implements ClusterFsmEvent{}
+    public record ActivationTimeReached() implements ClusterFsmEvent {}
 
-    public record CooldownRequested(Artifact artifact, long cooldownStartMs) implements ClusterFsmEvent{}
+    public record CooldownRequested(Artifact artifact, long cooldownStartMs) implements ClusterFsmEvent {}
 
-    public record CooldownExpired() implements ClusterFsmEvent{}
+    public record CooldownExpired() implements ClusterFsmEvent {}
 }

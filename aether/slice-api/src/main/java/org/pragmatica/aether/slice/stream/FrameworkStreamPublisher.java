@@ -5,7 +5,6 @@
 package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.aether.slice.resource.ResourceAddress;
-
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;

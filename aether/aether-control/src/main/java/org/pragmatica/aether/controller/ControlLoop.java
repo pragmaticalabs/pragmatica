@@ -49,16 +49,30 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@Contract public interface ControlLoop {
+@Contract
+public interface ControlLoop {
     Promise<Unit> activate();
     Promise<Unit> deactivate();
     boolean isActive();
-    @MessageReceiver void onMembershipDecision(MembershipDecision decision);
-    @MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
-    @MessageReceiver void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
-    @MessageReceiver void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
-    @MessageReceiver void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
-    @MessageReceiver void onQuorumStateChange(ClusterStateNotification notification);
+
+    @MessageReceiver
+    void onMembershipDecision(MembershipDecision decision);
+
+    @MessageReceiver
+    void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
+
+    @MessageReceiver
+    void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
+
+    @MessageReceiver
+    void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
+
+    @MessageReceiver
+    void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
+
+    @MessageReceiver
+    void onQuorumStateChange(ClusterStateNotification notification);
+
     void registerBlueprint(Artifact artifact, int instances, int minInstances);
     void unregisterBlueprint(Artifact artifact);
     ControllerConfig configuration();
@@ -90,6 +104,7 @@ import org.slf4j.LoggerFactory;
                                                                                                                      config,
                                                                                                                      eventPublisher);
         var fsm = Fsm.fsm("control-loop", self.id(), initialStateFactory);
+
         return new ControlLoopAdapter(ctxHolder.get(), fsm);
     }
 
@@ -114,115 +129,141 @@ import org.slf4j.LoggerFactory;
                                          interval,
                                          config,
                                          eventPublisher);
+
         ctxHolder.set(ctx);
+
         return ctx.dormant();
     }
 
     record ControlLoopAdapter(ControlLoopContext ctx, Fsm<ControlLoopState, ClusterFsmEvent> fsm) implements ControlLoop {
         private static final Logger log = LoggerFactory.getLogger(ControlLoop.class);
 
-        @Override public Promise<Unit> activate() {
+        @Override
+        public Promise<Unit> activate() {
             log.info("Node {} activating control loop", ctx.self());
             fsm.dispatch(new Activate());
+
             return Promise.unitPromise();
         }
 
-        @Override public Promise<Unit> deactivate() {
+        @Override
+        public Promise<Unit> deactivate() {
             log.info("Node {} deactivating control loop", ctx.self());
             fsm.dispatch(new Deactivate());
+
             return Promise.unitPromise();
         }
 
-        @Override public boolean isActive() {
+        @Override
+        public boolean isActive() {
             var current = fsm.current();
+
             return ! (current instanceof ControlLoopState.Dormant || current instanceof ControlLoopState.Stopped);
         }
 
-        @Override public void onMembershipDecision(MembershipDecision decision) {
-            switch (decision){
+        @Override
+        public void onMembershipDecision(MembershipDecision decision) {
+            switch (decision) {
                 case NodeJoined(_, var newTopology, _, _) -> ctx.setTopology(newTopology);
                 case NodeRemoved(_, var newTopology, _, _) -> ctx.setTopology(newTopology);
                 case NodeDecommissioned(_, var newTopology, _, _) -> ctx.setTopology(newTopology);
                 // RC1 Step 2 lifecycle-projection variants: ControlLoop reacts to terminal
                 // topology changes only — JOINING / DRAINING / FAILED_DRAIN /
                 // SHUTTING_DOWN do not adjust the committed core set.
-                case MembershipDecision.NodeJoining _,
-                     MembershipDecision.NodeDraining _,
-                     MembershipDecision.NodeFailedDrain _,
-                     MembershipDecision.NodeShuttingDown _ -> {}
+                case MembershipDecision.NodeJoining _, MembershipDecision.NodeDraining _, MembershipDecision.NodeFailedDrain _, MembershipDecision.NodeShuttingDown _ -> {}
             }
         }
 
-        @Override public void onQuorumStateChange(ClusterStateNotification notification) {
+        @Override
+        public void onQuorumStateChange(ClusterStateNotification notification) {
             if (!notification.advanceSequence(ctx.quorumSequence())) {
                 log.debug("Ignoring stale ClusterStateNotification: {}", notification);
+
                 return;
             }
-            switch (notification.state()){
+
+            switch (notification.state()) {
                 case ACTIVE -> fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());
                 case PASSIVE -> fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
             }
         }
 
-        @Override public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
+        @Override
+        public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
             var key = valuePut.cause().key();
             var value = valuePut.cause().value();
+
             registerBlueprint(key.artifactBase().withVersion(value.currentVersion()),
                               value.targetInstances(),
                               value.effectiveMinInstances());
         }
 
-        @Override public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
+        @Override
+        public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
             ctx.removeBlueprintMatching(valueRemove.cause().key());
         }
 
-        @Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+        @Override
+        public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
             var key = valuePut.cause().key();
             var value = valuePut.cause().value();
+
             ctx.recordSliceState(new SliceNodeKey(key.artifact(), key.nodeId()),
                                  value.state());
         }
 
-        @Override public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+        @Override
+        public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
             var key = valueRemove.cause().key();
+
             ctx.clearSliceState(new SliceNodeKey(key.artifact(), key.nodeId()));
         }
 
-        @Override public void registerBlueprint(Artifact artifact, int instances, int minInstances) {
+        @Override
+        public void registerBlueprint(Artifact artifact, int instances, int minInstances) {
             ctx.putBlueprint(artifact, instances, minInstances);
             log.info("Registered blueprint: {} with {} instances (min: {})", artifact, instances, minInstances);
         }
 
-        @Override public void unregisterBlueprint(Artifact artifact) {
+        @Override
+        public void unregisterBlueprint(Artifact artifact) {
             ctx.removeBlueprint(artifact);
             log.info("Unregistered blueprint: {}", artifact);
         }
 
-        @Override public ControllerConfig configuration() {
+        @Override
+        public ControllerConfig configuration() {
             return ctx.config();
         }
 
-        @Override public void updateConfiguration(ControllerConfig config) {
+        @Override
+        public void updateConfiguration(ControllerConfig config) {
             ctx.setConfig(config);
         }
 
-        @Override public void stop() {
+        @Override
+        public void stop() {
             fsm.dispatch(new ClusterFsmEvent.Shutdown());
         }
 
-        @Override public void onCommunityScalingRequest(CommunityScalingRequest request) {
+        @Override
+        public void onCommunityScalingRequest(CommunityScalingRequest request) {
             if (!isActive()) {
                 log.debug("Ignoring community scaling request: not active");
+
                 return;
             }
+
             ctx.handleCommunityScalingRequest(request);
         }
 
-        @Override public void onCommunityMetricsSnapshot(CommunityMetricsSnapshot snapshot) {
+        @Override
+        public void onCommunityMetricsSnapshot(CommunityMetricsSnapshot snapshot) {
             ctx.storeCommunitySnapshot(snapshot);
         }
 
-        @Override public Map<String, CommunityMetricsSnapshot> communitySnapshots() {
+        @Override
+        public Map<String, CommunityMetricsSnapshot> communitySnapshots() {
             return ctx.communitySnapshots();
         }
     }

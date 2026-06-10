@@ -33,6 +33,7 @@ sealed interface RemoteCommandRunner {
 
     static Result<String> ssh(String host, String command, SshConfig config) {
         var args = buildSshCommand(host, config);
+
         args.add(command);
 
         return executeProcess(args, DEFAULT_COMMAND_TIMEOUT_SECONDS);
@@ -47,7 +48,7 @@ sealed interface RemoteCommandRunner {
     static Result<Unit> waitForSsh(String host, SshConfig config, Duration timeout) {
         var deadline = System.currentTimeMillis() + timeout.toMillis();
 
-        while (System.currentTimeMillis() <deadline) {
+        while (System.currentTimeMillis() < deadline) {
             var result = ssh(host, "echo ok", config);
 
             if (result.isSuccess()) {
@@ -69,6 +70,7 @@ sealed interface RemoteCommandRunner {
                                            config.keyPath(),
                                            "-p",
                                            String.valueOf(config.port())));
+
         args.addAll(SSH_FLAGS);
         args.add(config.user() + "@" + host);
 
@@ -84,6 +86,7 @@ sealed interface RemoteCommandRunner {
                                            config.keyPath(),
                                            "-P",
                                            String.valueOf(config.port())));
+
         args.addAll(SSH_FLAGS);
         args.add(localPath);
         args.add(config.user() + "@" + host + ":" + remotePath);

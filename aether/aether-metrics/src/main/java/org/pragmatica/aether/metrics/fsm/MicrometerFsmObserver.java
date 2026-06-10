@@ -23,7 +23,9 @@ public final class MicrometerFsmObserver<S, E> implements FsmObserver<S, E> {
         return new MicrometerFsmObserver<>(registry);
     }
 
-    @Contract@Override public void onTransition(FsmTags tags, S from, S to) {
+    @Contract
+    @Override
+    public void onTransition(FsmTags tags, S from, S to) {
         Counter.builder("fsm_transitions_total").tags("fsm",
                                                       tags.kind(),
                                                       "node_id",
@@ -31,12 +33,12 @@ public final class MicrometerFsmObserver<S, E> implements FsmObserver<S, E> {
                                                       "from",
                                                       label(from),
                                                       "to",
-                                                      label(to))
-                       .register(registry)
-                       .increment();
+                                                      label(to)).register(registry).increment();
     }
 
-    @Contract@Override public void onCasLost(FsmTags tags, S expected, S actual) {
+    @Contract
+    @Override
+    public void onCasLost(FsmTags tags, S expected, S actual) {
         Counter.builder("fsm_cas_lost_total").tags("fsm",
                                                    tags.kind(),
                                                    "node_id",
@@ -44,12 +46,12 @@ public final class MicrometerFsmObserver<S, E> implements FsmObserver<S, E> {
                                                    "expected",
                                                    label(expected),
                                                    "actual",
-                                                   label(actual))
-                       .register(registry)
-                       .increment();
+                                                   label(actual)).register(registry).increment();
     }
 
-    @Contract@Override public void onEventIgnored(FsmTags tags, S state, E event) {
+    @Contract
+    @Override
+    public void onEventIgnored(FsmTags tags, S state, E event) {
         Counter.builder("fsm_events_ignored_total").tags("fsm",
                                                          tags.kind(),
                                                          "node_id",
@@ -57,12 +59,12 @@ public final class MicrometerFsmObserver<S, E> implements FsmObserver<S, E> {
                                                          "state",
                                                          label(state),
                                                          "event",
-                                                         label(event))
-                       .register(registry)
-                       .increment();
+                                                         label(event)).register(registry).increment();
     }
 
-    @Contract@Override public void onHandled(FsmTags tags, S state, E event) {
+    @Contract
+    @Override
+    public void onHandled(FsmTags tags, S state, E event) {
         Counter.builder("fsm_events_handled_total").tags("fsm",
                                                          tags.kind(),
                                                          "node_id",
@@ -70,14 +72,13 @@ public final class MicrometerFsmObserver<S, E> implements FsmObserver<S, E> {
                                                          "state",
                                                          label(state),
                                                          "event",
-                                                         label(event))
-                       .register(registry)
-                       .increment();
+                                                         label(event)).register(registry).increment();
     }
 
     private static String label(Object value) {
         return value == null
-              ? "null"
-              : value.getClass().getSimpleName();
+               ? "null"
+               : value.getClass()
+                      .getSimpleName();
     }
 }

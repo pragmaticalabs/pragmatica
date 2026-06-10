@@ -25,7 +25,8 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 
 
-@SuppressWarnings("JBCT-EX-01") public final class JooqXmlExporter {
+@SuppressWarnings("JBCT-EX-01")
+public final class JooqXmlExporter {
     private static final String NS = "http://www.jooq.org/xsd/jooq-meta-3.21.0.xsd";
 
     private JooqXmlExporter() {}
@@ -34,8 +35,10 @@ import static org.pragmatica.lang.Unit.unit;
         try {
             var writer = new StringWriter();
             var xmlWriter = createWriter(writer, config.prettyPrint());
+
             emit(xmlWriter, schema, config);
             xmlWriter.close();
+
             return success(writer.toString());
         } catch (XMLStreamException e) {
             return new JooqXmlExportError.MarshalFailed(e.getMessage()).result();
@@ -50,6 +53,7 @@ import static org.pragmatica.lang.Unit.unit;
         try {
             Files.createDirectories(target.getParent());
             Files.writeString(target, xml);
+
             return success(unit());
         } catch (IOException e) {
             return new JooqXmlExportError.IoError(e.getMessage()).result();
@@ -59,9 +63,10 @@ import static org.pragmatica.lang.Unit.unit;
     private static XMLStreamWriter createWriter(StringWriter writer, boolean prettyPrint) throws XMLStreamException {
         var factory = XMLOutputFactory.newInstance();
         var xmlWriter = factory.createXMLStreamWriter(writer);
+
         return prettyPrint
-              ? new IndentingXmlStreamWriter(xmlWriter)
-              : xmlWriter;
+               ? new IndentingXmlStreamWriter(xmlWriter)
+               : xmlWriter;
     }
 
     private static void emit(XMLStreamWriter w, Schema schema, JooqXmlConfig config) throws XMLStreamException {
@@ -70,14 +75,21 @@ import static org.pragmatica.lang.Unit.unit;
         w.writeDefaultNamespace(NS);
         var tables = collectTables(schema, config);
         var defaultSchema = config.defaultSchemaName();
+
         emitCatalogs(w, config);
         emitSchemata(w, schema, config);
         emitTables(w, tables, config);
         emitColumns(w, tables, defaultSchema, config);
         emitConstraints(w, tables, config);
         emitSequences(w, schema, config);
-        if (config.emitIndexes()) {emitIndexes(w, tables, config);}
-        if (config.emitEnums()) {emitEnums(w, schema, defaultSchema);}
+        if (config.emitIndexes()) {
+            emitIndexes(w, tables, config);
+        }
+
+        if (config.emitEnums()) {
+            emitEnums(w, schema, defaultSchema);
+        }
+
         emitDomains(w, schema, defaultSchema, config);
         w.writeEndElement();
         w.writeEndDocument();
@@ -93,6 +105,7 @@ import static org.pragmatica.lang.Unit.unit;
 
     private static void emitSchemata(XMLStreamWriter w, Schema schema, JooqXmlConfig config) throws XMLStreamException {
         var schemaNames = resolveSchemaNames(schema, config);
+
         w.writeStartElement("schemata");
         for (var name : schemaNames) {
             w.writeStartElement("schema");
@@ -100,6 +113,7 @@ import static org.pragmatica.lang.Unit.unit;
             writeElement(w, "schema_name", name);
             w.writeEndElement();
         }
+
         w.writeEndElement();
     }
 
@@ -113,10 +127,13 @@ import static org.pragmatica.lang.Unit.unit;
                          "table_name",
                          tw.table().name());
             writeElement(w, "table_type", "BASE TABLE");
-            if (config.emitComments()) {tw.table().comment()
-                                                .onPresent(c -> writeElementUnchecked(w, "comment", c));}
+            if (config.emitComments()) {
+                tw.table().comment().onPresent(c -> writeElementUnchecked(w, "comment", c));
+            }
+
             w.writeEndElement();
         }
+
         w.writeEndElement();
     }
 
@@ -127,8 +144,12 @@ import static org.pragmatica.lang.Unit.unit;
         w.writeStartElement("columns");
         for (var tw : tables) {
             var columns = tw.table().columns();
-            for (int i = 0;i <columns.size();i++) {emitColumn(w, tw, columns.get(i), i + 1, defaultSchema, config);}
+
+            for (int i = 0; i < columns.size(); i++) {
+                emitColumn(w, tw, columns.get(i), i + 1, defaultSchema, config);
+            }
         }
+
         w.writeEndElement();
     }
 
@@ -139,6 +160,7 @@ import static org.pragmatica.lang.Unit.unit;
                                    String defaultSchema,
                                    JooqXmlConfig config) throws XMLStreamException {
         var typeMapping = JooqTypeMapper.map(col.type(), defaultSchema);
+
         w.writeStartElement("column");
         writeElement(w, "table_catalog", config.catalogName());
         writeElement(w, "table_schema", tw.schema());
@@ -147,68 +169,84 @@ import static org.pragmatica.lang.Unit.unit;
                      tw.table().name());
         writeElement(w, "column_name", col.name());
         writeElement(w, "data_type", typeMapping.dataType());
-        typeMapping.characterMaximumLength()
-                                          .onPresent(v -> writeElementUnchecked(w,
-                                                                                "character_maximum_length",
-                                                                                String.valueOf(v)));
+        typeMapping.characterMaximumLength().onPresent(v -> writeElementUnchecked(w,
+                                                                                  "character_maximum_length",
+                                                                                  String.valueOf(v)));
         typeMapping.numericPrecision().onPresent(v -> writeElementUnchecked(w, "numeric_precision", String.valueOf(v)));
         typeMapping.numericScale().onPresent(v -> writeElementUnchecked(w, "numeric_scale", String.valueOf(v)));
-        typeMapping.datetimePrecision()
-                                     .onPresent(v -> writeElementUnchecked(w,
-                                                                           "datetime_precision",
-                                                                           String.valueOf(v)));
+        typeMapping.datetimePrecision().onPresent(v -> writeElementUnchecked(w, "datetime_precision", String.valueOf(v)));
         writeElement(w, "ordinal_position", String.valueOf(ordinal));
         col.defaultExpr().onPresent(d -> writeElementUnchecked(w, "column_default", d));
-        writeElement(w, "is_nullable", col.nullable()
-                                      ? "YES"
-                                      : "NO");
+        writeElement(w,
+                     "is_nullable",
+                     col.nullable()
+                     ? "YES"
+                     : "NO");
         writeElement(w, "udt_schema", typeMapping.udtSchema());
         writeElement(w, "udt_name", typeMapping.udtName());
         col.identity().onPresent(id -> emitIdentity(w, id));
         col.generatedExpr().onPresent(expr -> emitGeneratedExpr(w, expr));
-        if (config.emitComments()) {col.comment().onPresent(c -> writeElementUnchecked(w, "comment", c));}
+        if (config.emitComments()) {
+            col.comment().onPresent(c -> writeElementUnchecked(w, "comment", c));
+        }
+
         w.writeEndElement();
     }
 
     private static void emitConstraints(XMLStreamWriter w, List<TableWithSchema> tables, JooqXmlConfig config) throws XMLStreamException {
         var constraintCounter = new AtomicInteger(0);
+
         w.writeStartElement("table_constraints");
-        for (var tw : tables) {for (var constraint : sortConstraints(tw.table().constraints(),
-                                                                     config)) {emitTableConstraint(w,
-                                                                                                   tw,
-                                                                                                   constraint,
-                                                                                                   constraintCounter,
-                                                                                                   config);}}
+        for (var tw : tables) {
+            for (var constraint : sortConstraints(tw.table().constraints(),
+                                                  config)) {
+                emitTableConstraint(w, tw, constraint, constraintCounter, config);
+            }
+        }
+
         w.writeEndElement();
         w.writeStartElement("key_column_usages");
-        for (var tw : tables) {for (var constraint : sortConstraints(tw.table().constraints(),
-                                                                     config)) {emitKeyColumnUsages(w,
-                                                                                                   tw,
-                                                                                                   constraint,
-                                                                                                   config);}}
+        for (var tw : tables) {
+            for (var constraint : sortConstraints(tw.table().constraints(),
+                                                  config)) {
+                emitKeyColumnUsages(w, tw, constraint, config);
+            }
+        }
+
         w.writeEndElement();
         w.writeStartElement("referential_constraints");
-        for (var tw : tables) {for (var constraint : sortConstraints(tw.table().constraints(),
-                                                                     config)) {if (constraint instanceof ForeignKey fk) {emitReferentialConstraint(w,
-                                                                                                                                                   tw,
-                                                                                                                                                   fk,
-                                                                                                                                                   config);}}}
+        for (var tw : tables) {
+            for (var constraint : sortConstraints(tw.table().constraints(),
+                                                  config)) {
+                if (constraint instanceof ForeignKey fk) {
+                    emitReferentialConstraint(w, tw, fk, config);
+                }
+            }
+        }
+
         w.writeEndElement();
         if (config.emitCheckConstraints()) {
             w.writeStartElement("check_constraints");
-            for (var tw : tables) {for (var constraint : sortConstraints(tw.table().constraints(),
-                                                                         config)) {if (constraint instanceof Check check) {emitCheckConstraint(w,
-                                                                                                                                               tw,
-                                                                                                                                               check,
-                                                                                                                                               config);}}}
+            for (var tw : tables) {
+                for (var constraint : sortConstraints(tw.table().constraints(),
+                                                      config)) {
+                    if (constraint instanceof Check check) {
+                        emitCheckConstraint(w, tw, check, config);
+                    }
+                }
+            }
+
             w.writeEndElement();
         }
     }
 
     private static List<Constraint> sortConstraints(List<Constraint> constraints, JooqXmlConfig config) {
         if (!config.sortElements()) return constraints;
-        return constraints.stream().sorted(Comparator.comparing(c -> c.name().or("")))
-                                 .toList();
+
+        return constraints.stream()
+                          .sorted(Comparator.comparing(c -> c.name()
+                                                             .or("")))
+                          .toList();
     }
 
     private static void emitTableConstraint(XMLStreamWriter w,
@@ -217,10 +255,13 @@ import static org.pragmatica.lang.Unit.unit;
                                             AtomicInteger counter,
                                             JooqXmlConfig config) throws XMLStreamException {
         var type = constraintType(constraint);
+
         if (type.isEmpty()) return;
+
         var name = constraintName(constraint,
                                   tw.table().name(),
                                   counter);
+
         w.writeStartElement("table_constraint");
         writeElement(w, "constraint_catalog", config.catalogName());
         writeElement(w, "constraint_schema", tw.schema());
@@ -239,15 +280,18 @@ import static org.pragmatica.lang.Unit.unit;
                                             TableWithSchema tw,
                                             Constraint constraint,
                                             JooqXmlConfig config) throws XMLStreamException {
-        var columns = switch (constraint){
+        var columns = switch (constraint) {
             case PrimaryKey pk -> pk.columns();
             case ForeignKey fk -> fk.columns();
             case Unique u -> u.columns();
-            default -> List.<String>of();
+            default -> List.<String> of();
         };
+
         if (columns.isEmpty()) return;
+
         var constraintName = constraint.name().or(tw.table().name() + "_constraint");
-        for (int i = 0;i <columns.size();i++) {
+
+        for (int i = 0; i < columns.size(); i++) {
             w.writeStartElement("key_column_usage");
             writeElement(w, "constraint_catalog", config.catalogName());
             writeElement(w, "constraint_schema", tw.schema());
@@ -269,13 +313,14 @@ import static org.pragmatica.lang.Unit.unit;
                                                   JooqXmlConfig config) throws XMLStreamException {
         var constraintName = fk.name().or(tw.table().name() + "_" + String.join("_", fk.columns()) + "_fkey");
         var refTableName = fk.refTable().contains(".")
-                          ? fk.refTable().substring(fk.refTable().lastIndexOf('.') + 1)
-                          : fk.refTable();
+                           ? fk.refTable().substring(fk.refTable().lastIndexOf('.') + 1)
+                           : fk.refTable();
         var refSchema = fk.refTable().contains(".")
-                       ? fk.refTable().substring(0,
-                                                 fk.refTable().lastIndexOf('.'))
-                       : tw.schema();
+                        ? fk.refTable().substring(0,
+                                                  fk.refTable().lastIndexOf('.'))
+                        : tw.schema();
         var uniqueConstraintName = refTableName + "_pkey";
+
         w.writeStartElement("referential_constraint");
         writeElement(w, "constraint_catalog", config.catalogName());
         writeElement(w, "constraint_schema", tw.schema());
@@ -290,6 +335,7 @@ import static org.pragmatica.lang.Unit.unit;
 
     private static void emitCheckConstraint(XMLStreamWriter w, TableWithSchema tw, Check check, JooqXmlConfig config) throws XMLStreamException {
         var constraintName = check.name().or(tw.table().name() + "_check");
+
         w.writeStartElement("check_constraint");
         writeElement(w, "constraint_catalog", config.catalogName());
         writeElement(w, "constraint_schema", tw.schema());
@@ -299,13 +345,12 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private static void emitSequences(XMLStreamWriter w, Schema schema, JooqXmlConfig config) throws XMLStreamException {
-        var sequences = schema.sequences().values()
-                                        .stream()
-                                        .filter(s -> isIncluded(s.schema(),
-                                                                config))
-                                        .toList();
-        if (config.sortElements()) {sequences = sequences.stream().sorted(Comparator.comparing(Sequence::name))
-                                                                .toList();}
+        var sequences = schema.sequences().values().stream().filter(s -> isIncluded(s.schema(), config)).toList();
+
+        if (config.sortElements()) {
+            sequences = sequences.stream().sorted(Comparator.comparing(Sequence::name)).toList();
+        }
+
         w.writeStartElement("sequences");
         for (var seq : sequences) {
             w.writeStartElement("sequence");
@@ -321,12 +366,15 @@ import static org.pragmatica.lang.Unit.unit;
             seq.increment().onPresent(v -> writeElementUnchecked(w, "increment", String.valueOf(v)));
             seq.minValue().onPresent(v -> writeElementUnchecked(w, "minimum_value", String.valueOf(v)));
             seq.maxValue().onPresent(v -> writeElementUnchecked(w, "maximum_value", String.valueOf(v)));
-            writeElement(w, "cycle_option", seq.cycle()
-                                           ? "YES"
-                                           : "NO");
+            writeElement(w,
+                         "cycle_option",
+                         seq.cycle()
+                         ? "YES"
+                         : "NO");
             seq.cache().onPresent(v -> writeElementUnchecked(w, "cache", String.valueOf(v)));
             w.writeEndElement();
         }
+
         w.writeEndElement();
     }
 
@@ -334,8 +382,11 @@ import static org.pragmatica.lang.Unit.unit;
         w.writeStartElement("indexes");
         for (var tw : tables) {
             var indexes = tw.table().indexes();
-            if (config.sortElements()) {indexes = indexes.stream().sorted(Comparator.comparing(Index::name))
-                                                                .toList();}
+
+            if (config.sortElements()) {
+                indexes = indexes.stream().sorted(Comparator.comparing(Index::name)).toList();
+            }
+
             for (var idx : indexes) {
                 w.writeStartElement("index");
                 writeElement(w, "index_catalog", config.catalogName());
@@ -346,45 +397,52 @@ import static org.pragmatica.lang.Unit.unit;
                 writeElement(w,
                              "table_name",
                              tw.table().name());
-                writeElement(w, "is_unique", idx.unique()
-                                            ? "YES"
-                                            : "NO");
+                writeElement(w,
+                             "is_unique",
+                             idx.unique()
+                             ? "YES"
+                             : "NO");
                 w.writeEndElement();
             }
         }
+
         w.writeEndElement();
         w.writeStartElement("index_column_usages");
-        for (var tw : tables) {for (var idx : tw.table().indexes()) {for (int i = 0;i <idx.elements().size();i++) {
-            w.writeStartElement("index_column_usage");
-            writeElement(w, "index_catalog", config.catalogName());
-            writeElement(w, "index_schema", tw.schema());
-            writeElement(w, "index_name", idx.name());
-            writeElement(w, "table_catalog", config.catalogName());
-            writeElement(w, "table_schema", tw.schema());
-            writeElement(w,
-                         "table_name",
-                         tw.table().name());
-            writeElement(w,
-                         "column_name",
-                         idx.elements().get(i)
-                                     .expression());
-            writeElement(w, "ordinal_position", String.valueOf(i + 1));
-            w.writeEndElement();
-        }}}
+        for (var tw : tables) {
+            for (var idx : tw.table().indexes()) {
+                for (int i = 0; i < idx.elements().size(); i++) {
+                    w.writeStartElement("index_column_usage");
+                    writeElement(w, "index_catalog", config.catalogName());
+                    writeElement(w, "index_schema", tw.schema());
+                    writeElement(w, "index_name", idx.name());
+                    writeElement(w, "table_catalog", config.catalogName());
+                    writeElement(w, "table_schema", tw.schema());
+                    writeElement(w,
+                                 "table_name",
+                                 tw.table().name());
+                    writeElement(w,
+                                 "column_name",
+                                 idx.elements().get(i).expression());
+                    writeElement(w, "ordinal_position", String.valueOf(i + 1));
+                    w.writeEndElement();
+                }
+            }
+        }
+
         w.writeEndElement();
     }
 
     private static void emitEnums(XMLStreamWriter w, Schema schema, String defaultSchema) throws XMLStreamException {
-        var enums = schema.enumTypes().values()
-                                    .stream()
-                                    .sorted(Comparator.comparing(PgType.EnumType::name))
-                                    .toList();
+        var enums = schema.enumTypes().values().stream().sorted(Comparator.comparing(PgType.EnumType::name)).toList();
+
         if (enums.isEmpty()) return;
+
         w.writeStartElement("enums");
         for (var e : enums) {
             var enumSchema = e.schema().isEmpty()
-                            ? defaultSchema
-                            : e.schema();
+                             ? defaultSchema
+                             : e.schema();
+
             for (var value : e.values()) {
                 w.writeStartElement("enum");
                 writeElement(w, "enum_schema", enumSchema);
@@ -393,87 +451,88 @@ import static org.pragmatica.lang.Unit.unit;
                 w.writeEndElement();
             }
         }
+
         w.writeEndElement();
     }
 
     private static void emitDomains(XMLStreamWriter w, Schema schema, String defaultSchema, JooqXmlConfig config) throws XMLStreamException {
-        var domains = schema.domainTypes().values()
-                                        .stream()
-                                        .filter(d -> isIncluded(d.schema(),
-                                                                config))
-                                        .sorted(Comparator.comparing(PgType.DomainType::name))
-                                        .toList();
+        var domains = schema.domainTypes().values().stream().filter(d -> isIncluded(d.schema(), config)).sorted(Comparator.comparing(PgType.DomainType::name)).toList();
+
         if (domains.isEmpty()) return;
+
         w.writeStartElement("domains");
         for (var domain : domains) {
             var domainSchema = domain.schema().isEmpty()
-                              ? defaultSchema
-                              : domain.schema();
+                               ? defaultSchema
+                               : domain.schema();
             var baseMapping = JooqTypeMapper.map(domain.baseType(), defaultSchema);
+
             w.writeStartElement("domain");
             writeElement(w, "domain_catalog", config.catalogName());
             writeElement(w, "domain_schema", domainSchema);
             writeElement(w, "domain_name", domain.name());
             writeElement(w, "data_type", baseMapping.dataType());
-            baseMapping.characterMaximumLength()
-                                              .onPresent(v -> writeElementUnchecked(w,
-                                                                                    "character_maximum_length",
-                                                                                    String.valueOf(v)));
-            baseMapping.numericPrecision()
-                                        .onPresent(v -> writeElementUnchecked(w,
-                                                                              "numeric_precision",
-                                                                              String.valueOf(v)));
+            baseMapping.characterMaximumLength().onPresent(v -> writeElementUnchecked(w,
+                                                                                      "character_maximum_length",
+                                                                                      String.valueOf(v)));
+            baseMapping.numericPrecision().onPresent(v -> writeElementUnchecked(w,
+                                                                                "numeric_precision",
+                                                                                String.valueOf(v)));
             baseMapping.numericScale().onPresent(v -> writeElementUnchecked(w, "numeric_scale", String.valueOf(v)));
             domain.checkExpression().onPresent(expr -> writeElementUnchecked(w, "domain_default", expr));
             w.writeEndElement();
         }
+
         w.writeEndElement();
     }
 
     private static List<TableWithSchema> collectTables(Schema schema, JooqXmlConfig config) {
-        var tables = schema.tables().values()
-                                  .stream()
-                                  .filter(t -> isIncluded(t.schema(),
-                                                          config))
-                                  .map(t -> new TableWithSchema(t,
-                                                                t.schema().isEmpty()
-                                                                ? config.defaultSchemaName()
-                                                                : t.schema()));
-        if (config.sortElements()) {tables = tables.sorted(Comparator.comparing(TableWithSchema::schema)
-                                                                               .thenComparing(tw -> tw.table().name()));}
+        var tables = schema.tables().values().stream().filter(t -> isIncluded(t.schema(), config)).map(t -> new TableWithSchema(t,
+                                                                                                                                t.schema()
+                                                                                                                                 .isEmpty()
+                                                                                                                                ? config.defaultSchemaName()
+                                                                                                                                : t.schema()));
+
+        if (config.sortElements()) {
+            tables = tables.sorted(Comparator.comparing(TableWithSchema::schema).thenComparing(tw -> tw.table()
+                                                                                                       .name()));
+        }
+
         return tables.toList();
     }
 
     private static List<String> resolveSchemaNames(Schema schema, JooqXmlConfig config) {
         var names = new TreeSet<String>();
+
         names.add(config.defaultSchemaName());
-        schema.schemas().stream()
-                      .filter(s -> isIncluded(s, config))
-                      .forEach(names::add);
-        schema.tables().values()
-                     .stream()
-                     .map(Table::schema)
-                     .filter(s -> !s.isEmpty())
-                     .filter(s -> isIncluded(s, config))
-                     .forEach(names::add);
+        schema.schemas().stream().filter(s -> isIncluded(s, config)).forEach(names::add);
+        schema.tables().values().stream().map(Table::schema).filter(s -> !s.isEmpty()).filter(s -> isIncluded(s, config)).forEach(names::add);
+
         return List.copyOf(names);
     }
 
     private static boolean isIncluded(String schemaName, JooqXmlConfig config) {
         if (config.includedSchemas().isEmpty()) return true;
-        if (schemaName.isEmpty()) return config.includedSchemas().contains(config.defaultSchemaName());
-        return config.includedSchemas().contains(schemaName);
+
+        if (schemaName.isEmpty()) return config.includedSchemas()
+                                               .contains(config.defaultSchemaName());
+
+        return config.includedSchemas()
+                     .contains(schemaName);
     }
 
     private static String constraintName(Constraint constraint, String tableName, AtomicInteger counter) {
-        return constraint.name().or(() -> tableName + "_constraint_" + counter.incrementAndGet());
+        return constraint.name()
+                         .or(() -> tableName + "_constraint_" + counter.incrementAndGet());
     }
 
     private static void emitIdentity(XMLStreamWriter w, Column.IdentitySpec id) {
         writeElementUnchecked(w, "is_identity", "YES");
-        writeElementUnchecked(w, "identity_generation", id.kind() == Column.IdentityKind.ALWAYS
-                                                       ? "ALWAYS"
-                                                       : "BY DEFAULT");
+        writeElementUnchecked(w,
+                              "identity_generation",
+                              id.kind() == Column.IdentityKind.ALWAYS
+                              ? "ALWAYS"
+                              : "BY DEFAULT");
     }
 
     private static void emitGeneratedExpr(XMLStreamWriter w, String expr) {
@@ -482,7 +541,7 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private static Option<String> constraintType(Constraint constraint) {
-        return switch (constraint){
+        return switch (constraint) {
             case PrimaryKey _ -> Option.some("PRIMARY KEY");
             case ForeignKey _ -> Option.some("FOREIGN KEY");
             case Unique _ -> Option.some("UNIQUE");
@@ -492,7 +551,7 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private static String fkActionToString(Constraint.FkAction action) {
-        return switch (action){
+        return switch (action) {
             case NO_ACTION -> "NO ACTION";
             case RESTRICT -> "RESTRICT";
             case CASCADE -> "CASCADE";
@@ -515,5 +574,5 @@ import static org.pragmatica.lang.Unit.unit;
         }
     }
 
-    private record TableWithSchema(Table table, String schema){}
+    private record TableWithSchema(Table table, String schema) {}
 }

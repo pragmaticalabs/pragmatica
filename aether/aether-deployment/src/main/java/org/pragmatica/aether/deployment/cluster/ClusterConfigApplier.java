@@ -38,7 +38,9 @@ record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implem
     public Promise<Unit> apply(List<DiffAction> actions) {
         var promise = Promise.unitPromise();
 
-        for (var action : actions) {promise = promise.flatMap(_ -> applySingle(action));}
+        for (var action : actions) {
+            promise = promise.flatMap(_ -> applySingle(action));
+        }
 
         return promise;
     }

@@ -48,13 +48,22 @@ record RoutingEpochAckTrackerRecord(Map<SliceNodeKey, Expectation> pending) impl
     public Option<SliceNodeKey> observeAck(SliceNodeKey sliceKey, NodeId ackingNode, Epoch ackedEpoch) {
         var expectation = pending.get(sliceKey);
 
-        if (expectation == null) {return Option.none();}
-        if (!expectation.targets().contains(ackingNode)) {return Option.none();}
-        if (!ackedEpoch.isAtLeast(expectation.epoch())) {return Option.none();}
+        if (expectation == null) {
+            return Option.none();
+        }
+
+        if (!expectation.targets().contains(ackingNode)) {
+            return Option.none();
+        }
+
+        if (!ackedEpoch.isAtLeast(expectation.epoch())) {
+            return Option.none();
+        }
 
         expectation.acks().add(ackingNode);
-
-        if (!hasThreshold(expectation)) {return Option.none();}
+        if (!hasThreshold(expectation)) {
+            return Option.none();
+        }
 
         return consumeIfReady(sliceKey, expectation);
     }
@@ -83,6 +92,7 @@ record RoutingEpochAckTrackerRecord(Map<SliceNodeKey, Expectation> pending) impl
 
         public Set<NodeId> missingAcks() {
             var missing = new HashSet<>(targets);
+
             missing.removeAll(acks);
 
             return Set.copyOf(missing);

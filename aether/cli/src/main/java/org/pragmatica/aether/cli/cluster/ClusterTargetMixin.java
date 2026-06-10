@@ -20,7 +20,6 @@ import picocli.CommandLine.Option;
 
 public class ClusterTargetMixin {
     static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
-
     private static final String API_KEY_FILE_NAME = "api-key";
     static Supplier<Result<ClusterRegistry>> registryLoader = ClusterRegistry::load;
     static Function<String, Path> apiKeyPathResolver = ClusterTargetMixin::defaultApiKeyPath;
@@ -38,8 +37,13 @@ public class ClusterTargetMixin {
     }
 
     public Result<Unit> applyOverrides() {
-        if (clusterName == null || clusterName.isBlank()) {return Result.unitResult();}
-        if (!CLUSTER_NAME_PATTERN.matcher(clusterName).matches()) {return new ClusterTargetError.InvalidClusterName(clusterName).result();}
+        if (clusterName == null || clusterName.isBlank()) {
+            return Result.unitResult();
+        }
+
+        if (!CLUSTER_NAME_PATTERN.matcher(clusterName).matches()) {
+            return new ClusterTargetError.InvalidClusterName(clusterName).result();
+        }
 
         return registryLoader.get()
                              .mapError(c -> new ClusterTargetError.RegistryUnavailable(c.message()))
@@ -47,7 +51,10 @@ public class ClusterTargetMixin {
     }
 
     boolean isOverrideAcceptable() {
-        if (clusterName == null || clusterName.isBlank()) {return true;}
+        if (clusterName == null || clusterName.isBlank()) {
+            return true;
+        }
+
         return CLUSTER_NAME_PATTERN.matcher(clusterName).matches();
     }
 
@@ -74,7 +81,10 @@ public class ClusterTargetMixin {
 
     @Contract
     private static void installEndpoint(ClusterRegistry.ClusterEntry entry) {
-        if (entry.endpoint() == null || entry.endpoint().isBlank()) {return;}
+        if (entry.endpoint() == null || entry.endpoint().isBlank()) {
+            return;
+        }
+
         ClusterHttpClient.setEndpointOverride(entry.endpoint());
     }
 
@@ -87,7 +97,9 @@ public class ClusterTargetMixin {
     static Result<String> readApiKeyFile(String name) {
         var path = apiKeyPathResolver.apply(name);
 
-        if (!Files.exists(path)) {return new ClusterTargetError.ApiKeyMissing(path.toString()).result();}
+        if (!Files.exists(path)) {
+            return new ClusterTargetError.ApiKeyMissing(path.toString()).result();
+        }
 
         return Result.lift(e -> new ClusterTargetError.ApiKeyReadFailed(path.toString(),
                                                                         e.getMessage()),

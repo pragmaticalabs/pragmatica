@@ -32,9 +32,13 @@ public interface HttpClient {
     Promise<HttpResult<byte[]>> getBytes(String path, Map<String, String> headers);
     HttpClientConfig config();
     <T> Promise<T> getJson(String path, TypeToken<T> responseType, Option<TypeToken<?>> errorType);
+
     <T> Promise<T> postJson(String path, Object body, TypeToken<T> responseType, Option<TypeToken<?>> errorType);
+
     <T> Promise<T> putJson(String path, Object body, TypeToken<T> responseType, Option<TypeToken<?>> errorType);
+
     <T> Promise<T> patchJson(String path, Object body, TypeToken<T> responseType, Option<TypeToken<?>> errorType);
+
     <T> Promise<T> deleteJson(String path, TypeToken<T> responseType, Option<TypeToken<?>> errorType);
     Promise<Unit> deleteJsonVoid(String path);
 
@@ -51,7 +55,7 @@ public interface HttpClient {
     }
 
     default <T> Promise<T> getJson(String path, Class<T> type, Class<?> errorType) {
-        return getJson(path, typeToken(type), Option.<TypeToken<?>>some(typeToken(errorType)));
+        return getJson(path, typeToken(type), Option.<TypeToken<?>> some(typeToken(errorType)));
     }
 
     default <T> Promise<T> postJson(Object body, Class<T> type) {
@@ -67,7 +71,7 @@ public interface HttpClient {
     }
 
     default <T> Promise<T> postJson(String path, Object body, Class<T> type, Class<?> errorType) {
-        return postJson(path, body, typeToken(type), Option.<TypeToken<?>>some(typeToken(errorType)));
+        return postJson(path, body, typeToken(type), Option.<TypeToken<?>> some(typeToken(errorType)));
     }
 
     default <T> Promise<T> putJson(Object body, Class<T> type) {
@@ -83,7 +87,7 @@ public interface HttpClient {
     }
 
     default <T> Promise<T> putJson(String path, Object body, Class<T> type, Class<?> errorType) {
-        return putJson(path, body, typeToken(type), Option.<TypeToken<?>>some(typeToken(errorType)));
+        return putJson(path, body, typeToken(type), Option.<TypeToken<?>> some(typeToken(errorType)));
     }
 
     default <T> Promise<T> patchJson(Object body, Class<T> type) {
@@ -99,7 +103,7 @@ public interface HttpClient {
     }
 
     default <T> Promise<T> patchJson(String path, Object body, Class<T> type, Class<?> errorType) {
-        return patchJson(path, body, typeToken(type), Option.<TypeToken<?>>some(typeToken(errorType)));
+        return patchJson(path, body, typeToken(type), Option.<TypeToken<?>> some(typeToken(errorType)));
     }
 
     default <T> Promise<T> deleteJson(Class<T> type) {
@@ -115,7 +119,7 @@ public interface HttpClient {
     }
 
     default <T> Promise<T> deleteJson(String path, Class<T> type, Class<?> errorType) {
-        return deleteJson(path, typeToken(type), Option.<TypeToken<?>>some(typeToken(errorType)));
+        return deleteJson(path, typeToken(type), Option.<TypeToken<?>> some(typeToken(errorType)));
     }
 
     default Promise<Unit> deleteJson() {

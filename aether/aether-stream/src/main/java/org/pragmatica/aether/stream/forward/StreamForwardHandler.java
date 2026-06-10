@@ -22,8 +22,13 @@ import org.slf4j.LoggerFactory;
 
 
 public interface StreamForwardHandler {
-    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onPublishForward(PublishForward request);
-    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onReadForward(ReadForward request);
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    void onPublishForward(PublishForward request);
+
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    void onReadForward(ReadForward request);
 
     long DEFAULT_MAX_READ_RESPONSE_BYTES = 28L * 1024 * 1024;
 
@@ -46,17 +51,19 @@ public interface StreamForwardHandler {
     }
 
     StreamForwardHandler NOOP = new StreamForwardHandler() {
-        @Contract@Override public void onPublishForward(PublishForward request) {}
+        @Contract
+        @Override
+        public void onPublishForward(PublishForward request) {}
 
-        @Contract@Override public void onReadForward(ReadForward request) {}
+        @Contract
+        @Override
+        public void onReadForward(ReadForward request) {}
     };
 }
 
 final class DefaultStreamForwardHandler implements StreamForwardHandler {
     private static final Logger log = LoggerFactory.getLogger(StreamForwardHandler.class);
-
     private static final long PER_EVENT_OVERHEAD_BYTES = 24L;
-
     private static final long ENVELOPE_OVERHEAD_BYTES = 64L;
 
     private final NodeId selfNodeId;
@@ -77,26 +84,28 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         this.metrics = metrics;
     }
 
-    @Contract@Override@SuppressWarnings("JBCT-RET-01") public void onPublishForward(PublishForward request) {
-        partitionManager.publishLocal(request.streamName(),
-                                      request.partition(),
-                                      request.payload(),
-                                      request.timestamp()).onSuccess(offset -> sendSuccessResponse(request, offset))
-                                     .onFailure(cause -> sendFailureResponse(request,
-                                                                             cause.message()));
+    @Contract
+    @Override
+    @SuppressWarnings("JBCT-RET-01")
+    public void onPublishForward(PublishForward request) {
+        partitionManager.publishLocal(request.streamName(), request.partition(), request.payload(), request.timestamp()).onSuccess(offset -> sendSuccessResponse(request,
+                                                                                                                                                                 offset)).onFailure(cause -> sendFailureResponse(request,
+                                                                                                                                                                                                                 cause.message()));
     }
 
-    @Contract@Override@SuppressWarnings("JBCT-RET-01") public void onReadForward(ReadForward request) {
-        partitionManager.readLocal(request.streamName(),
-                                   request.partition(),
-                                   request.fromOffset(),
-                                   request.maxEvents()).onSuccess(events -> sendReadSuccess(request, events))
-                                  .onFailure(cause -> sendReadFailure(request,
-                                                                      cause.message()));
+    @Contract
+    @Override
+    @SuppressWarnings("JBCT-RET-01")
+    public void onReadForward(ReadForward request) {
+        partitionManager.readLocal(request.streamName(), request.partition(), request.fromOffset(), request.maxEvents()).onSuccess(events -> sendReadSuccess(request,
+                                                                                                                                                             events)).onFailure(cause -> sendReadFailure(request,
+                                                                                                                                                                                                         cause.message()));
     }
 
-    @Contract private void sendSuccessResponse(PublishForward request, long offset) {
+    @Contract
+    private void sendSuccessResponse(PublishForward request, long offset) {
         var response = PublishForwardResponse.successResponse(selfNodeId, request.correlationId(), offset);
+
         transport.send(request.sender(), response);
         log.trace("Forwarded publish succeeded for {}[{}] correlationId={} offset={}",
                   request.streamName(),
@@ -105,8 +114,10 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                   offset);
     }
 
-    @Contract private void sendFailureResponse(PublishForward request, String errorMessage) {
+    @Contract
+    private void sendFailureResponse(PublishForward request, String errorMessage) {
         var response = PublishForwardResponse.failureResponse(selfNodeId, request.correlationId(), errorMessage);
+
         transport.send(request.sender(), response);
         log.warn("Forwarded publish failed for {}[{}] correlationId={}: {}",
                  request.streamName(),
@@ -115,12 +126,17 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                  errorMessage);
     }
 
-    @Contract private void sendReadSuccess(ReadForward request, List<OffHeapRingBuffer.RawEvent> events) {
+    @Contract
+    private void sendReadSuccess(ReadForward request, List<OffHeapRingBuffer.RawEvent> events) {
         var capped = applyCap(events);
         var response = capped.truncated()
-                      ? ReadForwardResponse.truncatedResponse(selfNodeId, request.correlationId(), capped.events())
-                      : ReadForwardResponse.successResponse(selfNodeId, request.correlationId(), capped.events());
-        if (capped.truncated()) {metrics.recordTruncated();}
+                       ? ReadForwardResponse.truncatedResponse(selfNodeId, request.correlationId(), capped.events())
+                       : ReadForwardResponse.successResponse(selfNodeId, request.correlationId(), capped.events());
+
+        if (capped.truncated()) {
+            metrics.recordTruncated();
+        }
+
         transport.send(request.sender(), response);
         log.trace("Forwarded read succeeded for {}[{}] fromOffset={} correlationId={} events={} truncated={}",
                   request.streamName(),
@@ -131,8 +147,10 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                   capped.truncated());
     }
 
-    @Contract private void sendReadFailure(ReadForward request, String errorMessage) {
+    @Contract
+    private void sendReadFailure(ReadForward request, String errorMessage) {
         var response = ReadForwardResponse.failureResponse(selfNodeId, request.correlationId(), errorMessage);
+
         transport.send(request.sender(), response);
         log.warn("Forwarded read failed for {}[{}] fromOffset={} correlationId={}: {}",
                  request.streamName(),
@@ -145,15 +163,22 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     private CappedEvents applyCap(List<OffHeapRingBuffer.RawEvent> events) {
         var capped = new ArrayList<RawEventDto>();
         var total = ENVELOPE_OVERHEAD_BYTES;
+
         for (var event : events) {
             var next = total + event.data().length + PER_EVENT_OVERHEAD_BYTES;
-            if (next > maxReadResponseBytes) {break;}
+
+            if (next > maxReadResponseBytes) {
+                break;
+            }
+
             capped.add(RawEventDto.fromRawEvent(event));
             total = next;
         }
-        var truncated = capped.size() <events.size();
+
+        var truncated = capped.size() < events.size();
+
         return new CappedEvents(List.copyOf(capped), truncated);
     }
 
-    private record CappedEvents(List<RawEventDto> events, boolean truncated){}
+    private record CappedEvents(List<RawEventDto> events, boolean truncated) {}
 }

@@ -23,13 +23,15 @@ sealed interface ResourceProviderHolder {
 
     static Result<Unit> setInstance(ResourceProvider provider) {
         INSTANCE.set(provider);
+
         return unitResult();
     }
 
     static Result<Unit> clear() {
         INSTANCE.set(null);
+
         return unitResult();
     }
 
-    record unused() implements ResourceProviderHolder{}
+    record unused() implements ResourceProviderHolder {}
 }

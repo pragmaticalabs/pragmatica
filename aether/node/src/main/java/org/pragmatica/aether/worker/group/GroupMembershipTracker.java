@@ -35,8 +35,9 @@ public final class GroupMembershipTracker {
     public void updateMember(SwimMember member) {
         membershipSnapshot.removeIf(m -> m.nodeId()
                                           .equals(member.nodeId()));
-
-        if (member.state() != MemberState.FAULTY) {membershipSnapshot.add(member);}
+        if (member.state() != MemberState.FAULTY) {
+            membershipSnapshot.add(member);
+        }
 
         recomputeGroups();
     }
@@ -72,6 +73,7 @@ public final class GroupMembershipTracker {
 
     private void recomputeGroups() {
         var aliveIds = allAliveMembers();
+
         currentGroups = GroupAssignment.computeGroups(aliveIds, groupName, maxGroupSize);
         myGroup = currentGroups.entrySet().stream().filter(e -> e.getValue()
                                                                  .contains(self)).map(Map.Entry::getKey).findFirst().orElse(WorkerGroupId.workerGroupId(groupName,

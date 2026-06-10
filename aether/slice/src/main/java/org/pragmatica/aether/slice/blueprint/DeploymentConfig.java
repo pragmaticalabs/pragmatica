@@ -7,12 +7,13 @@ package org.pragmatica.aether.slice.blueprint;
 import java.util.List;
 
 
-@SuppressWarnings("JBCT-UTIL-02") public record DeploymentConfig(Strategy strategy,
-                                                                 List<CanaryStageConfig> canaryStages,
-                                                                 double maxErrorRate,
-                                                                 long maxLatencyMs,
-                                                                 long drainTimeoutMs,
-                                                                 boolean schemaRequired) {
+@SuppressWarnings("JBCT-UTIL-02")
+public record DeploymentConfig(Strategy strategy,
+                               List<CanaryStageConfig> canaryStages,
+                               double maxErrorRate,
+                               long maxLatencyMs,
+                               long drainTimeoutMs,
+                               boolean schemaRequired) {
     public enum Strategy {
         ROLLING,
         CANARY,

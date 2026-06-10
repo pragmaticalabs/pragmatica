@@ -33,7 +33,10 @@ public record RouteGroup(String name, List<MessageRouter.Entry<?>> entries) {
 
         @SafeVarargs
         public final <M extends Message> Builder fanOut(Class<M> type, Consumer<M>... handlers) {
-            for (var handler : handlers) {entries.add(MessageRouter.Entry.route(type, handler));}
+            for (var handler : handlers) {
+                entries.add(MessageRouter.Entry.route(type, handler));
+            }
+
             return this;
         }
 

@@ -27,9 +27,10 @@ import static org.pragmatica.lang.utils.Causes.cause;
 public final class SliceLoadingContext implements SliceCreationContext {
     private final SliceCreationContext delegate;
     private final BufferingInvokerFacade bufferingInvoker;
-
     private final AtomicBoolean materialized = new AtomicBoolean(false);
+
     private final AtomicReference<Option<ConfigurationProvider>> sliceComposite = new AtomicReference<>(Option.none());
+
     private final AtomicReference<Option<Fn1<Option<ConfigurationProvider>, ClassLoader>>> compositeBuilder = new AtomicReference<>(Option.none());
 
     private SliceLoadingContext(SliceCreationContext delegate) {
@@ -60,22 +61,25 @@ public final class SliceLoadingContext implements SliceCreationContext {
         return new NoOpResourceProvider();
     }
 
-    @Override public SliceInvokerFacade invoker() {
+    @Override
+    public SliceInvokerFacade invoker() {
         return bufferingInvoker;
     }
 
-    @Override public Option<String> sliceId() {
+    @Override
+    public Option<String> sliceId() {
         return delegate.sliceId();
     }
 
-    @Override public ConfigFacade config() {
+    @Override
+    public ConfigFacade config() {
         return delegate.config();
     }
 
-    @Override public ResourceProviderFacade resources() {
-        var base = delegate.sliceId().map(id -> sliceAwareResourceProvider(delegate.resources(),
-                                                                       id))
-                               .or(delegate.resources());
+    @Override
+    public ResourceProviderFacade resources() {
+        var base = delegate.sliceId().map(id -> sliceAwareResourceProvider(delegate.resources(), id)).or(delegate.resources());
+
         return new CompositeAwareResourceProvider(base, sliceComposite);
     }
 
@@ -87,7 +91,8 @@ public final class SliceLoadingContext implements SliceCreationContext {
     /// `ConfigService.instance()` singleton.
     ///
     /// Calling with `Option.none()` is a no-op. Subsequent calls overwrite the prior value.
-    @Contract public void setSliceComposite(Option<ConfigurationProvider> composite) {
+    @Contract
+    public void setSliceComposite(Option<ConfigurationProvider> composite) {
         composite.onPresent(_ -> sliceComposite.set(composite));
     }
 
@@ -98,17 +103,21 @@ public final class SliceLoadingContext implements SliceCreationContext {
     /// Use this when the caller can't construct the composite up front because it depends on
     /// the slice JAR's contents loaded via the slice classloader. Call `materializeComposite`
     /// with the resolved classloader to trigger the build and attach the result.
-    @Contract public void setCompositeBuilder(Fn1<Option<ConfigurationProvider>, ClassLoader> builder) {
+    @Contract
+    public void setCompositeBuilder(Fn1<Option<ConfigurationProvider>, ClassLoader> builder) {
         compositeBuilder.set(Option.some(builder));
     }
 
     /// Invoke the registered composite builder with the slice's classloader (if a builder is
     /// registered) and attach the resulting composite. Idempotent — once a non-empty composite
     /// is attached, subsequent calls don't overwrite it.
-    @Contract public void materializeComposite(ClassLoader sliceClassLoader) {
-        if (sliceComposite.get().isPresent()) {return;}
-        compositeBuilder.get()
-                        .onPresent(builder -> setSliceComposite(builder.apply(sliceClassLoader)));
+    @Contract
+    public void materializeComposite(ClassLoader sliceClassLoader) {
+        if (sliceComposite.get().isPresent()) {
+            return;
+        }
+
+        compositeBuilder.get().onPresent(builder -> setSliceComposite(builder.apply(sliceClassLoader)));
     }
 
     /// Return the currently-attached slice-composite, if any.
@@ -119,14 +128,19 @@ public final class SliceLoadingContext implements SliceCreationContext {
     public Result<Unit> materializeAll() {
         for (var handle : bufferingInvoker.bufferedHandles()) {
             var result = handle.materialize();
-            if (result.isFailure()) {return result;}
+
+            if (result.isFailure()) {
+                return result;
+            }
         }
+
         return Result.unitResult();
     }
 
     public Result<Unit> markMaterialized() {
         materialized.set(true);
         bufferingInvoker.stopBuffering();
+
         return success(unit());
     }
 
@@ -135,7 +149,8 @@ public final class SliceLoadingContext implements SliceCreationContext {
     }
 
     public int bufferedHandleCount() {
-        return bufferingInvoker.bufferedHandles().size();
+        return bufferingInvoker.bufferedHandles()
+                               .size();
     }
 
     public SliceCreationContext delegate() {
@@ -156,30 +171,31 @@ public final class SliceLoadingContext implements SliceCreationContext {
         private final AtomicReference<Option<ConfigurationProvider>> compositeRef;
 
         CompositeAwareResourceProvider(ResourceProviderFacade delegate,
-                                        AtomicReference<Option<ConfigurationProvider>> compositeRef) {
+                                       AtomicReference<Option<ConfigurationProvider>> compositeRef) {
             this.delegate = delegate;
             this.compositeRef = compositeRef;
         }
 
-        @Override public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
             return compositeRef.get()
                                .map(composite -> delegate.provide(resourceType,
                                                                   configSection,
-                                                                  ProvisioningContext.provisioningContext()
-                                                                                     .withExtension(ConfigurationProvider.class, composite)))
+                                                                  ProvisioningContext.provisioningContext().withExtension(ConfigurationProvider.class,
+                                                                                                                          composite)))
                                .or(() -> delegate.provide(resourceType, configSection));
         }
 
-        @Override public <T> Promise<T> provide(Class<T> resourceType,
-                                                String configSection,
-                                                ProvisioningContext context) {
-            var enriched = compositeRef.get()
-                                       .map(composite -> context.withExtension(ConfigurationProvider.class, composite))
-                                       .or(context);
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
+            var enriched = compositeRef.get().map(composite -> context.withExtension(ConfigurationProvider.class,
+                                                                                     composite)).or(context);
+
             return delegate.provide(resourceType, configSection, enriched);
         }
 
-        @Override public Promise<Unit> releaseAll(String sliceId) {
+        @Override
+        public Promise<Unit> releaseAll(String sliceId) {
             return delegate.releaseAll(sliceId);
         }
     }
@@ -193,17 +209,18 @@ public final class SliceLoadingContext implements SliceCreationContext {
             this.sliceId = sliceId;
         }
 
-        @Override public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
             return delegate.provide(resourceType, configSection);
         }
 
-        @Override public <T> Promise<T> provide(Class<T> resourceType,
-                                                String configSection,
-                                                ProvisioningContext context) {
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
             return delegate.provide(resourceType, configSection, context.withExtension(String.class, sliceId));
         }
 
-        @Override public Promise<Unit> releaseAll(String releaseSliceId) {
+        @Override
+        public Promise<Unit> releaseAll(String releaseSliceId) {
             return delegate.releaseAll(releaseSliceId);
         }
     }
@@ -211,45 +228,47 @@ public final class SliceLoadingContext implements SliceCreationContext {
     private static final class NoOpResourceProvider implements ResourceProviderFacade {
         private static final Cause NOT_CONFIGURED = cause("Resource provisioning not configured");
 
-        @Override public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
             return NOT_CONFIGURED.promise();
         }
 
-        @Override public <T> Promise<T> provide(Class<T> resourceType,
-                                                String configSection,
-                                                ProvisioningContext context) {
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
             return NOT_CONFIGURED.promise();
         }
     }
 
     private static final class BufferingInvokerFacade implements SliceInvokerFacade {
         private final SliceInvokerFacade delegate;
-
         private final List<MethodHandle<?, ?>> bufferedHandles = new CopyOnWriteArrayList<>();
-
         private final AtomicBoolean buffering = new AtomicBoolean(true);
 
         BufferingInvokerFacade(SliceInvokerFacade delegate) {
             this.delegate = delegate;
         }
 
-        @Override public <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
-                                                                        String methodName,
-                                                                        TypeToken<T> requestType,
-                                                                        TypeToken<R> responseType) {
+        @Override
+        public <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
+                                                              String methodName,
+                                                              TypeToken<T> requestType,
+                                                              TypeToken<R> responseType) {
             return delegate.methodHandle(sliceArtifact, methodName, requestType, responseType)
-                                        .onSuccess(this::bufferHandleIfActive);
+                           .onSuccess(this::bufferHandleIfActive);
         }
 
         private <R, T> void bufferHandleIfActive(MethodHandle<R, T> handle) {
-            if (buffering.get()) {bufferedHandles.add(handle);}
+            if (buffering.get()) {
+                bufferedHandles.add(handle);
+            }
         }
 
         List<MethodHandle<?, ?>> bufferedHandles() {
             return bufferedHandles;
         }
 
-        @Contract void stopBuffering() {
+        @Contract
+        void stopBuffering() {
             buffering.set(false);
         }
     }

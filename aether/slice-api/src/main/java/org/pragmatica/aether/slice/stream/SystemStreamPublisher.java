@@ -5,7 +5,6 @@
 package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.aether.slice.resource.ResourceAddress;
-
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -18,7 +17,8 @@ import org.pragmatica.lang.Unit;
 /// {@link FrameworkStreamPublishers#systemStreamPublisher(ResourceAddress, StreamPublisher)} which
 /// validates the address is in the `system` namespace.
 record SystemStreamPublisher<T>(ResourceAddress address, StreamPublisher<T> transport) implements FrameworkStreamPublisher<T> {
-    @Override public Promise<Unit> publish(T event) {
+    @Override
+    public Promise<Unit> publish(T event) {
         return transport.publish(event);
     }
 }

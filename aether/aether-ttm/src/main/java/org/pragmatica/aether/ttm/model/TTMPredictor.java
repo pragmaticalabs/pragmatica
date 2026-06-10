@@ -20,8 +20,11 @@ public interface TTMPredictor {
     Unit close();
 
     static Result<TTMPredictor> ttmPredictor(TtmConfig config) {
-        if (!config.enabled()) {return Result.success(noOp());}
-        return TTMPredictorFactory.INSTANCE.fold(() -> TTMError.NoProvider.noProvider().<TTMPredictor>result(),
+        if (!config.enabled()) {
+            return Result.success(noOp());
+        }
+
+        return TTMPredictorFactory.INSTANCE.fold(() -> TTMError.NoProvider.noProvider().<TTMPredictor> result(),
                                                  factory -> factory.ttmPredictor(config));
     }
 
@@ -32,19 +35,23 @@ public interface TTMPredictor {
     record NoOpTTMPredictor() implements TTMPredictor {
         static final NoOpTTMPredictor INSTANCE = new NoOpTTMPredictor();
 
-        @Override public Promise<float[]> predict(float[][] input) {
+        @Override
+        public Promise<float[]> predict(float[][] input) {
             return Promise.success(new float[FeatureIndex.FEATURE_COUNT]);
         }
 
-        @Override public double lastConfidence() {
+        @Override
+        public double lastConfidence() {
             return 0.0;
         }
 
-        @Override public boolean isReady() {
+        @Override
+        public boolean isReady() {
             return false;
         }
 
-        @Override public Unit close() {
+        @Override
+        public Unit close() {
             return unit();
         }
     }

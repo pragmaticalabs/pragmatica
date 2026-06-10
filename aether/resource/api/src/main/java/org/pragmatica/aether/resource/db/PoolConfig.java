@@ -44,8 +44,8 @@ public record PoolConfig(int minConnections,
 
     public int effectiveIoThreads() {
         return ioThreads > 0
-              ? ioThreads
-              : DEFAULT_IO_THREADS;
+               ? ioThreads
+               : DEFAULT_IO_THREADS;
     }
 
     public static final PoolConfig DEFAULT = poolConfig(4,
@@ -63,60 +63,61 @@ public record PoolConfig(int minConnections,
 
     public static final class Builder {
         private int minConnections = DEFAULT.minConnections;
-
         private int maxConnections = DEFAULT.maxConnections;
-
         private TimeSpan connectionTimeout = DEFAULT.connectionTimeout;
-
         private TimeSpan idleTimeout = DEFAULT.idleTimeout;
-
         private TimeSpan maxLifetime = DEFAULT.maxLifetime;
-
         private Option<String> validationQuery = DEFAULT.validationQuery;
-
         private TimeSpan leakDetectionTimeout = DEFAULT.leakDetectionTimeout;
-
         private int ioThreads = DEFAULT.ioThreads;
 
         private Builder() {}
 
         public Builder withMinConnections(int value) {
             this.minConnections = value;
+
             return this;
         }
 
         public Builder withMaxConnections(int value) {
             this.maxConnections = value;
+
             return this;
         }
 
         public Builder withConnectionTimeout(TimeSpan value) {
             this.connectionTimeout = value;
+
             return this;
         }
 
         public Builder withIdleTimeout(TimeSpan value) {
             this.idleTimeout = value;
+
             return this;
         }
 
         public Builder withMaxLifetime(TimeSpan value) {
             this.maxLifetime = value;
+
             return this;
         }
 
         public Builder withValidationQuery(String value) {
             this.validationQuery = option(value);
+
             return this;
         }
 
         public Builder withLeakDetectionTimeout(TimeSpan value) {
             this.leakDetectionTimeout = value;
+
             return this;
         }
 
         public Builder withIoThreads(int value) {
             this.ioThreads = value;
+
             return this;
         }
 

@@ -16,12 +16,18 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 public interface ReplicationManager extends AutoCloseable {
-    @Contract void replicateEvent(String streamName, int partition, long offset, byte[] payload, long timestamp);
-    @Contract void handleAck(ReplicationMessage.ReplicateAck ack);
+    @Contract
+    void replicateEvent(String streamName, int partition, long offset, byte[] payload, long timestamp);
+
+    @Contract
+    void handleAck(ReplicationMessage.ReplicateAck ack);
+
     ReplicaRegistry registry();
     Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks);
 
-    @Contract@Override default void close() {}
+    @Contract
+    @Override
+    default void close() {}
 
     ReplicationManager NONE = noOpReplicationManager();
 
@@ -39,6 +45,7 @@ public interface ReplicationManager extends AutoCloseable {
                                                          ReplicaRegistry registry,
                                                          ReplicationTransport transport) {
         var batcher = replicationBatcher(transport, registry, governorId);
+
         return new DefaultReplicationManager(governorId, registry, transport, batcher);
     }
 
@@ -48,28 +55,29 @@ public interface ReplicationManager extends AutoCloseable {
                                                          int maxEvents,
                                                          TimeSpan maxDelay) {
         var batcher = replicationBatcher(transport, registry, governorId, maxEvents, maxDelay);
+
         return new DefaultReplicationManager(governorId, registry, transport, batcher);
     }
 
     private static ReplicationManager noOpReplicationManager() {
         var emptyRegistry = ReplicaRegistry.replicaRegistry();
+
         return new ReplicationManager() {
-            @Contract@Override public void replicateEvent(String streamName,
-                                                          int partition,
-                                                          long offset,
-                                                          byte[] payload,
-                                                          long timestamp) {}
+            @Contract
+            @Override
+            public void replicateEvent(String streamName, int partition, long offset, byte[] payload, long timestamp) {}
 
-            @Contract@Override public void handleAck(ReplicationMessage.ReplicateAck ack) {}
+            @Contract
+            @Override
+            public void handleAck(ReplicationMessage.ReplicateAck ack) {}
 
-            @Override public ReplicaRegistry registry() {
+            @Override
+            public ReplicaRegistry registry() {
                 return emptyRegistry;
             }
 
-            @Override public Promise<Unit> awaitReplication(String streamName,
-                                                            int partition,
-                                                            long offset,
-                                                            int minAcks) {
+            @Override
+            public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
                 return success(unit());
             }
         };

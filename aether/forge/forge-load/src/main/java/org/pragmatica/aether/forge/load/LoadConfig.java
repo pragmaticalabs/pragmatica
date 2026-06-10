@@ -32,18 +32,19 @@ public record LoadConfig(List<LoadTarget> targets) {
     }
 
     public int totalRequestsPerSecond() {
-        return targets.stream().mapToInt(LoadConfig::targetRequestsPerSecond)
-                             .sum();
+        return targets.stream()
+                      .mapToInt(LoadConfig::targetRequestsPerSecond)
+                      .sum();
     }
 
     private static int targetRequestsPerSecond(LoadTarget t) {
-        return t.rate().requestsPerSecond();
+        return t.rate()
+                .requestsPerSecond();
     }
 
     public static Result<LoadConfig> loadConfig(LoadConfig config, double multiplier) {
-        var scaledTargets = config.targets().stream()
-                                          .map(t -> t.withScaledRate(multiplier))
-                                          .toList();
+        var scaledTargets = config.targets().stream().map(t -> t.withScaledRate(multiplier)).toList();
+
         return success(new LoadConfig(scaledTargets));
     }
 }

@@ -15,6 +15,7 @@ sealed interface SystemdUnitTemplate {
 
     static String generate(String javaOpts, String jarPath, String configPath, String user, String group) {
         var sb = new StringBuilder();
+
         sb.append("[Unit]\n");
         sb.append("Description=Aether Node %i\n");
         sb.append("After=network-online.target\n");

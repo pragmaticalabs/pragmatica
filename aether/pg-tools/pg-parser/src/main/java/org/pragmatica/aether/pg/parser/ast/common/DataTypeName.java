@@ -23,17 +23,27 @@ public record DataTypeName(SourceSpan span,
         return baseName.toLowerCase();
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         var sb = new StringBuilder();
-        if (customTypeName.isPresent()) {sb.append(customTypeName.unwrap());} else {sb.append(baseName);}
+
+        if (customTypeName.isPresent()) {
+            sb.append(customTypeName.unwrap());
+        } else {
+            sb.append(baseName);
+        }
+
         if (!modifiers.isEmpty()) {
             sb.append("(");
             sb.append(String.join(",",
-                                  modifiers.stream().map(String::valueOf)
-                                                  .toList()));
+                                  modifiers.stream().map(String::valueOf).toList()));
             sb.append(")");
         }
-        for (int i = 0;i <arrayDimensions;i++) {sb.append("[]");}
+
+        for (int i = 0; i < arrayDimensions; i++) {
+            sb.append("[]");
+        }
+
         return sb.toString();
     }
 

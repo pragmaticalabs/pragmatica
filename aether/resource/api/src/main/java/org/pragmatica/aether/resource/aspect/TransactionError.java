@@ -19,7 +19,8 @@ public sealed interface TransactionError extends Cause {
             return success(new NoActiveTransaction(operation));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "No active transaction for operation: " + operation;
         }
     }
@@ -29,7 +30,8 @@ public sealed interface TransactionError extends Cause {
             return success(new TransactionAlreadyActive(operation));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Transaction already active for operation: " + operation;
         }
     }
@@ -39,7 +41,8 @@ public sealed interface TransactionError extends Cause {
             return success(new TransactionTimedOut(transactionId));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Transaction timed out: " + transactionId;
         }
     }
@@ -50,7 +53,8 @@ public sealed interface TransactionError extends Cause {
             return success(new TransactionRolledBack(transactionId, cause));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Transaction rolled back: " + transactionId + cause.fold(() -> "", TransactionRolledBack::formatCause);
         }
 
@@ -64,7 +68,8 @@ public sealed interface TransactionError extends Cause {
             return success(new InvalidConfig(reason));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Invalid transaction configuration: " + reason;
         }
     }
@@ -74,7 +79,8 @@ public sealed interface TransactionError extends Cause {
             return success(new OperationFailed(operation, cause));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Transaction operation failed: " + operation + cause.fold(() -> "", OperationFailed::formatCause);
         }
 
@@ -120,7 +126,8 @@ public sealed interface TransactionError extends Cause {
             return success(new unused());
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "";
         }
     }

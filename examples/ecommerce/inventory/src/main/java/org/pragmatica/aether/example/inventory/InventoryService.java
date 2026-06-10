@@ -162,8 +162,9 @@ public interface InventoryService {
                                                                Map<ProductId, Quantity> stockMap) {
                 var unavailable = items.stream().filter(item -> stockMap.getOrDefault(item.productId(),
                                                                                       Quantity.ZERO)
-                                                                        .value() <item.quantity()
-                                                                                      .value()).map(LineItem::productId).toList();
+                                                                        .value() < item.quantity()
+                                                                                       .value()).map(LineItem::productId).toList();
+
                 return unavailable.isEmpty()
                        ? StockAvailability.fullyAvailable(stockMap)
                        : StockAvailability.partiallyAvailable(stockMap, unavailable);
@@ -193,6 +194,7 @@ public interface InventoryService {
                                                                      item.quantity().value(),
                                                                      item.productId().value(),
                                                                      item.quantity().value())).toList();
+
                 return Promise.allOf(updates)
                               .flatMap(results -> Result.allOf(results).async())
                               .map(counts -> counts.stream()
@@ -207,6 +209,7 @@ public interface InventoryService {
                                                                      reservationId,
                                                                      item.productId().value(),
                                                                      item.quantity().value())).toList();
+
                 return Promise.allOf(inserts)
                               .flatMap(results -> Result.allOf(results).async())
                               .map(counts -> counts.stream()
@@ -236,6 +239,7 @@ public interface InventoryService {
                                                    .sum());
             }
         }
+
         return new inventoryService(db);
     }
 

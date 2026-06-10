@@ -12,10 +12,12 @@ import static org.pragmatica.lang.Result.success;
 
 public sealed interface RoleEnforcer {
     sealed interface AuthorizationError extends Cause {
-        record AccessDenied(String message) implements AuthorizationError{}
+        record AccessDenied(String message) implements AuthorizationError {}
 
-        @SuppressWarnings("unused") record unused() implements AuthorizationError {
-            @Override public String message() {
+        @SuppressWarnings("unused")
+        record unused() implements AuthorizationError {
+            @Override
+            public String message() {
                 return "";
             }
         }
@@ -23,14 +25,16 @@ public sealed interface RoleEnforcer {
 
     static Result<SecurityContext> enforce(SecurityContext context, RoutePermission permission) {
         return permission.allows(context.authorizationRole())
-              ? success(context)
-              : accessDeniedCause(context.authorizationRole(), permission.minimumRole()).result();
+               ? success(context)
+               : accessDeniedCause(context.authorizationRole(), permission.minimumRole()).result();
     }
 
     private static AuthorizationError.AccessDenied accessDeniedCause(AuthorizationRole actual,
                                                                      AuthorizationRole required) {
-        return new AuthorizationError.AccessDenied("Access denied: role " + actual + " cannot access " + required + " endpoint");
+        return new AuthorizationError.AccessDenied("Access denied: role " + actual
+                                                  + " cannot access " + required
+                                                  + " endpoint");
     }
 
-    record unused() implements RoleEnforcer{}
+    record unused() implements RoleEnforcer {}
 }

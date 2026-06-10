@@ -15,7 +15,8 @@ public sealed interface SegmentError extends Cause {
         General(String message) {
             this.message = message;
         }
-        @Override public String message() {
+        @Override
+        public String message() {
             return message;
         }
     }

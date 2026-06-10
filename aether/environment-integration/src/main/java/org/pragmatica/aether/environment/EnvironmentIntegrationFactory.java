@@ -15,10 +15,12 @@ public interface EnvironmentIntegrationFactory {
     Result<EnvironmentIntegration> create(CloudConfig config);
 
     static Option<EnvironmentIntegrationFactory> forProvider(String providerName) {
-        return Option.from(ServiceLoader.load(EnvironmentIntegrationFactory.class).stream()
-                                             .map(ServiceLoader.Provider::get)
-                                             .filter(f -> f.providerName().equals(providerName))
-                                             .findFirst());
+        return Option.from(ServiceLoader.load(EnvironmentIntegrationFactory.class)
+                                        .stream()
+                                        .map(ServiceLoader.Provider::get)
+                                        .filter(f -> f.providerName()
+                                                      .equals(providerName))
+                                        .findFirst());
     }
 
     static Result<EnvironmentIntegration> createFromConfig(CloudConfig config) {

@@ -182,7 +182,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Override
     public Promise<Unit> setDesiredSize(int size) {
-        if (size <MINIMUM_CLUSTER_SIZE) {
+        if (size < MINIMUM_CLUSTER_SIZE) {
             return Causes.cause("Cluster size cannot be below " + MINIMUM_CLUSTER_SIZE + " (quorum requirement)").promise();
         }
 
@@ -254,7 +254,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     // a pure actuator driven by the LeaderReconciler (spec §7). The ProvisioningSlotKey/
     // ProvisioningSlotValue KV types remain alive (deleted in a later phase).
     // ---------------------------------------------------------------------------------------
-
     @Contract
     @Override
     public void onNodeReady(NodeId nodeId) {
@@ -264,10 +263,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     @Override
     public void onClusterConfigChanged() {
-        if (!active.get()) {return;}
+        if (!active.get()) {
+            return;
+        }
 
         var nowMs = nowMs();
         var windowMs = autoHealConfig.provisionStabilityWindow().millis();
+
         realActualStableSinceMs.set(nowMs - windowMs);
         log.debug("CTM: ClusterConfigKey changed, bypassing stability gate");
     }
@@ -275,7 +277,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     @Override
     public void onMembershipDecision(MembershipDecision decision) {
-        if (!active.get()) {return;}
+        if (!active.get()) {
+            return;
+        }
+
         switch (decision) {
             case NodeJoined joined -> handleNodeJoined(joined);
             case NodeRemoved removed -> handleNodeRemoved(removed);
@@ -287,7 +292,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     @Override
     public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
-        if (!active.get()) {return;}
+        if (!active.get()) {
+            return;
+        }
 
         log.warn("CTM: Self-shutdown observed for {}", selfShutdown.nodeId());
         maybeBumpAnchorOnHealthyOnDutyEdge("self-shutdown " + selfShutdown.nodeId());
@@ -337,23 +344,27 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
             return;
         }
-        if (previous != UNINITIALIZED_REAL_ACTUAL && current <previous) {
+
+        if (previous != UNINITIALIZED_REAL_ACTUAL && current < previous) {
             log.debug("CTM: stability anchor preserved on downward edge ({}); healthyOnDuty {} -> {}",
                       reason,
                       previous,
                       current);
+
             return;
         }
 
         var displayPrev = previous == UNINITIALIZED_REAL_ACTUAL
                           ? "<unset>"
                           : Integer.toString(previous);
+
         bumpRealActualStability(reason + " (healthyOnDuty " + displayPrev + " -> " + current + ")");
     }
 
     @Contract
     private void bumpRealActualStability(String reason) {
         var nowMs = nowMs();
+
         realActualStableSinceMs.set(nowMs);
         log.debug("CTM: stability anchor reset ({}), nowMs={}", reason, nowMs);
     }
@@ -361,10 +372,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void resetProvisioningCircuit(String reason) {
         var prev = consecutiveProvisioningFailures.getAndSet(0);
+
         nextProvisioningAllowedMs.set(0L);
         var clusterName = clusterConfigReader.get().map(ClusterConfigValue::clusterName).or("");
-        lifecycleManager.resetProvisionerState(clusterName);
 
+        lifecycleManager.resetProvisionerState(clusterName);
         if (prev > 0) {
             log.info("CTM: provisioning circuit breaker reset ({}); cleared {} prior failure(s)", reason, prev);
         }
@@ -383,6 +395,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Override
     public int resetCircuitBreaker(String reason) {
         var prev = consecutiveProvisioningFailures.get();
+
         resetProvisioningCircuit("operator: " + reason);
 
         return prev;
@@ -403,6 +416,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                      ? "enabled"
                      : "disabled",
                      reason);
+
             return prev;
         }
 
@@ -443,7 +457,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                  newNodeId,
                  failedPeer,
                  clusterMembers.size());
-
         var contextBase = buildProvisionContext(newNodeId);
         var memberPeers = liveMemberPeers(clusterMembers);
         var contextSeeded = memberPeers.isEmpty()
@@ -453,13 +466,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         if (contextSeeded.peers().or("").isEmpty()) {
             log.warn("CTM v2: provisionReplacement deferred — no healthy peers visible (peers list empty); "
                     + "returning success so the LeaderReconciler retries on its next tick.");
+
             return Promise.success(unit());
         }
 
         var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", contextSeeded).unwrap();
         var spec = computePlacementHint().map(baseSpec::withPlacement).or(baseSpec);
 
-        return lifecycleManager.provisionNode(spec).mapToUnit();
+        return lifecycleManager.provisionNode(spec)
+                               .mapToUnit();
     }
 
     /// Build the PEERS string from the LIVE member set: `self` first (always present — the
@@ -471,13 +486,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         if (clusterMembers.isEmpty()) {
             return "";
         }
-        var selfEntry = formatPeerEntry(observer.self());
-        var remoteEntries = clusterMembers.stream()
-                                          .flatMap(nodeId -> observer.get(nodeId).stream())
-                                          .map(ClusterTopologyManagerRecord::formatPeerEntry)
-                                          .filter(entry -> !entry.equals(selfEntry));
 
-        return Stream.concat(Stream.of(selfEntry), remoteEntries).distinct().collect(Collectors.joining(","));
+        var selfEntry = formatPeerEntry(observer.self());
+        var remoteEntries = clusterMembers.stream().flatMap(nodeId -> observer.get(nodeId)
+                                                                              .stream()).map(ClusterTopologyManagerRecord::formatPeerEntry).filter(entry -> !entry.equals(selfEntry));
+
+        return Stream.concat(Stream.of(selfEntry),
+                             remoteEntries).distinct()
+                            .collect(Collectors.joining(","));
     }
 
     /// Membership v2 / B5b — drain a specific node via the graceful v2 DRAIN-command path.
@@ -492,9 +508,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// (the drain itself proceeds asynchronously via the heartbeat + backstop).
     @Override
     public Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
-        log.info("CTM v2: drainNode requested (target={}, reason={}) — enqueuing DRAIN command",
-                 targetNodeId,
-                 reason);
+        log.info("CTM v2: drainNode requested (target={}, reason={}) — enqueuing DRAIN command", targetNodeId, reason);
         drainCommandSink.accept(targetNodeId);
         scheduleGraceTerminate(targetNodeId);
 
@@ -511,13 +525,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     private void graceTerminate(NodeId targetNodeId) {
-        log.info("CTM v2: drain grace expired for {} — reaping container + clearing DRAIN command",
-                 targetNodeId);
+        log.info("CTM v2: drain grace expired for {} — reaping container + clearing DRAIN command", targetNodeId);
         drainCommandClear.accept(targetNodeId);
-        lifecycleManager.terminateNode(targetNodeId)
-                        .onFailure(cause -> log.warn("CTM v2: grace-terminate of {} failed: {}",
-                                                     targetNodeId,
-                                                     cause.message()));
+        lifecycleManager.terminateNode(targetNodeId).onFailure(cause -> log.warn("CTM v2: grace-terminate of {} failed: {}",
+                                                                                 targetNodeId,
+                                                                                 cause.message()));
     }
 
     /// Membership v2 / E2 — public reconcile. CTM no longer drives a slot loop; the
@@ -533,7 +545,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     @Override
     public void activate() {
-        if (!active.compareAndSet(false, true)) {return;}
+        if (!active.compareAndSet(false, true)) {
+            return;
+        }
 
         bumpRealActualStability("activate");
         resetProvisioningCircuit("activate (leader handoff)");
@@ -552,14 +566,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var readyCount = observer.readyNodeCount();
         var effectiveActual = Math.max(actual, readyCount);
         var clusterWasFormed = readyCount > 0;
-        log.info("CTM: Activated, desired={}, active={}, ready={}", desired, actual, readyCount);
 
+        log.info("CTM: Activated, desired={}, active={}, ready={}", desired, actual, readyCount);
         if (desired == 0) {
             transitionTo(new NodeReconcilerState.Converged());
             log.info("CTM: Activated without desiredCoreSize (snapshot not yet projected); awaiting snapshot bump");
 
             return;
         }
+
         if (effectiveActual >= desired) {
             transitionTo(new NodeReconcilerState.Converged());
             anchorBootstrapGrace();
@@ -567,13 +582,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                      BOOTSTRAP_GRACE_MS);
         } else if (clusterWasFormed && effectiveActual >= desired - 1) {
             activateWithLeaderFailover(effectiveActual, desired);
-        } else {activateWithFormation();}
+        } else {
+            activateWithFormation();
+        }
     }
 
     @Contract
     private void anchorBootstrapGrace() {
         var nowMs = nowMs();
         var windowMs = autoHealConfig.provisionStabilityWindow().millis();
+
         realActualStableSinceMs.set(nowMs + BOOTSTRAP_GRACE_MS - windowMs);
         log.debug("CTM: bootstrap grace anchored — provisioning gate held closed for {}ms", BOOTSTRAP_GRACE_MS);
     }
@@ -605,7 +623,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     @Override
     public void deactivate() {
-        if (!active.compareAndSet(true, false)) {return;}
+        if (!active.compareAndSet(true, false)) {
+            return;
+        }
 
         cancelSafetyNetPoll();
         transitionTo(new NodeReconcilerState.Inactive("deactivated (not leader)"));
@@ -677,6 +697,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void transitionTo(NodeReconcilerState newState) {
         var previous = stateRef.getAndSet(newState);
+
         log.info("CTM state: {} -> {}",
                  stateName(previous),
                  stateName(newState));
@@ -684,17 +705,27 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     private void checkFormationComplete() {
-        if (!active.get()) {return;}
-        if (! (stateRef.get() instanceof NodeReconcilerState.Forming)) {return;}
+        if (!active.get()) {
+            return;
+        }
+
+        if (! (stateRef.get() instanceof NodeReconcilerState.Forming)) {
+            return;
+        }
 
         var actual = observer.healthyActiveNodeCount();
         var desired = snapshotDesiredCoreSize();
 
-        if (desired == 0) {return;}
+        if (desired == 0) {
+            return;
+        }
+
         if (actual >= desired) {
             transitionTo(new NodeReconcilerState.Converged());
             log.info("CTM: Cluster formation complete ({}/{})", actual, desired);
-        } else {handleFormationCooldownExpired(actual, desired);}
+        } else {
+            handleFormationCooldownExpired(actual, desired);
+        }
     }
 
     @Contract
@@ -705,9 +736,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     private void cancelInFlightProvisions(String reason) {
-        if (inFlightProvisions.isEmpty()) {return;}
+        if (inFlightProvisions.isEmpty()) {
+            return;
+        }
 
         var size = inFlightProvisions.size();
+
         log.info("CTM: cancelling {} in-flight provision(s) ({})", size, reason);
         inFlightProvisions.values().forEach(Promise::cancel);
         inFlightProvisions.clear();
@@ -727,7 +761,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                                                .stream()).map(ClusterTopologyManagerRecord::formatPeerEntry).filter(entry -> !entry.equals(selfEntry));
         var peers = Stream.concat(Stream.of(selfEntry), remoteEntries).collect(Collectors.joining(","));
         var clusterName = clusterConfigReader.get().map(ClusterConfigValue::clusterName).or("");
-
         // Thread the leader-minted identity through so the provisioned node boots under exactly
         // this id (provider injects it as AETHER_NODE_ID / Docker container name; the node adopts
         // it as `self`). NodeId.id() is `node-<lowercase-ULID>` — alphanumeric + hyphen, a valid
@@ -753,16 +786,22 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var zoneCounts = observer.topology().stream().map(this::zoneLabel).filter(z -> !z.isEmpty()).collect(Collectors.groupingBy(z -> z,
                                                                                                                                    Collectors.counting()));
 
-        if (zoneCounts.isEmpty()) {return Option.empty();}
+        if (zoneCounts.isEmpty()) {
+            return Option.empty();
+        }
 
         var minCount = zoneCounts.values().stream().mapToLong(Long::longValue).min().orElse(0L);
         var underRepresented = zoneCounts.entrySet().stream().filter(e -> e.getValue() == minCount).map(Map.Entry::getKey).toList();
 
-        if (underRepresented.size() == 1) {return Option.some(PlacementHint.zoneHint(underRepresented.getFirst()));}
+        if (underRepresented.size() == 1) {
+            return Option.some(PlacementHint.zoneHint(underRepresented.getFirst()));
+        }
 
         var overRepresented = zoneCounts.entrySet().stream().filter(e -> e.getValue() > minCount).map(Map.Entry::getKey).collect(Collectors.toSet());
 
-        if (overRepresented.isEmpty()) {return Option.empty();}
+        if (overRepresented.isEmpty()) {
+            return Option.empty();
+        }
 
         return Option.some(PlacementHint.antiAffinityHint(overRepresented));
     }

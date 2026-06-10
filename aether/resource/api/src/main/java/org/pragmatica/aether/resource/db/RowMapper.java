@@ -7,7 +7,8 @@ package org.pragmatica.aether.resource.db;
 import org.pragmatica.lang.Result;
 
 
-@FunctionalInterface public interface RowMapper<T> {
+@FunctionalInterface
+public interface RowMapper<T> {
     Result<T> map(RowAccessor row);
 
     interface RowAccessor {

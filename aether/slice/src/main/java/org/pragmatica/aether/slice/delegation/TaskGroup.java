@@ -7,7 +7,8 @@ package org.pragmatica.aether.slice.delegation;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public enum TaskGroup {
+@Codec
+public enum TaskGroup {
     METRICS,
     SCALING,
     STRATEGIES,

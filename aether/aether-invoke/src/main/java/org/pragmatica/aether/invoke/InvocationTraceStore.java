@@ -23,7 +23,6 @@ import java.util.function.Supplier;
 
 public final class InvocationTraceStore {
     private static final int DEFAULT_CAPACITY = 50_000;
-
     private static final long DEFAULT_INJECTED_DURATION_MS = 10L;
 
     private static final String INJECTED_NODE_ID = "@injected";
@@ -34,19 +33,20 @@ public final class InvocationTraceStore {
     /// Decouples this module (`aether-invoke`) from `aether/node`'s `ClusterEvent` /
     /// `ClusterEventAggregator`. Production wiring adapts via a lambda in `AetherNode` that
     /// constructs the `TraceInjected` variant and calls `aggregator.emit(...)`.
-    @FunctionalInterface public interface TraceEventSink {
-        void emitInjectedTrace(String operation, String requestId, int depth, long durationMs, Map<String, String> metadata);
+    @FunctionalInterface
+    public interface TraceEventSink {
+        void emitInjectedTrace(String operation,
+                               String requestId,
+                               int depth,
+                               long durationMs,
+                               Map<String, String> metadata);
     }
 
     private final InvocationNode[] buffer;
     private final int capacity;
-
     private final ReentrantLock lock = new ReentrantLock();
-
     private int head = 0;
-
     private int size = 0;
-
     /// Optional sink for emitting the injected-trace event into the cluster-wide events stream.
     /// Bound post-construction because `InvocationTraceStore` is created BEFORE
     /// `ClusterEventAggregator` in `AetherNode`. Unbound: inject paths remain node-local,
@@ -65,7 +65,7 @@ public final class InvocationTraceStore {
                                     long durationMs,
                                     int depth,
                                     long timestamp,
-                                    String nodeId){}
+                                    String nodeId) {}
 
     private InvocationTraceStore(int capacity) {
         this.capacity = capacity;
@@ -93,12 +93,15 @@ public final class InvocationTraceStore {
         return new InvocationTraceStore(capacity);
     }
 
-    @SuppressWarnings("JBCT-RET-01") public void record(InvocationNode node) {
+    @SuppressWarnings("JBCT-RET-01")
+    public void record(InvocationNode node) {
         lock.lock();
         try {
             buffer[head] = node;
             head = (head + 1) % capacity;
-            if (size <capacity) {size++;}
+            if (size < capacity) {
+                size++;
+            }
         } finally {
             lock.unlock();
         }
@@ -117,7 +120,10 @@ public final class InvocationTraceStore {
     }
 
     private static Result<String> validateInjectionInput(String operation) {
-        if (operation == null || operation.isBlank()) {return InjectionError.OPERATION_REQUIRED.result();}
+        if (operation == null || operation.isBlank()) {
+            return InjectionError.OPERATION_REQUIRED.result();
+        }
+
         return Result.success(operation);
     }
 
@@ -126,8 +132,7 @@ public final class InvocationTraceStore {
                                                   Option<Integer> depth,
                                                   Option<String> requestId,
                                                   Option<String> traceId) {
-        var resolvedRequestId = requestId.filter(InvocationTraceStore::nonBlank).orElse(() -> traceId.filter(InvocationTraceStore::nonBlank))
-                                                .or(InvocationTraceStore::generateUuid);
+        var resolvedRequestId = requestId.filter(InvocationTraceStore::nonBlank).orElse(() -> traceId.filter(InvocationTraceStore::nonBlank)).or(InvocationTraceStore::generateUuid);
         var resolvedDepth = depth.or(0);
         var resolvedDurationMs = durationMs.or(DEFAULT_INJECTED_DURATION_MS);
         var durationNs = Math.max(0L, resolvedDurationMs) * 1_000_000L;
@@ -142,8 +147,10 @@ public final class InvocationTraceStore {
                                       Option.none(),
                                       true,
                                       0);
+
         record(node);
         publishInjectionToClusterLog(operation, resolvedRequestId, resolvedDepth, resolvedDurationMs);
+
         return node;
     }
 
@@ -152,25 +159,28 @@ public final class InvocationTraceStore {
     /// local ring already holds the entry, so the originating node remains correct.
     private void publishInjectionToClusterLog(String operation, String requestId, int depth, long durationMs) {
         traceEventSink.onPresent(sink -> sink.emitInjectedTrace(operation,
-                                                                 requestId,
-                                                                 depth,
-                                                                 durationMs,
-                                                                 buildTraceInjectMetadata(operation,
-                                                                                          requestId,
-                                                                                          depth,
-                                                                                          durationMs)));
+                                                                requestId,
+                                                                depth,
+                                                                durationMs,
+                                                                buildTraceInjectMetadata(operation,
+                                                                                         requestId,
+                                                                                         depth,
+                                                                                         durationMs)));
     }
 
     private static Map<String, String> buildTraceInjectMetadata(String operation,
-                                                                 String requestId,
-                                                                 int depth,
-                                                                 long durationMs) {
+                                                                String requestId,
+                                                                int depth,
+                                                                long durationMs) {
         var metadata = new LinkedHashMap<String, String>();
+
         metadata.put("requestId", requestId);
         metadata.put("operation", operation);
         metadata.put("durationMs", Long.toString(durationMs));
         metadata.put("depth", Integer.toString(depth));
-        metadata.put("timestamp", Long.toString(System.currentTimeMillis()));
+        metadata.put("timestamp",
+                     Long.toString(System.currentTimeMillis()));
+
         return Map.copyOf(metadata);
     }
 
@@ -188,35 +198,42 @@ public final class InvocationTraceStore {
         InjectionError(String message) {
             this.message = message;
         }
-        @Override public String message() {
+        @Override
+        public String message() {
             return message;
         }
     }
 
     public Promise<List<InvocationNode>> all() {
         List<InvocationNode> local;
+
         lock.lock();
         try {
             local = collectNewestFirst(size);
         } finally {
             lock.unlock();
         }
+
         return unionWithClusterWideInjected(local, _ -> true, Integer.MAX_VALUE);
     }
 
     public Promise<List<InvocationNode>> forRequest(String requestId) {
-        return query(node -> node.requestId().equals(requestId),
+        return query(node -> node.requestId()
+                                 .equals(requestId),
                      capacity);
     }
 
     public Promise<List<InvocationNode>> query(Predicate<InvocationNode> predicate, int limit) {
         List<InvocationNode> local;
+
         lock.lock();
         try {
             local = new ArrayList<>(Math.min(limit, size));
             var count = 0;
-            for (int i = 0;i <size && count <limit;i++) {
+
+            for (int i = 0; i < size && count < limit; i++) {
                 var node = nodeAtReverseIndex(i);
+
                 if (node != null && predicate.test(node)) {
                     local.add(node);
                     count++;
@@ -225,6 +242,7 @@ public final class InvocationTraceStore {
         } finally {
             lock.unlock();
         }
+
         return unionWithClusterWideInjected(local, predicate, limit);
     }
 
@@ -234,34 +252,53 @@ public final class InvocationTraceStore {
                                                                        Predicate<InvocationNode> predicate,
                                                                        int limit) {
         return clusterEventsSource.fold(() -> Promise.success(local),
-                                         source -> source.get().map(events -> {
-                                             var seenRequestIds = new java.util.HashSet<String>();
-                                             for (var node : local) {seenRequestIds.add(node.requestId());}
-                                             var combined = new ArrayList<>(local);
-                                             for (var event : events) {
-                                                 if (combined.size() >= limit) {break;}
-                                                 if (event.requestId() == null || !seenRequestIds.add(event.requestId())) {continue;}
-                                                 var projected = projectClusterTraceEvent(event);
-                                                 if (predicate.test(projected)) {combined.add(projected);}
-                                             }
-                                             return (List<InvocationNode>) combined;
-                                         }));
+                                        source -> source.get()
+                                                        .map(events -> {
+                                                                 var seenRequestIds = new java.util.HashSet<String>();
+
+                                                                 for (var node : local) {
+                                                                 seenRequestIds.add(node.requestId());
+                                                             }
+
+                                                                 var combined = new ArrayList<>(local);
+
+                                                                 for (var event : events) {
+                                                                 if (combined.size() >= limit) {
+                                                                 break;
+                                                             }
+
+                                                                 if (event.requestId() == null || !seenRequestIds.add(event.requestId())) {
+                                                                 continue;
+                                                             }
+
+                                                                 var projected = projectClusterTraceEvent(event);
+
+                                                                 if (predicate.test(projected)) {
+                                                                 combined.add(projected);
+                                                             }
+                                                             }
+
+                                                                 return (List<InvocationNode>) combined;
+                                                             }));
     }
 
     private static InvocationNode projectClusterTraceEvent(ClusterTraceEvent event) {
         var durationNs = Math.max(0L, event.durationMs()) * 1_000_000L;
-        var resolvedNodeId = event.nodeId() == null || event.nodeId().isEmpty() ? INJECTED_NODE_ID : event.nodeId();
+        var resolvedNodeId = event.nodeId() == null || event.nodeId().isEmpty()
+                             ? INJECTED_NODE_ID
+                             : event.nodeId();
+
         return new InvocationNode(event.requestId(),
-                                   event.depth(),
-                                   Instant.ofEpochMilli(event.timestamp()),
-                                   resolvedNodeId,
-                                   INJECTED_CALLER,
-                                   event.operation(),
-                                   durationNs,
-                                   InvocationNode.Outcome.SUCCESS,
-                                   Option.none(),
-                                   false,
-                                   0);
+                                  event.depth(),
+                                  Instant.ofEpochMilli(event.timestamp()),
+                                  resolvedNodeId,
+                                  INJECTED_CALLER,
+                                  event.operation(),
+                                  durationNs,
+                                  InvocationNode.Outcome.SUCCESS,
+                                  Option.none(),
+                                  false,
+                                  0);
     }
 
     public TraceStats stats() {
@@ -284,15 +321,21 @@ public final class InvocationTraceStore {
 
     private InvocationNode nodeAtReverseIndex(int reverseIndex) {
         var index = ((head - 1 - reverseIndex) % capacity + capacity) % capacity;
+
         return buffer[index];
     }
 
     private List<InvocationNode> collectNewestFirst(int count) {
         var result = new ArrayList<InvocationNode>(count);
-        for (int i = 0;i <count;i++) {
+
+        for (int i = 0; i < count; i++) {
             var node = nodeAtReverseIndex(i);
-            if (node != null) {result.add(node);}
+
+            if (node != null) {
+                result.add(node);
+            }
         }
+
         return result;
     }
 
@@ -300,17 +343,26 @@ public final class InvocationTraceStore {
         long successCount = 0;
         long failureCount = 0;
         double totalDurationMs = 0;
-        for (int i = 0;i <size;i++) {
+
+        for (int i = 0; i < size; i++) {
             var node = nodeAtReverseIndex(i);
+
             if (node != null) {
-                if (node.outcome() == InvocationNode.Outcome.SUCCESS) {successCount++;} else {failureCount++;}
+                if (node.outcome() == InvocationNode.Outcome.SUCCESS) {
+                    successCount++;
+                } else {
+                    failureCount++;
+                }
+
                 totalDurationMs += node.durationMs();
             }
         }
+
         var total = successCount + failureCount;
         var avgDuration = total > 0
-                         ? totalDurationMs / total
-                         : 0.0;
+                          ? totalDurationMs / total
+                          : 0.0;
+
         return new TraceStats(total, successCount, failureCount, avgDuration, size, capacity);
     }
 
@@ -319,5 +371,5 @@ public final class InvocationTraceStore {
                              long failureCount,
                              double avgDurationMs,
                              int bufferSize,
-                             int bufferCapacity){}
+                             int bufferCapacity) {}
 }

@@ -13,56 +13,66 @@ import org.pragmatica.lang.utils.Causes;
 import static org.pragmatica.lang.Result.success;
 
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-NEST-01", "JBCT-UTIL-02"}) public sealed interface VersionPattern {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-NEST-01", "JBCT-UTIL-02"})
+public sealed interface VersionPattern {
     boolean matches(Version version);
     String asString();
 
     record Exact(Version version) implements VersionPattern {
-        @Override public boolean matches(Version other) {
+        @Override
+        public boolean matches(Version other) {
             return version.equals(other);
         }
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return version.withQualifier();
         }
     }
 
     record Range(Version from, boolean fromInclusive, Version to, boolean toInclusive) implements VersionPattern {
-        @Override public boolean matches(Version version) {
+        @Override
+        public boolean matches(Version version) {
             int fromCmp = compareVersions(version, from);
             int toCmp = compareVersions(version, to);
             boolean fromMatch = fromInclusive
-                               ? fromCmp >= 0
-                               : fromCmp > 0;
+                                ? fromCmp >= 0
+                                : fromCmp > 0;
             boolean toMatch = toInclusive
-                             ? toCmp <= 0
-                             : toCmp <0;
+                              ? toCmp <= 0
+                              : toCmp < 0;
+
             return fromMatch && toMatch;
         }
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             var fromBracket = fromInclusive
-                             ? "["
-                             : "(";
+                              ? "["
+                              : "(";
             var toBracket = toInclusive
-                           ? "]"
-                           : ")";
+                            ? "]"
+                            : ")";
+
             return fromBracket + from.withQualifier() + "," + to.withQualifier() + toBracket;
         }
     }
 
     record Comparison(Operator operator, Version version) implements VersionPattern {
-        @Override public boolean matches(Version other) {
+        @Override
+        public boolean matches(Version other) {
             int cmp = compareVersions(other, version);
-            return switch (operator){
+
+            return switch (operator) {
                 case GT -> cmp > 0;
                 case GTE -> cmp >= 0;
-                case LT -> cmp <0;
+                case LT -> cmp < 0;
                 case LTE -> cmp <= 0;
             };
         }
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return operator.symbol() + version.withQualifier();
         }
 
@@ -79,7 +89,7 @@ import static org.pragmatica.lang.Result.success;
                 return symbol;
             }
             public static Result<Operator> fromSymbol(String symbol) {
-                return switch (symbol){
+                return switch (symbol) {
                     case ">" -> success(GT);
                     case ">=" -> success(GTE);
                     case "<" -> success(LT);
@@ -92,41 +102,77 @@ import static org.pragmatica.lang.Result.success;
     }
 
     record Tilde(Version version) implements VersionPattern {
-        @Override public boolean matches(Version other) {
-            if (compareVersions(other, version) <0) {return false;}
+        @Override
+        public boolean matches(Version other) {
+            if (compareVersions(other, version) < 0) {
+                return false;
+            }
+
             return other.major() == version.major() && other.minor() == version.minor();
         }
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return "~" + version.withQualifier();
         }
     }
 
     record Caret(Version version) implements VersionPattern {
-        @Override public boolean matches(Version other) {
-            if (compareVersions(other, version) <0) {return false;}
+        @Override
+        public boolean matches(Version other) {
+            if (compareVersions(other, version) < 0) {
+                return false;
+            }
+
             return other.major() == version.major();
         }
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return "^" + version.withQualifier();
         }
     }
 
     static int compareVersions(Version v1, Version v2) {
-        if (v1.major() != v2.major()) {return Integer.compare(v1.major(), v2.major());}
-        if (v1.minor() != v2.minor()) {return Integer.compare(v1.minor(), v2.minor());}
-        if (v1.patch() != v2.patch()) {return Integer.compare(v1.patch(), v2.patch());}
-        return v1.qualifier().compareTo(v2.qualifier());
+        if (v1.major() != v2.major()) {
+            return Integer.compare(v1.major(), v2.major());
+        }
+
+        if (v1.minor() != v2.minor()) {
+            return Integer.compare(v1.minor(), v2.minor());
+        }
+
+        if (v1.patch() != v2.patch()) {
+            return Integer.compare(v1.patch(), v2.patch());
+        }
+
+        return v1.qualifier()
+                 .compareTo(v2.qualifier());
     }
 
     static Result<VersionPattern> parse(String pattern) {
         var trimmed = pattern.trim();
-        if (trimmed.isEmpty()) {return EMPTY_PATTERN.result();}
-        if (isRangePattern(trimmed)) {return parseRange(trimmed);}
-        if (trimmed.startsWith("~")) {return parseTilde(trimmed);}
-        if (trimmed.startsWith("^")) {return parseCaret(trimmed);}
-        if (isComparisonPattern(trimmed)) {return parseComparison(trimmed);}
+
+        if (trimmed.isEmpty()) {
+            return EMPTY_PATTERN.result();
+        }
+
+        if (isRangePattern(trimmed)) {
+            return parseRange(trimmed);
+        }
+
+        if (trimmed.startsWith("~")) {
+            return parseTilde(trimmed);
+        }
+
+        if (trimmed.startsWith("^")) {
+            return parseCaret(trimmed);
+        }
+
+        if (isComparisonPattern(trimmed)) {
+            return parseComparison(trimmed);
+        }
+
         return parseExact(trimmed);
     }
 
@@ -143,25 +189,33 @@ import static org.pragmatica.lang.Result.success;
         var toInclusive = pattern.endsWith("]");
         var content = pattern.substring(1, pattern.length() - 1);
         var parts = content.split(",");
-        if (parts.length != 2) {return INVALID_RANGE_FORMAT.apply(pattern).result();}
-        return Version.version(parts[0].trim())
-                              .flatMap(from -> Version.version(parts[1].trim())
-                                                              .map(to -> new Range(from, fromInclusive, to, toInclusive)));
+
+        if (parts.length != 2) {
+            return INVALID_RANGE_FORMAT.apply(pattern).result();
+        }
+
+        return Version.version(parts[0].trim()).flatMap(from -> Version.version(parts[1].trim()).map(to -> new Range(from,
+                                                                                                                     fromInclusive,
+                                                                                                                     to,
+                                                                                                                     toInclusive)));
     }
 
     private static Result<VersionPattern> parseTilde(String pattern) {
         var versionStr = pattern.substring(1).trim();
+
         return Version.version(versionStr).map(Tilde::new);
     }
 
     private static Result<VersionPattern> parseCaret(String pattern) {
         var versionStr = pattern.substring(1).trim();
+
         return Version.version(versionStr).map(Caret::new);
     }
 
     private static Result<VersionPattern> parseComparison(String pattern) {
         String opStr;
         String versionStr;
+
         if (pattern.startsWith(">=")) {
             opStr = ">=";
             versionStr = pattern.substring(2).trim();
@@ -174,11 +228,12 @@ import static org.pragmatica.lang.Result.success;
         } else if (pattern.startsWith("<")) {
             opStr = "<";
             versionStr = pattern.substring(1).trim();
-        } else {return INVALID_COMPARISON_FORMAT.apply(pattern).result();}
-        return Comparison.Operator.fromSymbol(opStr)
-                                             .flatMap(operator -> Version.version(versionStr)
-                                                                                 .map(version -> new Comparison(operator,
-                                                                                                                version)));
+        } else {
+            return INVALID_COMPARISON_FORMAT.apply(pattern).result();
+        }
+
+        return Comparison.Operator.fromSymbol(opStr).flatMap(operator -> Version.version(versionStr).map(version -> new Comparison(operator,
+                                                                                                                                   version)));
     }
 
     private static Result<VersionPattern> parseExact(String pattern) {
@@ -186,17 +241,17 @@ import static org.pragmatica.lang.Result.success;
     }
 
     Cause EMPTY_PATTERN = Causes.cause("Version pattern cannot be empty");
-
     Fn1<Cause, String> INVALID_RANGE_FORMAT = Causes.forOneValue("Invalid range format: %s");
-
     Fn1<Cause, String> INVALID_COMPARISON_FORMAT = Causes.forOneValue("Invalid comparison format: %s");
 
     record unused() implements VersionPattern {
-        @Override public boolean matches(Version version) {
+        @Override
+        public boolean matches(Version version) {
             return false;
         }
 
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return "unused";
         }
     }

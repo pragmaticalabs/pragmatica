@@ -36,14 +36,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private static final long INDEX_ENTRY_SIZE = 24;
     private static final long INDEX_DATA_OFFSET = 0;
     private static final long INDEX_DATA_LENGTH = 8;
-
     private static final long INDEX_TIMESTAMP = 16;
-
     /// Fixed data-segment granule. The data region grows one segment at a time toward the cap
     /// (`dataRegionSize`). The last logical segment is clamped so total allocated data never
     /// exceeds the cap. See spec §4.2.
     static final long DEFAULT_SEGMENT_BYTES = 256 * 1024L;
-
     /// Always-admit growth predicate (default seam — standalone buffers grow without budget gating).
     private static final LongPredicate ALWAYS_ADMIT = _ -> true;
 
@@ -79,19 +76,15 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private final EvictionListener listener;
     private final EvictionPolicy evictionPolicy;
     private final LongPredicate reserve;
-
     private final LongConsumer release;
-
     /// Live count of allocated data bytes (Σ dataSegments sizes), always <= dataRegionSize cap.
     private long allocatedDataBytes;
-
     /// Once a DROP_OLDEST stream is refused growth and starts wrapping within its allocated bytes,
     /// the data ring is frozen at that size: it must never grow again, otherwise an already-wrapped
     /// event (laid out under the smaller ring) would be misread under a larger modulus. This matches
     /// the spec's "behaves like a fixed ring at its current allocated size" + no-reclamation
     /// decisions (§4.2, §10).
     private boolean growthFrozen = false;
-
     /// Bytes accounted against the seam over this buffer's lifetime (released on close()).
     private long accountedBytes;
     private final List<LongConsumer> appendListeners = new CopyOnWriteArrayList<>();
@@ -223,6 +216,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
             return StreamError.General.STREAM_MEMORY_EXCEEDED.result();
         }
+
         try {
             return success(buildFloor(arena,
                                       streamName,
@@ -254,6 +248,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var firstSegmentBytes = firstSegmentBytes(dataRegionSize);
         var controlSegment = arena.allocate(controlSize, 64);
         var firstDataSegment = arena.allocate(firstSegmentBytes, 64);
+
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, -1L);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, 0L);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, 0L);
@@ -281,7 +276,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     public Result<Long> append(byte[] payload, long timestamp) {
-        if (closed.get()) {return StreamError.General.BUFFER_CLOSED.result();}
+        if (closed.get()) {
+            return StreamError.General.BUFFER_CLOSED.result();
+        }
+
         if (payload.length > dataRegionSize) {
             return new StreamError.EventTooLarge(payload.length, dataRegionSize).result();
         }
@@ -305,7 +303,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     ///     existing non-fatal EVENTUAL contract (EVENTUAL appends never fail; the exhaustion event was
     ///     already emitted via the growth seam). See spec §4.2 / bug #7.
     private Result<Long> appendIfFitsAllocated(byte[] payload, long timestamp) {
-        if (payload.length <= allocatedDataBytes) {return appendWritten(payload, timestamp);}
+        if (payload.length <= allocatedDataBytes) {
+            return appendWritten(payload, timestamp);
+        }
+
         if (evictionPolicy == EvictionPolicy.REJECT_WHEN_FULL) {
             return StreamError.General.STREAM_MEMORY_EXCEEDED.result();
         }
@@ -329,6 +330,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var newOffset = currentHead + 1;
         var slotIndex = Math.floorMod(newOffset, capacity);
         var dataPos = Math.floorMod(dataWritePos(), dataRing());
+
         writeDataBytes(dataPos, payload);
         writeIndexEntry(slotIndex, dataPos, payload.length, timestamp);
         updateHeaderAfterAppend(newOffset, payload.length);
@@ -338,8 +340,13 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     public Result<Long> appendBatch(List<byte[]> payloads, long[] timestamps) {
-        if (closed.get()) {return StreamError.General.BUFFER_CLOSED.result();}
-        if (payloads.isEmpty()) {return success(headOffset());}
+        if (closed.get()) {
+            return StreamError.General.BUFFER_CLOSED.result();
+        }
+
+        if (payloads.isEmpty()) {
+            return success(headOffset());
+        }
 
         var totalSize = totalPayloadSize(payloads);
 
@@ -357,7 +364,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// the ring (corruption / segment overrun). STRONG rejects loud; EVENTUAL drops the whole batch (no
     /// write) and reports success at the current head. See spec §4.2 / bug #7.
     private Result<Long> appendBatchIfFitsAllocated(List<byte[]> payloads, long[] timestamps, long totalSize) {
-        if (totalSize <= allocatedDataBytes) {return appendBatchWritten(payloads, timestamps);}
+        if (totalSize <= allocatedDataBytes) {
+            return appendBatchWritten(payloads, timestamps);
+        }
+
         if (evictionPolicy == EvictionPolicy.REJECT_WHEN_FULL) {
             return StreamError.General.STREAM_MEMORY_EXCEEDED.result();
         }
@@ -374,6 +384,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
         evictForSpace((int) totalSize);
         var lastOffset = appendPayloads(payloads, timestamps);
+
         notifyAppendListeners(lastOffset);
 
         return success(lastOffset);
@@ -408,6 +419,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         if (after > before) {
             return growUntil(requiredAllocatedBytes);
         }
+
         return success(after);
     }
 
@@ -473,7 +485,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     public Result<MemorySegment> readSlice(long offset) {
-        if (closed.get()) {return StreamError.General.BUFFER_CLOSED.result();}
+        if (closed.get()) {
+            return StreamError.General.BUFFER_CLOSED.result();
+        }
+
         return guardedAccess(() -> readSliceChecked(offset));
     }
 
@@ -481,9 +496,17 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var head = headOffset();
         var tail = tailOffset();
 
-        if (head <0) {return StreamError.General.BUFFER_EMPTY.result();}
-        if (offset <tail) {return new StreamError.CursorExpired(offset, tail).result();}
-        if (offset > head) {return StreamError.General.BUFFER_EMPTY.result();}
+        if (head < 0) {
+            return StreamError.General.BUFFER_EMPTY.result();
+        }
+
+        if (offset < tail) {
+            return new StreamError.CursorExpired(offset, tail).result();
+        }
+
+        if (offset > head) {
+            return StreamError.General.BUFFER_EMPTY.result();
+        }
 
         return readSliceAtOffset(offset);
     }
@@ -499,7 +522,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     public Result<List<RawEvent>> read(long fromOffset, int maxEvents) {
-        if (closed.get()) {return StreamError.General.BUFFER_CLOSED.result();}
+        if (closed.get()) {
+            return StreamError.General.BUFFER_CLOSED.result();
+        }
+
         return guardedAccess(() -> readChecked(fromOffset, maxEvents));
     }
 
@@ -507,9 +533,17 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var tail = tailOffset();
         var head = headOffset();
 
-        if (head <0) {return success(List.of());}
-        if (fromOffset <tail) {return new StreamError.CursorExpired(fromOffset, tail).result();}
-        if (fromOffset > head) {return success(List.of());}
+        if (head < 0) {
+            return success(List.of());
+        }
+
+        if (fromOffset < tail) {
+            return new StreamError.CursorExpired(fromOffset, tail).result();
+        }
+
+        if (fromOffset > head) {
+            return success(List.of());
+        }
 
         var count = (int) Math.min(maxEvents, head - fromOffset + 1);
 
@@ -519,7 +553,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private Result<List<RawEvent>> readEvents(long fromOffset, int count) {
         var events = new ArrayList<RawEvent>(count);
 
-        for (long offset = fromOffset;offset <fromOffset + count;offset++) {events.add(readSingleEvent(offset));}
+        for (long offset = fromOffset; offset < fromOffset + count; offset++) {
+            events.add(readSingleEvent(offset));
+        }
 
         return success(List.copyOf(events));
     }
@@ -566,6 +602,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     public void evictByAge(long maxAgeMs) {
         var cutoff = System.currentTimeMillis() - maxAgeMs;
         var countToEvict = countEvictionsByAge(cutoff);
+
         notifyAndEvict(countToEvict);
     }
 
@@ -595,7 +632,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     @SuppressWarnings("JBCT-ZONE-02")
     private void applyNormalRetention(RetentionPolicy policy) {
-        if (policy.mode() == RetentionMode.ALL) {applyAllModeRetention(policy);} else {applyAnyModeRetention(policy);}
+        if (policy.mode() == RetentionMode.ALL) {
+            applyAllModeRetention(policy);
+        } else {
+            applyAnyModeRetention(policy);
+        }
     }
 
     private void applyAnyModeRetention(RetentionPolicy policy) {
@@ -620,15 +661,25 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                         : Long.MAX_VALUE;
         var allExceeded = (!countConfigured || countExcess > 0) && (!sizeConfigured || sizeExcess > 0) && (!ageConfigured || ageExcess > 0);
 
-        if (allExceeded) {notifyAndEvict(minConfiguredExcess(countExcess, sizeExcess, ageExcess));}
+        if (allExceeded) {
+            notifyAndEvict(minConfiguredExcess(countExcess, sizeExcess, ageExcess));
+        }
     }
 
     private static long minConfiguredExcess(long countExcess, long sizeExcess, long ageExcess) {
         var min = Long.MAX_VALUE;
 
-        if (countExcess != Long.MAX_VALUE && countExcess > 0) {min = Math.min(min, countExcess);}
-        if (sizeExcess != Long.MAX_VALUE && sizeExcess > 0) {min = Math.min(min, sizeExcess);}
-        if (ageExcess != Long.MAX_VALUE && ageExcess > 0) {min = Math.min(min, ageExcess);}
+        if (countExcess != Long.MAX_VALUE && countExcess > 0) {
+            min = Math.min(min, countExcess);
+        }
+
+        if (sizeExcess != Long.MAX_VALUE && sizeExcess > 0) {
+            min = Math.min(min, sizeExcess);
+        }
+
+        if (ageExcess != Long.MAX_VALUE && ageExcess > 0) {
+            min = Math.min(min, ageExcess);
+        }
 
         return min == Long.MAX_VALUE
                ? 0
@@ -640,7 +691,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var sealedCount = countSealedEvents();
         var sealedExcess = sealedCount - tierAware.postSealMaxCount();
 
-        if (sealedExcess > 0) {notifyAndEvict(sealedExcess);}
+        if (sealedExcess > 0) {
+            notifyAndEvict(sealedExcess);
+        }
 
         evictSealedByAge(tierAware.postSealBufferMs());
     }
@@ -649,7 +702,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var tail = tailOffset();
         var sealed = lastSealedOffset;
 
-        if (sealed <tail) {return 0;}
+        if (sealed < tail) {
+            return 0;
+        }
 
         return sealed - tail + 1;
     }
@@ -665,7 +720,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             var slotIndex = Math.floorMod(tail + count, capacity);
             var timestamp = readTimestamp(slotIndex);
 
-            if (timestamp >= cutoff) {break;}
+            if (timestamp >= cutoff) {
+                break;
+            }
 
             count++;
         }
@@ -680,7 +737,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private static long totalPayloadSize(List<byte[]> payloads) {
         var total = 0L;
 
-        for (var payload : payloads) {total += payload.length;}
+        for (var payload : payloads) {
+            total += payload.length;
+        }
 
         return total;
     }
@@ -689,11 +748,13 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var currentHead = headOffset();
         var lastOffset = currentHead;
 
-        for (int i = 0;i <payloads.size();i++) {
+        for (int i = 0; i < payloads.size(); i++) {
             var payload = payloads.get(i);
+
             lastOffset = currentHead + 1 + i;
             var slotIndex = Math.floorMod(lastOffset, capacity);
             var dataPos = Math.floorMod(dataWritePos(), dataRing());
+
             writeDataBytes(dataPos, payload);
             writeIndexEntry(slotIndex, dataPos, payload.length, timestamps[i]);
             updateHeaderAfterAppend(lastOffset, payload.length);
@@ -729,6 +790,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// `copyIntoData`. See spec §4.2.
     private void writeDataBytes(long dataPos, byte[] payload) {
         var remaining = dataRing() - dataPos;
+
         if (remaining >= payload.length) {
             copyIntoData(dataPos, payload, 0, payload.length);
         } else {
@@ -761,13 +823,14 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var srcSeg = MemorySegment.ofArray(src);
         var copied = 0;
 
-        while (copied <len) {
+        while (copied < len) {
             var linearPos = pos + copied;
             var segmentIndex = (int)(linearPos / DEFAULT_SEGMENT_BYTES);
             var segmentOffset = linearPos % DEFAULT_SEGMENT_BYTES;
             var segment = dataSegments.get(segmentIndex);
             var spaceInSegment = segment.byteSize() - segmentOffset;
             var chunk = (int) Math.min(len - copied, spaceInSegment);
+
             MemorySegment.copy(srcSeg, srcOffset + copied, segment, segmentOffset, chunk);
             copied += chunk;
         }
@@ -780,13 +843,14 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var destSeg = MemorySegment.ofArray(dest);
         var copied = 0;
 
-        while (copied <len) {
+        while (copied < len) {
             var linearPos = pos + copied;
             var segmentIndex = (int)(linearPos / DEFAULT_SEGMENT_BYTES);
             var segmentOffset = linearPos % DEFAULT_SEGMENT_BYTES;
             var segment = dataSegments.get(segmentIndex);
             var spaceInSegment = segment.byteSize() - segmentOffset;
             var chunk = (int) Math.min(len - copied, spaceInSegment);
+
             MemorySegment.copy(segment, segmentOffset, destSeg, destOffset + copied, chunk);
             copied += chunk;
         }
@@ -794,6 +858,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     private void writeIndexEntry(long slotIndex, long dataPos, int dataLength, long timestamp) {
         var indexPos = indexStart + slotIndex * INDEX_ENTRY_SIZE;
+
         controlSegment.set(ValueLayout.JAVA_LONG, indexPos + INDEX_DATA_OFFSET, dataPos);
         controlSegment.set(ValueLayout.JAVA_INT, indexPos + INDEX_DATA_LENGTH, dataLength);
         controlSegment.set(ValueLayout.JAVA_LONG, indexPos + INDEX_TIMESTAMP, timestamp);
@@ -824,6 +889,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     private void evictForSpace(int payloadLength) {
         var countToEvict = countEvictionsForSpace(payloadLength);
+
         notifyAndEvict(countToEvict);
     }
 
@@ -837,6 +903,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             simulatedCount--;
             count++;
         }
+
         while (simulatedCount > 0 && wouldNeedDataEviction(payloadLength, simulatedTail)) {
             simulatedTail++;
             simulatedCount--;
@@ -853,7 +920,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private boolean wouldNeedDataEviction(int payloadLength, long simulatedTail) {
         var head = headOffset();
 
-        if (simulatedTail > head) {return false;}
+        if (simulatedTail > head) {
+            return false;
+        }
 
         var tailSlot = Math.floorMod(simulatedTail, capacity);
         var headSlot = Math.floorMod(head, capacity);
@@ -874,7 +943,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private void evictOldest() {
         var tail = tailOffset();
 
-        if (tail > headOffset()) {return;}
+        if (tail > headOffset()) {
+            return;
+        }
 
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, tail + 1);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, eventCount() - 1);
@@ -882,37 +953,54 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     private void evictByCount(long maxCount) {
         var excess = eventCount() - maxCount;
-        if (excess > 0) {notifyAndEvict(excess);}
+
+        if (excess > 0) {
+            notifyAndEvict(excess);
+        }
     }
 
     private void evictBySize(long maxBytes) {
         var countToEvict = countEvictionsBySize(maxBytes);
+
         notifyAndEvict(countToEvict);
     }
 
     private void notifyAndEvict(long count) {
-        if (count <= 0) {return;}
+        if (count <= 0) {
+            return;
+        }
+
         if (listener != EvictionListener.NOOP) {
             var events = collectEvictedEvents(count);
+
             listener.onEviction(streamName, partition, events);
             updateSealedOffsetFromEvents(events);
         }
-        for (long i = 0;i <count;i++) {evictOldest();}
+
+        for (long i = 0; i < count; i++) {
+            evictOldest();
+        }
     }
 
     private void updateSealedOffsetFromEvents(List<RawEvent> events) {
-        if (events.isEmpty()) {return;}
+        if (events.isEmpty()) {
+            return;
+        }
 
         var sealedTo = events.getLast().offset();
 
-        if (sealedTo > lastSealedOffset) {lastSealedOffset = sealedTo;}
+        if (sealedTo > lastSealedOffset) {
+            lastSealedOffset = sealedTo;
+        }
     }
 
     private List<OffHeapRingBuffer.RawEvent> collectEvictedEvents(long count) {
         var tail = tailOffset();
         var events = new ArrayList<RawEvent>((int) count);
 
-        for (long i = 0;i <count;i++) {events.add(readSingleEvent(tail + i));}
+        for (long i = 0; i < count; i++) {
+            events.add(readSingleEvent(tail + i));
+        }
 
         return List.copyOf(events);
     }
@@ -921,11 +1009,13 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var count = 0L;
         var tail = tailOffset();
 
-        while (count <eventCount()) {
+        while (count < eventCount()) {
             var slotIndex = Math.floorMod(tail + count, capacity);
             var timestamp = readTimestamp(slotIndex);
 
-            if (timestamp >= cutoff) {break;}
+            if (timestamp >= cutoff) {
+                break;
+            }
 
             count++;
         }
@@ -952,7 +1042,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                        ? headEnd - tailDataPos
                        : (dataRing() - tailDataPos) + headEnd;
 
-            if (used <= maxBytes) {break;}
+            if (used <= maxBytes) {
+                break;
+            }
 
             count++;
         }

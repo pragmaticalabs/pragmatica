@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.validation;
 
-
 /// Non-blocking advisory produced by [StreamResourceValidator] (spec §11.1.3 multi-version case).
 ///
 /// Same `field`/`rule`/`message` shape as [StreamValidationFailure] but emitted alongside a

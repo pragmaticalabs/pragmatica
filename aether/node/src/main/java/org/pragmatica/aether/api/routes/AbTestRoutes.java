@@ -108,6 +108,7 @@ public final class AbTestRoutes implements RouteSource {
 
         if (!node.isLeader()) {
             var leaderInfo = node.leader().map(id -> " Current leader: " + id.id()).or("");
+
             return Causes.cause(NOT_LEADER.message() + leaderInfo).promise();
         }
 
@@ -119,8 +120,13 @@ public final class AbTestRoutes implements RouteSource {
                                        SplitRule splitRule) {}
 
     private Promise<ParsedAbTestRequest> parseCreateRequest(AbTestCreateRequest request) {
-        if (request.artifactBase() == null) {return MISSING_ARTIFACT_BASE.promise();}
-        if (request.variants() == null || request.variants().isEmpty()) {return MISSING_VARIANTS.promise();}
+        if (request.artifactBase() == null) {
+            return MISSING_ARTIFACT_BASE.promise();
+        }
+
+        if (request.variants() == null || request.variants().isEmpty()) {
+            return MISSING_VARIANTS.promise();
+        }
 
         return ArtifactBase.artifactBase(request.artifactBase())
                            .async()
@@ -153,11 +159,13 @@ public final class AbTestRoutes implements RouteSource {
         var headerName = request.splitHeader() != null
                          ? request.splitHeader()
                          : "X-Request-Id";
+
         return SplitRule.HeaderHashSplit.headerHashSplit(headerName, 2);
     }
 
     private AbTestListResponse buildAbTestListResponse() {
         var tests = nodeSupplier.get().abTestManager().allTests().stream().map(this::toAbTestInfo).toList();
+
         return new AbTestListResponse(tests);
     }
 
@@ -171,6 +179,7 @@ public final class AbTestRoutes implements RouteSource {
 
     private Promise<AbTestMetricsResponse> buildAbTestMetricsResponse(String testId) {
         var metrics = nodeSupplier.get().abTestManager().getMetrics(testId);
+
         return Promise.success(toAbTestMetricsResponse(metrics));
     }
 
@@ -187,6 +196,7 @@ public final class AbTestRoutes implements RouteSource {
     private AbTestMetricsResponse toAbTestMetricsResponse(AbTestMetrics metrics) {
         var variants = metrics.variantMetrics().entrySet().stream().collect(Collectors.toMap(Map.Entry::getKey,
                                                                                              entry -> toVariantMetrics(entry.getValue())));
+
         return new AbTestMetricsResponse(metrics.testId(), variants, metrics.collectedAt());
     }
 

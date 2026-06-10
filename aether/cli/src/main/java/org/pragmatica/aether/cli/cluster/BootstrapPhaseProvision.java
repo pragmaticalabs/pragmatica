@@ -50,7 +50,9 @@ sealed interface BootstrapPhaseProvision {
             var source = entry.getValue();
             var result = provisionSource(ctx, sourceName, source, mgmtPort, clusterName);
 
-            if (result.isFailure()) {return result.map(_ -> ctx);}
+            if (result.isFailure()) {
+                return result.map(_ -> ctx);
+            }
 
             var _ = result.onSuccess(allNodes::addAll);
         }
@@ -90,7 +92,9 @@ sealed interface BootstrapPhaseProvision {
                                             String sourceName,
                                             SourceProfile source,
                                             String providerName) {
-        if (source.type() != SourceType.CLOUD) {return state;}
+        if (source.type() != SourceType.CLOUD) {
+            return state;
+        }
 
         var envVars = extractEnvVarNames(rawToml, sourceName);
         var handle = SourceCleanupHandle.sourceCleanupHandle(providerName, source.region(), envVars);
@@ -100,19 +104,27 @@ sealed interface BootstrapPhaseProvision {
 
     @SuppressWarnings("JBCT-PAT-01")
     static Map<String, String> extractEnvVarNames(String rawToml, String sourceName) {
-        if (rawToml == null || rawToml.isEmpty()) {return Map.of();}
+        if (rawToml == null || rawToml.isEmpty()) {
+            return Map.of();
+        }
 
         var stanza = extractStanza(rawToml, sourceName);
 
-        if (stanza.isEmpty()) {return Map.of();}
+        if (stanza.isEmpty()) {
+            return Map.of();
+        }
 
         var envName = matchCredentialEnvName(stanza);
 
-        if (envName == null) {return Map.of();}
+        if (envName == null) {
+            return Map.of();
+        }
 
         var result = new LinkedHashMap<String, String>();
 
-        for (var alias : CREDENTIAL_FIELD_KEYS) {result.put(alias, envName);}
+        for (var alias : CREDENTIAL_FIELD_KEYS) {
+            result.put(alias, envName);
+        }
 
         return Map.copyOf(result);
     }
@@ -130,11 +142,13 @@ sealed interface BootstrapPhaseProvision {
         var header = "[sources." + sourceName + "]";
         var headerIndex = rawToml.indexOf(header);
 
-        if (headerIndex <0) {return "";}
+        if (headerIndex < 0) {
+            return "";
+        }
 
         var after = rawToml.indexOf("\n[", headerIndex + header.length());
 
-        return after <0
+        return after < 0
                ? rawToml.substring(headerIndex)
                : rawToml.substring(headerIndex, after);
     }
@@ -215,7 +229,9 @@ sealed interface BootstrapPhaseProvision {
             if (result.isPresent()) {
                 var provisionResult = result.unwrap();
 
-                if (provisionResult.isFailure()) {return provisionResult;}
+                if (provisionResult.isFailure()) {
+                    return provisionResult;
+                }
 
                 var _ = provisionResult.onSuccess(allNodes::addAll);
             }
@@ -238,13 +254,18 @@ sealed interface BootstrapPhaseProvision {
             var roleTable = option(source.roles().get(role));
             var count = roleTable.flatMap(rt -> rt.count()).or(0);
 
-            if (count == 0) {continue;}
+            if (count == 0) {
+                continue;
+            }
 
             var result = provisionCloudRoleGroup(compute, ctx, sourceName, role, count, source, clusterName, nodeIndex);
 
-            if (result.isFailure()) {return result;}
+            if (result.isFailure()) {
+                return result;
+            }
 
             var _ = result.onSuccess(allNodes::addAll);
+
             nodeIndex += count;
         }
 
@@ -281,16 +302,20 @@ sealed interface BootstrapPhaseProvision {
         logProvisionRole(sourceName, source.type(), role, Option.some(count));
         var nodes = new ArrayList<ProvisionedNode>();
 
-        for (int i = 0;i <count;i++) {
+        for (int i = 0; i < count; i++) {
             var nodeId = sourceName + "-" + role.value() + "-" + i;
             var globalIndex = nodeIndexBase + i;
             var specResult = buildCloudProvisionSpec(ctx, sourceName, source, role, nodeId, globalIndex, clusterName);
 
-            if (specResult.isFailure()) {return specResult.map(_ -> List.<ProvisionedNode> of());}
+            if (specResult.isFailure()) {
+                return specResult.map(_ -> List.<ProvisionedNode> of());
+            }
 
             var provisionResult = CloudProviderSupport.provisionOne(compute, nodeId, specResult.unwrap()).await();
 
-            if (provisionResult.isFailure()) {return provisionResult.map(_ -> List.<ProvisionedNode> of());}
+            if (provisionResult.isFailure()) {
+                return provisionResult.map(_ -> List.<ProvisionedNode> of());
+            }
 
             var _ = provisionResult.onSuccess(nodes::add);
         }
@@ -362,6 +387,7 @@ sealed interface BootstrapPhaseProvision {
 
         for (var entry : source.roles().entrySet()) {
             var role = entry.getKey();
+
             entry.getValue().hosts().onPresent(hosts -> addSshNodes(nodes, sourceName, role, hosts));
         }
 
@@ -375,8 +401,9 @@ sealed interface BootstrapPhaseProvision {
 
     @Contract
     private static void addSshNodes(List<ProvisionedNode> nodes, String sourceName, NodeRole role, List<String> hosts) {
-        for (int i = 0;i <hosts.size();i++) {
+        for (int i = 0; i < hosts.size(); i++) {
             var nodeId = sourceName + "-" + role.value() + "-" + i;
+
             nodes.add(ProvisionedNode.provisionedNode(nodeId, "ssh", hosts.get(i)));
         }
     }
@@ -394,13 +421,17 @@ sealed interface BootstrapPhaseProvision {
         for (var role : roleOrder) {
             var count = option(source.roles().get(role)).flatMap(rt -> rt.count()).or(0);
 
-            for (int i = 0;i <count;i++) {
+            for (int i = 0; i < count; i++) {
                 var nodeId = sourceName + "-" + role.value() + "-" + i;
                 var nodePort = managementPort + counter;
+
                 nodes.add(ProvisionedNode.provisionedNode(nodeId, "forge", "127.0.0.1"));
                 counter++;
             }
-            if (count > 0) {logProvisionRole(sourceName, source.type(), role, Option.some(count));}
+
+            if (count > 0) {
+                logProvisionRole(sourceName, source.type(), role, Option.some(count));
+            }
         }
 
         return success(List.copyOf(nodes));

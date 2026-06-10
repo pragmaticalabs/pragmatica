@@ -20,11 +20,13 @@ import static org.pragmatica.aether.environment.azure.AzureEnvironmentConfig.azu
 
 
 public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegrationFactory {
-    @Override public String providerName() {
+    @Override
+    public String providerName() {
         return "azure";
     }
 
-    @Override public Result<EnvironmentIntegration> create(CloudConfig config) {
+    @Override
+    public Result<EnvironmentIntegration> create(CloudConfig config) {
         return buildEnvironmentConfig(config).flatMap(AzureEnvironmentIntegration::azureEnvironmentIntegration)
                                      .map(EnvironmentIntegration.class::cast);
     }
@@ -35,15 +37,35 @@ public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegra
 
     private static Result<Map<String, String>> validateCredentials(Map<String, String> creds) {
         var missing = new ArrayList<String>();
-        if (blank(creds.get("tenant_id"))) {missing.add("AZURE_TENANT_ID");}
-        if (blank(creds.get("client_id"))) {missing.add("AZURE_CLIENT_ID");}
-        if (blank(creds.get("client_secret"))) {missing.add("AZURE_CLIENT_SECRET");}
-        if (blank(creds.get("subscription_id"))) {missing.add("AZURE_SUBSCRIPTION_ID");}
-        if (blank(creds.get("resource_group"))) {missing.add("AZURE_RESOURCE_GROUP");}
-        if (blank(creds.get("location"))) {missing.add("AZURE_LOCATION");}
-        if (!missing.isEmpty()) {return Result.failure(EnvironmentError.CredentialsMissing.credentialsMissing("azure",
-                                                                                                              missing)
-        .unwrap());}
+
+        if (blank(creds.get("tenant_id"))) {
+            missing.add("AZURE_TENANT_ID");
+        }
+
+        if (blank(creds.get("client_id"))) {
+            missing.add("AZURE_CLIENT_ID");
+        }
+
+        if (blank(creds.get("client_secret"))) {
+            missing.add("AZURE_CLIENT_SECRET");
+        }
+
+        if (blank(creds.get("subscription_id"))) {
+            missing.add("AZURE_SUBSCRIPTION_ID");
+        }
+
+        if (blank(creds.get("resource_group"))) {
+            missing.add("AZURE_RESOURCE_GROUP");
+        }
+
+        if (blank(creds.get("location"))) {
+            missing.add("AZURE_LOCATION");
+        }
+
+        if (!missing.isEmpty()) {
+            return Result.failure(EnvironmentError.CredentialsMissing.credentialsMissing("azure", missing).unwrap());
+        }
+
         return Result.success(creds);
     }
 
@@ -59,6 +81,7 @@ public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegra
                                                   creds.get("subscription_id"),
                                                   creds.get("resource_group"),
                                                   creds.get("location"));
+
         return azureEnvironmentConfig(azureConfig,
                                       compute.getOrDefault("vm_size", ""),
                                       compute.getOrDefault("image", ""),
@@ -66,9 +89,8 @@ public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegra
                                       compute.getOrDefault("ssh_public_key", ""),
                                       compute.getOrDefault("vnet_subnet_id", ""),
                                       compute.getOrDefault("user_data", "")).map(envConfig -> applyLoadBalancer(envConfig,
-                                                                                                                config.loadBalancer()))
-                                     .map(envConfig -> applyDiscovery(envConfig,
-                                                                      config.discovery()))
+                                                                                                                config.loadBalancer())).map(envConfig -> applyDiscovery(envConfig,
+                                                                                                                                                                        config.discovery()))
                                      .map(envConfig -> applyCertificatePrefix(envConfig,
                                                                               config.security()));
     }
@@ -78,8 +100,13 @@ public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegra
         var lbName = lbMap.getOrDefault("load_balancer_name", "");
         var poolName = lbMap.getOrDefault("backend_pool_name", "");
         var vnetId = lbMap.getOrDefault("vnet_id", "");
-        if (lbName.isEmpty() || poolName.isEmpty() || vnetId.isEmpty()) {return envConfig;}
-        return azureLbConfig(lbName, poolName, vnetId).map(lb -> withLoadBalancer(envConfig, lb)).or(envConfig);
+
+        if (lbName.isEmpty() || poolName.isEmpty() || vnetId.isEmpty()) {
+            return envConfig;
+        }
+
+        return azureLbConfig(lbName, poolName, vnetId).map(lb -> withLoadBalancer(envConfig, lb))
+                            .or(envConfig);
     }
 
     private static AzureEnvironmentConfig applyDiscovery(AzureEnvironmentConfig envConfig,
@@ -87,20 +114,23 @@ public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegra
         var clusterName = discoveryMap.getOrDefault("cluster_name", "");
         var pollInterval = discoveryMap.getOrDefault("poll_interval_ms", "");
         var result = clusterName.isEmpty()
-                    ? envConfig
-                    : envConfig.withDiscovery(clusterName);
+                     ? envConfig
+                     : envConfig.withDiscovery(clusterName);
+
         return pollInterval.isEmpty()
-              ? result
-              : Result.lift(() -> Long.parseLong(pollInterval)).map(result::withDiscoveryPollInterval)
-                           .or(result);
+               ? result
+               : Result.lift(() -> Long.parseLong(pollInterval))
+                       .map(result::withDiscoveryPollInterval)
+                       .or(result);
     }
 
     private static AzureEnvironmentConfig applyCertificatePrefix(AzureEnvironmentConfig envConfig,
                                                                  Map<String, String> securityMap) {
         var prefix = securityMap.getOrDefault("certificate_secret_prefix", "");
+
         return prefix.isEmpty()
-              ? envConfig
-              : envConfig.withCertificateSecretPrefix(prefix);
+               ? envConfig
+               : envConfig.withCertificateSecretPrefix(prefix);
     }
 
     private static AzureEnvironmentConfig withLoadBalancer(AzureEnvironmentConfig envConfig,

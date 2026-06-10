@@ -16,13 +16,14 @@ import java.util.Objects;
 import static org.pragmatica.lang.Result.success;
 
 
-@Codec public record HttpRequestContext(String path,
-                                        String method,
-                                        Map<String, List<String>> queryParams,
-                                        Map<String, List<String>> headers,
-                                        byte[] body,
-                                        String requestId,
-                                        SecurityContext security) {
+@Codec
+public record HttpRequestContext(String path,
+                                 String method,
+                                 Map<String, List<String>> queryParams,
+                                 Map<String, List<String>> headers,
+                                 byte[] body,
+                                 String requestId,
+                                 SecurityContext security) {
     private static final byte[] EMPTY_BODY = new byte[0];
 
     public HttpRequestContext {
@@ -32,7 +33,9 @@ import static org.pragmatica.lang.Result.success;
         Objects.requireNonNull(headers, "headers");
         Objects.requireNonNull(requestId, "requestId");
         Objects.requireNonNull(security, "security");
-        if (body == null || body.length == 0) {body = EMPTY_BODY;}
+        if (body == null || body.length == 0) {
+            body = EMPTY_BODY;
+        }
     }
 
     public static Result<HttpRequestContext> httpRequestContext(Result<String> path,

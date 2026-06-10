@@ -23,9 +23,7 @@ public record HttpClientConfig(Option<String> baseUrl,
                                Option<JsonConfig> json,
                                Map<String, String> defaultHeaders) {
     private static final TimeSpan DEFAULT_CONNECT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
-
     private static final TimeSpan DEFAULT_REQUEST_TIMEOUT = TimeSpan.timeSpan(30).seconds();
-
     private static final Redirect DEFAULT_REDIRECT = Redirect.NORMAL;
 
     public static Result<HttpClientConfig> httpClientConfig() {

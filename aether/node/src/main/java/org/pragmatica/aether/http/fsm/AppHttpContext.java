@@ -72,6 +72,7 @@ public final class AppHttpContext {
     @Contract
     public void publishRouteTable() {
         var table = routeTableSupplier.get();
+
         log.debug("Router rebuilt: {} local routes, {} remote routes",
                   table.localRoutes().size(),
                   table.remoteRoutes().size());
@@ -80,7 +81,9 @@ public final class AppHttpContext {
 
     @Contract
     public void publishQuorumStateIfEstablished() {
-        if (quorumEstablishedSupplier.getAsBoolean()) {fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());}
+        if (quorumEstablishedSupplier.getAsBoolean()) {
+            fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());
+        }
     }
 
     @Contract

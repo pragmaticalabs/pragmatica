@@ -8,8 +8,10 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 
 
-@FunctionalInterface public interface ReplicationTransport {
-    @Contract void send(NodeId target, ReplicationMessage message);
+@FunctionalInterface
+public interface ReplicationTransport {
+    @Contract
+    void send(NodeId target, ReplicationMessage message);
 
     ReplicationTransport NOOP = (_, _) -> {};
 }

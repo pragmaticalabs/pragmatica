@@ -25,8 +25,13 @@ sealed interface UserDataTemplate {
     String JAR_REPO_PATH = "pragmaticalabs/pragmatica";
 
     static String deriveJarTag(String version) {
-        if (version == null || version.isBlank()) {return "vunknown";}
-        if (PLAIN_SEMVER.matcher(version).matches()) {return "v" + version;}
+        if (version == null || version.isBlank()) {
+            return "vunknown";
+        }
+
+        if (PLAIN_SEMVER.matcher(version).matches()) {
+            return "v" + version;
+        }
 
         return "v" + version + "-candidate";
     }
@@ -95,6 +100,7 @@ sealed interface UserDataTemplate {
         var image = runtimeProfile.flatMap(RuntimeProfile::image).or("ghcr.io/pragmaticalabs/aether-node:" + config.cluster().version());
         var peersValue = String.join(",", peers);
         var sb = new StringBuilder();
+
         appendHeader(sb, clusterName, nodeId, role);
         appendVariables(sb,
                         config.cluster().version(),
@@ -105,7 +111,6 @@ sealed interface UserDataTemplate {
                         ports.management(),
                         peersValue);
         appendSshAuthorizedKeys(sb, sshPublicKeys);
-
         if (isContainer) {
             appendDockerInstall(sb);
             appendComposedConfig(sb, composedConfig);
@@ -126,21 +131,25 @@ sealed interface UserDataTemplate {
     }
 
     private static void appendSshAuthorizedKeys(StringBuilder sb, List<SshPublicKey> keys) {
-        if (keys.isEmpty()) {return;}
+        if (keys.isEmpty()) {
+            return;
+        }
 
         sb.append("# --- Provision operator SSH access ---\n");
         sb.append("install -d -m 0700 /root/.ssh\n");
         sb.append("id -u aether >/dev/null 2>&1 || useradd -m -s /bin/bash aether || true\n");
         sb.append("install -d -m 0700 -o aether -g aether /home/aether/.ssh\n");
         sb.append("cat >> /root/.ssh/authorized_keys <<'AETHER_SSH_KEYS'\n");
-
-        for (var key : keys) {sb.append(key.value()).append('\n');}
+        for (var key : keys) {
+            sb.append(key.value()).append('\n');
+        }
 
         sb.append("AETHER_SSH_KEYS\n");
         sb.append("chmod 0600 /root/.ssh/authorized_keys\n");
         sb.append("cat >> /home/aether/.ssh/authorized_keys <<'AETHER_SSH_KEYS'\n");
-
-        for (var key : keys) {sb.append(key.value()).append('\n');}
+        for (var key : keys) {
+            sb.append(key.value()).append('\n');
+        }
 
         sb.append("AETHER_SSH_KEYS\n");
         sb.append("chown aether:aether /home/aether/.ssh/authorized_keys\n");
@@ -304,8 +313,9 @@ sealed interface UserDataTemplate {
         sb.append("PEERS_ARG=\"\"\n");
         sb.append("if [ -n \"${AETHER_PEERS}\" ]; then PEERS_ARG=\"--peers=${AETHER_PEERS}\"; fi\n");
         sb.append("AETHER_CLUSTER_SECRET=\"${AETHER_CLUSTER_SECRET}\" java ");
-
-        if (!jvmArgs.isEmpty()) {sb.append(jvmArgs).append(' ');}
+        if (!jvmArgs.isEmpty()) {
+            sb.append(jvmArgs).append(' ');
+        }
 
         sb.append("-jar /opt/aether/aether-node.jar --config=/opt/aether/config/aether.toml ");
         sb.append("--node-id=\"${AETHER_NODE_ID}\" ");

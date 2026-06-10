@@ -34,7 +34,10 @@ sealed interface BootstrapPhasePost {
     private static void activateElectedLoadBalancers(BootstrapContext ctx) {
         for (var entry : ctx.config().sources().entrySet()) {
             var source = entry.getValue();
-            if (source.loadBalancer() == LoadBalancerMode.ELECTED) {attachFloatingIp(entry.getKey(), source, ctx);}
+
+            if (source.loadBalancer() == LoadBalancerMode.ELECTED) {
+                attachFloatingIp(entry.getKey(), source, ctx);
+            }
         }
     }
 
@@ -56,6 +59,7 @@ sealed interface BootstrapPhasePost {
                                             BootstrapContext ctx) {
         var targetNode = ctx.nodes().stream().filter(n -> n.nodeId()
                                                            .startsWith(sourceName + "-core-")).findFirst();
+
         targetNode.ifPresent(node -> attachLoadBalancerIps(fip, source, node.nodeId()));
     }
 
@@ -75,12 +79,14 @@ sealed interface BootstrapPhasePost {
         var endpoint = ctx.addresses().isEmpty()
                        ? "http://localhost:9090"
                        : "http://" + ctx.addresses().getFirst().publicIp();
+
         ClusterRegistry.load().map(registry -> registry.add(clusterName, endpoint, Option.some(apiKeyEnvName))).flatMap(ClusterRegistry::save).onFailure(cause -> System.err.println("Warning: failed to register cluster locally: " + cause.message()));
     }
 
     @Contract
     private static void printConnectionInfo(BootstrapContext ctx) {
         var clusterName = ctx.config().cluster().name();
+
         System.out.println();
         System.out.printf("Cluster \"%s\" bootstrapped successfully.%n", clusterName);
         System.out.printf("Nodes: %d address(es) collected%n",

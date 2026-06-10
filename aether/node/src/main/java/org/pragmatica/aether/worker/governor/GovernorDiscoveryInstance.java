@@ -23,6 +23,7 @@ final class GovernorDiscoveryInstance implements GovernorDiscovery {
     @SuppressWarnings("JBCT-RET-01")
     public void onGovernorAnnounced(String communityId, NodeId governorId) {
         var previous = knownGovernors.put(communityId, governorId);
+
         logGovernorChange(communityId, governorId, previous);
     }
 

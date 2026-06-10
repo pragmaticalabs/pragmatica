@@ -9,19 +9,24 @@ import org.pragmatica.http.routing.HttpStatus;
 import org.pragmatica.lang.Cause;
 
 
-@FunctionalInterface public interface ErrorMapper {
+@FunctionalInterface
+public interface ErrorMapper {
     HttpError map(Cause cause);
 
     static ErrorMapper defaultMapper() {
         return cause -> cause instanceof HttpError he
-                       ? he
-                       : HttpError.httpError(HttpStatus.INTERNAL_SERVER_ERROR, cause);
+                        ? he
+                        : HttpError.httpError(HttpStatus.INTERNAL_SERVER_ERROR, cause);
     }
 
     default ErrorMapper orElse(ErrorMapper other) {
         return cause -> {
             var result = this.map(cause);
-            if (result.status() == HttpStatus.INTERNAL_SERVER_ERROR && !(cause instanceof HttpError)) {return other.map(cause);}
+
+            if (result.status() == HttpStatus.INTERNAL_SERVER_ERROR && !(cause instanceof HttpError)) {
+                return other.map(cause);
+            }
+
             return result;
         };
     }

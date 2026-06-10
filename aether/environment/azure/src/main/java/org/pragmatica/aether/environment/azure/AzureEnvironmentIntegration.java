@@ -33,6 +33,7 @@ public record AzureEnvironmentIntegration(AzureComputeProvider computeProvider,
                                           Option<CertificateProvider> certProvider) implements EnvironmentIntegration {
     public static Result<AzureEnvironmentIntegration> azureEnvironmentIntegration(AzureEnvironmentConfig config) {
         var client = AzureClient.azureClient(config.azureConfig());
+
         return azureEnvironmentIntegration(client, config);
     }
 
@@ -43,13 +44,19 @@ public record AzureEnvironmentIntegration(AzureComputeProvider computeProvider,
         var discovery = resolveDiscoveryProvider(client, config);
         var secrets = resolveSecretsProvider(client);
         var certProv = resolveCertificateProvider(client, config);
-        return Result.all(compute, lbProvider)
-                         .map((cp, lb) -> new AzureEnvironmentIntegration(cp, lb, discovery, secrets, certProv));
+
+        return Result.all(compute, lbProvider).map((cp, lb) -> new AzureEnvironmentIntegration(cp,
+                                                                                               lb,
+                                                                                               discovery,
+                                                                                               secrets,
+                                                                                               certProv));
     }
 
     private static Result<Option<LoadBalancerProvider>> resolveLbProvider(AzureClient client,
                                                                           AzureEnvironmentConfig config) {
-        return config.loadBalancer().fold(() -> success(Option.empty()), lbConfig -> toLbOption(client, lbConfig));
+        return config.loadBalancer()
+                     .fold(() -> success(Option.empty()),
+                           lbConfig -> toLbOption(client, lbConfig));
     }
 
     private static Result<Option<LoadBalancerProvider>> toLbOption(AzureClient client,
@@ -66,11 +73,13 @@ public record AzureEnvironmentIntegration(AzureComputeProvider computeProvider,
 
     private static Option<DiscoveryProvider> resolveDiscoveryProvider(AzureClient client,
                                                                       AzureEnvironmentConfig config) {
-        return config.clusterName().map(name -> azureDiscoveryProvider(client, config));
+        return config.clusterName()
+                     .map(name -> azureDiscoveryProvider(client, config));
     }
 
     private static Option<SecretsProvider> resolveSecretsProvider(AzureClient client) {
-        return azureSecretsProvider(client).map(AzureEnvironmentIntegration::wrapSecretInSome).or(Option.empty());
+        return azureSecretsProvider(client).map(AzureEnvironmentIntegration::wrapSecretInSome)
+                                   .or(Option.empty());
     }
 
     private static Option<SecretsProvider> wrapSecretInSome(AzureSecretsProvider provider) {
@@ -78,34 +87,40 @@ public record AzureEnvironmentIntegration(AzureComputeProvider computeProvider,
                                                                   TimeSpan.timeSpan(5).minutes()));
     }
 
-    @Override public Option<ComputeProvider> compute() {
+    @Override
+    public Option<ComputeProvider> compute() {
         return some(computeProvider);
     }
 
-    @Override public Option<SecretsProvider> secrets() {
+    @Override
+    public Option<SecretsProvider> secrets() {
         return secretsProvider;
     }
 
-    @Override public Option<LoadBalancerProvider> loadBalancer() {
+    @Override
+    public Option<LoadBalancerProvider> loadBalancer() {
         return loadBalancerProvider;
     }
 
-    @Override public Option<DiscoveryProvider> discovery() {
+    @Override
+    public Option<DiscoveryProvider> discovery() {
         return discoveryProvider;
     }
 
-    @Override public Option<CertificateProvider> certificateProvider() {
+    @Override
+    public Option<CertificateProvider> certificateProvider() {
         return certProvider;
     }
 
-    @Override public Option<FloatingIpProvider> floatingIp() {
+    @Override
+    public Option<FloatingIpProvider> floatingIp() {
         return Option.empty();
     }
 
     private static Option<CertificateProvider> resolveCertificateProvider(AzureClient client,
                                                                           AzureEnvironmentConfig config) {
         return config.certificateSecretPrefix()
-                                             .flatMap(prefix -> azureCertificateProvider(client, prefix).map(CertificateProvider.class::cast)
-                                                                                        .option());
+                     .flatMap(prefix -> azureCertificateProvider(client, prefix).map(CertificateProvider.class::cast)
+                                                                .option());
     }
 }

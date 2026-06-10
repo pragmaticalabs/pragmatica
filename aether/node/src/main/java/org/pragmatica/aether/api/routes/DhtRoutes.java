@@ -91,20 +91,32 @@ public final class DhtRoutes implements RouteSource {
     }
 
     // --- POST /api/dht/inject (dev-mode-only) ---
-
     private Promise<DhtInjectResponse> handleInject(DhtInjectRequest req) {
         if (!devModeEnabled.getAsBoolean()) {
             return DhtError.DEV_MODE_DISABLED.promise();
         }
+
         return validateInject(req).async()
-                                  .flatMap(this::executeInject);
+                             .flatMap(this::executeInject);
     }
 
     private Result<DhtInjectRequest> validateInject(DhtInjectRequest req) {
-        if (req == null) {return DhtError.MISSING_BODY.result();}
-        if (req.key() == null || req.key().isBlank()) {return DhtError.MISSING_KEY.result();}
-        if (req.value() == null) {return DhtError.MISSING_VALUE.result();}
-        if (req.hlc() == null) {return DhtError.MISSING_HLC.result();}
+        if (req == null) {
+            return DhtError.MISSING_BODY.result();
+        }
+
+        if (req.key() == null || req.key().isBlank()) {
+            return DhtError.MISSING_KEY.result();
+        }
+
+        if (req.value() == null) {
+            return DhtError.MISSING_VALUE.result();
+        }
+
+        if (req.hlc() == null) {
+            return DhtError.MISSING_HLC.result();
+        }
+
         return Result.success(req);
     }
 
@@ -113,13 +125,15 @@ public final class DhtRoutes implements RouteSource {
     }
 
     private Promise<DhtInjectResponse> writeVersioned(DHTNode node, DhtInjectRequest req) {
-        return mergeHlc(node, req.hlc()).async()
-                                        .flatMap(committed -> putAndWrap(node, req, committed));
+        return mergeHlc(node,
+                        req.hlc()).async()
+                       .flatMap(committed -> putAndWrap(node, req, committed));
     }
 
     private Result<HlcTimestamp> mergeHlc(DHTNode node, HlcShape requested) {
         var remote = new HlcTimestamp(HlcTimestamp.pack(requested.physical(), requested.logical()),
                                       node.nodeId());
+
         return node.hlcClock()
                    .update(remote);
     }
@@ -127,8 +141,13 @@ public final class DhtRoutes implements RouteSource {
     private Promise<DhtInjectResponse> putAndWrap(DHTNode node, DhtInjectRequest req, HlcTimestamp committed) {
         var keyBytes = req.key().getBytes(StandardCharsets.UTF_8);
         var valueBytes = req.value().getBytes(StandardCharsets.UTF_8);
-        return node.putLocalVersioned(keyBytes, valueBytes, committed.packed())
-                   .map(written -> toInjectResponse(req.key(), committed, written));
+
+        return node.putLocalVersioned(keyBytes,
+                                      valueBytes,
+                                      committed.packed())
+                   .map(written -> toInjectResponse(req.key(),
+                                                    committed,
+                                                    written));
     }
 
     private static DhtInjectResponse toInjectResponse(String key, HlcTimestamp committed, boolean written) {
@@ -138,16 +157,16 @@ public final class DhtRoutes implements RouteSource {
     }
 
     // --- GET /api/dht/replication-map ---
-
     private Promise<DhtReplicationMapResponse> handleReplicationMap(Option<String> rawLimit, Option<String> rawPrefix) {
         return resolveDhtNode().flatMap(node -> buildReplicationMap(node, rawLimit, rawPrefix));
     }
 
     private Promise<DhtReplicationMapResponse> buildReplicationMap(DHTNode node,
-                                                                    Option<String> rawLimit,
-                                                                    Option<String> rawPrefix) {
+                                                                   Option<String> rawLimit,
+                                                                   Option<String> rawPrefix) {
         var limit = clampLimit(rawLimit);
         var prefix = rawPrefix.or("");
+
         return node.storage()
                    .keys()
                    .map(keys -> assembleResponse(node, keys, limit, prefix));
@@ -161,46 +180,47 @@ public final class DhtRoutes implements RouteSource {
 
     private static Option<Integer> parsePositiveIntAsOption(String raw) {
         return org.pragmatica.lang.parse.Number.parseInt(raw)
-                                                .option()
-                                                .filter(v -> v > 0);
+                                               .option()
+                                               .filter(v -> v > 0);
     }
 
     private static DhtReplicationMapResponse assembleResponse(DHTNode node,
                                                               List<byte[]> keys,
                                                               int limit,
                                                               String prefix) {
-        var replicationFactor = node.config()
-                                    .effectiveReplicationFactor(node.ring()
-                                                                    .nodeCount());
+        var replicationFactor = node.config().effectiveReplicationFactor(node.ring().nodeCount());
         var prefixBytes = prefix.getBytes(StandardCharsets.UTF_8);
-        var matched = keys.stream()
-                          .filter(key -> matchesPrefix(key, prefixBytes))
-                          .toList();
-        var entries = matched.stream()
-                             .limit(limit)
-                             .map(key -> toReplicationEntry(node, key, replicationFactor))
-                             .toList();
+        var matched = keys.stream().filter(key -> matchesPrefix(key, prefixBytes)).toList();
+        var entries = matched.stream().limit(limit).map(key -> toReplicationEntry(node, key, replicationFactor)).toList();
+
         return new DhtReplicationMapResponse(replicationFactor, matched.size(), entries.size(), entries);
     }
 
     private static boolean matchesPrefix(byte[] key, byte[] prefix) {
-        if (prefix.length == 0) {return true;}
-        if (key.length < prefix.length) {return false;}
-        for (int i = 0; i < prefix.length; i++) {if (key[i] != prefix[i]) {return false;}}
+        if (prefix.length == 0) {
+            return true;
+        }
+
+        if (key.length < prefix.length) {
+            return false;
+        }
+
+        for (int i = 0; i < prefix.length; i++) {
+            if (key[i] != prefix[i]) {
+                return false;
+            }
+        }
+
         return true;
     }
 
     private static DhtReplicationEntry toReplicationEntry(DHTNode node, byte[] key, int replicationFactor) {
-        var nodeIds = node.ring()
-                          .nodesFor(key, replicationFactor)
-                          .stream()
-                          .map(org.pragmatica.consensus.NodeId::id)
-                          .toList();
+        var nodeIds = node.ring().nodesFor(key, replicationFactor).stream().map(org.pragmatica.consensus.NodeId::id).toList();
+
         return new DhtReplicationEntry(new String(key, StandardCharsets.UTF_8), nodeIds);
     }
 
     // --- shared helpers ---
-
     private Promise<DHTNode> resolveDhtNode() {
         return nodeSupplier.get()
                            .dhtNode()

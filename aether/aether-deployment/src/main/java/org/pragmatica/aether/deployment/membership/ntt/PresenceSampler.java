@@ -30,6 +30,7 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
+
 /// Presence Sampler (formerly `NodeTopologyTracker`) — a **SWIM-sampling debounce clock**,
 /// NOT a membership authority. Since the membership-FSM cutover (Waves D1/E) the authoritative
 /// "who is in the cluster" answer is owned by [`MembershipFsm`]; this class no longer answers
@@ -89,10 +90,8 @@ import static org.pragmatica.lang.Option.some;
 /// [`#sample`] directly to step the sampler deterministically without a real scheduler.
 public final class PresenceSampler {
     private static final Logger log = LoggerFactory.getLogger(PresenceSampler.class);
-
     /// Default sample tick period: recompute the candidate live set once per second.
     public static final TimeSpan SAMPLE_INTERVAL_DEFAULT = TimeSpan.timeSpan(1).seconds();
-
     /// Default fast UP hysteresis: 2 consecutive healthy samples to admit a node.
     public static final int K_UP_DEFAULT = 2;
 
@@ -101,7 +100,10 @@ public final class PresenceSampler {
     private static final Consumer<NodeId> NOOP_DOWN_CROSSING = id -> {};
 
     /// Transient per-sample QUIC/SWIM bias for a node.
-    private enum SampleBias { PRESENT, ABSENT }
+    private enum SampleBias {
+        PRESENT,
+        ABSENT
+    }
 
     private final NodeId self;
     private final Supplier<HealthSnapshot> healthSupplier;
@@ -110,7 +112,6 @@ public final class PresenceSampler {
     private final int downHysteresis;
     private final LongSupplier nowNanos;
     private final Runnable onReconcileNeeded;
-
     /// Injected callback fired exactly at the DOWN-hysteresis crossing edge for a node
     /// (mirrors `onReconcileNeeded`). Routes the crossing to the membership FSM; defaults
     /// to a no-op so callers/tests that don't supply it are unaffected. Additive to — not a
@@ -122,24 +123,20 @@ public final class PresenceSampler {
     /// [`#onDownHysteresisCrossing(Consumer)`]. The constructor param + no-op default remain for
     /// tests that have the callback at construction time.
     private volatile Consumer<NodeId> onDownHysteresisCrossing;
-
     /// Per-node consecutive-sample counters. Positive = up-streak, negative = down-streak.
     /// A node not present here has never been sampled.
     private final Map<NodeId, Integer> streaks = new ConcurrentHashMap<>();
-
     /// Per-node bias applied to the NEXT sample only. Consumed (removed) on read.
     private final Map<NodeId, SampleBias> biases = new ConcurrentHashMap<>();
-
     /// Stable member set (debounced). Always contains self.
     private final Set<NodeId> stableMembers = ConcurrentHashMap.newKeySet();
-
     /// Last-emitted set — the delta baseline. Distinct from `stableMembers` so the
     /// reconcile trigger fires exactly once per transition.
     private final AtomicReference<Set<NodeId>> lastEmitted;
 
     private final AtomicReference<Option<ScheduledFuture<?>>> tickFuture = new AtomicReference<>(Option.none());
-    private final Object sampleLock = new Object();
 
+    private final Object sampleLock = new Object();
     /// One-way high-water mark of the stable member-set size ever observed (init 1 = self).
     /// Updated to `max(peak, current.size())` on every emitted membership change — including the
     /// initial 1→full-size formation growth — so it records that the cluster REACHED full
@@ -152,13 +149,13 @@ public final class PresenceSampler {
     private int peakMembershipCount = 1;
 
     private PresenceSampler(NodeId self,
-                                Supplier<HealthSnapshot> healthSupplier,
-                                TimeSpan sampleInterval,
-                                int upHysteresis,
-                                int downHysteresis,
-                                LongSupplier nowNanos,
-                                Runnable onReconcileNeeded,
-                                Consumer<NodeId> onDownHysteresisCrossing) {
+                            Supplier<HealthSnapshot> healthSupplier,
+                            TimeSpan sampleInterval,
+                            int upHysteresis,
+                            int downHysteresis,
+                            LongSupplier nowNanos,
+                            Runnable onReconcileNeeded,
+                            Consumer<NodeId> onDownHysteresisCrossing) {
         this.self = self;
         this.healthSupplier = healthSupplier;
         this.sampleInterval = sampleInterval;
@@ -175,85 +172,85 @@ public final class PresenceSampler {
     /// hysteresis, down hysteresis derived from `config.nttDepartureTimeout`,
     /// `System::nanoTime` clock.
     public static PresenceSampler presenceSampler(MembershipConfig config,
-                                                          NodeId self,
-                                                          Supplier<HealthSnapshot> healthSupplier,
-                                                          Runnable onReconcileNeeded) {
+                                                  NodeId self,
+                                                  Supplier<HealthSnapshot> healthSupplier,
+                                                  Runnable onReconcileNeeded) {
         return presenceSampler(config, self, healthSupplier, onReconcileNeeded, NOOP_DOWN_CROSSING);
     }
 
     /// Production factory with an explicit DOWN-hysteresis crossing callback (routes the
     /// crossing edge to the membership FSM). Otherwise identical to the no-callback overload.
     public static PresenceSampler presenceSampler(MembershipConfig config,
-                                                          NodeId self,
-                                                          Supplier<HealthSnapshot> healthSupplier,
-                                                          Runnable onReconcileNeeded,
-                                                          Consumer<NodeId> onDownHysteresisCrossing) {
+                                                  NodeId self,
+                                                  Supplier<HealthSnapshot> healthSupplier,
+                                                  Runnable onReconcileNeeded,
+                                                  Consumer<NodeId> onDownHysteresisCrossing) {
         return new PresenceSampler(self,
-                                       healthSupplier,
-                                       SAMPLE_INTERVAL_DEFAULT,
-                                       K_UP_DEFAULT,
-                                       downHysteresisFor(config.nttDepartureTimeout(), SAMPLE_INTERVAL_DEFAULT),
-                                       System::nanoTime,
-                                       onReconcileNeeded,
-                                       onDownHysteresisCrossing);
+                                   healthSupplier,
+                                   SAMPLE_INTERVAL_DEFAULT,
+                                   K_UP_DEFAULT,
+                                   downHysteresisFor(config.nttDepartureTimeout(), SAMPLE_INTERVAL_DEFAULT),
+                                   System::nanoTime,
+                                   onReconcileNeeded,
+                                   onDownHysteresisCrossing);
     }
 
     /// Test factory: explicit sample interval, hysteresis, clock and a no-op reconcile
     /// trigger. The periodic tick is NOT scheduled — tests drive the FSM via [`#sample`].
     public static PresenceSampler presenceSampler(NodeId self,
-                                                          Supplier<HealthSnapshot> healthSupplier,
-                                                          TimeSpan sampleInterval,
-                                                          int upHysteresis,
-                                                          int downHysteresis,
-                                                          LongSupplier nowNanos) {
+                                                  Supplier<HealthSnapshot> healthSupplier,
+                                                  TimeSpan sampleInterval,
+                                                  int upHysteresis,
+                                                  int downHysteresis,
+                                                  LongSupplier nowNanos) {
         return new PresenceSampler(self,
-                                       healthSupplier,
-                                       sampleInterval,
-                                       upHysteresis,
-                                       downHysteresis,
-                                       nowNanos,
-                                       NOOP_RECONCILE_TRIGGER,
-                                       NOOP_DOWN_CROSSING);
-    }
-
-    /// Test factory: explicit sample interval, hysteresis, clock and a reconcile trigger.
-    /// Required for deterministic emit-once assertions. The periodic tick is NOT scheduled.
-    public static PresenceSampler presenceSampler(NodeId self,
-                                                          Supplier<HealthSnapshot> healthSupplier,
-                                                          TimeSpan sampleInterval,
-                                                          int upHysteresis,
-                                                          int downHysteresis,
-                                                          LongSupplier nowNanos,
-                                                          Runnable onReconcileNeeded) {
-        return presenceSampler(self,
                                    healthSupplier,
                                    sampleInterval,
                                    upHysteresis,
                                    downHysteresis,
                                    nowNanos,
-                                   onReconcileNeeded,
+                                   NOOP_RECONCILE_TRIGGER,
                                    NOOP_DOWN_CROSSING);
+    }
+
+    /// Test factory: explicit sample interval, hysteresis, clock and a reconcile trigger.
+    /// Required for deterministic emit-once assertions. The periodic tick is NOT scheduled.
+    public static PresenceSampler presenceSampler(NodeId self,
+                                                  Supplier<HealthSnapshot> healthSupplier,
+                                                  TimeSpan sampleInterval,
+                                                  int upHysteresis,
+                                                  int downHysteresis,
+                                                  LongSupplier nowNanos,
+                                                  Runnable onReconcileNeeded) {
+        return presenceSampler(self,
+                               healthSupplier,
+                               sampleInterval,
+                               upHysteresis,
+                               downHysteresis,
+                               nowNanos,
+                               onReconcileNeeded,
+                               NOOP_DOWN_CROSSING);
     }
 
     /// Test factory: explicit sample interval, hysteresis, clock, a reconcile trigger and a
     /// DOWN-hysteresis crossing callback. Required for deterministic crossing-edge
     /// assertions. The periodic tick is NOT scheduled.
     public static PresenceSampler presenceSampler(NodeId self,
-                                                          Supplier<HealthSnapshot> healthSupplier,
-                                                          TimeSpan sampleInterval,
-                                                          int upHysteresis,
-                                                          int downHysteresis,
-                                                          LongSupplier nowNanos,
-                                                          Runnable onReconcileNeeded,
-                                                          Consumer<NodeId> onDownHysteresisCrossing) {
+                                                  Supplier<HealthSnapshot> healthSupplier,
+                                                  TimeSpan sampleInterval,
+                                                  int upHysteresis,
+                                                  int downHysteresis,
+                                                  LongSupplier nowNanos,
+                                                  Runnable onReconcileNeeded,
+                                                  Consumer<NodeId> onDownHysteresisCrossing) {
         return new PresenceSampler(self,
-                                       healthSupplier,
-                                       sampleInterval,
-                                       upHysteresis,
-                                       downHysteresis,
-                                       nowNanos,
-                                       onReconcileNeeded,
-                                       onDownHysteresisCrossing);
+                                   healthSupplier,
+                                   sampleInterval,
+                                   upHysteresis,
+                                   downHysteresis,
+                                   nowNanos,
+                                   onReconcileNeeded,
+                                   onDownHysteresisCrossing);
     }
 
     /// Down hysteresis derived from the legacy departure timeout:
@@ -261,7 +258,8 @@ public final class PresenceSampler {
     /// departure-timeout semantics as a debounce window on the sample stream.
     public static int downHysteresisFor(TimeSpan departureTimeout, TimeSpan sampleInterval) {
         var interval = Math.max(1L, sampleInterval.nanos());
-        return Math.max(1, (int) ((departureTimeout.nanos() + interval - 1) / interval));
+
+        return Math.max(1, (int)((departureTimeout.nanos() + interval - 1) / interval));
     }
 
     /// Start the periodic sample tick on the shared scheduler. Idempotent — a second
@@ -269,6 +267,7 @@ public final class PresenceSampler {
     @Contract
     public void start() {
         var future = SharedScheduler.scheduleAtFixedRate(this::sample, sampleInterval);
+
         if (!tickFuture.compareAndSet(Option.none(), some(future))) {
             future.cancel(false);
         }
@@ -277,8 +276,7 @@ public final class PresenceSampler {
     /// Cancel the periodic sample tick. Idempotent.
     @Contract
     public void stop() {
-        tickFuture.getAndSet(Option.none())
-                  .onPresent(future -> future.cancel(false));
+        tickFuture.getAndSet(Option.none()).onPresent(future -> future.cancel(false));
     }
 
     /// SWIM observation entry point — biases the NEXT sample only. `HealthyObserved`
@@ -316,7 +314,9 @@ public final class PresenceSampler {
     /// logic in [`#crossDownHysteresis`] — only which listener it dispatches to.
     @Contract
     public void onDownHysteresisCrossing(Consumer<NodeId> listener) {
-        onDownHysteresisCrossing = listener == null ? NOOP_DOWN_CROSSING : listener;
+        onDownHysteresisCrossing = listener == null
+                                   ? NOOP_DOWN_CROSSING
+                                   : listener;
     }
 
     @Contract
@@ -345,6 +345,7 @@ public final class PresenceSampler {
 
     private void sampleLocked() {
         var candidates = candidateLiveSet();
+
         advanceStreaks(candidates);
         emitIfChanged();
     }
@@ -353,11 +354,11 @@ public final class PresenceSampler {
     /// any pending bias (PRESENT forces in, ABSENT forces out). Bias is consumed.
     private Set<NodeId> candidateLiveSet() {
         var live = new HashSet<NodeId>();
+
         live.add(self);
-        healthSupplier.get()
-                      .peerHealth()
-                      .forEach((peer, health) -> addIfHealthy(live, peer, health));
+        healthSupplier.get().peerHealth().forEach((peer, health) -> addIfHealthy(live, peer, health));
         applyBias(live);
+
         return live;
     }
 
@@ -369,6 +370,7 @@ public final class PresenceSampler {
 
     private void applyBias(Set<NodeId> live) {
         var pending = Map.copyOf(biases);
+
         pending.forEach((peer, bias) -> applyOneBias(live, peer, bias));
         pending.keySet().forEach(biases::remove);
     }
@@ -390,6 +392,7 @@ public final class PresenceSampler {
     /// then apply threshold crossings to `stableMembers`. Self never leaves.
     private void advanceStreaks(Set<NodeId> candidates) {
         var known = new HashSet<NodeId>();
+
         known.addAll(streaks.keySet());
         known.addAll(stableMembers);
         known.addAll(candidates);
@@ -399,6 +402,7 @@ public final class PresenceSampler {
 
     private void advanceOne(NodeId node, boolean present) {
         var next = nextStreak(streaks.getOrDefault(node, 0), present);
+
         streaks.put(node, next);
         if (present && next >= upHysteresis) {
             stableMembers.add(node);
@@ -423,18 +427,26 @@ public final class PresenceSampler {
     /// of the new direction (so a flap does not accumulate across directions).
     private static int nextStreak(int current, boolean present) {
         if (present) {
-            return current < 0 ? 1 : current + 1;
+            return current < 0
+                   ? 1
+                   : current + 1;
         }
-        return current > 0 ? -1 : current - 1;
+
+        return current > 0
+               ? -1
+               : current - 1;
     }
 
     private void emitIfChanged() {
         var current = Set.copyOf(stableMembers);
+
         peakMembershipCount = Math.max(peakMembershipCount, current.size());
         var previous = lastEmitted.getAndSet(current);
+
         if (current.equals(previous)) {
             return;
         }
+
         log.info("PresenceSampler membership changed: {} -> {} (added={}, removed={})",
                  previous.size(),
                  current.size(),
@@ -445,7 +457,9 @@ public final class PresenceSampler {
 
     private static Set<NodeId> difference(Set<NodeId> from, Set<NodeId> remove) {
         var result = new HashSet<>(from);
+
         result.removeAll(remove);
+
         return result;
     }
 
@@ -466,6 +480,7 @@ public final class PresenceSampler {
         if (node.equals(self)) {
             return;
         }
+
         synchronized (sampleLock) {
             evictLocked(node);
         }
@@ -475,10 +490,12 @@ public final class PresenceSampler {
         streaks.remove(node);
         biases.remove(node);
         var wasStableMember = stableMembers.remove(node);
+
         log.info("PresenceSampler evict({}): wasStableMember={}", node, wasStableMember);
         if (!wasStableMember) {
             return;
         }
+
         lastEmitted.set(Set.copyOf(stableMembers));
         log.debug("Hard evict @{}ns: node={} members={}", nowNanos.getAsLong(), node, stableMembers);
         onReconcileNeeded.run();

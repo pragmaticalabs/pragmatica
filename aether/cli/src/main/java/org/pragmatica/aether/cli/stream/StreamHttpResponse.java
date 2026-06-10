@@ -10,6 +10,7 @@ import org.pragmatica.lang.Option;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+
 /// Helpers that map the JSON envelopes returned by [org.pragmatica.aether.cli.AetherCli] HTTP
 /// helpers (`{"error":"HTTP <code>: <body>"}`) to spec event-stream-namespaces §8.6 exit codes.
 ///
@@ -23,11 +24,21 @@ public sealed interface StreamHttpResponse {
     /// `null` and `""` short-circuit to absent — the CLI HTTP layer never returns either,
     /// but defensive against synthetic test input.
     static Option<Integer> extractHttpStatus(String responseJson) {
-        if (responseJson == null || responseJson.isEmpty()) {return Option.none();}
-        if (!OutputFormatter.isErrorResponse(responseJson)) {return Option.none();}
+        if (responseJson == null || responseJson.isEmpty()) {
+            return Option.none();
+        }
+
+        if (!OutputFormatter.isErrorResponse(responseJson)) {
+            return Option.none();
+        }
+
         var message = OutputFormatter.extractErrorMessage(responseJson);
         Matcher matcher = HTTP_STATUS.matcher(message);
-        if (!matcher.find()) {return Option.none();}
+
+        if (!matcher.find()) {
+            return Option.none();
+        }
+
         try {
             return Option.some(Integer.parseInt(matcher.group(1)));
         } catch (NumberFormatException _) {
@@ -39,9 +50,8 @@ public sealed interface StreamHttpResponse {
     /// non-2xx → generic ERROR. Successful responses are not handled here — caller invokes
     /// the table renderer instead.
     static int mapErrorExitCode(String responseJson) {
-        return extractHttpStatus(responseJson)
-                .map(StreamHttpResponse::statusToExitCode)
-                .or(StreamExitCode.ERROR);
+        return extractHttpStatus(responseJson).map(StreamHttpResponse::statusToExitCode)
+                                .or(StreamExitCode.ERROR);
     }
 
     private static int statusToExitCode(int status) {

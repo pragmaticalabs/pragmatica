@@ -50,6 +50,7 @@ public interface SecurityValidator {
                                                                                 Principal.PrincipalType.SERVICE).unwrap(),
                                                             Set.of(Role.ADMIN, Role.SERVICE),
                                                             Map.of());
+
         return (_, _) -> Result.success(systemContext);
     }
 }

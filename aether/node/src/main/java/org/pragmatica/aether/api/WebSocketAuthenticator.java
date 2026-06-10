@@ -65,8 +65,13 @@ public final class WebSocketAuthenticator {
     }
 
     public boolean onMessage(WebSocketSession session, String text) {
-        if (!securityEnabled || authenticatedSessions.contains(session.id())) {return false;}
-        if (pendingSessions.containsKey(session.id())) {return handleAuthMessage(session, text);}
+        if (!securityEnabled || authenticatedSessions.contains(session.id())) {
+            return false;
+        }
+
+        if (pendingSessions.containsKey(session.id())) {
+            return handleAuthMessage(session, text);
+        }
 
         session.send("{\"type\":\"AUTH_FAILED\",\"reason\":\"not_authenticated\"}");
         session.close();
@@ -96,6 +101,7 @@ public final class WebSocketAuthenticator {
 
             return;
         }
+
         if (pendingSessions.remove(session.id()) != null) {
             log.warn("WebSocket auth timeout for session {}", session.id());
             AuditLog.wsAuthFailure(session.id(), "timeout");
@@ -136,7 +142,9 @@ public final class WebSocketAuthenticator {
         if (result.isSuccess()) {
             acceptSession(session,
                           result.unwrap().principal().value());
-        } else {rejectSession(session);}
+        } else {
+            rejectSession(session);
+        }
 
         return true;
     }

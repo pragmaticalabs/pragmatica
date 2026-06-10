@@ -13,7 +13,8 @@ import java.util.Arrays;
 import java.util.List;
 
 
-@Codec public sealed interface StreamForwardMessage extends ProtocolMessage {
+@Codec
+public sealed interface StreamForwardMessage extends ProtocolMessage {
     @Override
     default StreamType streamType() {
         return StreamType.FORWARD;
@@ -38,22 +39,32 @@ import java.util.List;
             return new PublishForward(sender, correlationId, streamName, partition, payload, timestamp);
         }
 
-        @Override public byte[] payload() {
+        @Override
+        public byte[] payload() {
             return payload.clone();
         }
 
-        @Override public boolean equals(Object obj) {
-            return obj instanceof PublishForward other && sender.equals(other.sender) && correlationId.equals(other.correlationId) && streamName.equals(other.streamName) && partition == other.partition && Arrays.equals(payload,
-                                                                                                                                                                                                                           other.payload) && timestamp == other.timestamp;
+        @Override
+        public boolean equals(Object obj) {
+            return obj instanceof PublishForward other
+                   && sender.equals(other.sender)
+                   && correlationId.equals(other.correlationId)
+                   && streamName.equals(other.streamName)
+                   && partition == other.partition
+                   && Arrays.equals(payload, other.payload)
+                   && timestamp == other.timestamp;
         }
 
-        @Override public int hashCode() {
+        @Override
+        public int hashCode() {
             int result = sender.hashCode();
+
             result = 31 * result + correlationId.hashCode();
             result = 31 * result + streamName.hashCode();
             result = 31 * result + Integer.hashCode(partition);
             result = 31 * result + Arrays.hashCode(payload);
             result = 31 * result + Long.hashCode(timestamp);
+
             return result;
         }
     }
@@ -68,7 +79,7 @@ import java.util.List;
         }
 
         public static PublishForwardResponse failureResponse(NodeId sender, String correlationId, String errorMessage) {
-            return new PublishForwardResponse(sender, correlationId, false, - 1L, errorMessage);
+            return new PublishForwardResponse(sender, correlationId, false, -1L, errorMessage);
         }
     }
 

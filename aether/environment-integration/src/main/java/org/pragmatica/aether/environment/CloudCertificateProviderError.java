@@ -26,25 +26,29 @@ public sealed interface CloudCertificateProviderError extends Cause {
     }
 
     record CertificateFetchFailed(String secretPath, Throwable cause) implements CloudCertificateProviderError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Certificate fetch failed for '" + secretPath + "': " + Causes.fromThrowable(cause).message();
         }
     }
 
     record InvalidCertificateMaterial(String detail) implements CloudCertificateProviderError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Invalid certificate material: " + detail;
         }
     }
 
     record CertificateIssueFailed(String nodeId, Throwable cause) implements CloudCertificateProviderError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Certificate issue failed for node " + nodeId + ": " + Causes.fromThrowable(cause).message();
         }
     }
 
     record GossipKeyFailed(String detail) implements CloudCertificateProviderError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Gossip key failed: " + detail;
         }
     }

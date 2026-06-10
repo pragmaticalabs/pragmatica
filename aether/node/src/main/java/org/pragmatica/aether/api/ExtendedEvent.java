@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
-
 /// Non-sealed extension hatch for {@link ClusterEvent} (spec §6.4.1).
 ///
 /// Framework extensions (plugins, framework modules) implement this interface to introduce

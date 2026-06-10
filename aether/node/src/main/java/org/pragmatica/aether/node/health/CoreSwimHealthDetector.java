@@ -59,7 +59,6 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
 
     private final SwimHealthContext context;
     private final SwimConfig swimConfig;
-
     private final List<Consumer<SwimObservation>> pendingObservationListeners = new CopyOnWriteArrayList<>();
 
     /// Transport-observation emitters pending wiring into the underlying [`SwimProtocol`]
@@ -204,6 +203,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                                                                               swimConfig,
                                                                                                                               isBootingSupplier,
                                                                                                                               faultyLeaderEvictor);
+
         Fsm.fsm("swim-health",
                 topologyConfig.self().id(),
                 initialStateFactory);
@@ -237,6 +237,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                         System::currentTimeMillis,
                                         isBootingSupplier,
                                         faultyLeaderEvictor);
+
         ctxHolder.set(ctx);
 
         return ctx.stopped();
@@ -330,10 +331,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     }
 
     @Contract
-    public void announceJoin(NodeInfo self,
-                             String clusterName,
-                             long incarnation,
-                             List<InetSocketAddress> seeds) {
+    public void announceJoin(NodeInfo self, String clusterName, long incarnation, List<InetSocketAddress> seeds) {
         pendingAnnounceJoin = option(new AnnounceJoinCall(self, clusterName, incarnation, seeds));
         protocol().onPresent(p -> p.announceJoin(self, clusterName, incarnation, seeds));
     }
@@ -452,6 +450,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         var host = node.address().host();
         var swimPort = node.address().port() + SWIM_PORT_OFFSET;
         var swimAddress = InetSocketAddress.createUnresolved(host, swimPort);
+
         protocol.addSeedMember(node.id(), swimAddress);
     }
 

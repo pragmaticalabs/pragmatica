@@ -12,13 +12,14 @@ import org.pragmatica.serialization.Codec;
 import java.util.List;
 
 
-@Codec public record CommunityMetricsSnapshot(String communityId,
-                                              NodeId governorId,
-                                              long requestId,
-                                              int memberCount,
-                                              List<PerSliceMetrics> sliceMetrics,
-                                              List<WindowSample> slidingWindow,
-                                              long timestampMs) implements Message.Wired {
+@Codec
+public record CommunityMetricsSnapshot(String communityId,
+                                       NodeId governorId,
+                                       long requestId,
+                                       int memberCount,
+                                       List<PerSliceMetrics> sliceMetrics,
+                                       List<WindowSample> slidingWindow,
+                                       long timestampMs) implements Message.Wired {
     @Override
     public StreamType streamType() {
         return StreamType.METRICS;

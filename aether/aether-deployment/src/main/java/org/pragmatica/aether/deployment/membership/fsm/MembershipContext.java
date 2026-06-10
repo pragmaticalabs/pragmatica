@@ -9,6 +9,7 @@ import org.pragmatica.statemachine.Fsm;
 
 import java.util.concurrent.atomic.AtomicLong;
 
+
 /// Shared per-member context for the membership FSM ([`MembershipState`]). Mirrors the
 /// `LeaderElectionContext` idiom: one instance per FSM, holds the `Fsm` reference (bound at
 /// construction via the constructor-driven initial-state factory), the tracked member's `NodeId`,
@@ -24,13 +25,11 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class MembershipContext {
     private final Fsm<MembershipState, MembershipEvent> fsm;
     private final NodeId member;
-
     // Per-FSM data-free state singletons — CAS comparisons against them are reference-stable.
     private final MembershipState.Observed observed;
     private final MembershipState.Member memberState;
     private final MembershipState.Suspect suspect;
     private final MembershipState.Departing departing;
-
     /// Highest SWIM incarnation observed for this identity. Stamped onto [`MembershipState.Dead`] on
     /// entry, so the terminal DEAD edge records the last incarnation the cluster ever attributed to
     /// this identity — even when the DEAD-triggering event (`Stopped`, `JoinGraceExpiredNeverHealthy`,
@@ -65,7 +64,6 @@ public final class MembershipContext {
     }
 
     // --- Per-FSM state instances ---
-
     public MembershipState.Observed observed() {
         return observed;
     }
@@ -75,6 +73,7 @@ public final class MembershipContext {
     /// OBSERVED singleton (data-free) after re-seeding the mark.
     public MembershipState.Observed observedRejoin(long incarnation) {
         lastSeenIncarnation.set(incarnation);
+
         return observed;
     }
 

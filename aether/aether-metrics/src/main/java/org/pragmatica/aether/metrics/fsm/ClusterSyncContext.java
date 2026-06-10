@@ -39,9 +39,7 @@ import org.slf4j.LoggerFactory;
 
 public final class ClusterSyncContext {
     private static final Logger log = LoggerFactory.getLogger(ClusterSyncContext.class);
-
     private static final int PER_PEER_BURST = 4;
-
     private static final int MIN_BUFFER_CAP = 8;
 
     private final Fsm<ClusterSyncState, ClusterFsmEvent> fsm;
@@ -53,14 +51,12 @@ public final class ClusterSyncContext {
     private final HealthSignalSink signalSink;
     private final int pingTimeoutThreshold;
     private final Supplier<Epoch> epochSupplier;
-
     /// #231 regression fix — ping DISPATCH is leader-only. Sourced from the SAME leader signal as
     /// the other leader-gated AetherNode wiring (`clusterNode.leaderManager()::isLeader`). When this
     /// returns false the Pinging tick is a no-op (no dispatch, no missedPings, no eviction emission);
     /// the node still RESPONDS to inbound pings. Defaults to always-leader for callers that don't
     /// supply it (single-pinger tests / standalone use), preserving prior behavior.
     private final BooleanSupplier isLeader;
-
     /// Membership v2 (B5a/B5b) — leader-local supplier of the GLOBAL set of nodes to command DRAIN.
     /// `broadcastPing` snapshots it via `drainTargets.get()` and stamps the set into the single
     /// uniform `ClusterSyncPing.drainNodes` BROADCAST to every QUIC-connected peer; each receiver
@@ -84,20 +80,18 @@ public final class ClusterSyncContext {
     private final AtomicReference<Supplier<Set<NodeId>>> dispatchedNodesSupplier = new AtomicReference<>(Set::of);
 
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
-
     private final AtomicLong quorumSequence = new AtomicLong();
-
     private final Map<NodeId, Epoch> observedEpoch = new ConcurrentHashMap<>();
-
     private final PeerObservationStore observationStore;
-
     /// RC1 (S01 fix) — peers this node has locally evicted via ping-timeout, with the
     /// nanos timestamp at which the eviction was recorded. Snapshotted into each outbound
     /// `ClusterSyncPing.evictionHints` as a suggestion to followers. Entries older than
     /// `EVICTION_HINT_TTL` are pruned on read. ConcurrentHashMap so the periodic
     /// ping tick (read) and `emitPingTimeoutIfExceeded` (write) don't race.
     private final Map<NodeId, Long> evictionHints = new ConcurrentHashMap<>();
+
     private static final TimeSpan EVICTION_HINT_TTL = TimeSpan.timeSpan(15).seconds();
+
     private final PeriodicObservationConfig periodicConfig;
     private final ClusterSyncState dormant;
     private final ClusterSyncState stopped;
@@ -214,11 +208,13 @@ public final class ClusterSyncContext {
         this.dormant = new ClusterSyncState.Dormant(this);
         this.stopped = new ClusterSyncState.Stopped(this);
     }
+
     public Fsm<ClusterSyncState, ClusterFsmEvent> fsm() {
         return fsm;
     }
 
-    @Contract public void dispatch(ClusterFsmEvent event) {
+    @Contract
+    public void dispatch(ClusterFsmEvent event) {
         fsm.dispatch(event);
     }
 
@@ -265,25 +261,28 @@ public final class ClusterSyncContext {
         return network.connectedPeers();
     }
 
-    @Contract public void setTopology(List<NodeId> newTopology) {
+    @Contract
+    public void setTopology(List<NodeId> newTopology) {
         topology.set(newTopology);
     }
 
-    @Contract public void recordObservedEpoch(NodeId nodeId, Epoch epoch) {
+    @Contract
+    public void recordObservedEpoch(NodeId nodeId, Epoch epoch) {
         observedEpoch.merge(nodeId, epoch, ClusterSyncContext::pickLater);
     }
 
     private static Epoch pickLater(Epoch prev, Epoch next) {
         return next.isStrictlyAfter(prev)
-              ? next
-              : prev;
+               ? next
+               : prev;
     }
 
     public Map<NodeId, Epoch> observedEpochs() {
         return Map.copyOf(observedEpoch);
     }
 
-    @Contract public void forgetPeer(NodeId peer) {
+    @Contract
+    public void forgetPeer(NodeId peer) {
         observedEpoch.remove(peer);
     }
 
@@ -309,15 +308,22 @@ public final class ClusterSyncContext {
     /// scheduler task and by `ClusterSyncScheduler.emitPeriodicConnectivityNow()`
     /// for deterministic testing. NOT leader-gated — every node emits its own
     /// view; leader gating happens at FSM consumption (Step 3).
-    @Contract public void emitPeriodicConnectivityNow() {
+    @Contract
+    public void emitPeriodicConnectivityNow() {
         var currentTopology = topology.get();
-        if (currentTopology == null || currentTopology.isEmpty()) {return;}
+
+        if (currentTopology == null || currentTopology.isEmpty()) {
+            return;
+        }
+
         var topologySet = Set.copyOf(currentTopology);
         var connected = new HashSet<>(network.connectedPeers());
+
         collector.emitPeriodicConnectivity(topologySet, connected, self, System.currentTimeMillis());
     }
 
-    @Contract public void clearObservationBuffers() {
+    @Contract
+    public void clearObservationBuffers() {
         observationStore.clear();
     }
 
@@ -331,7 +337,8 @@ public final class ClusterSyncContext {
     /// `readinessView` (so followers cache it and serve per-node readiness without a leader
     /// round-trip). `network.broadcast` skips self, so no per-peer dispatch or self-exclusion is
     /// needed here.
-    @Contract public void broadcastPing(Epoch currentEpoch, long rabiaTerm) {
+    @Contract
+    public void broadcastPing(Epoch currentEpoch, long rabiaTerm) {
         var ping = new ClusterSyncPing(self,
                                        collector.allMetrics(),
                                        rabiaTerm,
@@ -341,6 +348,7 @@ public final class ClusterSyncContext {
                                        drainTargets.get().get(),
                                        collector.authoritativeReadinessView(),
                                        dispatchedNodesSupplier.get().get());
+
         log.debug("ClusterSync: broadcasting PING (rabiaTerm={}, epoch={}:{})",
                   rabiaTerm,
                   currentEpoch.rabiaTerm(),
@@ -352,7 +360,8 @@ public final class ClusterSyncContext {
     /// `AetherNode` calls this (via `ClusterSyncScheduler.setDrainTargets`) once the
     /// `DrainCommandRegistry` exists, wiring `DrainCommandRegistry::drainTargets`. `null`
     /// resets to the empty-set default.
-    @Contract public void setDrainTargets(Supplier<Set<NodeId>> supplier) {
+    @Contract
+    public void setDrainTargets(Supplier<Set<NodeId>> supplier) {
         drainTargets.set(supplier == null
                          ? Set::of
                          : supplier);
@@ -362,7 +371,8 @@ public final class ClusterSyncContext {
     /// construction. `AetherNode` calls this (via `ClusterSyncScheduler.setDispatchedNodesSupplier`)
     /// once the `LeaderReconciler` exists, wiring `LeaderReconciler::inFlightProvisioningKeys`.
     /// `null` resets to the empty-set default.
-    @Contract public void setDispatchedNodesSupplier(Supplier<Set<NodeId>> supplier) {
+    @Contract
+    public void setDispatchedNodesSupplier(Supplier<Set<NodeId>> supplier) {
         dispatchedNodesSupplier.set(supplier == null
                                     ? Set::of
                                     : supplier);
@@ -376,7 +386,9 @@ public final class ClusterSyncContext {
     private Set<NodeId> currentEvictionHints() {
         var now = System.nanoTime();
         var ttl = EVICTION_HINT_TTL.nanos();
+
         evictionHints.entrySet().removeIf(e -> (now - e.getValue()) > ttl);
+
         return Set.copyOf(evictionHints.keySet());
     }
 
@@ -384,8 +396,12 @@ public final class ClusterSyncContext {
         return rabiaTermSupplier.get();
     }
 
-    @Contract public void emitPingTimeoutIfExceeded(NodeId peer, int missed) {
-        if (missed <pingTimeoutThreshold) {return;}
+    @Contract
+    public void emitPingTimeoutIfExceeded(NodeId peer, int missed) {
+        if (missed < pingTimeoutThreshold) {
+            return;
+        }
+
         signalSink.emit(new HealthSignal.PingTimeout(peer, missed, epochSupplier.get()));
         // RC1 (S01 fix, owner-side SWIM symmetry): the follower-side `processEvictionHints`
         // already refuses to act on an eviction hint when SWIM reports the peer ALIVE; the
@@ -398,8 +414,8 @@ public final class ClusterSyncContext {
         // that the SWIM-gated FSM arbitrates independently; only the disconnect + hint are
         // harmful for a peer SWIM still considers reachable.
         if (collector.peerLocallyAlive(peer)) {
-            log.debug("ClusterSync: skipping ping-timeout eviction for {} — SWIM says ALIVE (missed={})",
-                      peer, missed);
+            log.debug("ClusterSync: skipping ping-timeout eviction for {} — SWIM says ALIVE (missed={})", peer, missed);
+
             return;
         }
         // RC1 (S01 fix): app-level liveness detection. QUIC's MAX_IDLE_TIMEOUT is
@@ -425,15 +441,19 @@ public final class ClusterSyncContext {
     public int bufferCap() {
         var peers = Math.max(topology.get().size() - 1,
                              0);
-        var floor = Math.max(periodicConfig.capFloor().getAsInt(), MIN_BUFFER_CAP);
+        var floor = Math.max(periodicConfig.capFloor().getAsInt(),
+                             MIN_BUFFER_CAP);
+
         return Math.max(peers * PER_PEER_BURST, floor);
     }
 
-    @Contract public void pushHealth(PeerHealthObservation observation) {
+    @Contract
+    public void pushHealth(PeerHealthObservation observation) {
         observationStore.pushHealth(observation);
     }
 
-    @Contract public void pushConnectivity(PeerConnectivityObservation observation) {
+    @Contract
+    public void pushConnectivity(PeerConnectivityObservation observation) {
         observationStore.pushConnectivity(observation);
     }
 

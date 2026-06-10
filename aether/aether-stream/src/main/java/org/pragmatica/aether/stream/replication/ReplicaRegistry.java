@@ -41,26 +41,34 @@ public final class ReplicaRegistry {
         return new ReplicaRegistry(watermarkStore, assignmentStore);
     }
 
-    @Contract public void registerReplica(String streamName, int partition, NodeId nodeId) {
+    @Contract
+    public void registerReplica(String streamName, int partition, NodeId nodeId) {
         var key = partitionKey(streamName, partition);
-        var descriptor = replicaDescriptor(nodeId, streamName, partition, - 1L, ReplicationState.SYNCING);
+        var descriptor = replicaDescriptor(nodeId, streamName, partition, -1L, ReplicationState.SYNCING);
+
         replicas.computeIfAbsent(key, _ -> new ConcurrentHashMap<>()).put(nodeId, descriptor);
         assignmentStore.persistAssignment(streamName, partition, nodeId, true);
     }
 
-    @Contract public void unregisterReplica(String streamName, int partition, NodeId nodeId) {
+    @Contract
+    public void unregisterReplica(String streamName, int partition, NodeId nodeId) {
         var key = partitionKey(streamName, partition);
+
         option(replicas.get(key)).onPresent(nodeMap -> nodeMap.remove(nodeId));
         assignmentStore.persistAssignment(streamName, partition, nodeId, false);
     }
 
     public List<ReplicaDescriptor> replicasFor(String streamName, int partition) {
         var key = partitionKey(streamName, partition);
-        return option(replicas.get(key)).map(nodeMap -> List.copyOf(nodeMap.values())).or(List.of());
+
+        return option(replicas.get(key)).map(nodeMap -> List.copyOf(nodeMap.values()))
+                     .or(List.of());
     }
 
-    @Contract public void updateWatermark(String streamName, int partition, NodeId nodeId, long confirmedOffset) {
+    @Contract
+    public void updateWatermark(String streamName, int partition, NodeId nodeId, long confirmedOffset) {
         var key = partitionKey(streamName, partition);
+
         option(replicas.get(key)).onPresent(nodeMap -> nodeMap.computeIfPresent(nodeId,
                                                                                 (_, _) -> replicaDescriptor(nodeId,
                                                                                                             streamName,
@@ -70,7 +78,8 @@ public final class ReplicaRegistry {
         watermarkStore.persistWatermark(streamName, partition, nodeId, confirmedOffset);
     }
 
-    @Contract public void rebuildFromWatermarks(Map<PartitionKey, Map<NodeId, Long>> watermarks) {
+    @Contract
+    public void rebuildFromWatermarks(Map<PartitionKey, Map<NodeId, Long>> watermarks) {
         watermarks.forEach(this::rebuildPartitionWatermarks);
     }
 
@@ -95,9 +104,11 @@ public final class ReplicaRegistry {
 
     public Option<Long> minConfirmedOffset(String streamName, int partition) {
         var descriptors = replicasFor(streamName, partition);
-        if (descriptors.isEmpty()) {return Option.none();}
-        return Option.some(descriptors.stream().mapToLong(ReplicaDescriptor::confirmedOffset)
-                                             .min()
-                                             .getAsLong());
+
+        if (descriptors.isEmpty()) {
+            return Option.none();
+        }
+
+        return Option.some(descriptors.stream().mapToLong(ReplicaDescriptor::confirmedOffset).min().getAsLong());
     }
 }

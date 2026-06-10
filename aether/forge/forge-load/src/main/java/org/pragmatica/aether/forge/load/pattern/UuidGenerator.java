@@ -18,11 +18,13 @@ public record UuidGenerator() implements PatternGenerator {
         return success(new UuidGenerator());
     }
 
-    @Override public String generate() {
+    @Override
+    public String generate() {
         return UUID.randomUUID().toString();
     }
 
-    @Override public String pattern() {
+    @Override
+    public String pattern() {
         return "${uuid}";
     }
 }

@@ -77,9 +77,12 @@ public interface DecisionRelay {
             }
 
             private void trimBuffer() {
-                while (decisionBuffer.size() > bufferSize) {decisionBuffer.pollFirst();}
+                while (decisionBuffer.size() > bufferSize) {
+                    decisionBuffer.pollFirst();
+                }
             }
         }
+
         return new decisionRelay(selfId, delegateRouter, bufferSize, new ConcurrentLinkedDeque<>(), new AtomicLong(-1));
     }
 }

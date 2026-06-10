@@ -8,9 +8,9 @@ import org.pragmatica.lang.Cause;
 
 
 public sealed interface NotificationError extends Cause {
-    record BackendNotConfigured(String message) implements NotificationError{}
+    record BackendNotConfigured(String message) implements NotificationError {}
 
-    record UnsupportedChannel(String message) implements NotificationError{}
+    record UnsupportedChannel(String message) implements NotificationError {}
 
-    record DeliveryFailed(String message) implements NotificationError{}
+    record DeliveryFailed(String message) implements NotificationError {}
 }

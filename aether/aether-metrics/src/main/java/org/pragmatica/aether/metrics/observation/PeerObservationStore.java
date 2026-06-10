@@ -25,11 +25,8 @@ public final class PeerObservationStore implements PeerObservationBuffer {
     private static final int DEFAULT_CAP = 64;
 
     private final Object healthLock = new Object();
-
     private final Deque<PeerHealthObservation> healthBuffer = new ArrayDeque<>();
-
     private final Object connectivityLock = new Object();
-
     private final Deque<PeerConnectivityObservation> connectivityBuffer = new ArrayDeque<>();
 
     private final CopyOnWriteArrayList<Consumer<PeerHealthObservation>> healthSubscribers = new CopyOnWriteArrayList<>();
@@ -37,7 +34,6 @@ public final class PeerObservationStore implements PeerObservationBuffer {
     private final CopyOnWriteArrayList<Consumer<PeerConnectivityObservation>> connectivitySubscribers = new CopyOnWriteArrayList<>();
 
     private final ConcurrentHashMap<NodeId, Integer> pingMisses = new ConcurrentHashMap<>();
-
     private volatile IntSupplier capSupplier = () -> DEFAULT_CAP;
 
     private PeerObservationStore() {}
@@ -46,56 +42,93 @@ public final class PeerObservationStore implements PeerObservationBuffer {
         return new PeerObservationStore();
     }
 
-    @Contract public void setCapSupplier(IntSupplier supplier) {
+    @Contract
+    public void setCapSupplier(IntSupplier supplier) {
         capSupplier = supplier;
     }
 
-    @Override@Contract public void pushHealth(PeerHealthObservation observation) {
+    @Override
+    @Contract
+    public void pushHealth(PeerHealthObservation observation) {
         boolean delivered;
+
         synchronized (healthLock) {
             if (healthSubscribers.isEmpty()) {
-                if (healthBuffer.size() >= capSupplier.getAsInt()) {healthBuffer.pollFirst();}
+                if (healthBuffer.size() >= capSupplier.getAsInt()) {
+                    healthBuffer.pollFirst();
+                }
+
                 healthBuffer.offerLast(observation);
                 delivered = false;
-            } else {delivered = true;}
+            } else {
+                delivered = true;
+            }
         }
-        if (delivered) {notifyHealth(observation);}
+
+        if (delivered) {
+            notifyHealth(observation);
+        }
     }
 
-    @Override@Contract public void pushConnectivity(PeerConnectivityObservation observation) {
+    @Override
+    @Contract
+    public void pushConnectivity(PeerConnectivityObservation observation) {
         boolean delivered;
+
         synchronized (connectivityLock) {
             if (connectivitySubscribers.isEmpty()) {
-                if (connectivityBuffer.size() >= capSupplier.getAsInt()) {connectivityBuffer.pollFirst();}
+                if (connectivityBuffer.size() >= capSupplier.getAsInt()) {
+                    connectivityBuffer.pollFirst();
+                }
+
                 connectivityBuffer.offerLast(observation);
                 delivered = false;
-            } else {delivered = true;}
+            } else {
+                delivered = true;
+            }
         }
-        if (delivered) {notifyConnectivity(observation);}
+
+        if (delivered) {
+            notifyConnectivity(observation);
+        }
     }
 
-    @Override public List<PeerHealthObservation> drainHealth() {
+    @Override
+    public List<PeerHealthObservation> drainHealth() {
         synchronized (healthLock) {
-            if (healthBuffer.isEmpty()) {return List.of();}
+            if (healthBuffer.isEmpty()) {
+                return List.of();
+            }
+
             var drained = new ArrayList<>(healthBuffer);
+
             healthBuffer.clear();
+
             return List.copyOf(drained);
         }
     }
 
-    @Override public List<PeerConnectivityObservation> drainConnectivity() {
+    @Override
+    public List<PeerConnectivityObservation> drainConnectivity() {
         synchronized (connectivityLock) {
-            if (connectivityBuffer.isEmpty()) {return List.of();}
+            if (connectivityBuffer.isEmpty()) {
+                return List.of();
+            }
+
             var drained = new ArrayList<>(connectivityBuffer);
+
             connectivityBuffer.clear();
+
             return List.copyOf(drained);
         }
     }
 
-    @Contract public void clear() {
+    @Contract
+    public void clear() {
         synchronized (healthLock) {
             healthBuffer.clear();
         }
+
         synchronized (connectivityLock) {
             connectivityBuffer.clear();
         }
@@ -105,7 +138,8 @@ public final class PeerObservationStore implements PeerObservationBuffer {
         return pingMisses.merge(peer, 1, Integer::sum);
     }
 
-    @Contract public void clearPingMisses(NodeId peer) {
+    @Contract
+    public void clearPingMisses(NodeId peer) {
         pingMisses.remove(peer);
     }
 
@@ -113,21 +147,25 @@ public final class PeerObservationStore implements PeerObservationBuffer {
         return pingMisses.getOrDefault(peer, 0);
     }
 
-    @Contract public void retainPingMisses(Set<NodeId> liveCore) {
+    @Contract
+    public void retainPingMisses(Set<NodeId> liveCore) {
         pingMisses.keySet().retainAll(liveCore);
     }
 
-    @Contract public void clearAllPingMisses() {
+    @Contract
+    public void clearAllPingMisses() {
         pingMisses.clear();
     }
 
     public Subscription subscribeHealth(Consumer<PeerHealthObservation> callback) {
         healthSubscribers.add(callback);
+
         return () -> healthSubscribers.remove(callback);
     }
 
     public Subscription subscribeConnectivity(Consumer<PeerConnectivityObservation> callback) {
         connectivitySubscribers.add(callback);
+
         return () -> connectivitySubscribers.remove(callback);
     }
 
@@ -135,10 +173,12 @@ public final class PeerObservationStore implements PeerObservationBuffer {
         synchronized (healthLock) {
             healthSubscribers.add(callback);
             var drained = healthBuffer.isEmpty()
-                         ? List.<PeerHealthObservation>of()
-                         : List.copyOf(new ArrayList<>(healthBuffer));
+                          ? List.<PeerHealthObservation> of()
+                          : List.copyOf(new ArrayList<>(healthBuffer));
+
             healthBuffer.clear();
             Subscription sub = () -> healthSubscribers.remove(callback);
+
             return new DrainAndSubscribe<>(drained, sub);
         }
     }
@@ -147,10 +187,12 @@ public final class PeerObservationStore implements PeerObservationBuffer {
         synchronized (connectivityLock) {
             connectivitySubscribers.add(callback);
             var drained = connectivityBuffer.isEmpty()
-                         ? List.<PeerConnectivityObservation>of()
-                         : List.copyOf(new ArrayList<>(connectivityBuffer));
+                          ? List.<PeerConnectivityObservation> of()
+                          : List.copyOf(new ArrayList<>(connectivityBuffer));
+
             connectivityBuffer.clear();
             Subscription sub = () -> connectivitySubscribers.remove(callback);
+
             return new DrainAndSubscribe<>(drained, sub);
         }
     }
@@ -170,6 +212,7 @@ public final class PeerObservationStore implements PeerObservationBuffer {
     }
 
     public interface Subscription {
-        @Contract void unsubscribe();
+        @Contract
+        void unsubscribe();
     }
 }

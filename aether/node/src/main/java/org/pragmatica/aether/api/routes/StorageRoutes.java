@@ -115,6 +115,7 @@ public final class StorageRoutes implements RouteSource {
 
     private StorageListResponse listInstances() {
         var summaries = nodeSupplier.get().storageSetups().values().stream().map(StorageRoutes::toSummary).toList();
+
         return new StorageListResponse(summaries);
     }
 
@@ -236,6 +237,7 @@ public final class StorageRoutes implements RouteSource {
     private static ClusterStorageDetailResponse assembleClusterDetail(String name,
                                                                       List<Map.Entry<StorageStatusKey, StorageStatusValue>> entries) {
         var nodes = entries.stream().map(StorageRoutes::toNodeStorageDetail).toList();
+
         return new ClusterStorageDetailResponse(name,
                                                 nodes.size(),
                                                 totalUsedBytes(entries),
@@ -257,6 +259,7 @@ public final class StorageRoutes implements RouteSource {
 
     private static Map<String, List<Map.Entry<StorageStatusKey, StorageStatusValue>>> collectStatusesByInstance(ManageableNode node) {
         var grouped = new LinkedHashMap<String, List<Map.Entry<StorageStatusKey, StorageStatusValue>>>();
+
         node.kvStore().forEach(StorageStatusKey.class,
                                StorageStatusValue.class,
                                (key, value) -> grouped.computeIfAbsent(key.instanceName(),

@@ -21,7 +21,9 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-@Codec@SuppressWarnings("JBCT-SEQ-01") public enum SliceState {
+@Codec
+@SuppressWarnings("JBCT-SEQ-01")
+public enum SliceState {
     LOAD,
     LOADING(timeSpan(2).minutes()),
     LOADED,
@@ -54,13 +56,13 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
         return hasTimeout();
     }
     public boolean isInProgress() {
-        return switch (this){
+        return switch (this) {
             case LOAD, LOADING, ACTIVATE, ACTIVATING, ROUTING, DEACTIVATE, DEACTIVATING, UNLOAD, UNLOADING -> true;
             case LOADED, ACTIVE, FAILED -> false;
         };
     }
     public Set<SliceState> validTransitions() {
-        return switch (this){
+        return switch (this) {
             case LOAD -> Set.of(LOADING);
             case LOADING, DEACTIVATING -> Set.of(LOADED, FAILED);
             case LOADED -> Set.of(ACTIVATE, UNLOAD);
@@ -78,7 +80,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
         return validTransitions().contains(target);
     }
     public Result<SliceState> nextState() {
-        return switch (this){
+        return switch (this) {
             case LOAD -> success(LOADING);
             case LOADING, DEACTIVATING -> success(LOADED);
             case LOADED -> success(ACTIVATE);
@@ -95,6 +97,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
     private static final Map<String, SliceState> STRING_TO_STATE;
     static {
         var map = new HashMap<String, SliceState>();
+
         map.put("LOAD", LOAD);
         map.put("LOADING", LOADING);
         map.put("LOADED", LOADED);

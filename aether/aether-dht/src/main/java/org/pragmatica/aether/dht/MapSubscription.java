@@ -8,6 +8,9 @@ import org.pragmatica.lang.Contract;
 
 
 public interface MapSubscription<K, V> {
-    @Contract void onPut(K key, V value);
-    @Contract void onRemove(K key);
+    @Contract
+    void onPut(K key, V value);
+
+    @Contract
+    void onRemove(K key);
 }

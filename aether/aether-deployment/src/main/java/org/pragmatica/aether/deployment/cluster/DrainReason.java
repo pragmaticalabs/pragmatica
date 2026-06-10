@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
-
 /// Membership v2 / E2 — drain-action reason used by both [`ClusterTopologyManager#drainNode`]
 /// (leader-pinned, operator/auto-remediation reasons) and the §8.2 unified [`DrainProcedure`]
 /// (node-local, local-trigger reasons). Observability-only at this layer: surfaces *why* a
@@ -30,4 +29,3 @@ public enum DrainReason {
     QUORUM_LOSS,
     COMMANDED
 }
-

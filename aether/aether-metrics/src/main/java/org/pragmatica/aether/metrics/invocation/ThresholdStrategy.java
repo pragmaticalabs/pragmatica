@@ -21,7 +21,8 @@ import static org.pragmatica.lang.Result.unitResult;
 public sealed interface ThresholdStrategy {
     boolean isSlow(MethodName method, long durationNs);
 
-    @Contract default void observe(MethodName method, long durationNs) {}
+    @Contract
+    default void observe(MethodName method, long durationNs) {}
 
     long thresholdNs(MethodName method);
 
@@ -44,26 +45,32 @@ public sealed interface ThresholdStrategy {
     static ThresholdStrategy composite(Map<MethodName, Long> methodThresholdsMs, long defaultMinMs, long defaultMaxMs) {
         var adaptive = adaptive(defaultMinMs, defaultMaxMs);
         var methodThresholdsNs = new ConcurrentHashMap<MethodName, Long>();
+
         methodThresholdsMs.forEach((k, v) -> methodThresholdsNs.put(k, v * 1_000_000));
+
         return new Composite(methodThresholdsNs, adaptive);
     }
 
     record unused() implements ThresholdStrategy {
-        @Override public boolean isSlow(MethodName method, long durationNs) {
+        @Override
+        public boolean isSlow(MethodName method, long durationNs) {
             return false;
         }
 
-        @Override public long thresholdNs(MethodName method) {
+        @Override
+        public long thresholdNs(MethodName method) {
             return 0;
         }
     }
 
     record Fixed(long thresholdNs) implements ThresholdStrategy {
-        @Override public boolean isSlow(MethodName method, long durationNs) {
+        @Override
+        public boolean isSlow(MethodName method, long durationNs) {
             return durationNs > thresholdNs;
         }
 
-        @Override public long thresholdNs(MethodName method) {
+        @Override
+        public long thresholdNs(MethodName method) {
             return thresholdNs;
         }
     }
@@ -76,26 +83,40 @@ public sealed interface ThresholdStrategy {
             return new Adaptive(minThresholdNs, maxThresholdNs, multiplier, new ConcurrentHashMap<>());
         }
 
-        @Override public boolean isSlow(MethodName method, long durationNs) {
+        @Override
+        public boolean isSlow(MethodName method, long durationNs) {
             var stats = methodStats.get(method);
-            if (stats == null || stats.count().get() <10) {return durationNs > minThresholdNs;}
+
+            if (stats == null || stats.count().get() < 10) {
+                return durationNs > minThresholdNs;
+            }
+
             return durationNs > computeThreshold(stats);
         }
 
-        @Override@Contract public void observe(MethodName method, long durationNs) {
+        @Override
+        @Contract
+        public void observe(MethodName method, long durationNs) {
             var stats = methodStats.computeIfAbsent(method, _ -> MethodStats.methodStats());
+
             stats.update(durationNs);
         }
 
-        @Override public long thresholdNs(MethodName method) {
+        @Override
+        public long thresholdNs(MethodName method) {
             var stats = methodStats.get(method);
-            if (stats == null || stats.count().get() <10) {return minThresholdNs;}
+
+            if (stats == null || stats.count().get() < 10) {
+                return minThresholdNs;
+            }
+
             return computeThreshold(stats);
         }
 
         private long computeThreshold(MethodStats stats) {
             var avgNs = stats.averageNs();
             var threshold = (long)(avgNs * multiplier);
+
             return Math.max(minThresholdNs, Math.min(maxThresholdNs, threshold));
         }
 
@@ -106,18 +127,26 @@ public sealed interface ThresholdStrategy {
                 return new MethodStats(new AtomicLong(), new AtomicReference<>(0.0));
             }
 
-            @Contract void update(long durationNs) {
+            @Contract
+            void update(long durationNs) {
                 var c = count.incrementAndGet();
-                if (c == 1) {ema.set((double) durationNs);} else {updateEma(durationNs);}
+
+                if (c == 1) {
+                    ema.set((double) durationNs);
+                } else {
+                    updateEma(durationNs);
+                }
             }
 
             long averageNs() {
-                return ema.get().longValue();
+                return ema.get()
+                          .longValue();
             }
 
             private void updateEma(long durationNs) {
                 Double currentEma;
                 double newEma;
+
                 do {
                     currentEma = ema.get();
                     newEma = ALPHA * durationNs + (1 - ALPHA) * currentEma;
@@ -133,34 +162,44 @@ public sealed interface ThresholdStrategy {
 
         public PerMethod withThreshold(MethodName method, long thresholdMs) {
             methodThresholds.put(method, thresholdMs * 1_000_000);
+
             return this;
         }
 
         public PerMethod removeThreshold(MethodName method) {
             methodThresholds.remove(method);
+
             return this;
         }
 
-        @Override public boolean isSlow(MethodName method, long durationNs) {
+        @Override
+        public boolean isSlow(MethodName method, long durationNs) {
             return durationNs > thresholdNs(method);
         }
 
-        @Override public long thresholdNs(MethodName method) {
+        @Override
+        public long thresholdNs(MethodName method) {
             return methodThresholds.getOrDefault(method, defaultThresholdNs);
         }
     }
 
     record Composite(Map<MethodName, Long> methodThresholdsNs, ThresholdStrategy fallback) implements ThresholdStrategy {
-        @Override public boolean isSlow(MethodName method, long durationNs) {
+        @Override
+        public boolean isSlow(MethodName method, long durationNs) {
             return option(methodThresholdsNs.get(method)).map(explicit -> durationNs > explicit)
                          .or(() -> fallback.isSlow(method, durationNs));
         }
 
-        @Override@Contract public void observe(MethodName method, long durationNs) {
-            if (!methodThresholdsNs.containsKey(method)) {fallback.observe(method, durationNs);}
+        @Override
+        @Contract
+        public void observe(MethodName method, long durationNs) {
+            if (!methodThresholdsNs.containsKey(method)) {
+                fallback.observe(method, durationNs);
+            }
         }
 
-        @Override public long thresholdNs(MethodName method) {
+        @Override
+        public long thresholdNs(MethodName method) {
             return option(methodThresholdsNs.get(method)).or(() -> fallback.thresholdNs(method));
         }
     }

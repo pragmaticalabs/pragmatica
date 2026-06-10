@@ -97,6 +97,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                               BackoffConfig.DEFAULT,
                                               coreMax,
                                               effectiveClusterSize);
+
             return new AetherNodeConfig(topology,
                                         protocol,
                                         sliceAction,
@@ -374,9 +375,10 @@ public record AetherNodeConfig(TopologyConfig topology,
     }
 
     public Result<Unit> validate() {
-        if (managementPort <0 || managementPort > 65535) {
+        if (managementPort < 0 || managementPort > 65535) {
             return Causes.cause("Invalid management port: " + managementPort).result();
         }
+
         if (managementPort != MANAGEMENT_DISABLED && topology.coreNodes().isEmpty()) {
             return Causes.cause("At least one core node required when management is enabled").result();
         }

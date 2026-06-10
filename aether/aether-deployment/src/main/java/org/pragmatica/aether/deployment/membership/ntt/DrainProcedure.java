@@ -9,10 +9,11 @@ import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.atomic.AtomicReference;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -86,14 +87,22 @@ public final class DrainProcedure {
                                                 Runnable swimLeaveEmitter,
                                                 Runnable jvmExit,
                                                 TimeSpan drainTimeout) {
-        return new DrainProcedure(tracker, swimLeaveEmitter, reason -> {}, jvmExit, drainTimeout);
+        return new DrainProcedure(tracker,
+                                  swimLeaveEmitter,
+                                  reason -> {},
+                                  jvmExit,
+                                  drainTimeout);
     }
 
     /// Convenience factory using the spec §14 default drain timeout (30s).
     public static DrainProcedure drainProcedure(InFlightRequestTracker tracker,
                                                 Runnable swimLeaveEmitter,
                                                 Runnable jvmExit) {
-        return new DrainProcedure(tracker, swimLeaveEmitter, reason -> {}, jvmExit, DEFAULT_DRAIN_TIMEOUT);
+        return new DrainProcedure(tracker,
+                                  swimLeaveEmitter,
+                                  reason -> {},
+                                  jvmExit,
+                                  DEFAULT_DRAIN_TIMEOUT);
     }
 
     /// Factory variant that additionally takes a best-effort `drainInitiatedEmitter`, invoked once
@@ -116,6 +125,7 @@ public final class DrainProcedure {
         if (!state.compareAndSet(DrainState.INACTIVE, DrainState.DRAINING)) {
             return;
         }
+
         log.warn("DrainProcedure: DRAINING (reason={}) — closing tracker gate, grace={}ms",
                  reason,
                  drainTimeout.millis());
@@ -150,6 +160,7 @@ public final class DrainProcedure {
         if (state.get() == DrainState.DRAINING) {
             log.warn("DrainProcedure: grace expired with in-flight={} — forcing exit", tracker.count());
         }
+
         performExit();
     }
 
@@ -158,6 +169,7 @@ public final class DrainProcedure {
         if (!state.compareAndSet(DrainState.DRAINING, DrainState.EXITED)) {
             return;
         }
+
         emitSwimLeaveSafely();
         jvmExit.run();
     }

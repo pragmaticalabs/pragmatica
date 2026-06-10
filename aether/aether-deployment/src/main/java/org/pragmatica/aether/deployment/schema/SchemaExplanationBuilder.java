@@ -18,6 +18,7 @@ public interface SchemaExplanationBuilder {
                                          int maxRetries,
                                          long nextRetryMs) {
         var sb = new StringBuilder();
+
         sb.append("Schema migration FAILED for datasource '").append(datasource).append("' (artifact '").append(artifactCoords).append("').\n\n");
         appendCauseLine(sb, causeMessage, attemptNumber, maxRetries);
         appendClassificationLine(sb, classification, nextRetryMs);
@@ -46,17 +47,17 @@ public interface SchemaExplanationBuilder {
                                                  FailureClassification classification,
                                                  long nextRetryMs) {
         sb.append("Classification: ").append(classification.name());
-
         if (classification == FailureClassification.TRANSIENT && nextRetryMs > 0) {
             sb.append(" — automatic retry scheduled in ").append(nextRetryMs / 1000).append("s");
-        } else if (classification == FailureClassification.PERMANENT) {sb.append(" — automatic retry will not help");}
+        } else if (classification == FailureClassification.PERMANENT) {
+            sb.append(" — automatic retry will not help");
+        }
 
         sb.append(".\n\n");
     }
 
     private static void appendImpactSection(StringBuilder sb, List<String> blockedSlices) {
         sb.append("Impact: ").append(blockedSlices.size()).append(" slices blocked in LOADED state");
-
         if (blockedSlices.isEmpty()) {
             sb.append(".\n\n");
 
@@ -79,7 +80,7 @@ public interface SchemaExplanationBuilder {
         sb.append("Options:\n");
         var optionIndex = 1;
 
-        if (classification == FailureClassification.TRANSIENT && attemptNumber <maxRetries) {
+        if (classification == FailureClassification.TRANSIENT && attemptNumber < maxRetries) {
             sb.append("  ").append(optionIndex++).append(". Wait for automatic retry (attempt ").append(attemptNumber + 1).append("/").append(maxRetries).append(" in ").append(nextRetryMs / 1000).append("s)\n");
         }
 

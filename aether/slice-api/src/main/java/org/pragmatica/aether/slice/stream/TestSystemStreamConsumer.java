@@ -5,7 +5,6 @@
 package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.aether.slice.resource.ResourceAddress;
-
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.aether.slice.StreamAccess.StreamMetadata;
 import org.pragmatica.lang.Option;
@@ -26,25 +25,29 @@ import java.util.function.Supplier;
 /// tests typically only need a single fixed list of events without partition semantics. `metadata`
 /// returns a single-partition `StreamMetadata` describing the test stream. `commit` and
 /// `committedOffset` are no-ops returning success / `Option.none()`.
-record TestSystemStreamConsumer<T>(ResourceAddress address,
-                                   Supplier<List<StreamEvent<T>>> fetchSupplier) implements FrameworkStreamConsumer<T> {
-    @Override public Promise<List<StreamEvent<T>>> fetch(long fromOffset, int maxEvents) {
+record TestSystemStreamConsumer<T>(ResourceAddress address, Supplier<List<StreamEvent<T>>> fetchSupplier) implements FrameworkStreamConsumer<T> {
+    @Override
+    public Promise<List<StreamEvent<T>>> fetch(long fromOffset, int maxEvents) {
         return Promise.success(fetchSupplier.get());
     }
 
-    @Override public Promise<List<StreamEvent<T>>> fetch(int partition, long fromOffset, int maxEvents) {
+    @Override
+    public Promise<List<StreamEvent<T>>> fetch(int partition, long fromOffset, int maxEvents) {
         return Promise.success(fetchSupplier.get());
     }
 
-    @Override public Promise<Unit> commit(String consumerGroup, int partition, long offset) {
+    @Override
+    public Promise<Unit> commit(String consumerGroup, int partition, long offset) {
         return Promise.unitPromise();
     }
 
-    @Override public Promise<Option<Long>> committedOffset(String consumerGroup, int partition) {
+    @Override
+    public Promise<Option<Long>> committedOffset(String consumerGroup, int partition) {
         return Promise.success(Option.none());
     }
 
-    @Override public Promise<StreamMetadata> metadata() {
+    @Override
+    public Promise<StreamMetadata> metadata() {
         return Promise.success(new StreamMetadata(address.asString(), 1, List.of()));
     }
 }

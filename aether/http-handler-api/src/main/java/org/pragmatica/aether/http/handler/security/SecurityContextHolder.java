@@ -14,8 +14,8 @@ public final class SecurityContextHolder {
 
     public static Option<SecurityContext> currentContext() {
         return SECURITY_CONTEXT.isBound()
-              ? Option.option(SECURITY_CONTEXT.get())
-              : Option.empty();
+               ? Option.option(SECURITY_CONTEXT.get())
+               : Option.empty();
     }
 
     public static boolean isAuthenticated() {

@@ -55,27 +55,42 @@ public record SshPublicKey(String value) {
     }
 
     private static Result<String> validateNonNull(String raw) {
-        if (raw == null) {return new InvalidPublicKey("Public key is null").result();}
+        if (raw == null) {
+            return new InvalidPublicKey("Public key is null").result();
+        }
 
         var trimmed = raw.trim();
 
-        if (trimmed.isEmpty()) {return new InvalidPublicKey("Public key is blank").result();}
+        if (trimmed.isEmpty()) {
+            return new InvalidPublicKey("Public key is blank").result();
+        }
 
         return Result.success(trimmed);
     }
 
     private static Result<String> validateSingleLine(String raw) {
-        if (raw.indexOf('\n') >= 0 || raw.indexOf('\r') >= 0) {return new InvalidPublicKey("Public key must be a single line").result();}
+        if (raw.indexOf('\n') >= 0 || raw.indexOf('\r') >= 0) {
+            return new InvalidPublicKey("Public key must be a single line").result();
+        }
+
         return Result.success(raw);
     }
 
     private static Result<String> validateAlgorithm(String raw) {
         var parts = raw.split("\\s+", 3);
 
-        if (parts.length <2) {return new InvalidPublicKey("Public key must have format '<algo> <base64-blob> [<comment>]'").result();}
-        if (!SUPPORTED_ALGORITHMS.contains(parts[0])) {return new InvalidPublicKey("Unsupported SSH key algorithm '" + parts[0]
-                                                                                  + "'. Supported: " + SUPPORTED_ALGORITHMS).result();}
-        if (parts[1].isBlank()) {return new InvalidPublicKey("Public key blob is blank").result();}
+        if (parts.length < 2) {
+            return new InvalidPublicKey("Public key must have format '<algo> <base64-blob> [<comment>]'").result();
+        }
+
+        if (!SUPPORTED_ALGORITHMS.contains(parts[0])) {
+            return new InvalidPublicKey("Unsupported SSH key algorithm '" + parts[0]
+                                       + "'. Supported: " + SUPPORTED_ALGORITHMS).result();
+        }
+
+        if (parts[1].isBlank()) {
+            return new InvalidPublicKey("Public key blob is blank").result();
+        }
 
         return Result.success(raw);
     }

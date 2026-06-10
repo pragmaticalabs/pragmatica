@@ -23,7 +23,6 @@ public final class DelegatedStorageAdapter {
 
     private final DemotionManager demotionManager;
     private final StorageGarbageCollector garbageCollector;
-
     private final AtomicBoolean active = new AtomicBoolean(false);
 
     private DelegatedStorageAdapter(DemotionManager demotionManager, StorageGarbageCollector garbageCollector) {
@@ -42,23 +41,28 @@ public final class DelegatedStorageAdapter {
 
     private static DemotionManager noOpDemotionManager() {
         return new DemotionManager() {
-            @Override public int demote() {
+            @Override
+            public int demote() {
                 return 0;
             }
 
-            @Override public DemotionStats stats() {
+            @Override
+            public DemotionStats stats() {
                 return new DemotionStats(0, 0, 0);
             }
 
-            @Override public Result<Unit> activate() {
+            @Override
+            public Result<Unit> activate() {
                 return Result.success(unit());
             }
 
-            @Override public Result<Unit> deactivate() {
+            @Override
+            public Result<Unit> deactivate() {
                 return Result.success(unit());
             }
 
-            @Override public boolean isActive() {
+            @Override
+            public boolean isActive() {
                 return false;
             }
         };
@@ -66,23 +70,28 @@ public final class DelegatedStorageAdapter {
 
     private static StorageGarbageCollector noOpGarbageCollector() {
         return new StorageGarbageCollector() {
-            @Override public int collectGarbage() {
+            @Override
+            public int collectGarbage() {
                 return 0;
             }
 
-            @Override public GCStats stats() {
+            @Override
+            public GCStats stats() {
                 return new GCStats(0, 0);
             }
 
-            @Override public Result<Unit> activate() {
+            @Override
+            public Result<Unit> activate() {
                 return Result.success(unit());
             }
 
-            @Override public Result<Unit> deactivate() {
+            @Override
+            public Result<Unit> deactivate() {
                 return Result.success(unit());
             }
 
-            @Override public boolean isActive() {
+            @Override
+            public boolean isActive() {
                 return false;
             }
         };
@@ -94,6 +103,7 @@ public final class DelegatedStorageAdapter {
             garbageCollector.activate();
             log.info("STORAGE delegation group activated");
         }
+
         return Promise.success(unit());
     }
 
@@ -103,6 +113,7 @@ public final class DelegatedStorageAdapter {
             demotionManager.deactivate();
             log.info("STORAGE delegation group deactivated");
         }
+
         return Promise.success(unit());
     }
 

@@ -11,19 +11,20 @@ import org.pragmatica.serialization.Codec;
 import java.util.Set;
 
 
-@Codec public record CommunitySummary(String communityId,
-                                      NodeId governorNodeId,
-                                      long communityTerm,
-                                      Epoch communityEpoch,
-                                      int memberCount,
-                                      int healthyMembers,
-                                      int suspectedMembers,
-                                      int faultyMembers,
-                                      Set<String> partitions,
-                                      Option<NodeId> assignedSpokesman,
-                                      Epoch lastAckAtCore,
-                                      CommunityQuiescence quiescence,
-                                      String quiescenceDetail) {
+@Codec
+public record CommunitySummary(String communityId,
+                               NodeId governorNodeId,
+                               long communityTerm,
+                               Epoch communityEpoch,
+                               int memberCount,
+                               int healthyMembers,
+                               int suspectedMembers,
+                               int faultyMembers,
+                               Set<String> partitions,
+                               Option<NodeId> assignedSpokesman,
+                               Epoch lastAckAtCore,
+                               CommunityQuiescence quiescence,
+                               String quiescenceDetail) {
     public CommunitySummary {
         partitions = Set.copyOf(partitions);
     }

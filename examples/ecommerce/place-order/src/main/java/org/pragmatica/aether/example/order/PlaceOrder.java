@@ -229,6 +229,7 @@ public interface PlaceOrder {
                                                                                                       order.items()));
                 var shippingPromise = fulfillment.calculateShipping(CalculateShippingRequest.calculateShippingRequest(order.items(),
                                                                                                                       order.shippingAddress()));
+
                 return Promise.all(pricePromise, shippingPromise).flatMap((priceBreakdown, shippingQuote) -> applyDiscount(order,
                                                                                                                            priceBreakdown,
                                                                                                                            shippingQuote));
@@ -241,6 +242,7 @@ public interface PlaceOrder {
                                                                                                                  basePrice.subtotal(),
                                                                                                                  code)).or(() -> ApplyDiscountRequest.withoutCode(order.customerId(),
                                                                                                                                                                   basePrice.subtotal()));
+
                 return pricing.applyDiscount(discountRequest)
                               .flatMap(discount -> calculateTaxAndBuildPrice(order, basePrice, shippingQuote, discount));
             }
@@ -288,6 +290,7 @@ public interface PlaceOrder {
             private Promise<OrderWithReservation> reserveStock(OrderWithPricing context) {
                 var reserveRequest = ReserveStockRequest.reserveStockRequest(context.order().orderId(),
                                                                              context.order().items());
+
                 return inventory.reserveStock(reserveRequest)
                                 .map(reservation -> new OrderWithReservation(context, reservation));
             }
@@ -297,6 +300,7 @@ public interface PlaceOrder {
                                                                                  context.context().order().customerId(),
                                                                                  context.context().pricing().total(),
                                                                                  context.context().order().paymentMethod());
+
                 return payment.processPayment(paymentRequest)
                               .map(result -> new OrderWithPayment(context, result))
                               .onFailure(cause -> releaseStockOnFailure(context));
@@ -304,6 +308,7 @@ public interface PlaceOrder {
 
             private void releaseStockOnFailure(OrderWithReservation context) {
                 var releaseRequest = ReleaseStockRequest.releaseStockRequest(context.reservation().reservationId());
+
                 inventory.releaseStock(releaseRequest);
             }
 
@@ -325,6 +330,7 @@ public interface PlaceOrder {
                                                    complete.shipment());
             }
         }
+
         return new placeOrder(inventory, pricing, payment, fulfillment);
     }
 }

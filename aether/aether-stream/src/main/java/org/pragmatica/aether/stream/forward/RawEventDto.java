@@ -10,7 +10,8 @@ import org.pragmatica.serialization.Codec;
 import java.util.Arrays;
 
 
-@Codec public record RawEventDto(long offset, long timestamp, byte[] data) {
+@Codec
+public record RawEventDto(long offset, long timestamp, byte[] data) {
     public RawEventDto {
         data = data.clone();
     }
@@ -19,19 +20,26 @@ import java.util.Arrays;
         return new RawEventDto(event.offset(), event.timestamp(), event.data());
     }
 
-    @Override public byte[] data() {
+    @Override
+    public byte[] data() {
         return data.clone();
     }
 
-    @Override public boolean equals(Object obj) {
-        return obj instanceof RawEventDto other && offset == other.offset && timestamp == other.timestamp && Arrays.equals(data,
-                                                                                                                           other.data);
+    @Override
+    public boolean equals(Object obj) {
+        return obj instanceof RawEventDto other
+               && offset == other.offset
+               && timestamp == other.timestamp
+               && Arrays.equals(data, other.data);
     }
 
-    @Override public int hashCode() {
+    @Override
+    public int hashCode() {
         int result = Long.hashCode(offset);
+
         result = 31 * result + Long.hashCode(timestamp);
         result = 31 * result + Arrays.hashCode(data);
+
         return result;
     }
 }

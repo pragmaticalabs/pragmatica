@@ -28,19 +28,14 @@ import picocli.CommandLine.Parameters;
 /// Exit codes follow [StreamExitCode]: 0=success, 1=error, 2=validation, 3=user-cancelled,
 /// 4=not-found, 5=conflict, 6=gone. HTTP errors are scraped from the JSON envelope returned by
 /// the base CLI HTTP helpers (see [StreamHttpResponse]).
-@Command(name = "stream",
-        description = "Manage event streams (list, show, tail, delete, group create/delete)",
-        subcommands = {
-                StreamCommand.ListCommand.class,
-                StreamCommand.ShowCommand.class,
-                StreamCommand.TailCommand.class,
-                StreamCommand.DeleteCommand.class,
-                StreamCommand.GroupCommand.class
-        })
+@Command(name = "stream", description = "Manage event streams (list, show, tail, delete, group create/delete)", subcommands = {StreamCommand.ListCommand.class, StreamCommand.ShowCommand.class, StreamCommand.TailCommand.class, StreamCommand.DeleteCommand.class, StreamCommand.GroupCommand.class})
 public class StreamCommand implements Runnable {
-    @CommandLine.ParentCommand private AetherCli parent;
+    @CommandLine.ParentCommand
+    private AetherCli parent;
 
-    @Contract @Override public void run() {
+    @Contract
+    @Override
+    public void run() {
         CommandLine.usage(this, System.out);
     }
 
@@ -50,86 +45,98 @@ public class StreamCommand implements Runnable {
 
     @Command(name = "list", description = "List all streams (optionally filtered by namespace)")
     public static class ListCommand implements Callable<Integer> {
-        @CommandLine.ParentCommand private StreamCommand streamParent;
+        @CommandLine.ParentCommand
+        private StreamCommand streamParent;
 
-        @CommandLine.Option(names = "--namespace", description = "Filter to a single namespace") private String namespace;
+        @CommandLine.Option(names = "--namespace", description = "Filter to a single namespace")
+        private String namespace;
 
-        @Override public Integer call() {
-            var query = namespace == null || namespace.isBlank() ? "" : "namespace=" + namespace;
+        @Override
+        public Integer call() {
+            var query = namespace == null || namespace.isBlank()
+                        ? ""
+                        : "namespace=" + namespace;
             var response = streamParent.parent().fetch(ManagementRoute.STREAMS_LIST, List.of(), query);
+
             return renderQueryOrError(response, streamParent.parent(), "Failed to list streams");
         }
     }
 
     @Command(name = "show", description = "Show stream metadata for a specific version")
     public static class ShowCommand implements Callable<Integer> {
-        @CommandLine.ParentCommand private StreamCommand streamParent;
+        @CommandLine.ParentCommand
+        private StreamCommand streamParent;
 
-        @Parameters(index = "0", description = "Stream address: namespace:stream:version") private String address;
+        @Parameters(index = "0", description = "Stream address: namespace:stream:version")
+        private String address;
 
-        @Override public Integer call() {
-            return StreamAddressArg.parse(address)
-                    .fold(StreamCommand::handleAddressError, addr -> fetchMetadata(addr, streamParent.parent()));
+        @Override
+        public Integer call() {
+            return StreamAddressArg.parse(address).fold(StreamCommand::handleAddressError,
+                                                        addr -> fetchMetadata(addr, streamParent.parent()));
         }
     }
 
-    @Command(name = "tail",
-            description = "Tail events from a stream version via polling /events (press Ctrl-C to stop)")
+    @Command(name = "tail", description = "Tail events from a stream version via polling /events (press Ctrl-C to stop)")
     public static class TailCommand implements Callable<Integer> {
-        @CommandLine.ParentCommand private StreamCommand streamParent;
+        @CommandLine.ParentCommand
+        private StreamCommand streamParent;
 
-        @Parameters(index = "0", description = "Stream address: namespace:stream:version") private String address;
+        @Parameters(index = "0", description = "Stream address: namespace:stream:version")
+        private String address;
 
-        @CommandLine.Option(names = "--interval",
-                description = "Polling interval in milliseconds (default: 500)",
-                defaultValue = "500") private long intervalMs;
+        @CommandLine.Option(names = "--interval", description = "Polling interval in milliseconds (default: 500)", defaultValue = "500")
+        private long intervalMs;
 
-        @CommandLine.Option(names = "--from-offset",
-                description = "Initial offset to read from (default: 0 — start from beginning)",
-                defaultValue = "0") private long fromOffset;
+        @CommandLine.Option(names = "--from-offset", description = "Initial offset to read from (default: 0 — start from beginning)", defaultValue = "0")
+        private long fromOffset;
 
-        @CommandLine.Option(names = "--max-events",
-                description = "Maximum events per poll page (default: 100, server-capped at 1000)",
-                defaultValue = "100") private int maxEvents;
+        @CommandLine.Option(names = "--max-events", description = "Maximum events per poll page (default: 100, server-capped at 1000)", defaultValue = "100")
+        private int maxEvents;
 
-        @CommandLine.Option(names = "--follow",
-                description = "Keep polling for new events (default: true). Use --no-follow for one-shot.",
-                negatable = true,
-                defaultValue = "true") private boolean follow;
+        @CommandLine.Option(names = "--follow", description = "Keep polling for new events (default: true). Use --no-follow for one-shot.", negatable = true, defaultValue = "true")
+        private boolean follow;
 
-        @Override public Integer call() {
-            return StreamAddressArg.parse(address)
-                    .fold(StreamCommand::handleAddressError,
-                          addr -> tailStream(addr,
-                                             streamParent.parent(),
-                                             new StreamTailPoller.PollerOptions(fromOffset,
-                                                                                maxEvents,
-                                                                                follow,
-                                                                                intervalMs)));
+        @Override
+        public Integer call() {
+            return StreamAddressArg.parse(address).fold(StreamCommand::handleAddressError,
+                                                        addr -> tailStream(addr,
+                                                                           streamParent.parent(),
+                                                                           new StreamTailPoller.PollerOptions(fromOffset,
+                                                                                                              maxEvents,
+                                                                                                              follow,
+                                                                                                              intervalMs)));
         }
     }
 
     @Command(name = "delete", description = "Force-purge a specific stream version")
     public static class DeleteCommand implements Callable<Integer> {
-        @CommandLine.ParentCommand private StreamCommand streamParent;
+        @CommandLine.ParentCommand
+        private StreamCommand streamParent;
 
-        @Parameters(index = "0", description = "Stream address: namespace:stream:version") private String address;
+        @Parameters(index = "0", description = "Stream address: namespace:stream:version")
+        private String address;
 
-        @CommandLine.Option(names = {"--force", "-f"}, description = "Skip confirmation prompt") private boolean force;
+        @CommandLine.Option(names = {"--force", "-f"}, description = "Skip confirmation prompt")
+        private boolean force;
 
-        @Override public Integer call() {
-            return StreamAddressArg.parse(address)
-                    .fold(StreamCommand::handleAddressError,
-                          addr -> deleteStreamWithConfirmation(addr, force, streamParent.parent()));
+        @Override
+        public Integer call() {
+            return StreamAddressArg.parse(address).fold(StreamCommand::handleAddressError,
+                                                        addr -> deleteStreamWithConfirmation(addr,
+                                                                                             force,
+                                                                                             streamParent.parent()));
         }
     }
 
-    @Command(name = "group", description = "Manage durable consumer groups",
-            subcommands = {GroupCommand.CreateCommand.class, GroupCommand.DeleteCommand.class})
+    @Command(name = "group", description = "Manage durable consumer groups", subcommands = {GroupCommand.CreateCommand.class, GroupCommand.DeleteCommand.class})
     public static class GroupCommand implements Runnable {
-        @CommandLine.ParentCommand private StreamCommand streamParent;
+        @CommandLine.ParentCommand
+        private StreamCommand streamParent;
 
-        @Contract @Override public void run() {
+        @Contract
+        @Override
+        public void run() {
             CommandLine.usage(this, System.out);
         }
 
@@ -139,52 +146,67 @@ public class StreamCommand implements Runnable {
 
         @Command(name = "create", description = "Create a durable consumer group on a stream version")
         public static class CreateCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand private GroupCommand groupParent;
+            @CommandLine.ParentCommand
+            private GroupCommand groupParent;
 
-            @Parameters(index = "0", description = "Stream address: namespace:stream:version") private String address;
+            @Parameters(index = "0", description = "Stream address: namespace:stream:version")
+            private String address;
 
-            @Parameters(index = "1", description = "Consumer group ID") private String group;
+            @Parameters(index = "1", description = "Consumer group ID")
+            private String group;
 
-            @CommandLine.Option(names = "--initial-position",
-                    description = "Initial position: 'earliest' or 'latest' (default: latest)",
-                    defaultValue = "latest") private String initialPosition;
+            @CommandLine.Option(names = "--initial-position", description = "Initial position: 'earliest' or 'latest' (default: latest)", defaultValue = "latest")
+            private String initialPosition;
 
-            @Override public Integer call() {
-                return StreamAddressArg.parse(address)
-                        .fold(StreamCommand::handleAddressError,
-                              addr -> createGroup(addr, group, initialPosition, groupParent.streamParent().parent()));
+            @Override
+            public Integer call() {
+                return StreamAddressArg.parse(address).fold(StreamCommand::handleAddressError,
+                                                            addr -> createGroup(addr,
+                                                                                group,
+                                                                                initialPosition,
+                                                                                groupParent.streamParent().parent()));
             }
         }
 
         @Command(name = "delete", description = "Delete a durable consumer group; releases its reference")
         public static class DeleteCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand private GroupCommand groupParent;
+            @CommandLine.ParentCommand
+            private GroupCommand groupParent;
 
-            @Parameters(index = "0", description = "Stream address: namespace:stream:version") private String address;
+            @Parameters(index = "0", description = "Stream address: namespace:stream:version")
+            private String address;
 
-            @Parameters(index = "1", description = "Consumer group ID") private String group;
+            @Parameters(index = "1", description = "Consumer group ID")
+            private String group;
 
-            @CommandLine.Option(names = {"--force", "-f"}, description = "Skip confirmation prompt") private boolean force;
+            @CommandLine.Option(names = {"--force", "-f"}, description = "Skip confirmation prompt")
+            private boolean force;
 
-            @Override public Integer call() {
-                return StreamAddressArg.parse(address)
-                        .fold(StreamCommand::handleAddressError,
-                              addr -> deleteGroupWithConfirmation(addr, group, force,
-                                                                  groupParent.streamParent().parent()));
+            @Override
+            public Integer call() {
+                return StreamAddressArg.parse(address).fold(StreamCommand::handleAddressError,
+                                                            addr -> deleteGroupWithConfirmation(addr,
+                                                                                                group,
+                                                                                                force,
+                                                                                                groupParent.streamParent()
+                                                                                                           .parent()));
             }
         }
     }
 
     // ====================== Helpers (Leaves) ======================
-
     private static int handleAddressError(org.pragmatica.lang.Cause cause) {
         System.err.println("Error: invalid stream address: " + cause.message());
+
         return StreamExitCode.VALIDATION;
     }
 
     private static int fetchMetadata(ResourceAddress addr, AetherCli cli) {
         var response = cli.fetch(ManagementRoute.STREAMS_METADATA,
-                                 List.of(addr.namespace().value(), addr.name().value(), addr.version().asString()));
+                                 List.of(addr.namespace().value(),
+                                         addr.name().value(),
+                                         addr.version().asString()));
+
         return renderQueryOrError(response, cli, "Failed to load stream metadata");
     }
 
@@ -209,26 +231,37 @@ public class StreamCommand implements Runnable {
         if (!force && !confirm("Delete stream version '" + addr.asString() + "'?")) {
             return StreamExitCode.USER_CANCELLED;
         }
+
         var response = cli.delete(ManagementRoute.STREAMS_DELETE,
-                                  List.of(addr.namespace().value(), addr.name().value(), addr.version().asString()));
+                                  List.of(addr.namespace().value(),
+                                          addr.name().value(),
+                                          addr.version().asString()));
         var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), "Failed to delete stream");
+
         if (errorCode >= 0) {
             return mapHttpErrorOrFallback(response, errorCode);
         }
+
         return OutputFormatter.printAction(response, cli.outputOptions(), "Deleted stream: " + addr.asString());
     }
 
     private static int createGroup(ResourceAddress addr, String groupId, String initialPosition, AetherCli cli) {
-        var body = "{\"groupId\":\"" + escapeJson(groupId) + "\",\"initialPosition\":\"" + escapeJson(initialPosition)
-                + "\"}";
+        var body = "{\"groupId\":\"" + escapeJson(groupId)
+                 + "\",\"initialPosition\":\"" + escapeJson(initialPosition)
+                 + "\"}";
         var response = cli.post(ManagementRoute.STREAMS_GROUP_CREATE,
-                                List.of(addr.namespace().value(), addr.name().value(), addr.version().asString()),
+                                List.of(addr.namespace().value(),
+                                        addr.name().value(),
+                                        addr.version().asString()),
                                 body);
         var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), "Failed to create group");
+
         if (errorCode >= 0) {
             return mapHttpErrorOrFallback(response, errorCode);
         }
-        return OutputFormatter.printAction(response, cli.outputOptions(),
+
+        return OutputFormatter.printAction(response,
+                                           cli.outputOptions(),
                                            "Created group '" + groupId + "' on " + addr.asString());
     }
 
@@ -236,21 +269,30 @@ public class StreamCommand implements Runnable {
         if (!force && !confirm("Delete consumer group '" + groupId + "' on '" + addr.asString() + "'?")) {
             return StreamExitCode.USER_CANCELLED;
         }
+
         var response = cli.delete(ManagementRoute.STREAMS_GROUP_DELETE,
-                                  List.of(addr.namespace().value(), addr.name().value(), addr.version().asString(), groupId));
+                                  List.of(addr.namespace().value(),
+                                          addr.name().value(),
+                                          addr.version().asString(),
+                                          groupId));
         var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), "Failed to delete group");
+
         if (errorCode >= 0) {
             return mapHttpErrorOrFallback(response, errorCode);
         }
-        return OutputFormatter.printAction(response, cli.outputOptions(),
+
+        return OutputFormatter.printAction(response,
+                                           cli.outputOptions(),
                                            "Deleted group '" + groupId + "' on " + addr.asString());
     }
 
     private static int renderQueryOrError(String response, AetherCli cli, String errorLabel) {
         var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), errorLabel);
+
         if (errorCode >= 0) {
             return mapHttpErrorOrFallback(response, errorCode);
         }
+
         return OutputFormatter.printQuery(response, cli.outputOptions());
     }
 
@@ -263,7 +305,9 @@ public class StreamCommand implements Runnable {
         // to the generic exit so non-HTTP failures stay at the OutputFormatter-level code.
         return switch (mapped) {
             case StreamExitCode.NOT_FOUND, StreamExitCode.CONFLICT, StreamExitCode.GONE -> mapped;
-            default -> genericExit == 0 ? StreamExitCode.ERROR : genericExit;
+            default -> genericExit == 0
+                       ? StreamExitCode.ERROR
+                       : genericExit;
         };
     }
 
@@ -275,6 +319,7 @@ public class StreamCommand implements Runnable {
     /// Group IDs are spec-constrained to a tame charset; this is belt-and-suspenders for operator
     /// pastes that include a stray backslash or quote.
     private static String escapeJson(String s) {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+        return s.replace("\\", "\\\\")
+                .replace("\"", "\\\"");
     }
 }

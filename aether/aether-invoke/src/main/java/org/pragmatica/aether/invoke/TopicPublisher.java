@@ -17,11 +17,20 @@ import java.util.ArrayList;
 public record TopicPublisher<T>(String topicName, TopicSubscriptionRegistry registry, SliceInvoker invoker) implements Publisher<T> {
     private static final TypeToken<Unit> UNIT_TYPE_TOKEN = new TypeToken<>() {};
 
-    @Override public Promise<Unit> publish(T message) {
+    @Override
+    public Promise<Unit> publish(T message) {
         var subscribers = registry.findSubscribers(topicName);
-        if (subscribers.isEmpty()) {return Promise.unitPromise();}
+
+        if (subscribers.isEmpty()) {
+            return Promise.unitPromise();
+        }
+
         var deliveries = new ArrayList<Promise<Unit>>(subscribers.size());
-        for (var subscriber : subscribers) {deliveries.add(deliverToSubscriber(subscriber, message));}
+
+        for (var subscriber : subscribers) {
+            deliveries.add(deliverToSubscriber(subscriber, message));
+        }
+
         return Promise.allOf(deliveries).map(_ -> Unit.unit());
     }
 

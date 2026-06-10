@@ -25,20 +25,16 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-EX-01"}) public interface BlueprintArtifactParser {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-EX-01"})
+public interface BlueprintArtifactParser {
     Cause MISSING_BLUEPRINT_TOML = Causes.cause("Blueprint artifact missing META-INF/blueprint.toml");
-
     Fn1<Cause, String> PARSE_ERROR = Causes.forOneValue("Failed to parse blueprint artifact: %s");
-
     /// Spec event-stream-namespaces §11: stream alias is the part after `streams.` in the
     /// `[streams.X]` section header — slice manifests record the full `configSection` (e.g.
     /// `streams.orders`); the validator's `roleHints` map is keyed by the alias only.
     String STREAMS_PREFIX = "streams.";
-
     String ROLE_PRODUCER = "producer";
-
     String ROLE_CONSUMER = "consumer";
-
     String ROLE_BOTH = "both";
 
     static Result<BlueprintArtifact> parse(byte[] jarBytes) {
@@ -55,8 +51,10 @@ import java.util.zip.ZipInputStream;
         var schemaMigrations = new LinkedHashMap<String, List<MigrationEntry>>();
         var sliceManifestProps = new ArrayList<Properties>();
         ZipEntry entry;
+
         while ((entry = zis.getNextEntry()) != null) {
             var name = entry.getName();
+
             if ("META-INF/blueprint.toml".equals(name)) {
                 blueprintToml = readEntry(zis);
             } else if ("META-INF/resources.toml".equals(name)) {
@@ -67,14 +65,18 @@ import java.util.zip.ZipInputStream;
                 addMigrationEntry(zis, name, schemaMigrations);
             }
         }
-        if (blueprintToml == null) {return MISSING_BLUEPRINT_TOML.result();}
+
+        if (blueprintToml == null) {
+            return MISSING_BLUEPRINT_TOML.result();
+        }
+
         var resourcesConfig = Option.option(resourcesToml);
         var roleHints = aggregateRoleHints(sliceManifestProps);
-        return BlueprintParser.parse(blueprintToml)
-                                    .map(blueprint -> BlueprintArtifact.blueprintArtifact(blueprint,
-                                                                                          resourcesConfig,
-                                                                                          schemaMigrations,
-                                                                                          roleHints));
+
+        return BlueprintParser.parse(blueprintToml).map(blueprint -> BlueprintArtifact.blueprintArtifact(blueprint,
+                                                                                                         resourcesConfig,
+                                                                                                         schemaMigrations,
+                                                                                                         roleHints));
     }
 
     private static String readEntry(ZipInputStream zis) throws IOException {
@@ -83,6 +85,7 @@ import java.util.zip.ZipInputStream;
 
     private static void addSliceManifest(ZipInputStream zis, List<Properties> sink) throws IOException {
         var props = new Properties();
+
         props.load(new ByteArrayInputStream(zis.readAllBytes()));
         sink.add(props);
     }
@@ -93,24 +96,35 @@ import java.util.zip.ZipInputStream;
     /// in the same blueprint) collapses to `both`.
     static Map<String, String> aggregateRoleHints(List<Properties> sliceManifestProps) {
         var rolesByConfig = new LinkedHashMap<String, Set<String>>();
-        sliceManifestProps.forEach(props -> collectRoleConfigs(props, "stream.publisher.", "stream.publishers.count",
-                                                                ROLE_PRODUCER, rolesByConfig));
-        sliceManifestProps.forEach(props -> collectRoleConfigs(props, "stream.access.", "stream.access.count",
-                                                                ROLE_CONSUMER, rolesByConfig));
+
+        sliceManifestProps.forEach(props -> collectRoleConfigs(props,
+                                                               "stream.publisher.",
+                                                               "stream.publishers.count",
+                                                               ROLE_PRODUCER,
+                                                               rolesByConfig));
+        sliceManifestProps.forEach(props -> collectRoleConfigs(props,
+                                                               "stream.access.",
+                                                               "stream.access.count",
+                                                               ROLE_CONSUMER,
+                                                               rolesByConfig));
         var result = new LinkedHashMap<String, String>();
-        rolesByConfig.forEach((configSection, roles) -> aliasOf(configSection)
-                .onPresent(alias -> result.put(alias, collapseRole(roles))));
+
+        rolesByConfig.forEach((configSection, roles) -> aliasOf(configSection).onPresent(alias -> result.put(alias,
+                                                                                                             collapseRole(roles))));
+
         return Map.copyOf(result);
     }
 
     private static void collectRoleConfigs(Properties props,
-                                            String prefix,
-                                            String countKey,
-                                            String role,
-                                            Map<String, Set<String>> sink) {
+                                           String prefix,
+                                           String countKey,
+                                           String role,
+                                           Map<String, Set<String>> sink) {
         var count = parseCount(props.getProperty(countKey));
+
         for (int i = 0; i < count; i++) {
             var configSection = props.getProperty(prefix + i + ".config");
+
             if (configSection != null && !configSection.isEmpty()) {
                 sink.computeIfAbsent(configSection, _ -> new LinkedHashSet<>()).add(role);
             }
@@ -118,7 +132,10 @@ import java.util.zip.ZipInputStream;
     }
 
     private static int parseCount(String raw) {
-        if (raw == null || raw.isEmpty()) {return 0;}
+        if (raw == null || raw.isEmpty()) {
+            return 0;
+        }
+
         try {
             return Integer.parseInt(raw.trim());
         } catch (NumberFormatException _) {
@@ -127,14 +144,26 @@ import java.util.zip.ZipInputStream;
     }
 
     private static Option<String> aliasOf(String configSection) {
-        if (!configSection.startsWith(STREAMS_PREFIX)) {return Option.none();}
+        if (!configSection.startsWith(STREAMS_PREFIX)) {
+            return Option.none();
+        }
+
         var alias = configSection.substring(STREAMS_PREFIX.length());
-        return alias.isEmpty() ? Option.none() : Option.some(alias);
+
+        return alias.isEmpty()
+               ? Option.none()
+               : Option.some(alias);
     }
 
     private static String collapseRole(Set<String> roles) {
-        if (roles.contains(ROLE_PRODUCER) && roles.contains(ROLE_CONSUMER)) {return ROLE_BOTH;}
-        if (roles.contains(ROLE_PRODUCER)) {return ROLE_PRODUCER;}
+        if (roles.contains(ROLE_PRODUCER) && roles.contains(ROLE_CONSUMER)) {
+            return ROLE_BOTH;
+        }
+
+        if (roles.contains(ROLE_PRODUCER)) {
+            return ROLE_PRODUCER;
+        }
+
         return ROLE_CONSUMER;
     }
 
@@ -144,23 +173,30 @@ import java.util.zip.ZipInputStream;
         var parts = entryPath.split("/");
         String datasource;
         String filename;
+
         if (parts.length == 2) {
             datasource = "database";
             filename = parts[1];
         } else if (parts.length >= 3) {
             datasource = "database." + parts[1];
             filename = parts[parts.length - 1];
-        } else {return;}
+        } else {
+            return;
+        }
+
         var sql = readEntry(zis);
         var checksum = computeChecksum(sql);
-        migrations.computeIfAbsent(datasource,
-                                   _ -> new ArrayList<>())
-        .add(MigrationEntry.migrationEntry(filename, sql, checksum));
+
+        migrations.computeIfAbsent(datasource, _ -> new ArrayList<>()).add(MigrationEntry.migrationEntry(filename,
+                                                                                                         sql,
+                                                                                                         checksum));
     }
 
     private static long computeChecksum(String content) {
         var crc = new CRC32();
+
         crc.update(content.getBytes(StandardCharsets.UTF_8));
+
         return crc.getValue();
     }
 }

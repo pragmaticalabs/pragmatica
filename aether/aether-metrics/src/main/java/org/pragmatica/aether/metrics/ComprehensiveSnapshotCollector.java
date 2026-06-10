@@ -34,7 +34,6 @@ import static org.pragmatica.lang.Result.unitResult;
 
 public final class ComprehensiveSnapshotCollector {
     private static final Logger log = LoggerFactory.getLogger(ComprehensiveSnapshotCollector.class);
-
     private static final long COLLECTION_INTERVAL_MS = 1000;
 
     private final GCMetricsCollector gcCollector;
@@ -101,24 +100,32 @@ public final class ComprehensiveSnapshotCollector {
     }
 
     public Result<Unit> start() {
-        if (started) {return unitResult();}
+        if (started) {
+            return unitResult();
+        }
+
         started = true;
         gcCollector.start();
         eventLoopCollector.start();
         collectionTask.set(Option.some(SharedScheduler.scheduleAtFixedRate(this::collectSnapshot,
-                                                                           TimeSpan.timeSpan(COLLECTION_INTERVAL_MS)
-                                                                                            .millis())));
+                                                                           TimeSpan.timeSpan(COLLECTION_INTERVAL_MS).millis())));
         log.info("Comprehensive snapshot collection started (interval: {}ms)", COLLECTION_INTERVAL_MS);
+
         return unitResult();
     }
 
-    @SuppressWarnings("JBCT-EX-01") public Result<Unit> stop() {
-        if (!started) {return unitResult();}
+    @SuppressWarnings("JBCT-EX-01")
+    public Result<Unit> stop() {
+        if (!started) {
+            return unitResult();
+        }
+
         started = false;
         collectionTask.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
         gcCollector.stop();
         eventLoopCollector.stop();
         log.info("Comprehensive snapshot collection stopped");
+
         return unitResult();
     }
 
@@ -130,9 +137,11 @@ public final class ComprehensiveSnapshotCollector {
         return derivedCalculator.current();
     }
 
-    @SuppressWarnings("JBCT-EX-01") private void collectSnapshot() {
+    @SuppressWarnings("JBCT-EX-01")
+    private void collectSnapshot() {
         try {
             var snapshot = buildSnapshot();
+
             minuteAggregator.addSample(snapshot);
             derivedCalculator.addSample(snapshot);
             log.trace("Collected comprehensive snapshot: cpu={}, heap={}, invocations={}",
@@ -156,16 +165,20 @@ public final class ComprehensiveSnapshotCollector {
         long successfulInvocations = 0;
         long failedInvocations = 0;
         double totalLatencyMs = 0;
+
         for (var methodSnapshot : invocationSnapshots) {
             var metrics = methodSnapshot.metrics();
+
             totalInvocations += metrics.count();
             successfulInvocations += metrics.successCount();
             failedInvocations += metrics.failureCount();
             totalLatencyMs += metrics.totalDurationNs() / 1_000_000.0;
         }
+
         double avgLatencyMs = totalInvocations > 0
-                             ? totalLatencyMs / totalInvocations
-                             : 0.0;
+                              ? totalLatencyMs / totalInvocations
+                              : 0.0;
+
         return new ComprehensiveSnapshot(System.currentTimeMillis(),
                                          cpuUsage,
                                          heapUsage.getUsed(),
@@ -183,10 +196,13 @@ public final class ComprehensiveSnapshotCollector {
 
     private double collectCpuUsage() {
         double systemLoad = osMxBean.getSystemLoadAverage();
+
         if (systemLoad >= 0) {
             int processors = osMxBean.getAvailableProcessors();
+
             return Math.min(1.0, systemLoad / processors);
         }
+
         return 0.0;
     }
 }

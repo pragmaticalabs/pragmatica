@@ -22,6 +22,7 @@ sealed interface ComputeProviderLog {
         log.warn("Provision readiness FAILED for {}: instance reached terminal status {} during boot — refusing to report a phantom RUNNING node",
                  instanceId.value(),
                  lastStatus);
+
         return EnvironmentError.provisionReadinessTimeout(instanceId, lastStatus, 0L);
     }
 
@@ -33,6 +34,7 @@ sealed interface ComputeProviderLog {
                  instanceId.value(),
                  timeoutMillis,
                  underlying.message());
+
         return EnvironmentError.provisionReadinessTimeout(instanceId, InstanceStatus.PROVISIONING, timeoutMillis);
     }
 

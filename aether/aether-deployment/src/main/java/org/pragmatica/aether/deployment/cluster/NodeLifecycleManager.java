@@ -38,7 +38,6 @@ public interface NodeLifecycleManager {
 
 record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) implements NodeLifecycleManager {
     private static final Logger log = LoggerFactory.getLogger(NodeLifecycleManagerRecord.class);
-
     // Upper-layer canonical tag key for binding a cloud instance to its assigned NodeId.
     // Each ComputeProvider translates this dotted key to its native label/tag convention
     // at the boundary: DockerComputeProvider sets `aether.node-id` as a Docker label
@@ -65,6 +64,7 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) imple
                                         log.info("Provisioning new instance: size={}, pool={}",
                                                  spec.instanceSize(),
                                                  spec.pool());
+
                                         return provider.provision(spec);
                                     });
     }
@@ -117,12 +117,14 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) imple
                                                    List<InstanceInfo> instances) {
         if (instances.size() == 1) {
             var instanceId = instances.getFirst().id();
+
             log.info("Terminating cloud instance {} for node {}", instanceId.value(), nodeId);
 
             return provider.terminate(instanceId)
                            .onSuccess(_ -> log.info("Cloud instance {} terminated successfully",
                                                     instanceId.value()));
         }
+
         return logMismatch("terminate", nodeId, instances.size());
     }
 
@@ -131,12 +133,14 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) imple
                                                  List<InstanceInfo> instances) {
         if (instances.size() == 1) {
             var instanceId = instances.getFirst().id();
+
             log.info("Restarting cloud instance {} for node {}", instanceId.value(), nodeId);
 
             return provider.restart(instanceId)
                            .onSuccess(_ -> log.info("Cloud instance {} restarted successfully",
                                                     instanceId.value()));
         }
+
         return logMismatch("restart", nodeId, instances.size());
     }
 
@@ -144,6 +148,7 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) imple
         var reason = count == 0
                      ? "no cloud instance with tag " + NODE_ID_TAG + "=" + nodeId.id()
                      : "found " + count + " instances with tag " + NODE_ID_TAG + "=" + nodeId.id() + " (expected 1)";
+
         log.warn("{} of {} skipped: {}", operation, nodeId.id(), reason);
 
         return EnvironmentError.operationNotSupported(operation + ": " + reason).promise();

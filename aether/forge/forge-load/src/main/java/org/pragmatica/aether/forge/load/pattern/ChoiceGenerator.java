@@ -33,23 +33,24 @@ public record ChoiceGenerator(List<String> choices) implements PatternGenerator 
     }
 
     private static Result<PatternGenerator> toChoices(String choiceSpec) {
-        var choices = Arrays.stream(choiceSpec.split(",")).map(String::trim)
-                                   .filter(s -> !s.isEmpty())
-                                   .toList();
+        var choices = Arrays.stream(choiceSpec.split(",")).map(String::trim).filter(s -> !s.isEmpty()).toList();
+
         return ensureNonEmpty(choices, choiceSpec);
     }
 
     private static Result<PatternGenerator> ensureNonEmpty(List<String> choices, String choiceSpec) {
         return choices.isEmpty()
-              ? INVALID_CHOICE.apply(choiceSpec).result()
-              : choiceGenerator(choices).map(gen -> gen);
+               ? INVALID_CHOICE.apply(choiceSpec).result()
+               : choiceGenerator(choices).map(gen -> gen);
     }
 
-    @Override public String generate() {
+    @Override
+    public String generate() {
         return choices.get(ThreadLocalRandom.current().nextInt(choices.size()));
     }
 
-    @Override public String pattern() {
+    @Override
+    public String pattern() {
         return "${choice:" + String.join(",", choices) + "}";
     }
 }

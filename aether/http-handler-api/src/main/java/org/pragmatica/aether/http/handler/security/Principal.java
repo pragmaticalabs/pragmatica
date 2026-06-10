@@ -10,7 +10,8 @@ import org.pragmatica.lang.Verify;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public record Principal(String value) {
+@Codec
+public record Principal(String value) {
     public sealed interface PrincipalError extends Cause {
         enum General implements PrincipalError {
             NULL_VALUE("Principal value cannot be null"),
@@ -19,13 +20,16 @@ import org.pragmatica.serialization.Codec;
             General(String message) {
                 this.message = message;
             }
-            @Override public String message() {
+            @Override
+            public String message() {
                 return message;
             }
         }
 
-        @SuppressWarnings("unused") record unused() implements PrincipalError {
-            @Override public String message() {
+        @SuppressWarnings("unused")
+        record unused() implements PrincipalError {
+            @Override
+            public String message() {
                 return "";
             }
         }
@@ -38,7 +42,8 @@ import org.pragmatica.serialization.Codec;
     }
 
     public static Result<Principal> principal(String name, PrincipalType type) {
-        return ensureNotBlank(name).map(type::prefixed).map(Principal::new);
+        return ensureNotBlank(name).map(type::prefixed)
+                             .map(Principal::new);
     }
 
     public boolean isAnonymous() {
@@ -58,8 +63,8 @@ import org.pragmatica.serialization.Codec;
     }
 
     private static Result<String> ensureNotBlank(String value) {
-        return Verify.ensure(value, Verify.Is::notNull, PrincipalError.General.NULL_VALUE)
-                            .filter(PrincipalError.General.BLANK_VALUE, Verify.Is::notBlank);
+        return Verify.ensure(value, Verify.Is::notNull, PrincipalError.General.NULL_VALUE).filter(PrincipalError.General.BLANK_VALUE,
+                                                                                                  Verify.Is::notBlank);
     }
 
     public enum PrincipalType {

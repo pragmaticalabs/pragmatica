@@ -12,25 +12,21 @@ import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 
-@SuppressWarnings({"JBCT-RET-01", "JBCT-ZONE-02"}) public sealed interface CommunityScalingEvaluator permits ActiveCommunityScalingEvaluator {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-ZONE-02"})
+public sealed interface CommunityScalingEvaluator permits ActiveCommunityScalingEvaluator {
     double DEFAULT_SCALE_UP_CPU_THRESHOLD = 0.80;
-
     double DEFAULT_SCALE_DOWN_CPU_THRESHOLD = 0.20;
-
     double DEFAULT_SCALE_UP_P95_THRESHOLD_MS = 500.0;
-
     double DEFAULT_SCALE_UP_ERROR_RATE_THRESHOLD = 0.10;
-
     long DEFAULT_COOLDOWN_MS = 60_000;
-
     int DEFAULT_WINDOW_SIZE = 5;
-
     int DEFAULT_SUSTAINED_COUNT = 3;
 
     Option<CommunityScalingRequest> evaluate(String communityId,
                                              NodeId governorId,
                                              int memberCount,
                                              WindowSample currentSample);
+
     List<WindowSample> slidingWindow();
     void reset();
 

@@ -42,11 +42,24 @@ import org.slf4j.LoggerFactory;
 
 
 public interface SpokesmanPingLoop {
-    @Contract void start();
-    @Contract void stop();
-    @MessageReceiver@Contract void onSpokesmanPut(ValuePut<SpokesmanKey, SpokesmanValue> notification);
-    @MessageReceiver@Contract void onSpokesmanRemove(ValueRemove<SpokesmanKey, SpokesmanValue> notification);
-    @MessageReceiver@Contract void onClusterSyncPong(ClusterSyncPong pong);
+    @Contract
+    void start();
+
+    @Contract
+    void stop();
+
+    @MessageReceiver
+    @Contract
+    void onSpokesmanPut(ValuePut<SpokesmanKey, SpokesmanValue> notification);
+
+    @MessageReceiver
+    @Contract
+    void onSpokesmanRemove(ValueRemove<SpokesmanKey, SpokesmanValue> notification);
+
+    @MessageReceiver
+    @Contract
+    void onClusterSyncPong(ClusterSyncPong pong);
+
     boolean isActive();
     List<CommunityReport> currentReports();
 
@@ -82,8 +95,11 @@ public interface SpokesmanPingLoop {
     }
 
     interface SpokesmanStatusWriter {
-        @Contract void writeActive(NodeId self, SpokesmanValue baseValue);
-        @Contract void writeFailure(NodeId self, SpokesmanValue baseValue, String reason);
+        @Contract
+        void writeActive(NodeId self, SpokesmanValue baseValue);
+
+        @Contract
+        void writeFailure(NodeId self, SpokesmanValue baseValue, String reason);
 
         static SpokesmanStatusWriter fromCluster(ClusterNode<KVCommand<AetherKey>> cluster) {
             return new ClusterSpokesmanStatusWriter(cluster);
@@ -93,29 +109,37 @@ public interface SpokesmanPingLoop {
 
 enum NoopSpokesmanStatusWriter implements SpokesmanPingLoop.SpokesmanStatusWriter {
     INSTANCE;
-    @Contract@Override public void writeActive(NodeId self, SpokesmanValue baseValue) {}
-    @Contract@Override public void writeFailure(NodeId self, SpokesmanValue baseValue, String reason) {}
+    @Contract
+    @Override
+    public void writeActive(NodeId self, SpokesmanValue baseValue) {}
+    @Contract
+    @Override
+    public void writeFailure(NodeId self, SpokesmanValue baseValue, String reason) {}
 }
 
 record ClusterSpokesmanStatusWriter(ClusterNode<KVCommand<AetherKey>> cluster) implements SpokesmanPingLoop.SpokesmanStatusWriter {
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(ClusterSpokesmanStatusWriter.class);
 
-    @Contract@Override public void writeActive(NodeId self, SpokesmanValue baseValue) {
+    @Contract
+    @Override
+    public void writeActive(NodeId self, SpokesmanValue baseValue) {
         var active = baseValue.withStatus(SpokesmanStatus.ACTIVE);
         var command = new KVCommand.Put<AetherKey, AetherValue>(SpokesmanKey.spokesmanKey(self), active);
-        cluster.apply(java.util.List.<KVCommand<AetherKey>>of(command))
-                     .onFailure(cause -> LOG.warn("Failed to write SpokesmanValue ACTIVE for {}: {}",
-                                                  self,
-                                                  cause.message()));
+
+        cluster.apply(java.util.List.<KVCommand<AetherKey>> of(command)).onFailure(cause -> LOG.warn("Failed to write SpokesmanValue ACTIVE for {}: {}",
+                                                                                                     self,
+                                                                                                     cause.message()));
     }
 
-    @Contract@Override public void writeFailure(NodeId self, SpokesmanValue baseValue, String reason) {
+    @Contract
+    @Override
+    public void writeFailure(NodeId self, SpokesmanValue baseValue, String reason) {
         var failed = baseValue.withFailure(reason);
         var command = new KVCommand.Put<AetherKey, AetherValue>(SpokesmanKey.spokesmanKey(self), failed);
-        cluster.apply(java.util.List.<KVCommand<AetherKey>>of(command))
-                     .onFailure(cause -> LOG.warn("Failed to write SpokesmanValue FAILED for {}: {}",
-                                                  self,
-                                                  cause.message()));
+
+        cluster.apply(java.util.List.<KVCommand<AetherKey>> of(command)).onFailure(cause -> LOG.warn("Failed to write SpokesmanValue FAILED for {}: {}",
+                                                                                                     self,
+                                                                                                     cause.message()));
     }
 }
 
@@ -129,13 +153,9 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
     private final Supplier<Map<NodeId, Map<String, Double>>> allMetricsSupplier;
     private final Function<String, Option<NodeId>> governorLookup;
     private final SpokesmanStatusWriter statusWriter;
-
     private final AtomicBoolean started = new AtomicBoolean(false);
-
     private final AtomicBoolean active = new AtomicBoolean(false);
-
     private final AtomicReference<List<String>> assignedCommunities = new AtomicReference<>(List.of());
-
     private final AtomicReference<Map<String, CommunityReport>> reports = new AtomicReference<>(Map.of());
 
     private final AtomicReference<Map<NodeId, String>> governorToCommunity = new AtomicReference<>(Map.of());
@@ -158,33 +178,49 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
         this.statusWriter = statusWriter;
     }
 
-    @Override@Contract public void start() {
+    @Override
+    @Contract
+    public void start() {
         started.set(true);
     }
 
-    @Override@Contract public void stop() {
+    @Override
+    @Contract
+    public void stop() {
         started.set(false);
         deactivate();
     }
 
-    @Override@Contract public void onSpokesmanPut(ValuePut<SpokesmanKey, SpokesmanValue> notification) {
-        if (!started.get()) {return;}
-        if (!notification.cause().key()
-                               .coreNodeId()
-                               .equals(self)) {return;}
+    @Override
+    @Contract
+    public void onSpokesmanPut(ValuePut<SpokesmanKey, SpokesmanValue> notification) {
+        if (!started.get()) {
+            return;
+        }
+
+        if (!notification.cause().key().coreNodeId().equals(self)) {
+            return;
+        }
+
         var value = notification.cause().value();
+
         if (value.communities().isEmpty() || value.status() == SpokesmanStatus.FAILED) {
             deactivate();
+
             return;
         }
+
         if (value.status() == SpokesmanStatus.ACTIVE) {
             activate(value.communities());
+
             return;
         }
+
         handleAssigned(value);
     }
 
-    @Contract private void handleAssigned(SpokesmanValue baseValue) {
+    @Contract
+    private void handleAssigned(SpokesmanValue baseValue) {
         try {
             activate(baseValue.communities());
             statusWriter.writeActive(self, baseValue);
@@ -199,42 +235,57 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
         }
     }
 
-    @Override@Contract public void onSpokesmanRemove(ValueRemove<SpokesmanKey, SpokesmanValue> notification) {
-        if (!notification.cause().key()
-                               .coreNodeId()
-                               .equals(self)) {return;}
+    @Override
+    @Contract
+    public void onSpokesmanRemove(ValueRemove<SpokesmanKey, SpokesmanValue> notification) {
+        if (!notification.cause().key().coreNodeId().equals(self)) {
+            return;
+        }
+
         deactivate();
     }
 
-    @Override@Contract public void onClusterSyncPong(ClusterSyncPong pong) {
-        if (!active.get()) {return;}
-        Option.option(governorToCommunity.get().get(pong.sender()))
-                     .onPresent(communityId -> aggregatePong(communityId, pong));
+    @Override
+    @Contract
+    public void onClusterSyncPong(ClusterSyncPong pong) {
+        if (!active.get()) {
+            return;
+        }
+
+        Option.option(governorToCommunity.get().get(pong.sender())).onPresent(communityId -> aggregatePong(communityId,
+                                                                                                           pong));
     }
 
-    @Override public boolean isActive() {
+    @Override
+    public boolean isActive() {
         return active.get();
     }
 
-    @Override public List<CommunityReport> currentReports() {
+    @Override
+    public List<CommunityReport> currentReports() {
         return List.copyOf(reports.get().values());
     }
 
-    @Contract private void activate(List<String> communities) {
+    @Contract
+    private void activate(List<String> communities) {
         var frozen = List.copyOf(communities);
         var newIndex = buildGovernorIndex(frozen);
+
         if (!active.compareAndSet(false, true)) {
             assignedCommunities.set(frozen);
             governorToCommunity.set(newIndex);
+
             return;
         }
+
         assignedCommunities.set(frozen);
         governorToCommunity.set(newIndex);
         task.set(SharedScheduler.scheduleAtFixedRate(this::tick, interval));
         log.info("SpokesmanPingLoop activated on {} with communities {}", self, frozen);
     }
 
-    @Contract private void deactivate() {
+    @Contract
+    private void deactivate() {
         if (active.compareAndSet(true, false)) {
             task.cancel();
             reports.set(Map.of());
@@ -246,16 +297,23 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
 
     private Map<NodeId, String> buildGovernorIndex(List<String> communities) {
         var fresh = new LinkedHashMap<NodeId, String>();
+
         communities.forEach(communityId -> governorLookup.apply(communityId)
-                                                               .onPresent(governor -> fresh.put(governor, communityId)));
+                                                         .onPresent(governor -> fresh.put(governor, communityId)));
+
         return Map.copyOf(fresh);
     }
 
     private void tick() {
         try {
             var communities = assignedCommunities.get();
-            if (communities.isEmpty()) {return;}
+
+            if (communities.isEmpty()) {
+                return;
+            }
+
             var rabiaTerm = rabiaTermSupplier.get();
+
             communities.forEach(communityId -> pingOneGovernor(communityId, rabiaTerm));
         } catch (Exception e) {
             log.warn("SpokesmanPingLoop tick failed: {}", e.getMessage());
@@ -275,6 +333,7 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
                                        epoch.localCounter(),
                                        Set.of(),
                                        Set.of());
+
         network.send(governor, ping);
     }
 
@@ -285,8 +344,7 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
     private static Map<String, CommunityReport> mergeReport(Map<String, CommunityReport> current,
                                                             String communityId,
                                                             ClusterSyncPong pong) {
-        var partitionsHeld = Option.option(current.get(communityId)).map(CommunityReport::partitionsHeld)
-                                          .or(Set.of());
+        var partitionsHeld = Option.option(current.get(communityId)).map(CommunityReport::partitionsHeld).or(Set.of());
         var members = lifecycleCount(pong);
         var report = new CommunityReport(communityId,
                                          0L,
@@ -300,7 +358,9 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
                                          partitionsHeld,
                                          System.currentTimeMillis());
         var fresh = new HashMap<>(current);
+
         fresh.put(communityId, report);
+
         return Map.copyOf(fresh);
     }
 
@@ -310,13 +370,14 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
         // (SYNCING|READY|DRAINING). READY/SYNCING are operational (healthy); DRAINING is winding
         // down (suspected). The legacy synthetic lifecycle states are gone.
         var healthy = NodeReportedState.READY.name().equals(state) || NodeReportedState.SYNCING.name().equals(state)
-                     ? 1
-                     : 0;
+                      ? 1
+                      : 0;
         var suspected = NodeReportedState.DRAINING.name().equals(state)
-                       ? 1
-                       : 0;
+                        ? 1
+                        : 0;
+
         return new LifecycleCounts(healthy + suspected, healthy, suspected, 0);
     }
 
-    private record LifecycleCounts(int total, int healthy, int suspected, int faulty){}
+    private record LifecycleCounts(int total, int healthy, int suspected, int faulty) {}
 }

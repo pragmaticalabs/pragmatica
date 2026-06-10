@@ -23,9 +23,10 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-UTIL-02", "JBCT-PAT-01", "JBCT-RET-05", "JBCT-NAM-01"}) public record DependencyFile(List<ArtifactDependency> shared,
-                                                                                                                                                           List<ArtifactDependency> infra,
-                                                                                                                                                           List<ArtifactDependency> slices) {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-UTIL-02", "JBCT-PAT-01", "JBCT-RET-05", "JBCT-NAM-01"})
+public record DependencyFile(List<ArtifactDependency> shared,
+                             List<ArtifactDependency> infra,
+                             List<ArtifactDependency> slices) {
     private enum Section {
         NONE,
         SHARED,
@@ -39,40 +40,63 @@ import static org.pragmatica.lang.Result.success;
         var slices = new ArrayList<ArtifactDependency>();
         var currentSection = Section.NONE;
         var lines = content.split("\n");
+
         for (var line : lines) {
             var trimmed = line.trim();
-            if (trimmed.isEmpty() || trimmed.startsWith("#")) {continue;}
+
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                continue;
+            }
+
             if (trimmed.equals("[shared]")) {
                 currentSection = Section.SHARED;
                 continue;
             }
+
             if (trimmed.equals("[infra]")) {
                 currentSection = Section.INFRA;
                 continue;
             }
+
             if (trimmed.equals("[slices]")) {
                 currentSection = Section.SLICES;
                 continue;
             }
-            if (trimmed.startsWith("[") && trimmed.endsWith("]")) {return UNKNOWN_SECTION.apply(trimmed).result();}
+
+            if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                return UNKNOWN_SECTION.apply(trimmed).result();
+            }
+
             var parseResult = ArtifactDependency.artifactDependency(trimmed);
             final var sectionRef = currentSection;
             var errorHolder = new AtomicReference<Cause>();
             var skipFlag = new AtomicBoolean(false);
+
             parseResult.onSuccess(dependency -> {
-                                      switch (sectionRef){
-                case SHARED -> shared.add(dependency);
-                case INFRA -> infra.add(dependency);
-                case SLICES, NONE -> slices.add(dependency);
+                switch (sectionRef) {
+                    case SHARED -> shared.add(dependency);
+                    case INFRA -> infra.add(dependency);
+                    case SLICES, NONE -> slices.add(dependency);
+                }
+            }).onFailure(cause -> {
+                if (cause == ArtifactDependency.EMPTY_LINE || cause == ArtifactDependency.COMMENT_LINE || cause == ArtifactDependency.SECTION_HEADER) {
+                    skipFlag.set(true);
+                } else {
+                    errorHolder.set(cause);
+                }
+            });
+            if (skipFlag.get()) {
+                continue;
             }
-                                  })
-            .onFailure(cause -> {
-                           if (cause == ArtifactDependency.EMPTY_LINE || cause == ArtifactDependency.COMMENT_LINE || cause == ArtifactDependency.SECTION_HEADER) {skipFlag.set(true);} else {errorHolder.set(cause);}
-                       });
-            if (skipFlag.get()) {continue;}
-            if (errorHolder.get() != null) {return errorHolder.get().result();}
+
+            if (errorHolder.get() != null) {
+                return errorHolder.get()
+                                  .result();
+            }
         }
+
         var result = new DependencyFile(List.copyOf(shared), List.copyOf(infra), List.copyOf(slices));
+
         return result.validateNoFrameworkDependencies();
     }
 
@@ -82,8 +106,18 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private Option<String> findFrameworkDependency() {
-        for (var dep : shared) {if (isFrameworkArtifact(dep)) {return some("[shared] " + dep.asString());}}
-        for (var dep : infra) {if (isFrameworkArtifact(dep)) {return some("[infra] " + dep.asString());}}
+        for (var dep : shared) {
+            if (isFrameworkArtifact(dep)) {
+                return some("[shared] " + dep.asString());
+            }
+        }
+
+        for (var dep : infra) {
+            if (isFrameworkArtifact(dep)) {
+                return some("[infra] " + dep.asString());
+            }
+        }
+
         return none();
     }
 
@@ -95,17 +129,19 @@ import static org.pragmatica.lang.Result.success;
 
     private static final Set<String> FRAMEWORK_ARTIFACTS = Set.of("slice-api", "infra-api", "slice-annotations");
 
-    private static final Fn1<Cause, String> FRAMEWORK_DEPENDENCY_ERROR = Causes.forOneValue("Slice incorrectly packaged: framework dependency declared in %s. " + "slice-api, infra-api, and slice-annotations are provided by the runtime and must not be declared as dependencies");
+    private static final Fn1<Cause, String> FRAMEWORK_DEPENDENCY_ERROR = Causes.forOneValue("Slice incorrectly packaged: framework dependency declared in %s. "
+                                                                                           + "slice-api, infra-api, and slice-annotations are provided by the runtime and must not be declared as dependencies");
 
     public static Result<DependencyFile> dependencyFile(InputStream inputStream) {
         return StreamOps.readString(inputStream).flatMap(DependencyFile::dependencyFile);
     }
 
     public static Result<DependencyFile> load(String sliceClassName, ClassLoader classLoader) {
-        return StreamOps.readResource(classLoader, "META-INF/dependencies/" + sliceClassName).flatMap(DependencyFile::dependencyFile)
-                                     .orElse(success(new DependencyFile(List.of(),
-                                                                        List.of(),
-                                                                        List.of())));
+        return StreamOps.readResource(classLoader, "META-INF/dependencies/" + sliceClassName)
+                        .flatMap(DependencyFile::dependencyFile)
+                        .orElse(success(new DependencyFile(List.of(),
+                                                           List.of(),
+                                                           List.of())));
     }
 
     public boolean hasSharedDependencies() {
@@ -121,7 +157,9 @@ import static org.pragmatica.lang.Result.success;
     }
 
     public boolean isEmpty() {
-        return shared.isEmpty() && infra.isEmpty() && slices.isEmpty();
+        return shared.isEmpty()
+               && infra.isEmpty()
+               && slices.isEmpty();
     }
 
     private static final Fn1<Cause, String> UNKNOWN_SECTION = Causes.forOneValue("Unknown section in dependency file: %s. Valid sections: [shared], [infra], [slices]");

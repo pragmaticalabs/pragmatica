@@ -53,14 +53,12 @@ public final class NodeLifecycleRoutes implements RouteSource {
     private static final String STOPPED_STATE = "STOPPED";
 
     private final Supplier<ManageableNode> nodeSupplier;
-
     /// Membership v2 (B5b) — leader-local DRAIN command sink. Operator `drain` / `shutdown` routes
     /// enqueue the target here (wired to `DrainCommandRegistry::requestDrain` in `AetherNode`) so
     /// the leader's cluster-sync ping carries the target in its global `drainNodes` set, which
     /// self-drains via its `DrainProcedure` (the v2 mechanism — no `LifecycleWriter` write).
     /// Defaults to no-op via the single-arg factory for legacy callers / test fixtures.
     private final Consumer<NodeId> drainCommandSink;
-
     /// Membership v2 (B5b) — read counterpart to [#drainCommandSink]: the leader's set of
     /// commanded-but-not-yet-departed DRAIN targets (wired to `DrainCommandRegistry::drainTargets`
     /// in `AetherNode`). The disruption-budget guard counts these in-flight drains so sequential
@@ -84,7 +82,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     public static NodeLifecycleRoutes nodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier) {
-        return new NodeLifecycleRoutes(nodeSupplier, _ -> {}, Set::of);
+        return new NodeLifecycleRoutes(nodeSupplier,
+                                       _ -> {},
+                                       Set::of);
     }
 
     /// Membership v2 (B5b) — production factory wiring the leader's DRAIN command sink + the
@@ -153,9 +153,11 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// name.
     private Promise<List<LifecycleEntry>> getAllLifecycleStates(Option<String> stateFilter) {
         var collector = nodeSupplier.get().metricsCollector();
+
         if (!collector.hasAuthoritativeReadiness()) {
             return readinessUnavailableError().promise();
         }
+
         return Promise.success(collectLifecycleEntries(stateFilter, collector.reportedStates()));
     }
 
@@ -163,6 +165,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                                 Map<NodeId, NodeReportedState> states) {
         var normalizedFilter = stateFilter.map(RouteFilters::parseStateFilter);
         var entries = new ArrayList<LifecycleEntry>();
+
         states.forEach((nodeId, state) -> appendIfMatches(entries, nodeId, state, normalizedFilter));
 
         return entries;
@@ -177,7 +180,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
         var leaderId = leader.map(NodeId::id).or("none");
         var leaderAddress = leader.flatMap(this::resolveLeaderAddress).or("");
         var detail = "readiness view not available on this node"
-                   + " (leaderId=" + leaderId + ", leaderAddress=" + leaderAddress + ")";
+                   + " (leaderId=" + leaderId
+                   + ", leaderAddress=" + leaderAddress
+                   + ")";
 
         return HttpError.httpError(HttpStatus.SERVICE_UNAVAILABLE, Causes.cause(detail));
     }
@@ -186,7 +191,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
         return nodeSupplier.get()
                            .topologyManager()
                            .get(leaderId)
-                           .map(info -> info.address().host() + ":" + info.address().port());
+                           .map(info -> info.address()
+                                            .host() + ":" + info.address()
+                                                                .port());
     }
 
     private static void appendIfMatches(List<LifecycleEntry> entries,
@@ -194,15 +201,14 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                         NodeReportedState state,
                                         Option<Set<String>> normalizedFilter) {
         var entry = new LifecycleEntry(nodeId.id(), state.name(), 0L);
+
         if (normalizedFilter.map(set -> set.contains(entry.state())).or(true)) {
             entries.add(entry);
         }
     }
 
     private Promise<LifecycleEntry> getNodeLifecycle(String nodeIdStr) {
-        return resolveLifecycleState(nodeIdStr).map(state -> new LifecycleEntry(nodeIdStr,
-                                                                               state.name(),
-                                                                               0L));
+        return resolveLifecycleState(nodeIdStr).map(state -> new LifecycleEntry(nodeIdStr, state.name(), 0L));
     }
 
     /// Membership v2 (B5b) — operator drain. After the disruption-budget guard and the presence
@@ -227,6 +233,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                    + " (must be READY)"))
                             .promise();
         }
+
         return NodeId.nodeId(nodeIdStr)
                      .async()
                      .flatMap(this::enqueueDrainCommand);
@@ -235,6 +242,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     private Promise<TransitionResult> enqueueDrainCommand(NodeId nodeId) {
         drainCommandSink.accept(nodeId);
         var result = drainInitiatedResult(nodeId.id());
+
         auditAndEmitLifecycleTransition(result, NodeReportedState.DRAINING.name());
 
         return Promise.success(result);
@@ -295,7 +303,8 @@ public final class NodeLifecycleRoutes implements RouteSource {
     private int pendingDrainsExcluding(String nodeIdStr) {
         return (int) pendingDrainsSupplier.get()
                                           .stream()
-                                          .filter(node -> !node.id().equals(nodeIdStr))
+                                          .filter(node -> !node.id()
+                                                               .equals(nodeIdStr))
                                           .count();
     }
 
@@ -319,6 +328,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     private Promise<TransitionResult> enqueueShutdownCommand(NodeId nodeId) {
         drainCommandSink.accept(nodeId);
         var result = shutdownInitiatedResult(nodeId.id());
+
         auditAndEmitLifecycleTransition(result, STOPPED_STATE);
 
         return Promise.success(result);
@@ -339,14 +349,15 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// (`ForwardingClusterNode` / `SwitchableClusterNode`) to the new role.
     Promise<PromoteNodeResponse> promoteNode(String nodeIdStr, PromoteNodeRequest request) {
         return validatePromote(request).flatMap(role -> resolveAndPromote(nodeIdStr, role))
-                                       .async()
-                                       .flatMap(plan -> applyPromotion(nodeIdStr, plan));
+                              .async()
+                              .flatMap(plan -> applyPromotion(nodeIdStr, plan));
     }
 
     private static Result<String> validatePromote(PromoteNodeRequest request) {
         if (request == null || request.targetRole() == null || request.targetRole().isBlank()) {
             return PromoteError.MISSING_TARGET_ROLE.result();
         }
+
         var normalised = request.targetRole().trim().toUpperCase(Locale.ROOT);
 
         return switch (normalised) {
@@ -373,9 +384,10 @@ public final class NodeLifecycleRoutes implements RouteSource {
         if (plan.previousRole().equals(plan.targetRole())) {
             return Promise.success(noopPromotionResponse(nodeIdStr, plan));
         }
+
         var key = ActivationDirectiveKey.activationDirectiveKey(plan.nodeId());
         var value = new ActivationDirectiveValue(plan.targetRole());
-        var command = (KVCommand<AetherKey>) (KVCommand<?>) new KVCommand.Put<>(key, value);
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
 
         return nodeSupplier.get()
                            .<Object> apply(List.of(command))
@@ -385,28 +397,28 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     private static PromoteNodeResponse noopPromotionResponse(String nodeIdStr, PromotePlan plan) {
         return new PromoteNodeResponse(true,
-                                        nodeIdStr,
-                                        plan.previousRole(),
-                                        plan.targetRole(),
-                                        "Node already has role " + plan.targetRole());
+                                       nodeIdStr,
+                                       plan.previousRole(),
+                                       plan.targetRole(),
+                                       "Node already has role " + plan.targetRole());
     }
 
     private static PromoteNodeResponse successPromotionResponse(String nodeIdStr, PromotePlan plan) {
         return new PromoteNodeResponse(true,
-                                        nodeIdStr,
-                                        plan.previousRole(),
-                                        plan.targetRole(),
-                                        "Promoted node from " + plan.previousRole() + " to " + plan.targetRole());
+                                       nodeIdStr,
+                                       plan.previousRole(),
+                                       plan.targetRole(),
+                                       "Promoted node from " + plan.previousRole() + " to " + plan.targetRole());
     }
 
     private void auditAndEmitRoleTransition(String nodeIdStr, PromotePlan plan) {
         AuditLog.nodeLifecycleTransition(nodeIdStr,
-                                          "ROLE:" + plan.targetRole(),
-                                          true,
-                                          "Promoted from " + plan.previousRole() + " to " + plan.targetRole());
+                                         "ROLE:" + plan.targetRole(),
+                                         true,
+                                         "Promoted from " + plan.previousRole() + " to " + plan.targetRole());
         nodeSupplier.get().route(OperationalEvent.NodeLifecycleChanged.nodeLifecycleChanged(nodeIdStr,
-                                                                                             "ROLE:" + plan.targetRole(),
-                                                                                             "api.promote"));
+                                                                                            "ROLE:" + plan.targetRole(),
+                                                                                            "api.promote"));
     }
 
     private record PromotePlan(NodeId nodeId, String previousRole, String targetRole) {}
@@ -438,17 +450,11 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private Option<NodeReportedState> readLifecycleState(NodeId nodeId) {
-        return Option.option(nodeSupplier.get()
-                                         .metricsCollector()
-                                         .reportedStates()
-                                         .get(nodeId));
+        return Option.option(nodeSupplier.get().metricsCollector().reportedStates().get(nodeId));
     }
 
     private void auditAndEmitLifecycleTransition(TransitionResult result, String newState) {
-        AuditLog.nodeLifecycleTransition(result.nodeId(),
-                                         result.state(),
-                                         result.success(),
-                                         result.message());
+        AuditLog.nodeLifecycleTransition(result.nodeId(), result.state(), result.success(), result.message());
         nodeSupplier.get().route(OperationalEvent.NodeLifecycleChanged.nodeLifecycleChanged(result.nodeId(),
                                                                                             newState,
                                                                                             "api"));

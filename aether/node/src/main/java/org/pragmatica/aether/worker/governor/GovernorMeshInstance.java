@@ -71,7 +71,10 @@ final class GovernorMeshInstance implements GovernorMesh {
     }
 
     private void registerPeerAddress(NodeId governorId, String tcpAddress) {
-        if (tcpAddress == null || tcpAddress.isEmpty()) {return;}
+        if (tcpAddress == null || tcpAddress.isEmpty()) {
+            return;
+        }
+
         parseTcpAddress(tcpAddress).onPresent(addr -> registerInTopology(governorId, addr));
     }
 
@@ -85,7 +88,9 @@ final class GovernorMeshInstance implements GovernorMesh {
     private static Option<NodeAddress> parseTcpAddress(String tcpAddress) {
         var parts = tcpAddress.split(":");
 
-        if (parts.length != 2) {return Option.empty();}
+        if (parts.length != 2) {
+            return Option.empty();
+        }
 
         return Number.parseInt(parts[1])
                      .option()

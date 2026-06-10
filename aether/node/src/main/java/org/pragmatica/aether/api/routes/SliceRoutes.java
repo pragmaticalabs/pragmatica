@@ -57,7 +57,6 @@ public final class SliceRoutes implements RouteSource {
     private static final Cause MISSING_ARTIFACT_OR_INSTANCES = Causes.cause("Missing 'artifact' or 'instances' field");
 
     private static final Cause BLUEPRINT_NOT_FOUND = Causes.cause("Blueprint not found");
-
     private static final Cause SLICE_NOT_LOADED = Causes.cause("Slice not loaded or no per-slice config available");
 
     private static final Cause NOT_IN_BLUEPRINT = Causes.cause("Slice is not part of any active blueprint. Deploy via blueprint.");
@@ -172,7 +171,9 @@ public final class SliceRoutes implements RouteSource {
     private static final Cause BELOW_MIN_INSTANCES = Causes.cause("Requested instances is below blueprint minimum");
 
     private Promise<Unit> guardMinInstances(Artifact artifact, int requestedInstances) {
-        if (requestedInstances <1) {return BELOW_MIN_INSTANCES.promise();}
+        if (requestedInstances < 1) {
+            return BELOW_MIN_INSTANCES.promise();
+        }
 
         var node = nodeSupplier.get();
         var key = SliceTargetKey.sliceTargetKey(artifact.base());
@@ -261,6 +262,7 @@ public final class SliceRoutes implements RouteSource {
 
     private BlueprintListResponse buildBlueprintListResponse() {
         var blueprints = nodeSupplier.get().blueprintService().list().stream().map(this::toBlueprintSummary).toList();
+
         return new BlueprintListResponse(blueprints);
     }
 
@@ -283,6 +285,7 @@ public final class SliceRoutes implements RouteSource {
         var slices = blueprint.loadOrder().stream().map(this::toBlueprintSliceInfo).toList();
         var dependencies = blueprint.loadOrder().stream().filter(ResolvedSlice::isDependency).map(s -> s.artifact()
                                                                                                         .asString()).toList();
+
         return new BlueprintDetailResponse(blueprint.id().asString(),
                                            slices,
                                            dependencies);
@@ -290,6 +293,7 @@ public final class SliceRoutes implements RouteSource {
 
     private BlueprintSliceInfo toBlueprintSliceInfo(ResolvedSlice slice) {
         var deps = slice.dependencies().stream().map(Artifact::asString).toList();
+
         return new BlueprintSliceInfo(slice.artifact().asString(),
                                       slice.instances(),
                                       slice.isDependency(),
@@ -335,7 +339,15 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private String determineSliceDeploymentStatus(int target, int active) {
-        if (active == 0) {return "PENDING";} else if (active <target) {return "DEPLOYING";} else if (active == target) {return "DEPLOYED";} else {return "SCALING_DOWN";}
+        if (active == 0) {
+            return "PENDING";
+        } else if (active < target) {
+            return "DEPLOYING";
+        } else if (active == target) {
+            return "DEPLOYED";
+        } else {
+            return "SCALING_DOWN";
+        }
     }
 
     private String computeOverallStatus(List<BlueprintSliceStatus> sliceStatuses) {
@@ -344,7 +356,15 @@ public final class SliceRoutes implements RouteSource {
         var hasScalingDown = sliceStatuses.stream().anyMatch(s -> "SCALING_DOWN".equals(s.status()));
         var allDeployed = sliceStatuses.stream().allMatch(s -> "DEPLOYED".equals(s.status()));
 
-        if (allDeployed) {return "DEPLOYED";} else if (hasPending) {return "PENDING";} else if (hasDeploying || hasScalingDown) {return "IN_PROGRESS";} else {return "PARTIAL";}
+        if (allDeployed) {
+            return "DEPLOYED";
+        } else if (hasPending) {
+            return "PENDING";
+        } else if (hasDeploying || hasScalingDown) {
+            return "IN_PROGRESS";
+        } else {
+            return "PARTIAL";
+        }
     }
 
     private Promise<BlueprintDeleteResponse> handleDeleteBlueprint(String id) {
@@ -436,10 +456,8 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private static SliceConfigResponse projectSliceConfig(Artifact artifact, ConfigurationProvider composite) {
-        var entries = composite.keys().stream()
-                               .sorted()
-                               .map(key -> attribute(key, composite))
-                               .toList();
+        var entries = composite.keys().stream().sorted().map(key -> attribute(key, composite)).toList();
+
         return new SliceConfigResponse(artifact.asString(), entries);
     }
 
@@ -448,6 +466,7 @@ public final class SliceRoutes implements RouteSource {
         var source = composite instanceof LayeredConfigProvider layered
                      ? layered.sourceOf(key).map(LayeredConfigProvider.SourceAttribution::layerName).or("unknown")
                      : composite.displayName();
+
         return new SliceConfigEntry(key, value, source);
     }
 
@@ -461,10 +480,12 @@ public final class SliceRoutes implements RouteSource {
     private List<SliceTopology> collectSliceTopologies() {
         var node = nodeSupplier.get();
         var loaded = node.sliceStore().loaded();
+
         log.debug("buildTopologyResponse: loaded slices={}", loaded.size());
         var topologies = loaded.stream().flatMap(ls -> TopologyParser.parse(ls.slice(),
                                                                             ls.artifact().asString())
                                                                      .stream()).toList();
+
         log.debug("buildTopologyResponse: topologies={}", topologies.size());
 
         return topologies;
@@ -482,6 +503,7 @@ public final class SliceRoutes implements RouteSource {
                                                                          e.to(),
                                                                          e.style().name(),
                                                                          e.topicConfig())).toList();
+
         return new TopologyResponse(nodes, edges);
     }
 
@@ -507,6 +529,7 @@ public final class SliceRoutes implements RouteSource {
 
     private Map<String, SliceTargetValue> collectSliceTargets(ManageableNode node) {
         var targets = new HashMap<String, SliceTargetValue>();
+
         node.kvStore().forEach(SliceTargetKey.class,
                                SliceTargetValue.class,
                                (key, value) -> targets.put(key.artifactBase().asString(),
@@ -546,6 +569,7 @@ public final class SliceRoutes implements RouteSource {
 
     private RouteInfo toRouteInfo(org.pragmatica.aether.http.HttpRouteRegistry.RouteInfo route) {
         List<String> nodeIds = route.nodes().stream().map(NodeId::id).toList();
+
         return new RouteInfo(route.httpMethod(), route.pathPrefix(), nodeIds, route.security());
     }
 
@@ -558,6 +582,7 @@ public final class SliceRoutes implements RouteSource {
 
     private SliceStatus toSliceStatusFromDeployment(DeploymentMap.SliceDeploymentInfo info) {
         var instanceInfos = info.instances().stream().map(this::toSliceInstanceInfoFromDeployment).toList();
+
         return new SliceStatus(info.artifact(),
                                info.aggregateState().name(),
                                instanceInfos);
@@ -567,6 +592,7 @@ public final class SliceRoutes implements RouteSource {
         var health = inst.state() == SliceState.ACTIVE
                      ? "HEALTHY"
                      : "UNHEALTHY";
+
         return new SliceInstanceInfo(inst.nodeId(),
                                      inst.state().name(),
                                      health);

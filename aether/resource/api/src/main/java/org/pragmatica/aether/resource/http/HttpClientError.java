@@ -8,22 +8,25 @@ import org.pragmatica.lang.Cause;
 
 
 public sealed interface HttpClientError extends Cause {
-    record SerializationFailed(String message) implements HttpClientError{}
+    record SerializationFailed(String message) implements HttpClientError {}
 
     record DeserializationFailed(String detail, String responseBody) implements HttpClientError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Deserialization failed: " + detail;
         }
     }
 
     record RequestFailed(int statusCode, String responseBody) implements HttpClientError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "HTTP " + statusCode + ": " + responseBody;
         }
     }
 
     record RequestFailedWithBody(int statusCode, Object parsedError, String rawBody) implements HttpClientError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "HTTP " + statusCode + ": " + parsedError;
         }
     }

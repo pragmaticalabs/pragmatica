@@ -57,7 +57,9 @@ public class StatusWebSocketHandler implements WebSocketHandler {
     }
 
     private void sendIfAuthenticated(WebSocketSession session, String message) {
-        if (authenticator.isAuthenticated(session.id())) {session.send(message);}
+        if (authenticator.isAuthenticated(session.id())) {
+            session.send(message);
+        }
     }
 
     public int connectedClients() {

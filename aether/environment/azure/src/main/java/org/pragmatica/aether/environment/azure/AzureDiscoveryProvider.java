@@ -31,15 +31,10 @@ import static org.pragmatica.lang.Unit.unit;
 
 public final class AzureDiscoveryProvider implements DiscoveryProvider {
     private static final Logger log = LoggerFactory.getLogger(AzureDiscoveryProvider.class);
-
     private static final int DEFAULT_PORT = 9100;
-
     private static final String TAG_CLUSTER = "aether-cluster";
-
     private static final String TAG_PORT = "aether-port";
-
     private static final String TAG_ROLE = "aether-role";
-
     private static final String DEFAULT_ROLE = "core";
 
     private static final EnvironmentError NO_SELF_VM_NAME = EnvironmentError.operationNotSupported("registerSelf/deregisterSelf requires selfVmName");
@@ -48,7 +43,6 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
     private final String clusterName;
     private final Option<String> selfVmName;
     private final long pollIntervalMs;
-
     private final StoppableThread watchThread = StoppableThread.stoppableThread();
 
     private AzureDiscoveryProvider(AzureClient client,
@@ -68,41 +62,58 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
                                           config.discoveryPollIntervalMs());
     }
 
-    @Override public Promise<List<PeerInfo>> discoverPeers() {
-        return client.queryResources(clusterQuery()).map(AzureDiscoveryProvider::toPeerInfoList)
-                                    .mapError(AzureDiscoveryProvider::toDiscoveryError);
+    @Override
+    public Promise<List<PeerInfo>> discoverPeers() {
+        return client.queryResources(clusterQuery())
+                     .map(AzureDiscoveryProvider::toPeerInfoList)
+                     .mapError(AzureDiscoveryProvider::toDiscoveryError);
     }
 
-    @Override public Promise<Unit> watchPeers(Consumer<List<PeerInfo>> onChange) {
-        var thread = Thread.ofVirtual().name("azure-discovery-watcher")
-                                     .start(() -> pollLoop(onChange));
+    @Override
+    public Promise<Unit> watchPeers(Consumer<List<PeerInfo>> onChange) {
+        var thread = Thread.ofVirtual().name("azure-discovery-watcher").start(() -> pollLoop(onChange));
+
         watchThread.set(thread);
+
         return Promise.success(unit());
     }
 
-    @Override public Promise<Unit> stopWatching() {
+    @Override
+    public Promise<Unit> stopWatching() {
         interruptWatchThread();
+
         return Promise.success(unit());
     }
 
-    @Override public Promise<Unit> registerSelf(PeerInfo self) {
-        return selfVmName.map(name -> applyRegistrationTags(name, self)).or(NO_SELF_VM_NAME.promise());
+    @Override
+    public Promise<Unit> registerSelf(PeerInfo self) {
+        return selfVmName.map(name -> applyRegistrationTags(name, self))
+                         .or(NO_SELF_VM_NAME.promise());
     }
 
-    @Override public Promise<Unit> deregisterSelf() {
-        return selfVmName.map(this::clearTags).or(NO_SELF_VM_NAME.promise());
+    @Override
+    public Promise<Unit> deregisterSelf() {
+        return selfVmName.map(this::clearTags)
+                         .or(NO_SELF_VM_NAME.promise());
     }
 
     String clusterQuery() {
-        return "Resources | where type == \"microsoft.compute/virtualmachines\"" + " | where tags[\"" + TAG_CLUSTER + "\"] == \"" + clusterName + "\"";
+        return "Resources | where type == \"microsoft.compute/virtualmachines\""
+             + " | where tags[\"" + TAG_CLUSTER
+             + "\"] == \"" + clusterName
+             + "\"";
     }
 
     private Promise<Unit> applyRegistrationTags(String vmName, PeerInfo self) {
-        return client.updateTags(vmName, buildSelfTags(self)).mapToUnit();
+        return client.updateTags(vmName,
+                                 buildSelfTags(self))
+                     .mapToUnit();
     }
 
     private Promise<Unit> clearTags(String vmName) {
-        return client.updateTags(vmName, Map.of()).mapToUnit();
+        return client.updateTags(vmName,
+                                 Map.of())
+                     .mapToUnit();
     }
 
     private Map<String, String> buildSelfTags(PeerInfo self) {
@@ -115,8 +126,9 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
     }
 
     private static List<PeerInfo> toPeerInfoList(List<ResourceRow> rows) {
-        return rows.stream().map(AzureDiscoveryProvider::rowToPeerInfo)
-                          .toList();
+        return rows.stream()
+                   .map(AzureDiscoveryProvider::rowToPeerInfo)
+                   .toList();
     }
 
     private static PeerInfo rowToPeerInfo(ResourceRow row) {
@@ -134,7 +146,8 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
     }
 
     private static int parsePortOrDefault(String portStr) {
-        return org.pragmatica.lang.parse.Number.parseInt(portStr).or(DEFAULT_PORT);
+        return org.pragmatica.lang.parse.Number.parseInt(portStr)
+                                               .or(DEFAULT_PORT);
     }
 
     private static Map<String, String> extractMetadata(ResourceRow row) {
@@ -143,6 +156,7 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
 
     private void pollLoop(Consumer<List<PeerInfo>> onChange) {
         var previousPeers = new AtomicReference<Set<String>>(Set.of());
+
         while (!Thread.currentThread().isInterrupted()) {
             pollOnce(onChange, previousPeers);
             sleepOrExit();
@@ -150,16 +164,16 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
     }
 
     private void pollOnce(Consumer<List<PeerInfo>> onChange, AtomicReference<Set<String>> previousPeers) {
-        discoverPeers().await()
-                     .onFailure(cause -> log.warn("Discovery poll failed: {}",
-                                                  cause.message()))
-                     .onSuccess(peers -> notifyIfChanged(peers, onChange, previousPeers));
+        discoverPeers().await().onFailure(cause -> log.warn("Discovery poll failed: {}", cause.message())).onSuccess(peers -> notifyIfChanged(peers,
+                                                                                                                                              onChange,
+                                                                                                                                              previousPeers));
     }
 
     private static void notifyIfChanged(List<PeerInfo> peers,
                                         Consumer<List<PeerInfo>> onChange,
                                         AtomicReference<Set<String>> previousPeers) {
         var currentKeys = toPeerKeys(peers);
+
         if (!currentKeys.equals(previousPeers.get())) {
             previousPeers.set(currentKeys);
             onChange.accept(peers);
@@ -167,8 +181,9 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
     }
 
     private static Set<String> toPeerKeys(List<PeerInfo> peers) {
-        return peers.stream().map(AzureDiscoveryProvider::peerKey)
-                           .collect(Collectors.toSet());
+        return peers.stream()
+                    .map(AzureDiscoveryProvider::peerKey)
+                    .collect(Collectors.toSet());
     }
 
     private static String peerKey(PeerInfo peer) {

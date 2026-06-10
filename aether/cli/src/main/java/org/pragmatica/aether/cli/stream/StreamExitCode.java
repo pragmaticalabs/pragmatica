@@ -14,22 +14,16 @@ package org.pragmatica.aether.cli.stream;
 public sealed interface StreamExitCode {
     /// Successful operation.
     int SUCCESS = 0;
-
     /// Generic failure: network, server 5xx, deserialization, etc.
     int ERROR = 1;
-
     /// Address parse failure or malformed CLI argument.
     int VALIDATION = 2;
-
     /// User declined an interactive confirmation prompt.
     int USER_CANCELLED = 3;
-
     /// HTTP 404 — stream/version/group not found.
     int NOT_FOUND = 4;
-
     /// HTTP 409 — conflicting state (e.g. group already exists).
     int CONFLICT = 5;
-
     /// HTTP 410 — gone (e.g. stream version was purged).
     int GONE = 6;
 

@@ -5,7 +5,6 @@
 package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.aether.slice.resource.ResourceAddress;
-
 import org.pragmatica.aether.slice.StreamAccess;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.lang.Cause;
@@ -33,10 +32,12 @@ public sealed interface FrameworkStreamConsumers {
     /// {@link FrameworkStreamConsumerError.General#NOT_SYSTEM_NAMESPACE} so a misuse from inside
     /// the framework module surfaces immediately rather than silently exposing app-namespace
     /// events through the privileged SPI.
-    static <T> Result<FrameworkStreamConsumer<T>> systemStreamConsumer(ResourceAddress address, StreamAccess<T> transport) {
+    static <T> Result<FrameworkStreamConsumer<T>> systemStreamConsumer(ResourceAddress address,
+                                                                       StreamAccess<T> transport) {
         if (!address.isSystem()) {
             return FrameworkStreamConsumerError.General.NOT_SYSTEM_NAMESPACE.result();
         }
+
         return Result.success(new SystemStreamConsumer<>(address, transport));
     }
 
@@ -51,6 +52,7 @@ public sealed interface FrameworkStreamConsumers {
         if (!address.isSystem()) {
             return FrameworkStreamConsumerError.General.NOT_SYSTEM_NAMESPACE.result();
         }
+
         return Result.success(new TestSystemStreamConsumer<>(address, fetchSupplier));
     }
 
@@ -58,24 +60,25 @@ public sealed interface FrameworkStreamConsumers {
     sealed interface FrameworkStreamConsumerError extends Cause {
         enum General implements FrameworkStreamConsumerError {
             NOT_SYSTEM_NAMESPACE("FrameworkStreamConsumer requires a system-namespace address");
-
             private final String message;
-
             General(String message) {
                 this.message = message;
             }
-
-            @Override public String message() {
+            @Override
+            public String message() {
                 return message;
             }
         }
 
-        @SuppressWarnings("unused") record unused() implements FrameworkStreamConsumerError {
-            @Override public String message() {
+        @SuppressWarnings("unused")
+        record unused() implements FrameworkStreamConsumerError {
+            @Override
+            public String message() {
                 return "";
             }
         }
     }
 
-    @SuppressWarnings("unused") record unused() implements FrameworkStreamConsumers {}
+    @SuppressWarnings("unused")
+    record unused() implements FrameworkStreamConsumers {}
 }

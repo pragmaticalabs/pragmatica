@@ -32,6 +32,7 @@ public interface StreamAccess<T> {
     Promise<List<StreamEvent<T>>> fetch(int partition, long fromOffset, int maxEvents);
     Promise<Unit> commit(String consumerGroup, int partition, long offset);
     Promise<Option<Long>> committedOffset(String consumerGroup, int partition);
+
     Promise<StreamMetadata> metadata();
 
     /// Resolver-side fail-safe: refuse to bind app `StreamAccess` for a system address.
@@ -44,33 +45,34 @@ public interface StreamAccess<T> {
         if (address.isSystem()) {
             return StreamAccessError.General.SYSTEM_ADDRESS_REFUSED.result();
         }
+
         return Result.success(address);
     }
 
-    record StreamEvent<T>(long offset, long timestamp, int partition, T payload){}
+    record StreamEvent<T>(long offset, long timestamp, int partition, T payload) {}
 
-    record StreamMetadata(String streamName, int partitionCount, List<PartitionInfo> partitions){}
+    record StreamMetadata(String streamName, int partitionCount, List<PartitionInfo> partitions) {}
 
-    record PartitionInfo(int partition, long headOffset, long tailOffset, long eventCount){}
+    record PartitionInfo(int partition, long headOffset, long tailOffset, long eventCount) {}
 
     /// Failure cases for app stream-access resolution.
     sealed interface StreamAccessError extends Cause {
         enum General implements StreamAccessError {
             SYSTEM_ADDRESS_REFUSED("StreamAccess cannot be bound to a system-namespace address; use FrameworkStreamConsumer/FrameworkStreamPublisher");
-
             private final String message;
-
             General(String message) {
                 this.message = message;
             }
-
-            @Override public String message() {
+            @Override
+            public String message() {
                 return message;
             }
         }
 
-        @SuppressWarnings("unused") record unused() implements StreamAccessError {
-            @Override public String message() {
+        @SuppressWarnings("unused")
+        record unused() implements StreamAccessError {
+            @Override
+            public String message() {
                 return "";
             }
         }

@@ -32,9 +32,7 @@ import static org.pragmatica.aether.management.route.ManagementRoute.NODE_SHUTDO
 class ClusterDestroyCommand implements Callable<Integer> {
     private static final int DRAIN_POLL_INTERVAL_MS = 2000;
     private static final int DRAIN_TIMEOUT_SECONDS = 120;
-
     private static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
-
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
     static Function<String, org.pragmatica.lang.Option<BootstrapState>> stateLoader = BootstrapStatePersistence::load;
@@ -68,13 +66,17 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
             return ExitCode.USAGE;
         }
+
         return ClusterRegistry.load()
                               .flatMap(this::executeDestroy)
                               .fold(ClusterDestroyCommand::onFailure, v -> v);
     }
 
     private boolean isOverrideAcceptable() {
-        if (clusterNameOverride == null || clusterNameOverride.isBlank()) {return true;}
+        if (clusterNameOverride == null || clusterNameOverride.isBlank()) {
+            return true;
+        }
+
         return CLUSTER_NAME_PATTERN.matcher(clusterNameOverride).matches();
     }
 
@@ -87,6 +89,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
             return registry.current()
                            .toResult(ClusterHttpClient.HttpError.NO_ACTIVE_CLUSTER);
         }
+
         return Result.success(findOrSynthesizeEntry(registry, clusterNameOverride));
     }
 
@@ -114,7 +117,10 @@ class ClusterDestroyCommand implements Callable<Integer> {
     }
 
     private static void applyEndpointOverride(ClusterRegistry.ClusterEntry entry) {
-        if (entry.endpoint() == null || entry.endpoint().isBlank()) {return;}
+        if (entry.endpoint() == null || entry.endpoint().isBlank()) {
+            return;
+        }
+
         ClusterHttpClient.setEndpointOverride(entry.endpoint());
     }
 
@@ -137,6 +143,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
             return true;
         }
+
         return stateLoader.apply(clusterName)
                           .fold(() -> warnNoState(clusterName),
                                 this::runCleanup);
@@ -157,6 +164,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
         System.out.printf("Cleaning up %d created resources from bootstrap state...%n",
                           state.createdResources().size());
+
         return resourceCleaner.apply(state)
                               .onFailure(c -> System.err.println("Resource cleanup failed: " + c.message()))
                               .onSuccess(_ -> System.out.println("Resource cleanup complete."))
@@ -180,10 +188,16 @@ class ClusterDestroyCommand implements Callable<Integer> {
     private static List<String> extractNodeIds(JsonNode root) {
         var result = new ArrayList<String>();
 
-        if (!root.isArray()) {return List.of();}
+        if (!root.isArray()) {
+            return List.of();
+        }
+
         for (var node : root) {
             var nodeId = node.path("nodeId").asText("");
-            if (!nodeId.isEmpty()) {result.add(nodeId);}
+
+            if (!nodeId.isEmpty()) {
+                result.add(nodeId);
+            }
         }
 
         return List.copyOf(result);
@@ -195,6 +209,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
         for (var nodeId : nodeIds) {
             System.out.printf("Draining node %s...%n", nodeId);
             var result = drainSingleNode(nodeId);
+
             results.add(result);
         }
 
@@ -212,7 +227,9 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
         var success = waitForDecommissioned(nodeId);
 
-        if (success) {System.out.printf("  Node %s decommissioned.%n", nodeId);} else {
+        if (success) {
+            System.out.printf("  Node %s decommissioned.%n", nodeId);
+        } else {
             System.err.printf("  Node %s did not decommission in time.%n", nodeId);
         }
 
@@ -222,11 +239,13 @@ class ClusterDestroyCommand implements Callable<Integer> {
     private static boolean waitForDecommissioned(String nodeId) {
         var deadline = System.currentTimeMillis() + (long) DRAIN_TIMEOUT_SECONDS * 1000;
 
-        while (System.currentTimeMillis() <deadline) {
+        while (System.currentTimeMillis() < deadline) {
             var state = ClusterHttpClient.fetch(NODE_LIFECYCLE_GET, List.of(nodeId)).flatMap(MAPPER::readTree).map(node -> node.path("state")
                                                                                                                                .asText("UNKNOWN")).or("UNKNOWN");
 
-            if ("DECOMMISSIONED".equals(state)) {return true;}
+            if ("DECOMMISSIONED".equals(state)) {
+                return true;
+            }
 
             sleepQuietly();
         }
@@ -242,7 +261,9 @@ class ClusterDestroyCommand implements Callable<Integer> {
             var result = ClusterHttpClient.post(NODE_SHUTDOWN, List.of(nodeId), "{}");
             var success = result.isSuccess();
 
-            if (!success) {System.err.printf("  Failed to shutdown %s.%n", nodeId);}
+            if (!success) {
+                System.err.printf("  Failed to shutdown %s.%n", nodeId);
+            }
 
             results.add(new NodeResult(nodeId, success));
         }
@@ -251,7 +272,10 @@ class ClusterDestroyCommand implements Callable<Integer> {
     }
 
     private static Result<ClusterRegistry> removeRegistryEntry(ClusterRegistry registry, String name) {
-        if (!registryContains(registry, name)) {return Result.success(registry);}
+        if (!registryContains(registry, name)) {
+            return Result.success(registry);
+        }
+
         return registry.remove(name)
                        .flatMap(updated -> updated.save()
                                                   .map(_ -> updated));
@@ -288,6 +312,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
             return ExitCode.CLEANUP_FAILED;
         }
+
         if (!drainShutdownOk) {
             System.err.println("Warning: some drain/shutdown operations failed. Check output above.");
 

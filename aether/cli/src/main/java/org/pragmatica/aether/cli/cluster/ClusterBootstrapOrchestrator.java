@@ -78,15 +78,18 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                              boolean keepOnFailure,
                                              String rawTomlContent) {
         configureClusterHttpClient(config);
-
-        if (resume) {return resumeBootstrap(config, fullCheck, sshPublicKeys, keepOnFailure, rawTomlContent);}
+        if (resume) {
+            return resumeBootstrap(config, fullCheck, sshPublicKeys, keepOnFailure, rawTomlContent);
+        }
 
         return freshBootstrap(config, fullCheck, sshPublicKeys, keepOnFailure, rawTomlContent);
     }
 
     @Contract
     private static void configureClusterHttpClient(ClusterBootstrapConfig config) {
-        if (config.operations().tls().autoGenerate()) {ClusterHttpClient.enableTlsSkipVerify();}
+        if (config.operations().tls().autoGenerate()) {
+            ClusterHttpClient.enableTlsSkipVerify();
+        }
     }
 
     private static Result<BootstrapResult> freshBootstrap(ClusterBootstrapConfig config,
@@ -172,6 +175,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
 
             return success(ctx);
         }
+
         return markAndExecutePhase(ctx, phase, phaseFunc);
     }
 
@@ -179,6 +183,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                                                 BootstrapPhase phase,
                                                                 Function<BootstrapContext, Result<BootstrapContext>> phaseFunc) {
         var inProgress = ctx.withState(ctx.state().withPhaseStatus(phase, PhaseStatus.IN_PROGRESS));
+
         BootstrapStatePersistence.save(inProgress.state());
 
         return phaseFunc.apply(inProgress)
@@ -188,6 +193,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
 
     private static BootstrapContext markPhaseCompleted(BootstrapContext result, BootstrapPhase phase) {
         var completed = result.withState(result.state().withPhaseStatus(phase, PhaseStatus.COMPLETED));
+
         BootstrapStatePersistence.save(completed.state());
 
         return completed;
@@ -196,6 +202,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
     @Contract
     private static void markPhaseFailed(BootstrapContext ctx, BootstrapPhase phase) {
         var failed = ctx.withState(ctx.state().withPhaseStatus(phase, PhaseStatus.FAILED));
+
         BootstrapStatePersistence.save(failed.state());
     }
 
@@ -205,6 +212,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
 
             return cause;
         }
+
         return cleanupOnFailure(clusterName).fold(cleanupCause -> wrapWithOrphans(cause, cleanupCause), _ -> cause);
     }
 
@@ -227,6 +235,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         var vmCount = resources.stream().filter(r -> r instanceof CreatedResource.ProvisionedVm).count();
         var keyCount = resources.stream().filter(r -> r instanceof CreatedResource.SshKeyResource).count();
         var failedPhase = state.map(ClusterBootstrapOrchestrator::resolveFailedPhase).or("UNKNOWN");
+
         System.err.printf("[--keep-on-failure] Bootstrap of cluster '%s' failed at phase %s (%s).%n",
                           clusterName,
                           failedPhase,
@@ -266,6 +275,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
 
     static String generateApiKey() {
         var bytes = new byte[API_KEY_BYTES];
+
         new SecureRandom().nextBytes(bytes);
 
         return Base64.getUrlEncoder()
@@ -275,6 +285,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
 
     static String generateClusterSecret() {
         var bytes = new byte[API_KEY_BYTES];
+
         new SecureRandom().nextBytes(bytes);
 
         return Base64.getUrlEncoder()
@@ -324,9 +335,17 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
     }
 
     static long parseDurationMs(String duration) {
-        if (duration.endsWith("s")) {return parseNumericPrefix(duration) * 1000;}
-        if (duration.endsWith("m")) {return parseNumericPrefix(duration) * 60_000;}
-        if (duration.endsWith("h")) {return parseNumericPrefix(duration) * 3_600_000;}
+        if (duration.endsWith("s")) {
+            return parseNumericPrefix(duration) * 1000;
+        }
+
+        if (duration.endsWith("m")) {
+            return parseNumericPrefix(duration) * 60_000;
+        }
+
+        if (duration.endsWith("h")) {
+            return parseNumericPrefix(duration) * 3_600_000;
+        }
 
         return DEFAULT_TIMEOUT_MS;
     }
@@ -435,6 +454,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
 
         BootstrapContext withSshKeyIds(String provider, List<Long> ids) {
             var merged = new HashMap<String, List<Long>>(sshKeyIdsByProvider);
+
             merged.put(provider, List.copyOf(ids));
 
             return new BootstrapContext(config,

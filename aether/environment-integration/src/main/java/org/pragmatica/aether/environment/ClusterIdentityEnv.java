@@ -6,6 +6,7 @@ package org.pragmatica.aether.environment;
 
 import java.util.List;
 
+
 /// Single source of truth for the environment variables a compute provider must
 /// propagate to every node it mints, so an auto-healed replacement inherits the
 /// same cluster identity its compose-fixed siblings receive. Previously each
@@ -32,7 +33,6 @@ public sealed interface ClusterIdentityEnv {
 
     /// Docker-specific infrastructure env vars (network + docker group id).
     List<String> DOCKER_INFRA_VARS = List.of("AETHER_DOCKER_NETWORK", "DOCKER_GID");
-
     /// Insecure dev-mode flag. Isolated from [#IDENTITY_VARS] on purpose — propagated
     /// only via a standalone block so it can never silently inherit into production.
     String INSECURE_DEV_MODE = "AETHER_INSECURE_DEV_MODE";

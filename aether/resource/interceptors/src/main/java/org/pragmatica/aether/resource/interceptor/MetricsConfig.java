@@ -23,6 +23,7 @@ public record MetricsConfig(String name,
     public static Result<MetricsConfig> metricsConfig(String name, MeterRegistry registry) {
         var validName = ensure(name, Verify.Is::notBlank);
         var validRegistry = ensure(registry, Verify.Is::notNull);
+
         return all(validName, validRegistry).map((n, r) -> new MetricsConfig(n, r, true, true, List.of()));
     }
 
@@ -32,6 +33,7 @@ public record MetricsConfig(String name,
                                                       boolean recordCounts) {
         var validName = ensure(name, Verify.Is::notBlank);
         var validRegistry = ensure(registry, Verify.Is::notNull);
+
         return all(validName, validRegistry).map((n, r) -> new MetricsConfig(n, r, recordTiming, recordCounts, List.of()));
     }
 

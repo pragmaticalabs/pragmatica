@@ -7,18 +7,21 @@ package org.pragmatica.aether.slice.generation;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public record Epoch(long rabiaTerm, long localCounter) implements Comparable<Epoch> {
+@Codec
+public record Epoch(long rabiaTerm, long localCounter) implements Comparable<Epoch> {
     public static final Epoch ZERO = new Epoch(0L, 0L);
 
     public static Epoch epoch(long rabiaTerm, long localCounter) {
         return new Epoch(rabiaTerm, localCounter);
     }
 
-    @Override public int compareTo(Epoch other) {
+    @Override
+    public int compareTo(Epoch other) {
         var byTerm = Long.compare(rabiaTerm, other.rabiaTerm);
+
         return byTerm != 0
-              ? byTerm
-              : Long.compare(localCounter, other.localCounter);
+               ? byTerm
+               : Long.compare(localCounter, other.localCounter);
     }
 
     public boolean isAtLeast(Epoch other) {
@@ -37,7 +40,8 @@ import org.pragmatica.serialization.Codec;
         return new Epoch(newRabiaTerm, 0L);
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return rabiaTerm + ":" + localCounter;
     }
 }

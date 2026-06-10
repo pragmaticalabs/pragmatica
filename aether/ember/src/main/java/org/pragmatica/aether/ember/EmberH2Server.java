@@ -18,7 +18,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings({"JBCT-RET-03", "JBCT-EX-01"}) public final class EmberH2Server {
+@SuppressWarnings({"JBCT-RET-03", "JBCT-EX-01"})
+public final class EmberH2Server {
     private static final Logger log = LoggerFactory.getLogger(EmberH2Server.class);
 
     private final EmberH2Config config;
@@ -35,61 +36,75 @@ import org.slf4j.LoggerFactory;
     public Promise<Unit> start() {
         if (!config.enabled()) {
             log.debug("H2 server disabled, skipping start");
+
             return Promise.success(Unit.unit());
         }
-        return Promise.lift(H2Error.StartFailed::new, this::startServer).flatMap(this::initializeDatabase)
-                           .onSuccess(_ -> log.info("H2 server started on port {} ({})",
-                                                    config.port(),
-                                                    config.persistent()
-                                                    ? "persistent"
-                                                    : "in-memory"));
+
+        return Promise.lift(H2Error.StartFailed::new, this::startServer)
+                      .flatMap(this::initializeDatabase)
+                      .onSuccess(_ -> log.info("H2 server started on port {} ({})",
+                                               config.port(),
+                                               config.persistent()
+                                               ? "persistent"
+                                               : "in-memory"));
     }
 
     private Server startServer() throws SQLException {
         var args = new String[]{"-tcp", "-tcpPort", String.valueOf(config.port()), "-tcpAllowOthers", "-ifNotExists"};
+
         tcpServer = Server.createTcpServer(args).start();
+
         return tcpServer;
     }
 
     private Promise<Unit> initializeDatabase(Server server) {
-        return config.initScript().map(this::runInitScript)
-                                .or(() -> {
-                                        log.debug("No init script configured, skipping database initialization");
-                                        return Promise.success(Unit.unit());
-                                    });
+        return config.initScript()
+                     .map(this::runInitScript)
+                     .or(() -> {
+                             log.debug("No init script configured, skipping database initialization");
+
+                             return Promise.success(Unit.unit());
+                         });
     }
 
     private Promise<Unit> runInitScript(String scriptPath) {
         log.info("Running H2 init script: {}", scriptPath);
+
         return Promise.lift(H2Error.InitScriptFailed::new,
                             () -> {
                                 try (Connection conn = DriverManager.getConnection(jdbcUrl(),
                                                                                    "sa",
                                                                                    "")) {
-                                    var statement = conn.createStatement();
-                                    statement.execute("RUNSCRIPT FROM '" + scriptPath + "'");
-                                }
-                            }).mapToUnit()
-                           .onSuccess(_ -> log.info("H2 init script completed"))
-                           .onFailure(cause -> log.error("H2 init script failed: {}",
-                                                         cause.message()));
+                                var statement = conn.createStatement();
+
+                                statement.execute("RUNSCRIPT FROM '" + scriptPath + "'");
+                            }
+                            })
+                      .mapToUnit()
+                      .onSuccess(_ -> log.info("H2 init script completed"))
+                      .onFailure(cause -> log.error("H2 init script failed: {}",
+                                                    cause.message()));
     }
 
     public Promise<Unit> stop() {
-        if (tcpServer == null) {return Promise.success(Unit.unit());}
+        if (tcpServer == null) {
+            return Promise.success(Unit.unit());
+        }
+
         return Promise.lift(H2Error.StopFailed::new,
                             () -> {
                                 tcpServer.stop();
                                 tcpServer = null;
                                 log.info("H2 server stopped");
                             })
-        .mapToUnit();
+                      .mapToUnit();
     }
 
     public String jdbcUrl() {
         var dbPath = config.persistent()
-                    ? "tcp://localhost:" + config.port() + "/./" + config.name()
-                    : "tcp://localhost:" + config.port() + "/mem:" + config.name() + ";DB_CLOSE_DELAY=-1";
+                     ? "tcp://localhost:" + config.port() + "/./" + config.name()
+                     : "tcp://localhost:" + config.port() + "/mem:" + config.name() + ";DB_CLOSE_DELAY=-1";
+
         return "jdbc:h2:" + dbPath;
     }
 
@@ -103,19 +118,22 @@ import org.slf4j.LoggerFactory;
 
     public sealed interface H2Error extends Cause {
         record StartFailed(Throwable cause) implements H2Error {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Failed to start H2 server: " + cause.getMessage();
             }
         }
 
         record StopFailed(Throwable cause) implements H2Error {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Failed to stop H2 server: " + cause.getMessage();
             }
         }
 
         record InitScriptFailed(Throwable cause) implements H2Error {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Failed to run H2 init script: " + cause.getMessage();
             }
         }

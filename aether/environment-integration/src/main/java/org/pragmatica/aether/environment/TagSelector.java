@@ -17,7 +17,8 @@ public record TagSelector(Map<String, String> requiredTags) {
     }
 
     public boolean matches(InstanceInfo instance) {
-        return instance.tags().entrySet()
-                            .containsAll(requiredTags.entrySet());
+        return instance.tags()
+                       .entrySet()
+                       .containsAll(requiredTags.entrySet());
     }
 }

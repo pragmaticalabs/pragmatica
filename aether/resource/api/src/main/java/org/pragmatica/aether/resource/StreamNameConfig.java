@@ -4,4 +4,4 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource;
 
-public record StreamNameConfig(String streamName){}
+public record StreamNameConfig(String streamName) {}

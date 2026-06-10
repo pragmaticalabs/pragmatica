@@ -9,9 +9,7 @@ import org.pragmatica.lang.io.TimeSpan;
 
 public record DhtReplicationConfig(TimeSpan cooldownDelay, int cooldownRate, int targetRf) {
     public static final TimeSpan DEFAULT_COOLDOWN_DELAY = TimeSpan.timeSpan(10).seconds();
-
     public static final int DEFAULT_COOLDOWN_RATE = 10_000;
-
     public static final int DEFAULT_TARGET_RF = 3;
 
     public static DhtReplicationConfig dhtReplicationConfig(TimeSpan cooldownDelay, int cooldownRate, int targetRf) {

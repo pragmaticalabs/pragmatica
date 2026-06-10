@@ -10,7 +10,7 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 
 
 public interface ClusterSyncEvents extends ClusterFsmEvent {
-    record PingTick(Epoch currentEpoch) implements ClusterSyncEvents{}
+    record PingTick(Epoch currentEpoch) implements ClusterSyncEvents {}
 
-    record PongReceived(NodeId peer) implements ClusterSyncEvents{}
+    record PongReceived(NodeId peer) implements ClusterSyncEvents {}
 }

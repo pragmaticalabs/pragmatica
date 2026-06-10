@@ -27,22 +27,28 @@ public record Route53DnsProvider(AwsClient client, String hostedZoneId) implemen
         return success(new Route53DnsProvider(client, hostedZoneId));
     }
 
-    @Override public Promise<Unit> upsertRecord(String hostname, List<String> addresses, DnsRecordType type) {
+    @Override
+    public Promise<Unit> upsertRecord(String hostname, List<String> addresses, DnsRecordType type) {
         log.info("Route53 UPSERT {} {} -> {} (zone: {})",
                  type,
                  hostname,
                  addresses,
                  hostedZoneId);
+
         return Promise.success(unit());
     }
 
-    @Override public Promise<Unit> removeRecord(String hostname, DnsRecordType type) {
+    @Override
+    public Promise<Unit> removeRecord(String hostname, DnsRecordType type) {
         log.info("Route53 DELETE {} {} (zone: {})", type, hostname, hostedZoneId);
+
         return Promise.success(unit());
     }
 
-    @Override public Promise<List<String>> resolve(String hostname) {
+    @Override
+    public Promise<List<String>> resolve(String hostname) {
         log.debug("Route53 resolve {} (zone: {})", hostname, hostedZoneId);
+
         return Promise.success(List.of());
     }
 }

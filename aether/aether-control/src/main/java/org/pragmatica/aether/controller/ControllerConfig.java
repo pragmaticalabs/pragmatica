@@ -88,32 +88,32 @@ public record ControllerConfig(double cpuScaleUpThreshold,
 
     private static Result<Double> validateThreshold(double value, String name) {
         return value >= 0.0 && value <= 1.0
-              ? Result.success(value)
-              : INVALID_THRESHOLD.apply(name + "=" + value).result();
+               ? Result.success(value)
+               : INVALID_THRESHOLD.apply(name + "=" + value).result();
     }
 
     private static Result<Double> validatePositive(double value, String name) {
         return value > 0
-              ? Result.success(value)
-              : INVALID_POSITIVE.apply(name + "=" + value).result();
+               ? Result.success(value)
+               : INVALID_POSITIVE.apply(name + "=" + value).result();
     }
 
     private static Result<Long> validatePositive(long value, String name) {
         return value > 0
-              ? Result.success(value)
-              : INVALID_POSITIVE.apply(name + "=" + value).result();
+               ? Result.success(value)
+               : INVALID_POSITIVE.apply(name + "=" + value).result();
     }
 
     private static Result<Long> validateNonNegative(long value, String name) {
         return value >= 0
-              ? Result.success(value)
-              : INVALID_NON_NEGATIVE.apply(name + "=" + value).result();
+               ? Result.success(value)
+               : INVALID_NON_NEGATIVE.apply(name + "=" + value).result();
     }
 
     private static Result<Double> validateThresholdOrder(double up, double down) {
         return up > down
-              ? Result.success(up)
-              : INVALID_THRESHOLD_ORDER.result();
+               ? Result.success(up)
+               : INVALID_THRESHOLD_ORDER.result();
     }
 
     public ControllerConfig withCpuScaleUpThreshold(double threshold) {
@@ -151,20 +151,38 @@ public record ControllerConfig(double cpuScaleUpThreshold,
     }
 
     public String toJson() {
-        return "{\"cpuScaleUpThreshold\":" + cpuScaleUpThreshold + ",\"cpuScaleDownThreshold\":" + cpuScaleDownThreshold + ",\"callRateScaleUpThreshold\":" + callRateScaleUpThreshold + ",\"evaluationIntervalMs\":" + evaluationInterval.millis() + ",\"warmUpPeriodMs\":" + warmUpPeriod.millis() + ",\"sliceCooldownMs\":" + sliceCooldown.millis() + ",\"scalingConfig\":" + scalingConfigToJson() + "}";
+        return "{\"cpuScaleUpThreshold\":" + cpuScaleUpThreshold
+             + ",\"cpuScaleDownThreshold\":" + cpuScaleDownThreshold
+             + ",\"callRateScaleUpThreshold\":" + callRateScaleUpThreshold
+             + ",\"evaluationIntervalMs\":" + evaluationInterval.millis()
+             + ",\"warmUpPeriodMs\":" + warmUpPeriod.millis()
+             + ",\"sliceCooldownMs\":" + sliceCooldown.millis()
+             + ",\"scalingConfig\":" + scalingConfigToJson()
+             + "}";
     }
 
     private String scalingConfigToJson() {
         var weightsJson = new StringBuilder("{");
         var first = true;
+
         for (var entry : scalingConfig.weights().entrySet()) {
-            if (!first) {weightsJson.append(",");}
-            weightsJson.append("\"").append(entry.getKey().name())
-                              .append("\":")
-                              .append(entry.getValue());
+            if (!first) {
+                weightsJson.append(",");
+            }
+
+            weightsJson.append("\"").append(entry.getKey().name()).append("\":").append(entry.getValue());
             first = false;
         }
+
         weightsJson.append("}");
-        return "{\"windowSize\":" + scalingConfig.windowSize() + ",\"evaluationIntervalMs\":" + scalingConfig.evaluationInterval().millis() + ",\"scaleUpThreshold\":" + scalingConfig.scaleUpThreshold() + ",\"scaleDownThreshold\":" + scalingConfig.scaleDownThreshold() + ",\"errorRateBlockThreshold\":" + scalingConfig.errorRateBlockThreshold() + ",\"weights\":" + weightsJson + "}";
+
+        return "{\"windowSize\":" + scalingConfig.windowSize()
+             + ",\"evaluationIntervalMs\":" + scalingConfig.evaluationInterval()
+                                                           .millis()
+             + ",\"scaleUpThreshold\":" + scalingConfig.scaleUpThreshold()
+             + ",\"scaleDownThreshold\":" + scalingConfig.scaleDownThreshold()
+             + ",\"errorRateBlockThreshold\":" + scalingConfig.errorRateBlockThreshold()
+             + ",\"weights\":" + weightsJson
+             + "}";
     }
 }

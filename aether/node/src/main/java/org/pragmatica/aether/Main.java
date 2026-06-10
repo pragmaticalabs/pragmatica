@@ -65,6 +65,7 @@ public record Main(String[] args) {
 
     private void run() {
         var aetherConfig = loadConfig();
+
         verifyClusterLabelConsistency(aetherConfig);
         enforceClusterNamePresent();
         enforceDevModeCompatibility(aetherConfig);
@@ -75,12 +76,14 @@ public record Main(String[] args) {
         var peers = parsePeers(nodeId, port, nodeLabels, aetherConfig);
         var sliceConfig = parseSliceConfig(aetherConfig);
         var dhtConfig = parseDhtConfig(aetherConfig);
+
         logStartupInfo(nodeId, port, managementPort, peers, aetherConfig, sliceConfig);
         var coreMax = parseCoreMax(aetherConfig);
         var tlsBundle = resolveTls(nodeId, peers, aetherConfig).expect("Failed to resolve TLS configuration at node startup");
         var appHttpTls = aetherConfig.filter(AetherConfig::tlsEnabled).map(_ -> tlsBundle.tls());
         var config = AetherNodeConfig.builder().self(nodeId).coreNodes(peers).managementPort(managementPort).sliceConfig(sliceConfig).artifactRepo(dhtConfig).coreMax(coreMax).appHttp(resolveAppHttp(aetherConfig)).tls(appHttpTls).quicTls(tlsBundle.tls()).certificateProvider(tlsBundle.provider()).configProvider(resolveConfigProvider()).environment(resolveEnvironment(aetherConfig)).managementHttpProtocol(resolveManagementHttpProtocol(aetherConfig)).storageConfig(resolveStorage(aetherConfig)).backupConfig(resolveBackup(aetherConfig)).membership(resolveMembership(aetherConfig)).streaming(resolveStreaming(aetherConfig)).build();
         var node = AetherNode.aetherNode(config).expect("Failed to initialize Aether node at startup");
+
         registerShutdownHook(node);
         startNodeAndWait(node, nodeId);
     }
@@ -126,19 +129,18 @@ public record Main(String[] args) {
     /// (lowercase DNS-label). Inlined here because the `node` module does not depend on `cli`.
     private static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
 
-    private static final Cause MISSING_CLUSTER_NAME =
-        Causes.cause("AETHER_CLUSTER_NAME is not set. A running node must know its cluster name. "
-                     + "Set the AETHER_CLUSTER_NAME environment variable (or bootstrap-seed it) before start.");
+    private static final Cause MISSING_CLUSTER_NAME = Causes.cause("AETHER_CLUSTER_NAME is not set. A running node must know its cluster name. "
+                                                                  + "Set the AETHER_CLUSTER_NAME environment variable (or bootstrap-seed it) before start.");
 
-    private static final Cause DEV_MODE_WITH_REAL_TLS =
-        Causes.cause("AETHER_INSECURE_DEV_MODE refused — operator TLS certificates are configured "
-                     + "([tls] auto_generate=false with cert/key paths). Insecure dev-mode is "
-                     + "fundamentally incompatible with a production TLS deployment.");
+    private static final Cause DEV_MODE_WITH_REAL_TLS = Causes.cause("AETHER_INSECURE_DEV_MODE refused — operator TLS certificates are configured "
+                                                                    + "([tls] auto_generate=false with cert/key paths). Insecure dev-mode is "
+                                                                    + "fundamentally incompatible with a production TLS deployment.");
 
     /// Source the TLS config from the SAME place [#resolveTls] uses, so the dev-mode guard
     /// and the actual TLS setup never disagree about what certificates are configured.
     private static TlsConfig resolveTlsConfig(Option<AetherConfig> aetherConfig) {
-        return aetherConfig.flatMap(AetherConfig::tls).or(TlsConfig.tlsConfig());
+        return aetherConfig.flatMap(AetherConfig::tls)
+                           .or(TlsConfig.tlsConfig());
     }
 
     /// Boot gate: a running node must know its cluster name. Reads `AETHER_CLUSTER_NAME`,
@@ -157,22 +159,21 @@ public record Main(String[] args) {
                      .map(String::trim)
                      .filter(s -> !s.isEmpty())
                      .toResult(MISSING_CLUSTER_NAME)
-                     .filter(MALFORMED_CLUSTER_NAME, name -> CLUSTER_NAME_PATTERN.matcher(name).matches())
+                     .filter(MALFORMED_CLUSTER_NAME,
+                             name -> CLUSTER_NAME_PATTERN.matcher(name).matches())
                      .mapToUnit();
     }
 
-    private static final Fn1<Cause, String> MALFORMED_CLUSTER_NAME =
-        Causes.forOneValue("AETHER_CLUSTER_NAME '%s' is malformed — must match "
-                           + "[a-z]([a-z0-9-]{0,61}[a-z0-9])? (lowercase DNS label, 1-63 chars, e.g. a or prod-eu).");
+    private static final Fn1<Cause, String> MALFORMED_CLUSTER_NAME = Causes.forOneValue("AETHER_CLUSTER_NAME '%s' is malformed — must match "
+                                                                                       + "[a-z]([a-z0-9-]{0,61}[a-z0-9])? (lowercase DNS label, 1-63 chars, e.g. a or prod-eu).");
 
     /// Boot gate: insecure dev-mode must be fundamentally incompatible with a real
     /// (operator-supplied) TLS deployment. Reads the dev-mode env and the resolved TLS
     /// config, delegates to the pure [#verifyDevModeCompatibility] guard, exits on violation.
     @Contract
     private void enforceDevModeCompatibility(Option<AetherConfig> aetherConfig) {
-        var devMode = Option.option(System.getenv("AETHER_INSECURE_DEV_MODE"))
-                            .map(v -> v.equalsIgnoreCase("true"))
-                            .or(false);
+        var devMode = Option.option(System.getenv("AETHER_INSECURE_DEV_MODE")).map(v -> v.equalsIgnoreCase("true")).or(false);
+
         verifyDevModeCompatibility(devMode, resolveTlsConfig(aetherConfig)).onFailure(this::abortBoot);
     }
 
@@ -181,8 +182,8 @@ public record Main(String[] args) {
     /// `auto_generate=true`/no cert paths) or dev-mode off → success.
     static Result<Unit> verifyDevModeCompatibility(boolean devModeOn, TlsConfig tlsConfig) {
         return devModeOn && tlsConfig.hasProvidedCertificates()
-              ? DEV_MODE_WITH_REAL_TLS.result()
-              : Result.unitResult();
+               ? DEV_MODE_WITH_REAL_TLS.result()
+               : Result.unitResult();
     }
 
     @Contract
@@ -197,6 +198,7 @@ public record Main(String[] args) {
         return resolveClusterSecret(tlsCfg).flatMap(SelfSignedCertificateProvider::selfSignedCertificateProvider)
                                    .flatMap(provider -> {
                                                 var hostname = findHostnameFromPeers(nodeId, peers);
+
                                                 return org.pragmatica.net.tcp.TlsConfig.fromProvider(provider,
                                                                                                      nodeId.id(),
                                                                                                      hostname)
@@ -253,16 +255,17 @@ public record Main(String[] args) {
     /// "no `[membership]` section, defaults will be applied at use sites" signal it sees
     /// today, preserving default-OFF behaviour exactly.
     private static Option<MembershipConfig> resolveMembership(Option<AetherConfig> aetherConfig) {
-        return aetherConfig.flatMap(AetherConfig::membership).map(Main::liftMembershipBinding);
+        return aetherConfig.flatMap(AetherConfig::membership)
+                           .map(Main::liftMembershipBinding);
     }
 
     private static MembershipConfig liftMembershipBinding(MembershipConfigBinding binding) {
-        return new MembershipConfig(binding.nttDepartureTimeout(),
-                                    binding.quorumLossDrainThreshold());
+        return new MembershipConfig(binding.nttDepartureTimeout(), binding.quorumLossDrainThreshold());
     }
 
     private ConfigurationProvider buildConfigProvider(Path configPath) {
         var builder = ConfigurationProvider.builder();
+
         builder.withTomlFile(configPath);
         builder.withSystemProperties("aether.");
         builder.withEnvironment("AETHER_");
@@ -364,9 +367,8 @@ public record Main(String[] args) {
         }
     }
 
-    private static final Cause MISSING_NODE_ID =
-        Causes.cause("No node id: set --node-id=<id>, or env AETHER_NODE_ID / NODE_ID. "
-                     + "A clustered node requires a stable, explicit identity.");
+    private static final Cause MISSING_NODE_ID = Causes.cause("No node id: set --node-id=<id>, or env AETHER_NODE_ID / NODE_ID. "
+                                                             + "A clustered node requires a stable, explicit identity.");
 
     /// Boot gate: a clustered node MUST have an explicit, externally-assigned, stable id.
     /// Threads the explicit sources (`--node-id=`, env `AETHER_NODE_ID`, env `NODE_ID`) via
@@ -377,9 +379,8 @@ public record Main(String[] args) {
     private NodeId parseNodeId(Option<AetherConfig> aetherConfig) {
         return resolveNodeId(findArg("--node-id="),
                              findEnv("AETHER_NODE_ID").or(""),
-                             findEnv("NODE_ID").or(""))
-              .onFailure(this::abortBoot)
-              .expect("Failed to resolve node id at startup");
+                             findEnv("NODE_ID").or("")).onFailure(this::abortBoot)
+                            .expect("Failed to resolve node id at startup");
     }
 
     /// Pure, unit-testable guard: resolves the node id from the explicit chain
@@ -459,12 +460,14 @@ public record Main(String[] args) {
         var port = clusterPort + (env == Environment.LOCAL
                                   ? index
                                   : 0);
+
         return NodeInfo.nodeInfo(NodeId.nodeId("node-" + index).expect("generated node id must be valid"),
                                  nodeAddress(host, port).expect("generated node address must be valid"));
     }
 
     private List<NodeInfo> parsePeersFromString(String peersStr, NodeId self, NodeInfo selfInfo) {
         var peers = Arrays.stream(peersStr.split(",")).map(String::trim).filter(s -> !s.isEmpty()).flatMap(peerStr -> parsePeerAddress(peerStr).stream()).toList();
+
         return ensureSelfIncluded(peers, self, selfInfo);
     }
 
@@ -474,6 +477,7 @@ public record Main(String[] args) {
 
         if (selfMissing) {
             var allPeers = new ArrayList<>(peers);
+
             allPeers.add(selfInfo);
 
             return List.copyOf(allPeers);
@@ -525,6 +529,7 @@ public record Main(String[] args) {
     /// function so the env-to-label contract is testable without a live node boot.
     static Map<String, String> collectNodeLabels(String hostname, Fn1<Option<String>, String> envLookup) {
         var labels = new HashMap<String, String>();
+
         labels.put(NodeInfo.LABEL_HOSTNAME, hostname);
         envLookup.apply("AETHER_ZONE").onPresent(z -> labels.put(NodeInfo.LABEL_ZONE, z));
         envLookup.apply("AETHER_INSTANCE_TYPE").onPresent(t -> labels.put(NodeInfo.LABEL_INSTANCE_TYPE, t));

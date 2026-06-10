@@ -13,15 +13,16 @@ import org.pragmatica.serialization.Codec;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+
 /// Resource-name value object — the validated kebab-case name component of a [ResourceAddress].
 ///
 /// This type owns the name grammar (kebab-case: lowercase, no leading/trailing/double hyphen),
 /// the length bound and the reserved-name set. The raw string is rendered verbatim via [#value()]
 /// so the `namespace:name:version` wire form is unchanged. Parse-don't-validate: an instance is the
 /// proof that the grammar holds.
-@Codec public record ResourceName(String value) {
+@Codec
+public record ResourceName(String value) {
     public static final Set<String> RESERVED = Set.of("latest");
-
     private static final Pattern PATTERN = Pattern.compile("[a-z][a-z0-9-]{0,63}");
 
     /// Resource-name (kebab-case) validation, shared by all resource-flavored address types.
@@ -39,14 +40,17 @@ import java.util.regex.Pattern;
     /// for symmetry — otherwise a future regex tweak allowing leading digits would silently let
     /// leading hyphens through.
     private static boolean hasValidHyphens(String value) {
-        return !value.startsWith("-") && !value.endsWith("-") && !value.contains("--");
+        return ! value.startsWith("-")
+               && !value.endsWith("-")
+               && !value.contains("--");
     }
 
     private static boolean isNotReserved(String value) {
-        return !RESERVED.contains(value);
+        return ! RESERVED.contains(value);
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return value;
     }
 }

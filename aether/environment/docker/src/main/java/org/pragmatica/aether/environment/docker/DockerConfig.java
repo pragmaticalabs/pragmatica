@@ -19,21 +19,13 @@ public record DockerConfig(String imageName,
                            String dockerGid,
                            boolean exposeHostPorts) {
     private static final String DEFAULT_IMAGE_NAME = "aether-node:local";
-
     private static final String DEFAULT_NETWORK_NAME = "aether-network";
-
     private static final int DEFAULT_MANAGEMENT_PORT_BASE = 5150;
-
     private static final int DEFAULT_APP_PORT_BASE = 8070;
-
     private static final int DEFAULT_CLUSTER_PORT = 6000;
-
     private static final String DEFAULT_SOCKET_PATH = "/var/run/docker.sock";
-
     private static final String DEFAULT_API_KEY = "";
-
     private static final String DEFAULT_DOCKER_GID = "";
-
     private static final boolean DEFAULT_EXPOSE_HOST_PORTS = false;
 
     public static Result<DockerConfig> dockerConfig(String imageName,

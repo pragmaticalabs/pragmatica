@@ -103,7 +103,9 @@ public interface NotificationService {
         }
 
         private void trimRecent() {
-            while (recentNotifications.size() > MAX_RECENT) {recentNotifications.removeFirst();}
+            while (recentNotifications.size() > MAX_RECENT) {
+                recentNotifications.removeFirst();
+            }
         }
     }
 }

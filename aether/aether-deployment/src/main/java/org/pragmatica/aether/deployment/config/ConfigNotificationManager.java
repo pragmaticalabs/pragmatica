@@ -51,6 +51,7 @@ public sealed interface ConfigNotificationManager {
 
         private static Thread createDaemonThread(Runnable r) {
             var thread = new Thread(r, "config-notification");
+
             thread.setDaemon(true);
 
             return thread;
@@ -64,6 +65,7 @@ public sealed interface ConfigNotificationManager {
             findNotifyMethod(sliceClassLoader, factoryClassName).onPresent(method -> registerSlice(artifact,
                                                                                                    sliceInstance,
                                                                                                    method));
+
             return unitResult();
         }
 
@@ -78,7 +80,9 @@ public sealed interface ConfigNotificationManager {
         public Result<Unit> notifyInitial(Artifact artifact, List<String> sections, ConfigFacade config) {
             var registration = registrations.get(artifact);
 
-            if (registration == null) {return unitResult();}
+            if (registration == null) {
+                return unitResult();
+            }
 
             executor.execute(() -> dispatchInitialNotification(registration, sections, config));
 
@@ -89,6 +93,7 @@ public sealed interface ConfigNotificationManager {
         public Result<Unit> unregister(Artifact artifact) {
             registrations.remove(artifact);
             var prefix = artifact.asString() + ":";
+
             lastParsedConfig.keySet().removeIf(key -> key.startsWith(prefix));
 
             return unitResult();
@@ -119,13 +124,17 @@ public sealed interface ConfigNotificationManager {
         }
 
         private void dispatchNotification(String section, ConfigFacade config) {
-            for (var registration : registrations.values()) {invokeNotifyMethod(registration, section, config);}
+            for (var registration : registrations.values()) {
+                invokeNotifyMethod(registration, section, config);
+            }
         }
 
         private void dispatchInitialNotification(SliceRegistration registration,
                                                  List<String> sections,
                                                  ConfigFacade config) {
-            for (var section : sections) {invokeNotifyMethod(registration, section, config);}
+            for (var section : sections) {
+                invokeNotifyMethod(registration, section, config);
+            }
         }
 
         private void invokeNotifyMethod(SliceRegistration registration, String section, ConfigFacade config) {

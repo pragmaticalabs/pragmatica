@@ -41,15 +41,26 @@ public sealed interface StreamTailPoller {
                            PrintStream err,
                            Sleeper sleeper) {
         var state = new PollState(options.fromOffset(), 0);
+
         while (true) {
             var query = buildQuery(state.offset(), options.maxEvents());
             var response = httpFetch.apply(addr, query);
             var outcome = pollOnce(response, state, out, err);
-            if (outcome.exitCode().isPresent()) {return outcome.exitCode().getAsInt();}
+
+            if (outcome.exitCode().isPresent()) {
+                return outcome.exitCode()
+                              .getAsInt();
+            }
+
             state = outcome.nextState();
-            if (!options.follow() && !outcome.hasMore()) {return StreamExitCode.SUCCESS;}
+            if (!options.follow() && !outcome.hasMore()) {
+                return StreamExitCode.SUCCESS;
+            }
+
             if (!outcome.hasMore() && options.follow()) {
-                if (!sleeper.sleep(options.intervalMs())) {return StreamExitCode.SUCCESS;}
+                if (!sleeper.sleep(options.intervalMs())) {
+                    return StreamExitCode.SUCCESS;
+                }
             }
         }
     }
@@ -57,14 +68,17 @@ public sealed interface StreamTailPoller {
     /// Single-iteration step extracted for testability. Returns the next state plus an optional
     /// exit code (set when the loop must terminate immediately, e.g. on 404 or repeated 5xx).
     static PollOutcome pollOnce(String response, PollState state, PrintStream out, PrintStream err) {
-        if (OutputFormatter.isErrorResponse(response)) {return handleErrorResponse(response, state, err);}
-        return MAPPER.readTree(response)
-                     .fold(_ -> handleParseFailure(response, state, err),
-                           node -> handleSuccess(node, state, out));
+        if (OutputFormatter.isErrorResponse(response)) {
+            return handleErrorResponse(response, state, err);
+        }
+
+        return MAPPER.readTree(response).fold(_ -> handleParseFailure(response, state, err),
+                                              node -> handleSuccess(node, state, out));
     }
 
     private static PollOutcome handleErrorResponse(String response, PollState state, PrintStream err) {
         var status = StreamHttpResponse.extractHttpStatus(response);
+
         return status.map(code -> handleHttpStatus(code, response, state, err))
                      .or(() -> retryOrFail(response, state, err));
     }
@@ -72,49 +86,70 @@ public sealed interface StreamTailPoller {
     private static PollOutcome handleHttpStatus(int code, String response, PollState state, PrintStream err) {
         if (code == 404) {
             err.println("Error: stream not found");
+
             return PollOutcome.exit(StreamExitCode.NOT_FOUND);
         }
+
         if (code == 410) {
             err.println("Error: stream was deleted; address can be re-registered");
+
             return PollOutcome.exit(StreamExitCode.GONE);
         }
-        if (code >= 500) {return retryOrFail(response, state, err);}
+
+        if (code >= 500) {
+            return retryOrFail(response, state, err);
+        }
+
         err.println("Error: " + OutputFormatter.extractErrorMessage(response));
+
         return PollOutcome.exit(StreamExitCode.ERROR);
     }
 
     private static PollOutcome retryOrFail(String response, PollState state, PrintStream err) {
         var nextRetry = state.consecutive5xx() + 1;
+
         if (nextRetry > MAX_5XX_RETRIES) {
-            err.println("Error: server failure after " + MAX_5XX_RETRIES + " retries: "
-                                + OutputFormatter.extractErrorMessage(response));
+            err.println("Error: server failure after " + MAX_5XX_RETRIES
+                       + " retries: " + OutputFormatter.extractErrorMessage(response));
+
             return PollOutcome.exit(StreamExitCode.ERROR);
         }
-        err.println("Warning: server failure (retry " + nextRetry + "/" + MAX_5XX_RETRIES + "): "
-                            + OutputFormatter.extractErrorMessage(response));
+
+        err.println("Warning: server failure (retry " + nextRetry
+                   + "/" + MAX_5XX_RETRIES
+                   + "): " + OutputFormatter.extractErrorMessage(response));
+
         return PollOutcome.continueRetry(state.withRetry(nextRetry));
     }
 
     private static PollOutcome handleParseFailure(String response, PollState state, PrintStream err) {
         err.println("Error: malformed server response: " + truncate(response, 200));
+
         return PollOutcome.exit(StreamExitCode.ERROR);
     }
 
     private static PollOutcome handleSuccess(JsonNode node, PollState state, PrintStream out) {
         var events = resolveEventsArray(node);
+
         events.forEach(eventNode -> out.println(formatEventLine(eventNode)));
         var nextOffset = node.has("nextOffset")
-                ? node.get("nextOffset").asLong(state.offset())
-                : state.offset();
+                         ? node.get("nextOffset").asLong(state.offset())
+                         : state.offset();
         var hasMore = node.has("hasMore") && node.get("hasMore").asBoolean(false);
+
         return PollOutcome.advance(new PollState(nextOffset, 0), hasMore);
     }
 
     private static List<JsonNode> resolveEventsArray(JsonNode root) {
-        if (!root.has("events") || !root.get("events").isArray()) {return List.of();}
+        if (!root.has("events") || !root.get("events").isArray()) {
+            return List.of();
+        }
+
         var arr = root.get("events");
         var list = new java.util.ArrayList<JsonNode>(arr.size());
+
         arr.forEach(list::add);
+
         return list;
     }
 
@@ -129,7 +164,9 @@ public sealed interface StreamTailPoller {
     }
 
     private static String truncate(String s, int max) {
-        return s == null || s.length() <= max ? s : s.substring(0, max) + "...";
+        return s == null || s.length() <= max
+               ? s
+               : s.substring(0, max) + "...";
     }
 
     int MAX_5XX_RETRIES = 3;
@@ -137,7 +174,9 @@ public sealed interface StreamTailPoller {
     /// Per-iteration polling state — the offset to fetch from on the next call, and how many
     /// consecutive 5xx responses we've seen (resets to 0 on any 2xx).
     record PollState(long offset, int consecutive5xx) {
-        PollState withRetry(int retry) {return new PollState(offset, retry);}
+        PollState withRetry(int retry) {
+            return new PollState(offset, retry);
+        }
     }
 
     /// Loop options bundled into a record so the picocli command can package them once and the
@@ -151,12 +190,17 @@ public sealed interface StreamTailPoller {
     ///
     /// `hasMore=true` triggers immediate next-poll without sleeping.
     record PollOutcome(java.util.OptionalInt exitCode, PollState nextState, boolean hasMore) {
-        static PollOutcome exit(int code) {return new PollOutcome(java.util.OptionalInt.of(code),
-                                                                  new PollState(0, 0), false);}
-        static PollOutcome advance(PollState next, boolean hasMore) {return new PollOutcome(java.util.OptionalInt.empty(),
-                                                                                            next, hasMore);}
-        static PollOutcome continueRetry(PollState next) {return new PollOutcome(java.util.OptionalInt.empty(),
-                                                                                 next, false);}
+        static PollOutcome exit(int code) {
+            return new PollOutcome(java.util.OptionalInt.of(code), new PollState(0, 0), false);
+        }
+
+        static PollOutcome advance(PollState next, boolean hasMore) {
+            return new PollOutcome(java.util.OptionalInt.empty(), next, hasMore);
+        }
+
+        static PollOutcome continueRetry(PollState next) {
+            return new PollOutcome(java.util.OptionalInt.empty(), next, false);
+        }
     }
 
     /// Sleep abstraction so tests can drive the loop deterministically without real waits.
@@ -166,12 +210,21 @@ public sealed interface StreamTailPoller {
         boolean sleep(long millis);
 
         Sleeper REAL = millis -> {
-            try {Thread.sleep(millis);return true;}
-            catch (InterruptedException _) {Thread.currentThread().interrupt();return false;}
+            try {
+                Thread.sleep(millis);
+
+                return true;
+            } catch (InterruptedException _) {
+                Thread.currentThread().interrupt();
+
+                return false;
+            }
         };
     }
 
-    static String routeForEvents() {return ManagementRoute.STREAMS_EVENTS.name();}
+    static String routeForEvents() {
+        return ManagementRoute.STREAMS_EVENTS.name();
+    }
 
     record unused() implements StreamTailPoller {}
 }

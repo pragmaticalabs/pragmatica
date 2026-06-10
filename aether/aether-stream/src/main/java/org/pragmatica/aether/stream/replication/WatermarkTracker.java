@@ -16,7 +16,9 @@ import static org.pragmatica.lang.Option.option;
 
 
 public sealed interface WatermarkTracker {
-    @Contract void advance(String streamName, int partition, long offset);
+    @Contract
+    void advance(String streamName, int partition, long offset);
+
     Option<Long> watermark(String streamName, int partition);
     Map<String, Map<Integer, Long>> allWatermarks();
 
@@ -25,13 +27,17 @@ public sealed interface WatermarkTracker {
     }
 
     record unused() implements WatermarkTracker {
-        @Contract@Override public void advance(String streamName, int partition, long offset) {}
+        @Contract
+        @Override
+        public void advance(String streamName, int partition, long offset) {}
 
-        @Override public Option<Long> watermark(String streamName, int partition) {
+        @Override
+        public Option<Long> watermark(String streamName, int partition) {
             return Option.none();
         }
 
-        @Override public Map<String, Map<Integer, Long>> allWatermarks() {
+        @Override
+        public Map<String, Map<Integer, Long>> allWatermarks() {
             return Map.of();
         }
     }
@@ -40,19 +46,27 @@ public sealed interface WatermarkTracker {
 final class DefaultWatermarkTracker implements WatermarkTracker {
     private final ConcurrentHashMap<PartitionKey, Long> watermarks = new ConcurrentHashMap<>();
 
-    @Contract@Override public void advance(String streamName, int partition, long offset) {
+    @Contract
+    @Override
+    public void advance(String streamName, int partition, long offset) {
         var key = partitionKey(streamName, partition);
+
         watermarks.merge(key, offset, Math::max);
     }
 
-    @Override public Option<Long> watermark(String streamName, int partition) {
+    @Override
+    public Option<Long> watermark(String streamName, int partition) {
         return option(watermarks.get(partitionKey(streamName, partition)));
     }
 
-    @Override public Map<String, Map<Integer, Long>> allWatermarks() {
-        return watermarks.entrySet().stream()
-                                  .collect(Collectors.groupingBy(e -> e.getKey().streamName(),
-                                                                 Collectors.toMap(e -> e.getKey().partition(),
-                                                                                  Map.Entry::getValue)));
+    @Override
+    public Map<String, Map<Integer, Long>> allWatermarks() {
+        return watermarks.entrySet()
+                         .stream()
+                         .collect(Collectors.groupingBy(e -> e.getKey()
+                                                              .streamName(),
+                                                        Collectors.toMap(e -> e.getKey()
+                                                                               .partition(),
+                                                                         Map.Entry::getValue)));
     }
 }

@@ -69,7 +69,10 @@ class ClusterScaffoldCommand implements Callable<Integer> {
     }
 
     private Result<String> render(String _format) {
-        if (nodes <3) {return new ScaffoldError.InvalidNodeCount(nodes).result();}
+        if (nodes < 3) {
+            return new ScaffoldError.InvalidNodeCount(nodes).result();
+        }
+
         return Result.success(DockerComposeTemplate.render(name, nodes, image, mgmtPortBase, appPortBase, clusterPort));
     }
 
@@ -88,12 +91,16 @@ class ClusterScaffoldCommand implements Callable<Integer> {
     sealed interface ScaffoldError extends Cause {
         record UnsupportedFormat(String format) implements ScaffoldError {
             @Override
-            public String message() {return "Unsupported --format '" + format + "' (supported: docker-compose)";}
+            public String message() {
+                return "Unsupported --format '" + format + "' (supported: docker-compose)";
+            }
         }
 
         record InvalidNodeCount(int nodes) implements ScaffoldError {
             @Override
-            public String message() {return "Invalid --nodes " + nodes + " (must be >= 3)";}
+            public String message() {
+                return "Invalid --nodes " + nodes + " (must be >= 3)";
+            }
         }
     }
 }

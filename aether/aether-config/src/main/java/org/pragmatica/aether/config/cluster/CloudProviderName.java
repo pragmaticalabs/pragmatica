@@ -25,9 +25,10 @@ public enum CloudProviderName {
         return value;
     }
     public static Result<CloudProviderName> cloudProviderName(String raw) {
-        return Arrays.stream(values()).filter(cp -> cp.value.equals(raw))
-                            .findFirst()
-                            .map(Result::success)
-                            .orElseGet(INVALID_TYPE::result);
+        return Arrays.stream(values())
+                     .filter(cp -> cp.value.equals(raw))
+                     .findFirst()
+                     .map(Result::success)
+                     .orElseGet(INVALID_TYPE::result);
     }
 }

@@ -42,23 +42,25 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"}) public interface DependencyResolver {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"})
+public interface DependencyResolver {
     Logger log = LoggerFactory.getLogger(DependencyResolver.class);
 
-    record ResolvedSlice(Slice slice, SliceLoadingContext loadingContext){}
+    record ResolvedSlice(Slice slice, SliceLoadingContext loadingContext) {}
 
     static Promise<Slice> resolve(Artifact artifact,
                                   Repository repository,
                                   SliceRegistry registry,
                                   SharedLibraryClassLoader sharedLibraryLoader,
                                   SliceInvokerFacade invokerFacade) {
-        return registry.lookup(artifact).map(Promise::success)
-                              .or(() -> resolveWithSharedLoader(artifact,
-                                                                repository,
-                                                                registry,
-                                                                sharedLibraryLoader,
-                                                                invokerFacade,
-                                                                new HashSet<>()));
+        return registry.lookup(artifact)
+                       .map(Promise::success)
+                       .or(() -> resolveWithSharedLoader(artifact,
+                                                         repository,
+                                                         registry,
+                                                         sharedLibraryLoader,
+                                                         invokerFacade,
+                                                         new HashSet<>()));
     }
 
     static Promise<ResolvedSlice> resolveWithContext(Artifact artifact,
@@ -91,14 +93,17 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                      ResourceProviderFacade resourceFacade,
                                                      Option<org.pragmatica.lang.Functions.Fn1<Option<org.pragmatica.config.ConfigurationProvider>, ClassLoader>> compositeBuilder) {
         var loadingContext = SliceLoadingContext.sliceLoadingContext(invokerFacade, resourceFacade, artifact.asString());
+
         compositeBuilder.onPresent(loadingContext::setCompositeBuilder);
-        return registry.lookup(artifact).map(slice -> Promise.success(new ResolvedSlice(slice, loadingContext)))
-                              .or(() -> resolveWithSharedLoaderAndContext(artifact,
-                                                                          repository,
-                                                                          registry,
-                                                                          sharedLibraryLoader,
-                                                                          loadingContext,
-                                                                          new HashSet<>()));
+
+        return registry.lookup(artifact)
+                       .map(slice -> Promise.success(new ResolvedSlice(slice, loadingContext)))
+                       .or(() -> resolveWithSharedLoaderAndContext(artifact,
+                                                                   repository,
+                                                                   registry,
+                                                                   sharedLibraryLoader,
+                                                                   loadingContext,
+                                                                   new HashSet<>()));
     }
 
     static Promise<ResolvedSlice> resolveWithContext(Artifact artifact,
@@ -116,15 +121,17 @@ import static org.pragmatica.lang.utils.Causes.cause;
 
     private static ResourceProviderFacade noOpResourceProvider() {
         return new ResourceProviderFacade() {
-            private static final Cause NOT_CONFIGURED = cause("Resource provisioning not configured. " + "Use resolveWithContext(artifact, repo, registry, loader, invoker, resourceFacade) " + "to enable resource provisioning.");
+            private static final Cause NOT_CONFIGURED = cause("Resource provisioning not configured. "
+                                                             + "Use resolveWithContext(artifact, repo, registry, loader, invoker, resourceFacade) "
+                                                             + "to enable resource provisioning.");
 
-            @Override public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+            @Override
+            public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
                 return NOT_CONFIGURED.promise();
             }
 
-            @Override public <T> Promise<T> provide(Class<T> resourceType,
-                                                    String configSection,
-                                                    ProvisioningContext context) {
+            @Override
+            public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
                 return NOT_CONFIGURED.promise();
             }
         };
@@ -138,32 +145,37 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                                             Set<String> resolutionPath) {
         log.info("Resolving artifact {} with shared loader and context", artifact.asString());
         var artifactKey = artifact.asString();
+
         if (resolutionPath.contains(artifactKey)) {
             log.error("Circular dependency detected for {}", artifactKey);
+
             return circularDependencyDetected(artifactKey).promise();
         }
+
         resolutionPath.add(artifactKey);
-        return repository.locate(artifact).onSuccess(location -> log.info("Located artifact {} at {}",
-                                                                          artifact.asString(),
-                                                                          location.url()))
-                                .flatMap(location -> loadFromLocationWithSharedAndContext(artifact,
-                                                                                          location,
-                                                                                          repository,
-                                                                                          registry,
-                                                                                          sharedLibraryLoader,
-                                                                                          loadingContext,
-                                                                                          resolutionPath))
-                                .onSuccess(_ -> {
-                                               log.info("Resolved artifact {} with context",
-                                                        artifact.asString());
-                                               resolutionPath.remove(artifactKey);
-                                           })
-                                .onFailure(cause -> {
-                                               log.error("Failed to resolve artifact {}: {}",
+
+        return repository.locate(artifact)
+                         .onSuccess(location -> log.info("Located artifact {} at {}",
                                                          artifact.asString(),
-                                                         cause.message());
-                                               resolutionPath.remove(artifactKey);
-                                           });
+                                                         location.url()))
+                         .flatMap(location -> loadFromLocationWithSharedAndContext(artifact,
+                                                                                   location,
+                                                                                   repository,
+                                                                                   registry,
+                                                                                   sharedLibraryLoader,
+                                                                                   loadingContext,
+                                                                                   resolutionPath))
+                         .onSuccess(_ -> {
+                                        log.info("Resolved artifact {} with context",
+                                                 artifact.asString());
+                                        resolutionPath.remove(artifactKey);
+                                    })
+                         .onFailure(cause -> {
+                                        log.error("Failed to resolve artifact {}: {}",
+                                                  artifact.asString(),
+                                                  cause.message());
+                                        resolutionPath.remove(artifactKey);
+                                    });
     }
 
     private static Promise<ResolvedSlice> loadFromLocationWithSharedAndContext(Artifact artifact,
@@ -173,20 +185,20 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                                                SharedLibraryClassLoader sharedLibraryLoader,
                                                                                SliceLoadingContext loadingContext,
                                                                                Set<String> resolutionPath) {
-        return SliceManifest.read(location.url()).flatMap(manifest -> SliceManifest.checkEnvelopeCompatibility(manifest.envelopeVersion())
-                                                                                                              .map(_ -> manifest))
-                                 .onFailure(cause -> log.error("Invalid slice JAR {}: {}",
-                                                               artifact,
-                                                               cause.message()))
-                                 .async()
-                                 .flatMap(manifest -> validateAndLoadWithSharedAndContext(artifact,
-                                                                                          location,
-                                                                                          manifest,
-                                                                                          repository,
-                                                                                          registry,
-                                                                                          sharedLibraryLoader,
-                                                                                          loadingContext,
-                                                                                          resolutionPath));
+        return SliceManifest.read(location.url())
+                            .flatMap(manifest -> SliceManifest.checkEnvelopeCompatibility(manifest.envelopeVersion()).map(_ -> manifest))
+                            .onFailure(cause -> log.error("Invalid slice JAR {}: {}",
+                                                          artifact,
+                                                          cause.message()))
+                            .async()
+                            .flatMap(manifest -> validateAndLoadWithSharedAndContext(artifact,
+                                                                                     location,
+                                                                                     manifest,
+                                                                                     repository,
+                                                                                     registry,
+                                                                                     sharedLibraryLoader,
+                                                                                     loadingContext,
+                                                                                     resolutionPath));
     }
 
     private static Promise<ResolvedSlice> validateAndLoadWithSharedAndContext(Artifact artifact,
@@ -199,8 +211,10 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                                               Set<String> resolutionPath) {
         if (!manifest.artifact().equals(artifact)) {
             log.error("Artifact mismatch: requested {} but JAR declares {}", artifact, manifest.artifact());
+
             return artifactMismatch(artifact, manifest.artifact()).promise();
         }
+
         return DependencyFile.load(manifest.sliceClassName(),
                                    createTempLoader(location.url(),
                                                     sharedLibraryLoader)).async()
@@ -228,7 +242,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                                 location.url()).flatMap(sharedResult -> SharedDependencyLoader.processInfraDependencies(depFile.infra(),
                                                                                                                                                         sharedLibraryLoader,
                                                                                                                                                         repository)
-        .map(_ -> sharedResult))
+                                                                                                                              .map(_ -> sharedResult))
                                                                .flatMap(sharedResult -> addSliceDependencyJarsToClassLoader(depFile.slices(),
                                                                                                                             sharedResult,
                                                                                                                             repository))
@@ -250,16 +264,15 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                                                   SharedLibraryClassLoader sharedLibraryLoader,
                                                                                   SliceLoadingContext loadingContext,
                                                                                   Set<String> resolutionPath) {
-        return loadClass(manifest.sliceClassName(), sharedResult.sliceClassLoader())
-            .flatMap(sliceClass -> materializeThenResolve(manifest,
-                                                          depFile,
-                                                          sharedResult,
-                                                          sliceClass,
-                                                          repository,
-                                                          registry,
-                                                          sharedLibraryLoader,
-                                                          loadingContext,
-                                                          resolutionPath));
+        return loadClass(manifest.sliceClassName(), sharedResult.sliceClassLoader()).flatMap(sliceClass -> materializeThenResolve(manifest,
+                                                                                                                                  depFile,
+                                                                                                                                  sharedResult,
+                                                                                                                                  sliceClass,
+                                                                                                                                  repository,
+                                                                                                                                  registry,
+                                                                                                                                  sharedLibraryLoader,
+                                                                                                                                  loadingContext,
+                                                                                                                                  resolutionPath));
     }
 
     /// Materializes the slice's intrinsic config composite synchronously (happens-before the
@@ -278,6 +291,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                                  SliceLoadingContext loadingContext,
                                                                  Set<String> resolutionPath) {
         loadingContext.materializeComposite(sharedResult.sliceClassLoader());
+
         return resolveSliceDependenciesWithContext(manifest.artifact(),
                                                    sliceClass,
                                                    depFile.slices(),
@@ -301,12 +315,14 @@ import static org.pragmatica.lang.utils.Causes.cause;
         log.info("Resolving {} slice dependencies for {} with context", sliceDeps.size(), artifact.asString());
         if (sliceDeps.isEmpty()) {
             log.info("No slice dependencies for {}, creating slice directly with context", artifact.asString());
+
             return createSliceFromClass(sliceClass,
                                         loadingContext,
                                         List.of(),
                                         List.of()).flatMap(slice -> registerSlice(artifact, slice, registry))
                                        .map(slice -> new ResolvedSlice(slice, loadingContext));
         }
+
         return resolveArtifactDependenciesWithContextSequentially(sliceDeps,
                                                                   repository,
                                                                   registry,
@@ -331,6 +347,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                                             List<ArtifactDependency> sliceDeps,
                                                                             SliceRegistry registry) {
         log.info("Creating and registering slice {} with context", artifact.asString());
+
         return createSliceFromClass(sliceClass, loadingContext, resolvedSlices, sliceDeps).flatMap(slice -> registerSlice(artifact,
                                                                                                                           slice,
                                                                                                                           registry))
@@ -356,32 +373,37 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                           Set<String> resolutionPath) {
         log.info("Resolving artifact {} with shared loader", artifact.asString());
         var artifactKey = artifact.asString();
+
         if (resolutionPath.contains(artifactKey)) {
             log.error("Circular dependency detected for {}", artifactKey);
+
             return circularDependencyDetected(artifactKey).promise();
         }
+
         resolutionPath.add(artifactKey);
-        return repository.locate(artifact).onSuccess(location -> log.info("Located artifact {} at {}",
-                                                                          artifact.asString(),
-                                                                          location.url()))
-                                .flatMap(location -> loadFromLocationWithShared(artifact,
-                                                                                location,
-                                                                                repository,
-                                                                                registry,
-                                                                                sharedLibraryLoader,
-                                                                                invokerFacade,
-                                                                                resolutionPath))
-                                .onSuccess(_ -> {
-                                               log.info("Resolved artifact {}",
-                                                        artifact.asString());
-                                               resolutionPath.remove(artifactKey);
-                                           })
-                                .onFailure(cause -> {
-                                               log.error("Failed to resolve artifact {}: {}",
+
+        return repository.locate(artifact)
+                         .onSuccess(location -> log.info("Located artifact {} at {}",
                                                          artifact.asString(),
-                                                         cause.message());
-                                               resolutionPath.remove(artifactKey);
-                                           });
+                                                         location.url()))
+                         .flatMap(location -> loadFromLocationWithShared(artifact,
+                                                                         location,
+                                                                         repository,
+                                                                         registry,
+                                                                         sharedLibraryLoader,
+                                                                         invokerFacade,
+                                                                         resolutionPath))
+                         .onSuccess(_ -> {
+                                        log.info("Resolved artifact {}",
+                                                 artifact.asString());
+                                        resolutionPath.remove(artifactKey);
+                                    })
+                         .onFailure(cause -> {
+                                        log.error("Failed to resolve artifact {}: {}",
+                                                  artifact.asString(),
+                                                  cause.message());
+                                        resolutionPath.remove(artifactKey);
+                                    });
     }
 
     private static Promise<Slice> loadFromLocationWithShared(Artifact artifact,
@@ -391,20 +413,20 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                              SharedLibraryClassLoader sharedLibraryLoader,
                                                              SliceInvokerFacade invokerFacade,
                                                              Set<String> resolutionPath) {
-        return SliceManifest.read(location.url()).flatMap(manifest -> SliceManifest.checkEnvelopeCompatibility(manifest.envelopeVersion())
-                                                                                                              .map(_ -> manifest))
-                                 .onFailure(cause -> log.error("Invalid slice JAR {}: {}",
-                                                               artifact,
-                                                               cause.message()))
-                                 .async()
-                                 .flatMap(manifest -> validateAndLoadWithShared(artifact,
-                                                                                location,
-                                                                                manifest,
-                                                                                repository,
-                                                                                registry,
-                                                                                sharedLibraryLoader,
-                                                                                invokerFacade,
-                                                                                resolutionPath));
+        return SliceManifest.read(location.url())
+                            .flatMap(manifest -> SliceManifest.checkEnvelopeCompatibility(manifest.envelopeVersion()).map(_ -> manifest))
+                            .onFailure(cause -> log.error("Invalid slice JAR {}: {}",
+                                                          artifact,
+                                                          cause.message()))
+                            .async()
+                            .flatMap(manifest -> validateAndLoadWithShared(artifact,
+                                                                           location,
+                                                                           manifest,
+                                                                           repository,
+                                                                           registry,
+                                                                           sharedLibraryLoader,
+                                                                           invokerFacade,
+                                                                           resolutionPath));
     }
 
     private static Promise<Slice> validateAndLoadWithShared(Artifact artifact,
@@ -417,8 +439,10 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                             Set<String> resolutionPath) {
         if (!manifest.artifact().equals(artifact)) {
             log.error("Artifact mismatch: requested {} but JAR declares {}", artifact, manifest.artifact());
+
             return artifactMismatch(artifact, manifest.artifact()).promise();
         }
+
         return DependencyFile.load(manifest.sliceClassName(),
                                    createTempLoader(location.url(),
                                                     sharedLibraryLoader)).async()
@@ -450,7 +474,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                                 location.url()).flatMap(sharedResult -> SharedDependencyLoader.processInfraDependencies(depFile.infra(),
                                                                                                                                                         sharedLibraryLoader,
                                                                                                                                                         repository)
-        .map(_ -> sharedResult))
+                                                                                                                              .map(_ -> sharedResult))
                                                                .flatMap(sharedResult -> addSliceDependencyJarsToClassLoader(depFile.slices(),
                                                                                                                             sharedResult,
                                                                                                                             repository))
@@ -467,17 +491,25 @@ import static org.pragmatica.lang.utils.Causes.cause;
     private static Promise<SharedDependencyLoader.SharedDependencyResult> addSliceDependencyJarsToClassLoader(List<ArtifactDependency> sliceDeps,
                                                                                                               SharedDependencyLoader.SharedDependencyResult sharedResult,
                                                                                                               Repository repository) {
-        if (sliceDeps.isEmpty()) {return Promise.success(sharedResult);}
+        if (sliceDeps.isEmpty()) {
+            return Promise.success(sharedResult);
+        }
+
         log.debug("Adding {} slice dependency JARs to classloader before loading slice class", sliceDeps.size());
+
         return addSliceDependencyJarsSequentially(sliceDeps, sharedResult, repository);
     }
 
     private static Promise<SharedDependencyLoader.SharedDependencyResult> addSliceDependencyJarsSequentially(List<ArtifactDependency> sliceDeps,
                                                                                                              SharedDependencyLoader.SharedDependencyResult sharedResult,
                                                                                                              Repository repository) {
-        if (sliceDeps.isEmpty()) {return Promise.success(sharedResult);}
+        if (sliceDeps.isEmpty()) {
+            return Promise.success(sharedResult);
+        }
+
         var dep = sliceDeps.getFirst();
         var remaining = sliceDeps.subList(1, sliceDeps.size());
+
         return locateAndAddSliceDependencyJar(dep, sharedResult, repository).flatMap(_ -> addSliceDependencyJarsSequentially(remaining,
                                                                                                                              sharedResult,
                                                                                                                              repository));
@@ -489,9 +521,11 @@ import static org.pragmatica.lang.utils.Causes.cause;
         return toArtifact(dependency).async()
                          .flatMap(repository::locate)
                          .map(location -> {
-                                  sharedResult.sliceClassLoader().addSliceDependencyUrl(location.url());
+                                  sharedResult.sliceClassLoader()
+                                              .addSliceDependencyUrl(location.url());
                                   log.debug("Added slice dependency JAR {} to classloader",
                                             dependency.asString());
+
                                   return sharedResult;
                               });
     }
@@ -527,10 +561,12 @@ import static org.pragmatica.lang.utils.Causes.cause;
         log.info("Resolving {} slice dependencies for {}", sliceDeps.size(), artifact.asString());
         if (sliceDeps.isEmpty()) {
             log.info("No slice dependencies for {}, creating slice directly", artifact.asString());
+
             return createSliceFromClass(sliceClass, toCreationContext(invokerFacade), List.of(), List.of()).flatMap(slice -> registerSlice(artifact,
                                                                                                                                            slice,
                                                                                                                                            registry));
         }
+
         return resolveArtifactDependenciesSequentially(sliceDeps,
                                                        repository,
                                                        registry,
@@ -555,6 +591,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                          List<ArtifactDependency> sliceDeps,
                                                          SliceRegistry registry) {
         log.info("Creating and registering slice {}", artifact.asString());
+
         return createSliceFromClass(sliceClass, toCreationContext(invokerFacade), resolvedSlices, sliceDeps).flatMap(slice -> registerSlice(artifact,
                                                                                                                                             slice,
                                                                                                                                             registry));
@@ -567,9 +604,13 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                                                 SliceInvokerFacade invokerFacade,
                                                                                 Set<String> resolutionPath,
                                                                                 List<Slice> accumulated) {
-        if (dependencies.isEmpty()) {return Promise.success(accumulated);}
+        if (dependencies.isEmpty()) {
+            return Promise.success(accumulated);
+        }
+
         var dep = dependencies.getFirst();
         var remaining = dependencies.subList(1, dependencies.size());
+
         return resolveArtifactDependency(dep, repository, registry, sharedLibraryLoader, invokerFacade, resolutionPath).flatMap(slice -> resolveArtifactDependenciesSequentially(remaining,
                                                                                                                                                                                  repository,
                                                                                                                                                                                  registry,
@@ -589,11 +630,15 @@ import static org.pragmatica.lang.utils.Causes.cause;
         var inRegistry = registry.findByArtifactKey(dependency.groupId(),
                                                     dependency.artifactId(),
                                                     dependency.versionPattern());
+
         if (inRegistry.isPresent()) {
             log.info("Found dependency {} in registry", dependency.asString());
+
             return Promise.success(inRegistry.unwrap());
         }
+
         log.info("Dependency {} not in registry, loading from repository", dependency.asString());
+
         return resolveArtifactFromRepository(dependency,
                                              repository,
                                              registry,
@@ -624,9 +669,13 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                                                            SliceLoadingContext loadingContext,
                                                                                            Set<String> resolutionPath,
                                                                                            List<Slice> accumulated) {
-        if (dependencies.isEmpty()) {return Promise.success(accumulated);}
+        if (dependencies.isEmpty()) {
+            return Promise.success(accumulated);
+        }
+
         var dep = dependencies.getFirst();
         var remaining = dependencies.subList(1, dependencies.size());
+
         return resolveArtifactDependencyWithContext(dep,
                                                     repository,
                                                     registry,
@@ -651,11 +700,15 @@ import static org.pragmatica.lang.utils.Causes.cause;
         var inRegistry = registry.findByArtifactKey(dependency.groupId(),
                                                     dependency.artifactId(),
                                                     dependency.versionPattern());
+
         if (inRegistry.isPresent()) {
             log.info("Found dependency {} in registry", dependency.asString());
+
             return Promise.success(inRegistry.unwrap());
         }
+
         log.info("Dependency {} not in registry, loading from repository with context", dependency.asString());
+
         return resolveArtifactFromRepositoryWithContext(dependency,
                                                         repository,
                                                         registry,
@@ -682,11 +735,12 @@ import static org.pragmatica.lang.utils.Causes.cause;
 
     private static Result<Artifact> toArtifact(ArtifactDependency dependency) {
         var versionStr = extractVersion(dependency.versionPattern()).withQualifier();
+
         return Artifact.artifact(dependency.groupId() + ":" + dependency.artifactId() + ":" + versionStr);
     }
 
     private static Version extractVersion(VersionPattern pattern) {
-        return switch (pattern){
+        return switch (pattern) {
             case VersionPattern.Exact(Version version) -> version;
             case VersionPattern.Range(Version from, _, _, _) -> from;
             case VersionPattern.Comparison(_, Version version) -> version;
@@ -703,8 +757,8 @@ import static org.pragmatica.lang.utils.Causes.cause;
         var legacyDescriptors = descriptors.stream().map(dep -> new DependencyDescriptor(ArtifactMapper.toClassName(dep.groupId(),
                                                                                                                     dep.artifactId()),
                                                                                          dep.versionPattern(),
-                                                                                         none()))
-                                                  .toList();
+                                                                                         none())).toList();
+
         return SliceFactory.createSlice(sliceClass, creationContext, dependencies, legacyDescriptors);
     }
 
@@ -713,14 +767,18 @@ import static org.pragmatica.lang.utils.Causes.cause;
     }
 
     private static Promise<Slice> registerSlice(Artifact artifact, Slice slice, SliceRegistry registry) {
-        return registry.register(artifact, slice).map(_ -> slice)
-                                .recover(_ -> registry.lookup(artifact).or(slice))
-                                .async();
+        return registry.register(artifact, slice)
+                       .map(_ -> slice)
+                       .recover(_ -> registry.lookup(artifact)
+                                             .or(slice))
+                       .async();
     }
 
     private static <T> List<T> appendToList(List<T> list, T element) {
         var newList = new ArrayList<>(list);
+
         newList.add(element);
+
         return List.copyOf(newList);
     }
 

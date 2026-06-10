@@ -41,6 +41,7 @@ public record Deployment(String deploymentId,
                                         List<ArtifactBase> artifacts,
                                         int newInstances) {
         var now = System.currentTimeMillis();
+
         return new Deployment(deploymentId,
                               blueprintId,
                               oldVersion,
@@ -106,8 +107,10 @@ public record Deployment(String deploymentId,
     }
 
     private Result<Deployment> transitionTo(DeploymentState newState) {
-        if (!state.validTransitions().contains(newState)) {return INVALID_TRANSITION.apply(state + " -> " + newState)
-                                                                                          .result();}
+        if (!state.validTransitions().contains(newState)) {
+            return INVALID_TRANSITION.apply(state + " -> " + newState).result();
+        }
+
         return Result.success(new Deployment(deploymentId,
                                              blueprintId,
                                              oldVersion,

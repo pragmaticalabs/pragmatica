@@ -36,9 +36,9 @@ import org.slf4j.LoggerFactory;
 /// pong arrivals. It is DECOUPLED from `aether-deployment` (no CTM import): the stuck-SYNCING
 /// reaper invokes an injected `Consumer<NodeId>` callback rather than calling CTM directly, and
 /// the warmed-up guard is an injected `BooleanSupplier`. `AetherNode` wires these later.
-@Contract public interface ClusterSyncPongSignalFan {
+@Contract
+public interface ClusterSyncPongSignalFan {
     Logger log = LoggerFactory.getLogger(ClusterSyncPongSignalFan.class);
-
     /// Default number of consecutive SYNCING-state pongs (at the same incarnation) tolerated
     /// before the stuck-SYNCING reaper fires. Each SYNCING pong decrements the entry countdown;
     /// any READY/DRAINING pong resets it. See membership-architecture-v2-spec §7.5.6.
@@ -49,9 +49,11 @@ import org.slf4j.LoggerFactory;
     /// constructs `LifecycleCommand.ForceOnDuty(candidate, ...)` and routes it through
     /// `LifecycleWriter.applyCommand`. Default is a no-op so embeddings that pre-date
     /// Phase 2 PR-B (cluster-convergence-reconciler) keep working unchanged.
-    @Contract @FunctionalInterface
+    @Contract
+    @FunctionalInterface
     interface ReadyCandidateSink {
-        @Contract void onReadyCandidate(NodeId sender, NodeId candidate);
+        @Contract
+        void onReadyCandidate(NodeId sender, NodeId candidate);
 
         ReadyCandidateSink NOOP = (_, _) -> {};
     }
@@ -61,34 +63,56 @@ import org.slf4j.LoggerFactory;
     /// No-op fan for placeholder wiring (e.g. before `AetherNode` installs the real fan).
     /// Holds no readiness state and ignores every signal.
     ClusterSyncPongSignalFan NOOP = new ClusterSyncPongSignalFan() {
-        @Override @Contract public void fan(ClusterSyncPong pong) {}
-        @Override @Contract public void evict(NodeId nodeId) {}
-        @Override @Contract public void sweepStale(long maxAgeNanos) {}
-        @Override public Map<NodeId, NodeReportedState> readinessSnapshot() {return Map.of();}
-        @Override @Contract public void onStuckSyncing(Consumer<NodeId> callback) {}
-        @Override @Contract public void warmedUp(BooleanSupplier guard) {}
+        @Override
+        @Contract
+        public void fan(ClusterSyncPong pong) {}
+
+        @Override
+        @Contract
+        public void evict(NodeId nodeId) {}
+
+        @Override
+        @Contract
+        public void sweepStale(long maxAgeNanos) {}
+
+        @Override
+        public Map<NodeId, NodeReportedState> readinessSnapshot() {
+            return Map.of();
+        }
+
+        @Override
+        @Contract
+        public void onStuckSyncing(Consumer<NodeId> callback) {}
+
+        @Override
+        @Contract
+        public void warmedUp(BooleanSupplier guard) {}
     };
 
     /// Remove a node from the readiness view regardless of incarnation. Invoked by `AetherNode`
     /// when the node is decommissioned / observed-failed so the leader's view does not retain a
     /// phantom entry.
-    @Contract void evict(NodeId nodeId);
+    @Contract
+    void evict(NodeId nodeId);
 
     /// Remove every readiness entry whose `lastSeenNanos` is older than `now - maxAgeNanos`.
     /// Invoked periodically by `AetherNode` to garbage-collect silent entries.
-    @Contract void sweepStale(long maxAgeNanos);
+    @Contract
+    void sweepStale(long maxAgeNanos);
 
     /// Immutable `NodeId → NodeReportedState` snapshot of the current readiness view, for the
     /// CDM allocation gate (later phase).
     Map<NodeId, NodeReportedState> readinessSnapshot();
 
     /// Wire the callback invoked when a stuck-SYNCING entry is reaped. Default is a no-op.
-    @Contract void onStuckSyncing(Consumer<NodeId> callback);
+    @Contract
+    void onStuckSyncing(Consumer<NodeId> callback);
 
     /// Wire the guard that gates the stuck-SYNCING reaper — the reaper only fires once the
     /// cluster is warmed up. Default is always-`false` (never warmed up), which disables the
     /// reaper until `AetherNode` wires the real guard.
-    @Contract void warmedUp(BooleanSupplier guard);
+    @Contract
+    void warmedUp(BooleanSupplier guard);
 
     /// Backward-compatible factory: no readiness sink wired — `readyCandidate` arrivals are
     /// observed silently. Preserves pre-Phase-2 behaviour for tests / embeddings that pre-date
@@ -126,7 +150,9 @@ import org.slf4j.LoggerFactory;
         private final ReadyCandidateSink readySink;
         private final LongSupplier nowNanos;
         private final ConcurrentHashMap<NodeId, ReadinessEntry> readiness = new ConcurrentHashMap<>();
+
         private volatile Consumer<NodeId> onStuckSyncing = _ -> {};
+
         private volatile BooleanSupplier warmedUp = () -> false;
 
         private StatefulSignalFan(HealthSignalSink sink,
@@ -139,8 +165,13 @@ import org.slf4j.LoggerFactory;
             this.nowNanos = nowNanos;
         }
 
-        @Override @Contract public void fan(ClusterSyncPong pong) {
-            if (!leaderManager.isLeader()) {return;}
+        @Override
+        @Contract
+        public void fan(ClusterSyncPong pong) {
+            if (!leaderManager.isLeader()) {
+                return;
+            }
+
             sink.emit(new HealthSignal.SwimHint(pong.sender(),
                                                 HealthHint.HEALTHY,
                                                 Epoch.epoch(pong.observedEpochTerm(), pong.observedEpochCounter())));
@@ -150,27 +181,43 @@ import org.slf4j.LoggerFactory;
             pong.peerConnectivity().forEach(observation -> emitConnectivity(pong, observation, sink));
         }
 
-        @Override @Contract public void evict(NodeId nodeId) {
+        @Override
+        @Contract
+        public void evict(NodeId nodeId) {
             readiness.remove(nodeId);
         }
 
-        @Override @Contract public void sweepStale(long maxAgeNanos) {
+        @Override
+        @Contract
+        public void sweepStale(long maxAgeNanos) {
             var cutoff = nowNanos.getAsLong() - maxAgeNanos;
+
             readiness.values().removeIf(entry -> entry.lastSeenNanos() < cutoff);
         }
 
-        @Override public Map<NodeId, NodeReportedState> readinessSnapshot() {
+        @Override
+        public Map<NodeId, NodeReportedState> readinessSnapshot() {
             var snapshot = new HashMap<NodeId, NodeReportedState>();
+
             readiness.forEach((nodeId, entry) -> snapshot.put(nodeId, entry.state()));
+
             return Map.copyOf(snapshot);
         }
 
-        @Override @Contract public void onStuckSyncing(Consumer<NodeId> callback) {
-            this.onStuckSyncing = callback == null ? _ -> {} : callback;
+        @Override
+        @Contract
+        public void onStuckSyncing(Consumer<NodeId> callback) {
+            this.onStuckSyncing = callback == null
+                                  ? _ -> {}
+                                  : callback;
         }
 
-        @Override @Contract public void warmedUp(BooleanSupplier guard) {
-            this.warmedUp = guard == null ? () -> false : guard;
+        @Override
+        @Contract
+        public void warmedUp(BooleanSupplier guard) {
+            this.warmedUp = guard == null
+                            ? () -> false
+                            : guard;
         }
 
         private void recordReadiness(ClusterSyncPong pong) {
@@ -209,7 +256,9 @@ import org.slf4j.LoggerFactory;
             return new ReadinessEntry(state,
                                       incarnation,
                                       now,
-                                      state == NodeReportedState.SYNCING ? SYNC_REAP_THRESHOLD : 0);
+                                      state == NodeReportedState.SYNCING
+                                      ? SYNC_REAP_THRESHOLD
+                                      : 0);
         }
 
         private void maybeReap(NodeId sender, ReadinessEntry entry) {

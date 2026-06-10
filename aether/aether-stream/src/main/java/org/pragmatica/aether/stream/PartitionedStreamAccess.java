@@ -41,15 +41,15 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.allOf;
 
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01"}) public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
-    @FunctionalInterface public interface CursorCheckpointWriter {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01"})
+public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
+    @FunctionalInterface
+    public interface CursorCheckpointWriter {
         Promise<Unit> checkpoint(String streamName, String consumerGroup, int partition, long offset);
     }
 
     private static final CursorCheckpointWriter NOOP_WRITER = (_, _, _, _) -> Promise.unitPromise();
-
     private static final NodeId EMPTY_SELF = new NodeId("__no_self__");
-
     private static final System.Logger LOG = System.getLogger(PartitionedStreamAccess.class.getName());
 
     private final StreamPartitionManager partitionManager;
@@ -391,12 +391,14 @@ import static org.pragmatica.lang.Result.allOf;
     /// a steady-state single-node cluster is always its own owner, and dropping the write would be
     /// worse than landing it on the only node that can serve it; once placement is known, subsequent
     /// publishes route correctly. This mirrors the B3 owner-gate's bootstrap-window tolerance.
-    @Override public Promise<Long> publish(T event) {
+    @Override
+    public Promise<Long> publish(T event) {
         var bytes = serializer.encode(event);
         var partition = resolvePartition(event);
         var timestamp = System.currentTimeMillis();
+
         return resolveOwner(partition).map(owner -> routeToOwner(owner, partition, bytes, timestamp))
-                             .or(() -> publishLocal(partition, bytes, timestamp));
+                           .or(() -> publishLocal(partition, bytes, timestamp));
     }
 
     /// #47: resolve the publish owner for `(streamName, partition)`. Prefers the partition-aware HRW
@@ -411,58 +413,70 @@ import static org.pragmatica.lang.Result.allOf;
 
     private Promise<Long> routeToOwner(NodeId owner, int partition, byte[] bytes, long timestamp) {
         return owner.equals(selfNodeId)
-             ? publishLocal(partition, bytes, timestamp)
-             : forwardClient.map(client -> client.publishRemote(owner, streamName, partition, bytes, timestamp))
-                            .or(() -> publishLocal(partition, bytes, timestamp));
+               ? publishLocal(partition, bytes, timestamp)
+               : forwardClient.map(client -> client.publishRemote(owner, streamName, partition, bytes, timestamp))
+                              .or(() -> publishLocal(partition, bytes, timestamp));
     }
 
     private Promise<Long> publishLocal(int partition, byte[] bytes, long timestamp) {
-        return partitionManager.publishLocal(streamName, partition, bytes, timestamp).async();
+        return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
+                               .async();
     }
 
-    @Override public Promise<List<StreamEvent<T>>> fetch(long fromOffset, int maxEvents) {
+    @Override
+    public Promise<List<StreamEvent<T>>> fetch(long fromOffset, int maxEvents) {
         return fetchFromAllPartitions(fromOffset, maxEvents);
     }
 
-    @Override public Promise<List<StreamEvent<T>>> fetch(int partition, long fromOffset, int maxEvents) {
+    @Override
+    public Promise<List<StreamEvent<T>>> fetch(int partition, long fromOffset, int maxEvents) {
         return readWithPreference(partition, fromOffset, maxEvents);
     }
 
     public Result<MemorySegment> readSlice(int partition, long offset) {
-        return partitionManager.partitionBuffer(streamName, partition).toResult(StreamError.General.PARTITION_NOT_LOCAL)
-                                               .flatMap(buffer -> buffer.readSlice(offset));
+        return partitionManager.partitionBuffer(streamName, partition)
+                               .toResult(StreamError.General.PARTITION_NOT_LOCAL)
+                               .flatMap(buffer -> buffer.readSlice(offset));
     }
 
     public ReadPreference readPreference() {
         return readPreference;
     }
 
-    @Override public Promise<Unit> commit(String consumerGroup, int partition, long offset) {
+    @Override
+    public Promise<Unit> commit(String consumerGroup, int partition, long offset) {
         committedOffsets.put(new ConsumerPartitionKey(consumerGroup, partition), offset);
+
         return cursorWriter.checkpoint(streamName, consumerGroup, partition, offset);
     }
 
-    @Override public Promise<Option<Long>> committedOffset(String consumerGroup, int partition) {
+    @Override
+    public Promise<Option<Long>> committedOffset(String consumerGroup, int partition) {
         var inMemory = option(committedOffsets.get(new ConsumerPartitionKey(consumerGroup, partition)));
-        if (inMemory.isPresent()) {return Promise.success(inMemory);}
+
+        if (inMemory.isPresent()) {
+            return Promise.success(inMemory);
+        }
+
         return fetchFromCursorStore(consumerGroup, partition);
     }
 
     private Promise<Option<Long>> fetchFromCursorStore(String consumerGroup, int partition) {
         return cursorStore.map(store -> store.fetch(consumerGroup, streamName, partition))
-                              .or(Promise.success(Option.empty()));
+                          .or(Promise.success(Option.empty()));
     }
 
-    @Override public Promise<StreamMetadata> metadata() {
-        return partitionManager.allPartitionInfo(streamName).map(this::toStreamMetadata)
-                                                .async();
+    @Override
+    public Promise<StreamMetadata> metadata() {
+        return partitionManager.allPartitionInfo(streamName)
+                               .map(this::toStreamMetadata)
+                               .async();
     }
 
     private StreamMetadata toStreamMetadata(List<StreamPartitionManager.PartitionInfo> partitions) {
         return new StreamMetadata(streamName,
                                   partitionCount,
-                                  partitions.stream().map(PartitionedStreamAccess::toPartitionInfo)
-                                                   .toList());
+                                  partitions.stream().map(PartitionedStreamAccess::toPartitionInfo).toList());
     }
 
     private static PartitionInfo toPartitionInfo(StreamPartitionManager.PartitionInfo pi) {
@@ -480,14 +494,15 @@ import static org.pragmatica.lang.Result.allOf;
     private Promise<List<StreamEvent<T>>> fetchFromAllPartitions(long fromOffset, int maxEvents) {
         List<Promise<List<StreamEvent<T>>>> perPartitionPromises = IntStream.range(0, partitionCount).mapToObj(p -> readWithPreference(p,
                                                                                                                                        fromOffset,
-                                                                                                                                       maxEvents))
-                                                                                  .toList();
-        return Promise.allOf(perPartitionPromises)
-                            .flatMap(results -> allOf(results).map(lists -> mergeAndLimit(lists, maxEvents)).async());
+                                                                                                                                       maxEvents)).toList();
+
+        return Promise.allOf(perPartitionPromises).flatMap(results -> allOf(results).map(lists -> mergeAndLimit(lists,
+                                                                                                                maxEvents))
+                                                                           .async());
     }
 
     private Promise<List<StreamEvent<T>>> readWithPreference(int partition, long fromOffset, int maxEvents) {
-        return switch (readPreference){
+        return switch (readPreference) {
             case GOVERNOR -> readPartition(partition, fromOffset, maxEvents);
             case ANY_REPLICA, NEAREST -> readFromReplicaOrLocal(partition, fromOffset, maxEvents);
         };
@@ -495,17 +510,19 @@ import static org.pragmatica.lang.Result.allOf;
 
     private Promise<List<StreamEvent<T>>> readFromReplicaOrLocal(int partition, long fromOffset, int maxEvents) {
         return replicaRegistry.map(registry -> selectReplicaAndRead(registry, partition, fromOffset, maxEvents))
-                                  .or(() -> readPartition(partition, fromOffset, maxEvents));
+                              .or(() -> readPartition(partition, fromOffset, maxEvents));
     }
 
     private Promise<List<StreamEvent<T>>> selectReplicaAndRead(ReplicaRegistry registry,
                                                                int partition,
                                                                long fromOffset,
                                                                int maxEvents) {
-        var caughtUp = registry.replicasFor(streamName, partition).stream()
-                                           .filter(PartitionedStreamAccess::isCaughtUp)
-                                           .toList();
-        if (caughtUp.isEmpty()) {return readPartition(partition, fromOffset, maxEvents);}
+        var caughtUp = registry.replicasFor(streamName, partition).stream().filter(PartitionedStreamAccess::isCaughtUp).toList();
+
+        if (caughtUp.isEmpty()) {
+            return readPartition(partition, fromOffset, maxEvents);
+        }
+
         return readWithPrimaryAndRetry(caughtUp, partition, fromOffset, maxEvents);
     }
 
@@ -513,11 +530,15 @@ import static org.pragmatica.lang.Result.allOf;
                                                                   int partition,
                                                                   long fromOffset,
                                                                   int maxEvents) {
-        var remote = caughtUp.stream().filter(r -> !r.nodeId().equals(selfNodeId))
-                                    .toList();
-        if (remote.isEmpty()) {return readPartition(partition, fromOffset, maxEvents);}
+        var remote = caughtUp.stream().filter(r -> !r.nodeId()
+                                                     .equals(selfNodeId)).toList();
+
+        if (remote.isEmpty()) {
+            return readPartition(partition, fromOffset, maxEvents);
+        }
+
         return forwardClient.map(client -> attemptPrimary(client, remote, partition, fromOffset, maxEvents))
-                                .or(() -> readPartition(partition, fromOffset, maxEvents));
+                            .or(() -> readPartition(partition, fromOffset, maxEvents));
     }
 
     private Promise<List<StreamEvent<T>>> attemptPrimary(StreamForwardClient client,
@@ -526,12 +547,14 @@ import static org.pragmatica.lang.Result.allOf;
                                                          long fromOffset,
                                                          int maxEvents) {
         var primary = pickReplica(pool);
+
         LOG.log(System.Logger.Level.DEBUG,
                 "ReadPreference {0}: primary replica {1} for {2}[{3}]",
                 readPreference,
                 primary.nodeId(),
                 streamName,
                 partition);
+
         return client.readRemote(primary.nodeId(),
                                  streamName,
                                  partition,
@@ -555,8 +578,9 @@ import static org.pragmatica.lang.Result.allOf;
                                                       long fromOffset,
                                                       int maxEvents,
                                                       Cause firstCause) {
-        var alternatives = pool.stream().filter(r -> !r.nodeId().equals(primary.nodeId()))
-                                      .toList();
+        var alternatives = pool.stream().filter(r -> !r.nodeId()
+                                                       .equals(primary.nodeId())).toList();
+
         if (alternatives.isEmpty()) {
             LOG.log(System.Logger.Level.DEBUG,
                     "ReadPreference {0}: single-replica failure for {1}[{2}]: {3}",
@@ -564,10 +588,13 @@ import static org.pragmatica.lang.Result.allOf;
                     streamName,
                     partition,
                     firstCause.message());
+
             return firstCause.promise();
         }
+
         metrics.recordRetry();
         var retry = pickReplica(alternatives);
+
         LOG.log(System.Logger.Level.DEBUG,
                 "ReadPreference {0}: retry replica {1} for {2}[{3}] after primary {4} failed: {5}",
                 readPreference,
@@ -576,13 +603,14 @@ import static org.pragmatica.lang.Result.allOf;
                 partition,
                 primary.nodeId(),
                 firstCause.message());
+
         return client.readRemote(retry.nodeId(),
                                  streamName,
                                  partition,
                                  fromOffset,
                                  maxEvents)
-        .map(result -> decodeAll(result.events(),
-                                 partition));
+                     .map(result -> decodeAll(result.events(),
+                                              partition));
     }
 
     private static ReplicaDescriptor pickReplica(List<ReplicaDescriptor> pool) {
@@ -590,8 +618,9 @@ import static org.pragmatica.lang.Result.allOf;
     }
 
     private List<StreamEvent<T>> decodeAll(List<RawEventDto> events, int partition) {
-        return events.stream().map(dto -> toStreamEventFromDto(dto, partition))
-                            .toList();
+        return events.stream()
+                     .map(dto -> toStreamEventFromDto(dto, partition))
+                     .toList();
     }
 
     private static boolean isCaughtUp(ReplicaDescriptor descriptor) {
@@ -599,20 +628,20 @@ import static org.pragmatica.lang.Result.allOf;
     }
 
     private Promise<List<StreamEvent<T>>> readPartition(int partition, long fromOffset, int maxEvents) {
-        return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents).map(rawEvents -> toStreamEvents(rawEvents,
-                                                                                                                        partition))
-                                         .fold(cause -> handleReadFailure(cause, partition, fromOffset, maxEvents),
-                                               Promise::success);
+        return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents)
+                               .map(rawEvents -> toStreamEvents(rawEvents, partition))
+                               .fold(cause -> handleReadFailure(cause, partition, fromOffset, maxEvents),
+                                     Promise::success);
     }
 
     private Promise<List<StreamEvent<T>>> handleReadFailure(org.pragmatica.lang.Cause cause,
                                                             int partition,
                                                             long fromOffset,
                                                             int maxEvents) {
-        if (cause instanceof StreamError.CursorExpired expired) {return readWithSegmentFallback(partition,
-                                                                                                fromOffset,
-                                                                                                maxEvents,
-                                                                                                expired.requestedOffset());}
+        if (cause instanceof StreamError.CursorExpired expired) {
+            return readWithSegmentFallback(partition, fromOffset, maxEvents, expired.requestedOffset());
+        }
+
         return cause.promise();
     }
 
@@ -621,13 +650,14 @@ import static org.pragmatica.lang.Result.allOf;
                                                                   int maxEvents,
                                                                   long expiredOffset) {
         return tieredReader.map(reader -> readFromTieredReader(reader, partition, fromOffset, maxEvents))
-                               .or(() -> cursorExpiredPromise(partition, expiredOffset));
+                           .or(() -> cursorExpiredPromise(partition, expiredOffset));
     }
 
     private Promise<List<StreamEvent<T>>> cursorExpiredPromise(int partition, long expiredOffset) {
         return new StreamError.CursorExpired(expiredOffset,
-                                             partitionManager.partitionInfo(streamName, partition).map(StreamPartitionManager.PartitionInfo::tailOffset)
-                                                                           .or(0L)).promise();
+                                             partitionManager.partitionInfo(streamName, partition)
+                                                             .map(StreamPartitionManager.PartitionInfo::tailOffset)
+                                                             .or(0L)).promise();
     }
 
     private Promise<List<StreamEvent<T>>> readFromTieredReader(TieredStreamReader reader,
@@ -635,7 +665,7 @@ import static org.pragmatica.lang.Result.allOf;
                                                                long fromOffset,
                                                                int maxEvents) {
         return reader.read(streamName, partition, fromOffset, maxEvents)
-                          .map(sealedEvents -> combineWithBufferEvents(sealedEvents, partition, fromOffset, maxEvents));
+                     .map(sealedEvents -> combineWithBufferEvents(sealedEvents, partition, fromOffset, maxEvents));
     }
 
     private List<StreamEvent<T>> combineWithBufferEvents(List<OffHeapRingBuffer.RawEvent> sealedEvents,
@@ -644,37 +674,46 @@ import static org.pragmatica.lang.Result.allOf;
                                                          int maxEvents) {
         var remaining = maxEvents - sealedEvents.size();
         var sealed = toStreamEvents(sealedEvents, partition);
-        if (remaining <= 0) {return sealed;}
+
+        if (remaining <= 0) {
+            return sealed;
+        }
+
         var bufferStart = sealedEvents.isEmpty()
-                         ? fromOffset
-                         : sealedEvents.getLast().offset() + 1;
+                          ? fromOffset
+                          : sealedEvents.getLast().offset() + 1;
         var bufferEvents = partitionManager.readLocal(streamName, partition, bufferStart, remaining).map(rawEvents -> toStreamEvents(rawEvents,
-                                                                                                                                     partition))
-                                                     .or(List.of());
+                                                                                                                                     partition)).or(List.of());
+
         return List.copyOf(Stream.concat(sealed.stream(), bufferEvents.stream()).toList());
     }
 
     private List<StreamEvent<T>> toStreamEvents(List<OffHeapRingBuffer.RawEvent> rawEvents, int partition) {
-        return rawEvents.stream().map(raw -> toStreamEvent(raw, partition))
-                               .toList();
+        return rawEvents.stream()
+                        .map(raw -> toStreamEvent(raw, partition))
+                        .toList();
     }
 
     private static <T> List<StreamEvent<T>> mergeAndLimit(List<List<StreamEvent<T>>> lists, int maxEvents) {
         var merged = new ArrayList<StreamEvent<T>>();
+
         lists.forEach(merged::addAll);
         merged.sort(Comparator.comparingLong(StreamEvent::offset));
+
         return merged.size() > maxEvents
-              ? List.copyOf(merged.subList(0, maxEvents))
-              : List.copyOf(merged);
+               ? List.copyOf(merged.subList(0, maxEvents))
+               : List.copyOf(merged);
     }
 
     private StreamEvent<T> toStreamEvent(OffHeapRingBuffer.RawEvent raw, int partition) {
         T payload = deserializer.decode(raw.data());
+
         return new StreamEvent<>(raw.offset(), raw.timestamp(), partition, payload);
     }
 
     private StreamEvent<T> toStreamEventFromDto(RawEventDto dto, int partition) {
         T payload = deserializer.decode(dto.data());
+
         return new StreamEvent<>(dto.offset(), dto.timestamp(), partition, payload);
     }
 
@@ -686,12 +725,13 @@ import static org.pragmatica.lang.Result.allOf;
     /// fall back to round-robin.
     private int resolvePartition(T event) {
         return partitionKeyExtractor.map(extractor -> stablePartition(extractor.apply(event)))
-                                    .or(() -> (int) (roundRobinCounter.getAndIncrement() % partitionCount));
+                                    .or(() -> (int)(roundRobinCounter.getAndIncrement() % partitionCount));
     }
 
     private int stablePartition(Object key) {
-        return (int) Math.floorMod(ReplicaPlacement.stableHash64(String.valueOf(key)), (long) partitionCount);
+        return (int) Math.floorMod(ReplicaPlacement.stableHash64(String.valueOf(key)),
+                                   (long) partitionCount);
     }
 
-    private record ConsumerPartitionKey(String consumerGroup, int partition){}
+    private record ConsumerPartitionKey(String consumerGroup, int partition) {}
 }

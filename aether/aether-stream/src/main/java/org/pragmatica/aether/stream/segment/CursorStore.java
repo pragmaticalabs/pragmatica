@@ -19,7 +19,6 @@ import org.slf4j.LoggerFactory;
 
 public final class CursorStore {
     private static final Logger log = LoggerFactory.getLogger(CursorStore.class);
-
     private static final String CURSORS_PREFIX = "cursors/";
 
     private final StorageInstance storage;
@@ -35,26 +34,33 @@ public final class CursorStore {
     public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
         var refName = buildRefName(consumerGroup, streamName, partition);
         var payload = encodeOffset(offset);
-        return storage.put(payload).flatMap(blockId -> replaceRef(refName, blockId))
-                          .onSuccess(_ -> logCommit(consumerGroup, streamName, partition, offset));
+
+        return storage.put(payload)
+                      .flatMap(blockId -> replaceRef(refName, blockId))
+                      .onSuccess(_ -> logCommit(consumerGroup, streamName, partition, offset));
     }
 
     public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
         var refName = buildRefName(consumerGroup, streamName, partition);
-        return storage.resolveRef(refName).map(this::readOffset)
-                                 .or(Promise.success(Option.empty()));
+
+        return storage.resolveRef(refName)
+                      .map(this::readOffset)
+                      .or(Promise.success(Option.empty()));
     }
 
     private Promise<Unit> replaceRef(String refName, BlockId blockId) {
-        return storage.deleteRef(refName).flatMap(_ -> storage.createRef(refName, blockId));
+        return storage.deleteRef(refName)
+                      .flatMap(_ -> storage.createRef(refName, blockId));
     }
 
     private Promise<Option<Long>> readOffset(BlockId blockId) {
-        return storage.get(blockId).map(CursorStore::decodeOptionalOffset);
+        return storage.get(blockId)
+                      .map(CursorStore::decodeOptionalOffset);
     }
 
     private static Option<Long> decodeOptionalOffset(Option<byte[]> opt) {
-        return opt.filter(bytes -> bytes.length == Long.BYTES).map(CursorStore::decodeOffset);
+        return opt.filter(bytes -> bytes.length == Long.BYTES)
+                  .map(CursorStore::decodeOffset);
     }
 
     private static void logCommit(String consumerGroup, String streamName, int partition, long offset) {
@@ -70,13 +76,15 @@ public final class CursorStore {
     }
 
     static byte[] encodeOffset(long offset) {
-        return ByteBuffer.allocate(Long.BYTES).order(ByteOrder.BIG_ENDIAN)
-                                  .putLong(offset)
-                                  .array();
+        return ByteBuffer.allocate(Long.BYTES)
+                         .order(ByteOrder.BIG_ENDIAN)
+                         .putLong(offset)
+                         .array();
     }
 
     static long decodeOffset(byte[] bytes) {
-        return ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
-                              .getLong();
+        return ByteBuffer.wrap(bytes)
+                         .order(ByteOrder.BIG_ENDIAN)
+                         .getLong();
     }
 }

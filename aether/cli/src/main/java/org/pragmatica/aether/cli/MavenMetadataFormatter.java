@@ -39,14 +39,18 @@ public sealed interface MavenMetadataFormatter {
     private static String firstMatch(Pattern pattern, String input) {
         var matcher = pattern.matcher(input);
 
-        return matcher.find() ? unescapeXml(matcher.group(1)) : "";
+        return matcher.find()
+               ? unescapeXml(matcher.group(1))
+               : "";
     }
 
     private static List<String> allMatches(Pattern pattern, String input) {
         var matcher = pattern.matcher(input);
         var results = new ArrayList<String>();
 
-        while (matcher.find()) {results.add(unescapeXml(matcher.group(1)));}
+        while (matcher.find()) {
+            results.add(unescapeXml(matcher.group(1)));
+        }
 
         return results;
     }
@@ -61,22 +65,24 @@ public sealed interface MavenMetadataFormatter {
 
     private static String buildJson(String groupId, String artifactId, List<String> versions) {
         var sb = new StringBuilder();
-        sb.append("{\"groupId\":\"")
-          .append(escapeJson(groupId))
-          .append("\",\"artifactId\":\"")
-          .append(escapeJson(artifactId))
-          .append("\",\"versions\":[");
+
+        sb.append("{\"groupId\":\"").append(escapeJson(groupId)).append("\",\"artifactId\":\"").append(escapeJson(artifactId)).append("\",\"versions\":[");
         for (var i = 0; i < versions.size(); i++) {
-            if (i > 0) {sb.append(',');}
+            if (i > 0) {
+                sb.append(',');
+            }
+
             sb.append('"').append(escapeJson(versions.get(i))).append('"');
         }
+
         sb.append("]}");
 
         return sb.toString();
     }
 
     private static String escapeJson(String value) {
-        return value.replace("\\", "\\\\").replace("\"", "\\\"");
+        return value.replace("\\", "\\\\")
+                    .replace("\"", "\\\"");
     }
 
     record unused() implements MavenMetadataFormatter {}

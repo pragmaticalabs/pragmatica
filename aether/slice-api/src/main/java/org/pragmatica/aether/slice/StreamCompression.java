@@ -6,7 +6,9 @@ package org.pragmatica.aether.slice;
 
 import org.pragmatica.serialization.Codec;
 
-@Codec public enum StreamCompression {
+
+@Codec
+public enum StreamCompression {
     NONE,
     LZ4,
     ZSTD

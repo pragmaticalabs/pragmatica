@@ -17,6 +17,7 @@ public record RateLimitConfig(int maxRequests, TimeSpan window, int burst) {
     public static Result<RateLimitConfig> rateLimitConfig(int maxRequests, TimeSpan window) {
         var validRequests = ensure(maxRequests, Verify.Is::positive);
         var validWindow = ensure(window, Verify.Is::notNull);
+
         return all(validRequests, validWindow).map((r, w) -> new RateLimitConfig(r, w, 0));
     }
 
@@ -24,6 +25,7 @@ public record RateLimitConfig(int maxRequests, TimeSpan window, int burst) {
         var validRequests = ensure(maxRequests, Verify.Is::positive);
         var validWindow = ensure(window, Verify.Is::notNull);
         var validBurst = ensure(burst, Verify.Is::nonNegative);
+
         return all(validRequests, validWindow, validBurst).map(RateLimitConfig::new);
     }
 

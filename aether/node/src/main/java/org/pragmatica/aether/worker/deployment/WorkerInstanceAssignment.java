@@ -16,18 +16,22 @@ public sealed interface WorkerInstanceAssignment {
     record unused() implements WorkerInstanceAssignment {}
 
     static int assignedInstances(Artifact artifact, int targetInstances, List<NodeId> aliveMembers, NodeId self) {
-        if (aliveMembers.isEmpty() || targetInstances <= 0) {return 0;}
+        if (aliveMembers.isEmpty() || targetInstances <= 0) {
+            return 0;
+        }
 
         var sortedMembers = aliveMembers.stream().sorted(Comparator.comparingInt(member -> hashFor(member, artifact))).toList();
         var selfIndex = sortedMembers.indexOf(self);
 
-        if (selfIndex <0) {return 0;}
+        if (selfIndex < 0) {
+            return 0;
+        }
 
         var memberCount = sortedMembers.size();
         var baseCount = targetInstances / memberCount;
         var remainder = targetInstances % memberCount;
 
-        return baseCount + (selfIndex <remainder
+        return baseCount + (selfIndex < remainder
                             ? 1
                             : 0);
     }

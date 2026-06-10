@@ -4,7 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
-@FunctionalInterface public interface Aspect<T> {
+@FunctionalInterface
+public interface Aspect<T> {
     T apply(T instance);
 
     static <T> Aspect<T> identity() {

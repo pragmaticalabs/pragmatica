@@ -77,7 +77,9 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
     private static Result<Epoch> parseEpochString(String raw) {
         var parts = raw.split(":");
 
-        if (parts.length != 2) {return INVALID_EPOCH.apply(raw).result();}
+        if (parts.length != 2) {
+            return INVALID_EPOCH.apply(raw).result();
+        }
 
         return parseLongPair(parts[0], parts[1]).mapError(_ -> INVALID_EPOCH.apply(raw));
     }
@@ -101,6 +103,7 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
         var trimmed = raw.endsWith("s")
                       ? raw.substring(0, raw.length() - 1)
                       : raw;
+
         return Number.parseLong(trimmed).mapError(_ -> INVALID_TIMEOUT.apply(raw));
     }
 
@@ -113,6 +116,7 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
     private Promise<AwaitQuiescedResponse> awaitQuiesced(Epoch requested, TimeSpan timeout) {
         var startNanos = System.nanoTime();
         var deadlineNanos = startNanos + timeout.nanos();
+
         log.debug("await-quiesced: requested={}, timeout={}ms", requested, timeout.millis());
 
         return pollUntilReadyOrTimeout(requested, startNanos, deadlineNanos, 0);
@@ -126,7 +130,9 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
         var observed = node.currentGenerationEpoch();
         var quiescence = ClusterGenerationAssembler.clusterQuiescence(node).quiescence();
 
-        if (pollCount > 0 && pollCount % LOG_EVERY_N_POLLS == 0) {logProgress(requested, observed, quiescence, pollCount, startNanos);}
+        if (pollCount > 0 && pollCount % LOG_EVERY_N_POLLS == 0) {
+            logProgress(requested, observed, quiescence, pollCount, startNanos);
+        }
 
         return matchesQuiesced(observed, quiescence, requested)
                ? Promise.success(buildResponse(observed, quiescence, startNanos))
@@ -142,6 +148,7 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
 
             return timeoutResponse();
         }
+
         return Promise.<Boolean> promise(POLL_INTERVAL,
                                          p -> p.succeed(true))
                       .flatMap(_ -> pollUntilReadyOrTimeout(requested, startNanos, deadlineNanos, pollCount + 1));
@@ -154,6 +161,7 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
                                     int pollCount,
                                     long startNanos) {
         var elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
+
         log.info("await-quiesced still waiting (poll={}, elapsed={}ms): requested={}, observed=epoch={} quiescence={}",
                  pollCount,
                  elapsedMs,
@@ -166,6 +174,7 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
     private void logTimeout(Epoch requested, int pollCount, long startNanos) {
         var elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
         var node = nodeSupplier.get();
+
         log.warn("await-quiesced TIMEOUT (polls={}, elapsed={}ms): requested={}, final=epoch={} quiescence={}",
                  pollCount,
                  elapsedMs,
@@ -181,9 +190,7 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
     private static AwaitQuiescedResponse buildResponse(Epoch observed, ClusterQuiescence quiescence, long startNanos) {
         var waitedMs = (System.nanoTime() - startNanos) / 1_000_000L;
 
-        return new AwaitQuiescedResponse(observed.toString(),
-                                         quiescence.name(),
-                                         waitedMs);
+        return new AwaitQuiescedResponse(observed.toString(), quiescence.name(), waitedMs);
     }
 
     private static Promise<AwaitQuiescedResponse> timeoutResponse() {

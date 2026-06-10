@@ -22,31 +22,52 @@ public final class SafeTypeChanges {
     public static boolean isSafe(PgType oldType, PgType newType) {
         var oldName = baseTypeName(oldType).toLowerCase();
         var newName = baseTypeName(newType).toLowerCase();
-        if (oldName.equals(newName)) {return isModifierChangeSafe(oldType, newType);}
-        for (var group : COERCIBLE_GROUPS) {if (group.contains(oldName) && group.contains(newName)) {return true;}}
-        if (isStringType(oldName) && isStringType(newName)) {return true;}
+
+        if (oldName.equals(newName)) {
+            return isModifierChangeSafe(oldType, newType);
+        }
+
+        for (var group : COERCIBLE_GROUPS) {
+            if (group.contains(oldName) && group.contains(newName)) {
+                return true;
+            }
+        }
+
+        if (isStringType(oldName) && isStringType(newName)) {
+            return true;
+        }
+
         return false;
     }
 
     private static boolean isModifierChangeSafe(PgType oldType, PgType newType) {
         var oldMods = modifiers(oldType);
         var newMods = modifiers(newType);
+
         if (oldMods.isEmpty() && newMods.isEmpty()) return true;
+
         if (oldMods.isEmpty()) return true;
+
         if (newMods.isEmpty()) return true;
-        if (!oldMods.isEmpty() && !newMods.isEmpty()) {if (newMods.getFirst() >= oldMods.getFirst()) {return true;}}
+
+        if (!oldMods.isEmpty() && !newMods.isEmpty()) {
+            if (newMods.getFirst() >= oldMods.getFirst()) {
+                return true;
+            }
+        }
+
         return false;
     }
 
     private static java.util.List<Integer> modifiers(PgType type) {
-        return switch (type){
+        return switch (type) {
             case PgType.BuiltinType bt -> bt.modifiers();
             default -> java.util.List.of();
         };
     }
 
     private static String baseTypeName(PgType type) {
-        return switch (type){
+        return switch (type) {
             case PgType.ArrayType at -> baseTypeName(at.elementType());
             default -> type.name();
         };

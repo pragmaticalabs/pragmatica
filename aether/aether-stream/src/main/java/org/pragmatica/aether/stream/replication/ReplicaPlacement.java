@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
+
 /// Pure, deterministic stream-replica placement using HRW (highest-random-weight /
 /// rendezvous) hashing.
 ///
@@ -57,10 +58,7 @@ public final class ReplicaPlacement {
     ///
     /// Returns [Option#none()] when `members` is empty. `requestedRf` is clamped to
     /// `[1, members.size()]` internally.
-    public static Option<Placement> place(String streamName,
-                                          int partition,
-                                          Iterable<NodeId> members,
-                                          int requestedRf) {
+    public static Option<Placement> place(String streamName, int partition, Iterable<NodeId> members, int requestedRf) {
         var ranked = rank(streamName, partition, members);
 
         if (ranked.isEmpty()) {
@@ -77,12 +75,9 @@ public final class ReplicaPlacement {
     /// Package-visible to allow direct churn/ordering assertions in tests.
     static List<NodeId> rank(String streamName, int partition, Iterable<NodeId> members) {
         var ranked = new ArrayList<NodeId>();
-        members.forEach(ranked::add);
 
-        ranked.sort(Comparator
-                            .comparingLong((NodeId node) -> score(streamName, partition, node))
-                            .reversed()
-                            .thenComparing(NodeId::id));
+        members.forEach(ranked::add);
+        ranked.sort(Comparator.comparingLong((NodeId node) -> score(streamName, partition, node)).reversed().thenComparing(NodeId::id));
 
         return ranked;
     }
@@ -98,9 +93,9 @@ public final class ReplicaPlacement {
                                   Iterable<NodeId> members,
                                   int requestedRf,
                                   NodeId self) {
-        return place(streamName, partition, members, requestedRf)
-                .map(placement -> placement.owner().equals(self))
-                .or(false);
+        return place(streamName, partition, members, requestedRf).map(placement -> placement.owner()
+                                                                                            .equals(self))
+                    .or(false);
     }
 
     /// Effective replication factor for an APP stream:

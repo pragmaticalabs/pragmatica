@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config;
 
-
 /// Per-rule toggle pair for the Phase 4 PR-D `LifecycleReconciler`. Each of the seven
 /// reconciliation rules carries its own
 /// `RuleSpec`:

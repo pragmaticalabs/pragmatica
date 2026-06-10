@@ -31,11 +31,12 @@ public sealed interface GovernorFailoverHandler {
     }
 
     record unused() implements GovernorFailoverHandler {
-        @Override public Promise<Unit> handleFailover(String streamName,
-                                                      int partition,
-                                                      WatermarkTracker localWatermarks,
-                                                      SegmentIndex segmentIndex,
-                                                      SegmentReader segmentReader) {
+        @Override
+        public Promise<Unit> handleFailover(String streamName,
+                                            int partition,
+                                            WatermarkTracker localWatermarks,
+                                            SegmentIndex segmentIndex,
+                                            SegmentReader segmentReader) {
             return Promise.success(Unit.unit());
         }
     }
@@ -43,7 +44,6 @@ public sealed interface GovernorFailoverHandler {
 
 final class DefaultGovernorFailoverHandler implements GovernorFailoverHandler {
     private static final Logger log = LoggerFactory.getLogger(DefaultGovernorFailoverHandler.class);
-
     private static final int MAX_EVENTS_PER_SEGMENT_READ = 10_000;
 
     private final ReplicaRegistry registry;
@@ -54,13 +54,15 @@ final class DefaultGovernorFailoverHandler implements GovernorFailoverHandler {
         this.partitionRecovery = partitionRecovery;
     }
 
-    @Override public Promise<Unit> handleFailover(String streamName,
-                                                  int partition,
-                                                  WatermarkTracker localWatermarks,
-                                                  SegmentIndex segmentIndex,
-                                                  SegmentReader segmentReader) {
+    @Override
+    public Promise<Unit> handleFailover(String streamName,
+                                        int partition,
+                                        WatermarkTracker localWatermarks,
+                                        SegmentIndex segmentIndex,
+                                        SegmentReader segmentReader) {
         var catchupOffset = determineCatchupOffset(streamName, partition, localWatermarks);
         var segments = segmentIndex.listSegments(streamName, partition);
+
         return catchupOffset.fold(() -> handleNoWatermark(streamName, partition, segments, segmentReader),
                                   offset -> handleWithWatermark(streamName, partition, offset, segments, segmentReader));
     }
@@ -71,8 +73,10 @@ final class DefaultGovernorFailoverHandler implements GovernorFailoverHandler {
                                             SegmentReader segmentReader) {
         if (segments.isEmpty()) {
             log.info("Failover {}/{}  no watermark, no segments -- nothing to replay", streamName, partition);
+
             return Promise.success(Unit.unit());
         }
+
         return replaySegments(streamName,
                               partition,
                               segments.getFirst().startOffset(),
@@ -86,10 +90,13 @@ final class DefaultGovernorFailoverHandler implements GovernorFailoverHandler {
                                               List<SegmentRef> segments,
                                               SegmentReader segmentReader) {
         var relevantSegments = filterSegmentsFrom(segments, catchupOffset);
+
         if (relevantSegments.isEmpty()) {
             log.info("Failover {}/{} from offset {} -- no segments to replay", streamName, partition, catchupOffset);
+
             return Promise.success(Unit.unit());
         }
+
         return replaySegments(streamName, partition, catchupOffset, relevantSegments, segmentReader);
     }
 
@@ -103,43 +110,50 @@ final class DefaultGovernorFailoverHandler implements GovernorFailoverHandler {
                  partition,
                  fromOffset,
                  segments.size());
-        return segmentReader.readEvents(streamName, partition, fromOffset, MAX_EVENTS_PER_SEGMENT_READ).map(events -> applyEvents(streamName,
-                                                                                                                                  partition,
-                                                                                                                                  events))
-                                       .mapToUnit();
+
+        return segmentReader.readEvents(streamName, partition, fromOffset, MAX_EVENTS_PER_SEGMENT_READ)
+                            .map(events -> applyEvents(streamName, partition, events))
+                            .mapToUnit();
     }
 
     private long applyEvents(String streamName, int partition, List<RawEvent> events) {
-        for (var event : events) {partitionRecovery.appendRecoveredEvent(streamName,
-                                                                         partition,
-                                                                         event.data(),
-                                                                         event.timestamp());}
+        for (var event : events) {
+            partitionRecovery.appendRecoveredEvent(streamName, partition, event.data(), event.timestamp());
+        }
+
         log.info("Failover {}/{} replayed {} event(s)", streamName, partition, events.size());
+
         return events.size();
     }
 
     private Option<Long> determineCatchupOffset(String streamName, int partition, WatermarkTracker localWatermarks) {
         var localWm = localWatermarks.watermark(streamName, partition);
         var replicaWm = highestReplicaWatermark(streamName, partition);
+
         return bestWatermark(localWm, replicaWm).map(wm -> wm + 1);
     }
 
     private Option<Long> highestReplicaWatermark(String streamName, int partition) {
         var replicas = registry.replicasFor(streamName, partition);
-        if (replicas.isEmpty()) {return Option.none();}
-        var max = replicas.stream().mapToLong(ReplicaDescriptor::confirmedOffset)
-                                 .max();
-        return Option.from(max.stream().boxed()
-                                     .findFirst());
+
+        if (replicas.isEmpty()) {
+            return Option.none();
+        }
+
+        var max = replicas.stream().mapToLong(ReplicaDescriptor::confirmedOffset).max();
+
+        return Option.from(max.stream().boxed().findFirst());
     }
 
     private static Option<Long> bestWatermark(Option<Long> a, Option<Long> b) {
-        return a.flatMap(aVal -> b.map(bVal -> Math.max(aVal, bVal))).orElse(a)
-                        .orElse(b);
+        return a.flatMap(aVal -> b.map(bVal -> Math.max(aVal, bVal)))
+                .orElse(a)
+                .orElse(b);
     }
 
     private static List<SegmentRef> filterSegmentsFrom(List<SegmentRef> segments, long fromOffset) {
-        return segments.stream().filter(ref -> ref.endOffset() >= fromOffset)
-                              .toList();
+        return segments.stream()
+                       .filter(ref -> ref.endOffset() >= fromOffset)
+                       .toList();
     }
 }

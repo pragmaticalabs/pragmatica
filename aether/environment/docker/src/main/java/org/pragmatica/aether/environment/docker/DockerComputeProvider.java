@@ -34,24 +34,28 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Result.success;
 
 
-@Contract public record DockerComputeProvider(DockerCommandRunner runner,
-                                              DockerConfig config) implements ComputeProvider {
+@Contract
+public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig config) implements ComputeProvider {
     private static final Logger log = LoggerFactory.getLogger(DockerComputeProvider.class);
 
     public static Result<DockerComputeProvider> dockerComputeProvider(DockerCommandRunner runner, DockerConfig config) {
         return success(new DockerComputeProvider(runner, config));
     }
 
-    @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
+    @Override
+    public Promise<InstanceInfo> provision(InstanceType instanceType) {
         var ctx = ProvisionContext.provisionContext("default",
                                                     "core",
                                                     "default",
                                                     ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+
         return provision(ProvisionSpec.provisionSpec(instanceType, "docker", "default", ctx).unwrap());
     }
 
-    @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
+    @Override
+    public Promise<InstanceInfo> provision(ProvisionSpec spec) {
         var preflight = preflightCheck(spec);
+
         if (preflight.isPresent()) {
             return preflight.unwrap();
         }
@@ -63,8 +67,8 @@ import static org.pragmatica.lang.Result.success;
         // and unique, eliminating the slot-number reuse the old max(existing)+1 scheme
         // suffered when dead containers were swept and the observed max dropped.
         var identity = resolveIdentity(spec);
-        return provisionWithIdentity(spec, identity)
-                                  .mapError(DockerComputeProvider::toProvisionError);
+
+        return provisionWithIdentity(spec, identity).mapError(DockerComputeProvider::toProvisionError);
     }
 
     /// Resolve the node identity used as both container name and NodeId. Honors a
@@ -76,15 +80,22 @@ import static org.pragmatica.lang.Result.success;
     /// and `docker kill` prefix-matching keep working.
     private String resolveIdentity(ProvisionSpec spec) {
         var cluster = clusterOrDefault(spec.context());
-        return spec.context().nodeId().or(() -> IdGenerator.generate(ProvisionContext.coreNodeNamePrefix(cluster)));
+
+        return spec.context()
+                   .nodeId()
+                   .or(() -> IdGenerator.generate(ProvisionContext.coreNodeNamePrefix(cluster)));
     }
 
     private Promise<InstanceInfo> provisionWithIdentity(ProvisionSpec spec, String containerName) {
         var command = buildRunCommand(spec, containerName);
-        return runner.execute(command).map(containerId -> toProvisionedInfo(containerId, containerName, spec))
-                             .flatMap(info -> confirmRunning(info, ReadinessPolicy.dockerDefault()))
-                             .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause));
+
+        return runner.execute(command)
+                     .map(containerId -> toProvisionedInfo(containerId, containerName, spec))
+                     .flatMap(info -> confirmRunning(info,
+                                                     ReadinessPolicy.dockerDefault()))
+                     .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause));
     }
+
     /// bootstrap list (3-part `nodeId:host:port` entries) so the new container can join
     /// the existing consensus group. Without peers the container starts with `PEERS=`
     /// (empty), the JVM cold-boots in isolation (`quorate=false, leaderId=none`), and
@@ -98,18 +109,23 @@ import static org.pragmatica.lang.Result.success;
     /// cluster formation (would require a "formed" signal threaded through here).
     private Option<Promise<InstanceInfo>> preflightCheck(ProvisionSpec spec) {
         var ctx = spec.context();
+
         if (!ProvisionContext.PROVISIONED_BY_CTM.equals(ctx.provisionedBy())) {
             return Option.empty();
         }
+
         if (!ctx.peers().or("").isEmpty()) {
             return Option.empty();
         }
+
         var message = "DockerComputeProvider.provision rejected: CTM auto-heal requires a non-empty PEERS bootstrap list, "
-                       + "but the provided ProvisionContext.peers is absent or empty. Refusing to spawn an orphan container "
-                       + "that would cold-boot in isolation and corrupt cluster management views. "
-                       + "Caller (ClusterTopologyManager) should defer provisioning until at least one healthy peer is "
-                       + "visible in the observed topology.";
+                    + "but the provided ProvisionContext.peers is absent or empty. Refusing to spawn an orphan container "
+                    + "that would cold-boot in isolation and corrupt cluster management views. "
+                    + "Caller (ClusterTopologyManager) should defer provisioning until at least one healthy peer is "
+                    + "visible in the observed topology.";
+
         log.warn(message);
+
         return Option.some(EnvironmentError.provisionFailed(new IllegalStateException(message)).promise());
     }
 
@@ -124,18 +140,22 @@ import static org.pragmatica.lang.Result.success;
         log.warn("Provision failed for container {} ({}); attempting rollback via docker rm -f",
                  containerName,
                  cause.message());
-        runner.execute(buildForceRemoveCommand(containerName))
-              .onFailure(rollbackCause -> log.warn("Rollback rm -f {} returned non-zero (likely no partial container existed): {}",
-                                                    containerName,
-                                                    rollbackCause.message()))
-              .onSuccess(ignored -> log.info("Rollback removed partial container {}", containerName));
+        runner.execute(buildForceRemoveCommand(containerName)).onFailure(rollbackCause -> log.warn("Rollback rm -f {} returned non-zero (likely no partial container existed): {}",
+                                                                                                   containerName,
+                                                                                                   rollbackCause.message())).onSuccess(ignored -> log.info("Rollback removed partial container {}",
+                                                                                                                                                           containerName));
     }
 
-    @Override public void resetProvisionerState(String clusterName) {
+    @Override
+    public void resetProvisionerState(String clusterName) {
         if (!clusterName.isEmpty()) {
-            runner.execute(buildCtmPruneCommand(clusterName))
-                  .onFailure(cause -> log.warn("CTM sweep failed for cluster {}: {}", clusterName, cause.message()))
-                  .onSuccess(out -> { if (!out.isBlank()) {log.info("CTM sweep for cluster {}: {}", clusterName, out.strip());}});
+            runner.execute(buildCtmPruneCommand(clusterName)).onFailure(cause -> log.warn("CTM sweep failed for cluster {}: {}",
+                                                                                          clusterName,
+                                                                                          cause.message())).onSuccess(out -> {
+                if (!out.isBlank()) {
+                    log.info("CTM sweep for cluster {}: {}", clusterName, out.strip());
+                }
+            });
         }
     }
 
@@ -154,41 +174,56 @@ import static org.pragmatica.lang.Result.success;
         return List.of("docker", "rm", "-f", containerName);
     }
 
-    @Override public Promise<Unit> terminate(InstanceId instanceId) {
+    @Override
+    public Promise<Unit> terminate(InstanceId instanceId) {
         var stopCommand = buildStopCommand(instanceId);
         var removeCommand = buildRemoveCommand(instanceId);
-        return runner.execute(stopCommand).flatMap(ignored -> runner.execute(removeCommand))
-                             .mapToUnit()
-                             .mapError(cause -> toTerminateError(instanceId, cause));
+
+        return runner.execute(stopCommand)
+                     .flatMap(ignored -> runner.execute(removeCommand))
+                     .mapToUnit()
+                     .mapError(cause -> toTerminateError(instanceId, cause));
     }
 
-    @Override public Promise<List<InstanceInfo>> listInstances() {
+    @Override
+    public Promise<List<InstanceInfo>> listInstances() {
         var command = buildListCommand();
-        return runner.execute(command).map(DockerComputeProvider::parseContainerList)
-                             .mapError(DockerComputeProvider::toListInstancesError);
+
+        return runner.execute(command)
+                     .map(DockerComputeProvider::parseContainerList)
+                     .mapError(DockerComputeProvider::toListInstancesError);
     }
 
-    @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
+    @Override
+    public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
         var command = buildFilteredListCommand(tagFilter);
-        return runner.execute(command).map(DockerComputeProvider::parseContainerList)
-                             .mapError(DockerComputeProvider::toListInstancesError);
+
+        return runner.execute(command)
+                     .map(DockerComputeProvider::parseContainerList)
+                     .mapError(DockerComputeProvider::toListInstancesError);
     }
 
-    @Override public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
+    @Override
+    public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
         var command = buildInspectCommand(instanceId);
-        return runner.execute(command).map(output -> parseInspectOutput(output, instanceId))
-                             .mapError(DockerComputeProvider::toProvisionError);
+
+        return runner.execute(command)
+                     .map(output -> parseInspectOutput(output, instanceId))
+                     .mapError(DockerComputeProvider::toProvisionError);
     }
 
-    @Override public Promise<Unit> restart(InstanceId id) {
+    @Override
+    public Promise<Unit> restart(InstanceId id) {
         var command = buildRestartCommand(id);
-        return runner.execute(command).mapToUnit()
-                             .mapError(DockerComputeProvider::toProvisionError);
+
+        return runner.execute(command)
+                     .mapToUnit()
+                     .mapError(DockerComputeProvider::toProvisionError);
     }
 
-    @Override public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
-        return EnvironmentError.operationNotSupported("applyTags (Docker labels are immutable after creation)")
-                                                     .promise();
+    @Override
+    public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
+        return EnvironmentError.operationNotSupported("applyTags (Docker labels are immutable after creation)").promise();
     }
 
     private List<String> buildRunCommand(ProvisionSpec spec, String containerName) {
@@ -206,11 +241,12 @@ import static org.pragmatica.lang.Result.success;
         var command = new ArrayList<>(List.of("docker",
                                               "run",
                                               "-d",
-                                              // Explicit `--restart no` so a host running with a daemon-level
-                                              // `--default-restart-policy` (Docker 28+) cannot silently auto-restart a
-                                              // CTM-launched replacement — that would resurrect a terminally-removed
-                                              // NodeId and violate the terminal-removal invariant.
-                                              "--restart",
+
+        // Explicit `--restart no` so a host running with a daemon-level
+        // `--default-restart-policy` (Docker 28+) cannot silently auto-restart a
+        // CTM-launched replacement — that would resurrect a terminally-removed
+        // NodeId and violate the terminal-removal invariant.
+        "--restart",
                                               "no",
                                               "--name",
                                               containerName,
@@ -233,18 +269,19 @@ import static org.pragmatica.lang.Result.success;
                                               "-e",
                                               "AETHER_NODE_ID=" + nodeId,
                                               "-e",
-                                              // Authoritative cluster name: emitted from the SAME source as the
-                                              // `aether.cluster` label above (clusterOrDefault(ctx) →
-                                              // ProvisionContext.clusterName, the KV-bootstrapped name) — NOT
-                                              // forwarded verbatim from the leader's process env. The leader's
-                                              // AETHER_CLUSTER_NAME can legitimately differ from the bootstrapped
-                                              // cluster.name (e.g. compose label `b` vs bootstrap `integration-test`);
-                                              // forwarding it verbatim made the replacement's env disagree with its
-                                              // own label, and the boot guard (Main.verifyClusterLabelConsistency)
-                                              // exited(1) → CTM retried forever → auto-heal storm. Mirrors
-                                              // AETHER_NODE_ID above; the IDENTITY_VARS loop below dedupes via
-                                              // alreadyEmitted().
-                                              "AETHER_CLUSTER_NAME=" + cluster,
+
+        // Authoritative cluster name: emitted from the SAME source as the
+        // `aether.cluster` label above (clusterOrDefault(ctx) →
+        // ProvisionContext.clusterName, the KV-bootstrapped name) — NOT
+        // forwarded verbatim from the leader's process env. The leader's
+        // AETHER_CLUSTER_NAME can legitimately differ from the bootstrapped
+        // cluster.name (e.g. compose label `b` vs bootstrap `integration-test`);
+        // forwarding it verbatim made the replacement's env disagree with its
+        // own label, and the boot guard (Main.verifyClusterLabelConsistency)
+        // exited(1) → CTM retried forever → auto-heal storm. Mirrors
+        // AETHER_NODE_ID above; the IDENTITY_VARS loop below dedupes via
+        // alreadyEmitted().
+        "AETHER_CLUSTER_NAME=" + cluster,
                                               "-e",
                                               "CLUSTER_PORT=" + config.clusterPort(),
                                               "-e",
@@ -255,6 +292,7 @@ import static org.pragmatica.lang.Result.success;
                                               "CORE_MAX=" + coreMax,
                                               "-e",
                                               "AETHER_API_KEY=" + apiKey));
+
         if (!provisionedBy.isEmpty()) {
             command.add("-e");
             command.add("AETHER_PROVISIONED_BY=" + provisionedBy);
@@ -283,6 +321,7 @@ import static org.pragmatica.lang.Result.success;
             command.add("--group-add");
             command.add(config.dockerGid());
         }
+
         if (config.exposeHostPorts()) {
             // ULID-minted replacements have no numeric slot, so the old `base + slot`
             // host-port scheme no longer applies. Publish the in-container management
@@ -293,15 +332,21 @@ import static org.pragmatica.lang.Result.success;
             command.add("-p");
             command.add("8080");
         }
+
         addSpecLabels(command, ctx.extraTags());
         addPlacementLabels(command, spec.placement());
         command.add(config.imageName());
+
         return List.copyOf(command);
     }
 
     private static void propagateEnvVar(ArrayList<String> command, String name) {
-        if (alreadyEmitted(command, name)) {return;}
+        if (alreadyEmitted(command, name)) {
+            return;
+        }
+
         var value = System.getenv(name);
+
         if (value != null && !value.isEmpty()) {
             command.add("-e");
             command.add(name + "=" + value);
@@ -313,17 +358,19 @@ import static org.pragmatica.lang.Result.success;
     /// allow-list loop never double-emits a var that was set explicitly upstream.
     private static boolean alreadyEmitted(ArrayList<String> command, String name) {
         var prefix = name + "=";
-        return command.stream().anyMatch(arg -> arg.startsWith(prefix));
+
+        return command.stream()
+                      .anyMatch(arg -> arg.startsWith(prefix));
     }
 
     private static void addSpecLabels(ArrayList<String> command, Map<String, String> tags) {
-        tags.entrySet().stream()
-                     .filter(DockerComputeProvider::isCustomLabel)
-                     .forEach(entry -> addLabelArgs(command, entry));
+        tags.entrySet().stream().filter(DockerComputeProvider::isCustomLabel).forEach(entry -> addLabelArgs(command,
+                                                                                                            entry));
     }
 
     private static boolean isCustomLabel(Map.Entry<String, String> entry) {
-        return ! entry.getKey().startsWith("aether.");
+        return ! entry.getKey()
+                      .startsWith("aether.");
     }
 
     private static void addLabelArgs(ArrayList<String> command, Map.Entry<String, String> entry) {
@@ -336,7 +383,7 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static void applyPlacementHint(ArrayList<String> command, PlacementHint hint) {
-        switch (hint){
+        switch (hint) {
             case PlacementHint.ZoneHint zone -> addPlacementLabel(command, "zone", zone.zoneName());
             case PlacementHint.HostGroupHint group -> addPlacementLabel(command, "host-group", group.groupId());
             case PlacementHint.AffinityHint ignored -> log.debug("Docker provider ignoring AffinityHint — not supported");
@@ -369,9 +416,11 @@ import static org.pragmatica.lang.Result.success;
 
     private static List<String> buildFilteredListCommand(Map<String, String> tagFilter) {
         var command = new ArrayList<>(List.of("docker", "ps", "-a"));
+
         tagFilter.forEach((key, value) -> addFilterArgs(command, key, value));
         command.addAll(List.of("--format",
                                "{{.ID}}\t{{.Names}}\t{{.State}}\t{{.Label \"aether.cluster\"}}\t{{.Label \"aether.role\"}}\t{{.Label \"aether.node-id\"}}"));
+
         return List.copyOf(command);
     }
 
@@ -392,9 +441,7 @@ import static org.pragmatica.lang.Result.success;
         return List.of("docker", "restart", id.value());
     }
 
-    private InstanceInfo toProvisionedInfo(String containerId,
-                                           String containerName,
-                                           ProvisionSpec spec) {
+    private InstanceInfo toProvisionedInfo(String containerId, String containerName, ProvisionSpec spec) {
         // Provider-minted replacements are reached on the Docker overlay network at
         // the container's own ports (mgmt 8080, app 8070), addressed by container name
         // == NodeId. Host-mapped per-slot ports were a seed-only convenience; ULID
@@ -423,13 +470,16 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static String roleOrDefault(ProvisionContext ctx) {
-        return ctx.role().isEmpty()
-              ? "core"
-              : ctx.role();
+        return ctx.role()
+                  .isEmpty()
+               ? "core"
+               : ctx.role();
     }
 
     private static String clusterOrDefault(ProvisionContext ctx) {
-        if (!ctx.clusterName().isEmpty()) {return ctx.clusterName();}
+        if (!ctx.clusterName().isEmpty()) {
+            return ctx.clusterName();
+        }
         // Fallback: when ClusterConfigValue isn't yet seeded in KV-Store (e.g., compose-only
         // deployments that never ran `aether cluster bootstrap`), source the cluster name
         // from the AETHER_CLUSTER_NAME env var so CTM-provisioned replacements still get a
@@ -437,7 +487,10 @@ import static org.pragmatica.lang.Result.success;
         // this env to `a` / `b` so cluster A/B's CTM replacements carry the same label as
         // their compose-fixed siblings — closes the spec's caveat-c gap.
         var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
-        if (fromEnv != null && !fromEnv.isEmpty()) {return fromEnv;}
+
+        if (fromEnv != null && !fromEnv.isEmpty()) {
+            return fromEnv;
+        }
         // No cluster name anywhere: mirror the cloud providers' empty fall-through rather
         // than silently mislabeling the node "default". An empty name now reaches the
         // node-side boot gate (Main.verifyClusterNamePresent), which fails loud.
@@ -445,14 +498,18 @@ import static org.pragmatica.lang.Result.success;
     }
 
     static List<InstanceInfo> parseContainerList(String output) {
-        if (output.isEmpty()) {return List.of();}
-        return Arrays.stream(output.split("\n")).filter(line -> !line.isBlank())
-                            .map(DockerComputeProvider::parseContainerLine)
-                            .toList();
+        if (output.isEmpty()) {
+            return List.of();
+        }
+
+        return Arrays.stream(output.split("\n"))
+                     .filter(line -> !line.isBlank())
+                     .map(DockerComputeProvider::parseContainerLine)
+                     .toList();
     }
 
     static InstanceInfo parseContainerLine(String line) {
-        var parts = line.split("\t", - 1);
+        var parts = line.split("\t", -1);
         var id = safePart(parts, 0);
         var name = safePart(parts, 1);
         var state = safePart(parts, 2);
@@ -460,29 +517,33 @@ import static org.pragmatica.lang.Result.success;
         var role = safePart(parts, 4);
         var nodeId = safePart(parts, 5);
         var tags = Map.of("aether.cluster", cluster, "aether.role", role, "aether.node-id", nodeId);
+
         return new InstanceInfo(new InstanceId(id),
                                 mapDockerState(state),
                                 List.of(),
                                 InstanceType.ON_DEMAND,
                                 tags,
-                                nodeId.isEmpty() ? Option.none() : Option.some(nodeId));
+                                nodeId.isEmpty()
+                                ? Option.none()
+                                : Option.some(nodeId));
     }
 
     private static String safePart(String[] parts, int index) {
-        return index <parts.length
-              ? parts[index]
-              : "";
+        return index < parts.length
+               ? parts[index]
+               : "";
     }
 
     static InstanceInfo parseInspectOutput(String output, InstanceId instanceId) {
-        var parts = output.split("\t", - 1);
+        var parts = output.split("\t", -1);
         var state = safePart(parts, 0);
         var name = safePart(parts, 1).replaceFirst("^/", "");
+
         return new InstanceInfo(instanceId, mapDockerState(state), List.of(name), InstanceType.ON_DEMAND, Map.of());
     }
 
     static InstanceStatus mapDockerState(String dockerState) {
-        return switch (dockerState){
+        return switch (dockerState) {
             case "created", "restarting" -> InstanceStatus.PROVISIONING;
             case "running" -> InstanceStatus.RUNNING;
             case "paused", "removing", "exited" -> InstanceStatus.STOPPING;

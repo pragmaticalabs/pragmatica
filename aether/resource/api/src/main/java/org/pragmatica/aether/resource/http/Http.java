@@ -12,4 +12,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 
-@ResourceQualifier(type = HttpClient.class, config = "http") @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.PARAMETER) public@interface Http {}
+@ResourceQualifier(type = HttpClient.class, config = "http")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+public @interface Http {}

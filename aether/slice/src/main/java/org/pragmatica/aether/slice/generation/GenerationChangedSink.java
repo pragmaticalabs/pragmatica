@@ -8,7 +8,8 @@ import org.pragmatica.lang.Contract;
 
 
 public interface GenerationChangedSink {
-    @Contract void emit(GenerationChangedNotice notice);
+    @Contract
+    void emit(GenerationChangedNotice notice);
 
     static GenerationChangedSink noop() {
         return _ -> {};

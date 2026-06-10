@@ -29,23 +29,29 @@ public record AzureDnsDnsProvider(AzureClient client, String resourceGroup, Stri
         return success(new AzureDnsDnsProvider(client, resourceGroup, dnsZoneName));
     }
 
-    @Override public Promise<Unit> upsertRecord(String hostname, List<String> addresses, DnsRecordType type) {
+    @Override
+    public Promise<Unit> upsertRecord(String hostname, List<String> addresses, DnsRecordType type) {
         log.info("Azure DNS UPSERT {} {} -> {} (rg: {}, zone: {})",
                  type,
                  hostname,
                  addresses,
                  resourceGroup,
                  dnsZoneName);
+
         return Promise.success(unit());
     }
 
-    @Override public Promise<Unit> removeRecord(String hostname, DnsRecordType type) {
+    @Override
+    public Promise<Unit> removeRecord(String hostname, DnsRecordType type) {
         log.info("Azure DNS DELETE {} {} (rg: {}, zone: {})", type, hostname, resourceGroup, dnsZoneName);
+
         return Promise.success(unit());
     }
 
-    @Override public Promise<List<String>> resolve(String hostname) {
+    @Override
+    public Promise<List<String>> resolve(String hostname) {
         log.debug("Azure DNS resolve {} (rg: {}, zone: {})", hostname, resourceGroup, dnsZoneName);
+
         return Promise.success(List.of());
     }
 }

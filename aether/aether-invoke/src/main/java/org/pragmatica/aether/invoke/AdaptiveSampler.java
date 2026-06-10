@@ -16,9 +16,7 @@ public final class AdaptiveSampler {
     private static final long RECALCULATION_INTERVAL_SEC = 5;
 
     private final int targetTracesPerSec;
-
     private final AtomicLong invocationCount = new AtomicLong();
-
     private volatile double effectiveRate = 1.0;
 
     private AdaptiveSampler(int targetTracesPerSec) {
@@ -30,12 +28,13 @@ public final class AdaptiveSampler {
         return new AdaptiveSampler(targetTracesPerSec);
     }
 
-    @SuppressWarnings("JBCT-RET-01") public void recordInvocation() {
+    @SuppressWarnings("JBCT-RET-01")
+    public void recordInvocation() {
         invocationCount.incrementAndGet();
     }
 
     public boolean shouldSample() {
-        return ThreadLocalRandom.current().nextDouble() <effectiveRate;
+        return ThreadLocalRandom.current().nextDouble() < effectiveRate;
     }
 
     public double effectiveRate() {
@@ -45,8 +44,9 @@ public final class AdaptiveSampler {
     private void recalculate() {
         var count = invocationCount.getAndSet(0);
         var throughput = count / (double) RECALCULATION_INTERVAL_SEC;
+
         effectiveRate = throughput > 0
-                       ? Math.min((double) targetTracesPerSec / throughput, 1.0)
-                       : 1.0;
+                        ? Math.min((double) targetTracesPerSec / throughput, 1.0)
+                        : 1.0;
     }
 }

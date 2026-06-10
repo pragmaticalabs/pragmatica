@@ -93,6 +93,7 @@ public final class SchemaRoutes implements RouteSource {
 
     private SchemaStatusListResponse allSchemaStatuses() {
         var entries = new ArrayList<SchemaStatusResponse>();
+
         nodeSupplier.get().kvStore().forEach(SchemaVersionKey.class,
                                              SchemaVersionValue.class,
                                              (_, value) -> entries.add(SchemaStatusResponse.schemaStatusResponse(value)));
@@ -141,6 +142,7 @@ public final class SchemaRoutes implements RouteSource {
                                                             current.lastMigration(),
                                                             SchemaStatus.MIGRATING,
                                                             current.artifactCoords());
+
         return applySchemaUpdate(datasource, updated).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
                                                                                                            "Migration triggered for " + datasource));
     }
@@ -153,6 +155,7 @@ public final class SchemaRoutes implements RouteSource {
                                                             current.lastMigration(),
                                                             SchemaStatus.PENDING,
                                                             current.artifactCoords());
+
         return applySchemaUpdate(datasource, updated).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
                                                                                                            "Undo to version " + targetVersion
                                                                                                           + " initiated for " + datasource));
@@ -163,6 +166,7 @@ public final class SchemaRoutes implements RouteSource {
                                                               version,
                                                               "V" + String.format("%03d", version) + "__baseline",
                                                               SchemaStatus.COMPLETED);
+
         return applySchemaUpdate(datasource, baselined).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
                                                                                                              "Baselined " + datasource
                                                                                                             + " at version " + version));
@@ -182,7 +186,9 @@ public final class SchemaRoutes implements RouteSource {
     }
 
     private Promise<SchemaMigrateResponse> writeRetryStatus(SchemaVersionValue current, String datasource) {
-        if (current.status() != SchemaStatus.FAILED) {return SCHEMA_NOT_FAILED.promise();}
+        if (current.status() != SchemaStatus.FAILED) {
+            return SCHEMA_NOT_FAILED.promise();
+        }
 
         var updated = SchemaVersionValue.schemaVersionValue(datasource,
                                                             current.currentVersion(),
@@ -190,6 +196,7 @@ public final class SchemaRoutes implements RouteSource {
                                                             SchemaStatus.PENDING,
                                                             current.artifactCoords(),
                                                             0);
+
         return applySchemaUpdate(datasource, updated).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
                                                                                                            "Retry initiated for " + datasource));
     }

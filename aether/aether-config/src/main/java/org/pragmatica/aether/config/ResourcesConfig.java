@@ -23,7 +23,7 @@ public record ResourcesConfig(String cpuRequest, String cpuLimit, String memoryR
 
     public static ResourcesConfig resourcesConfig(boolean minimal) {
         return minimal
-              ? resourcesConfig("100m", "500m", "256Mi", "512Mi").unwrap()
-              : resourcesConfig();
+               ? resourcesConfig("100m", "500m", "256Mi", "512Mi").unwrap()
+               : resourcesConfig();
     }
 }

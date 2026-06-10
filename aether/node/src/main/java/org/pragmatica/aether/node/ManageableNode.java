@@ -68,18 +68,15 @@ public interface ManageableNode {
     MavenProtocolHandler mavenProtocolHandler();
     ArtifactStore artifactStore();
     TopologyManager topologyManager();
-
     /// #114 W2.0 — exposes the per-node authoritative `MembershipFsm` so management HTTP
     /// routes can read live membership (members/health/quiescence) directly, replacing reads
     /// of the generation snapshot. Additive accessor; snapshot accessors remain until a later wave.
     MembershipFsm membershipFsm();
-
     /// #114 — the node's CURRENT generation epoch. On the leader this is the locally-minted
     /// epoch (`leaderTerm`:`generationCounter`); on followers it is the observed ping epoch.
     /// The leader never receives its own pings, so its `metricsCollector().observedEpoch()`
     /// stays at `0:0` forever — gen-route, await-quiesced and NDM MUST read this instead.
     Epoch currentGenerationEpoch();
-
     InvocationMetricsCollector invocationMetrics();
     DeploymentManager deploymentManager();
     AbTestManager abTestManager();
@@ -100,7 +97,6 @@ public interface ManageableNode {
     Map<String, StorageFactory.StorageSetup> storageSetups();
     Option<ClusterTopologyManager> clusterTopologyManager();
     Option<CertificateRenewalScheduler> certRenewalScheduler();
-
     /// Runtime TLS posture. `true` when the node's app-HTTP server is bound with TLS
     /// (equivalent to `AetherNodeConfig.tls().isPresent()` — i.e. `AetherConfig.tlsEnabled()`
     /// was true at startup and a `CertificateProvider` resolved). Surfaced through
@@ -108,7 +104,6 @@ public interface ManageableNode {
     /// inferring it from the `renewalStatus` placeholder. See
     /// `aether/docs/internal/audits/integration-test-audit-2026-05-21.md` §2.2.
     boolean tlsEnabled();
-
     int connectedNodeCount();
     Map<String, Number> transportMetrics();
     Set<NodeId> connectedPeerIds();
@@ -124,30 +119,25 @@ public interface ManageableNode {
     HealthSignalSink healthSignalSink();
     InFlightRequestTracker inFlightRequestTracker();
     NodeLifecycle nodeLifecycle();
-
     /// RC1 Step 4 — exposes the node's canonical Hybrid Logical Clock so request-handling
     /// routes (e.g., `NodeLifecycleRoutes` constructing operator events) can stamp events
     /// with the same clock, preserving causal ordering across the admission path.
     HlcClock hlcClock();
-
     /// P-NEW-B / P-NEW-F (RC1, 2026-05-21) — exposes the node's local DHT client so management
     /// routes (`DhtRoutes`) can issue versioned puts with explicit HLC for deterministic
     /// version-conflict tests, and surface the active replication map for operator inspection.
     /// `Option.none()` only in tests that wire a `ManageableNode` proxy without DHT.
     Option<DHTClient> dhtClient();
-
     /// P-NEW-B / P-NEW-F (RC1, 2026-05-21) — exposes the local `DHTNode` for storage iteration
     /// (`storage().keys()` powers the replication-map inspector) and direct versioned local
     /// puts (`putLocalVersioned`, used by the dev-mode `/api/dht/inject` test hook to write a
     /// value with an explicit HLC, bypassing the live-clock advancement the regular `put` path
     /// performs). `Option.none()` only in tests that wire a `ManageableNode` proxy without DHT.
     Option<DHTNode> dhtNode();
-
     /// H.1 (spec §H): derived cluster-membership view. Computed from the local SWIM
     /// `HealthSnapshot` — SWIM is authoritative for "alive". Reader-side replacement for
     /// the retired membership FSM snapshot. Cheap to call repeatedly — recomputes on each query.
     org.pragmatica.aether.deployment.membership.view.MembershipView membershipView();
-
     /// Post-E.8 (spec §7.2): unified `ClusterPhase` accessor that returns the value
     /// derived by `ClusterPhaseView.compute()`. Status routes and any dashboard consumer
     /// should call this rather than reading the KV atom directly.

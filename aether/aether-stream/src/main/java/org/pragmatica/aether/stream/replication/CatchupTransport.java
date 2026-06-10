@@ -13,7 +13,8 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Catchu
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupResponse.catchupResponse;
 
 
-@FunctionalInterface public interface CatchupTransport {
+@FunctionalInterface
+public interface CatchupTransport {
     Promise<CatchupResponse> requestCatchup(NodeId target, ReplicationMessage.CatchupRequest request);
 
     CatchupTransport NOOP = (_, request) -> Promise.success(catchupResponse(request.replicaId(),

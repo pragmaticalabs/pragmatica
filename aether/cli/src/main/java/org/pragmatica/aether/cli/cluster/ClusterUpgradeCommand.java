@@ -48,7 +48,10 @@ class ClusterUpgradeCommand implements Callable<Integer> {
     }
 
     private Result<String> validateVersion() {
-        if (!VERSION_PATTERN.matcher(targetVersion).matches()) {return new UpgradeError.InvalidVersion(targetVersion).result();}
+        if (!VERSION_PATTERN.matcher(targetVersion).matches()) {
+            return new UpgradeError.InvalidVersion(targetVersion).result();
+        }
+
         return Result.success(targetVersion);
     }
 
@@ -59,7 +62,9 @@ class ClusterUpgradeCommand implements Callable<Integer> {
     private Result<String> initiateUpgrade(JsonNode config) {
         var currentVersion = config.path("version").asText("unknown");
 
-        if (targetVersion.equals(currentVersion)) {return new UpgradeError.AlreadyAtVersion(targetVersion).result();}
+        if (targetVersion.equals(currentVersion)) {
+            return new UpgradeError.AlreadyAtVersion(targetVersion).result();
+        }
 
         var jsonBody = "{\"targetVersion\":\"" + targetVersion + "\"}";
 

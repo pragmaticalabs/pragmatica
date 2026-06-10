@@ -25,9 +25,10 @@ public enum SourceType {
         return value;
     }
     public static Result<SourceType> sourceType(String raw) {
-        return Arrays.stream(values()).filter(st -> st.value.equals(raw))
-                            .findFirst()
-                            .map(Result::success)
-                            .orElseGet(INVALID_TYPE::result);
+        return Arrays.stream(values())
+                     .filter(st -> st.value.equals(raw))
+                     .findFirst()
+                     .map(Result::success)
+                     .orElseGet(INVALID_TYPE::result);
     }
 }

@@ -69,6 +69,7 @@ public interface MutationForwarder {
                 LOG.trace("Forwarded mutation {} to governor {}", mutation.correlationId(), governorId.id());
             }
         }
+
         return new mutationForwarder(selfId, delegateRouter, new AtomicReference<>(Option.empty()));
     }
 }

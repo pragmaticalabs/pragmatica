@@ -12,11 +12,11 @@ import static org.pragmatica.lang.Result.success;
 
 
 public sealed interface RepositoryType {
-    record Local() implements RepositoryType{}
+    record Local() implements RepositoryType {}
 
-    record Builtin() implements RepositoryType{}
+    record Builtin() implements RepositoryType {}
 
-    record Remote(String id, String url) implements RepositoryType{}
+    record Remote(String id, String url) implements RepositoryType {}
 
     String CENTRAL_URL = "https://repo1.maven.org/maven2/";
 
@@ -31,38 +31,52 @@ public sealed interface RepositoryType {
         return RepositoryTypeError.InvalidRepositoryType.invalidRepositoryType("repository name cannot be blank");
     }
 
-    @SuppressWarnings("JBCT-RET-07") private static Result<RepositoryType> fromNormalized(String name) {
-        return switch (name.toLowerCase()){
+    @SuppressWarnings("JBCT-RET-07")
+    private static Result<RepositoryType> fromNormalized(String name) {
+        return switch (name.toLowerCase()) {
             case "local" -> success(new Local());
             case "builtin" -> success(new Builtin());
             default -> {
-                if (name.toLowerCase().startsWith("remote:")) {yield parseRemote(name.substring(7));}
-                yield RepositoryTypeError.InvalidRepositoryType.invalidRepositoryType("unknown repository type: " + name + ". Valid types: local, builtin, remote:<id-or-url>")
-                                                                                     .result();
+                if (name.toLowerCase().startsWith("remote:")) {
+                    yield parseRemote(name.substring(7));
+                }
+
+                yield RepositoryTypeError.InvalidRepositoryType.invalidRepositoryType("unknown repository type: " + name + ". Valid types: local, builtin, remote:<id-or-url>").result();
             }
         };
     }
 
     private static Result<RepositoryType> parseRemote(String value) {
-        if (value.isEmpty()) {return RepositoryTypeError.InvalidRepositoryType.invalidRepositoryType("remote repository requires an identifier or URL after 'remote:'")
-                                                                                                    .result();}
-        if (value.equalsIgnoreCase("central")) {return success(new Remote("central", CENTRAL_URL));}
+        if (value.isEmpty()) {
+            return RepositoryTypeError.InvalidRepositoryType.invalidRepositoryType("remote repository requires an identifier or URL after 'remote:'").result();
+        }
+
+        if (value.equalsIgnoreCase("central")) {
+            return success(new Remote("central", CENTRAL_URL));
+        }
+
         var colonIdx = value.indexOf(':');
-        if (colonIdx > 0 && value.substring(colonIdx + 1).startsWith("http")) {return success(new Remote(value.substring(0,
-                                                                                                                         colonIdx),
-                                                                                                         value.substring(colonIdx + 1)));}
+
+        if (colonIdx > 0 && value.substring(colonIdx + 1).startsWith("http")) {
+            return success(new Remote(value.substring(0, colonIdx), value.substring(colonIdx + 1)));
+        }
+
         if (value.startsWith("http://") || value.startsWith("https://")) {
             var id = deriveIdFromUrl(value);
+
             return success(new Remote(id, value));
         }
-        return RepositoryTypeError.InvalidRepositoryType.invalidRepositoryType("invalid remote repository format: " + value + ". Use 'remote:central', 'remote:https://...', or 'remote:id:https://...'")
-                                                                              .result();
+
+        return RepositoryTypeError.InvalidRepositoryType.invalidRepositoryType("invalid remote repository format: " + value
+                                                                              + ". Use 'remote:central', 'remote:https://...', or 'remote:id:https://...'").result();
     }
 
     private static String deriveIdFromUrl(String url) {
         try {
             var uri = java.net.URI.create(url);
-            return uri.getHost().replace('.', '-');
+
+            return uri.getHost()
+                      .replace('.', '-');
         } catch (Exception e) {
             return "remote";
         }
@@ -70,7 +84,8 @@ public sealed interface RepositoryType {
 
     sealed interface RepositoryTypeError extends Cause {
         record unused() implements RepositoryTypeError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "unused";
             }
         }
@@ -84,7 +99,8 @@ public sealed interface RepositoryType {
                 return invalidRepositoryType(detail, true).unwrap();
             }
 
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Invalid repository type: " + detail;
             }
         }

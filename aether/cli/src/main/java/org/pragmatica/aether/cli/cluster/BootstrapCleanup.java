@@ -36,6 +36,7 @@ sealed interface BootstrapCleanup {
                                 Fn1<Result<HetznerClient>, String> hetznerClientResolver) {
         System.out.println("Cleaning up resources for cluster '" + state.clusterName() + "'...");
         var resources = new ArrayList<>(state.createdResources());
+
         Collections.reverse(resources);
         var failures = collectCleanupFailures(state, resources, cloudComputeResolver, hetznerClientResolver);
 
@@ -50,6 +51,7 @@ sealed interface BootstrapCleanup {
 
         for (var resource : resources) {
             var result = destroyResource(state, resource, cloudComputeResolver, hetznerClientResolver);
+
             logResourceResult(result, resource);
             var _ = result.onFailure(cause -> failures.add(resource.description() + ": " + cause.message()));
         }
@@ -64,7 +66,10 @@ sealed interface BootstrapCleanup {
     }
 
     private static Result<Unit> finishCleanup(BootstrapState state, List<String> failures) {
-        if (!failures.isEmpty()) {return new CleanupError(String.join("; ", failures)).result();}
+        if (!failures.isEmpty()) {
+            return new CleanupError(String.join("; ", failures)).result();
+        }
+
         return BootstrapStatePersistence.delete(state.clusterName());
     }
 
@@ -87,8 +92,9 @@ sealed interface BootstrapCleanup {
     private static Result<Unit> deleteSshKey(CreatedResource.SshKeyResource key,
                                              Fn1<Result<HetznerClient>, String> hetznerClientResolver) {
         System.out.printf("  Deleting SSH key %d (%s) from %s...%n", key.sshKeyId(), key.name(), key.provider());
-
-        if (!"hetzner".equals(key.provider())) {return new UnsupportedSshKeyProvider(key.provider()).result();}
+        if (!"hetzner".equals(key.provider())) {
+            return new UnsupportedSshKeyProvider(key.provider()).result();
+        }
 
         return hetznerClientResolver.apply(key.provider())
                                     .flatMap(client -> client.deleteSshKey(key.sshKeyId())
@@ -96,11 +102,15 @@ sealed interface BootstrapCleanup {
     }
 
     private static Result<HetznerClient> defaultHetznerClient(String providerName) {
-        if (!"hetzner".equals(providerName)) {return new UnsupportedSshKeyProvider(providerName).result();}
+        if (!"hetzner".equals(providerName)) {
+            return new UnsupportedSshKeyProvider(providerName).result();
+        }
 
         var token = System.getenv("HCLOUD_TOKEN");
 
-        if (token == null || token.isBlank()) {return new HetznerCredentialsMissing().result();}
+        if (token == null || token.isBlank()) {
+            return new HetznerCredentialsMissing().result();
+        }
 
         return Result.success(HetznerClient.hetznerClient(HetznerConfig.hetznerConfig(token)));
     }
@@ -120,7 +130,9 @@ sealed interface BootstrapCleanup {
                                                                Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
         var handle = state.sources().get(vm.sourceName());
 
-        if (handle == null) {return cloudComputeResolver.apply(vm.provider());}
+        if (handle == null) {
+            return cloudComputeResolver.apply(vm.provider());
+        }
 
         return ProviderResolver.resolveCloudComputeFromHandle(handle);
     }

@@ -23,6 +23,7 @@ public interface DeploymentManager {
     Promise<Unit> activate();
     Promise<Unit> deactivate();
     boolean isActive();
+
     Result<Deployment> start(String blueprintId,
                              Version newVersion,
                              DeploymentStrategy strategy,
@@ -30,6 +31,7 @@ public interface DeploymentManager {
                              HealthThresholds thresholds,
                              CleanupPolicy cleanupPolicy,
                              int instances);
+
     Result<Deployment> promote(String deploymentId);
     Result<Deployment> rollback(String deploymentId);
     Result<Deployment> complete(String deploymentId);
@@ -37,7 +39,7 @@ public interface DeploymentManager {
     List<Deployment> list();
     Option<ActiveRouting> activeRouting(ArtifactBase artifactBase);
 
-    record ActiveRouting(VersionRouting routing, Version oldVersion, Version newVersion){}
+    record ActiveRouting(VersionRouting routing, Version oldVersion, Version newVersion) {}
 
     static DeploymentManager deploymentManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                KVStore<AetherKey, AetherValue> kvStore) {

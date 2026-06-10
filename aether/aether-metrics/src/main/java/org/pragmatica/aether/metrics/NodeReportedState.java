@@ -24,7 +24,6 @@ public enum NodeReportedState {
     SYNCING,
     READY,
     DRAINING;
-
     /// Parse the on-wire lifecycle-state name (as carried on `ClusterSyncPong.lifecycleState` and
     /// `ClusterSyncPing.readinessView` values) back into the enum. Unknown / empty / pre-migration
     /// values fold to [SYNCING] (a node whose state we cannot read is treated as not-yet-ready).

@@ -38,6 +38,7 @@ public final class WaveExecutor {
                                               ClusterBootstrapConfig stored,
                                               ClusterBootstrapConfig desired) {
         var managementPort = desired.operations().ports().management();
+
         return executeAdditions(plan.additions(), desired).flatMap(added -> executeModifications(plan.modifications(),
                                                                                                  stored,
                                                                                                  desired).flatMap(modified -> executeRemovals(plan.removals(),
@@ -54,7 +55,9 @@ public final class WaveExecutor {
         for (var action : additions) {
             var result = executeAddition(action, desired);
 
-            if (result.isFailure()) {return result;}
+            if (result.isFailure()) {
+                return result;
+            }
 
             totalAdded += result.or(0);
         }
@@ -175,7 +178,7 @@ public final class WaveExecutor {
                  + " in-process node(s) will be started by Forge");
         var nodes = new ArrayList<ProvisionedNode>();
 
-        for (int i = 0;i <count;i++) {
+        for (int i = 0; i < count; i++) {
             nodes.add(ProvisionedNode.provisionedNode(sourceName + "-" + role.value() + "-" + i, "forge", "127.0.0.1"));
         }
 
@@ -186,11 +189,12 @@ public final class WaveExecutor {
                                                                          NodeRole role,
                                                                          SourceProfile source) {
         var hosts = option(source.roles().get(role)).flatMap(rt -> rt.hosts()).or(List.of());
+
         logAction("+",
                   sourceName + "." + role.value() + "/ssh: " + hosts.size() + " pre-existing host(s) registered");
         var nodes = new ArrayList<ProvisionedNode>();
 
-        for (int i = 0;i <hosts.size();i++) {
+        for (int i = 0; i < hosts.size(); i++) {
             nodes.add(ProvisionedNode.provisionedNode(sourceName + "-" + role.value() + "-" + i, "ssh", hosts.get(i)));
         }
 
@@ -208,7 +212,9 @@ public final class WaveExecutor {
         for (var action : modifications) {
             var result = executeModification(action, stored, desired);
 
-            if (result.isFailure()) {return result;}
+            if (result.isFailure()) {
+                return result;
+            }
 
             totalModified += result.or(0);
         }
@@ -235,6 +241,7 @@ public final class WaveExecutor {
                  + "." + change.role().value()
                  + ": runtime change " + change.fromRuntime()
                  + " -> " + change.toRuntime());
+
         return lookupSource(change.sourceName(), stored.sources()).flatMap(source -> rollingRestart(change.sourceName(),
                                                                                                     change.role(),
                                                                                                     source,
@@ -250,11 +257,13 @@ public final class WaveExecutor {
         var nodeCount = option(source.roles().get(role)).flatMap(RoleSubTable::count).or(0);
         var modified = 0;
 
-        for (int batch = 0;batch <nodeCount;batch += maxUnavailable) {
+        for (int batch = 0; batch < nodeCount; batch += maxUnavailable) {
             var batchSize = Math.min(maxUnavailable, nodeCount - batch);
             var result = rollingRestartBatch(sourceName, role, source, desired, managementPort, batch, batchSize);
 
-            if (result.isFailure()) {return result;}
+            if (result.isFailure()) {
+                return result;
+            }
 
             modified += result.or(0);
         }
@@ -271,11 +280,13 @@ public final class WaveExecutor {
                                                        int batchSize) {
         var modified = 0;
 
-        for (int i = startIndex;i <startIndex + batchSize;i++) {
+        for (int i = startIndex; i < startIndex + batchSize; i++) {
             var nodeId = sourceName + "-" + role.value() + "-" + i;
             var result = rollingRestartSingleNode(nodeId, sourceName, role, source, desired, managementPort);
 
-            if (result.isFailure()) {return result;}
+            if (result.isFailure()) {
+                return result;
+            }
 
             modified++;
         }
@@ -317,7 +328,9 @@ public final class WaveExecutor {
                                                                           .stream()
                                                                           .flatMap(List::stream)).toList()).filter(l -> !l.isEmpty()).or(List.of());
 
-        if (hosts.isEmpty()) {return Result.unitResult();}
+        if (hosts.isEmpty()) {
+            return Result.unitResult();
+        }
 
         var host = hosts.getFirst();
 
@@ -331,6 +344,7 @@ public final class WaveExecutor {
 
     private static Result<Unit> sshStopNode(String host, SourceProfile source) {
         var sshConfig = buildSshConfig(source);
+
         logAction("~", "  SSH stop on " + host);
 
         return RemoteCommandRunner.ssh(host, "docker stop aether-node || true", sshConfig).mapToUnit();
@@ -363,8 +377,12 @@ public final class WaveExecutor {
     private static Result<List<ProvisionedNode>> waitForNewNodes(List<ProvisionedNode> nodes, int managementPort) {
         for (var node : nodes) {
             var result = ClusterHttpClient.waitForNodeReady(node.publicIp(), managementPort, READY_TIMEOUT_MS);
-            if (result.isFailure()) {return result.map(_ -> List.of());}
+
+            if (result.isFailure()) {
+                return result.map(_ -> List.of());
+            }
         }
+
         return success(nodes);
     }
 
@@ -373,6 +391,7 @@ public final class WaveExecutor {
                                                             ClusterBootstrapConfig desired) {
         logAction("~",
                   change.sourceName() + ": " + change.field() + " changed (replace-before-retire)");
+
         return lookupSource(change.sourceName(), stored.sources()).flatMap(oldSource -> lookupSource(change.sourceName(),
                                                                                                      desired.sources()).flatMap(newSource -> replaceBeforeRetire(change.sourceName(),
                                                                                                                                                                  oldSource,
@@ -391,11 +410,15 @@ public final class WaveExecutor {
             var role = entry.getKey();
             var count = entry.getValue().count().or(0);
 
-            if (count <= 0) {continue;}
+            if (count <= 0) {
+                continue;
+            }
 
             var result = replaceBeforeRetireRole(sourceName, role, count, newSource, desired, managementPort);
 
-            if (result.isFailure()) {return result;}
+            if (result.isFailure()) {
+                return result;
+            }
 
             totalAffected += result.or(0);
         }
@@ -428,7 +451,7 @@ public final class WaveExecutor {
                                               ClusterBootstrapConfig desired) {
         var managementPort = desired.operations().ports().management();
 
-        for (int i = 0;i <count;i++) {
+        for (int i = 0; i < count; i++) {
             var nodeId = sourceName + "-" + role.value() + "-old-" + i;
             var address = resolveNodeAddress(nodeId);
             Result<Unit> result = ClusterHttpClient.drainNode(address, managementPort, nodeId).flatMap(_ -> ClusterHttpClient.waitForDrainComplete(address,
@@ -436,7 +459,9 @@ public final class WaveExecutor {
                                                                                                                                                    nodeId,
                                                                                                                                                    DRAIN_TIMEOUT_MS));
 
-            if (result.isFailure()) {return result;}
+            if (result.isFailure()) {
+                return result;
+            }
         }
 
         return Result.unitResult();
@@ -445,6 +470,7 @@ public final class WaveExecutor {
     private static Result<Integer> logClusterLevelChange(DiffAction.ClusterLevelChange change) {
         logAction("~",
                   "cluster." + change.field() + ": " + change.from() + " -> " + change.to() + " (cluster-wide update)");
+
         return success(1);
     }
 
@@ -487,7 +513,9 @@ public final class WaveExecutor {
         for (var action : removals) {
             var result = executeRemoval(action, stored, managementPort);
 
-            if (result.isFailure()) {return result;}
+            if (result.isFailure()) {
+                return result;
+            }
 
             totalRemoved += result.or(0);
         }
@@ -525,11 +553,15 @@ public final class WaveExecutor {
         for (var entry : source.roles().entrySet()) {
             var count = entry.getValue().count().or(0);
 
-            if (count <= 0) {continue;}
+            if (count <= 0) {
+                continue;
+            }
 
             var result = dispatchDestroy(sourceName, source, entry.getKey(), count, managementPort);
 
-            if (result.isFailure()) {return result.map(_ -> 0);}
+            if (result.isFailure()) {
+                return result.map(_ -> 0);
+            }
 
             totalDestroyed += count;
         }
@@ -620,7 +652,9 @@ public final class WaveExecutor {
     private static List<String> buildNodeIds(String sourceName, NodeRole role, int count) {
         var ids = new ArrayList<String>(count);
 
-        for (int i = count - 1;i >= 0;i--) {ids.add(sourceName + "-" + role.value() + "-" + i);}
+        for (int i = count - 1; i >= 0; i--) {
+            ids.add(sourceName + "-" + role.value() + "-" + i);
+        }
 
         return List.copyOf(ids);
     }
@@ -628,6 +662,7 @@ public final class WaveExecutor {
     private static Result<Unit> forgeDestroyPlaceholder(String sourceName, NodeRole role, int count) {
         logAction("-",
                   sourceName + "." + role.value() + "/forge: " + count + " in-process node(s) will be stopped by Forge");
+
         return Result.unitResult();
     }
 
@@ -640,7 +675,7 @@ public final class WaveExecutor {
         var hosts = option(source.roles().get(role)).flatMap(RoleSubTable::hosts).or(List.of());
         var stopCount = Math.min(count, hosts.size());
 
-        for (int i = 0;i <stopCount;i++) {
+        for (int i = 0; i < stopCount; i++) {
             var host = hosts.get(hosts.size() - 1 - i);
             var nodeId = sourceName + "-" + role.value() + "-" + (hosts.size() - 1 - i);
             var result = ClusterHttpClient.drainNode(host, managementPort, nodeId).flatMap(_ -> ClusterHttpClient.waitForDrainComplete(host,
@@ -649,7 +684,9 @@ public final class WaveExecutor {
                                                                                                                                        DRAIN_TIMEOUT_MS)).flatMap(_ -> sshStopNode(host,
                                                                                                                                                                                    source));
 
-            if (result.isFailure()) {return result;}
+            if (result.isFailure()) {
+                return result;
+            }
         }
 
         return Result.unitResult();

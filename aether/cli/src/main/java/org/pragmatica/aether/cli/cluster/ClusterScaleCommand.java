@@ -59,8 +59,13 @@ class ClusterScaleCommand implements Callable<Integer> {
     }
 
     private Result<EffectiveScale> resolveEffective() {
-        if (coreCount > 0) {return Result.success(new EffectiveScale(coreCount, "core"));}
-        if (count > 0) {return Result.success(new EffectiveScale(count, roleName));}
+        if (coreCount > 0) {
+            return Result.success(new EffectiveScale(coreCount, "core"));
+        }
+
+        if (count > 0) {
+            return Result.success(new EffectiveScale(count, roleName));
+        }
 
         return new ScaleError.MissingCount().result();
     }
@@ -68,19 +73,30 @@ class ClusterScaleCommand implements Callable<Integer> {
     private record EffectiveScale(int count, String role) {}
 
     private static Result<Integer> validateCount(int targetCount, String role) {
-        if ("core".equals(role)) {return validateCoreCount(targetCount);}
+        if ("core".equals(role)) {
+            return validateCoreCount(targetCount);
+        }
+
         return validateNonCoreCount(targetCount);
     }
 
     private static Result<Integer> validateCoreCount(int targetCount) {
-        if (targetCount <MINIMUM_CORE_COUNT) {return new ScaleError.QuorumSafety(targetCount, MINIMUM_CORE_COUNT).result();}
-        if (targetCount % 2 == 0) {return new ScaleError.MustBeOdd(targetCount).result();}
+        if (targetCount < MINIMUM_CORE_COUNT) {
+            return new ScaleError.QuorumSafety(targetCount, MINIMUM_CORE_COUNT).result();
+        }
+
+        if (targetCount % 2 == 0) {
+            return new ScaleError.MustBeOdd(targetCount).result();
+        }
 
         return Result.success(targetCount);
     }
 
     private static Result<Integer> validateNonCoreCount(int targetCount) {
-        if (targetCount <1) {return new ScaleError.MinimumCount(targetCount).result();}
+        if (targetCount < 1) {
+            return new ScaleError.MinimumCount(targetCount).result();
+        }
+
         return Result.success(targetCount);
     }
 

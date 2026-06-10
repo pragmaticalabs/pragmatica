@@ -27,23 +27,26 @@ public final class GcpCertificateProvider implements CertificateProvider {
     }
 
     private static Result<GcpCertificateProvider> buildFromSecrets(GcpSecretsProvider secrets, String secretPrefix) {
-        return CloudCertificateProvider.cloudCertificateProvider(secrets, secretPrefix)
-                                                                .map(GcpCertificateProvider::new);
+        return CloudCertificateProvider.cloudCertificateProvider(secrets, secretPrefix).map(GcpCertificateProvider::new);
     }
 
-    @Override public Result<CertificateBundle> issueCertificate(String nodeId, String hostname) {
+    @Override
+    public Result<CertificateBundle> issueCertificate(String nodeId, String hostname) {
         return delegate.issueCertificate(nodeId, hostname);
     }
 
-    @Override public Result<CertificateBundle> caCertificate() {
+    @Override
+    public Result<CertificateBundle> caCertificate() {
         return delegate.caCertificate();
     }
 
-    @Override public Result<GossipKey> currentGossipKey() {
+    @Override
+    public Result<GossipKey> currentGossipKey() {
         return delegate.currentGossipKey();
     }
 
-    @Override public Option<GossipKey> previousGossipKey() {
+    @Override
+    public Option<GossipKey> previousGossipKey() {
         return delegate.previousGossipKey();
     }
 }

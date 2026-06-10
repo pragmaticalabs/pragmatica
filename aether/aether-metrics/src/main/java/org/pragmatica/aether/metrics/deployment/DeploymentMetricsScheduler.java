@@ -31,14 +31,20 @@ import org.slf4j.LoggerFactory;
 
 public interface DeploymentMetricsScheduler {
     TimeSpan DEFAULT_INTERVAL = TimeSpan.timeSpan(5).seconds();
-
     Promise<Unit> activate();
     Promise<Unit> deactivate();
     boolean isActive();
 
-    @MessageReceiver@Contract void onMembershipDecision(MembershipDecision decision);
-    @MessageReceiver@Contract void onQuorumStateChange(ClusterStateNotification notification);
-    @Contract void stop();
+    @MessageReceiver
+    @Contract
+    void onMembershipDecision(MembershipDecision decision);
+
+    @MessageReceiver
+    @Contract
+    void onQuorumStateChange(ClusterStateNotification notification);
+
+    @Contract
+    void stop();
 
     static DeploymentMetricsScheduler deploymentMetricsScheduler(NodeId self,
                                                                  ClusterNetwork network,
@@ -61,13 +67,9 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
     private final ClusterNetwork network;
     private final DeploymentMetricsCollector collector;
     private final TimeSpan interval;
-
     private final CancellableTask pingTask = CancellableTask.cancellableTask();
-
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
-
     private final AtomicLong quorumSequence = new AtomicLong();
-
     private final AtomicBoolean active = new AtomicBoolean(false);
 
     DeploymentMetricsSchedulerImpl(NodeId self,
@@ -80,50 +82,60 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
         this.interval = interval;
     }
 
-    @Override public Promise<Unit> activate() {
+    @Override
+    public Promise<Unit> activate() {
         log.info("Node {} activating deployment metrics scheduler", self);
         active.set(true);
         startPinging();
+
         return Promise.unitPromise();
     }
 
-    @Override public Promise<Unit> deactivate() {
+    @Override
+    public Promise<Unit> deactivate() {
         log.info("Node {} deactivating deployment metrics scheduler", self);
         active.set(false);
         stopPinging();
+
         return Promise.unitPromise();
     }
 
-    @Override public boolean isActive() {
+    @Override
+    public boolean isActive() {
         return active.get();
     }
 
-    @Override@Contract public void onMembershipDecision(MembershipDecision decision) {
-        switch (decision){
+    @Override
+    @Contract
+    public void onMembershipDecision(MembershipDecision decision) {
+        switch (decision) {
             case NodeJoined(_, List<NodeId> newTopology, _, _) -> topology.set(newTopology);
             case NodeRemoved(_, List<NodeId> newTopology, _, _) -> topology.set(newTopology);
             case NodeDecommissioned(_, List<NodeId> newTopology, _, _) -> topology.set(newTopology);
             // RC1 Step 2 lifecycle-projection variants: pre-terminal transitions do not
             // change the committed topology shape — schedule unchanged.
-            case MembershipDecision.NodeJoining _,
-                 MembershipDecision.NodeDraining _,
-                 MembershipDecision.NodeFailedDrain _,
-                 MembershipDecision.NodeShuttingDown _ -> {}
+            case MembershipDecision.NodeJoining _, MembershipDecision.NodeDraining _, MembershipDecision.NodeFailedDrain _, MembershipDecision.NodeShuttingDown _ -> {}
         }
     }
 
-    @Override@Contract public void onQuorumStateChange(ClusterStateNotification notification) {
+    @Override
+    @Contract
+    public void onQuorumStateChange(ClusterStateNotification notification) {
         if (!notification.advanceSequence(quorumSequence)) {
             log.debug("Ignoring stale ClusterStateNotification: {}", notification);
+
             return;
         }
+
         if (notification.state() == ClusterStateNotification.State.PASSIVE) {
             log.info("Quorum disappeared, stopping deployment metrics scheduler");
             stopPinging();
         }
     }
 
-    @Override@Contract public void stop() {
+    @Override
+    @Contract
+    public void stop() {
         stopPinging();
     }
 
@@ -135,14 +147,19 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
         pingTask.cancel();
     }
 
-    @SuppressWarnings("JBCT-EX-01") private void sendPingsToAllNodes() {
+    @SuppressWarnings("JBCT-EX-01")
+    private void sendPingsToAllNodes() {
         try {
             var currentTopology = topology.get();
-            if (currentTopology.isEmpty()) {return;}
+
+            if (currentTopology.isEmpty()) {
+                return;
+            }
+
             var localMetrics = collector.collectLocalEntries();
             var ping = new DeploymentMetricsPing(self, localMetrics);
-            currentTopology.stream().filter(nodeId -> !nodeId.equals(self))
-                                  .forEach(nodeId -> network.send(nodeId, ping));
+
+            currentTopology.stream().filter(nodeId -> !nodeId.equals(self)).forEach(nodeId -> network.send(nodeId, ping));
             log.trace("Sent DeploymentMetricsPing to {} nodes", currentTopology.size() - 1);
         } catch (Exception e) {
             log.warn("Failed to send deployment metrics ping: {}", e.getMessage());

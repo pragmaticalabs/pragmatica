@@ -44,34 +44,37 @@ import static org.pragmatica.lang.Result.success;
 
 public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) implements ComputeProvider {
     private static final Logger log = LoggerFactory.getLogger(GcpComputeProvider.class);
-
     private static final String MANAGED_LABEL_KEY = "aether-managed";
-
     private static final String MANAGED_LABEL_VALUE = "true";
-
     private static final String NODE_ID_LABEL = "aether-node-id";
 
     public static Result<GcpComputeProvider> gcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) {
         return success(new GcpComputeProvider(client, config));
     }
 
-    @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
+    @Override
+    public Promise<InstanceInfo> provision(InstanceType instanceType) {
         return client.insertInstance(buildInsertRequest(Option.empty(),
                                                         config.userData(),
                                                         defaultLabels())).map(GcpComputeProvider::toInstanceInfo)
-                                    .flatMap(info -> confirmRunning(info, ReadinessPolicy.cloudDefault()))
+                                    .flatMap(info -> confirmRunning(info,
+                                                                    ReadinessPolicy.cloudDefault()))
                                     .onFailure(GcpComputeProvider::logProvisionFailureRollbackGap)
                                     .mapError(GcpComputeProvider::toProvisionError);
     }
 
-    @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
+    @Override
+    public Promise<InstanceInfo> provision(ProvisionSpec spec) {
         var zone = extractZone(spec.placement());
         var userData = spec.userData().or(config.userData());
         var labels = labelsFor(spec.context());
-        return client.insertInstance(buildInsertRequest(zone, userData, labels)).map(GcpComputeProvider::toInstanceInfo)
-                                    .flatMap(info -> confirmRunning(info, ReadinessPolicy.cloudDefault()))
-                                    .onFailure(GcpComputeProvider::logProvisionFailureRollbackGap)
-                                    .mapError(GcpComputeProvider::toProvisionError);
+
+        return client.insertInstance(buildInsertRequest(zone, userData, labels))
+                     .map(GcpComputeProvider::toInstanceInfo)
+                     .flatMap(info -> confirmRunning(info,
+                                                     ReadinessPolicy.cloudDefault()))
+                     .onFailure(GcpComputeProvider::logProvisionFailureRollbackGap)
+                     .mapError(GcpComputeProvider::toProvisionError);
     }
 
     /// Rollback acknowledgment for GCP provisions. GCP's `insertInstance` is a single
@@ -86,36 +89,53 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
                  cause.message());
     }
 
-    @Override public Promise<Unit> terminate(InstanceId instanceId) {
-        return client.deleteInstance(instanceId.value()).mapError(cause -> toTerminateError(instanceId, cause));
+    @Override
+    public Promise<Unit> terminate(InstanceId instanceId) {
+        return client.deleteInstance(instanceId.value())
+                     .mapError(cause -> toTerminateError(instanceId, cause));
     }
 
-    @Override public Promise<List<InstanceInfo>> listInstances() {
-        return client.listInstances().map(GcpComputeProvider::toInstanceInfoList)
-                                   .mapError(GcpComputeProvider::toListInstancesError);
+    @Override
+    public Promise<List<InstanceInfo>> listInstances() {
+        return client.listInstances()
+                     .map(GcpComputeProvider::toInstanceInfoList)
+                     .mapError(GcpComputeProvider::toListInstancesError);
     }
 
-    @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
-        return client.listInstances(toLabelFilter(tagFilter)).map(GcpComputeProvider::toInstanceInfoList)
-                                   .mapError(GcpComputeProvider::toListInstancesError);
+    @Override
+    public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
+        return client.listInstances(toLabelFilter(tagFilter))
+                     .map(GcpComputeProvider::toInstanceInfoList)
+                     .mapError(GcpComputeProvider::toListInstancesError);
     }
 
-    @Override public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
-        return client.getInstance(instanceId.value()).map(GcpComputeProvider::toInstanceInfo)
-                                 .mapError(GcpComputeProvider::toProvisionError);
+    @Override
+    public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
+        return client.getInstance(instanceId.value())
+                     .map(GcpComputeProvider::toInstanceInfo)
+                     .mapError(GcpComputeProvider::toProvisionError);
     }
 
-    @Override public Promise<Unit> restart(InstanceId id) {
-        return client.resetInstance(id.value()).mapToUnit();
+    @Override
+    public Promise<Unit> restart(InstanceId id) {
+        return client.resetInstance(id.value())
+                     .mapToUnit();
     }
 
-    @Override public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
-        return client.getInstance(id.value()).flatMap(instance -> setLabelsOnInstance(id.value(), instance, tags));
+    @Override
+    public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
+        return client.getInstance(id.value())
+                     .flatMap(instance -> setLabelsOnInstance(id.value(),
+                                                              instance,
+                                                              tags));
     }
 
     private Promise<Unit> setLabelsOnInstance(String instanceName, Instance instance, Map<String, String> tags) {
         var fingerprint = extractLabelFingerprint(instance);
-        return client.setLabels(instanceName, new SetLabelsRequest(tags, fingerprint)).mapToUnit();
+
+        return client.setLabels(instanceName,
+                                new SetLabelsRequest(tags, fingerprint))
+                     .mapToUnit();
     }
 
     private static String extractLabelFingerprint(Instance instance) {
@@ -130,6 +150,7 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         var disk = buildBootDisk();
         var networkInterface = buildNetworkInterface();
         var metadata = buildMetadata(userData);
+
         return new InsertInstanceRequest(name,
                                          machineType,
                                          List.of(disk),
@@ -140,26 +161,43 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     }
 
     private static Map<String, String> defaultLabels() {
-        return Map.of(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE,
-                      NODE_ID_LABEL, IdGenerator.generate("aether-node"));
+        return Map.of(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE, NODE_ID_LABEL, IdGenerator.generate("aether-node"));
     }
 
     private static Map<String, String> labelsFor(ProvisionContext ctx) {
         var labels = new java.util.HashMap<String, String>();
+
         labels.put(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE);
         var clusterName = resolveClusterName(ctx);
-        if (!clusterName.isEmpty()) {labels.put("aether-cluster", clusterName);}
-        if (!ctx.role().isEmpty()) {labels.put("aether-role", ctx.role());}
-        if (!ctx.sourceName().isEmpty()) {labels.put("aether-source", ctx.sourceName());}
+
+        if (!clusterName.isEmpty()) {
+            labels.put("aether-cluster", clusterName);
+        }
+
+        if (!ctx.role().isEmpty()) {
+            labels.put("aether-role", ctx.role());
+        }
+
+        if (!ctx.sourceName().isEmpty()) {
+            labels.put("aether-source", ctx.sourceName());
+        }
+
         labels.put(NODE_ID_LABEL, ctx.resolveNodeId());
         labels.putAll(ctx.extraTags());
+
         return Map.copyOf(labels);
     }
 
     private static String resolveClusterName(ProvisionContext ctx) {
-        if (!ctx.clusterName().isEmpty()) {return ctx.clusterName();}
+        if (!ctx.clusterName().isEmpty()) {
+            return ctx.clusterName();
+        }
+
         var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
-        return fromEnv != null && !fromEnv.isEmpty() ? fromEnv : "";
+
+        return fromEnv != null && !fromEnv.isEmpty()
+               ? fromEnv
+               : "";
     }
 
     private static Option<String> extractZone(Option<PlacementHint> placement) {
@@ -167,7 +205,7 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     }
 
     private static Option<String> zoneFromHint(PlacementHint hint) {
-        return switch (hint){
+        return switch (hint) {
             case PlacementHint.ZoneHint zone -> Option.some(zone.zoneName());
             case PlacementHint.HostGroupHint ignored -> logUnsupported("HostGroupHint");
             case PlacementHint.AffinityHint ignored -> logUnsupported("AffinityHint");
@@ -177,6 +215,7 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
 
     private static Option<String> logUnsupported(String hintType) {
         log.debug("GCP provider ignoring {} — not yet supported", hintType);
+
         return Option.empty();
     }
 
@@ -195,12 +234,14 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     }
 
     private static String generateInstanceName() {
-        return "aether-" + UUID.randomUUID().toString()
-                                          .substring(0, 8);
+        return "aether-" + UUID.randomUUID()
+                               .toString()
+                               .substring(0, 8);
     }
 
     static InstanceInfo toInstanceInfo(Instance instance) {
         var labels = safeLabels(instance);
+
         return new InstanceInfo(new InstanceId(instance.name()),
                                 mapStatus(instance.status()),
                                 collectAddresses(instance),
@@ -214,12 +255,13 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     }
 
     private static List<InstanceInfo> toInstanceInfoList(List<Instance> instances) {
-        return instances.stream().map(GcpComputeProvider::toInstanceInfo)
-                               .toList();
+        return instances.stream()
+                        .map(GcpComputeProvider::toInstanceInfo)
+                        .toList();
     }
 
     static InstanceStatus mapStatus(String gcpStatus) {
-        return switch (gcpStatus){
+        return switch (gcpStatus) {
             case "PROVISIONING", "STAGING" -> InstanceStatus.PROVISIONING;
             case "RUNNING" -> InstanceStatus.RUNNING;
             case "STOPPING", "TERMINATED", "SUSPENDED", "SUSPENDING" -> InstanceStatus.STOPPING;
@@ -228,19 +270,22 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     }
 
     static List<String> collectAddresses(Instance instance) {
-        return option(instance.networkInterfaces()).map(GcpComputeProvider::extractIpsFromInterfaces).or(List.of());
+        return option(instance.networkInterfaces()).map(GcpComputeProvider::extractIpsFromInterfaces)
+                     .or(List.of());
     }
 
     private static List<String> extractIpsFromInterfaces(List<Instance.NetworkInterface> interfaces) {
-        return interfaces.stream().map(Instance.NetworkInterface::networkIP)
-                                .toList();
+        return interfaces.stream()
+                         .map(Instance.NetworkInterface::networkIP)
+                         .toList();
     }
 
     static String toLabelFilter(Map<String, String> tagFilter) {
-        return tagFilter.entrySet().stream()
-                                 .map(GcpComputeProvider::toLabelFilterEntry)
-                                 .reduce(GcpComputeProvider::combineWithAnd)
-                                 .orElse("");
+        return tagFilter.entrySet()
+                        .stream()
+                        .map(GcpComputeProvider::toLabelFilterEntry)
+                        .reduce(GcpComputeProvider::combineWithAnd)
+                        .orElse("");
     }
 
     private static String toLabelFilterEntry(Map.Entry<String, String> entry) {

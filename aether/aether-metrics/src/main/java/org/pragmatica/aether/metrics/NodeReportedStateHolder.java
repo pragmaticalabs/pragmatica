@@ -9,6 +9,7 @@ import org.pragmatica.lang.Contract;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
+
 /// Node-local holder for the node's self-reported readiness state
 /// (membership-architecture-v2-spec §7.5.1). Owned per-node (NOT leader-only). The
 /// node ANDs its own local conditions and reports a single [NodeReportedState] on
@@ -36,18 +37,21 @@ import java.util.function.BooleanSupplier;
 /// The two latched flags are held in a single [AtomicReference] over an immutable snapshot
 /// updated with a CAS loop; the consensus-active level is read directly from the supplier.
 /// Latch methods are idempotent.
-@Contract public interface NodeReportedStateHolder {
+@Contract
+public interface NodeReportedStateHolder {
     /// Read the current node-reported state. Invoked by `ClusterSyncCollector` when
     /// building outgoing pongs. Samples the live consensus-active level on each call.
     NodeReportedState current();
 
     /// Local subsystems are up. Combined with a live consensus-active level this promotes the
     /// node to `READY`.
-    @Contract void onSubsystemsReady();
+    @Contract
+    void onSubsystemsReady();
 
     /// The node has entered the §8 drain procedure. Sticky: once set the node stays
     /// `DRAINING` regardless of subsequent consensus level / subsystem state (I9).
-    @Contract void onDrainStarted();
+    @Contract
+    void onDrainStarted();
 
     /// Default in-memory holder backed by an [AtomicReference] of an immutable latch snapshot.
     /// `consensusActiveLevel` is a LIVE level signal sampled on each [current] call (wire it to
@@ -64,15 +68,21 @@ import java.util.function.BooleanSupplier;
             this.consensusActiveLevel = consensusActiveLevel;
         }
 
-        @Override public NodeReportedState current() {
-            return latches.get().toState(consensusActiveLevel.getAsBoolean());
+        @Override
+        public NodeReportedState current() {
+            return latches.get()
+                          .toState(consensusActiveLevel.getAsBoolean());
         }
 
-        @Override @Contract public void onSubsystemsReady() {
+        @Override
+        @Contract
+        public void onSubsystemsReady() {
             latches.updateAndGet(Latches::withSubsystemsReady);
         }
 
-        @Override @Contract public void onDrainStarted() {
+        @Override
+        @Contract
+        public void onDrainStarted() {
             latches.updateAndGet(Latches::withDraining);
         }
 

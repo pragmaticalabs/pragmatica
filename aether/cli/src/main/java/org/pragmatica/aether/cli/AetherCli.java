@@ -89,21 +89,27 @@ public class AetherCli implements Runnable {
     public static void main(String[] args) {
         var cli = new AetherCli();
         var cmd = new CommandLine(cli);
+
         cli.lookupConnection(args);
         cli.tlsSkipVerify = containsTlsSkipVerify(args);
         cli.httpOps = cli.buildHttpOperations();
         org.pragmatica.aether.cli.cluster.ClusterHttpClient.setEndpointOverride(cli.resolveEndpointUrl());
         extractApiKeyArg(args).orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank())).onPresent(org.pragmatica.aether.cli.cluster.ClusterHttpClient::setApiKeyOverride);
         org.pragmatica.aether.cli.cluster.ClusterHttpClient.setRequestTimeout(resolveRequestTimeoutDuration(args));
-
-        if (isReplMode(args)) {cli.runRepl(cmd);} else {
+        if (isReplMode(args)) {
+            cli.runRepl(cmd);
+        } else {
             int exitCode = cmd.execute(args);
+
             System.exit(exitCode);
         }
     }
 
     private String resolveEndpointUrl() {
-        if (nodeAddress == null || nodeAddress.isBlank()) {return "";}
+        if (nodeAddress == null || nodeAddress.isBlank()) {
+            return "";
+        }
+
         return hasScheme(nodeAddress)
                ? nodeAddress
                : resolveScheme() + nodeAddress;
@@ -111,31 +117,44 @@ public class AetherCli implements Runnable {
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"})
     private static Option<String> extractApiKeyArg(String[] args) {
-        for (int i = 0;i <args.length;i++) {
-            if (args[i].equals("--api-key") && i + 1 <args.length) {return some(args[i + 1]);}
-            if (args[i].startsWith("--api-key=")) {return some(args[i].substring("--api-key=".length()));}
+        for (int i = 0; i < args.length; i++) {
+            if (args[i].equals("--api-key") && i + 1 < args.length) {
+                return some(args[i + 1]);
+            }
+
+            if (args[i].startsWith("--api-key=")) {
+                return some(args[i].substring("--api-key=".length()));
+            }
         }
+
         return empty();
     }
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"})
     private static Option<String> extractRequestTimeoutArg(String[] args) {
-        for (int i = 0;i <args.length;i++) {
-            if (args[i].equals("--request-timeout") && i + 1 <args.length) {return some(args[i + 1]);}
-            if (args[i].startsWith("--request-timeout=")) {return some(args[i].substring("--request-timeout=".length()));}
+        for (int i = 0; i < args.length; i++) {
+            if (args[i].equals("--request-timeout") && i + 1 < args.length) {
+                return some(args[i + 1]);
+            }
+
+            if (args[i].startsWith("--request-timeout=")) {
+                return some(args[i].substring("--request-timeout=".length()));
+            }
         }
+
         return empty();
     }
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
     private static Duration resolveRequestTimeoutDuration(String[] args) {
         var seconds = extractRequestTimeoutArg(args).map(s -> {
-                                                             try {
-                                                             return Integer.parseInt(s.trim());
-                                                         } catch (NumberFormatException e) {
-                                                             return 130;
-                                                         }
-                                                         }).or(130);
+            try {
+                return Integer.parseInt(s.trim());
+            } catch (NumberFormatException e) {
+                return 130;
+            }
+        }).or(130);
+
         return seconds > 0
                ? TimeSpan.timeSpan(seconds)
                          .seconds()
@@ -145,7 +164,9 @@ public class AetherCli implements Runnable {
 
     @SuppressWarnings("JBCT-SEQ-01")
     private static boolean isReplMode(String[] args) {
-        if (args.length == 0) {return true;}
+        if (args.length == 0) {
+            return true;
+        }
 
         var skipNext = false;
 
@@ -154,7 +175,14 @@ public class AetherCli implements Runnable {
                 skipNext = false;
                 continue;
             }
-            if (isBooleanConnectionFlag(arg)) {} else if (isConnectionValueFlag(arg)) {if (!arg.contains("=")) {skipNext = true;}} else {return false;}
+
+            if (isBooleanConnectionFlag(arg)) {} else if (isConnectionValueFlag(arg)) {
+                if (!arg.contains("=")) {
+                    skipNext = true;
+                }
+            } else {
+                return false;
+            }
         }
 
         return true;
@@ -173,13 +201,21 @@ public class AetherCli implements Runnable {
     }
 
     private static boolean containsTlsSkipVerify(String[] args) {
-        for (var arg : args) {if (arg.equals("-k") || arg.equals("--tls-skip-verify")) {return true;}}
+        for (var arg : args) {
+            if (arg.equals("-k") || arg.equals("--tls-skip-verify")) {
+                return true;
+            }
+        }
+
         return false;
     }
 
     @SuppressWarnings({"JBCT-SEQ-01", "JBCT-PAT-01"})
     private HttpOperations buildHttpOperations() {
-        if (!tlsSkipVerify) {return JdkHttpOperations.jdkHttpOperations();}
+        if (!tlsSkipVerify) {
+            return JdkHttpOperations.jdkHttpOperations();
+        }
+
         return buildTrustAllHttpOperations();
     }
 
@@ -201,6 +237,7 @@ public class AetherCli implements Runnable {
     private static SSLContext createTrustAllSslContext() throws NoSuchAlgorithmException, KeyManagementException {
         var trustAll = new TrustManager[]{new TrustAllManager()};
         var sslContext = SSLContext.getInstance("TLS");
+
         sslContext.init(null, trustAll, new SecureRandom());
 
         return sslContext;
@@ -210,6 +247,7 @@ public class AetherCli implements Runnable {
     private void lookupConnection(String[] args) {
         var connectArg = extractConnectArg(args);
         var configArg = extractConfigArg(args);
+
         connectArg.onPresent(address -> nodeAddress = address).onEmpty(() -> setAddressFromConfigOrDefault(configArg));
     }
 
@@ -225,18 +263,35 @@ public class AetherCli implements Runnable {
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"})
     private static Option<String> extractConnectArg(String[] args) {
-        for (int i = 0;i <args.length;i++) {if ((args[i].equals("-c") || args[i].equals("--connect") || args[i].equals("--endpoint")) && i + 1 <args.length) {return some(args[i + 1]);} else if (args[i].startsWith("--connect=")) {return some(args[i].substring("--connect=".length()));} else if (args[i].startsWith("--endpoint=")) {return some(args[i].substring("--endpoint=".length()));}}
+        for (int i = 0; i < args.length; i++) {
+            if ((args[i].equals("-c") || args[i].equals("--connect") || args[i].equals("--endpoint")) && i + 1 < args.length) {
+                return some(args[i + 1]);
+            } else if (args[i].startsWith("--connect=")) {
+                return some(args[i].substring("--connect=".length()));
+            } else if (args[i].startsWith("--endpoint=")) {
+                return some(args[i].substring("--endpoint=".length()));
+            }
+        }
+
         return empty();
     }
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"})
     private static Option<Path> extractConfigArg(String[] args) {
-        for (int i = 0;i <args.length;i++) {if (args[i].equals("--config") && i + 1 <args.length) {return some(Path.of(args[i + 1]));} else if (args[i].startsWith("--config=")) {return some(Path.of(args[i].substring("--config=".length())));}}
+        for (int i = 0; i < args.length; i++) {
+            if (args[i].equals("--config") && i + 1 < args.length) {
+                return some(Path.of(args[i + 1]));
+            } else if (args[i].startsWith("--config=")) {
+                return some(Path.of(args[i].substring("--config=".length())));
+            }
+        }
+
         return empty();
     }
 
     private void setAddressFromConfig(AetherConfig config) {
         var port = config.cluster().ports().management();
+
         nodeAddress = "localhost:" + port;
     }
 
@@ -256,19 +311,21 @@ public class AetherCli implements Runnable {
         System.out.println("Aether v" + BuildInfo.current().displayString() + " - Connected to " + nodeAddress);
         System.out.println("Type 'help' for available commands, 'exit' to quit.");
         System.out.println();
-
         try (var reader = new BufferedReader(new InputStreamReader(System.in))) {
             String line;
+
             while (true) {
                 System.out.print("aether> ");
                 System.out.flush();
                 line = reader.readLine();
-
                 if (isExitCommand(line)) {
                     System.out.println("Goodbye!");
                     break;
                 }
-                if (line.trim().isEmpty()) {continue;}
+
+                if (line.trim().isEmpty()) {
+                    continue;
+                }
 
                 sendReplCommand(cmd, line.trim());
             }
@@ -290,8 +347,10 @@ public class AetherCli implements Runnable {
     @SuppressWarnings("JBCT-UTIL-02")
     private void sendReplCommand(CommandLine cmd, String input) {
         String[] replArgs = input.split("\\s+");
+
         if (replArgs.length > 0) {
             var fullArgs = buildReplArgs(replArgs);
+
             cmd.execute(fullArgs);
         }
     }
@@ -299,15 +358,20 @@ public class AetherCli implements Runnable {
     @SuppressWarnings("JBCT-SEQ-01")
     private String[] buildReplArgs(String[] replArgs) {
         var args = new ArrayList<String>();
+
         args.add("--connect");
         args.add(nodeAddress);
         resolveApiKey().onPresent(key -> {
             args.add("--api-key");
             args.add(key);
         });
+        if (tlsSkipVerify) {
+            args.add("--tls-skip-verify");
+        }
 
-        if (tlsSkipVerify) {args.add("--tls-skip-verify");}
-        for (var arg : replArgs) {args.add(arg);}
+        for (var arg : replArgs) {
+            args.add(arg);
+        }
 
         return args.toArray(String[]::new);
     }
@@ -417,10 +481,21 @@ public class AetherCli implements Runnable {
     private static Result<byte[]> extractBytesBody(HttpResult<byte[]> response) {
         var status = response.statusCode();
 
-        if (status >= 200 && status <300) {return Result.success(response.body());}
-        if (status == 401) {return BytesFetchError.General.UNAUTHORIZED.result();}
-        if (status == 403) {return BytesFetchError.General.FORBIDDEN.result();}
-        if (status == 404) {return BytesFetchError.General.NOT_FOUND.result();}
+        if (status >= 200 && status < 300) {
+            return Result.success(response.body());
+        }
+
+        if (status == 401) {
+            return BytesFetchError.General.UNAUTHORIZED.result();
+        }
+
+        if (status == 403) {
+            return BytesFetchError.General.FORBIDDEN.result();
+        }
+
+        if (status == 404) {
+            return BytesFetchError.General.NOT_FOUND.result();
+        }
 
         return new BytesFetchError.HttpStatus(status).result();
     }
@@ -430,18 +505,21 @@ public class AetherCli implements Runnable {
             UNAUTHORIZED("Authentication required. Use --api-key or set AETHER_API_KEY environment variable."),
             FORBIDDEN("Access denied. The provided API key does not have sufficient permissions."),
             NOT_FOUND("Artifact not found");
-
             private final String message;
-
-            General(String message) {this.message = message;}
-
+            General(String message) {
+                this.message = message;
+            }
             @Override
-            public String message() {return message;}
+            public String message() {
+                return message;
+            }
         }
 
         record HttpStatus(int statusCode) implements BytesFetchError {
             @Override
-            public String message() {return "HTTP " + statusCode;}
+            public String message() {
+                return "HTTP " + statusCode;
+            }
         }
     }
 
@@ -495,6 +573,7 @@ public class AetherCli implements Runnable {
 
     private HttpRequest buildGetRequest(URI uri) {
         var builder = HttpRequest.newBuilder().uri(uri).GET();
+
         attachApiKey(builder);
         attachTimeout(builder);
 
@@ -504,6 +583,7 @@ public class AetherCli implements Runnable {
     @SuppressWarnings("JBCT-SEQ-01")
     private HttpRequest buildPostRequest(URI uri, String body) {
         var builder = HttpRequest.newBuilder().uri(uri).header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body));
+
         attachApiKey(builder);
         attachTimeout(builder);
 
@@ -513,6 +593,7 @@ public class AetherCli implements Runnable {
     @SuppressWarnings("JBCT-SEQ-01")
     private HttpRequest buildPutRequest(URI uri, byte[] content, String contentType) {
         var builder = HttpRequest.newBuilder().uri(uri).header("Content-Type", contentType).PUT(HttpRequest.BodyPublishers.ofByteArray(content));
+
         attachApiKey(builder);
         attachTimeout(builder);
 
@@ -521,6 +602,7 @@ public class AetherCli implements Runnable {
 
     private HttpRequest buildDeleteRequest(URI uri) {
         var builder = HttpRequest.newBuilder().uri(uri).DELETE();
+
         attachApiKey(builder);
         attachTimeout(builder);
 
@@ -529,9 +611,17 @@ public class AetherCli implements Runnable {
 
     @SuppressWarnings("JBCT-SEQ-01")
     private static String extractResponseBody(HttpResult<String> response) {
-        if (response.statusCode() == 200) {return response.body();}
-        if (response.statusCode() == 401) {return "{\"error\":\"Authentication required. Use --api-key or set AETHER_API_KEY environment variable.\"}";}
-        if (response.statusCode() == 403) {return "{\"error\":\"Access denied. The provided API key does not have sufficient permissions.\"}";}
+        if (response.statusCode() == 200) {
+            return response.body();
+        }
+
+        if (response.statusCode() == 401) {
+            return "{\"error\":\"Authentication required. Use --api-key or set AETHER_API_KEY environment variable.\"}";
+        }
+
+        if (response.statusCode() == 403) {
+            return "{\"error\":\"Access denied. The provided API key does not have sufficient permissions.\"}";
+        }
 
         return formatErrorResponse(response);
     }
@@ -544,13 +634,16 @@ public class AetherCli implements Runnable {
                    ? "{\"status\":\"ok\"}"
                    : response.body();
         }
+
         return formatErrorResponse(response);
     }
 
     private static String formatErrorResponse(HttpResult<String> response) {
         var body = response.body();
 
-        if (body != null && body.startsWith("{")) {return body;}
+        if (body != null && body.startsWith("{")) {
+            return body;
+        }
 
         var escaped = body == null
                       ? ""
@@ -561,6 +654,7 @@ public class AetherCli implements Runnable {
 
     private static String escapeJsonValue(String s) {
         if (s == null) return "";
+
         return s.replace("\\", "\\\\")
                 .replace("\"", "\\\"")
                 .replace("\n", "\\n")
@@ -579,6 +673,7 @@ public class AetherCli implements Runnable {
         @Override
         public Integer call() {
             var response = option(nodeId).map(id -> parent.fetch(NODE_STATUS_GET, List.of(id))).or(() -> parent.fetch(NODE_STATUS));
+
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
     }
@@ -674,12 +769,16 @@ public class AetherCli implements Runnable {
                 var body = "{\"targetRole\":\"" + role.trim().toUpperCase() + "\"}";
                 var response = nodesParent.parent.post(NODE_PROMOTE, List.of(nodeId), body);
                 var errorCode = OutputFormatter.checkResponseError(response,
-                                                                    nodesParent.parent.outputOptions(),
-                                                                    "Failed to promote node " + nodeId);
+                                                                   nodesParent.parent.outputOptions(),
+                                                                   "Failed to promote node " + nodeId);
 
-                if (errorCode >= 0) {return errorCode;}
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
 
-                return OutputFormatter.printAction(response, nodesParent.parent.outputOptions(), "promote node " + nodeId + " to " + role.trim().toUpperCase());
+                return OutputFormatter.printAction(response,
+                                                   nodesParent.parent.outputOptions(),
+                                                   "promote node " + nodeId + " to " + role.trim().toUpperCase());
             }
         }
 
@@ -694,6 +793,7 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var response = option(nodeId).map(id -> nodesParent.parent.fetch(NODE_SLICES_GET, List.of(id))).or(() -> nodesParent.parent.fetch(NODE_SLICES));
+
                 return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
             }
         }
@@ -709,6 +809,7 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var response = option(nodeId).map(id -> nodesParent.parent.fetch(NODE_ROUTES_GET, List.of(id))).or(() -> nodesParent.parent.fetch(NODE_ROUTES));
+
                 return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
             }
         }
@@ -724,6 +825,7 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var response = option(nodeId).map(id -> nodesParent.parent.fetch(NODE_INFLIGHT_GET, List.of(id))).or(() -> nodesParent.parent.fetch(NODE_INFLIGHT));
+
                 return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
             }
         }
@@ -739,6 +841,7 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var response = option(nodeId).map(id -> nodesParent.parent.fetch(NODE_METRICS_GET, List.of(id))).or(() -> nodesParent.parent.fetch(NODE_METRICS));
+
                 return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
             }
         }
@@ -778,7 +881,9 @@ public class AetherCli implements Runnable {
                                                                nodesParent.parent.outputOptions(),
                                                                "Failed to " + action + " node " + nodeId);
 
-            if (errorCode >= 0) {return errorCode;}
+            if (errorCode >= 0) {
+                return errorCode;
+            }
 
             return OutputFormatter.printAction(response, nodesParent.parent.outputOptions(), action + " node " + nodeId);
         }
@@ -943,7 +1048,9 @@ public class AetherCli implements Runnable {
             }
 
             String buildHistoryQuery() {
-                return option(range).orElse(() -> option(since)).map(v -> "range=" + v).or("");
+                return option(range).orElse(() -> option(since))
+                             .map(v -> "range=" + v)
+                             .or("");
             }
         }
 
@@ -1005,7 +1112,9 @@ public class AetherCli implements Runnable {
                                                      parent.outputOptions(),
                                                      "Scaled " + artifact + " to " + instances + " instances");
 
-            if (result != ExitCode.SUCCESS || !waitForCompletion) {return result;}
+            if (result != ExitCode.SUCCESS || !waitForCompletion) {
+                return result;
+            }
 
             return pollUntilScaled();
         }
@@ -1018,7 +1127,7 @@ public class AetherCli implements Runnable {
                               timeoutSeconds);
             var deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
 
-            while (System.currentTimeMillis() <deadline) {
+            while (System.currentTimeMillis() < deadline) {
                 var currentInstances = queryCurrentInstances();
 
                 if (currentInstances >= instances) {
@@ -1046,7 +1155,10 @@ public class AetherCli implements Runnable {
         }
 
         private int parseInstanceCount(String response) {
-            if (response.contains("\"error\"")) {return -1;}
+            if (response.contains("\"error\"")) {
+                return -1;
+            }
+
             return countMatchingInstances(response);
         }
 
@@ -1142,7 +1254,9 @@ public class AetherCli implements Runnable {
                                                                    artifactParent.parent.outputOptions(),
                                                                    "Failed to deploy");
 
-                if (errorCode >= 0) {return errorCode;}
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
 
                 var message = "Deployed " + coordinates + "\n  File: " + jarPath + "\n  Size: " + size + " bytes";
 
@@ -1196,7 +1310,9 @@ public class AetherCli implements Runnable {
                                                     Path blueprintPath) {
                 var sliceDescriptors = readSliceDescriptors(blueprintPath);
 
-                if (sliceDescriptors == null) {return ExitCode.ERROR;}
+                if (sliceDescriptors == null) {
+                    return ExitCode.ERROR;
+                }
 
                 var allArtifacts = buildArtifactList(groupId, artifactId, version, blueprintPath, sliceDescriptors);
 
@@ -1217,6 +1333,7 @@ public class AetherCli implements Runnable {
                                                                List<ArtifactDescriptor> sliceDescriptors) {
                 var all = new ArrayList<ArtifactDescriptor>();
                 var blueprintLabel = groupId + ":" + artifactId + ":" + version + ":blueprint";
+
                 all.add(new ArtifactDescriptor(groupId, artifactId, version, blueprintLabel, blueprintPath));
                 all.addAll(sliceDescriptors);
 
@@ -1228,20 +1345,27 @@ public class AetherCli implements Runnable {
                 var options = artifactParent.parent.outputOptions();
                 var jsonMode = options.format() == OutputFormat.JSON;
 
-                if (!jsonMode) {System.out.println("Pushing " + artifactId
-                                                  + " blueprint (" + artifacts.size()
-                                                  + " artifacts):");}
+                if (!jsonMode) {
+                    System.out.println("Pushing " + artifactId + " blueprint (" + artifacts.size() + " artifacts):");
+                }
 
                 var statuses = new ArrayList<String>();
 
                 for (var artifact : artifacts) {
                     var outcome = pushSingleArtifact(artifact, jsonMode);
 
-                    if (outcome.exitCode() != ExitCode.SUCCESS) {return outcome.exitCode();}
+                    if (outcome.exitCode() != ExitCode.SUCCESS) {
+                        return outcome.exitCode();
+                    }
 
                     statuses.add(outcome.status());
                 }
-                if (jsonMode) {emitBulkPushJson(artifactId, artifacts, statuses);} else {System.out.println("All artifacts pushed successfully.");}
+
+                if (jsonMode) {
+                    emitBulkPushJson(artifactId, artifacts, statuses);
+                } else {
+                    System.out.println("All artifacts pushed successfully.");
+                }
 
                 return ExitCode.SUCCESS;
             }
@@ -1253,10 +1377,13 @@ public class AetherCli implements Runnable {
                                           List<String> statuses) {
                 var aggregate = aggregateStatus(statuses);
                 var sb = new StringBuilder(256);
-                sb.append("{\"status\":\"").append(aggregate).append("\",").append("\"blueprint\":\"").append(escapeJsonValue(artifactId)).append("\",").append("\"artifacts\":[");
 
-                for (int i = 0;i <artifacts.size();i++) {
-                    if (i > 0) {sb.append(',');}
+                sb.append("{\"status\":\"").append(aggregate).append("\",").append("\"blueprint\":\"").append(escapeJsonValue(artifactId)).append("\",").append("\"artifacts\":[");
+                for (int i = 0; i < artifacts.size(); i++) {
+                    if (i > 0) {
+                        sb.append(',');
+                    }
+
                     sb.append("{\"coords\":\"").append(escapeJsonValue(artifacts.get(i).label())).append("\",").append("\"status\":\"").append(statuses.get(i)).append("\"}");
                 }
 
@@ -1272,11 +1399,17 @@ public class AetherCli implements Runnable {
             /// `mixed` still counts as success (exit code 0) — every individual artifact
             /// either uploaded or was already present.
             private static String aggregateStatus(List<String> statuses) {
-                if (statuses.isEmpty()) {return "uploaded";}
+                if (statuses.isEmpty()) {
+                    return "uploaded";
+                }
 
                 var first = statuses.getFirst();
 
-                for (var s : statuses) {if (!s.equals(first)) {return "mixed";}}
+                for (var s : statuses) {
+                    if (!s.equals(first)) {
+                        return "mixed";
+                    }
+                }
 
                 return first;
             }
@@ -1288,6 +1421,7 @@ public class AetherCli implements Runnable {
 
                     return new PushOutcome(ExitCode.ERROR, "missing", "");
                 }
+
                 try {
                     var content = Files.readAllBytes(descriptor.localPath());
                     var response = artifactParent.parent.put(ARTIFACT_PUT,
@@ -1300,7 +1434,9 @@ public class AetherCli implements Runnable {
                                                                        artifactParent.parent.outputOptions(),
                                                                        "Failed to push");
 
-                    if (errorCode >= 0) {return new PushOutcome(errorCode, "failed", response);}
+                    if (errorCode >= 0) {
+                        return new PushOutcome(errorCode, "failed", response);
+                    }
 
                     var status = parsePushStatus(response);
 
@@ -1309,6 +1445,7 @@ public class AetherCli implements Runnable {
                         var suffix = status.equals("already-present")
                                      ? " (already present)"
                                      : "";
+
                         System.out.println("  + " + descriptor.label() + " (" + sizeKb + "KB)" + suffix);
                     }
 
@@ -1325,26 +1462,36 @@ public class AetherCli implements Runnable {
             /// server contract is fixed, so this only triggers if a buggy server replies
             /// with a non-JSON 200 OK).
             private static String parsePushStatus(String response) {
-                if (response == null || response.isBlank()) {return "uploaded";}
+                if (response == null || response.isBlank()) {
+                    return "uploaded";
+                }
 
                 var trimmed = response.trim();
                 var marker = "\"status\"";
                 var idx = trimmed.indexOf(marker);
 
-                if (idx <0) {return "uploaded";}
+                if (idx < 0) {
+                    return "uploaded";
+                }
 
                 var rest = trimmed.substring(idx + marker.length());
                 var colon = rest.indexOf(':');
 
-                if (colon <0) {return "uploaded";}
+                if (colon < 0) {
+                    return "uploaded";
+                }
 
                 var afterColon = rest.substring(colon + 1).stripLeading();
 
-                if (afterColon.isEmpty() || afterColon.charAt(0) != '"') {return "uploaded";}
+                if (afterColon.isEmpty() || afterColon.charAt(0) != '"') {
+                    return "uploaded";
+                }
 
                 var endQuote = afterColon.indexOf('"', 1);
 
-                if (endQuote <0) {return "uploaded";}
+                if (endQuote < 0) {
+                    return "uploaded";
+                }
 
                 return afterColon.substring(1, endQuote);
             }
@@ -1354,7 +1501,9 @@ public class AetherCli implements Runnable {
                 try (var jar = new JarFile(jarPath.toFile())) {
                     var entry = jar.getEntry("META-INF/blueprint.toml");
 
-                    if (entry == null) {return MISSING_BLUEPRINT_TOML.result();}
+                    if (entry == null) {
+                        return MISSING_BLUEPRINT_TOML.result();
+                    }
 
                     return Result.success(new String(jar.getInputStream(entry).readAllBytes()));
                 } catch (IOException e) {
@@ -1382,6 +1531,7 @@ public class AetherCli implements Runnable {
 
                     if (sliceParts.length == 3) {
                         var path = findSliceJar(sliceParts[0], sliceParts[1], sliceParts[2]);
+
                         descriptors.add(new ArtifactDescriptor(sliceParts[0],
                                                                sliceParts[1],
                                                                sliceParts[2],
@@ -1470,9 +1620,12 @@ public class AetherCli implements Runnable {
                                                                    artifactParent.parent.outputOptions(),
                                                                    "Failed to get versions");
 
-                if (errorCode >= 0) {return errorCode;}
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
 
-                return artifactParent.parent.outputOptions().format() == OutputFormat.TABLE
+                return artifactParent.parent.outputOptions()
+                                            .format() == OutputFormat.TABLE
                        ? printRawXml(response)
                        : OutputFormatter.printQuery(MavenMetadataFormatter.toJson(response),
                                                     artifactParent.parent.outputOptions());
@@ -1538,8 +1691,7 @@ public class AetherCli implements Runnable {
                 var groupPath = parts[0].replace('.', '/');
                 var artifactId = parts[1];
                 var version = parts[2];
-                var filename = option(file).filter(s -> !s.isBlank())
-                                           .or(artifactId + "-" + version + ".jar");
+                var filename = option(file).filter(s -> !s.isBlank()).or(artifactId + "-" + version + ".jar");
                 var bytes = artifactParent.parent.fetchBytes(ARTIFACT_GET,
                                                              List.of(groupPath, artifactId, version, filename));
 
@@ -1555,7 +1707,7 @@ public class AetherCli implements Runnable {
             @SuppressWarnings({"JBCT-EX-01", "JBCT-UTIL-02"})
             private Integer writeBytes(byte[] content) {
                 return option(outPath).map(path -> writeToFile(path, content))
-                                      .or(() -> writeToStdout(content));
+                             .or(() -> writeToStdout(content));
             }
 
             @SuppressWarnings("JBCT-EX-01")
@@ -1612,7 +1764,9 @@ public class AetherCli implements Runnable {
                                                                    artifactParent.parent.outputOptions(),
                                                                    "Failed to delete");
 
-                if (errorCode >= 0) {return errorCode;}
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
 
                 return OutputFormatter.printAction(response,
                                                    artifactParent.parent.outputOptions(),
@@ -1709,7 +1863,9 @@ public class AetherCli implements Runnable {
                                                                        blueprintParent.parent.outputOptions(),
                                                                        "Failed to apply blueprint");
 
-                    if (errorCode >= 0) {return errorCode;}
+                    if (errorCode >= 0) {
+                        return errorCode;
+                    }
 
                     return OutputFormatter.printQuery(response, blueprintParent.parent.outputOptions());
                 } catch (IOException e) {
@@ -1732,7 +1888,9 @@ public class AetherCli implements Runnable {
                 var output = blueprintParent.parent.outputOptions();
                 var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to list blueprints");
 
-                if (errorCode >= 0) {return errorCode;}
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
 
                 return OutputFormatter.printQuery(response, output, BLUEPRINT_LIST_TABLE);
             }
@@ -1753,7 +1911,9 @@ public class AetherCli implements Runnable {
                 var output = blueprintParent.parent.outputOptions();
                 var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to get blueprint");
 
-                if (errorCode >= 0) {return errorCode;}
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
 
                 return OutputFormatter.printQuery(response, output, BLUEPRINT_SLICES_TABLE);
             }
@@ -1775,7 +1935,10 @@ public class AetherCli implements Runnable {
             public Integer call() {
                 if (!force) {
                     var confirmed = confirmDeletion(blueprintId);
-                    if (!confirmed) {return ExitCode.SUCCESS;}
+
+                    if (!confirmed) {
+                        return ExitCode.SUCCESS;
+                    }
                 }
 
                 var response = blueprintParent.parent.delete(BLUEPRINT_DELETE, List.of(blueprintId));
@@ -1783,7 +1946,9 @@ public class AetherCli implements Runnable {
                                                                    blueprintParent.parent.outputOptions(),
                                                                    "Failed to delete blueprint");
 
-                if (errorCode >= 0) {return errorCode;}
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
 
                 return OutputFormatter.printAction(response,
                                                    blueprintParent.parent.outputOptions(),
@@ -1820,7 +1985,9 @@ public class AetherCli implements Runnable {
                 var output = blueprintParent.parent.outputOptions();
                 var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to get blueprint status");
 
-                if (errorCode >= 0) {return errorCode;}
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
 
                 return OutputFormatter.printQuery(response, output, BLUEPRINT_STATUS_TABLE);
             }
@@ -1847,7 +2014,9 @@ public class AetherCli implements Runnable {
                     var content = Files.readString(blueprintPath);
                     var response = blueprintParent.parent.post(BLUEPRINT_VALIDATE, content);
 
-                    if (response.contains("\"valid\":false")) {return reportValidationFailure(response);}
+                    if (response.contains("\"valid\":false")) {
+                        return reportValidationFailure(response);
+                    }
 
                     return OutputFormatter.printQuery(response, blueprintParent.parent.outputOptions());
                 } catch (IOException e) {
@@ -1884,6 +2053,7 @@ public class AetherCli implements Runnable {
                 if (arrayStart == -1 || arrayEnd == -1) return result;
 
                 var arrayContent = json.substring(arrayStart + 1, arrayEnd);
+
                 parseStringElements(arrayContent, result);
 
                 return result;
@@ -1894,8 +2064,9 @@ public class AetherCli implements Runnable {
                 var inString = false;
                 var stringStart = -1;
 
-                for (int i = 0;i <arrayContent.length();i++) {
+                for (int i = 0; i < arrayContent.length(); i++) {
                     var c = arrayContent.charAt(i);
+
                     if (c == '"' && (i == 0 || arrayContent.charAt(i - 1) != '\\')) {
                         if (!inString) {
                             inString = true;
@@ -1919,10 +2090,13 @@ public class AetherCli implements Runnable {
                 var depth = 1;
                 var inString = false;
 
-                for (int i = openIndex + 1;i <json.length();i++) {
+                for (int i = openIndex + 1; i < json.length(); i++) {
                     var c = json.charAt(i);
-                    if (c == '"' && (i == 0 || json.charAt(i - 1) != '\\')) {inString = !inString;} else if (!inString) {
-                        if (c == openChar) depth++;else if (c == closeChar) {
+
+                    if (c == '"' && (i == 0 || json.charAt(i - 1) != '\\')) {
+                        inString = !inString;
+                    } else if (!inString) {
+                        if (c == openChar) depth++; else if (c == closeChar) {
                             depth--;
                             if (depth == 0) return i;
                         }
@@ -1962,11 +2136,15 @@ public class AetherCli implements Runnable {
                                                                    blueprintParent.parent.outputOptions(),
                                                                    "Failed to deploy blueprint");
 
-                if (errorCode >= 0) {return errorCode;}
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
 
                 var printResult = OutputFormatter.printQuery(response, blueprintParent.parent.outputOptions());
 
-                if (printResult != ExitCode.SUCCESS || !waitForCompletion) {return printResult;}
+                if (printResult != ExitCode.SUCCESS || !waitForCompletion) {
+                    return printResult;
+                }
 
                 return pollUntilDeployed();
             }
@@ -1976,7 +2154,7 @@ public class AetherCli implements Runnable {
                 System.out.printf("Waiting for %s deployment to complete (timeout: %ds)...%n", coords, timeoutSeconds);
                 var deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
 
-                while (System.currentTimeMillis() <deadline) {
+                while (System.currentTimeMillis() < deadline) {
                     var status = queryDeploymentStatus();
 
                     if (isDeploymentComplete(status)) {
@@ -2001,7 +2179,9 @@ public class AetherCli implements Runnable {
             private String queryDeploymentStatus() {
                 var response = blueprintParent.parent.fetch(SLICES_LIST);
 
-                if (response.contains("\"error\"")) {return "UNKNOWN";}
+                if (response.contains("\"error\"")) {
+                    return "UNKNOWN";
+                }
 
                 return response.contains(coords)
                        ? "ACTIVE"
@@ -2044,7 +2224,9 @@ public class AetherCli implements Runnable {
                                                                    blueprintParent.parent.outputOptions(),
                                                                    "Failed to publish blueprint");
 
-                if (errorCode >= 0) {return errorCode;}
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
 
                 return OutputFormatter.printAction(response,
                                                    blueprintParent.parent.outputOptions(),
@@ -2102,7 +2284,9 @@ public class AetherCli implements Runnable {
                                                                          blueprintParent.parent.outputOptions(),
                                                                          "Failed to upload");
 
-                    if (uploadError >= 0) {return uploadError;}
+                    if (uploadError >= 0) {
+                        return uploadError;
+                    }
 
                     var deployBody = "{\"artifact\":\"" + escapeJsonValue(coordinates) + "\"}";
                     var deployResponse = blueprintParent.parent.post(BLUEPRINT_DEPLOY, deployBody);
@@ -2110,7 +2294,9 @@ public class AetherCli implements Runnable {
                                                                          blueprintParent.parent.outputOptions(),
                                                                          "Failed to deploy");
 
-                    if (deployError >= 0) {return deployError;}
+                    if (deployError >= 0) {
+                        return deployError;
+                    }
 
                     return OutputFormatter.printAction(deployResponse,
                                                        blueprintParent.parent.outputOptions(),
@@ -2133,6 +2319,7 @@ public class AetherCli implements Runnable {
         @Override
         public void run() {
             var response = parent.fetch(INVOCATION_METRICS);
+
             OutputFormatter.printQuery(response, parent.outputOptions());
         }
 
@@ -2186,6 +2373,7 @@ public class AetherCli implements Runnable {
 
             private void showCurrentStrategy() {
                 var response = metricsParent.parent.fetch(INVOCATION_METRICS_STRATEGY_GET);
+
                 OutputFormatter.printQuery(response, metricsParent.parent.outputOptions());
             }
 
@@ -2209,7 +2397,9 @@ public class AetherCli implements Runnable {
                 if (OutputFormatter.isErrorResponse(response) || response.contains("Strategy change")) {
                     System.err.println("Error: Strategy changes at runtime are not yet supported.");
                     System.err.println("The strategy is configured at node startup. Use the GET command to view the current strategy.");
-                } else {OutputFormatter.printQuery(response, metricsParent.parent.outputOptions());}
+                } else {
+                    OutputFormatter.printQuery(response, metricsParent.parent.outputOptions());
+                }
             }
 
             private String buildFixedStrategyBody() {
@@ -2277,6 +2467,7 @@ public class AetherCli implements Runnable {
             @SuppressWarnings("JBCT-UTIL-02")
             private String buildConfigUpdateBody() {
                 var fields = new ArrayList<String>();
+
                 option(cpuScaleUp).onPresent(v -> fields.add("\"cpuScaleUpThreshold\":" + v));
                 option(cpuScaleDown).onPresent(v -> fields.add("\"cpuScaleDownThreshold\":" + v));
                 option(callRate).onPresent(v -> fields.add("\"callRateScaleUpThreshold\":" + v));
@@ -2324,6 +2515,7 @@ public class AetherCli implements Runnable {
         @Override
         public void run() {
             var response = parent.fetch(ALERTS);
+
             OutputFormatter.printQuery(response, parent.outputOptions());
         }
 
@@ -2413,7 +2605,10 @@ public class AetherCli implements Runnable {
                 if (metric != null) {
                     sb.append(",\"metric\":\"").append(escapeJson(metric)).append("\"");
                 }
-                if (value != null) {sb.append(",\"value\":").append(value);}
+
+                if (value != null) {
+                    sb.append(",\"value\":").append(value);
+                }
 
                 return sb.append("}")
                          .toString();
@@ -2435,6 +2630,7 @@ public class AetherCli implements Runnable {
         @Override
         public void run() {
             var response = parent.fetch(THRESHOLDS_LIST);
+
             OutputFormatter.printQuery(response, parent.outputOptions());
         }
 
@@ -2530,6 +2726,7 @@ public class AetherCli implements Runnable {
             @SuppressWarnings("JBCT-UTIL-02")
             private String buildTracesQueryString() {
                 var sb = new StringBuilder("limit=").append(limit);
+
                 option(method).onPresent(m -> sb.append("&method=")
                                                 .append(m));
                 option(status).onPresent(s -> sb.append("&status=")
@@ -2599,11 +2796,18 @@ public class AetherCli implements Runnable {
             private String buildInjectBody() {
                 var sb = new StringBuilder("{\"operation\":\"").append(escapeJson(operation)).append("\"");
 
-                if (durationMs != null) {sb.append(",\"durationMs\":").append(durationMs);}
-                if (depth != null) {sb.append(",\"depth\":").append(depth);}
+                if (durationMs != null) {
+                    sb.append(",\"durationMs\":").append(durationMs);
+                }
+
+                if (depth != null) {
+                    sb.append(",\"depth\":").append(depth);
+                }
+
                 if (requestId != null) {
                     sb.append(",\"requestId\":\"").append(escapeJson(requestId)).append("\"");
                 }
+
                 if (traceId != null) {
                     sb.append(",\"traceId\":\"").append(escapeJson(traceId)).append("\"");
                 }
@@ -2651,6 +2855,7 @@ public class AetherCli implements Runnable {
             @SuppressWarnings("JBCT-UTIL-02")
             private String buildQueryString() {
                 var sb = new StringBuilder();
+
                 option(limit).onPresent(v -> appendParam(sb, "limit", String.valueOf(v)));
                 option(prefix).onPresent(v -> appendParam(sb, "prefix", v));
 
@@ -2659,7 +2864,10 @@ public class AetherCli implements Runnable {
 
             @SuppressWarnings("JBCT-UTIL-02")
             private static void appendParam(StringBuilder sb, String name, String value) {
-                if (sb.length() > 0) {sb.append("&");}
+                if (sb.length() > 0) {
+                    sb.append("&");
+                }
+
                 sb.append(name).append("=").append(value);
             }
         }
@@ -2767,6 +2975,7 @@ public class AetherCli implements Runnable {
         @Override
         public void run() {
             var response = parent.fetch(LOG_LEVELS_LIST);
+
             OutputFormatter.printQuery(response, parent.outputOptions());
         }
 
@@ -2833,6 +3042,7 @@ public class AetherCli implements Runnable {
         @Override
         public void run() {
             var response = parent.fetch(CONFIG_LIST);
+
             OutputFormatter.printQuery(response, parent.outputOptions());
         }
 
@@ -2890,6 +3100,7 @@ public class AetherCli implements Runnable {
             @SuppressWarnings("JBCT-UTIL-02")
             private String buildConfigSetBody() {
                 var sb = new StringBuilder("{\"key\":\"").append(key).append("\",\"value\":\"").append(value).append("\"");
+
                 option(nodeId).onPresent(id -> sb.append(",\"nodeId\":\"")
                                                  .append(id)
                                                  .append("\""));
@@ -2939,6 +3150,7 @@ public class AetherCli implements Runnable {
         @Override
         public void run() {
             var response = parent.fetch(SCHEDULED_TASKS_LIST);
+
             OutputFormatter.printQuery(response, parent.outputOptions());
         }
 
@@ -2990,6 +3202,7 @@ public class AetherCli implements Runnable {
                 var response = tasksParent.parent.post(SCHEDULED_TASK_PAUSE,
                                                        List.of(configSection, artifact, method),
                                                        "");
+
                 return OutputFormatter.printAction(response,
                                                    tasksParent.parent.outputOptions(),
                                                    "Task paused: " + method);
@@ -3015,6 +3228,7 @@ public class AetherCli implements Runnable {
                 var response = tasksParent.parent.post(SCHEDULED_TASK_RESUME,
                                                        List.of(configSection, artifact, method),
                                                        "");
+
                 return OutputFormatter.printAction(response,
                                                    tasksParent.parent.outputOptions(),
                                                    "Task resumed: " + method);
@@ -3040,6 +3254,7 @@ public class AetherCli implements Runnable {
                 var response = tasksParent.parent.post(SCHEDULED_TASK_TRIGGER,
                                                        List.of(configSection, artifact, method),
                                                        "");
+
                 return OutputFormatter.printAction(response,
                                                    tasksParent.parent.outputOptions(),
                                                    "Task triggered: " + method);
@@ -3064,13 +3279,16 @@ public class AetherCli implements Runnable {
             public Integer call() {
                 var body = "{\"section\":\"" + escapeJson(section)
                          + "\",\"artifact\":\"" + escapeJson(artifact)
-                         + "\",\"method\":\"" + escapeJson(method) + "\"}";
+                         + "\",\"method\":\"" + escapeJson(method)
+                         + "\"}";
                 var response = tasksParent.parent.post(SCHEDULED_TASK_INJECT, body);
+
                 return OutputFormatter.printQuery(response, tasksParent.parent.outputOptions());
             }
 
             private static String escapeJson(String s) {
-                return s.replace("\\", "\\\\").replace("\"", "\\\"");
+                return s.replace("\\", "\\\\")
+                        .replace("\"", "\\\"");
             }
         }
 
@@ -3091,7 +3309,8 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var response = tasksParent.parent.fetch(SCHEDULED_TASK_EXECUTIONS_BY_NODE,
-                                                         List.of(configSection, artifact, method));
+                                                        List.of(configSection, artifact, method));
+
                 return OutputFormatter.printQuery(response, tasksParent.parent.outputOptions());
             }
         }
@@ -3212,11 +3431,11 @@ public class AetherCli implements Runnable {
                                     ? countExistingBackups()
                                     : -1;
                 var response = backupParent.parent.post(BACKUP_TRIGGER, "{}");
-                var result = OutputFormatter.printAction(response,
-                                                         backupParent.parent.outputOptions(),
-                                                         "Backup created");
+                var result = OutputFormatter.printAction(response, backupParent.parent.outputOptions(), "Backup created");
 
-                if (result != ExitCode.SUCCESS || !waitForCompletion) {return result;}
+                if (result != ExitCode.SUCCESS || !waitForCompletion) {
+                    return result;
+                }
 
                 return pollUntilBackupVisible(existingCount);
             }
@@ -3262,7 +3481,9 @@ public class AetherCli implements Runnable {
             /// envelope. Falls back to 0 on parse error so a missing/empty list does
             /// not collide with the "saw new entry" condition.
             static int countBackupEntries(String response) {
-                if (response == null || response.isBlank() || response.contains("\"error\"")) {return 0;}
+                if (response == null || response.isBlank() || response.contains("\"error\"")) {
+                    return 0;
+                }
 
                 var marker = "\"commitId\"";
                 var idx = 0;
@@ -3391,6 +3612,7 @@ public class AetherCli implements Runnable {
                 var response = datasource != null
                                ? schemaParent.parent.fetch(SCHEMA_STATUS_ONE, List.of(datasource))
                                : schemaParent.parent.fetch(SCHEMA_STATUS_ALL);
+
                 return OutputFormatter.printQuery(response, schemaParent.parent.outputOptions());
             }
         }
@@ -3446,6 +3668,7 @@ public class AetherCli implements Runnable {
                                                         List.of(datasource),
                                                         "targetVersion=" + targetVersion,
                                                         "{}");
+
                 return OutputFormatter.printAction(response,
                                                    schemaParent.parent.outputOptions(),
                                                    "Undo to version " + targetVersion + " for " + datasource);
@@ -3701,7 +3924,8 @@ public class AetherCli implements Runnable {
             }
 
             private String buildReadQuery() {
-                return Stream.of(option(since).map(v -> "from=" + v), option(limit).map(v -> "max=" + v))
+                return Stream.of(option(since).map(v -> "from=" + v),
+                                 option(limit).map(v -> "max=" + v))
                              .flatMap(Option::stream)
                              .collect(Collectors.joining("&"));
             }
@@ -3730,7 +3954,7 @@ public class AetherCli implements Runnable {
 
             private String buildCreateBody() {
                 return option(partitions).map(p -> "{\"name\":\"" + name + "\",\"partitions\":" + p + "}")
-                                         .or("{\"name\":\"" + name + "\"}");
+                             .or("{\"name\":\"" + name + "\"}");
             }
         }
 
@@ -3750,7 +3974,10 @@ public class AetherCli implements Runnable {
             public Integer call() {
                 if (!force) {
                     var confirmed = confirmDeletion(name);
-                    if (!confirmed) {return ExitCode.SUCCESS;}
+
+                    if (!confirmed) {
+                        return ExitCode.SUCCESS;
+                    }
                 }
 
                 var response = streamParent.parent.delete(STREAM_DELETE, List.of(name));
@@ -3758,7 +3985,9 @@ public class AetherCli implements Runnable {
                                                                    streamParent.parent.outputOptions(),
                                                                    "Failed to delete stream");
 
-                if (errorCode >= 0) {return errorCode;}
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
 
                 return OutputFormatter.printAction(response,
                                                    streamParent.parent.outputOptions(),
@@ -3809,9 +4038,11 @@ public class AetherCli implements Runnable {
                 @Override
                 public Integer call() {
                     var partitions = option(partitionCount).or(1);
-                    var body = "{\"groupId\":\"" + groupId + "\",\"streamName\":\"" + streamName
-                               + "\",\"partitionCount\":" + partitions
-                               + ",\"consumerId\":\"" + consumerId + "\"}";
+                    var body = "{\"groupId\":\"" + groupId
+                             + "\",\"streamName\":\"" + streamName
+                             + "\",\"partitionCount\":" + partitions
+                             + ",\"consumerId\":\"" + consumerId
+                             + "\"}";
                     var response = groupParent.streamParent.parent.post(CONSUMER_GROUP_JOIN, List.of(), body);
 
                     return OutputFormatter.printAction(response,
@@ -3836,8 +4067,10 @@ public class AetherCli implements Runnable {
 
                 @Override
                 public Integer call() {
-                    var body = "{\"groupId\":\"" + groupId + "\",\"streamName\":\"" + streamName
-                               + "\",\"consumerId\":\"" + consumerId + "\"}";
+                    var body = "{\"groupId\":\"" + groupId
+                             + "\",\"streamName\":\"" + streamName
+                             + "\",\"consumerId\":\"" + consumerId
+                             + "\"}";
                     var response = groupParent.streamParent.parent.post(CONSUMER_GROUP_LEAVE, List.of(), body);
 
                     return OutputFormatter.printAction(response,
@@ -3876,6 +4109,7 @@ public class AetherCli implements Runnable {
         @Override
         public void run() {
             var response = parent.fetch(CERTIFICATES_LIST);
+
             OutputFormatter.printQuery(response, parent.outputOptions());
         }
 

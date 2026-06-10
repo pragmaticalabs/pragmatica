@@ -13,12 +13,14 @@ import java.util.regex.Pattern;
 import static org.pragmatica.lang.Verify.ensure;
 
 
-@Codec public record ArtifactId(String id) {
+@Codec
+public record ArtifactId(String id) {
     public static Result<ArtifactId> artifactId(String id) {
         return Result.all(ensure(id, Verify.Is::matches, ARTIFACT_ID_PATTERN)).map(ArtifactId::new);
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return id;
     }
 

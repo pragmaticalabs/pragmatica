@@ -10,7 +10,8 @@ import org.pragmatica.lang.Cause;
 public sealed interface MetricsError extends Cause {
     enum StrategyChangeNotSupported implements MetricsError {
         INSTANCE;
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Strategy change at runtime requires collector recreation";
         }
     }

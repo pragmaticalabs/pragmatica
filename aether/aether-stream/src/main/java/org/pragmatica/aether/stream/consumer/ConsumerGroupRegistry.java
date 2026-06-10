@@ -21,40 +21,52 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.option;
 
 
-@SuppressWarnings("JBCT-RET-01") public sealed interface ConsumerGroupRegistry {
+@SuppressWarnings("JBCT-RET-01")
+public sealed interface ConsumerGroupRegistry {
     Map<Integer, ConsumerGroupValue> assignmentsFor(String groupId, String streamName);
     List<Integer> partitionsFor(String groupId, String streamName, NodeId nodeId);
-    @MessageReceiver void onConsumerGroupPut(ValuePut<ConsumerGroupKey, ConsumerGroupValue> notification);
-    @MessageReceiver void onConsumerGroupRemove(ValueRemove<ConsumerGroupKey, ConsumerGroupValue> notification);
+
+    @MessageReceiver
+    void onConsumerGroupPut(ValuePut<ConsumerGroupKey, ConsumerGroupValue> notification);
+
+    @MessageReceiver
+    void onConsumerGroupRemove(ValueRemove<ConsumerGroupKey, ConsumerGroupValue> notification);
 
     static ConsumerGroupRegistry consumerGroupRegistry() {
         return new DefaultConsumerGroupRegistry(new ConcurrentHashMap<>());
     }
 
-    record GroupStreamKey(String groupId, String streamName){}
+    record GroupStreamKey(String groupId, String streamName) {}
 
     record DefaultConsumerGroupRegistry(ConcurrentHashMap<GroupStreamKey, ConcurrentHashMap<Integer, ConsumerGroupValue>> state) implements ConsumerGroupRegistry {
         private static final Logger log = LoggerFactory.getLogger(DefaultConsumerGroupRegistry.class);
 
-        @Override public Map<Integer, ConsumerGroupValue> assignmentsFor(String groupId, String streamName) {
+        @Override
+        public Map<Integer, ConsumerGroupValue> assignmentsFor(String groupId, String streamName) {
             var key = new GroupStreamKey(groupId, streamName);
-            return option(state.get(key)).map(Map::copyOf).or(Map.of());
+
+            return option(state.get(key)).map(Map::copyOf)
+                         .or(Map.of());
         }
 
-        @Override public List<Integer> partitionsFor(String groupId, String streamName, NodeId nodeId) {
+        @Override
+        public List<Integer> partitionsFor(String groupId, String streamName, NodeId nodeId) {
             return assignmentsFor(groupId, streamName).entrySet()
                                  .stream()
-                                 .filter(e -> e.getValue().assignedTo()
-                                                        .equals(nodeId))
+                                 .filter(e -> e.getValue()
+                                               .assignedTo()
+                                               .equals(nodeId))
                                  .map(Map.Entry::getKey)
                                  .sorted()
                                  .toList();
         }
 
-        @Override public void onConsumerGroupPut(ValuePut<ConsumerGroupKey, ConsumerGroupValue> notification) {
+        @Override
+        public void onConsumerGroupPut(ValuePut<ConsumerGroupKey, ConsumerGroupValue> notification) {
             var kvKey = notification.cause().key();
             var kvValue = notification.cause().value();
             var groupStreamKey = new GroupStreamKey(kvKey.groupId(), kvKey.streamName());
+
             state.computeIfAbsent(groupStreamKey, _ -> new ConcurrentHashMap<>()).put(kvKey.partition(), kvValue);
             log.info("Consumer group {}/{} partition {} assigned to {} (consumer {})",
                      kvKey.groupId(),
@@ -64,9 +76,11 @@ import static org.pragmatica.lang.Option.option;
                      kvValue.consumerId());
         }
 
-        @Override public void onConsumerGroupRemove(ValueRemove<ConsumerGroupKey, ConsumerGroupValue> notification) {
+        @Override
+        public void onConsumerGroupRemove(ValueRemove<ConsumerGroupKey, ConsumerGroupValue> notification) {
             var kvKey = notification.cause().key();
             var groupStreamKey = new GroupStreamKey(kvKey.groupId(), kvKey.streamName());
+
             option(state.get(groupStreamKey)).onPresent(partitions -> removePartitionEntry(partitions,
                                                                                            groupStreamKey,
                                                                                            kvKey.partition()));
@@ -80,7 +94,9 @@ import static org.pragmatica.lang.Option.option;
                                           GroupStreamKey groupStreamKey,
                                           int partition) {
             partitions.remove(partition);
-            if (partitions.isEmpty()) {state.remove(groupStreamKey);}
+            if (partitions.isEmpty()) {
+                state.remove(groupStreamKey);
+            }
         }
     }
 }

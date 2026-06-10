@@ -24,7 +24,11 @@ public record GCMetrics(long youngGcCount,
 
     public double avgPauseMs() {
         long total = totalGcCount();
-        if (total == 0) {return 0.0;}
+
+        if (total == 0) {
+            return 0.0;
+        }
+
         return totalPauseMs() / (double) total;
     }
 }

@@ -47,12 +47,17 @@ public final class SwimHintsRegistry {
     @Contract
     public void putHint(NodeId node, HealthHint hint, long observedAtMs) {
         var prev = hints.put(node, new TimedHint(hint, observedAtMs));
-        if (prev == null || prev.hint != hint) {onChange.run();}
+
+        if (prev == null || prev.hint != hint) {
+            onChange.run();
+        }
     }
 
     @Contract
     public void clear(NodeId node) {
-        if (hints.remove(node) != null) {onChange.run();}
+        if (hints.remove(node) != null) {
+            onChange.run();
+        }
     }
 
     public boolean isEmpty() {
@@ -63,13 +68,14 @@ public final class SwimHintsRegistry {
         var now = nowSupplier.apply();
         var deadline = now - ttl.toMillis();
         var snapshot = new HashMap<NodeId, HealthHint>();
+
         hints.forEach((node, timed) -> {
-                          if (timed.observedAtMs >= deadline) {
-                          snapshot.put(node, timed.hint);
-                      } else {
-                          hints.remove(node, timed);
-                      }
-                      });
+            if (timed.observedAtMs >= deadline) {
+                snapshot.put(node, timed.hint);
+            } else {
+                hints.remove(node, timed);
+            }
+        });
 
         return snapshot;
     }

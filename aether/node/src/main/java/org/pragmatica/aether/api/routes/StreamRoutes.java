@@ -163,6 +163,7 @@ public final class StreamRoutes implements RouteSource {
 
     private StreamListResponse listStreams() {
         var streams = streamManager().listStreams().stream().map(StreamSummary::fromStreamInfo).toList();
+
         return new StreamListResponse(streams);
     }
 
@@ -232,9 +233,9 @@ public final class StreamRoutes implements RouteSource {
 
     private Result<Unit> ensureStreamExists(String name) {
         return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(StreamConfig.streamConfig(name,
-                                                                                                               DEFAULT_PARTITIONS,
-                                                                                                               MANAGEMENT_API_RETENTION,
-                                                                                                               "latest")));
+                                                                                                                DEFAULT_PARTITIONS,
+                                                                                                                MANAGEMENT_API_RETENTION,
+                                                                                                                "latest")));
     }
 
     private Promise<ReadEventsResponse> readEvents(String name,

@@ -22,17 +22,26 @@ public record NetworkMetrics(long bytesRead,
     }
 
     public double avgReadMessageSize() {
-        if (messagesRead == 0) {return 0.0;}
+        if (messagesRead == 0) {
+            return 0.0;
+        }
+
         return bytesRead / (double) messagesRead;
     }
 
     public double avgWriteMessageSize() {
-        if (messagesWritten == 0) {return 0.0;}
+        if (messagesWritten == 0) {
+            return 0.0;
+        }
+
         return bytesWritten / (double) messagesWritten;
     }
 
     public boolean isUnderBackpressure(long windowMs) {
-        if (lastBackpressureTimestamp == 0) {return false;}
-        return System.currentTimeMillis() - lastBackpressureTimestamp <windowMs;
+        if (lastBackpressureTimestamp == 0) {
+            return false;
+        }
+
+        return System.currentTimeMillis() - lastBackpressureTimestamp < windowMs;
     }
 }

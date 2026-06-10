@@ -52,9 +52,6 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
@@ -65,6 +62,9 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /// Aggregates cluster lifecycle events and publishes them into the
@@ -113,9 +113,7 @@ import java.util.function.Supplier;
 @SuppressWarnings("JBCT-RET-01")
 public final class ClusterEventAggregator {
     private static final Logger LOG = LoggerFactory.getLogger(ClusterEventAggregator.class);
-
-    private static final IntSupplier UNKNOWN_CLUSTER_SIZE = () -> -1;
-
+    private static final IntSupplier UNKNOWN_CLUSTER_SIZE = () -> - 1;
     /// Default owner-check used by the legacy factory overloads (tests / call sites that don't gate):
     /// always-owner, preserving prior unconditional-emit behaviour for those callers.
     private static final BooleanSupplier ALWAYS_OWNER = () -> true;
@@ -129,14 +127,12 @@ public final class ClusterEventAggregator {
     /// {@link #emitAsLeader} for those callers. The production factory used by `AetherNode` supplies
     /// the real leader check.
     private static final BooleanSupplier LEADER_ALWAYS = () -> true;
-
     /// Read window for `events()`. Must stay >= the stream's retention `maxCount` so a single fetch
     /// always covers the full retained window (no newest-event truncation) — the B5a/#239 fix. The
     /// stream's retention is now config-driven in [org.pragmatica.aether.node.AetherNode]; this is the
     /// upper bound the read path requests. Kept at the historical 10_000 default (the default
     /// retention maxCount); a larger configured maxCount would need this raised in lock-step.
     public static final int MAX_RETAINED_EVENTS = 10_000;
-
     private static final int FETCH_BATCH = MAX_RETAINED_EVENTS;
 
     private final Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier;
@@ -146,9 +142,7 @@ public final class ClusterEventAggregator {
     private final BooleanSupplier leaderCheck;
     private final HlcClock hlcClock;
     private final NodeId selfNode;
-
     private final AtomicLong quorumSequence = new AtomicLong();
-
     private final ConcurrentHashMap<String, Long> deploymentStartTimes = new ConcurrentHashMap<>();
 
     private final ConcurrentHashMap<String, Long> nodeJoinTimes = new ConcurrentHashMap<>();
@@ -187,7 +181,14 @@ public final class ClusterEventAggregator {
                                                                 Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
                                                                 NodeId selfNode,
                                                                 HlcClock hlcClock) {
-        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ALWAYS_OWNER, selfNode, hlcClock, UNKNOWN_CLUSTER_SIZE, NEVER_REPLAYING, LEADER_ALWAYS);
+        return new ClusterEventAggregator(publisherSupplier,
+                                          consumerSupplier,
+                                          ALWAYS_OWNER,
+                                          selfNode,
+                                          hlcClock,
+                                          UNKNOWN_CLUSTER_SIZE,
+                                          NEVER_REPLAYING,
+                                          LEADER_ALWAYS);
     }
 
     public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
@@ -195,7 +196,14 @@ public final class ClusterEventAggregator {
                                                                 NodeId selfNode,
                                                                 HlcClock hlcClock,
                                                                 IntSupplier clusterSizeSupplier) {
-        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ALWAYS_OWNER, selfNode, hlcClock, clusterSizeSupplier, NEVER_REPLAYING, LEADER_ALWAYS);
+        return new ClusterEventAggregator(publisherSupplier,
+                                          consumerSupplier,
+                                          ALWAYS_OWNER,
+                                          selfNode,
+                                          hlcClock,
+                                          clusterSizeSupplier,
+                                          NEVER_REPLAYING,
+                                          LEADER_ALWAYS);
     }
 
     /// Legacy production factory (pre-leader-gate): owner-gated emit + replay-gate, with the
@@ -209,7 +217,14 @@ public final class ClusterEventAggregator {
                                                                 HlcClock hlcClock,
                                                                 IntSupplier clusterSizeSupplier,
                                                                 BooleanSupplier replayingCheck) {
-        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ownerCheck, selfNode, hlcClock, clusterSizeSupplier, replayingCheck, LEADER_ALWAYS);
+        return new ClusterEventAggregator(publisherSupplier,
+                                          consumerSupplier,
+                                          ownerCheck,
+                                          selfNode,
+                                          hlcClock,
+                                          clusterSizeSupplier,
+                                          replayingCheck,
+                                          LEADER_ALWAYS);
     }
 
     /// Production factory (B5b): emit is gated by `ownerCheck` — only the owner of
@@ -229,7 +244,14 @@ public final class ClusterEventAggregator {
                                                                 IntSupplier clusterSizeSupplier,
                                                                 BooleanSupplier replayingCheck,
                                                                 BooleanSupplier leaderCheck) {
-        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, ownerCheck, selfNode, hlcClock, clusterSizeSupplier, replayingCheck, leaderCheck);
+        return new ClusterEventAggregator(publisherSupplier,
+                                          consumerSupplier,
+                                          ownerCheck,
+                                          selfNode,
+                                          hlcClock,
+                                          clusterSizeSupplier,
+                                          replayingCheck,
+                                          leaderCheck);
     }
 
     /// Read all events currently retained in the system stream's partition.
@@ -252,7 +274,8 @@ public final class ClusterEventAggregator {
 
     /// Oldest still-retained offset for partition 0. Empty/absent partition → 0 (fetch from start).
     private static long retainedTailOffset(StreamMetadata metadata) {
-        return metadata.partitions().stream()
+        return metadata.partitions()
+                       .stream()
                        .filter(p -> p.partition() == 0)
                        .mapToLong(PartitionInfo::tailOffset)
                        .filter(tail -> tail >= 0)
@@ -267,20 +290,26 @@ public final class ClusterEventAggregator {
 
     private static List<ClusterEvent> filterSince(List<ClusterEvent> events, Instant since) {
         long sinceMillis = since.toEpochMilli();
-        return events.stream().filter(e -> e.at().physicalMillis() > sinceMillis).toList();
+
+        return events.stream()
+                     .filter(e -> e.at()
+                                   .physicalMillis() > sinceMillis)
+                     .toList();
     }
 
     private static List<ClusterEvent> extractPayloads(List<StreamEvent<ClusterEvent>> raw) {
-        return raw.stream().map(StreamEvent::payload).toList();
+        return raw.stream()
+                  .map(StreamEvent::payload)
+                  .toList();
     }
 
     private Promise<List<ClusterEvent>> consume(Function<FrameworkStreamConsumer<ClusterEvent>, Promise<List<ClusterEvent>>> fn) {
-        return Option.option(consumerSupplier.get())
-                     .fold(() -> {
-                               LOG.debug("ClusterEventAggregator consumer not yet bound — returning empty");
-                               return Promise.success(List.of());
-                           },
-                           fn::apply);
+        return Option.option(consumerSupplier.get()).fold(() -> {
+                                                              LOG.debug("ClusterEventAggregator consumer not yet bound — returning empty");
+
+                                                              return Promise.success(List.of());
+                                                          },
+                                                          fn::apply);
     }
 
     /// Fire-and-forget publish into the system stream. Owner-gated (B5b): only the OWNER of
@@ -289,20 +318,25 @@ public final class ClusterEventAggregator {
     /// cannot yet be determined (bootstrap window) the owner-check returns false and the event is
     /// dropped+logged. If the publisher is not yet bound (bootstrap window) the event is likewise
     /// logged rather than dropped silently — spec §13.3.
-    @Contract public void emit(ClusterEvent event) {
+    @Contract
+    public void emit(ClusterEvent event) {
         if (replayingCheck.getAsBoolean()) {
-            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing side-effect emit of {}", event);
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing side-effect emit of {}",
+                      event);
+
             return;
         }
+
         if (!ownerCheck.getAsBoolean()) {
             LOG.debug("ClusterEventAggregator: not owner of cluster-events partition — suppressing emit of {}", event);
+
             return;
         }
-        Option.option(publisherSupplier.get())
-              .onPresent(publisher -> {
-                  Promise<?> ignored = publisher.publish(event);
-              })
-              .onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)", event));
+
+        Option.option(publisherSupplier.get()).onPresent(publisher -> {
+            Promise<?> ignored = publisher.publish(event);
+        }).onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)",
+                                  event));
     }
 
     /// Leader-gated emit for consensus-committed membership-DEPARTURE facts (NODE_FAILED / NODE_LEFT).
@@ -313,36 +347,43 @@ public final class ClusterEventAggregator {
     /// deferred to an executor while this emit runs synchronously on the same dispatch), so when the
     /// pre-removal owner is the removed node every survivor would suppress and the event is lost. Same
     /// replay-gate and publisher-not-bound bootstrap-drop behaviour as {@link #emit}.
-    @Contract public void emitAsLeader(ClusterEvent event) {
+    @Contract
+    public void emitAsLeader(ClusterEvent event) {
         if (replayingCheck.getAsBoolean()) {
-            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing side-effect emit of {}", event);
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing side-effect emit of {}",
+                      event);
+
             return;
         }
+
         if (!leaderCheck.getAsBoolean()) {
             LOG.debug("ClusterEventAggregator: not leader — suppressing emit of {}", event);
+
             return;
         }
-        Option.option(publisherSupplier.get())
-              .onPresent(publisher -> {
-                  Promise<?> ignored = publisher.publish(event);
-              })
-              .onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)", event));
+
+        Option.option(publisherSupplier.get()).onPresent(publisher -> {
+            Promise<?> ignored = publisher.publish(event);
+        }).onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)",
+                                  event));
     }
 
     /// Owner-gate-bypassing emit for per-node facts (spec §4.5c). Identical to {@link #emit} except it
     /// does NOT consult `ownerCheck`: budget exhaustion is a per-node truth (each node has its own
     /// off-heap budget), so every node must report its own — mirroring the `SelfDrainInitiated`
     /// not-leader-gated contract. The replay gate and publisher-bound bootstrap drop still apply.
-    @Contract public void emitLocal(ClusterEvent event) {
+    @Contract
+    public void emitLocal(ClusterEvent event) {
         if (replayingCheck.getAsBoolean()) {
             LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing local emit of {}", event);
+
             return;
         }
-        Option.option(publisherSupplier.get())
-              .onPresent(publisher -> {
-                  Promise<?> ignored = publisher.publish(event);
-              })
-              .onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — local event {} dropped (bootstrap window)", event));
+
+        Option.option(publisherSupplier.get()).onPresent(publisher -> {
+            Promise<?> ignored = publisher.publish(event);
+        }).onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — local event {} dropped (bootstrap window)",
+                                  event));
     }
 
     /// Budget-exhaustion sink entry point (spec §4.5c / reconciliation #13). Bound into the
@@ -350,12 +391,19 @@ public final class ClusterEventAggregator {
     /// `StreamMemoryExceeded` event, and emits it through the un-gated {@link #emitLocal} path
     /// (per-node fact). Rate-limited per `(streamName, phase)` to one event per
     /// {@link #STREAM_MEMORY_EVENT_THROTTLE_MS} so a saturated growing stream cannot flood the log.
-    @Contract public void onStreamMemoryExceeded(Exhaustion exhaustion) {
+    @Contract
+    public void onStreamMemoryExceeded(Exhaustion exhaustion) {
         if (!shouldEmitStreamMemoryEvent(exhaustion)) {
-            LOG.debug("ClusterEventAggregator: suppressing throttled StreamMemoryExceeded for {}", exhaustion.streamName());
+            LOG.debug("ClusterEventAggregator: suppressing throttled StreamMemoryExceeded for {}",
+                      exhaustion.streamName());
+
             return;
         }
-        emitLocal(new StreamMemoryExceeded(hlcClock.now(), Severity.WARNING, exhaustion.summary(), withNodeId(exhaustion.details())));
+
+        emitLocal(new StreamMemoryExceeded(hlcClock.now(),
+                                           Severity.WARNING,
+                                           exhaustion.summary(),
+                                           withNodeId(exhaustion.details())));
     }
 
     /// Throttle decision: emit iff no event for this `(streamName, phase)` key fired within the window.
@@ -367,7 +415,9 @@ public final class ClusterEventAggregator {
         var key = exhaustion.streamName() + ":" + exhaustion.phase().name();
         var now = hlcClock.now().physicalMillis();
         var admitted = new boolean[1];
+
         streamMemoryEventThrottle.compute(key, (_, previous) -> advanceWindow(previous, now, admitted));
+
         return admitted[0];
     }
 
@@ -376,15 +426,20 @@ public final class ClusterEventAggregator {
     private static long advanceWindow(Long previous, long now, boolean[] admitted) {
         if (previous != null && now - previous < STREAM_MEMORY_EVENT_THROTTLE_MS) {
             admitted[0] = false;
+
             return previous;
         }
+
         admitted[0] = true;
+
         return now;
     }
 
     private Map<String, String> withNodeId(Map<String, String> details) {
         var enriched = new HashMap<>(details);
+
         enriched.put("nodeId", selfNode.id());
+
         return Map.copyOf(enriched);
     }
 
@@ -392,41 +447,50 @@ public final class ClusterEventAggregator {
     /// CTM provisions replacements that re-occupy the same node-id slot — `MembershipDecision`
     /// doesn't fire (no `coreMemberIds` delta) but `TransportObservation.PeerJoined` does (fresh
     /// QUIC handshake), so this is the surface tests asserting replacement-NODE_JOINED depend on.
-    @Contract public void onPeerJoined(TransportObservation.PeerJoined event) {
-        nodeJoinTimes.put(event.nodeId().id(), System.currentTimeMillis());
+    @Contract
+    public void onPeerJoined(TransportObservation.PeerJoined event) {
+        nodeJoinTimes.put(event.nodeId().id(),
+                          System.currentTimeMillis());
         emitAsLeader(new NodeJoined(hlcClock.now(),
-                            Severity.INFO,
-                            "Node " + event.nodeId().id() + " joined cluster (now " + event.topology().size() + " nodes)",
-                            Map.of("nodeId", event.nodeId().id(),
-                                   "clusterSize", String.valueOf(event.topology().size()))));
+                                    Severity.INFO,
+                                    "Node " + event.nodeId().id()
+                                   + " joined cluster (now " + event.topology().size()
+                                   + " nodes)",
+                                    Map.of("nodeId",
+                                           event.nodeId().id(),
+                                           "clusterSize",
+                                           String.valueOf(event.topology().size()))));
     }
 
     /// rc1 substrate: NODE_FAILED / NODE_LEFT are re-sourced from `MembershipDecision`, not SWIM.
     /// Retained as a no-op for router-shape compatibility.
-    @Contract public void onSwimObservation(@SuppressWarnings("unused") org.pragmatica.swim.SwimObservation observation) {}
+    @Contract
+    public void onSwimObservation(@SuppressWarnings("unused") org.pragmatica.swim.SwimObservation observation) {}
 
-    @Contract public void onLeaderChange(LeaderNotification.LeaderChange event) {
+    @Contract
+    public void onLeaderChange(LeaderNotification.LeaderChange event) {
         event.leaderId().onPresent(leaderId -> emitAsLeader(new LeaderElected(hlcClock.now(),
-                                                                      Severity.INFO,
-                                                                      "Node " + leaderId.id() + " elected as leader",
-                                                                      Map.of("leaderId", leaderId.id()))))
-             .onEmpty(() -> emitAsLeader(new LeaderLost(hlcClock.now(),
-                                                Severity.WARNING,
-                                                "Leadership lost, election in progress",
-                                                Map.of())));
+                                                                              Severity.INFO,
+                                                                              "Node " + leaderId.id()
+                                                                             + " elected as leader",
+                                                                              Map.of("leaderId", leaderId.id())))).onEmpty(() -> emitAsLeader(new LeaderLost(hlcClock.now(),
+                                                                                                                                                             Severity.WARNING,
+                                                                                                                                                             "Leadership lost, election in progress",
+                                                                                                                                                             Map.of())));
     }
 
-    @Contract public void onQuorumStateChange(ClusterStateNotification event) {
-        if (!event.advanceSequence(quorumSequence)) {return;}
+    @Contract
+    public void onQuorumStateChange(ClusterStateNotification event) {
+        if (!event.advanceSequence(quorumSequence)) {
+            return;
+        }
+
         switch (event.state()) {
             case ACTIVE -> emitAsLeader(new QuorumEstablished(hlcClock.now(),
-                                                      Severity.INFO,
-                                                      "Quorum established",
-                                                      Map.of()));
-            case PASSIVE -> emitAsLeader(new QuorumLost(hlcClock.now(),
-                                                Severity.CRITICAL,
-                                                "Quorum lost",
-                                                Map.of()));
+                                                              Severity.INFO,
+                                                              "Quorum established",
+                                                              Map.of()));
+            case PASSIVE -> emitAsLeader(new QuorumLost(hlcClock.now(), Severity.CRITICAL, "Quorum lost", Map.of()));
         }
     }
 
@@ -439,20 +503,24 @@ public final class ClusterEventAggregator {
     /// to an executor while this emit runs synchronously on the same `NodeRemoved` dispatch, so the
     /// owner-check sees the PRE-removal placement; when the pre-removal owner is the removed node every
     /// survivor suppresses and the event is lost with no replay.
-    @Contract public void onMembershipDecision(MembershipDecision decision) {
+    @Contract
+    public void onMembershipDecision(MembershipDecision decision) {
         switch (decision) {
             case MembershipDecision.NodeRemoved removed -> emitAsLeader(new NodeFailed(hlcClock.now(),
                                                                                        Severity.CRITICAL,
                                                                                        "Node " + removed.nodeId().id() + " removed from membership",
-                                                                                       Map.of("nodeId", removed.nodeId().id())));
+                                                                                       Map.of("nodeId",
+                                                                                              removed.nodeId().id())));
             case MembershipDecision.NodeDecommissioned decommissioned -> emitAsLeader(new NodeLeft(hlcClock.now(),
                                                                                                    Severity.WARNING,
                                                                                                    "Node " + decommissioned.nodeId().id() + " decommissioned",
-                                                                                                   Map.of("nodeId", decommissioned.nodeId().id())));
+                                                                                                   Map.of("nodeId",
+                                                                                                          decommissioned.nodeId().id())));
             case MembershipDecision.NodeDraining draining -> emitAsLeader(new NodeLeft(hlcClock.now(),
                                                                                        Severity.WARNING,
                                                                                        "Node " + draining.nodeId().id() + " draining",
-                                                                                       Map.of("nodeId", draining.nodeId().id())));
+                                                                                       Map.of("nodeId",
+                                                                                              draining.nodeId().id())));
             // NODE_JOINED is NOT sourced from the membership delta: a JOINING replacement is not yet
             // a counted core member, so publishCoreMembershipDelta emits no `added` edge for it. The
             // authoritative join surface is the transport `PeerJoined` handshake (onPeerJoined), now
@@ -466,13 +534,15 @@ public final class ClusterEventAggregator {
         }
     }
 
-    @Contract public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> event) {
+    @Contract
+    public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> event) {
         var key = event.cause().key();
         var value = event.cause().value();
         var artifact = key.artifact().asString();
         var nodeId = key.nodeId().id();
         var state = value.state();
         var trackingKey = artifact + ":" + nodeId;
+
         switch (state) {
             case LOAD -> handleDeploymentStarted(trackingKey, artifact, nodeId);
             case ACTIVE -> handleDeploymentCompleted(trackingKey, artifact, nodeId);
@@ -481,7 +551,8 @@ public final class ClusterEventAggregator {
         }
     }
 
-    @Contract private void handleDeploymentStarted(String trackingKey, String artifact, String nodeId) {
+    @Contract
+    private void handleDeploymentStarted(String trackingKey, String artifact, String nodeId) {
         deploymentStartTimes.put(trackingKey, System.currentTimeMillis());
         emit(new DeploymentStarted(hlcClock.now(),
                                    Severity.INFO,
@@ -489,181 +560,265 @@ public final class ClusterEventAggregator {
                                    Map.of("artifact", artifact, "nodeId", nodeId)));
     }
 
-    @Contract private void handleDeploymentCompleted(String trackingKey, String artifact, String nodeId) {
+    @Contract
+    private void handleDeploymentCompleted(String trackingKey, String artifact, String nodeId) {
         var durationMs = computeAndRemoveDuration(trackingKey);
         var durationSuffix = durationMs.map(ms -> " in " + formatDuration(ms)).or("");
         var nodeReadySuffix = buildNodeReadySuffix(nodeId);
+
         emit(new DeploymentCompleted(hlcClock.now(),
                                      Severity.INFO,
                                      "Deployed " + artifact + " on " + nodeId + durationSuffix + nodeReadySuffix,
                                      buildCompletedMetadata(artifact, nodeId, durationMs)));
     }
 
-    @Contract private void handleDeploymentFailed(String trackingKey, String artifact, String nodeId, NodeArtifactValue value) {
+    @Contract
+    private void handleDeploymentFailed(String trackingKey, String artifact, String nodeId, NodeArtifactValue value) {
         var durationMs = computeAndRemoveDuration(trackingKey);
         var durationSuffix = durationMs.map(ms -> " after " + formatDuration(ms)).or("");
         var reason = value.failureReason().or("unknown");
+
         emit(new DeploymentFailed(hlcClock.now(),
                                   Severity.WARNING,
                                   "Deployment of " + artifact + " failed on " + nodeId + durationSuffix + ": " + reason,
                                   buildFailedMetadata(artifact, nodeId, reason, durationMs)));
     }
 
-    @Contract public void onSliceFailure(SliceFailureEvent.AllInstancesFailed event) {
+    @Contract
+    public void onSliceFailure(SliceFailureEvent.AllInstancesFailed event) {
         emit(new SliceFailure(hlcClock.now(),
                               Severity.CRITICAL,
-                              "All instances of " + event.artifact().asString() + ":" + event.method().name() + " failed",
-                              Map.of("artifact", event.artifact().asString(),
-                                     "method", event.method().name(),
-                                     "attemptedNodes", String.valueOf(event.attemptedNodes().size()))));
+                              "All instances of " + event.artifact().asString()
+                             + ":" + event.method().name()
+                             + " failed",
+                              Map.of("artifact",
+                                     event.artifact().asString(),
+                                     "method",
+                                     event.method().name(),
+                                     "attemptedNodes",
+                                     String.valueOf(event.attemptedNodes().size()))));
     }
 
-    @Contract public void onScaledUp(ScalingEvent.ScaledUp event) {
+    @Contract
+    public void onScaledUp(ScalingEvent.ScaledUp event) {
         emit(new ScaleUp(hlcClock.now(),
                          Severity.INFO,
-                         event.artifact().asString() + " scaled up from " + event.previousInstances() + " to " + event.newInstances() + " instances",
-                         Map.of("artifact", event.artifact().asString(),
-                                "previousInstances", String.valueOf(event.previousInstances()),
-                                "newInstances", String.valueOf(event.newInstances()))));
+                         event.artifact().asString()
+                        + " scaled up from " + event.previousInstances()
+                        + " to " + event.newInstances()
+                        + " instances",
+                         Map.of("artifact",
+                                event.artifact().asString(),
+                                "previousInstances",
+                                String.valueOf(event.previousInstances()),
+                                "newInstances",
+                                String.valueOf(event.newInstances()))));
     }
 
-    @Contract public void onScaledDown(ScalingEvent.ScaledDown event) {
+    @Contract
+    public void onScaledDown(ScalingEvent.ScaledDown event) {
         emit(new ScaleDown(hlcClock.now(),
                            Severity.INFO,
-                           event.artifact().asString() + " scaled down from " + event.previousInstances() + " to " + event.newInstances() + " instances",
-                           Map.of("artifact", event.artifact().asString(),
-                                  "previousInstances", String.valueOf(event.previousInstances()),
-                                  "newInstances", String.valueOf(event.newInstances()))));
+                           event.artifact().asString()
+                          + " scaled down from " + event.previousInstances()
+                          + " to " + event.newInstances()
+                          + " instances",
+                           Map.of("artifact",
+                                  event.artifact().asString(),
+                                  "previousInstances",
+                                  String.valueOf(event.previousInstances()),
+                                  "newInstances",
+                                  String.valueOf(event.newInstances()))));
     }
 
-    @Contract public void onReconciliationAdjustment(ClusterDeploymentManager.ReconciliationAdjustment event) {
+    @Contract
+    public void onReconciliationAdjustment(ClusterDeploymentManager.ReconciliationAdjustment event) {
         var scalingUp = event.currentInstances() < event.desiredInstances();
-        var direction = scalingUp ? "up" : "down";
-        var summary = "Reconciliation: " + event.artifact().asString() + " adjusted " + direction + " from "
-                      + event.currentInstances() + " to " + event.desiredInstances() + " instances";
-        var details = Map.of("artifact", event.artifact().asString(),
-                             "previousInstances", String.valueOf(event.currentInstances()),
-                             "desiredInstances", String.valueOf(event.desiredInstances()),
-                             "trigger", "reconciliation");
+        var direction = scalingUp
+                        ? "up"
+                        : "down";
+        var summary = "Reconciliation: " + event.artifact().asString()
+                    + " adjusted " + direction
+                    + " from " + event.currentInstances()
+                    + " to " + event.desiredInstances()
+                    + " instances";
+        var details = Map.of("artifact",
+                             event.artifact().asString(),
+                             "previousInstances",
+                             String.valueOf(event.currentInstances()),
+                             "desiredInstances",
+                             String.valueOf(event.desiredInstances()),
+                             "trigger",
+                             "reconciliation");
         var event2 = scalingUp
                      ? new ScaleUp(hlcClock.now(), Severity.INFO, summary, details)
                      : (ClusterEvent) new ScaleDown(hlcClock.now(), Severity.INFO, summary, details);
+
         emit(event2);
     }
 
-    @Contract public void onConnectionEstablished(NetworkServiceMessage.ConnectionEstablished event) {
+    @Contract
+    public void onConnectionEstablished(NetworkServiceMessage.ConnectionEstablished event) {
         emit(new ConnectionEstablished(hlcClock.now(),
                                        Severity.INFO,
                                        "Connected to node " + event.nodeId().id(),
-                                       Map.of("nodeId", event.nodeId().id())));
+                                       Map.of("nodeId",
+                                              event.nodeId().id())));
     }
 
-    @Contract public void onAccessDenied(OperationalEvent.AccessDenied event) {
+    @Contract
+    public void onAccessDenied(OperationalEvent.AccessDenied event) {
         emit(new AccessDenied(hlcClock.now(),
                               Severity.WARNING,
                               "Access denied for " + event.principal() + " on " + event.method() + " " + event.path(),
-                              Map.of("principal", event.principal(),
-                                     "method", event.method(),
-                                     "path", event.path(),
-                                     "actualRole", event.actualRole(),
-                                     "requiredRole", event.requiredRole())));
+                              Map.of("principal",
+                                     event.principal(),
+                                     "method",
+                                     event.method(),
+                                     "path",
+                                     event.path(),
+                                     "actualRole",
+                                     event.actualRole(),
+                                     "requiredRole",
+                                     event.requiredRole())));
     }
 
-    @Contract public void onNodeLifecycleChanged(OperationalEvent.NodeLifecycleChanged event) {
+    @Contract
+    public void onNodeLifecycleChanged(OperationalEvent.NodeLifecycleChanged event) {
         emitAsLeader(new NodeLifecycleChanged(hlcClock.now(),
-                                      Severity.INFO,
-                                      "Node " + event.nodeId() + " lifecycle: " + event.transition(),
-                                      Map.of("nodeId", event.nodeId(),
-                                             "transition", event.transition(),
-                                             "requestedBy", event.requestedBy())));
+                                              Severity.INFO,
+                                              "Node " + event.nodeId() + " lifecycle: " + event.transition(),
+                                              Map.of("nodeId",
+                                                     event.nodeId(),
+                                                     "transition",
+                                                     event.transition(),
+                                                     "requestedBy",
+                                                     event.requestedBy())));
     }
 
-    @Contract public void onConfigChanged(OperationalEvent.ConfigChanged event) {
+    @Contract
+    public void onConfigChanged(OperationalEvent.ConfigChanged event) {
         emit(new ConfigChanged(hlcClock.now(),
                                Severity.INFO,
                                "Config " + event.action() + ": " + event.key() + " (" + event.scope() + ")",
-                               Map.of("key", event.key(),
-                                      "scope", event.scope(),
-                                      "action", event.action(),
-                                      "requestedBy", event.requestedBy())));
+                               Map.of("key",
+                                      event.key(),
+                                      "scope",
+                                      event.scope(),
+                                      "action",
+                                      event.action(),
+                                      "requestedBy",
+                                      event.requestedBy())));
     }
 
-    @Contract public void onBackupCreated(OperationalEvent.BackupCreated event) {
+    @Contract
+    public void onBackupCreated(OperationalEvent.BackupCreated event) {
         emit(new BackupCreated(hlcClock.now(),
                                Severity.INFO,
                                "Backup created: " + event.commitId(),
                                Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
     }
 
-    @Contract public void onBackupRestored(OperationalEvent.BackupRestored event) {
+    @Contract
+    public void onBackupRestored(OperationalEvent.BackupRestored event) {
         emit(new BackupRestored(hlcClock.now(),
                                 Severity.WARNING,
                                 "Backup restored: " + event.commitId(),
                                 Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
     }
 
-    @Contract public void onBlueprintDeployed(OperationalEvent.BlueprintDeployed event) {
+    @Contract
+    public void onBlueprintDeployed(OperationalEvent.BlueprintDeployed event) {
         emit(new BlueprintDeployed(hlcClock.now(),
                                    Severity.INFO,
                                    "Blueprint deployed: " + event.artifactCoords(),
                                    Map.of("artifactCoords", event.artifactCoords(), "requestedBy", event.requestedBy())));
     }
 
-    @Contract public void onBlueprintDeleted(OperationalEvent.BlueprintDeleted event) {
+    @Contract
+    public void onBlueprintDeleted(OperationalEvent.BlueprintDeleted event) {
         emit(new BlueprintDeleted(hlcClock.now(),
                                   Severity.INFO,
                                   "Blueprint deleted: " + event.artifactId(),
                                   Map.of("artifactId", event.artifactId(), "requestedBy", event.requestedBy())));
     }
 
-    @Contract public void onGenerationChanged(OperationalEvent.GenerationChanged event) {
+    @Contract
+    public void onGenerationChanged(OperationalEvent.GenerationChanged event) {
         emitAsLeader(new GenerationChanged(hlcClock.now(),
-                                   Severity.INFO,
-                                   "Generation epoch advanced " + event.oldEpoch() + " -> " + event.newEpoch() + " (" + event.reason() + ")",
-                                   Map.of("oldEpoch", event.oldEpoch(),
-                                          "newEpoch", event.newEpoch(),
-                                          "reason", event.reason())));
+                                           Severity.INFO,
+                                           "Generation epoch advanced " + event.oldEpoch()
+                                          + " -> " + event.newEpoch()
+                                          + " (" + event.reason()
+                                          + ")",
+                                           Map.of("oldEpoch",
+                                                  event.oldEpoch(),
+                                                  "newEpoch",
+                                                  event.newEpoch(),
+                                                  "reason",
+                                                  event.reason())));
     }
 
-    @Contract public void onConnectionFailed(NetworkServiceMessage.ConnectionFailed event) {
+    @Contract
+    public void onConnectionFailed(NetworkServiceMessage.ConnectionFailed event) {
         emit(new ConnectionFailed(hlcClock.now(),
                                   Severity.WARNING,
                                   "Connection to node " + event.nodeId().id() + " failed: " + event.cause().message(),
-                                  Map.of("nodeId", event.nodeId().id(),
-                                         "cause", event.cause().message())));
+                                  Map.of("nodeId",
+                                         event.nodeId().id(),
+                                         "cause",
+                                         event.cause().message())));
     }
 
     private Option<Long> computeAndRemoveDuration(String trackingKey) {
-        return Option.option(deploymentStartTimes.remove(trackingKey))
-                     .map(startTime -> System.currentTimeMillis() - startTime);
+        return Option.option(deploymentStartTimes.remove(trackingKey)).map(startTime -> System.currentTimeMillis() - startTime);
     }
 
     private String buildNodeReadySuffix(String nodeId) {
         var nodeJoinTime = nodeJoinTimes.remove(nodeId);
-        if (nodeJoinTime == null) {return "";}
+
+        if (nodeJoinTime == null) {
+            return "";
+        }
+
         var joinToDeployMs = System.currentTimeMillis() - nodeJoinTime;
+
         return " (node ready in " + formatDuration(joinToDeployMs) + ")";
     }
 
     private static Map<String, String> buildCompletedMetadata(String artifact, String nodeId, Option<Long> durationMs) {
-        return durationMs.map(ms -> Map.of("artifact", artifact, "nodeId", nodeId, "durationMs", String.valueOf(ms)))
+        return durationMs.map(ms -> Map.of("artifact",
+                                           artifact,
+                                           "nodeId",
+                                           nodeId,
+                                           "durationMs",
+                                           String.valueOf(ms)))
                          .or(Map.of("artifact", artifact, "nodeId", nodeId));
     }
 
-    private static Map<String, String> buildFailedMetadata(String artifact, String nodeId, String reason, Option<Long> durationMs) {
+    private static Map<String, String> buildFailedMetadata(String artifact,
+                                                           String nodeId,
+                                                           String reason,
+                                                           Option<Long> durationMs) {
         var base = Map.of("artifact", artifact, "nodeId", nodeId, "reason", reason);
+
         return durationMs.map(ms -> withDuration(base, ms))
                          .or(base);
     }
 
     private static Map<String, String> withDuration(Map<String, String> base, long durationMs) {
         var metadata = new HashMap<>(base);
+
         metadata.put("durationMs", String.valueOf(durationMs));
+
         return Map.copyOf(metadata);
     }
 
     private static String formatDuration(long durationMs) {
-        if (durationMs < 1000) {return durationMs + "ms";}
+        if (durationMs < 1000) {
+            return durationMs + "ms";
+        }
+
         return String.format("%.1fs", durationMs / 1000.0);
     }
 }

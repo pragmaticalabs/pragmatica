@@ -35,6 +35,7 @@ public sealed interface NodeCodecs {
 
     static SliceCodec nodeCodecs(SliceCodec parent) {
         var all = new ArrayList<TypeCodec<?>>();
+
         all.addAll(org.pragmatica.consensus.ConsensusCodecs.CODECS);
         all.addAll(org.pragmatica.consensus.rabia.RabiaCodecs.CODECS);
         all.addAll(org.pragmatica.consensus.net.NetCodecs.CODECS);
@@ -78,6 +79,7 @@ public sealed interface NodeCodecs {
 
     private static Set<Class<?>> collectRequiredTypes() {
         var types = new java.util.HashSet<Class<?>>();
+
         types.addAll(org.pragmatica.swim.SwimCodecs.REQUIRED_TYPES);
         types.add(InetSocketAddress.class);
         types.add(MethodName.class);

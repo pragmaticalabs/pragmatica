@@ -43,8 +43,10 @@ public sealed interface ClusterHttpClient {
         try {
             var trustAll = new TrustManager[]{new TrustAllManager()};
             var sslContext = SSLContext.getInstance("TLS");
+
             sslContext.init(null, trustAll, new SecureRandom());
             var client = HttpClient.newBuilder().sslContext(sslContext).build();
+
             HTTP_OPS_REF.set(JdkHttpOperations.jdkHttpOperations(client));
         } catch (NoSuchAlgorithmException | KeyManagementException e) {
             System.err.println("Warning: failed to enable TLS skip-verify in ClusterHttpClient: " + e.getMessage());
@@ -89,7 +91,10 @@ public sealed interface ClusterHttpClient {
     @Contract
     static void applyTimeout(HttpRequest.Builder builder) {
         var timeout = REQUEST_TIMEOUT.get();
-        if (timeout != null && !timeout.isZero() && !timeout.isNegative()) {builder.timeout(timeout);}
+
+        if (timeout != null && !timeout.isZero() && !timeout.isNegative()) {
+            builder.timeout(timeout);
+        }
     }
 
     static Result<String> fetch(ManagementRoute route, List<String> params) {
@@ -149,7 +154,9 @@ public sealed interface ClusterHttpClient {
     static Result<String> resolveEndpoint() {
         var override = ENDPOINT_OVERRIDE.get();
 
-        if (override != null && !override.isBlank()) {return Result.success(override);}
+        if (override != null && !override.isBlank()) {
+            return Result.success(override);
+        }
 
         return ClusterRegistry.load().flatMap(ClusterHttpClient::extractEndpoint);
     }
@@ -165,6 +172,7 @@ public sealed interface ClusterHttpClient {
         var uri = URI.create(endpoint + path);
         var apiKey = resolveApiKey();
         var builder = HttpRequest.newBuilder().uri(uri).GET();
+
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
         applyTimeout(builder);
 
@@ -179,6 +187,7 @@ public sealed interface ClusterHttpClient {
         var uri = URI.create(endpoint + path);
         var apiKey = resolveApiKey();
         var builder = HttpRequest.newBuilder().uri(uri).header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(jsonBody));
+
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
         applyTimeout(builder);
 
@@ -193,6 +202,7 @@ public sealed interface ClusterHttpClient {
         var uri = URI.create(endpoint + path);
         var apiKey = resolveApiKey();
         var builder = HttpRequest.newBuilder().uri(uri).header("Content-Type", "application/json").PUT(HttpRequest.BodyPublishers.ofString(jsonBody));
+
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
         applyTimeout(builder);
 
@@ -203,7 +213,7 @@ public sealed interface ClusterHttpClient {
     }
 
     private static Result<String> extractBody(HttpResult<String> response) {
-        return response.statusCode() >= 200 && response.statusCode() <300
+        return response.statusCode() >= 200 && response.statusCode() < 300
                ? Result.success(response.body())
                : new HttpError.ApiError(response.statusCode(), response.body()).result();
     }
@@ -211,7 +221,9 @@ public sealed interface ClusterHttpClient {
     private static Option<String> resolveApiKey() {
         var override = API_KEY_OVERRIDE.get();
 
-        if (override != null && !override.isBlank()) {return option(override);}
+        if (override != null && !override.isBlank()) {
+            return option(override);
+        }
 
         return ClusterRegistry.load()
                               .option()
@@ -223,6 +235,7 @@ public sealed interface ClusterHttpClient {
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
     static Result<String> getDirect(String url) {
         var builder = HttpRequest.newBuilder().uri(URI.create(url)).GET();
+
         applyTimeout(builder);
 
         return HTTP_OPS_REF.get()
@@ -239,6 +252,7 @@ public sealed interface ClusterHttpClient {
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
     static Result<String> postDirect(String url, String jsonBody, Option<String> apiKey) {
         var builder = HttpRequest.newBuilder().uri(URI.create(url)).header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(jsonBody));
+
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
         applyTimeout(builder);
 
@@ -258,8 +272,11 @@ public sealed interface ClusterHttpClient {
         var url = "http://" + address + ":" + managementPort + "/health/ready";
         var deadline = System.currentTimeMillis() + timeoutMs;
 
-        while (System.currentTimeMillis() <deadline) {
-            if (getDirect(url).isSuccess()) {return Result.unitResult();}
+        while (System.currentTimeMillis() < deadline) {
+            if (getDirect(url).isSuccess()) {
+                return Result.unitResult();
+            }
+
             ClusterBootstrapOrchestrator.sleepQuietly(2000);
         }
 
@@ -276,10 +293,12 @@ public sealed interface ClusterHttpClient {
         var url = "http://" + address + ":" + managementPort + "/api/nodes/lifecycle/" + nodeId;
         var deadline = System.currentTimeMillis() + timeoutMs;
 
-        while (System.currentTimeMillis() <deadline) {
+        while (System.currentTimeMillis() < deadline) {
             var stateResult = getDirect(url);
 
-            if (stateResult.map(body -> body.contains("DECOMMISSIONED")).or(false)) {return Result.unitResult();}
+            if (stateResult.map(body -> body.contains("DECOMMISSIONED")).or(false)) {
+                return Result.unitResult();
+            }
 
             ClusterBootstrapOrchestrator.sleepQuietly(2000);
         }

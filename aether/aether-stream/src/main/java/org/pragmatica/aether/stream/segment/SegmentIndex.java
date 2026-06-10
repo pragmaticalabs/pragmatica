@@ -49,34 +49,36 @@ public final class SegmentIndex {
         }
     }
 
-    @Contract public void addSegment(String streamName,
-                                     int partition,
-                                     long startOffset,
-                                     long endOffset,
-                                     long maxTimestamp) {
+    @Contract
+    public void addSegment(String streamName, int partition, long startOffset, long endOffset, long maxTimestamp) {
         addSegment(streamName, partition, startOffset, endOffset, maxTimestamp, 0, false, 0);
     }
 
-    @Contract public void addSegment(String streamName, int partition, long startOffset, long endOffset) {
+    @Contract
+    public void addSegment(String streamName, int partition, long startOffset, long endOffset) {
         addSegment(streamName, partition, startOffset, endOffset, 0L);
     }
 
-    @Contract public void addSegment(String streamName,
-                                     int partition,
-                                     long startOffset,
-                                     long endOffset,
-                                     long maxTimestamp,
-                                     int compressionOrdinal,
-                                     boolean encrypted,
-                                     int originalSize) {
+    @Contract
+    public void addSegment(String streamName,
+                           int partition,
+                           long startOffset,
+                           long endOffset,
+                           long maxTimestamp,
+                           int compressionOrdinal,
+                           boolean encrypted,
+                           int originalSize) {
         var key = PartitionKey.partitionKey(streamName, partition);
         var map = partitions.computeIfAbsent(key, _ -> new ConcurrentSkipListMap<>());
+
         map.put(startOffset,
                 SegmentRef.segmentRef(startOffset, endOffset, maxTimestamp, compressionOrdinal, encrypted, originalSize));
     }
 
-    @Contract public void removeSegment(String streamName, int partition, long startOffset) {
+    @Contract
+    public void removeSegment(String streamName, int partition, long startOffset) {
         var key = PartitionKey.partitionKey(streamName, partition);
+
         option(partitions.get(key)).onPresent(map -> map.remove(startOffset));
     }
 
@@ -105,38 +107,48 @@ public final class SegmentIndex {
     private List<SegmentRef> collectOverlapping(ConcurrentSkipListMap<Long, SegmentRef> map,
                                                 long fromOffset,
                                                 long toOffset) {
-        if (map.isEmpty()) {return List.of();}
+        if (map.isEmpty()) {
+            return List.of();
+        }
+
         var startKey = option(map.floorKey(fromOffset)).or(map.firstKey());
-        return map.subMap(startKey, true, toOffset, true).values()
-                         .stream()
-                         .filter(ref -> ref.endOffset >= fromOffset && ref.startOffset <= toOffset)
-                         .toList();
+
+        return map.subMap(startKey, true, toOffset, true)
+                  .values()
+                  .stream()
+                  .filter(ref -> ref.endOffset >= fromOffset && ref.startOffset <= toOffset)
+                  .toList();
     }
 
-    @Contract public void rebuildFromRefs(MetadataStore metadataStore) {
+    @Contract
+    public void rebuildFromRefs(MetadataStore metadataStore) {
         partitions.clear();
-        metadataStore.listAllRefs().keySet()
-                                 .stream()
-                                 .filter(ref -> ref.startsWith(STREAMS_PREFIX))
-                                 .forEach(this::parseAndAddRef);
+        metadataStore.listAllRefs().keySet().stream().filter(ref -> ref.startsWith(STREAMS_PREFIX)).forEach(this::parseAndAddRef);
     }
 
     private void parseAndAddRef(String refName) {
         var parts = refName.substring(STREAMS_PREFIX.length()).split("/");
-        if (parts.length != 3) {return;}
+
+        if (parts.length != 3) {
+            return;
+        }
+
         var streamName = parts[0];
+
         Number.parseInt(parts[1]).onSuccess(partition -> parseOffsetRange(streamName, partition, parts[2]));
     }
 
     private void parseOffsetRange(String streamName, int partition, String range) {
         var dash = range.indexOf('-');
-        if (dash <0) {return;}
-        Number.parseLong(range.substring(0, dash))
-                        .onSuccess(start -> Number.parseLong(range.substring(dash + 1))
-                                                            .onSuccess(end -> addSegment(streamName,
-                                                                                         partition,
-                                                                                         start,
-                                                                                         end)));
+
+        if (dash < 0) {
+            return;
+        }
+
+        Number.parseLong(range.substring(0, dash)).onSuccess(start -> Number.parseLong(range.substring(dash + 1)).onSuccess(end -> addSegment(streamName,
+                                                                                                                                              partition,
+                                                                                                                                              start,
+                                                                                                                                              end)));
     }
 
     static String buildRefName(String streamName, int partition, SegmentRef ref) {

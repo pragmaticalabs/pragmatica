@@ -29,18 +29,21 @@ public final class ConfigLoader {
     private ConfigLoader() {}
 
     public static Result<AetherConfig> load(Path path) {
-        return TomlParser.parseFile(path).flatMap(ConfigLoader::fromDocument)
-                                   .flatMap(ConfigValidator::validate);
+        return TomlParser.parseFile(path)
+                         .flatMap(ConfigLoader::fromDocument)
+                         .flatMap(ConfigValidator::validate);
     }
 
     public static Result<AetherConfig> loadFromString(String content) {
-        return TomlParser.parse(content).flatMap(ConfigLoader::fromDocument)
-                               .flatMap(ConfigValidator::validate);
+        return TomlParser.parse(content)
+                         .flatMap(ConfigLoader::fromDocument)
+                         .flatMap(ConfigValidator::validate);
     }
 
     public static Result<AetherConfig> loadWithOverrides(Path path, Map<String, String> overrides) {
-        return TomlParser.parseFile(path).flatMap(doc -> fromDocumentWithOverrides(doc, overrides))
-                                   .flatMap(ConfigValidator::validate);
+        return TomlParser.parseFile(path)
+                         .flatMap(doc -> fromDocumentWithOverrides(doc, overrides))
+                         .flatMap(ConfigValidator::validate);
     }
 
     public static AetherConfig aetherConfig(Environment env) {
@@ -54,15 +57,19 @@ public final class ConfigLoader {
     private static Result<AetherConfig> fromDocumentWithOverrides(TomlDocument doc, Map<String, String> overrides) {
         var envStr = overrides.getOrDefault("environment",
                                             doc.getString("cluster", "environment").or("docker"));
+
         return Environment.environment(envStr).flatMap(environment -> assembleConfig(doc, overrides, environment));
     }
 
-    @SuppressWarnings("JBCT-UTIL-01") private static Result<AetherConfig> assembleConfig(TomlDocument doc,
-                                                                                         Map<String, String> overrides,
-                                                                                         Environment environment) {
+    @SuppressWarnings("JBCT-UTIL-01")
+    private static Result<AetherConfig> assembleConfig(TomlDocument doc,
+                                                       Map<String, String> overrides,
+                                                       Environment environment) {
         try {
             var builder = populateBuilder(doc, environment);
+
             mergeCliOverrides(overrides, builder);
+
             return success(builder.build());
         } catch (IllegalArgumentException e) {
             return ConfigError.invalidConfig(e.getMessage()).result();
@@ -71,6 +78,7 @@ public final class ConfigLoader {
 
     private static AetherConfig.Builder populateBuilder(TomlDocument doc, Environment environment) {
         var builder = AetherConfig.builder().withEnvironment(environment);
+
         populateClusterConfig(doc, builder);
         populateNodeConfig(doc, builder);
         populateTlsConfig(doc, builder, environment);
@@ -87,6 +95,7 @@ public final class ConfigLoader {
         populateEndpointsConfig(doc, builder);
         populateStreamingConfig(doc, builder);
         populateMembershipConfig(doc, builder);
+
         return builder;
     }
 
@@ -99,7 +108,11 @@ public final class ConfigLoader {
     /// instrumentation now wires unconditionally.
     private static void populateMembershipConfig(TomlDocument doc, AetherConfig.Builder builder) {
         var hasSection = doc.sectionNames().stream().anyMatch("membership"::equals);
-        if (!hasSection) {return;}
+
+        if (!hasSection) {
+            return;
+        }
+
         var nttTimeout = parseTimeSpan(doc,
                                        "membership",
                                        "ntt_departure_timeout",
@@ -108,52 +121,65 @@ public final class ConfigLoader {
                                                 "membership",
                                                 "quorum_loss_drain_threshold",
                                                 MembershipConfigBinding.DEFAULT_QUORUM_LOSS_DRAIN_THRESHOLD);
+
         builder.membership(new MembershipConfigBinding(nttTimeout, quorumLossThreshold));
     }
 
     private static void populateStreamingConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        var hasSection = doc.sectionNames().stream()
-                                         .anyMatch(s -> s.equals("streaming"));
-        if (!hasSection) {return;}
+        var hasSection = doc.sectionNames().stream().anyMatch(s -> s.equals("streaming"));
+
+        if (!hasSection) {
+            return;
+        }
+
         var defaults = StreamingConfig.streamingConfig();
         var publishTimeout = parseTimeSpan(doc, "streaming", "publish_forward_timeout", defaults.publishForwardTimeout());
         var readTimeout = parseTimeSpan(doc, "streaming", "read_forward_timeout", defaults.readForwardTimeout());
         var maxBytes = parseDataSize(doc, "streaming", "max_read_response_bytes", defaults.maxReadResponseBytes());
+
         builder.streaming(StreamingConfig.streamingConfig(publishTimeout, readTimeout, maxBytes));
     }
 
     private static long parseDataSize(TomlDocument doc, String section, String key, long defaultValue) {
-        var stringVal = doc.getString(section, key).flatMap(v -> DataSize.dataSize(v).option())
-                                     .map(DataSize::bytes);
-        if (stringVal.isPresent()) {return stringVal.or(defaultValue);}
-        return doc.getLong(section, key).or(defaultValue);
+        var stringVal = doc.getString(section, key).flatMap(v -> DataSize.dataSize(v).option()).map(DataSize::bytes);
+
+        if (stringVal.isPresent()) {
+            return stringVal.or(defaultValue);
+        }
+
+        return doc.getLong(section, key)
+                  .or(defaultValue);
     }
 
     private static TimeSpan parseTimeSpan(TomlDocument doc, String section, String key, TimeSpan defaultValue) {
-        return doc.getString(section, key).flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v).option())
-                            .map(ts -> TimeSpan.fromDuration(ts.duration()))
-                            .or(defaultValue);
+        return doc.getString(section, key)
+                  .flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
+                                                                  .option())
+                  .map(ts -> TimeSpan.fromDuration(ts.duration()))
+                  .or(defaultValue);
     }
 
     private static long parseLong(TomlDocument doc, String section, String key, long defaultValue) {
-        return doc.getLong(section, key).or(defaultValue);
+        return doc.getLong(section, key)
+                  .or(defaultValue);
     }
 
     private static int parseInt(TomlDocument doc, String section, String key, int defaultValue) {
-        return doc.getInt(section, key).or(defaultValue);
+        return doc.getInt(section, key)
+                  .or(defaultValue);
     }
 
     private static int parseDataSize(TomlDocument doc, String section, String key, int defaultValue) {
-        return doc.getString(section, key).flatMap(v -> DataSize.dataSize(v).option())
-                            .map(DataSize::bytesAsInt)
-                            .or(defaultValue);
+        return doc.getString(section, key)
+                  .flatMap(v -> DataSize.dataSize(v).option())
+                  .map(DataSize::bytesAsInt)
+                  .or(defaultValue);
     }
 
-    @SuppressWarnings("JBCT-RET-07") private static void populateClusterConfig(TomlDocument doc,
-                                                                               AetherConfig.Builder builder) {
+    @SuppressWarnings("JBCT-RET-07")
+    private static void populateClusterConfig(TomlDocument doc, AetherConfig.Builder builder) {
         doc.getInt("cluster", "nodes").onPresent(builder::nodes);
-        doc.getString("cluster", "tls").map(ConfigLoader::toBooleanValue)
-                     .onPresent(builder::tls);
+        doc.getString("cluster", "tls").map(ConfigLoader::toBooleanValue).onPresent(builder::tls);
         doc.getInt("cluster", "core_max").onPresent(builder::coreMax);
         builder.ports(portsFromDocument(doc));
     }
@@ -161,65 +187,76 @@ public final class ConfigLoader {
     private static PortsConfig portsFromDocument(TomlDocument doc) {
         var mgmtPort = doc.getInt("cluster.ports", "management").or(PortsConfig.DEFAULT_MANAGEMENT_PORT);
         var clusterPort = doc.getInt("cluster.ports", "cluster").or(PortsConfig.DEFAULT_CLUSTER_PORT);
-        var mgmtProtocol = doc.getString("cluster.ports", "management_protocol").flatMap(HttpProtocol::httpProtocol)
-                                        .or(HttpProtocol.H1);
+        var mgmtProtocol = doc.getString("cluster.ports", "management_protocol").flatMap(HttpProtocol::httpProtocol).or(HttpProtocol.H1);
+
         return PortsConfig.portsConfig(mgmtPort, clusterPort, mgmtProtocol).unwrap();
     }
 
-    @SuppressWarnings("JBCT-RET-07") private static void populateNodeConfig(TomlDocument doc,
-                                                                            AetherConfig.Builder builder) {
+    @SuppressWarnings("JBCT-RET-07")
+    private static void populateNodeConfig(TomlDocument doc, AetherConfig.Builder builder) {
         doc.getString("node", "heap").onPresent(builder::heap);
         doc.getString("node", "gc").onPresent(builder::gc);
     }
 
     private static void populateTlsConfig(TomlDocument doc, AetherConfig.Builder builder, Environment environment) {
         var tlsEnabled = isTlsEnabled(doc, environment);
-        if (tlsEnabled) {builder.tlsConfig(tlsFromDocument(doc));}
+
+        if (tlsEnabled) {
+            builder.tlsConfig(tlsFromDocument(doc));
+        }
     }
 
     private static boolean isTlsEnabled(TomlDocument doc, Environment environment) {
-        return doc.getString("cluster", "tls").map(ConfigLoader::toBooleanValue)
-                            .or(environment.defaultTls());
+        return doc.getString("cluster", "tls")
+                  .map(ConfigLoader::toBooleanValue)
+                  .or(environment.defaultTls());
     }
 
     private static TlsConfig tlsFromDocument(TomlDocument doc) {
-        var autoGen = doc.getString("tls", "auto_generate").map(ConfigLoader::toBooleanValue)
-                                   .or(true);
+        var autoGen = doc.getString("tls", "auto_generate").map(ConfigLoader::toBooleanValue).or(true);
         var certPath = doc.getString("tls", "cert_path").or("");
         var keyPath = doc.getString("tls", "key_path").or("");
         var caPath = doc.getString("tls", "ca_path").or("");
-        var clusterSecret = doc.getString("tls", "cluster_secret").orElse(Option.option(System.getenv("AETHER_CLUSTER_SECRET")))
-                                         .or("");
+        var clusterSecret = doc.getString("tls", "cluster_secret").orElse(Option.option(System.getenv("AETHER_CLUSTER_SECRET"))).or("");
+
         return new TlsConfig(autoGen, certPath, keyPath, caPath, clusterSecret);
     }
 
     private static void populateDockerConfig(TomlDocument doc, AetherConfig.Builder builder, Environment environment) {
-        if (environment == Environment.DOCKER) {builder.dockerConfig(dockerFromDocument(doc));}
+        if (environment == Environment.DOCKER) {
+            builder.dockerConfig(dockerFromDocument(doc));
+        }
     }
 
     private static DockerConfig dockerFromDocument(TomlDocument doc) {
         var network = doc.getString("docker", "network").or(DockerConfig.DEFAULT_NETWORK);
         var image = doc.getString("docker", "image").or(DockerConfig.DEFAULT_IMAGE);
+
         return DockerConfig.dockerConfig(network, image).unwrap();
     }
 
     private static void populateKubernetesConfig(TomlDocument doc,
                                                  AetherConfig.Builder builder,
                                                  Environment environment) {
-        if (environment == Environment.KUBERNETES) {builder.kubernetesConfig(kubernetesFromDocument(doc));}
+        if (environment == Environment.KUBERNETES) {
+            builder.kubernetesConfig(kubernetesFromDocument(doc));
+        }
     }
 
     private static KubernetesConfig kubernetesFromDocument(TomlDocument doc) {
         var namespace = doc.getString("kubernetes", "namespace").or(KubernetesConfig.DEFAULT_NAMESPACE);
         var serviceType = doc.getString("kubernetes", "service_type").or(KubernetesConfig.DEFAULT_SERVICE_TYPE);
         var storageClass = doc.getString("kubernetes", "storage_class").or("");
+
         return KubernetesConfig.kubernetesConfig(namespace, serviceType, storageClass).unwrap();
     }
 
     private static void populateTtmConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        var ttmEnabled = doc.getString("ttm", "enabled").map(ConfigLoader::toBooleanValue)
-                                      .or(false);
-        if (ttmEnabled) {builder.ttm(ttmFromDocument(doc));}
+        var ttmEnabled = doc.getString("ttm", "enabled").map(ConfigLoader::toBooleanValue).or(false);
+
+        if (ttmEnabled) {
+            builder.ttm(ttmFromDocument(doc));
+        }
     }
 
     private static TtmConfig ttmFromDocument(TomlDocument doc) {
@@ -232,21 +269,18 @@ public final class ConfigLoader {
                                              "evaluation_interval_ms",
                                              timeSpan(60).seconds());
         var confidence = doc.getDouble("ttm", "confidence_threshold").or(0.7);
-        return TtmConfig.ttmConfig(modelPath, inputWindow, predictionHorizon, evalInterval, confidence, true)
-                                  .or(TtmConfig.ttmConfig());
+
+        return TtmConfig.ttmConfig(modelPath, inputWindow, predictionHorizon, evalInterval, confidence, true).or(TtmConfig.ttmConfig());
     }
 
-    @SuppressWarnings({"JBCT-STY-05", "JBCT-RET-07"}) private static void populateSliceConfig(TomlDocument doc,
-                                                                                              AetherConfig.Builder builder) {
-        doc.getStringList("slice", "repositories").map(repos -> SliceConfig.sliceConfigFromNames(repos))
-                         .flatMap(Result::option)
-                         .onPresent(builder::sliceConfig);
+    @SuppressWarnings({"JBCT-STY-05", "JBCT-RET-07"})
+    private static void populateSliceConfig(TomlDocument doc, AetherConfig.Builder builder) {
+        doc.getStringList("slice", "repositories").map(repos -> SliceConfig.sliceConfigFromNames(repos)).flatMap(Result::option).onPresent(builder::sliceConfig);
     }
 
-    @SuppressWarnings("JBCT-STY-05") private static void populateAppHttpConfig(TomlDocument doc,
-                                                                               AetherConfig.Builder builder) {
-        var enabled = doc.getString("app-http", "enabled").map(ConfigLoader::toBooleanValue)
-                                   .or(false);
+    @SuppressWarnings("JBCT-STY-05")
+    private static void populateAppHttpConfig(TomlDocument doc, AetherConfig.Builder builder) {
+        var enabled = doc.getString("app-http", "enabled").map(ConfigLoader::toBooleanValue).or(false);
         var port = doc.getInt("app-http", "port").or(AppHttpConfig.DEFAULT_APP_HTTP_PORT);
         var maxRequestSize = parseDataSize(doc, "app-http", "max_request_size", AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE);
         var explicitMode = doc.getString("app-http", "security_mode").flatMap(SecurityMode::securityMode);
@@ -255,20 +289,22 @@ public final class ConfigLoader {
                                            ? SecurityMode.NONE
                                            : SecurityMode.API_KEY);
         var jwtConfig = parseJwtConfig(doc);
-        var httpProtocol = doc.getString("app-http", "protocol").flatMap(HttpProtocol::httpProtocol)
-                                        .or(HttpProtocol.H1);
-        if (enabled || !apiKeys.isEmpty()) {builder.appHttp(AppHttpConfig.appHttpConfig(enabled,
-                                                                                        port,
-                                                                                        apiKeys,
-                                                                                        maxRequestSize,
-                                                                                        securityMode,
-                                                                                        jwtConfig,
-                                                                                        httpProtocol)
-        .unwrap());}
+        var httpProtocol = doc.getString("app-http", "protocol").flatMap(HttpProtocol::httpProtocol).or(HttpProtocol.H1);
+
+        if (enabled || !apiKeys.isEmpty()) {
+            builder.appHttp(AppHttpConfig.appHttpConfig(enabled,
+                                                        port,
+                                                        apiKeys,
+                                                        maxRequestSize,
+                                                        securityMode,
+                                                        jwtConfig,
+                                                        httpProtocol).unwrap());
+        }
     }
 
     private static Option<JwtConfig> parseJwtConfig(TomlDocument doc) {
-        return doc.getString("app-http", "jwks_url").map(jwksUrl -> buildJwtConfig(doc, jwksUrl));
+        return doc.getString("app-http", "jwks_url")
+                  .map(jwksUrl -> buildJwtConfig(doc, jwksUrl));
     }
 
     private static JwtConfig buildJwtConfig(TomlDocument doc, String jwksUrl) {
@@ -277,26 +313,28 @@ public final class ConfigLoader {
         var roleClaim = doc.getString("app-http", "role_claim").or(JwtConfig.DEFAULT_ROLE_CLAIM);
         var cacheTtl = parseLong(doc, "app-http", "jwks_cache_ttl_seconds", JwtConfig.DEFAULT_CACHE_TTL_SECONDS);
         var clockSkew = parseLong(doc, "app-http", "clock_skew_seconds", JwtConfig.DEFAULT_CLOCK_SKEW_SECONDS);
+
         return JwtConfig.jwtConfig(jwksUrl, issuer, audience, roleClaim, cacheTtl, clockSkew).unwrap();
     }
 
     private static void populateBackupConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        var enabled = doc.getString("backup", "enabled").map(ConfigLoader::toBooleanValue)
-                                   .or(false);
+        var enabled = doc.getString("backup", "enabled").map(ConfigLoader::toBooleanValue).or(false);
+
         if (enabled) {
             var interval = doc.getString("backup", "interval").or("5m");
             var path = doc.getString("backup", "path").or("");
             var remote = doc.getString("backup", "remote").or("");
+
             builder.backup(BackupConfig.backupConfig(true, interval, path, remote));
         }
     }
 
     private static void populateDhtReplicationConfig(TomlDocument doc, AetherConfig.Builder builder) {
         var hasDelay = doc.getString("dht.replication", "cooldown_delay").isPresent() || doc.getLong("dht.replication",
-                                                                                                     "cooldown_delay_ms")
-        .isPresent();
+                                                                                                     "cooldown_delay_ms").isPresent();
         var hasRate = doc.getInt("dht.replication", "cooldown_rate").isPresent();
         var hasRf = doc.getInt("dht.replication", "target_rf").isPresent();
+
         if (hasDelay || hasRate || hasRf) {
             var delay = parseTimeSpanOrMs(doc,
                                           "dht.replication",
@@ -305,15 +343,19 @@ public final class ConfigLoader {
                                           DhtReplicationConfig.DEFAULT_COOLDOWN_DELAY);
             var rate = doc.getInt("dht.replication", "cooldown_rate").or(DhtReplicationConfig.DEFAULT_COOLDOWN_RATE);
             var rf = doc.getInt("dht.replication", "target_rf").or(DhtReplicationConfig.DEFAULT_TARGET_RF);
+
             builder.dhtReplication(DhtReplicationConfig.dhtReplicationConfig(delay, rate, rf));
         }
     }
 
-    @SuppressWarnings("JBCT-SEQ-01") private static void populateTimeoutsConfig(TomlDocument doc,
-                                                                                AetherConfig.Builder builder) {
-        var hasTimeoutsSection = doc.sectionNames().stream()
-                                                 .anyMatch(s -> s.startsWith("timeouts"));
-        if (!hasTimeoutsSection) {return;}
+    @SuppressWarnings("JBCT-SEQ-01")
+    private static void populateTimeoutsConfig(TomlDocument doc, AetherConfig.Builder builder) {
+        var hasTimeoutsSection = doc.sectionNames().stream().anyMatch(s -> s.startsWith("timeouts"));
+
+        if (!hasTimeoutsSection) {
+            return;
+        }
+
         builder.timeouts(timeoutsFromDocument(doc));
     }
 
@@ -329,25 +371,35 @@ public final class ConfigLoader {
         var discovery = doc.getSection("cloud.discovery");
         var secrets = doc.getSection("cloud.secrets");
         var withLb = lb.isEmpty()
-                    ? cc
-                    : cc.withLoadBalancer(lb);
+                     ? cc
+                     : cc.withLoadBalancer(lb);
         var withDiscovery = discovery.isEmpty()
-                           ? withLb
-                           : withLb.withDiscovery(discovery);
+                            ? withLb
+                            : withLb.withDiscovery(discovery);
         var withSecrets = secrets.isEmpty()
-                         ? withDiscovery
-                         : withDiscovery.withSecrets(secrets);
+                          ? withDiscovery
+                          : withDiscovery.withSecrets(secrets);
+
         builder.cloud(withSecrets);
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static void populateStorageConfig(TomlDocument doc,
-                                                                               AetherConfig.Builder builder) {
+    @SuppressWarnings("JBCT-PAT-01")
+    private static void populateStorageConfig(TomlDocument doc, AetherConfig.Builder builder) {
         var instances = new HashMap<String, StorageConfig>();
-        for (var sectionName : doc.sectionNames()) {if (sectionName.startsWith("storage.")) {
-            var instanceName = sectionName.substring("storage.".length());
-            if (!instanceName.isEmpty()) {instances.put(instanceName, storageFromSection(doc, sectionName));}
-        }}
-        if (!instances.isEmpty()) {builder.storage(Map.copyOf(instances));}
+
+        for (var sectionName : doc.sectionNames()) {
+            if (sectionName.startsWith("storage.")) {
+                var instanceName = sectionName.substring("storage.".length());
+
+                if (!instanceName.isEmpty()) {
+                    instances.put(instanceName, storageFromSection(doc, sectionName));
+                }
+            }
+        }
+
+        if (!instances.isEmpty()) {
+            builder.storage(Map.copyOf(instances));
+        }
     }
 
     private static StorageConfig storageFromSection(TomlDocument doc, String sectionName) {
@@ -358,6 +410,7 @@ public final class ConfigLoader {
         var mutationThreshold = parseInt(doc, sectionName, "snapshot_mutation_threshold", 1000);
         var snapshotInterval = doc.getString(sectionName, "snapshot_max_interval").or("60s");
         var retentionCount = parseInt(doc, sectionName, "snapshot_retention_count", 5);
+
         return StorageConfig.storageConfig(memoryMaxBytes,
                                            diskMaxBytes,
                                            diskPath,
@@ -369,38 +422,53 @@ public final class ConfigLoader {
 
     private static void populateEndpointsConfig(TomlDocument doc, AetherConfig.Builder builder) {
         var endpoints = new HashMap<String, EndpointConfig>();
-        for (var sectionName : doc.sectionNames()) {if (sectionName.startsWith("endpoints.")) {
-            var endpointName = sectionName.substring("endpoints.".length());
-            if (!endpointName.isEmpty()) {endpoints.put(endpointName, endpointFromSection(doc, sectionName));}
-        }}
-        if (!endpoints.isEmpty()) {builder.endpoints(Map.copyOf(endpoints));}
+
+        for (var sectionName : doc.sectionNames()) {
+            if (sectionName.startsWith("endpoints.")) {
+                var endpointName = sectionName.substring("endpoints.".length());
+
+                if (!endpointName.isEmpty()) {
+                    endpoints.put(endpointName, endpointFromSection(doc, sectionName));
+                }
+            }
+        }
+
+        if (!endpoints.isEmpty()) {
+            builder.endpoints(Map.copyOf(endpoints));
+        }
     }
 
     private static EndpointConfig endpointFromSection(TomlDocument doc, String sectionName) {
         var host = doc.getString(sectionName, "host").or("localhost");
         var port = doc.getInt(sectionName, "port").or(5432);
         var username = doc.getString(sectionName, "username").or("");
-        var password = doc.getString(sectionName, "password").map(ConfigLoader::resolveEnvVar)
-                                    .or("");
+        var password = doc.getString(sectionName, "password").map(ConfigLoader::resolveEnvVar).or("");
+
         return EndpointConfig.endpointConfig(host, port, username, password);
     }
 
     private static Map<String, String> resolveEnvVars(Map<String, String> map) {
         var resolved = new HashMap<String, String>();
+
         map.forEach((k, v) -> resolved.put(k, resolveEnvVar(v)));
+
         return resolved;
     }
 
     private static String resolveEnvVar(String value) {
         if (value.startsWith("${env:") && value.endsWith("}")) {
             var envName = value.substring(6, value.length() - 1);
+
             return Option.option(System.getenv(envName)).or(value);
         }
+
         return value;
     }
 
-    @SuppressWarnings("JBCT-SEQ-01") private static TimeoutsConfig timeoutsFromDocument(TomlDocument doc) {
+    @SuppressWarnings("JBCT-SEQ-01")
+    private static TimeoutsConfig timeoutsFromDocument(TomlDocument doc) {
         var defaults = TimeoutsConfig.timeoutsConfig();
+
         return new TimeoutsConfig(parseInvocationTimeouts(doc, defaults.invocation()),
                                   parseForwardingTimeouts(doc, defaults.forwarding()),
                                   parseDeploymentTimeouts(doc, defaults.deployment()),
@@ -673,68 +741,101 @@ public final class ConfigLoader {
                                               String msKey,
                                               TimeSpan defaultValue) {
         var fromString = doc.getString(section, stringKey).flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
-                                                                                                                   .option())
-                                      .map(ts -> TimeSpan.fromDuration(ts.duration()));
-        if (fromString.isPresent()) {return fromString.unwrap();}
-        return doc.getLong(section, msKey).map(ms -> timeSpan(ms).millis())
-                          .or(defaultValue);
+                                                                                                          .option()).map(ts -> TimeSpan.fromDuration(ts.duration()));
+
+        if (fromString.isPresent()) {
+            return fromString.unwrap();
+        }
+
+        return doc.getLong(section, msKey)
+                  .map(ms -> timeSpan(ms).millis())
+                  .or(defaultValue);
     }
 
     private static Map<String, ApiKeyEntry> resolveApiKeys(TomlDocument doc) {
         var envKeys = System.getenv("AETHER_API_KEYS");
-        if (envKeys != null && !envKeys.isBlank()) {return parseEnvApiKeys(envKeys);}
+
+        if (envKeys != null && !envKeys.isBlank()) {
+            return parseEnvApiKeys(envKeys);
+        }
+
         var richKeys = parseRichApiKeys(doc);
-        if (!richKeys.isEmpty()) {return richKeys;}
-        return doc.getStringList("app-http", "api_keys").map(ConfigLoader::wrapSimpleKeyList)
-                                .or(Map.of());
+
+        if (!richKeys.isEmpty()) {
+            return richKeys;
+        }
+
+        return doc.getStringList("app-http", "api_keys")
+                  .map(ConfigLoader::wrapSimpleKeyList)
+                  .or(Map.of());
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static Map<String, ApiKeyEntry> parseEnvApiKeys(String envValue) {
+    @SuppressWarnings("JBCT-PAT-01")
+    private static Map<String, ApiKeyEntry> parseEnvApiKeys(String envValue) {
         var result = new HashMap<String, ApiKeyEntry>();
+
         for (var segment : envValue.split(";")) {
             var parts = segment.trim().split(":", 4);
+
             if (parts.length >= 1 && !parts[0].isBlank()) {
                 var keyValue = parts[0].trim();
                 var name = parts.length >= 2
-                          ? parts[1].trim()
-                          : ApiKeyEntry.defaultEntry(keyValue).name();
+                           ? parts[1].trim()
+                           : ApiKeyEntry.defaultEntry(keyValue).name();
                 var roles = parts.length >= 3
-                           ? Set.of(parts[2].trim().split(","))
-                           : Set.of("service");
+                            ? Set.of(parts[2].trim().split(","))
+                            : Set.of("service");
                 var authRole = parts.length >= 4
-                              ? parts[3].trim()
-                              : ApiKeyEntry.DEFAULT_ROLE;
+                               ? parts[3].trim()
+                               : ApiKeyEntry.DEFAULT_ROLE;
+
                 result.put(keyValue, ApiKeyEntry.apiKeyEntry(name, roles, authRole));
             }
         }
+
         return Map.copyOf(result);
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static Map<String, ApiKeyEntry> parseRichApiKeys(TomlDocument doc) {
+    @SuppressWarnings("JBCT-PAT-01")
+    private static Map<String, ApiKeyEntry> parseRichApiKeys(TomlDocument doc) {
         var prefix = "app-http.api-keys.";
         var result = new HashMap<String, ApiKeyEntry>();
-        for (var sectionName : doc.sectionNames()) {if (sectionName.startsWith(prefix)) {
-            var keyValue = sectionName.substring(prefix.length());
-            var name = doc.getString(sectionName, "name").or(ApiKeyEntry.defaultEntry(keyValue).name());
-            var roles = doc.getStringList(sectionName, "roles").map(Set::copyOf)
-                                         .or(Set.of("service"));
-            var authRole = doc.getString(sectionName, "authorization_role").or(ApiKeyEntry.DEFAULT_ROLE);
-            result.put(keyValue, ApiKeyEntry.apiKeyEntry(name, roles, authRole));
-        }}
+
+        for (var sectionName : doc.sectionNames()) {
+            if (sectionName.startsWith(prefix)) {
+                var keyValue = sectionName.substring(prefix.length());
+                var name = doc.getString(sectionName, "name").or(ApiKeyEntry.defaultEntry(keyValue).name());
+                var roles = doc.getStringList(sectionName, "roles").map(Set::copyOf).or(Set.of("service"));
+                var authRole = doc.getString(sectionName, "authorization_role").or(ApiKeyEntry.DEFAULT_ROLE);
+
+                result.put(keyValue, ApiKeyEntry.apiKeyEntry(name, roles, authRole));
+            }
+        }
+
         return Map.copyOf(result);
     }
 
     private static Map<String, ApiKeyEntry> wrapSimpleKeyList(List<String> keys) {
         var result = new HashMap<String, ApiKeyEntry>();
+
         keys.forEach(key -> result.put(key, ApiKeyEntry.defaultEntry(key)));
+
         return Map.copyOf(result);
     }
 
-    @SuppressWarnings("JBCT-RET-07") private static void mergeCliOverrides(Map<String, String> overrides,
-                                                                           AetherConfig.Builder builder) {
-        if (overrides.containsKey("nodes")) {Number.parseInt(overrides.get("nodes")).onSuccess(builder::nodes);}
-        if (overrides.containsKey("heap")) {builder.heap(overrides.get("heap"));}
-        if (overrides.containsKey("tls")) {builder.tls(Boolean.parseBoolean(overrides.get("tls")));}
+    @SuppressWarnings("JBCT-RET-07")
+    private static void mergeCliOverrides(Map<String, String> overrides, AetherConfig.Builder builder) {
+        if (overrides.containsKey("nodes")) {
+            Number.parseInt(overrides.get("nodes")).onSuccess(builder::nodes);
+        }
+
+        if (overrides.containsKey("heap")) {
+            builder.heap(overrides.get("heap"));
+        }
+
+        if (overrides.containsKey("tls")) {
+            builder.tls(Boolean.parseBoolean(overrides.get("tls")));
+        }
     }
 
     private static boolean toBooleanValue(String s) {
@@ -743,15 +844,25 @@ public final class ConfigLoader {
 
     public static Duration parseDuration(String value) {
         var normalized = value.trim().toLowerCase();
+
         return normalized.isEmpty()
-              ? Duration.ofSeconds(1)
-              : durationFromSuffix(normalized);
+               ? Duration.ofSeconds(1)
+               : durationFromSuffix(normalized);
     }
 
     private static Duration durationFromSuffix(String normalized) {
-        if (normalized.endsWith("ms")) {return parseDurationMs(normalized);}
-        if (normalized.endsWith("s")) {return parseDurationSeconds(normalized);}
-        if (normalized.endsWith("m")) {return parseDurationMinutes(normalized);}
+        if (normalized.endsWith("ms")) {
+            return parseDurationMs(normalized);
+        }
+
+        if (normalized.endsWith("s")) {
+            return parseDurationSeconds(normalized);
+        }
+
+        if (normalized.endsWith("m")) {
+            return parseDurationMinutes(normalized);
+        }
+
         return parseDurationRaw(normalized);
     }
 
@@ -776,13 +887,15 @@ public final class ConfigLoader {
     }
 
     private static Duration parseDurationRaw(String normalized) {
-        return Number.parseLong(normalized).map(Duration::ofSeconds)
-                               .or(DEFAULT_DURATION);
+        return Number.parseLong(normalized)
+                     .map(Duration::ofSeconds)
+                     .or(DEFAULT_DURATION);
     }
 
     public sealed interface ConfigError extends Cause {
         record unused() implements ConfigError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "unused";
             }
         }
@@ -792,7 +905,8 @@ public final class ConfigLoader {
                 return success(new InvalidConfig(reason));
             }
 
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Invalid configuration: " + reason;
             }
         }

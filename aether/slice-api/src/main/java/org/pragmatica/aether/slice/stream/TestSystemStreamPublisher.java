@@ -5,7 +5,6 @@
 package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.aether.slice.resource.ResourceAddress;
-
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -22,8 +21,10 @@ import java.util.function.Consumer;
 /// depend on `FrameworkStreamPublisher<T>` actually publish. The capture callback receives every
 /// published event synchronously; the returned `Promise<Unit>` always succeeds.
 record TestSystemStreamPublisher<T>(ResourceAddress address, Consumer<T> capture) implements FrameworkStreamPublisher<T> {
-    @Override public Promise<Unit> publish(T event) {
+    @Override
+    public Promise<Unit> publish(T event) {
         capture.accept(event);
+
         return Promise.unitPromise();
     }
 }

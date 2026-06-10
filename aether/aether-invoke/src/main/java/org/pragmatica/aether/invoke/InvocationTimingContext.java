@@ -8,9 +8,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") public final class InvocationTimingContext {
+@SuppressWarnings("JBCT-RET-01")
+public final class InvocationTimingContext {
     private static final Logger log = LoggerFactory.getLogger(InvocationTimingContext.class);
-
     private static final InvocationTimingContext NOOP = new InvocationTimingContext(false);
 
     private final boolean active;
@@ -28,13 +28,15 @@ import org.slf4j.LoggerFactory;
 
     private InvocationTimingContext(boolean active) {
         this.active = active;
-        if (active) {this.startNs = System.nanoTime();}
+        if (active) {
+            this.startNs = System.nanoTime();
+        }
     }
 
     public static InvocationTimingContext invocationTimingContext() {
         return log.isTraceEnabled()
-              ? new InvocationTimingContext(true)
-              : NOOP;
+               ? new InvocationTimingContext(true)
+               : NOOP;
     }
 
     public void routeResolved() {
@@ -74,9 +76,13 @@ import org.slf4j.LoggerFactory;
     }
 
     public void complete(String artifact, String method) {
-        if (!active) {return;}
+        if (!active) {
+            return;
+        }
+
         completedNs = System.nanoTime();
-        log.trace("Invocation timing [{}::{}] total={}us route={}us ser={}us endpoint={}us net_send={}us " + "handler={}us bridge={}us resp_ser={}us net_resp={}us deser={}us",
+        log.trace("Invocation timing [{}::{}] total={}us route={}us ser={}us endpoint={}us net_send={}us "
+                 + "handler={}us bridge={}us resp_ser={}us net_resp={}us deser={}us",
                   artifact,
                   method,
                   deltaUs(startNs, completedNs),
@@ -93,7 +99,7 @@ import org.slf4j.LoggerFactory;
 
     private static long deltaUs(long from, long to) {
         return to > 0 && from > 0
-              ? (to - from) / 1_000
-              : 0;
+               ? (to - from) / 1_000
+               : 0;
     }
 }

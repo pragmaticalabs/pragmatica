@@ -8,9 +8,9 @@ import org.pragmatica.consensus.NodeId;
 
 
 public sealed interface OperatorIntent {
-    record RemoveMember(NodeId nodeId) implements OperatorIntent{}
+    record RemoveMember(NodeId nodeId) implements OperatorIntent {}
 
-    record SetDesiredSize(int size) implements OperatorIntent{}
+    record SetDesiredSize(int size) implements OperatorIntent {}
 
-    record DrainMember(NodeId nodeId) implements OperatorIntent{}
+    record DrainMember(NodeId nodeId) implements OperatorIntent {}
 }

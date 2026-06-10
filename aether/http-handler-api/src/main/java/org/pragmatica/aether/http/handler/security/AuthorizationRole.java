@@ -7,7 +7,8 @@ package org.pragmatica.aether.http.handler.security;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public enum AuthorizationRole {
+@Codec
+public enum AuthorizationRole {
     ADMIN,
     OPERATOR,
     VIEWER;

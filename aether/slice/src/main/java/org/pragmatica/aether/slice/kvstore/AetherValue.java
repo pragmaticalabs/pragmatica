@@ -30,7 +30,10 @@ import java.util.Set;
 import static org.pragmatica.lang.Option.none;
 
 
-@Codec@CodecFor(ExecutionMode.class) @SuppressWarnings("JBCT-NAM-01") public sealed interface AetherValue {
+@Codec
+@CodecFor(ExecutionMode.class)
+@SuppressWarnings("JBCT-NAM-01")
+public sealed interface AetherValue {
     record SliceTargetValue(Version currentVersion,
                             int targetInstances,
                             int minInstances,
@@ -40,7 +43,9 @@ import static org.pragmatica.lang.Option.none;
         private static final String DEFAULT_PLACEMENT = "CORE_ONLY";
 
         public SliceTargetValue {
-            if (placement == null || placement.isEmpty()) {placement = DEFAULT_PLACEMENT;}
+            if (placement == null || placement.isEmpty()) {
+                placement = DEFAULT_PLACEMENT;
+            }
         }
 
         public static SliceTargetValue sliceTargetValue(Version version, int instances, Option<BlueprintId> owner) {
@@ -158,6 +163,7 @@ import static org.pragmatica.lang.Option.none;
 
         public static SliceNodeValue failedSliceNodeValue(Cause cause) {
             var classified = SliceLoadingFailure.classify(cause);
+
             return new SliceNodeValue(SliceState.FAILED,
                                       Option.option(classified.message()),
                                       classified.isFatal(),
@@ -166,8 +172,8 @@ import static org.pragmatica.lang.Option.none;
 
         private static long defaultTransitionedAt(SliceState state) {
             return state.isTransitional()
-                  ? System.currentTimeMillis()
-                  : 0L;
+                   ? System.currentTimeMillis()
+                   : 0L;
         }
     }
 
@@ -409,7 +415,6 @@ import static org.pragmatica.lang.Option.none;
 
     record ActivationDirectiveValue(String role) implements AetherValue {
         public static final String CORE = "CORE";
-
         public static final String WORKER = "WORKER";
 
         public static ActivationDirectiveValue core() {
@@ -458,12 +463,23 @@ import static org.pragmatica.lang.Option.none;
                                      boolean dissolved) implements AetherValue {
         public GovernorAnnouncementValue {
             members = members == null
-                     ? List.of()
-                     : List.copyOf(members);
-            if (tcpAddress == null) {tcpAddress = "";}
-            if (communityEpoch == null) {communityEpoch = Epoch.ZERO;}
-            if (observedCoreEpoch == null) {observedCoreEpoch = Epoch.ZERO;}
-            if (transitionedAt == null) {transitionedAt = HlcTimestamp.ZERO;}
+                      ? List.of()
+                      : List.copyOf(members);
+            if (tcpAddress == null) {
+                tcpAddress = "";
+            }
+
+            if (communityEpoch == null) {
+                communityEpoch = Epoch.ZERO;
+            }
+
+            if (observedCoreEpoch == null) {
+                observedCoreEpoch = Epoch.ZERO;
+            }
+
+            if (transitionedAt == null) {
+                transitionedAt = HlcTimestamp.ZERO;
+            }
         }
 
         public static GovernorAnnouncementValue governorAnnouncementValue(NodeId governorId, int memberCount) {
@@ -579,6 +595,7 @@ import static org.pragmatica.lang.Option.none;
                                                             Epoch newObservedCoreEpoch,
                                                             HlcTimestamp newTransitionedAt) {
             var nextTerm = communityTerm + 1;
+
             return new GovernorAnnouncementValue(newGovernor,
                                                  newMembers.size(),
                                                  List.copyOf(newMembers),
@@ -619,7 +636,8 @@ import static org.pragmatica.lang.Option.none;
     ///   transitions normally. CTM auto-heal stays suspended (operator-free recovery is
     ///   the goal; provisioning resumes only after stability). Transition back to NORMAL:
     ///   quorum-stable for `recoveryStableWindowMs`.
-    @Codec enum ClusterPhase {
+    @Codec
+    enum ClusterPhase {
         COLD_BOOT,
         NORMAL,
         RECOVERING
@@ -627,7 +645,9 @@ import static org.pragmatica.lang.Option.none;
 
     record ClusterPhaseValue(ClusterPhase phase, long updatedAt) implements AetherValue {
         public ClusterPhaseValue {
-            if (phase == null) {phase = ClusterPhase.COLD_BOOT;}
+            if (phase == null) {
+                phase = ClusterPhase.COLD_BOOT;
+            }
         }
 
         public static ClusterPhaseValue clusterPhaseValue(ClusterPhase phase) {
@@ -639,7 +659,8 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
-    @Codec enum ProvisioningSource {
+    @Codec
+    enum ProvisioningSource {
         CTM,
         MANUAL,
         UNKNOWN
@@ -652,7 +673,9 @@ import static org.pragmatica.lang.Option.none;
     /// Pure observability atom — see [AetherKey.JoinDeadlineKey] for trigger semantics.
     record JoinDeadlineValue(long deadlineMs, HlcTimestamp setAt) implements AetherValue {
         public JoinDeadlineValue {
-            if (setAt == null) {setAt = HlcTimestamp.ZERO;}
+            if (setAt == null) {
+                setAt = HlcTimestamp.ZERO;
+            }
         }
 
         public static JoinDeadlineValue joinDeadlineValue(long deadlineMs, HlcTimestamp setAt) {
@@ -666,7 +689,9 @@ import static org.pragmatica.lang.Option.none;
     /// observability atom — see [AetherKey.DrainDeadlineKey] for trigger semantics.
     record DrainDeadlineValue(long deadlineMs, HlcTimestamp setAt) implements AetherValue {
         public DrainDeadlineValue {
-            if (setAt == null) {setAt = HlcTimestamp.ZERO;}
+            if (setAt == null) {
+                setAt = HlcTimestamp.ZERO;
+            }
         }
 
         public static DrainDeadlineValue drainDeadlineValue(long deadlineMs, HlcTimestamp setAt) {
@@ -690,6 +715,7 @@ import static org.pragmatica.lang.Option.none;
 
         public static NodeArtifactValue failedNodeArtifactValue(Cause cause) {
             var classified = SliceLoadingFailure.classify(cause);
+
             return new NodeArtifactValue(SliceState.FAILED,
                                          Option.option(classified.message()),
                                          classified.isFatal(),
@@ -708,12 +734,10 @@ import static org.pragmatica.lang.Option.none;
         }
 
         public NodeArtifactValue withState(SliceState newState) {
-            if (newState == SliceState.ACTIVE) {return new NodeArtifactValue(newState,
-                                                                             Option.none(),
-                                                                             false,
-                                                                             instanceNumber,
-                                                                             methods,
-                                                                             0L);}
+            if (newState == SliceState.ACTIVE) {
+                return new NodeArtifactValue(newState, Option.none(), false, instanceNumber, methods, 0L);
+            }
+
             return new NodeArtifactValue(newState, Option.none(), false, 0, List.of(), defaultTransitionedAt(newState));
         }
 
@@ -723,17 +747,19 @@ import static org.pragmatica.lang.Option.none;
 
         private static long defaultTransitionedAt(SliceState state) {
             return state.isTransitional()
-                  ? System.currentTimeMillis()
-                  : 0L;
+                   ? System.currentTimeMillis()
+                   : 0L;
         }
     }
 
     record NodeRoutesValue(List<RouteEntry> routes, Epoch observedCoreEpoch) implements AetherValue {
         public NodeRoutesValue {
             routes = routes == null
-                    ? List.of()
-                    : List.copyOf(routes);
-            if (observedCoreEpoch == null) {observedCoreEpoch = Epoch.ZERO;}
+                     ? List.of()
+                     : List.copyOf(routes);
+            if (observedCoreEpoch == null) {
+                observedCoreEpoch = Epoch.ZERO;
+            }
         }
 
         public record RouteEntry(String httpMethod,
@@ -837,6 +863,7 @@ import static org.pragmatica.lang.Option.none;
                                                                         NodeId heldBy,
                                                                         long ttlMs) {
             var now = System.currentTimeMillis();
+
             return new SchemaMigrationLockValue(datasourceName, heldBy, now, now + ttlMs);
         }
 
@@ -845,7 +872,8 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
-    @Codec enum SchemaStatus {
+    @Codec
+    enum SchemaStatus {
         PENDING,
         MIGRATING,
         COMPLETED,
@@ -971,7 +999,9 @@ import static org.pragmatica.lang.Option.none;
 
         public StorageBlockValue withTierAdded(String tier) {
             var tiers = new HashSet<>(presentIn);
+
             tiers.add(tier);
+
             return new StorageBlockValue(blockIdHex, Set.copyOf(tiers), refCount, lastAccessedAt, createdAt, accessCount);
         }
 
@@ -1106,11 +1136,8 @@ import static org.pragmatica.lang.Option.none;
                        long gracePeriodMs,
                        String authorizationRole) implements AetherValue {
         static final String ACTIVE = "ACTIVE";
-
         static final String REVOKED = "REVOKED";
-
         static final String EXPIRED = "EXPIRED";
-
         public static final String DEFAULT_ROLE = "VIEWER";
 
         public static ApiKeyValue apiKeyValue(String keyId, String keyHash, long gracePeriodMs) {
@@ -1165,7 +1192,9 @@ import static org.pragmatica.lang.Option.none;
         }
 
         public boolean isInGracePeriod() {
-            return isRevoked() && revokedAt > 0 && System.currentTimeMillis() <revokedAt + gracePeriodMs;
+            return isRevoked()
+                   && revokedAt > 0
+                   && System.currentTimeMillis() < revokedAt + gracePeriodMs;
         }
 
         public boolean isValidForAuth() {
@@ -1197,11 +1226,8 @@ import static org.pragmatica.lang.Option.none;
 
     record ApiKeyAuditValue(String keyId, String action, long timestamp, String operatorHint) implements AetherValue {
         public static final String ACTION_CREATED = "CREATED";
-
         public static final String ACTION_ROTATED = "ROTATED";
-
         public static final String ACTION_REVOKED = "REVOKED";
-
         public static final String ACTION_EXPIRED = "EXPIRED";
 
         public static ApiKeyAuditValue apiKeyAuditValue(String keyId, String action, String operatorHint) {
@@ -1221,7 +1247,8 @@ import static org.pragmatica.lang.Option.none;
             return new CloudCredentialsValue(encryptedToken.clone(), provider, System.currentTimeMillis());
         }
 
-        @Override public byte[] encryptedToken() {
+        @Override
+        public byte[] encryptedToken() {
             return encryptedToken.clone();
         }
     }
@@ -1248,9 +1275,17 @@ import static org.pragmatica.lang.Option.none;
                                       long ownershipTerm,
                                       HlcTimestamp transferredAt) implements AetherValue {
         public DhtPartitionOwnershipValue {
-            if (ownerCommunityId == null) {ownerCommunityId = "";}
-            if (ownerEpoch == null) {ownerEpoch = Epoch.ZERO;}
-            if (transferredAt == null) {transferredAt = HlcTimestamp.ZERO;}
+            if (ownerCommunityId == null) {
+                ownerCommunityId = "";
+            }
+
+            if (ownerEpoch == null) {
+                ownerEpoch = Epoch.ZERO;
+            }
+
+            if (transferredAt == null) {
+                transferredAt = HlcTimestamp.ZERO;
+            }
         }
 
         public static DhtPartitionOwnershipValue dhtPartitionOwnershipValue(NodeId ownerNodeId,
@@ -1266,7 +1301,8 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
-    @Codec enum SpokesmanStatus {
+    @Codec
+    enum SpokesmanStatus {
         ASSIGNED,
         ACTIVE,
         FAILED
@@ -1291,8 +1327,13 @@ import static org.pragmatica.lang.Option.none;
                                  long occupantEpoch,
                                  Option<NodeId> supersededNodeId) implements AetherValue {
         public ProvisioningSlotValue {
-            if (assignedNodeId == null) {assignedNodeId = Option.none();}
-            if (supersededNodeId == null) {supersededNodeId = Option.none();}
+            if (assignedNodeId == null) {
+                assignedNodeId = Option.none();
+            }
+
+            if (supersededNodeId == null) {
+                supersededNodeId = Option.none();
+            }
         }
 
         /// Backward-compatible constructor — preserves call sites that passed the now-derived
@@ -1320,8 +1361,7 @@ import static org.pragmatica.lang.Option.none;
             return new ProvisioningSlotValue(spawnedAtMs, Option.none(), 0L, Option.none());
         }
 
-        public static ProvisioningSlotValue provisioningSlotValue(long spawnedAtMs,
-                                                                  NodeId assignedNodeId) {
+        public static ProvisioningSlotValue provisioningSlotValue(long spawnedAtMs, NodeId assignedNodeId) {
             return new ProvisioningSlotValue(spawnedAtMs, Option.option(assignedNodeId), 0L, Option.none());
         }
 
@@ -1345,12 +1385,23 @@ import static org.pragmatica.lang.Option.none;
                           String failureReason) implements AetherValue {
         public SpokesmanValue {
             communities = communities == null
-                         ? List.of()
-                         : List.copyOf(communities);
-            if (assignedEpoch == null) {assignedEpoch = Epoch.ZERO;}
-            if (assignedAt == null) {assignedAt = HlcTimestamp.ZERO;}
-            if (status == null) {status = SpokesmanStatus.ASSIGNED;}
-            if (failureReason == null) {failureReason = "";}
+                          ? List.of()
+                          : List.copyOf(communities);
+            if (assignedEpoch == null) {
+                assignedEpoch = Epoch.ZERO;
+            }
+
+            if (assignedAt == null) {
+                assignedAt = HlcTimestamp.ZERO;
+            }
+
+            if (status == null) {
+                status = SpokesmanStatus.ASSIGNED;
+            }
+
+            if (failureReason == null) {
+                failureReason = "";
+            }
         }
 
         public static SpokesmanValue spokesmanValue(List<String> communities,
@@ -1371,7 +1422,6 @@ import static org.pragmatica.lang.Option.none;
 
     // Stage 1 (stream-namespaces) additive graft: stream-registry value. Added alongside the
     // retained ClusterEventValue (cluster-events replacement is a later stage).
-
     /// Consensus-replicated form of [StreamRegistryEntry].
     ///
     /// Single-key collapse of the spec's `stream-meta:{addr}` and `stream-refs:{addr}` (§7.1, §7.2)
@@ -1385,7 +1435,6 @@ import static org.pragmatica.lang.Option.none;
     }
 
     // Stage 2 (stream-namespaces) additive graft: per-blueprint resolved alias->ResourceAddress map.
-
     /// Per-blueprint resolved alias→`ResourceAddress` map persisted at deploy time.
     ///
     /// Kept as `List<NamedAddress>` instead of `Map<String, ResourceAddress>` so the compile-time
@@ -1397,7 +1446,9 @@ import static org.pragmatica.lang.Option.none;
     /// refcount accounting).
     record BlueprintStreamBindingsValue(List<NamedAddress> bindings) implements AetherValue {
         public BlueprintStreamBindingsValue {
-            bindings = bindings == null ? List.of() : List.copyOf(bindings);
+            bindings = bindings == null
+                       ? List.of()
+                       : List.copyOf(bindings);
         }
 
         public static BlueprintStreamBindingsValue blueprintStreamBindingsValue(List<NamedAddress> bindings) {
@@ -1405,11 +1456,8 @@ import static org.pragmatica.lang.Option.none;
         }
 
         public Option<ResourceAddress> addressFor(String alias) {
-            return Option.option(bindings.stream()
-                                         .filter(b -> b.alias().equals(alias))
-                                         .findFirst()
-                                         .orElse(null))
-                         .map(NamedAddress::address);
+            return Option.option(bindings.stream().filter(b -> b.alias()
+                                                                .equals(alias)).findFirst().orElse(null)).map(NamedAddress::address);
         }
 
         public record NamedAddress(String alias, ResourceAddress address) {

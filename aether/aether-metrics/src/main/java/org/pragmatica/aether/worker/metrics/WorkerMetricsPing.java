@@ -13,21 +13,30 @@ import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public record WorkerMetricsPing(NodeId sender,
-                                       long timestampMs,
-                                       long communityTerm,
-                                       Epoch communityEpoch,
-                                       Epoch observedCoreEpoch,
-                                       Option<CommunityGenerationSnapshot> snapshot) implements Message.Wired {
+@Codec
+public record WorkerMetricsPing(NodeId sender,
+                                long timestampMs,
+                                long communityTerm,
+                                Epoch communityEpoch,
+                                Epoch observedCoreEpoch,
+                                Option<CommunityGenerationSnapshot> snapshot) implements Message.Wired {
     @Override
     public StreamType streamType() {
         return StreamType.METRICS;
     }
 
     public WorkerMetricsPing {
-        if (communityEpoch == null) {communityEpoch = Epoch.ZERO;}
-        if (observedCoreEpoch == null) {observedCoreEpoch = Epoch.ZERO;}
-        if (snapshot == null) {snapshot = Option.none();}
+        if (communityEpoch == null) {
+            communityEpoch = Epoch.ZERO;
+        }
+
+        if (observedCoreEpoch == null) {
+            observedCoreEpoch = Epoch.ZERO;
+        }
+
+        if (snapshot == null) {
+            snapshot = Option.none();
+        }
     }
 
     public static WorkerMetricsPing workerMetricsPing(NodeId sender,

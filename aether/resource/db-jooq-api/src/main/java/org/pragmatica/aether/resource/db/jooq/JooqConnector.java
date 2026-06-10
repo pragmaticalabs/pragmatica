@@ -27,12 +27,13 @@ public interface JooqConnector extends DatabaseConnector {
     Promise<Integer> execute(Query query);
     <T> Promise<T> transactional(TransactionCallback<T> callback);
 
-    @FunctionalInterface interface TransactionCallback<T> {
+    @FunctionalInterface
+    interface TransactionCallback<T> {
         Promise<T> execute(JooqConnector connector);
     }
 
     static SQLDialect mapDialect(DatabaseType type) {
-        return switch (type){
+        return switch (type) {
             case POSTGRESQL, COCKROACHDB -> SQLDialect.POSTGRES;
             case MYSQL -> SQLDialect.MYSQL;
             case MARIADB -> SQLDialect.MARIADB;
@@ -43,15 +44,22 @@ public interface JooqConnector extends DatabaseConnector {
     }
 
     static <R extends Record> R extractSingleResult(org.jooq.Result<R> result) {
-        if (result.isEmpty()) {return DatabaseConnectorError.ResultNotFound.INSTANCE.<R>result().unwrap();}
-        if (result.size() > 1) {return DatabaseConnectorError.multipleResults(result.size()).<R>result()
-                                                                             .unwrap();}
+        if (result.isEmpty()) {
+            return DatabaseConnectorError.ResultNotFound.INSTANCE.<R> result().unwrap();
+        }
+
+        if (result.size() > 1) {
+            return DatabaseConnectorError.multipleResults(result.size())
+                                         .<R> result()
+                                         .unwrap();
+        }
+
         return result.getFirst();
     }
 
     static <R extends Record> Option<R> extractOptionalResult(org.jooq.Result<R> result) {
         return result.isEmpty()
-              ? Option.none()
-              : Option.some(result.getFirst());
+               ? Option.none()
+               : Option.some(result.getFirst());
     }
 }

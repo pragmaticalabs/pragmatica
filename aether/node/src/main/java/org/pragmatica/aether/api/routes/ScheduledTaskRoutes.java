@@ -200,20 +200,32 @@ public final class ScheduledTaskRoutes implements RouteSource {
         if (!devModeEnabled.getAsBoolean()) {
             return InjectError.DEV_MODE_DISABLED.promise();
         }
+
         return validateInjectRequest(req).flatMap(this::executeInject);
     }
 
     private Promise<ScheduledTaskInjectRequest> validateInjectRequest(ScheduledTaskInjectRequest req) {
-        if (req == null) {return InjectError.MISSING_BODY.promise();}
-        if (req.section() == null || req.section().isBlank()) {return InjectError.MISSING_SECTION.promise();}
-        if (req.artifact() == null || req.artifact().isBlank()) {return InjectError.MISSING_ARTIFACT.promise();}
-        if (req.method() == null || req.method().isBlank()) {return InjectError.MISSING_METHOD.promise();}
+        if (req == null) {
+            return InjectError.MISSING_BODY.promise();
+        }
+
+        if (req.section() == null || req.section().isBlank()) {
+            return InjectError.MISSING_SECTION.promise();
+        }
+
+        if (req.artifact() == null || req.artifact().isBlank()) {
+            return InjectError.MISSING_ARTIFACT.promise();
+        }
+
+        if (req.method() == null || req.method().isBlank()) {
+            return InjectError.MISSING_METHOD.promise();
+        }
+
         return Promise.success(req);
     }
 
     private Promise<ScheduledTaskInjectResponse> executeInject(ScheduledTaskInjectRequest req) {
-        return findTask(req.section(), req.artifact(), req.method())
-                       .flatMap(task -> ensureLocalThenInvoke(task, req));
+        return findTask(req.section(), req.artifact(), req.method()).flatMap(task -> ensureLocalThenInvoke(task, req));
     }
 
     /// Gate on `SliceInvoker.hasLocalSlice` before invoking — the inject path encodes the
@@ -227,7 +239,9 @@ public final class ScheduledTaskRoutes implements RouteSource {
         if (invoker.hasLocalSlice(task.artifact())) {
             return invokeAndAdvanceState(task, req);
         }
-        return new InjectError.SliceNotLocal(task.registeredBy().id(), task.artifact().asString()).promise();
+
+        return new InjectError.SliceNotLocal(task.registeredBy().id(),
+                                             task.artifact().asString()).promise();
     }
 
     private Promise<ScheduledTaskInjectResponse> invokeAndAdvanceState(ScheduledTask task,
@@ -237,9 +251,11 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                    task.methodName());
         var priorState = stateRegistry.stateFor(stateKey);
         var previousExecutionMs = priorState.map(ScheduledTaskStateValue::lastExecutionAt).or(0L);
-        return invoker.invoke(task.artifact(), task.methodName(), Unit.unit())
-                      .onFailure(cause -> writeFailureBestEffort(stateKey, priorState, cause))
-                      .flatMap(_ -> writeSuccessAndRespond(stateKey, priorState, req, previousExecutionMs));
+
+        return invoker.invoke(task.artifact(),
+                              task.methodName(),
+                              Unit.unit()).onFailure(cause -> writeFailureBestEffort(stateKey, priorState, cause))
+                             .flatMap(_ -> writeSuccessAndRespond(stateKey, priorState, req, previousExecutionMs));
     }
 
     private Promise<ScheduledTaskInjectResponse> writeSuccessAndRespond(ScheduledTaskStateKey stateKey,
@@ -266,6 +282,7 @@ public final class ScheduledTaskRoutes implements RouteSource {
         var priorFailures = priorState.map(ScheduledTaskStateValue::consecutiveFailures).or(0);
         var value = ScheduledTaskStateValue.failureState(0, priorFailures + 1, priorTotal, cause.message());
         KVCommand<AetherKey> command = new KVCommand.Put<>(stateKey, value);
+
         nodeSupplier.get().apply(List.of(command));
     }
 
@@ -275,20 +292,20 @@ public final class ScheduledTaskRoutes implements RouteSource {
     /// two tasks differing only by artifact (e.g. same `scheduling.heartbeat/heartbeat`
     /// section+method) flipped between a pause-write and a readback, producing a false
     /// `paused=false`. Ordering by `(configSection, artifact, method)` removes that flake.
-    private static final Comparator<ScheduledTask> TASK_ORDER =
-        Comparator.comparing(ScheduledTask::configSection)
-                  .thenComparing(task -> task.artifact().asString())
-                  .thenComparing(task -> task.methodName().name());
+    private static final Comparator<ScheduledTask> TASK_ORDER = Comparator.comparing(ScheduledTask::configSection).thenComparing(task -> task.artifact()
+                                                                                                                                             .asString()).thenComparing(task -> task.methodName()
+                                                                                                                                                                                    .name());
 
     private ScheduledTasksResponse buildTasksResponse() {
         var tasks = registry.allTasks().stream().sorted(TASK_ORDER).map(this::toSummary).toList();
+
         return new ScheduledTasksResponse(tasks, manager.activeTimerCount());
     }
 
     private Promise<FilteredTasksResponse> buildFilteredResponse(String configSection) {
         var tasks = registry.allTasks().stream().filter(task -> task.configSection()
-                                                                    .equals(configSection))
-                            .sorted(TASK_ORDER).map(this::toSummary).toList();
+                                                                    .equals(configSection)).sorted(TASK_ORDER).map(this::toSummary).toList();
+
         return Promise.success(new FilteredTasksResponse(tasks, configSection));
     }
 
@@ -365,6 +382,7 @@ public final class ScheduledTaskRoutes implements RouteSource {
         var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
                                                                    task.artifact(),
                                                                    task.methodName());
+
         return stateRegistry.stateFor(stateKey)
                             .fold(() -> buildSummary(task, 0, 0, 0, 0),
                                   state -> buildSummary(task,
@@ -407,6 +425,7 @@ public final class ScheduledTaskRoutes implements RouteSource {
         var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
                                                                    task.artifact(),
                                                                    task.methodName());
+
         return stateRegistry.stateFor(stateKey)
                             .fold(() -> Promise.success(emptyStateResponse(configSection, artifactStr, methodStr)),
                                   state -> Promise.success(new TaskStateResponse(configSection,
@@ -430,10 +449,12 @@ public final class ScheduledTaskRoutes implements RouteSource {
     /// tracked as a follow-up. Tests using ALL-mode tasks must assert on the global
     /// `totalExecutions` rather than per-node attribution until that is implemented.
     private Promise<ScheduledTaskExecutionsByNodeResponse> getExecutionsByNode(String configSection,
-                                                                                String artifactStr,
-                                                                                String methodStr) {
-        return findTask(configSection, artifactStr, methodStr)
-                       .map(task -> buildExecutionsByNode(task, configSection, artifactStr, methodStr));
+                                                                               String artifactStr,
+                                                                               String methodStr) {
+        return findTask(configSection, artifactStr, methodStr).map(task -> buildExecutionsByNode(task,
+                                                                                                 configSection,
+                                                                                                 artifactStr,
+                                                                                                 methodStr));
     }
 
     private ScheduledTaskExecutionsByNodeResponse buildExecutionsByNode(ScheduledTask task,
@@ -441,19 +462,21 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                         String artifactStr,
                                                                         String methodStr) {
         var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
-                                                                    task.artifact(),
-                                                                    task.methodName());
+                                                                   task.artifact(),
+                                                                   task.methodName());
+
         return stateRegistry.stateFor(stateKey)
                             .fold(() -> new ScheduledTaskExecutionsByNodeResponse(configSection,
-                                                                                   artifactStr,
-                                                                                   methodStr,
-                                                                                   List.of()),
+                                                                                  artifactStr,
+                                                                                  methodStr,
+                                                                                  List.of()),
                                   state -> new ScheduledTaskExecutionsByNodeResponse(configSection,
-                                                                                      artifactStr,
-                                                                                      methodStr,
-                                                                                      List.of(new ScheduledTaskNodeExecution(task.registeredBy().id(),
-                                                                                                                              state.totalExecutions(),
-                                                                                                                              state.lastExecutionAt()))));
+                                                                                     artifactStr,
+                                                                                     methodStr,
+                                                                                     List.of(new ScheduledTaskNodeExecution(task.registeredBy()
+                                                                                                                                .id(),
+                                                                                                                            state.totalExecutions(),
+                                                                                                                            state.lastExecutionAt()))));
     }
 
     private sealed interface InjectError extends Cause permits InjectError.General, InjectError.SliceNotLocal {
@@ -488,7 +511,7 @@ public final class ScheduledTaskRoutes implements RouteSource {
             @Override
             public String message() {
                 return "scheduled-tasks inject for artifact=" + artifact
-                       + " must run on a node hosting the slice; retry against node " + hostingNodeId;
+                     + " must run on a node hosting the slice; retry against node " + hostingNodeId;
             }
         }
     }

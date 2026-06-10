@@ -18,8 +18,10 @@ import java.util.List;
 /// registered on the node {@code MessageRouter} and the events serialized over the cluster network.
 /// `sender()` is the node that emitted the message (the owner/governor for replicate & catch-up
 /// responses, the replica for acks & catch-up requests).
-@Codec public sealed interface ReplicationMessage extends ProtocolMessage {
-    @Override default StreamType streamType() {
+@Codec
+public sealed interface ReplicationMessage extends ProtocolMessage {
+    @Override
+    default StreamType streamType() {
         return StreamType.FORWARD;
     }
 
@@ -30,8 +32,7 @@ import java.util.List;
                            List<byte[]> payloads,
                            List<Long> timestamps) implements ReplicationMessage {
         public ReplicateEvents {
-            payloads = payloads.stream().map(byte[]::clone)
-                                      .toList();
+            payloads = payloads.stream().map(byte[]::clone).toList();
             timestamps = List.copyOf(timestamps);
         }
 
@@ -44,13 +45,16 @@ import java.util.List;
             return new ReplicateEvents(governorId, streamName, partition, fromOffset, payloads, timestamps);
         }
 
-        @Override public NodeId sender() {
+        @Override
+        public NodeId sender() {
             return governorId;
         }
 
-        @Override public List<byte[]> payloads() {
-            return payloads.stream().map(byte[]::clone)
-                                  .toList();
+        @Override
+        public List<byte[]> payloads() {
+            return payloads.stream()
+                           .map(byte[]::clone)
+                           .toList();
         }
     }
 
@@ -62,7 +66,8 @@ import java.util.List;
             return new ReplicateAck(replicaId, streamName, partition, confirmedOffset);
         }
 
-        @Override public NodeId sender() {
+        @Override
+        public NodeId sender() {
             return replicaId;
         }
     }
@@ -86,26 +91,37 @@ import java.util.List;
             return new BatchSync(governorId, streamName, partition, fromOffset, toOffset, compressedBatch);
         }
 
-        @Override public NodeId sender() {
+        @Override
+        public NodeId sender() {
             return governorId;
         }
 
-        @Override public byte[] compressedBatch() {
+        @Override
+        public byte[] compressedBatch() {
             return compressedBatch.clone();
         }
 
-        @Override public boolean equals(Object obj) {
-            return obj instanceof BatchSync other && governorId.equals(other.governorId) && streamName.equals(other.streamName) && partition == other.partition && fromOffset == other.fromOffset && toOffset == other.toOffset && Arrays.equals(compressedBatch,
-                                                                                                                                                                                                                                                 other.compressedBatch);
+        @Override
+        public boolean equals(Object obj) {
+            return obj instanceof BatchSync other
+                   && governorId.equals(other.governorId)
+                   && streamName.equals(other.streamName)
+                   && partition == other.partition
+                   && fromOffset == other.fromOffset
+                   && toOffset == other.toOffset
+                   && Arrays.equals(compressedBatch, other.compressedBatch);
         }
 
-        @Override public int hashCode() {
+        @Override
+        public int hashCode() {
             int result = governorId.hashCode();
+
             result = 31 * result + streamName.hashCode();
             result = 31 * result + Integer.hashCode(partition);
             result = 31 * result + Long.hashCode(fromOffset);
             result = 31 * result + Long.hashCode(toOffset);
             result = 31 * result + Arrays.hashCode(compressedBatch);
+
             return result;
         }
     }
@@ -118,7 +134,8 @@ import java.util.List;
             return new CatchupRequest(replicaId, streamName, partition, fromOffset);
         }
 
-        @Override public NodeId sender() {
+        @Override
+        public NodeId sender() {
             return replicaId;
         }
     }
@@ -131,8 +148,7 @@ import java.util.List;
                            List<byte[]> payloads,
                            List<Long> timestamps) implements ReplicationMessage {
         public CatchupResponse {
-            payloads = payloads.stream().map(byte[]::clone)
-                                      .toList();
+            payloads = payloads.stream().map(byte[]::clone).toList();
             timestamps = List.copyOf(timestamps);
         }
 
@@ -146,13 +162,16 @@ import java.util.List;
             return new CatchupResponse(governorId, streamName, partition, fromOffset, toOffset, payloads, timestamps);
         }
 
-        @Override public NodeId sender() {
+        @Override
+        public NodeId sender() {
             return governorId;
         }
 
-        @Override public List<byte[]> payloads() {
-            return payloads.stream().map(byte[]::clone)
-                                  .toList();
+        @Override
+        public List<byte[]> payloads() {
+            return payloads.stream()
+                           .map(byte[]::clone)
+                           .toList();
         }
     }
 }

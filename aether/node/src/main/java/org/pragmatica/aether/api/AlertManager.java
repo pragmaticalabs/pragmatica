@@ -53,7 +53,6 @@ public class AlertManager {
     private final LinkedBlockingDeque<AlertHistoryEntry> alertHistory = new LinkedBlockingDeque<>(MAX_ALERT_HISTORY);
 
     private final Map<String, InjectedAlert> injectedAlerts = new ConcurrentHashMap<>();
-
     private final AtomicLong injectionSequence = new AtomicLong();
 
     /// Narrow event-sink shape for publishing operator-injected alerts as
@@ -69,11 +68,9 @@ public class AlertManager {
     /// in `AetherNode`. When unbound (`readOnly` factory, unit tests without consensus), inject
     /// paths fall back to the legacy node-local map only — preserving the prior contract.
     private volatile Option<EventSink> eventSink = Option.none();
-
     /// Optional HLC clock for stamping emitted events. Bound alongside `eventSink`. When
     /// `eventSink` is unbound, this is unused.
     private volatile Option<HlcClock> hlcClock = Option.none();
-
     /// Optional cluster-wide read source for cross-node visibility on `/api/alerts`. Returns a
     /// Promise because the underlying namespace-stream consumer is async.
     private volatile Option<Supplier<Promise<List<ClusterEvent>>>> clusterEventsSource = Option.none();
@@ -101,6 +98,7 @@ public class AlertManager {
     public static AlertManager alertManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                             KVStore<AetherKey, AetherValue> kvStore) {
         var manager = new AlertManager(clusterNode, kvStore);
+
         manager.loadThresholdsFromKvStore();
         manager.ensureDefaultThresholds();
 
@@ -109,6 +107,7 @@ public class AlertManager {
 
     public static AlertManager readOnly(KVStore<AetherKey, AetherValue> kvStore) {
         var manager = new AlertManager(null, kvStore);
+
         manager.loadThresholdsFromKvStore();
 
         return manager;
@@ -175,6 +174,7 @@ public class AlertManager {
 
     public Map<String, double[]> getAllThresholds() {
         Map<String, double[]> result = new ConcurrentHashMap<>();
+
         thresholds.forEach((k, v) -> result.put(k, new double[]{v.warning, v.critical}));
 
         return result;
@@ -196,9 +196,17 @@ public class AlertManager {
     }
 
     private Result<Unit> validateInjectionInput(String name, String severity, String message) {
-        if (name == null || name.isBlank()) {return InjectionError.NAME_REQUIRED.result();}
-        if (message == null || message.isBlank()) {return InjectionError.MESSAGE_REQUIRED.result();}
-        if (!isValidSeverity(severity)) {return InjectionError.INVALID_SEVERITY.result();}
+        if (name == null || name.isBlank()) {
+            return InjectionError.NAME_REQUIRED.result();
+        }
+
+        if (message == null || message.isBlank()) {
+            return InjectionError.MESSAGE_REQUIRED.result();
+        }
+
+        if (!isValidSeverity(severity)) {
+            return InjectionError.INVALID_SEVERITY.result();
+        }
 
         return Result.unitResult();
     }
@@ -215,6 +223,7 @@ public class AlertManager {
         var timestamp = System.currentTimeMillis();
         var alertId = "injected-" + timestamp + "-" + injectionSequence.incrementAndGet();
         var alert = new InjectedAlert(alertId, name, severity, message, metric, value, timestamp);
+
         injectedAlerts.put(alertId, alert);
         addInjectedToHistory(alert);
         publishInjectionToClusterLog(alert);
@@ -228,11 +237,10 @@ public class AlertManager {
     /// the injection, so the originating node remains correct even if the stream publisher is
     /// briefly unavailable.
     private void publishInjectionToClusterLog(InjectedAlert alert) {
-        eventSink.onPresent(sink -> hlcClock.onPresent(clock -> sink.emit(new AlertInjected(
-                clock.now(),
-                severityFor(alert.severity),
-                alert.message,
-                buildAlertInjectMetadata(alert)))));
+        eventSink.onPresent(sink -> hlcClock.onPresent(clock -> sink.emit(new AlertInjected(clock.now(),
+                                                                                            severityFor(alert.severity),
+                                                                                            alert.message,
+                                                                                            buildAlertInjectMetadata(alert)))));
     }
 
     private static Severity severityFor(String severity) {
@@ -245,6 +253,7 @@ public class AlertManager {
 
     private static Map<String, String> buildAlertInjectMetadata(InjectedAlert alert) {
         var metadata = new LinkedHashMap<String, String>();
+
         metadata.put("alertId", alert.alertId);
         metadata.put("name", alert.name);
         metadata.put("severity", alert.severity);
@@ -265,7 +274,9 @@ public class AlertManager {
                                           alert.severity,
                                           "INJECTED");
 
-        while (!alertHistory.offerLast(entry)) {alertHistory.pollFirst();}
+        while (!alertHistory.offerLast(entry)) {
+            alertHistory.pollFirst();
+        }
     }
 
     private enum InjectionError implements Cause {
@@ -328,6 +339,7 @@ public class AlertManager {
                     + "\",\"nodeId\":\"" + escapeJson(nodeId.id())
                     + "\",\"resolvedAt\":" + System.currentTimeMillis()
                     + "}}";
+
         DashboardWebSocketHandler.broadcast(message);
     }
 
@@ -347,6 +359,7 @@ public class AlertManager {
                                         threshold.forSeverity(severity),
                                         severity,
                                         System.currentTimeMillis());
+
             activeAlerts.put(alertKey, alert);
             addToHistory(metric, nodeId, value, severity, "TRIGGERED");
 
@@ -361,6 +374,7 @@ public class AlertManager {
     public void onAlertThresholdPut(ValuePut<AlertThresholdKey, AlertThresholdValue> valuePut) {
         var thresholdKey = valuePut.cause().key();
         var thresholdValue = valuePut.cause().value();
+
         thresholds.put(thresholdKey.metricName(),
                        new Threshold(thresholdValue.warningThreshold(), thresholdValue.criticalThreshold()));
         log.debug("Threshold updated from cluster: {} warning={}, critical={}",
@@ -373,6 +387,7 @@ public class AlertManager {
     @SuppressWarnings("JBCT-RET-01")
     public void onAlertThresholdRemove(ValueRemove<AlertThresholdKey, AlertThresholdValue> valueRemove) {
         var thresholdKey = valueRemove.cause().key();
+
         thresholds.remove(thresholdKey.metricName());
         log.debug("Threshold removed from cluster: {}", thresholdKey.metricName());
     }
@@ -394,12 +409,16 @@ public class AlertManager {
 
     private void addToHistory(String metric, NodeId nodeId, double value, String severity, String status) {
         var entry = new AlertHistoryEntry(System.currentTimeMillis(), metric, nodeId.id(), value, severity, status);
-        while (!alertHistory.offerLast(entry)) {alertHistory.pollFirst();}
+
+        while (!alertHistory.offerLast(entry)) {
+            alertHistory.pollFirst();
+        }
     }
 
     @SuppressWarnings("JBCT-PAT-01")
     public String thresholdsAsJson() {
         var sb = new StringBuilder();
+
         sb.append("{");
         boolean first = true;
 
@@ -469,6 +488,7 @@ public class AlertManager {
                                    alert.triggeredAt,
                                    null));
         }
+
         for (var alert : injectedAlerts.values()) {
             seenInjectedIds.add(alert.alertId);
             list.add(new AlertView(alert.alertId,
@@ -484,29 +504,43 @@ public class AlertManager {
                                    alert.timestamp));
         }
 
-        return appendClusterWideInjectedAlerts(list, seenInjectedIds)
-                .map(_ -> List.copyOf(list));
+        return appendClusterWideInjectedAlerts(list, seenInjectedIds).map(_ -> List.copyOf(list));
     }
 
-    private Promise<Unit> appendClusterWideInjectedAlerts(java.util.List<AlertView> sink, java.util.Set<String> seenIds) {
+    private Promise<Unit> appendClusterWideInjectedAlerts(java.util.List<AlertView> sink,
+                                                          java.util.Set<String> seenIds) {
         return clusterEventsSource.fold(() -> Promise.success(Unit.unit()),
-                                         source -> source.get().map(events -> {
-                                             for (var event : events) {
-                                                 if (!(event instanceof AlertInjected)) {continue;}
-                                                 var view = projectClusterEventToAlertView(event);
-                                                 if (view == null) {continue;}
-                                                 if (view.alertId() != null && !seenIds.add(view.alertId())) {continue;}
-                                                 sink.add(view);
-                                             }
-                                             return Unit.unit();
-                                         }));
+                                        source -> source.get()
+                                                        .map(events -> {
+                                                                 for (var event : events) {
+                                                                 if (! (event instanceof AlertInjected)) {
+                                                                 continue;
+                                                             }
+
+                                                                 var view = projectClusterEventToAlertView(event);
+
+                                                                 if (view == null) {
+                                                                 continue;
+                                                             }
+
+                                                                 if (view.alertId() != null && !seenIds.add(view.alertId())) {
+                                                                 continue;
+                                                             }
+
+                                                                 sink.add(view);
+                                                             }
+
+                                                                 return Unit.unit();
+                                                             }));
     }
 
     private static AlertView projectClusterEventToAlertView(ClusterEvent event) {
         var details = event.details();
         var alertId = details.get("alertId");
 
-        if (alertId == null) {return null;}
+        if (alertId == null) {
+            return null;
+        }
 
         var name = details.getOrDefault("name", "");
         var severity = details.getOrDefault("severity",
@@ -520,14 +554,20 @@ public class AlertManager {
     }
 
     private static Double parseDoubleOrNull(String raw) {
-        if (raw == null) {return null;}
+        if (raw == null) {
+            return null;
+        }
+
         return org.pragmatica.lang.parse.Number.parseDouble(raw)
                                                .option()
                                                .or((Double) null);
     }
 
     private static Long parseLongOrNull(String raw) {
-        if (raw == null) {return null;}
+        if (raw == null) {
+            return null;
+        }
+
         return org.pragmatica.lang.parse.Number.parseLong(raw)
                                                .option()
                                                .or((Long) null);
@@ -561,6 +601,7 @@ public class AlertManager {
     @SuppressWarnings("JBCT-PAT-01")
     public String activeAlertsAsJson() {
         var sb = new StringBuilder();
+
         sb.append("[");
         boolean first = true;
         var seenInjectedIds = new java.util.HashSet<String>();
@@ -578,9 +619,9 @@ public class AlertManager {
             sb.append("}");
             first = false;
         }
+
         for (var alert : injectedAlerts.values()) {
             seenInjectedIds.add(alert.alertId);
-
             if (!first) sb.append(",");
 
             sb.append("{");
@@ -634,6 +675,7 @@ public class AlertManager {
     @SuppressWarnings("JBCT-PAT-01")
     public String alertHistoryAsJson() {
         var sb = new StringBuilder();
+
         sb.append("[");
         boolean first = true;
 
@@ -665,6 +707,7 @@ public class AlertManager {
                                           event.attemptedNodes(),
                                           event.requestId(),
                                           event.timestamp());
+
         activeSliceFailureAlerts.put(alertKey, alert);
         addSliceFailureToHistory(event);
         log.error("[requestId={}] CRITICAL: All instances failed for {}.{} - {} nodes attempted: {}",
@@ -686,7 +729,10 @@ public class AlertManager {
                                                  event.method().name(),
                                                  event.attemptedNodes().stream().map(NodeId::id).toList(),
                                                  event.lastError().map(Cause::message).or("unknown"));
-        while (!sliceFailureHistory.offerLast(entry)) {sliceFailureHistory.pollFirst();}
+
+        while (!sliceFailureHistory.offerLast(entry)) {
+            sliceFailureHistory.pollFirst();
+        }
     }
 
     public List<SliceFailureAlert> getActiveSliceFailureAlerts() {
@@ -695,6 +741,7 @@ public class AlertManager {
 
     public void clearSliceFailureAlert(Artifact artifact, MethodName method) {
         var alertKey = "slice.all_failed:" + artifact.asString() + "/" + method.name();
+
         activeSliceFailureAlerts.remove(alertKey);
         log.info("Cleared slice failure alert for {}.{}", artifact, method);
     }
@@ -702,6 +749,7 @@ public class AlertManager {
     @SuppressWarnings("JBCT-PAT-01")
     public String sliceFailureAlertsAsJson() {
         var sb = new StringBuilder();
+
         sb.append("[");
         boolean first = true;
 
@@ -739,6 +787,7 @@ public class AlertManager {
     @SuppressWarnings("JBCT-PAT-01")
     public String sliceFailureHistoryAsJson() {
         var sb = new StringBuilder();
+
         sb.append("[");
         boolean first = true;
 
@@ -802,6 +851,7 @@ public class AlertManager {
     private record Threshold(double warning, double critical) {
         Option<String> severity(double value) {
             if (value >= critical) return Option.option("CRITICAL");
+
             if (value >= warning) return Option.option("WARNING");
 
             return Option.none();

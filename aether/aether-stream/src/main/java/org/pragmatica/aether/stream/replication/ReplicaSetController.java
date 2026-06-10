@@ -12,9 +12,6 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -27,10 +24,14 @@ import java.util.function.BiConsumer;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass.APP;
 import static org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass.SYSTEM;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+
 
 /// Per-node controller that keeps the local {@link ReplicaRegistry} in agreement with the
 /// HRW-derived desired replica set ({@link ReplicaPlacement}) for every `(stream, partition)`,
@@ -72,7 +73,6 @@ import static org.pragmatica.lang.Option.some;
 /// and {@link #onQuorumStateChange} to the `ClusterStateNotification` route.
 public final class ReplicaSetController implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(ReplicaSetController.class);
-
     private static final String SYSTEM_NAMESPACE_PREFIX = "system:";
 
     /// Self-role for a single `(stream, partition)` under the current placement.
@@ -90,9 +90,7 @@ public final class ReplicaSetController implements AutoCloseable {
     private final BiConsumer<String, Integer> onBecameReplica;
     private final Executor executor;
     private final boolean ownsExecutor;
-
     private final AtomicBoolean passive = new AtomicBoolean(false);
-
     /// Membership snapshot captured by the LAST completed reconcile. `roleFor` / `isOwner` (the B3
     /// emit-gate) compute placement from THIS snapshot — the same generation the registry was
     /// reconciled against — so emit-ownership and replica-ownership never read the live topology at
@@ -129,7 +127,12 @@ public final class ReplicaSetController implements AutoCloseable {
                                                             Supplier<List<NodeId>> membersSupplier,
                                                             IntSupplier clusterSizeSupplier,
                                                             StreamCatalog catalog) {
-        return replicaSetController(registry, self, membersSupplier, clusterSizeSupplier, catalog, (_, _) -> {});
+        return replicaSetController(registry,
+                                    self,
+                                    membersSupplier,
+                                    clusterSizeSupplier,
+                                    catalog,
+                                    (_, _) -> {});
     }
 
     /// Production factory with an explicit catch-up seam. Owns a dedicated single-thread executor.
@@ -141,10 +144,20 @@ public final class ReplicaSetController implements AutoCloseable {
                                                             BiConsumer<String, Integer> onBecameReplica) {
         var executor = Executors.newSingleThreadExecutor(runnable -> {
             var thread = new Thread(runnable, "replica-set-controller");
+
             thread.setDaemon(true);
+
             return thread;
         });
-        return new ReplicaSetController(registry, self, membersSupplier, clusterSizeSupplier, catalog, onBecameReplica, executor, true);
+
+        return new ReplicaSetController(registry,
+                                        self,
+                                        membersSupplier,
+                                        clusterSizeSupplier,
+                                        catalog,
+                                        onBecameReplica,
+                                        executor,
+                                        true);
     }
 
     /// Test/advanced factory: caller supplies the executor (e.g. a same-thread executor for
@@ -156,21 +169,32 @@ public final class ReplicaSetController implements AutoCloseable {
                                                             StreamCatalog catalog,
                                                             BiConsumer<String, Integer> onBecameReplica,
                                                             Executor executor) {
-        return new ReplicaSetController(registry, self, membersSupplier, clusterSizeSupplier, catalog, onBecameReplica, executor, false);
+        return new ReplicaSetController(registry,
+                                        self,
+                                        membersSupplier,
+                                        clusterSizeSupplier,
+                                        catalog,
+                                        onBecameReplica,
+                                        executor,
+                                        false);
     }
 
     /// Membership-tail hook: any {@link MembershipDecision} variant triggers a reconcile. Wire via
     /// `wireMembershipDecisionTail` in AetherNode.
-    @Contract public void onMembershipDecision(MembershipDecision decision) {
-        log.debug("ReplicaSetController: membership decision {} — scheduling reconcile", decision.getClass().getSimpleName());
+    @Contract
+    public void onMembershipDecision(MembershipDecision decision) {
+        log.debug("ReplicaSetController: membership decision {} — scheduling reconcile",
+                  decision.getClass().getSimpleName());
         reconcile();
     }
 
     /// Quorum-state hook: track ACTIVE/PASSIVE. On a fresh ACTIVE edge, reconcile (the cluster view
     /// may have changed while we were suppressing). PASSIVE just flips the suppression flag.
-    @Contract public void onQuorumStateChange(ClusterStateNotification notification) {
+    @Contract
+    public void onQuorumStateChange(ClusterStateNotification notification) {
         var nowPassive = notification.state() == ClusterStateNotification.State.PASSIVE;
         var wasPassive = passive.getAndSet(nowPassive);
+
         if (wasPassive && !nowPassive) {
             log.debug("ReplicaSetController: PASSIVE -> ACTIVE — scheduling reconcile");
             reconcile();
@@ -180,29 +204,31 @@ public final class ReplicaSetController implements AutoCloseable {
     /// Schedule a serialized reconcile. Returns immediately; the work runs on the controller's
     /// executor. Safe to call from any thread and any number of times (coalesces naturally because
     /// each run recomputes from a fresh snapshot).
-    @Contract public void reconcile() {
+    @Contract
+    public void reconcile() {
         executor.execute(this::reconcileNow);
     }
 
     private void reconcileNow() {
         if (passive.get()) {
             log.debug("ReplicaSetController: PASSIVE — skipping reconcile");
+
             return;
         }
 
         var members = List.copyOf(membersSupplier.get());
+
         if (members.isEmpty()) {
             log.debug("ReplicaSetController: no members yet — skipping reconcile");
+
             return;
         }
 
         var clusterSize = clusterSizeSupplier.getAsInt();
-
         // B3: publish the exact membership generation this reconcile is about to apply, so the
         // emit-gate (roleFor/isOwner) computes ownership from the SAME snapshot the registry is
         // reconciled against — not an independent live read taken at a different instant.
         reconciledView.set(some(new ReconciledView(members, clusterSize)));
-
         for (var spec : catalog.streams()) {
             reconcileStream(spec, members, clusterSize);
         }
@@ -214,24 +240,24 @@ public final class ReplicaSetController implements AutoCloseable {
 
         for (var partition = 0; partition < spec.partitions(); partition++) {
             var p = partition;
-            ReplicaPlacement.place(spec.name(), partition, members, rf)
-                            .onPresent(placement -> reconcilePartition(spec.name(), p, placement));
+
+            ReplicaPlacement.place(spec.name(), partition, members, rf).onPresent(placement -> reconcilePartition(spec.name(),
+                                                                                                                  p,
+                                                                                                                  placement));
         }
     }
 
     private void reconcilePartition(String streamName, int partition, Placement placement) {
         var desired = Set.copyOf(placement.replicas());
-
         var current = new HashSet<NodeId>();
-        registry.replicasFor(streamName, partition).forEach(descriptor -> current.add(descriptor.nodeId()));
 
+        registry.replicasFor(streamName, partition).forEach(descriptor -> current.add(descriptor.nodeId()));
         // Removed: in registry but no longer desired.
         for (var node : current) {
             if (!desired.contains(node)) {
                 registry.unregisterReplica(streamName, partition, node);
             }
         }
-
         // Added: desired but not yet in registry.
         for (var node : desired) {
             if (!current.contains(node)) {
@@ -277,7 +303,11 @@ public final class ReplicaSetController implements AutoCloseable {
         if (placement.owner().equals(self)) {
             return Role.OWNER;
         }
-        return placement.replicas().contains(self) ? Role.REPLICA : Role.NONE;
+
+        return placement.replicas()
+                        .contains(self)
+               ? Role.REPLICA
+               : Role.NONE;
     }
 
     /// True when THIS node is the owner of `(stream, partition)`. Called by the B3 emit-gating
@@ -296,26 +326,25 @@ public final class ReplicaSetController implements AutoCloseable {
         var members = currentMembers();
         var rf = rfFor(streamName, classify(streamName));
 
-        return ReplicaPlacement.place(streamName, partition, members, rf)
-                               .map(Placement::owner);
+        return ReplicaPlacement.place(streamName, partition, members, rf).map(Placement::owner);
     }
 
     private int rfFor(String streamName, StreamClass streamClass) {
         var clusterSize = currentClusterSize();
-        var requested = catalog.streams()
-                               .stream()
-                               .filter(spec -> spec.name().equals(streamName))
-                               .mapToInt(StreamCatalog.StreamSpec::minSyncReplicas)
-                               .findFirst()
-                               .orElse(0);
+        var requested = catalog.streams().stream().filter(spec -> spec.name()
+                                                                      .equals(streamName)).mapToInt(StreamCatalog.StreamSpec::minSyncReplicas).findFirst().orElse(0);
+
         return ReplicaPlacement.replicationFactor(streamClass, requested, clusterSize);
     }
 
     private static StreamClass classify(String streamName) {
-        return streamName.startsWith(SYSTEM_NAMESPACE_PREFIX) ? SYSTEM : APP;
+        return streamName.startsWith(SYSTEM_NAMESPACE_PREFIX)
+               ? SYSTEM
+               : APP;
     }
 
-    @Override public void close() {
+    @Override
+    public void close() {
         if (ownsExecutor && executor instanceof ExecutorService service) {
             service.shutdownNow();
         }

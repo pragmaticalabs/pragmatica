@@ -57,6 +57,7 @@ final class JwtTokenParser {
     private static Result<JwtHeader> extractHeader(Map<String, Object> headerMap) {
         var alg = Option.option(headerMap.get("alg")).map(Object::toString).or("RS256");
         var kid = Option.option(headerMap.get("kid")).map(Object::toString).or("");
+
         return success(new JwtHeader(alg, kid));
     }
 

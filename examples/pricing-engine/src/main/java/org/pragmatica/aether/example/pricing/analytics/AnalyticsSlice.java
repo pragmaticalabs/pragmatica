@@ -79,6 +79,7 @@ public interface AnalyticsSlice {
                 return new HighValueSummary(totalOrders, totalRevenue, buckets);
             }
         }
+
         return new analyticsSlice(db);
     }
 }

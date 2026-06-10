@@ -104,11 +104,13 @@ public final class StatusRoutes implements RouteSource {
                                   ctx.isAuthenticated());
     }
 
-    private Promise<List<ClusterEventView>> buildEventsResponse(Option<Long> sinceEpochParam, Option<Long> sinceSeqParam) {
+    private Promise<List<ClusterEventView>> buildEventsResponse(Option<Long> sinceEpochParam,
+                                                                Option<Long> sinceSeqParam) {
         var aggregator = nodeSupplier.get().eventAggregator();
 
         if (sinceEpochParam.isEmpty() && sinceSeqParam.isEmpty()) {
-            return aggregator.events().map(StatusRoutes::toEventViews);
+            return aggregator.events()
+                             .map(StatusRoutes::toEventViews);
         }
         // BEHAVIOR CHANGE (review C5): the `since` cursor is now an Instant in the namespace-stream
         // events API. The legacy `?sinceSeq=` cursor (an opaque sequence number in rc1) is remapped
@@ -117,14 +119,18 @@ public final class StatusRoutes implements RouteSource {
         // position. rc1 callers rarely passed sinceEpoch alone; operators should migrate to ISO-8601
         // timestamps. See CHANGELOG.
         var sinceMillis = sinceSeqParam.fold(() -> 0L, seq -> seq);
-        return aggregator.eventsSince(Instant.ofEpochMilli(sinceMillis)).map(StatusRoutes::toEventViews);
+
+        return aggregator.eventsSince(Instant.ofEpochMilli(sinceMillis))
+                         .map(StatusRoutes::toEventViews);
     }
 
     /// Project the sealed {@link ClusterEvent} list onto the self-describing
     /// {@link ClusterEventView} wire shape, surfacing each variant's `type()` discriminator
     /// alongside the existing at/severity/summary/details fields.
     private static List<ClusterEventView> toEventViews(List<ClusterEvent> events) {
-        return events.stream().map(StatusRoutes::toEventView).toList();
+        return events.stream()
+                     .map(StatusRoutes::toEventView)
+                     .toList();
     }
 
     private static ClusterEventView toEventView(ClusterEvent event) {
@@ -143,6 +149,7 @@ public final class StatusRoutes implements RouteSource {
         var view = node.membershipView();
         var topologyNodes = node.topologyManager().topology();
         var allNodeIds = new LinkedHashSet<NodeId>();
+
         topologyNodes.forEach(allNodeIds::add);
         view.snapshot().keySet().forEach(allNodeIds::add);
         var selfId = node.self();
@@ -189,10 +196,7 @@ public final class StatusRoutes implements RouteSource {
                                   BuildInfo.buildInfo().buildVersion());
     }
 
-    private static NodeInfo toNodeInfo(MembershipView view,
-                                       NodeId nodeId,
-                                       Option<NodeId> leader,
-                                       String kvState) {
+    private static NodeInfo toNodeInfo(MembershipView view, NodeId nodeId, Option<NodeId> leader, String kvState) {
         var isLeader = leader.map(l -> l.equals(nodeId)).or(false);
         var present = view.isPresent(nodeId);
         // kvState — node-reported work-state (NodeReportedState: SYNCING/READY/DRAINING) from the
@@ -226,7 +230,8 @@ public final class StatusRoutes implements RouteSource {
                    .entrySet()
                    .stream()
                    .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
-                                                         entry -> entry.getValue().name()));
+                                                         entry -> entry.getValue()
+                                                                       .name()));
     }
 
     /// E.6 (spec §7.2): route through `ManageableNode.clusterPhaseSupplier()` so the
@@ -247,10 +252,12 @@ public final class StatusRoutes implements RouteSource {
         var node = nodeSupplier.get();
         var metrics = node.metricsCollector().allMetrics();
         var nodeIds = new LinkedHashSet<String>();
+
         nodeIds.add(node.self().id());
         node.connectedPeerIds().forEach(nid -> nodeIds.add(nid.id()));
-
-        for (NodeId nodeId : metrics.keySet()) {nodeIds.add(nodeId.id());}
+        for (NodeId nodeId : metrics.keySet()) {
+            nodeIds.add(nodeId.id());
+        }
 
         node.kvStore().forEach(SliceNodeKey.class,
                                SliceNodeValue.class,
@@ -264,6 +271,7 @@ public final class StatusRoutes implements RouteSource {
 
     private static Map<String, String> collectNodeRoles(ManageableNode node) {
         var roleMap = new HashMap<String, String>();
+
         node.kvStore().forEach(ActivationDirectiveKey.class,
                                ActivationDirectiveValue.class,
                                (key, value) -> roleMap.put(key.nodeId().id(),
@@ -321,6 +329,7 @@ public final class StatusRoutes implements RouteSource {
         var nodeId = node.self().id();
         var state = node.nodeLifecycle().currentState();
         var components = new ArrayList<ComponentHealth>();
+
         components.add(buildLifecycleHealth(state));
         components.add(buildConsensusHealth(node));
         components.add(buildRoutesHealth());
@@ -366,6 +375,7 @@ public final class StatusRoutes implements RouteSource {
 
     private CertificateStatusResponse buildCertificateStatusResponse() {
         var node = nodeSupplier.get();
+
         return certificateStatus(node.tlsEnabled(), node.certRenewalScheduler());
     }
 
@@ -384,6 +394,7 @@ public final class StatusRoutes implements RouteSource {
         if (!tlsEnabled) {
             return new CertificateStatusResponse(false, "", 0, "", "NOT_CONFIGURED");
         }
+
         return new CertificateStatusResponse(tlsEnabled,
                                              scheduler.currentNotAfter().toString(),
                                              scheduler.secondsUntilExpiry(),

@@ -14,11 +14,12 @@ public record BackupConfig(boolean enabled, String interval, String path, String
     }
 
     public static BackupConfig backupConfig(Environment env) {
-        var defaultPath = switch (env){
+        var defaultPath = switch (env) {
             case LOCAL -> "./aether-backups";
             case DOCKER -> "/data/backups";
             case KUBERNETES -> "/var/aether/backups";
         };
+
         return new BackupConfig(false, "5m", defaultPath, "");
     }
 }

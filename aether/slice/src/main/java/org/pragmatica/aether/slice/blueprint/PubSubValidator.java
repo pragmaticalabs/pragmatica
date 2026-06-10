@@ -19,14 +19,21 @@ import java.util.stream.Stream;
 import static org.pragmatica.lang.Result.success;
 
 
-@SuppressWarnings("JBCT-UTIL-02") public sealed interface PubSubValidator {
+@SuppressWarnings("JBCT-UTIL-02")
+public sealed interface PubSubValidator {
     static Result<List<SliceTopology>> validate(List<SliceTopology> topologies) {
         var addressFailures = validateTopicAddresses(topologies);
+
         if (!addressFailures.isEmpty()) {
             return ExpanderError.InvalidTopicAddresses.invalidTopicAddresses(addressFailures).result();
         }
+
         var orphans = findOrphanPublishers(topologies);
-        if (orphans.isEmpty()) {return success(topologies);}
+
+        if (orphans.isEmpty()) {
+            return success(topologies);
+        }
+
         return ExpanderError.OrphanPublishers.orphanPublishers(orphans).result();
     }
 
@@ -41,40 +48,54 @@ import static org.pragmatica.lang.Result.success;
     ///    derived at deploy time from the blueprint coordinates and cannot be `system`.
     private static List<String> validateTopicAddresses(List<SliceTopology> topologies) {
         var diagnostics = new ArrayList<String>();
-        declaredTopicConfigs(topologies).forEach(config -> validateTopicConfig(config)
-                .onFailure(cause -> diagnostics.add("'" + config + "': " + cause.message())));
+
+        declaredTopicConfigs(topologies).forEach(config -> validateTopicConfig(config).onFailure(cause -> diagnostics.add("'" + config
+                                                                                                                         + "': " + cause.message())));
+
         return List.copyOf(diagnostics);
     }
 
     private static Result<ResourceAddress> validateTopicConfig(String config) {
         if (config != null && config.contains(":")) {
-            return ResourceAddress.resourceAddress(config)
-                               .flatMap(address -> ResourceAddress.validateAppNamespace(address.namespace().value()).map(_ -> address));
+            return ResourceAddress.resourceAddress(config).flatMap(address -> ResourceAddress.validateAppNamespace(address.namespace()
+                                                                                                                          .value()).map(_ -> address));
         }
-        return ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, config, ResourceVersion.defaultVersion());
+
+        return ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE,
+                                               config,
+                                               ResourceVersion.defaultVersion());
     }
 
     private static Set<String> declaredTopicConfigs(List<SliceTopology> topologies) {
         return topologies.stream()
-                         .flatMap(topology -> Stream.concat(topology.publishes().stream().map(SliceTopology.TopicPub::config),
-                                                            topology.subscribes().stream().map(SliceTopology.TopicSub::config)))
+                         .flatMap(topology -> Stream.concat(topology.publishes()
+                                                                    .stream()
+                                                                    .map(SliceTopology.TopicPub::config),
+                                                            topology.subscribes()
+                                                                    .stream()
+                                                                    .map(SliceTopology.TopicSub::config)))
                          .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
     private static List<String> findOrphanPublishers(List<SliceTopology> topologies) {
         var subscribedConfigs = collectSubscriberConfigs(topologies);
-        return topologies.stream().flatMap(topology -> topology.publishes().stream()
-                                                                         .map(SliceTopology.TopicPub::config))
-                                .filter(config -> !subscribedConfigs.contains(config))
-                                .distinct()
-                                .toList();
+
+        return topologies.stream()
+                         .flatMap(topology -> topology.publishes()
+                                                      .stream()
+                                                      .map(SliceTopology.TopicPub::config))
+                         .filter(config -> !subscribedConfigs.contains(config))
+                         .distinct()
+                         .toList();
     }
 
     private static Set<String> collectSubscriberConfigs(List<SliceTopology> topologies) {
-        return topologies.stream().flatMap(topology -> topology.subscribes().stream()
-                                                                          .map(SliceTopology.TopicSub::config))
-                                .collect(Collectors.toUnmodifiableSet());
+        return topologies.stream()
+                         .flatMap(topology -> topology.subscribes()
+                                                      .stream()
+                                                      .map(SliceTopology.TopicSub::config))
+                         .collect(Collectors.toUnmodifiableSet());
     }
 
-    record unused() implements PubSubValidator{}
+    record unused() implements PubSubValidator {}
 }

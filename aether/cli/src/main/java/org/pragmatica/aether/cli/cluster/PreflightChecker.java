@@ -37,6 +37,7 @@ sealed interface PreflightChecker {
 
     static Result<ClusterBootstrapConfig> runFull(ClusterBootstrapConfig config) {
         var results = new ArrayList<PreflightResult>();
+
         config.sources().forEach((name, source) -> runSourceChecks(name, source, results));
         printResults(results);
 
@@ -50,12 +51,16 @@ sealed interface PreflightChecker {
             case FORGE -> runForgeChecks(name, results);
             case DOCKER -> runDockerChecks(name, results);
         }
+
         checkFloatingIpIfElected(name, source, results);
     }
 
     @Contract
     private static void checkCloudCredentialsQuietly(String name, SourceProfile source) {
-        if (source.type() != SourceType.CLOUD) {return;}
+        if (source.type() != SourceType.CLOUD) {
+            return;
+        }
+
         ProviderResolver.resolveCloudCompute(source).onFailure(cause -> System.out.println("  WARN: " + name
                                                                                           + ": Cloud credential check failed: " + cause.message()));
     }
@@ -74,6 +79,7 @@ sealed interface PreflightChecker {
     @Contract
     private static void runSshChecks(String name, SourceProfile source, List<PreflightResult> results) {
         var port = source.sshPort().or(DEFAULT_SSH_PORT);
+
         source.roles().values().forEach(sub -> sub.hosts()
                                                   .onPresent(hosts -> hosts.forEach(host -> checkSshHost(name,
                                                                                                          host,
@@ -111,7 +117,10 @@ sealed interface PreflightChecker {
 
     @Contract
     private static void checkFloatingIpIfElected(String name, SourceProfile source, List<PreflightResult> results) {
-        if (source.loadBalancer() != LoadBalancerMode.ELECTED) {return;}
+        if (source.loadBalancer() != LoadBalancerMode.ELECTED) {
+            return;
+        }
+
         ProviderResolver.resolveFloatingIpProvider(source).onSuccess(fip -> results.add(preflightResult(name,
                                                                                                         "PF-12",
                                                                                                         CheckStatus.PASS,
@@ -162,7 +171,9 @@ sealed interface PreflightChecker {
                                                                   List<PreflightResult> results) {
         var failures = results.stream().filter(PreflightResult::isFail).toList();
 
-        if (failures.isEmpty()) {return success(config);}
+        if (failures.isEmpty()) {
+            return success(config);
+        }
 
         return new PreflightError.Failed(formatFailures(failures)).result();
     }

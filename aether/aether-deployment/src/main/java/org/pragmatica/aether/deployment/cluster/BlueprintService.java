@@ -99,7 +99,9 @@ public interface BlueprintService {
     static int extractVersionNumber(String filename) {
         var underscoreIdx = filename.indexOf("__");
 
-        if (underscoreIdx <= 1) {return 0;}
+        if (underscoreIdx <= 1) {
+            return 0;
+        }
 
         var numPart = filename.substring(1, underscoreIdx);
 
@@ -183,6 +185,7 @@ class BlueprintServiceInstance implements BlueprintService {
 
             return ParsedArtifactCoords.parsedArtifactCoords(Artifact.artifact(baseCoords), parts[3], baseCoords);
         }
+
         if (parts.length == 3) {
             return ParsedArtifactCoords.parsedArtifactCoords(Artifact.artifact(coords), "blueprint", coords);
         }
@@ -216,6 +219,7 @@ class BlueprintServiceInstance implements BlueprintService {
     @Override
     public List<ExpandedBlueprint> list() {
         var result = new ArrayList<ExpandedBlueprint>();
+
         store.forEach(AetherKey.AppBlueprintKey.class,
                       AetherValue.AppBlueprintValue.class,
                       (_, value) -> result.add(value.blueprint()));
@@ -269,6 +273,7 @@ class BlueprintServiceInstance implements BlueprintService {
                                                         String artifactCoords,
                                                         boolean registerOnly) {
         var commands = new ArrayList<KVCommand<AetherKey>>();
+
         commands.add(buildBlueprintPutCommand(expanded, registerOnly));
         // Slice META-INF/resources.toml is intentionally NOT published to KV — it is local to
         // each node and applied via the per-slice intrinsic config layer at slice load
@@ -282,7 +287,9 @@ class BlueprintServiceInstance implements BlueprintService {
         // on validation failure an empty bindings entry is still written, preserving rc1's deploy
         // semantics (the gate that would HTTP-422 on bad stream config is a separate stage).
         commands.add(buildStreamBindingsCommand(expanded, resourcesConfig, roleHints));
-        if (!migrations.isEmpty()) {commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords));}
+        if (!migrations.isEmpty()) {
+            commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords));
+        }
 
         return commands;
     }
@@ -290,9 +297,11 @@ class BlueprintServiceInstance implements BlueprintService {
     private static KVCommand<AetherKey> buildStreamBindingsCommand(ExpandedBlueprint expanded,
                                                                    Option<String> resourcesConfig,
                                                                    Map<String, String> roleHints) {
-        var bindings = StreamResourceValidator.validate(resourcesConfig, expanded.id().artifact(), roleHints)
-                                              .map(validated -> toNamedAddresses(expanded.id(), validated))
-                                              .or(List.<NamedAddress>of());
+        var bindings = StreamResourceValidator.validate(resourcesConfig,
+                                                        expanded.id().artifact(),
+                                                        roleHints).map(validated -> toNamedAddresses(expanded.id(),
+                                                                                                     validated)).or(List.<NamedAddress> of());
+
         return new Put<>(BlueprintStreamBindingsKey.blueprintStreamBindingsKey(expanded.id()),
                          BlueprintStreamBindingsValue.blueprintStreamBindingsValue(bindings));
     }
@@ -300,15 +309,16 @@ class BlueprintServiceInstance implements BlueprintService {
     private static List<NamedAddress> toNamedAddresses(BlueprintId blueprintId, ValidatedStreamResources validated) {
         var namespace = BlueprintNamespace.deriveNamespace(blueprintId).or("");
         var collected = new ArrayList<NamedAddress>();
-        validated.resources()
-                 .forEach((alias, resource) -> resolveBindingEntry(namespace, alias, resource).onPresent(collected::add));
+
+        validated.resources().forEach((alias, resource) -> resolveBindingEntry(namespace, alias, resource).onPresent(collected::add));
+
         return List.copyOf(collected);
     }
 
     private static Option<NamedAddress> resolveBindingEntry(String namespace, String alias, StreamResource resource) {
         return switch (resource) {
             case StreamResource.Owned owned -> resolveOwnedAddress(namespace, alias, owned).map(address -> NamedAddress.namedAddress(alias,
-                                                                                                                                      address));
+                                                                                                                                     address));
             case StreamResource.External external -> Option.some(NamedAddress.namedAddress(alias, external.target()));
         };
     }
@@ -317,7 +327,9 @@ class BlueprintServiceInstance implements BlueprintService {
     /// the explicit version produce the fully-qualified address. `Latest` version specs have no
     /// concrete address at deploy time — the consumer resolves them at subscribe-time against the
     /// live registry, so they're omitted from the bindings map.
-    private static Option<ResourceAddress> resolveOwnedAddress(String namespace, String alias, StreamResource.Owned owned) {
+    private static Option<ResourceAddress> resolveOwnedAddress(String namespace,
+                                                               String alias,
+                                                               StreamResource.Owned owned) {
         return switch (owned.version()) {
             case StreamVersionSpec.Exact exact -> ResourceAddress.resourceAddress(namespace, alias, exact.version()).option();
             case StreamVersionSpec.Latest _ -> Option.none();

@@ -61,7 +61,8 @@ public record AetherConfig(ClusterConfig cluster,
                                         none()));
     }
 
-    @SuppressWarnings("JBCT-SEQ-01") public static AetherConfig aetherConfig(Environment env) {
+    @SuppressWarnings("JBCT-SEQ-01")
+    public static AetherConfig aetherConfig(Environment env) {
         return aetherConfig(ClusterConfig.clusterConfig(env),
                             NodeConfig.nodeConfig(env),
                             tlsForEnvironment(env),
@@ -188,25 +189,24 @@ public record AetherConfig(ClusterConfig cluster,
 
     private static Option<TlsConfig> tlsForEnvironment(Environment env) {
         return env.defaultTls()
-              ? some(TlsConfig.tlsConfig())
-              : none();
+               ? some(TlsConfig.tlsConfig())
+               : none();
     }
 
     private static Option<DockerConfig> dockerForEnvironment(Environment env) {
         return env == Environment.DOCKER
-              ? some(DockerConfig.dockerConfig())
-              : none();
+               ? some(DockerConfig.dockerConfig())
+               : none();
     }
 
     private static Option<KubernetesConfig> kubernetesForEnvironment(Environment env) {
         return env == Environment.KUBERNETES
-              ? some(KubernetesConfig.kubernetesConfig())
-              : none();
+               ? some(KubernetesConfig.kubernetesConfig())
+               : none();
     }
 
     public static class Builder {
         private Environment environment = Environment.DOCKER;
-
         private Integer nodes;
         private Boolean tls;
         private String heap;
@@ -228,108 +228,130 @@ public record AetherConfig(ClusterConfig cluster,
         private StreamingConfig streamingConfig;
         private MembershipConfigBinding membershipConfig;
 
-        @SuppressWarnings("JBCT-NAM-01") public Builder withEnvironment(Environment environment) {
+        @SuppressWarnings("JBCT-NAM-01")
+        public Builder withEnvironment(Environment environment) {
             this.environment = environment;
+
             return this;
         }
 
         public Builder nodes(int nodes) {
             this.nodes = nodes;
+
             return this;
         }
 
         public Builder tls(boolean tls) {
             this.tls = tls;
+
             return this;
         }
 
         public Builder heap(String heap) {
             this.heap = heap;
+
             return this;
         }
 
         public Builder gc(String gc) {
             this.gc = gc;
+
             return this;
         }
 
         public Builder ports(PortsConfig ports) {
             this.ports = ports;
+
             return this;
         }
 
         public Builder tlsConfig(TlsConfig tlsConfig) {
             this.tlsConfig = tlsConfig;
+
             return this;
         }
 
         public Builder dockerConfig(DockerConfig dockerConfig) {
             this.dockerConfig = dockerConfig;
+
             return this;
         }
 
         public Builder kubernetesConfig(KubernetesConfig kubernetesConfig) {
             this.kubernetesConfig = kubernetesConfig;
+
             return this;
         }
 
         public Builder ttm(TtmConfig ttmConfig) {
             this.ttmConfig = ttmConfig;
+
             return this;
         }
 
         public Builder sliceConfig(SliceConfig sliceConfig) {
             this.sliceConfig = sliceConfig;
+
             return this;
         }
 
         public Builder appHttp(AppHttpConfig appHttpConfig) {
             this.appHttpConfig = appHttpConfig;
+
             return this;
         }
 
         public Builder backup(BackupConfig backupConfig) {
             this.backupConfig = backupConfig;
+
             return this;
         }
 
         public Builder dhtReplication(DhtReplicationConfig dhtReplicationConfig) {
             this.dhtReplicationConfig = dhtReplicationConfig;
+
             return this;
         }
 
         public Builder timeouts(TimeoutsConfig timeoutsConfig) {
             this.timeoutsConfig = timeoutsConfig;
+
             return this;
         }
 
         public Builder coreMax(int coreMax) {
             this.coreMax = coreMax;
+
             return this;
         }
 
         public Builder cloud(CloudConfig cloudConfig) {
             this.cloudConfig = cloudConfig;
+
             return this;
         }
 
         public Builder storage(Map<String, StorageConfig> storageConfig) {
             this.storageConfig = storageConfig;
+
             return this;
         }
 
         public Builder endpoints(Map<String, EndpointConfig> endpointsConfig) {
             this.endpointsConfig = endpointsConfig;
+
             return this;
         }
 
         public Builder streaming(StreamingConfig streamingConfig) {
             this.streamingConfig = streamingConfig;
+
             return this;
         }
 
         public Builder membership(MembershipConfigBinding membershipConfig) {
             this.membershipConfig = membershipConfig;
+
             return this;
         }
 
@@ -356,18 +378,18 @@ public record AetherConfig(ClusterConfig cluster,
                                                    finalAppHttp,
                                                    finalBackup,
                                                    finalDhtReplication,
-                                                   finalTimeouts)
-            .unwrap();
+                                                   finalTimeouts).unwrap();
             var finalStorage = storageFor();
             var withStorage = finalStorage.isEmpty()
-                             ? config
-                             : config.withStorage(finalStorage);
+                              ? config
+                              : config.withStorage(finalStorage);
             var finalEndpoints = endpointsFor();
             var withEp = finalEndpoints.isEmpty()
-                        ? withStorage
-                        : withStorage.withEndpoints(finalEndpoints);
+                         ? withStorage
+                         : withStorage.withEndpoints(finalEndpoints);
             var withStreaming = option(streamingConfig).map(withEp::withStreaming).or(withEp);
             var withCloudConfig = option(cloudConfig).fold(() -> withStreaming, withStreaming::withCloud);
+
             return option(membershipConfig).fold(() -> withCloudConfig, withCloudConfig::withMembership);
         }
 
@@ -375,12 +397,16 @@ public record AetherConfig(ClusterConfig cluster,
             var withNodes = option(nodes).map(base::withNodes).or(base);
             var withTls = option(tls).map(withNodes::withTls).or(withNodes);
             var withPorts = option(ports).map(withTls::withPorts).or(withTls);
-            return option(coreMax).map(withPorts::withCoreMax).or(withPorts);
+
+            return option(coreMax).map(withPorts::withCoreMax)
+                         .or(withPorts);
         }
 
         private NodeConfig applyNodeOverrides(NodeConfig base) {
             var withHeap = option(heap).map(base::withHeap).or(base);
-            return option(gc).map(withHeap::withGc).or(withHeap);
+
+            return option(gc).map(withHeap::withGc)
+                         .or(withHeap);
         }
 
         private Option<TlsConfig> tlsFor(ClusterConfig clusterCfg) {
@@ -389,8 +415,8 @@ public record AetherConfig(ClusterConfig cluster,
 
         private static Option<TlsConfig> defaultTlsFor(ClusterConfig clusterCfg) {
             return clusterCfg.tls()
-                  ? some(TlsConfig.tlsConfig())
-                  : none();
+                   ? some(TlsConfig.tlsConfig())
+                   : none();
         }
 
         private Option<DockerConfig> dockerFor() {

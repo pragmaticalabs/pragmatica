@@ -43,6 +43,7 @@ public class LogLevelRegistry {
     public static LogLevelRegistry logLevelRegistry(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                     KVStore<AetherKey, AetherValue> kvStore) {
         var registry = new LogLevelRegistry(clusterNode, kvStore);
+
         registry.loadFromKvStore();
 
         return registry;
@@ -50,6 +51,7 @@ public class LogLevelRegistry {
 
     public static LogLevelRegistry readOnly(KVStore<AetherKey, AetherValue> kvStore) {
         var registry = new LogLevelRegistry(null, kvStore);
+
         registry.loadFromKvStore();
 
         return registry;
@@ -102,6 +104,7 @@ public class LogLevelRegistry {
     public void onLogLevelPut(ValuePut<LogLevelKey, LogLevelValue> valuePut) {
         var logLevelKey = valuePut.cause().key();
         var logLevelValue = valuePut.cause().value();
+
         registry.put(logLevelKey.loggerName(), logLevelValue.level());
         applyLevel(logLevelKey.loggerName(), logLevelValue.level());
         log.debug("Log level updated from cluster: {} -> {}",
@@ -113,6 +116,7 @@ public class LogLevelRegistry {
     @SuppressWarnings("JBCT-RET-01")
     public void onLogLevelRemove(ValueRemove<LogLevelKey, LogLevelValue> valueRemove) {
         var logLevelKey = valueRemove.cause().key();
+
         registry.remove(logLevelKey.loggerName());
         resetLogLevel(logLevelKey.loggerName());
         log.debug("Log level reset from cluster: {}", logLevelKey.loggerName());

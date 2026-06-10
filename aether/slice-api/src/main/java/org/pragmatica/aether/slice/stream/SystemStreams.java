@@ -16,9 +16,10 @@ import java.util.List;
 /// framework and must also list it here so [SystemStreamBootstrap] registers it.
 public final class SystemStreams {
     /// Structured cluster event stream (replaces the per-node [RingBuffer] storage).
-    public static final ResourceAddress CLUSTER_EVENTS = ResourceAddress
-            .systemResource("cluster-events", ResourceVersion.resourceVersion(1, 0, 0).unwrap())
-            .unwrap();
+    public static final ResourceAddress CLUSTER_EVENTS = ResourceAddress.systemResource("cluster-events",
+                                                                                        ResourceVersion.resourceVersion(1,
+                                                                                                                        0,
+                                                                                                                        0).unwrap()).unwrap();
 
     /// All system stream addresses that must exist at cluster bootstrap.
     public static final List<ResourceAddress> ALL = List.of(CLUSTER_EVENTS);

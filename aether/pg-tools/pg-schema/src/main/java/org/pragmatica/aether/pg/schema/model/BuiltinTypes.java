@@ -93,13 +93,15 @@ public final class BuiltinTypes {
     public static Option<PgType.BuiltinType> lookup(String typeName) {
         var normalized = typeName.toLowerCase().trim();
         var type = TYPES.get(normalized);
+
         return type != null
-              ? Option.present(type)
-              : Option.empty();
+               ? Option.present(type)
+               : Option.empty();
     }
 
     public static String canonicalize(String typeName) {
         var normalized = typeName.toLowerCase().trim();
+
         return ALIASES.getOrDefault(normalized, normalized);
     }
 
@@ -107,11 +109,12 @@ public final class BuiltinTypes {
         var canonical = canonicalize(typeName);
         var builtin = TYPES.get(canonical);
         PgType base = builtin != null
-                     ? new PgType.BuiltinType(canonical, builtin.category(), modifiers)
-                     : new PgType.CustomType(typeName, "");
+                      ? new PgType.BuiltinType(canonical, builtin.category(), modifiers)
+                      : new PgType.CustomType(typeName, "");
+
         return arrayDims > 0
-              ? new PgType.ArrayType(base, arrayDims)
-              : base;
+               ? new PgType.ArrayType(base, arrayDims)
+               : base;
     }
 
     private static Map.Entry<String, PgType.BuiltinType> entry(String name, PgType.TypeCategory category) {

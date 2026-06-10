@@ -70,6 +70,7 @@ public interface BackupService {
 
     static BackupService disabled() {
         var disabledError = BackupError.backupDisabled();
+
         record disabledBackupService(BackupError error) implements BackupService {
             @Override
             public Result<Unit> backupNow() {

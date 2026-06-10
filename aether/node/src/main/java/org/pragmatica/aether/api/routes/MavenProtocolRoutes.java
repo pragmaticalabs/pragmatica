@@ -40,12 +40,16 @@ public final class MavenProtocolRoutes implements RouteHandler {
         var path = ctx.path();
         var method = ctx.method();
 
-        if (!path.startsWith(REPOSITORY_PREFIX) || path.startsWith(REPOSITORY_INFO_PREFIX)) {return false;}
+        if (!path.startsWith(REPOSITORY_PREFIX) || path.startsWith(REPOSITORY_INFO_PREFIX)) {
+            return false;
+        }
+
         if (method == GET) {
             handleGet(response, path);
 
             return true;
         }
+
         if (method == POST || method == PUT) {
             handlePut(response, path, ctx.body());
 
@@ -58,33 +62,52 @@ public final class MavenProtocolRoutes implements RouteHandler {
     @Contract
     private void handleGet(ResponseWriter response, String uri) {
         var node = nodeSupplier.get();
+
         node.mavenProtocolHandler().handleGet(uri).onSuccess(r -> sendProtocolResponse(response, r)).onFailure(response::internalError);
     }
 
     @Contract
     private void handlePut(ResponseWriter response, String uri, byte[] content) {
         var node = nodeSupplier.get();
+
         node.mavenProtocolHandler().handlePut(uri, content).onSuccess(r -> sendProtocolResponse(response, r)).onFailure(response::internalError);
     }
 
     private void sendProtocolResponse(ResponseWriter response, MavenResponse mavenResponse) {
         var status = findHttpStatus(mavenResponse.statusCode());
+
         response.write(status,
                        mavenResponse.content(),
                        ContentType.contentType(mavenResponse.contentType(), categoryFor(mavenResponse.contentType())));
     }
 
     private ContentCategory categoryFor(String contentType) {
-        if (contentType == null) {return ContentCategory.BINARY;}
-        if (contentType.startsWith("application/json") || contentType.startsWith("application/problem+json")) {return ContentCategory.JSON;}
-        if (contentType.startsWith("application/xml")) {return ContentCategory.XML;}
-        if (contentType.startsWith("text/")) {return ContentCategory.TEXT;}
+        if (contentType == null) {
+            return ContentCategory.BINARY;
+        }
+
+        if (contentType.startsWith("application/json") || contentType.startsWith("application/problem+json")) {
+            return ContentCategory.JSON;
+        }
+
+        if (contentType.startsWith("application/xml")) {
+            return ContentCategory.XML;
+        }
+
+        if (contentType.startsWith("text/")) {
+            return ContentCategory.TEXT;
+        }
 
         return ContentCategory.BINARY;
     }
 
     private HttpStatus findHttpStatus(int code) {
-        for (var status : HttpStatus.values()) {if (status.code() == code) {return status;}}
+        for (var status : HttpStatus.values()) {
+            if (status.code() == code) {
+                return status;
+            }
+        }
+
         return HttpStatus.OK;
     }
 }

@@ -15,9 +15,10 @@ public record GcpSecretsProvider(GcpClient client) implements SecretsProvider {
         return new GcpSecretsProvider(client);
     }
 
-    @Override public Promise<String> resolveSecret(String secretPath) {
+    @Override
+    public Promise<String> resolveSecret(String secretPath) {
         return client.accessSecretVersion(secretPath)
-                                         .mapError(cause -> EnvironmentError.secretResolutionFailed(secretPath,
-                                                                                                    new RuntimeException(cause.message())));
+                     .mapError(cause -> EnvironmentError.secretResolutionFailed(secretPath,
+                                                                                new RuntimeException(cause.message())));
     }
 }

@@ -23,6 +23,7 @@ public sealed interface GroupAssignment {
     static Map<WorkerGroupId, List<NodeId>> computeGroups(List<NodeId> allMembers, String groupName, int maxGroupSize) {
         var result = new TreeMap<WorkerGroupId, List<NodeId>>(Comparator.comparing(WorkerGroupId::communityId));
         var zoneGroups = groupByZone(allMembers);
+
         zoneGroups.forEach((zone, members) -> assignZoneGroups(result, members, groupName, zone, maxGroupSize));
 
         return result;
@@ -38,6 +39,7 @@ public sealed interface GroupAssignment {
 
             return;
         }
+
         splitIntoSubgroups(result, members, groupName, zone, maxGroupSize);
     }
 
@@ -49,16 +51,24 @@ public sealed interface GroupAssignment {
         var subgroupCount = (members.size() + maxGroupSize - 1) / maxGroupSize;
         var subgroups = new ArrayList<List<NodeId>>(subgroupCount);
 
-        for (var i = 0;i <subgroupCount;i++) {subgroups.add(new ArrayList<>());}
-        for (var i = 0;i <members.size();i++) {subgroups.get(i % subgroupCount).add(members.get(i));}
-        for (var i = 0;i <subgroupCount;i++) {result.put(workerGroupId(groupName + "-" + i, zone), subgroups.get(i));}
+        for (var i = 0; i < subgroupCount; i++) {
+            subgroups.add(new ArrayList<>());
+        }
+
+        for (var i = 0; i < members.size(); i++) {
+            subgroups.get(i % subgroupCount).add(members.get(i));
+        }
+
+        for (var i = 0; i < subgroupCount; i++) {
+            result.put(workerGroupId(groupName + "-" + i, zone), subgroups.get(i));
+        }
     }
 
     private static String extractZone(NodeId nodeId) {
         var id = nodeId.id();
         var lastDash = id.lastIndexOf('-');
 
-        return lastDash <0
+        return lastDash < 0
                ? "local"
                : id.substring(0, lastDash);
     }

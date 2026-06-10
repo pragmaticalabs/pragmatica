@@ -29,11 +29,8 @@ public record ConsumerConfig(String groupId,
     }
 
     private static final int DEFAULT_BATCH_SIZE = 1;
-
     private static final TimeSpan DEFAULT_CHECKPOINT_INTERVAL = timeSpan(1).seconds();
-
     private static final int DEFAULT_MAX_RETRIES = 3;
-
     private static final String DEFAULT_DEAD_LETTER_STREAM = "";
 
     public static ConsumerConfig consumerConfig(String groupId) {

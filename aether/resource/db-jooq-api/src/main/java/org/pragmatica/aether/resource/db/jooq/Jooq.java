@@ -12,4 +12,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 
-@ResourceQualifier(type = JooqConnector.class, config = "database") @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.PARAMETER) public@interface Jooq {}
+@ResourceQualifier(type = JooqConnector.class, config = "database")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+public @interface Jooq {}

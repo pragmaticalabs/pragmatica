@@ -22,7 +22,8 @@ public record FileSecretsProvider(Path baseDir) implements SecretsProvider {
         return new FileSecretsProvider(baseDir);
     }
 
-    @Override public Promise<String> resolveSecret(String secretPath) {
+    @Override
+    public Promise<String> resolveSecret(String secretPath) {
         return readString(toFilePath(secretPath)).map(String::trim)
                          .mapError(cause -> EnvironmentError.secretResolutionFailed(secretPath,
                                                                                     new RuntimeException(cause.message())))

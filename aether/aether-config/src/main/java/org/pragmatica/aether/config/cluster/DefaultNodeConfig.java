@@ -22,6 +22,8 @@ public interface DefaultNodeConfig {
     }
 
     private static Result<TomlDocument> loadResource(String path) {
-        return StreamOps.readResource(DefaultNodeConfig.class.getClassLoader(), path).flatMap(TomlParser::parse);
+        return StreamOps.readResource(DefaultNodeConfig.class.getClassLoader(),
+                                      path)
+                        .flatMap(TomlParser::parse);
     }
 }

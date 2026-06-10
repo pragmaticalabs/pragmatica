@@ -15,44 +15,57 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-@SuppressWarnings({"JBCT-ZONE-02", "JBCT-ZONE-03"}) public record WorkerConfig(List<String> coreNodes,
-                                                                               int clusterPort,
-                                                                               int swimPort,
-                                                                               SwimSettings swimSettings,
-                                                                               SliceConfig sliceConfig,
-                                                                               String groupName,
-                                                                               String zone,
-                                                                               int maxGroupSize,
-                                                                               TimeSpan heartbeatInterval,
-                                                                               TimeSpan heartbeatTimeout,
-                                                                               String advertiseAddress,
-                                                                               TimeSpan metricsAggregation) {
+@SuppressWarnings({"JBCT-ZONE-02", "JBCT-ZONE-03"})
+public record WorkerConfig(List<String> coreNodes,
+                           int clusterPort,
+                           int swimPort,
+                           SwimSettings swimSettings,
+                           SliceConfig sliceConfig,
+                           String groupName,
+                           String zone,
+                           int maxGroupSize,
+                           TimeSpan heartbeatInterval,
+                           TimeSpan heartbeatTimeout,
+                           String advertiseAddress,
+                           TimeSpan metricsAggregation) {
     public static final int DEFAULT_CLUSTER_PORT = 7100;
-
     public static final int DEFAULT_SWIM_PORT = 7200;
-
     public static final String DEFAULT_GROUP_NAME = "default";
-
     public static final String DEFAULT_ZONE = "local";
-
     public static final int DEFAULT_MAX_GROUP_SIZE = 100;
-
     public static final TimeSpan DEFAULT_HEARTBEAT_INTERVAL = timeSpan(500).millis();
-
     public static final TimeSpan DEFAULT_HEARTBEAT_TIMEOUT = timeSpan(2).seconds();
-
     public static final String DEFAULT_ADVERTISE_ADDRESS = "";
-
     public static final TimeSpan DEFAULT_METRICS_AGGREGATION = timeSpan(5).seconds();
 
     public WorkerConfig {
-        if (groupName == null || groupName.isBlank()) {groupName = DEFAULT_GROUP_NAME;}
-        if (zone == null || zone.isBlank()) {zone = DEFAULT_ZONE;}
-        if (maxGroupSize <2) {maxGroupSize = DEFAULT_MAX_GROUP_SIZE;}
-        if (heartbeatInterval.millis() <= 0) {heartbeatInterval = DEFAULT_HEARTBEAT_INTERVAL;}
-        if (heartbeatTimeout.millis() <= 0) {heartbeatTimeout = DEFAULT_HEARTBEAT_TIMEOUT;}
-        if (advertiseAddress == null) {advertiseAddress = DEFAULT_ADVERTISE_ADDRESS;}
-        if (metricsAggregation.millis() <= 0) {metricsAggregation = DEFAULT_METRICS_AGGREGATION;}
+        if (groupName == null || groupName.isBlank()) {
+            groupName = DEFAULT_GROUP_NAME;
+        }
+
+        if (zone == null || zone.isBlank()) {
+            zone = DEFAULT_ZONE;
+        }
+
+        if (maxGroupSize < 2) {
+            maxGroupSize = DEFAULT_MAX_GROUP_SIZE;
+        }
+
+        if (heartbeatInterval.millis() <= 0) {
+            heartbeatInterval = DEFAULT_HEARTBEAT_INTERVAL;
+        }
+
+        if (heartbeatTimeout.millis() <= 0) {
+            heartbeatTimeout = DEFAULT_HEARTBEAT_TIMEOUT;
+        }
+
+        if (advertiseAddress == null) {
+            advertiseAddress = DEFAULT_ADVERTISE_ADDRESS;
+        }
+
+        if (metricsAggregation.millis() <= 0) {
+            metricsAggregation = DEFAULT_METRICS_AGGREGATION;
+        }
     }
 
     public static Result<WorkerConfig> workerConfig(List<String> coreNodes,
@@ -154,8 +167,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
     private static Result<Integer> checkPort(String name, int port) {
         return port >= 1 && port <= 65535
-              ? success(port)
-              : WorkerConfigError.invalidWorkerConfig(name + " must be 1-65535, got: " + port).result();
+               ? success(port)
+               : WorkerConfigError.invalidWorkerConfig(name + " must be 1-65535, got: " + port).result();
     }
 
     private static Result<String> checkNotBlank(String name, String value) {
@@ -165,8 +178,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
     private static Result<Integer> checkMinValue(String name, int value, int min) {
         return value >= min
-              ? success(value)
-              : WorkerConfigError.invalidWorkerConfig(name + " must be >= " + min + ", got: " + value).result();
+               ? success(value)
+               : WorkerConfigError.invalidWorkerConfig(name + " must be >= " + min + ", got: " + value).result();
     }
 
     public record SwimSettings(TimeSpan period,
@@ -175,13 +188,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                TimeSpan suspectTimeout,
                                int maxPiggyback) {
         public static final TimeSpan DEFAULT_PERIOD = timeSpan(1).seconds();
-
         public static final TimeSpan DEFAULT_PROBE_TIMEOUT = timeSpan(500).millis();
-
         public static final int DEFAULT_INDIRECT_PROBES = 3;
-
         public static final TimeSpan DEFAULT_SUSPECT_TIMEOUT = timeSpan(5).seconds();
-
         public static final int DEFAULT_MAX_PIGGYBACK = 8;
 
         private static final SwimSettings DEFAULT = new SwimSettings(DEFAULT_PERIOD,
@@ -213,21 +222,21 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
         private static Result<TimeSpan> checkPositiveTimeSpan(String name, TimeSpan value) {
             return value.millis() > 0
-                  ? success(value)
-                  : WorkerConfigError.invalidWorkerConfig(name + " must be positive, got: " + value.millis() + "ms")
-                                                         .result();
+                   ? success(value)
+                   : WorkerConfigError.invalidWorkerConfig(name + " must be positive, got: " + value.millis() + "ms").result();
         }
 
         private static Result<Integer> checkPositiveInt(String name, int value) {
             return value > 0
-                  ? success(value)
-                  : WorkerConfigError.invalidWorkerConfig(name + " must be positive, got: " + value).result();
+                   ? success(value)
+                   : WorkerConfigError.invalidWorkerConfig(name + " must be positive, got: " + value).result();
         }
     }
 
     public sealed interface WorkerConfigError extends Cause {
         record unused() implements WorkerConfigError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "unused";
             }
         }
@@ -241,7 +250,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                 return invalidWorkerConfig(detail, true).unwrap();
             }
 
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Invalid worker configuration: " + detail;
             }
         }

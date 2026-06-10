@@ -25,40 +25,7 @@ import java.util.Map;
 /// every closed variant is handled and that an `ExtendedEvent` arm is present (typically a
 /// discriminator-keyed dispatch, structured log, or no-op).
 @Codec
-public sealed interface ClusterEvent permits
-        ClusterEvent.NodeJoined,
-        ClusterEvent.NodeLeft,
-        ClusterEvent.NodeFailed,
-        ClusterEvent.LeaderElected,
-        ClusterEvent.LeaderLost,
-        ClusterEvent.QuorumEstablished,
-        ClusterEvent.QuorumLost,
-        ClusterEvent.DeploymentStarted,
-        ClusterEvent.DeploymentCompleted,
-        ClusterEvent.DeploymentFailed,
-        ClusterEvent.ScaleUp,
-        ClusterEvent.ScaleDown,
-        ClusterEvent.SliceFailure,
-        ClusterEvent.ConnectionEstablished,
-        ClusterEvent.ConnectionFailed,
-        ClusterEvent.CommunityScaleRequest,
-        ClusterEvent.CommunityMetricsSnapshot,
-        ClusterEvent.AccessDenied,
-        ClusterEvent.NodeLifecycleChanged,
-        ClusterEvent.ConfigChanged,
-        ClusterEvent.BackupCreated,
-        ClusterEvent.BackupRestored,
-        ClusterEvent.BlueprintDeployed,
-        ClusterEvent.BlueprintDeleted,
-        ClusterEvent.GenerationChanged,
-        ClusterEvent.StreamRegistered,
-        ClusterEvent.StreamDeleted,
-        ClusterEvent.AlertInjected,
-        ClusterEvent.TraceInjected,
-        ClusterEvent.SelfDrainInitiated,
-        ClusterEvent.StreamMemoryExceeded,
-        ExtendedEvent {
-
+public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.GenerationChanged, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ExtendedEvent {
     /// Restart-safe identity + total cluster ordering: HLC physical micros + logical counter + origin nodeId.
     HlcTimestamp at();
 
@@ -80,22 +47,24 @@ public sealed interface ClusterEvent permits
     /// `SELF_DRAIN_INITIATED`. No nulls: `getSimpleName()` of a non-anonymous record is always present.
     private static String screamingSnakeCase(String simpleName) {
         var builder = new StringBuilder(simpleName.length() + 8);
+
         for (int i = 0; i < simpleName.length(); i++) {
             char c = simpleName.charAt(i);
+
             if (i > 0 && Character.isUpperCase(c)) {
                 builder.append('_');
             }
+
             builder.append(Character.toUpperCase(c));
         }
+
         return builder.toString();
     }
 
     /// Severity bucket carried by every closed-set variant for management-API JSON.
     Severity severity();
-
     /// Human-readable single-line summary carried by every closed-set variant.
     String summary();
-
     /// Free-form key/value payload carried by every closed-set variant.
     Map<String, String> details();
 
@@ -157,11 +126,17 @@ public sealed interface ClusterEvent permits
     record GenerationChanged(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
 
     /// Stream lifecycle event: a stream was registered (spec §13.1).
-    record StreamRegistered(HlcTimestamp at, Severity severity, String summary, Map<String, String> details,
+    record StreamRegistered(HlcTimestamp at,
+                            Severity severity,
+                            String summary,
+                            Map<String, String> details,
                             ResourceAddress address) implements ClusterEvent {}
 
     /// Stream lifecycle event: a stream was deleted (spec §13.2).
-    record StreamDeleted(HlcTimestamp at, Severity severity, String summary, Map<String, String> details,
+    record StreamDeleted(HlcTimestamp at,
+                         Severity severity,
+                         String summary,
+                         Map<String, String> details,
                          ResourceAddress address) implements ClusterEvent {}
 
     /// Operator-injected synthetic alert. Replicated cluster-wide via the events stream so peers

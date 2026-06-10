@@ -33,8 +33,7 @@ public final class ClusterPhaseView {
         this.haveLeaderReader = haveLeaderReader;
     }
 
-    public static ClusterPhaseView clusterPhaseView(BooleanSupplier inQuorumReader,
-                                                    BooleanSupplier haveLeaderReader) {
+    public static ClusterPhaseView clusterPhaseView(BooleanSupplier inQuorumReader, BooleanSupplier haveLeaderReader) {
         return new ClusterPhaseView(inQuorumReader, haveLeaderReader);
     }
 
@@ -57,6 +56,7 @@ public final class ClusterPhaseView {
         if (!everQuorate.get()) {
             return ClusterPhase.COLD_BOOT;
         }
+
         return inQuorum && haveLeader
                ? ClusterPhase.NORMAL
                : ClusterPhase.RECOVERING;

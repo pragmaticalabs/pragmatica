@@ -12,14 +12,15 @@ import java.util.List;
 import java.util.Set;
 
 
-@Codec public record CommunityGenerationSnapshot(String communityId,
-                                                 long communityTerm,
-                                                 Epoch communityEpoch,
-                                                 NodeId governorNodeId,
-                                                 List<NodeId> members,
-                                                 Epoch observedCoreEpoch,
-                                                 Set<String> partitionsHeld,
-                                                 HlcTimestamp committedAt) {
+@Codec
+public record CommunityGenerationSnapshot(String communityId,
+                                          long communityTerm,
+                                          Epoch communityEpoch,
+                                          NodeId governorNodeId,
+                                          List<NodeId> members,
+                                          Epoch observedCoreEpoch,
+                                          Set<String> partitionsHeld,
+                                          HlcTimestamp committedAt) {
     public CommunityGenerationSnapshot {
         members = List.copyOf(members);
         partitionsHeld = Set.copyOf(partitionsHeld);

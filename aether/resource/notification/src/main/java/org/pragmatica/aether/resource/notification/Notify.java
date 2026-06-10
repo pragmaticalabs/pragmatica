@@ -12,4 +12,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 
-@ResourceQualifier(type = NotificationSender.class, config = "notification") @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.PARAMETER) public@interface Notify {}
+@ResourceQualifier(type = NotificationSender.class, config = "notification")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+public @interface Notify {}

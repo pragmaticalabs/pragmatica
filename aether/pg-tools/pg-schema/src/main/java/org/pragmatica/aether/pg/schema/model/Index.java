@@ -17,7 +17,7 @@ public record Index(String name,
                     boolean concurrent,
                     Option<String> whereClause,
                     List<String> includeColumns) {
-    public record IndexElement(String expression, Option<SortOrder> order, Option<NullsOrder> nullsOrder){}
+    public record IndexElement(String expression, Option<SortOrder> order, Option<NullsOrder> nullsOrder) {}
 
     public enum IndexMethod {
         BTREE,

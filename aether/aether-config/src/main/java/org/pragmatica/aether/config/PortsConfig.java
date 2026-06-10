@@ -11,7 +11,6 @@ import static org.pragmatica.lang.Result.success;
 
 public record PortsConfig(int management, int cluster, HttpProtocol managementHttpProtocol) {
     public static final int DEFAULT_MANAGEMENT_PORT = 8080;
-
     public static final int DEFAULT_CLUSTER_PORT = 8090;
 
     public static Result<PortsConfig> portsConfig(int management, int cluster, HttpProtocol managementHttpProtocol) {

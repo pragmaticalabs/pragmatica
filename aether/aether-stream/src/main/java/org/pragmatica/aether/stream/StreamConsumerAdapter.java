@@ -15,7 +15,8 @@ import java.lang.foreign.ValueLayout;
 import java.util.function.Function;
 
 
-@SuppressWarnings("JBCT-UTIL-02") public interface StreamConsumerAdapter {
+@SuppressWarnings("JBCT-UTIL-02")
+public interface StreamConsumerAdapter {
     TimeSpan HANDLER_TIMEOUT = TimeSpan.timeSpan(30).seconds();
 
     static <T> ConsumerCallback singleEvent(Deserializer deserializer, Function<T, Promise<Unit>> handler) {
@@ -31,7 +32,9 @@ import java.util.function.Function;
                                              MemorySegment slice) {
         var bytes = slice.toArray(ValueLayout.JAVA_BYTE);
         T event = deserializer.decode(bytes);
-        return handler.apply(event).timeout(HANDLER_TIMEOUT);
+
+        return handler.apply(event)
+                      .timeout(HANDLER_TIMEOUT);
     }
 
     static <T> StreamConsumerRuntime.BatchConsumerCallback batch(Deserializer deserializer,
@@ -43,14 +46,17 @@ import java.util.function.Function;
                                                    Function<T, Promise<Unit>> handler,
                                                    byte[] payload) {
         T event = deserializer.decode(payload);
-        return handler.apply(event).timeout(HANDLER_TIMEOUT);
+
+        return handler.apply(event)
+                      .timeout(HANDLER_TIMEOUT);
     }
 
     private static <T> Promise<Unit> invokeBatchHandler(Deserializer deserializer,
                                                         Function<java.util.List<T>, Promise<Unit>> handler,
                                                         java.util.List<OffHeapRingBuffer.RawEvent> events) {
-        var decoded = events.stream().map(raw -> (T) deserializer.<T>decode(raw.data()))
-                                   .toList();
-        return handler.apply(decoded).timeout(HANDLER_TIMEOUT);
+        var decoded = events.stream().map(raw -> (T) deserializer.<T> decode(raw.data())).toList();
+
+        return handler.apply(decoded)
+                      .timeout(HANDLER_TIMEOUT);
     }
 }

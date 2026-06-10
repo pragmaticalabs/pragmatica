@@ -33,10 +33,17 @@ public record ClusterIdentity(String name, String version) {
     }
 
     private static Result<Unit> validateName(String candidate) {
-        if (candidate == null || candidate.isBlank()) {return new InvalidName("Cluster name must not be blank").result();}
-        if (!NAME_PATTERN.matcher(candidate).matches()) {return new InvalidName("Cluster name '" + candidate + "' does not match required pattern " + NAME_PATTERN.pattern()).result();}
+        if (candidate == null || candidate.isBlank()) {
+            return new InvalidName("Cluster name must not be blank").result();
+        }
+
+        if (!NAME_PATTERN.matcher(candidate).matches()) {
+            return new InvalidName("Cluster name '" + candidate
+                                  + "' does not match required pattern " + NAME_PATTERN.pattern()).result();
+        }
+
         return Result.success(Unit.unit());
     }
 
-    public record InvalidName(String message) implements Cause{}
+    public record InvalidName(String message) implements Cause {}
 }

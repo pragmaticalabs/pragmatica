@@ -13,6 +13,6 @@ public record QuotaStatus(boolean sufficient, int requested, int availableInRegi
     }
 
     public static QuotaStatus unknown(int requested) {
-        return new QuotaStatus(true, requested, - 1, "unknown");
+        return new QuotaStatus(true, requested, -1, "unknown");
     }
 }

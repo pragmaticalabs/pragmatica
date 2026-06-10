@@ -34,7 +34,6 @@ public final class StreamingCoordinator {
     private final WatermarkTracker watermarkTracker;
     private final SegmentIndex segmentIndex;
     private final SegmentReader segmentReader;
-
     private final AtomicBoolean active = new AtomicBoolean(false);
 
     private StreamingCoordinator(GovernorFailoverHandler failoverHandler,
@@ -70,9 +69,13 @@ public final class StreamingCoordinator {
     }
 
     public Promise<Unit> activate() {
-        if (!active.compareAndSet(false, true)) {return Promise.success(unit());}
+        if (!active.compareAndSet(false, true)) {
+            return Promise.success(unit());
+        }
+
         retentionEnforcer.start();
         log.info("STREAMING delegation group activated");
+
         return runFailoverRecovery();
     }
 
@@ -81,6 +84,7 @@ public final class StreamingCoordinator {
             retentionEnforcer.close();
             log.info("STREAMING delegation group deactivated");
         }
+
         return Promise.success(unit());
     }
 
@@ -94,37 +98,49 @@ public final class StreamingCoordinator {
 
     private Promise<Unit> runFailoverRecovery() {
         var streams = partitionManager.listStreams();
+
         if (streams.isEmpty()) {
             log.info("Failover recovery: no streams to recover");
+
             return Promise.success(unit());
         }
+
         log.info("Failover recovery: recovering {} stream(s)", streams.size());
-        var recoveryPromises = streams.stream().flatMap(this::recoverStream)
-                                             .toList();
-        if (recoveryPromises.isEmpty()) {return Promise.success(unit());}
-        return Promise.allOf(recoveryPromises).map(results -> logRecoveryResults(results, streams))
-                            .mapToUnit();
+        var recoveryPromises = streams.stream().flatMap(this::recoverStream).toList();
+
+        if (recoveryPromises.isEmpty()) {
+            return Promise.success(unit());
+        }
+
+        return Promise.allOf(recoveryPromises)
+                      .map(results -> logRecoveryResults(results, streams))
+                      .mapToUnit();
     }
 
     private Stream<Promise<Unit>> recoverStream(StreamInfo info) {
-        return IntStream.range(0, info.partitions()).mapToObj(partition -> recoverPartition(info.name(), partition));
+        return IntStream.range(0,
+                               info.partitions())
+                        .mapToObj(partition -> recoverPartition(info.name(),
+                                                                partition));
     }
 
     private Promise<Unit> recoverPartition(String streamName, int partition) {
         return failoverHandler.handleFailover(streamName, partition, watermarkTracker, segmentIndex, segmentReader)
-                                             .onFailure(cause -> log.warn("Failover recovery failed for {}/{}: {}",
-                                                                          streamName,
-                                                                          partition,
-                                                                          cause.message()));
+                              .onFailure(cause -> log.warn("Failover recovery failed for {}/{}: {}",
+                                                           streamName,
+                                                           partition,
+                                                           cause.message()));
     }
 
     private static long logRecoveryResults(List<Result<Unit>> results, List<StreamInfo> streams) {
-        var failures = results.stream().filter(Result::isFailure)
-                                     .count();
-        if (failures > 0) {log.warn("Failover recovery completed with {} failure(s) across {} stream(s)",
-                                    failures,
-                                    streams.size());} else {log.info("Failover recovery completed successfully for {} stream(s)",
-                                                                     streams.size());}
+        var failures = results.stream().filter(Result::isFailure).count();
+
+        if (failures > 0) {
+            log.warn("Failover recovery completed with {} failure(s) across {} stream(s)", failures, streams.size());
+        } else {
+            log.info("Failover recovery completed successfully for {} stream(s)", streams.size());
+        }
+
         return failures;
     }
 }
@@ -134,11 +150,13 @@ final class NoOpStreamingComponent {
 
     public Promise<Unit> activate() {
         active.set(true);
+
         return Promise.success(unit());
     }
 
     public Promise<Unit> deactivate() {
         active.set(false);
+
         return Promise.success(unit());
     }
 

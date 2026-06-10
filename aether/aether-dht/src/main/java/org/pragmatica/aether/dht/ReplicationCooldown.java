@@ -21,11 +21,12 @@ import org.slf4j.LoggerFactory;
 
 public interface ReplicationCooldown {
     long DEFAULT_COOLDOWN_DELAY_MS = 10_000L;
-
     int DEFAULT_RATE_PER_SECOND = 10_000;
-
     Promise<Unit> start();
-    @Contract void stop();
+
+    @Contract
+    void stop();
+
     boolean isComplete();
 
     static ReplicationCooldown replicationCooldown(long cooldownDelayMs, int ratePerSecond) {
@@ -42,7 +43,6 @@ final class DefaultReplicationCooldown implements ReplicationCooldown {
 
     private final long cooldownDelayMs;
     private final int ratePerSecond;
-
     private final AtomicBoolean complete = new AtomicBoolean(false);
 
     private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
@@ -52,22 +52,29 @@ final class DefaultReplicationCooldown implements ReplicationCooldown {
         this.ratePerSecond = ratePerSecond;
     }
 
-    @Override public Promise<Unit> start() {
-        var promise = Promise.<Unit>promise();
+    @Override
+    public Promise<Unit> start() {
+        var promise = Promise.<Unit> promise();
+
         scheduledTask.set(Option.some(SharedScheduler.schedule(() -> completeWarmup(promise),
                                                                TimeSpan.timeSpan(cooldownDelayMs).millis())));
+
         return promise;
     }
 
-    @Contract@Override public void stop() {
+    @Contract
+    @Override
+    public void stop() {
         scheduledTask.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
     }
 
-    @Override public boolean isComplete() {
+    @Override
+    public boolean isComplete() {
         return complete.get();
     }
 
-    @SuppressWarnings("JBCT-RET-01") private void completeWarmup(Promise<Unit> promise) {
+    @SuppressWarnings("JBCT-RET-01")
+    private void completeWarmup(Promise<Unit> promise) {
         log.info("Replication cooldown complete after {}ms delay, RF upgrade ready (rate limit: {}/s)",
                  cooldownDelayMs,
                  ratePerSecond);

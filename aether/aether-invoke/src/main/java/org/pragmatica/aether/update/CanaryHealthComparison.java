@@ -73,24 +73,33 @@ public record CanaryHealthComparison(String canaryId,
                                                   VersionMetrics canaryMetrics,
                                                   HealthThresholds thresholds,
                                                   CanaryAnalysisConfig config) {
-        if (!canaryMetrics.hasSufficientData()) {return withVerdict(canaryId,
-                                                                    baselineVersion,
-                                                                    canaryVersion,
-                                                                    baselineMetrics,
-                                                                    canaryMetrics,
-                                                                    Verdict.INSUFFICIENT_DATA);}
-        if (breachesAbsoluteThreshold(canaryMetrics, thresholds, config)) {return withVerdict(canaryId,
-                                                                                              baselineVersion,
-                                                                                              canaryVersion,
-                                                                                              baselineMetrics,
-                                                                                              canaryMetrics,
-                                                                                              Verdict.ABSOLUTE_BREACH);}
-        if (breachesRelativeThreshold(baselineMetrics, canaryMetrics, config)) {return withVerdict(canaryId,
-                                                                                                   baselineVersion,
-                                                                                                   canaryVersion,
-                                                                                                   baselineMetrics,
-                                                                                                   canaryMetrics,
-                                                                                                   Verdict.RELATIVE_BREACH);}
+        if (!canaryMetrics.hasSufficientData()) {
+            return withVerdict(canaryId,
+                               baselineVersion,
+                               canaryVersion,
+                               baselineMetrics,
+                               canaryMetrics,
+                               Verdict.INSUFFICIENT_DATA);
+        }
+
+        if (breachesAbsoluteThreshold(canaryMetrics, thresholds, config)) {
+            return withVerdict(canaryId,
+                               baselineVersion,
+                               canaryVersion,
+                               baselineMetrics,
+                               canaryMetrics,
+                               Verdict.ABSOLUTE_BREACH);
+        }
+
+        if (breachesRelativeThreshold(baselineMetrics, canaryMetrics, config)) {
+            return withVerdict(canaryId,
+                               baselineVersion,
+                               canaryVersion,
+                               baselineMetrics,
+                               canaryMetrics,
+                               Verdict.RELATIVE_BREACH);
+        }
+
         return withVerdict(canaryId, baselineVersion, canaryVersion, baselineMetrics, canaryMetrics, Verdict.HEALTHY);
     }
 
@@ -121,8 +130,12 @@ public record CanaryHealthComparison(String canaryId,
     private static boolean breachesRelativeThreshold(VersionMetrics baselineMetrics,
                                                      VersionMetrics canaryMetrics,
                                                      CanaryAnalysisConfig config) {
-        if (config.mode() == CanaryAnalysisConfig.ComparisonMode.ABSOLUTE_ONLY || !baselineMetrics.hasSufficientData()) {return false;}
+        if (config.mode() == CanaryAnalysisConfig.ComparisonMode.ABSOLUTE_ONLY || !baselineMetrics.hasSufficientData()) {
+            return false;
+        }
+
         var relativeThreshold = 1.0 + (config.relativeThresholdPercent() / 100.0);
+
         return canaryMetrics.exceedsRelativeErrorRate(baselineMetrics.errorRate(), relativeThreshold) || canaryMetrics.exceedsRelativeLatency(baselineMetrics.p99LatencyMs(),
                                                                                                                                               relativeThreshold);
     }

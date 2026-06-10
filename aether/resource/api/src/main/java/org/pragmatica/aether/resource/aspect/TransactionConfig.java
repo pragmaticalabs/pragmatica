@@ -19,9 +19,7 @@ public record TransactionConfig(TransactionPropagation propagation,
                                 boolean readOnly,
                                 Class<?>[] rollbackFor) {
     private static final TransactionPropagation DEFAULT_PROPAGATION = TransactionPropagation.REQUIRED;
-
     private static final IsolationLevel DEFAULT_ISOLATION = IsolationLevel.DEFAULT;
-
     private static final Class<?>[] EMPTY_ROLLBACK_FOR = new Class<?>[0];
 
     public static Result<TransactionConfig> transactionConfig() {
@@ -37,15 +35,17 @@ public record TransactionConfig(TransactionPropagation propagation,
                                                               IsolationLevel isolation) {
         var validPropagation = option(propagation).toResult(TransactionError.invalidConfig("Propagation cannot be null"));
         var validIsolation = option(isolation).toResult(TransactionError.invalidConfig("Isolation cannot be null"));
+
         return Result.all(validPropagation, validIsolation).map(TransactionConfig::withPropagationAndIsolation);
     }
 
-    @SuppressWarnings("JBCT-NAM-01") private static TransactionConfig withDefaultsFrom(TransactionPropagation p) {
+    @SuppressWarnings("JBCT-NAM-01")
+    private static TransactionConfig withDefaultsFrom(TransactionPropagation p) {
         return new TransactionConfig(p, DEFAULT_ISOLATION, none(), false, EMPTY_ROLLBACK_FOR);
     }
 
-    @SuppressWarnings("JBCT-NAM-01") private static TransactionConfig withPropagationAndIsolation(TransactionPropagation p,
-                                                                                                  IsolationLevel i) {
+    @SuppressWarnings("JBCT-NAM-01")
+    private static TransactionConfig withPropagationAndIsolation(TransactionPropagation p, IsolationLevel i) {
         return new TransactionConfig(p, i, none(), false, EMPTY_ROLLBACK_FOR);
     }
 }

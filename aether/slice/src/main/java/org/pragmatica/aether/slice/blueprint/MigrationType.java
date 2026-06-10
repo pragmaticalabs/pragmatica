@@ -13,8 +13,11 @@ public enum MigrationType {
     UNDO,
     BASELINE;
     public static Option<MigrationType> migrationType(String filename) {
-        if (filename == null || filename.isEmpty()) {return Option.none();}
-        return switch (filename.charAt(0)){
+        if (filename == null || filename.isEmpty()) {
+            return Option.none();
+        }
+
+        return switch (filename.charAt(0)) {
             case 'V' -> Option.some(VERSIONED);
             case 'R' -> Option.some(REPEATABLE);
             case 'U' -> Option.some(UNDO);

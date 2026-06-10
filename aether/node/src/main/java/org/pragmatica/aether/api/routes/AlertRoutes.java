@@ -82,8 +82,13 @@ public final class AlertRoutes implements RouteSource {
     }
 
     private Result<ThresholdRequest> validateThresholdRequest(ThresholdRequest req) {
-        if (req.metric() == null || req.metric().isEmpty()) {return AlertError.MISSING_FIELDS.result();}
-        if (req.warning() == null || req.critical() == null) {return AlertError.MISSING_FIELDS.result();}
+        if (req.metric() == null || req.metric().isEmpty()) {
+            return AlertError.MISSING_FIELDS.result();
+        }
+
+        if (req.warning() == null || req.critical() == null) {
+            return AlertError.MISSING_FIELDS.result();
+        }
 
         return Result.success(req);
     }
@@ -95,14 +100,18 @@ public final class AlertRoutes implements RouteSource {
     }
 
     private Promise<ThresholdRemovedResponse> handleDeleteThreshold(String metric) {
-        if (metric.isEmpty()) {return AlertError.METRIC_REQUIRED.promise();}
+        if (metric.isEmpty()) {
+            return AlertError.METRIC_REQUIRED.promise();
+        }
+
         return alertManager.removeThreshold(metric)
                            .map(_ -> new ThresholdRemovedResponse("threshold_removed", metric));
     }
 
     private Promise<AlertsResponse> buildAlertsResponse() {
         return alertManager.activeAlertsAsList()
-                           .map(active -> new AlertsResponse(active, alertManager.alertHistoryAsList()));
+                           .map(active -> new AlertsResponse(active,
+                                                             alertManager.alertHistoryAsList()));
     }
 
     private enum AlertError implements Cause {

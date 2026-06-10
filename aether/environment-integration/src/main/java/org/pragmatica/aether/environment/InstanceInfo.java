@@ -28,7 +28,9 @@ public record InstanceInfo(InstanceId id,
                            Map<String, String> tags,
                            Option<String> nodeId) {
     public InstanceInfo {
-        if (nodeId == null) {nodeId = Option.none();}
+        if (nodeId == null) {
+            nodeId = Option.none();
+        }
     }
 
     /// Return a copy with the status replaced. Used by [ComputeProvider#confirmRunning]

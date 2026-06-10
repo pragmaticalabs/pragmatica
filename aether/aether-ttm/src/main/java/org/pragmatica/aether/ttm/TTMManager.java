@@ -31,7 +31,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") public interface TTMManager {
+@SuppressWarnings("JBCT-RET-01")
+public interface TTMManager {
     Promise<Unit> activate();
     Promise<Unit> deactivate();
     boolean isActive();
@@ -45,12 +46,14 @@ import org.slf4j.LoggerFactory;
     static Result<TTMManager> ttmManager(TtmConfig config,
                                          MinuteAggregator aggregator,
                                          Supplier<ControllerConfig> controllerConfigSupplier) {
-        if (!config.enabled()) {return Result.success(noOp(config));}
-        return TTMPredictor.ttmPredictor(config)
-                                        .map(predictor -> createManager(config,
-                                                                        predictor,
-                                                                        aggregator,
-                                                                        controllerConfigSupplier));
+        if (!config.enabled()) {
+            return Result.success(noOp(config));
+        }
+
+        return TTMPredictor.ttmPredictor(config).map(predictor -> createManager(config,
+                                                                                predictor,
+                                                                                aggregator,
+                                                                                controllerConfigSupplier));
     }
 
     private static TTMManager createManager(TtmConfig config,
@@ -58,6 +61,7 @@ import org.slf4j.LoggerFactory;
                                             MinuteAggregator aggregator,
                                             Supplier<ControllerConfig> controllerConfigSupplier) {
         var analyzer = ForecastAnalyzer.forecastAnalyzer(config);
+
         return new ActiveTTMManager(config,
                                     predictor,
                                     analyzer,
@@ -74,33 +78,41 @@ import org.slf4j.LoggerFactory;
     }
 
     record NoOpTTMManager(TtmConfig config) implements TTMManager {
-        @Override public Promise<Unit> activate() {
+        @Override
+        public Promise<Unit> activate() {
             return Promise.unitPromise();
         }
 
-        @Override public Promise<Unit> deactivate() {
+        @Override
+        public Promise<Unit> deactivate() {
             return Promise.unitPromise();
         }
 
-        @Override public boolean isActive() {
+        @Override
+        public boolean isActive() {
             return false;
         }
 
-        @Override public Option<TTMForecast> currentForecast() {
+        @Override
+        public Option<TTMForecast> currentForecast() {
             return Option.empty();
         }
 
-        @Override public TTMState state() {
+        @Override
+        public TTMState state() {
             return TTMState.STOPPED;
         }
 
-        @Override public void onForecast(Consumer<TTMForecast> callback) {}
+        @Override
+        public void onForecast(Consumer<TTMForecast> callback) {}
 
-        @Override public boolean isEnabled() {
+        @Override
+        public boolean isEnabled() {
             return false;
         }
 
-        @Override public Unit stop() {
+        @Override
+        public Unit stop() {
             return Unit.unit();
         }
     }
@@ -115,52 +127,60 @@ import org.slf4j.LoggerFactory;
                             AtomicReference<TTMState> stateRef,
                             CopyOnWriteArrayList<Consumer<TTMForecast>> callbacks) implements TTMManager {
         private static final Logger log = LoggerFactory.getLogger(ActiveTTMManager.class);
-
         private static final Counter PREDICTION_COUNTER = Metrics.counter("ttm.predictions.count");
-
         private static final Counter SCALE_UP_COUNTER = Metrics.counter("ttm.recommendations", "type", "scale_up");
-
         private static final Counter SCALE_DOWN_COUNTER = Metrics.counter("ttm.recommendations", "type", "scale_down");
 
         private static final Counter ADJUST_COUNTER = Metrics.counter("ttm.recommendations", "type", "adjust_thresholds");
 
         private static final Counter HOLD_COUNTER = Metrics.counter("ttm.recommendations", "type", "hold");
 
-        @Override public Promise<Unit> activate() {
+        @Override
+        public Promise<Unit> activate() {
             log.info("Activating TTM evaluation");
             startEvaluation();
+
             return Promise.unitPromise();
         }
 
-        @Override public Promise<Unit> deactivate() {
+        @Override
+        public Promise<Unit> deactivate() {
             log.info("Deactivating TTM evaluation");
             stopEvaluation();
+
             return Promise.unitPromise();
         }
 
-        @Override public boolean isActive() {
+        @Override
+        public boolean isActive() {
             return stateRef.get() == TTMState.RUNNING;
         }
 
-        @Override public Option<TTMForecast> currentForecast() {
+        @Override
+        public Option<TTMForecast> currentForecast() {
             return Option.option(currentForecastRef.get());
         }
 
-        @Override public TTMState state() {
+        @Override
+        public TTMState state() {
             return stateRef.get();
         }
 
-        @Override public void onForecast(Consumer<TTMForecast> callback) {
+        @Override
+        public void onForecast(Consumer<TTMForecast> callback) {
             callbacks.add(callback);
         }
 
-        @Override public boolean isEnabled() {
+        @Override
+        public boolean isEnabled() {
             return true;
         }
 
-        @Override public Unit stop() {
+        @Override
+        public Unit stop() {
             stopEvaluation();
             predictor.close();
+
             return Unit.unit();
         }
 
@@ -177,20 +197,26 @@ import org.slf4j.LoggerFactory;
             log.info("TTM evaluation stopped");
         }
 
-        @Contract private void runEvaluation() {
+        @Contract
+        private void runEvaluation() {
             evaluateAsync().onFailure(this::handleEvaluationError);
         }
 
         private Promise<Unit> evaluateAsync() {
             int available = aggregator.aggregateCount();
             int required = config.inputWindowMinutes();
-            if (available <required / 2) {
+
+            if (available < required / 2) {
                 log.debug("Insufficient data for TTM: {} minutes available, {} required", available, required);
+
                 return Promise.unitPromise();
             }
+
             float[][] input = aggregator.toTTMInput(required);
-            return predictor.predict(input).withSuccess(this::processPrediction)
-                                    .mapToUnit();
+
+            return predictor.predict(input)
+                            .withSuccess(this::processPrediction)
+                            .mapToUnit();
         }
 
         private void handleEvaluationError(Cause cause) {
@@ -202,19 +228,19 @@ import org.slf4j.LoggerFactory;
             var recentHistory = aggregator.recent(config.inputWindowMinutes());
             var controllerConfig = controllerConfigSupplier.get();
             var forecast = analyzer.analyze(predictions, predictor.lastConfidence(), recentHistory, controllerConfig);
+
             currentForecastRef.set(forecast);
             PREDICTION_COUNTER.increment();
             trackRecommendationType(forecast.recommendation());
             log.debug("TTM forecast: recommendation={}, confidence={}",
-                      forecast.recommendation().getClass()
-                                             .getSimpleName(),
+                      forecast.recommendation().getClass().getSimpleName(),
                       forecast.confidence());
             notifyCallbacks(forecast);
             stateRef.set(TTMState.RUNNING);
         }
 
         private void trackRecommendationType(ScalingRecommendation rec) {
-            switch (rec){
+            switch (rec) {
                 case ScalingRecommendation.PreemptiveScaleUp _ -> SCALE_UP_COUNTER.increment();
                 case ScalingRecommendation.PreemptiveScaleDown _ -> SCALE_DOWN_COUNTER.increment();
                 case ScalingRecommendation.AdjustThresholds _ -> ADJUST_COUNTER.increment();
@@ -228,13 +254,13 @@ import org.slf4j.LoggerFactory;
 
         private void safeInvokeCallback(Consumer<TTMForecast> callback, TTMForecast forecast) {
             Result.lift(e -> new TTMError.InferenceFailed("Callback error: " + e.getMessage()),
-                        () -> invokeCallback(callback, forecast))
-            .onFailure(cause -> log.warn("Forecast callback error: {}",
-                                         cause.message()));
+                        () -> invokeCallback(callback, forecast)).onFailure(cause -> log.warn("Forecast callback error: {}",
+                                                                                              cause.message()));
         }
 
         private static Unit invokeCallback(Consumer<TTMForecast> callback, TTMForecast forecast) {
             callback.accept(forecast);
+
             return Unit.unit();
         }
     }

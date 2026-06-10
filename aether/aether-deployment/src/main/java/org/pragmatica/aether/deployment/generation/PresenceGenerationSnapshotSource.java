@@ -78,6 +78,7 @@ public final class PresenceGenerationSnapshotSource implements GenerationSnapsho
         }
 
         reachedQuorum.set(true);
+
         return Option.some(PresenceMembershipView.from(memberSupplier, desiredCoreSizeSupplier, ctmProvisionedSupplier));
     }
 

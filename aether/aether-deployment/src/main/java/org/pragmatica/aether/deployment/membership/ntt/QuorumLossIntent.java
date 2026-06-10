@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.ntt;
 
-
 /// Emitted by [`LocalQuorumWatcher`] when `localQuorumCount` has been below the quorum
 /// threshold continuously for at least `quorumLossDrainThreshold` (spec §8.1, third bullet).
 ///
@@ -17,9 +16,7 @@ package org.pragmatica.aether.deployment.membership.ntt;
 ///                                 (self + currently-connected peers)
 /// @param requiredThreshold       the simple-majority threshold `coreCount / 2 + 1` against
 ///                                which the observation was made
-public record QuorumLossIntent(long observedAtNanos,
-                               int observedLocalQuorumCount,
-                               int requiredThreshold) {
+public record QuorumLossIntent(long observedAtNanos, int observedLocalQuorumCount, int requiredThreshold) {
     public static QuorumLossIntent quorumLossIntent(long observedAtNanos,
                                                     int observedLocalQuorumCount,
                                                     int requiredThreshold) {

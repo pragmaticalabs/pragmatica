@@ -55,67 +55,78 @@ public sealed interface ManagementRouteError extends Cause {
     }
 
     record NoMatch(HttpMethod method, String path) implements ManagementRouteError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "No management route matches " + method + " " + path;
         }
     }
 
     record WrongParamCount(String routeName, int expected, int actual) implements ManagementRouteError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Route " + routeName + " expects " + expected + " parameters, got " + actual;
         }
     }
 
     record MissingParam(String routeName, String paramName) implements ManagementRouteError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Route " + routeName + " missing parameter: " + paramName;
         }
     }
 
     record AmbiguousRoutes(String first, String second, String signature) implements ManagementRouteError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Ambiguous management routes: " + first + " and " + second + " share signature " + signature;
         }
     }
 
     record LocalNotForwardable(String routeName) implements ManagementRouteError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Route " + routeName + " is marked LOCAL and cannot be forwarded";
         }
     }
 
     record OwnerDisconnected(TaskGroup group, String ownerNodeId) implements ManagementRouteError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Task group " + group + " owner " + ownerNodeId + " is not connected";
         }
     }
 
     record NoLeaderElected() implements ManagementRouteError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "No leader elected for leader-bound management route";
         }
     }
 
     record LeaderDisconnected(String leaderNodeId) implements ManagementRouteError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Cluster leader " + leaderNodeId + " is not connected";
         }
     }
 
     record NotLeader() implements ManagementRouteError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Target handler requires the cluster leader";
         }
     }
 
     record NotLocalTarget(String nodeId) implements ManagementRouteError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Per-node forward target " + nodeId + " is the local node; signal to handle locally";
         }
     }
 
     record TargetDisconnected(String nodeId) implements ManagementRouteError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Per-node forward target " + nodeId + " is not connected";
         }
     }

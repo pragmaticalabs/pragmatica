@@ -41,6 +41,7 @@ public sealed interface WorkerCodecs {
 
     static SliceCodec workerCodecs(SliceCodec parent) {
         var all = new ArrayList<TypeCodec<?>>();
+
         all.addAll(ConsensusCodecs.CODECS);
         all.addAll(RabiaCodecs.CODECS);
         all.addAll(NetCodecs.CODECS);
@@ -71,6 +72,7 @@ public sealed interface WorkerCodecs {
 
     private static Set<Class<?>> collectRequiredTypes() {
         var types = new java.util.HashSet<Class<?>>();
+
         types.addAll(SwimCodecs.REQUIRED_TYPES);
         types.add(InetSocketAddress.class);
 

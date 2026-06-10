@@ -7,7 +7,8 @@ package org.pragmatica.aether.slice.blueprint;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public record MigrationEntry(String filename, String sql, long checksum) {
+@Codec
+public record MigrationEntry(String filename, String sql, long checksum) {
     public static MigrationEntry migrationEntry(String filename, String sql, long checksum) {
         return new MigrationEntry(filename, sql, checksum);
     }

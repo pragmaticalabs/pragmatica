@@ -15,12 +15,15 @@ sealed interface DockerComposeGenerator {
 
     static String generate(ClusterBootstrapConfig config, String apiKey) {
         var sb = new StringBuilder();
+
         appendHeader(sb);
         appendNetworks(sb);
         appendServicesHeader(sb);
         var coreCount = config.derivedCoreCount();
 
-        for (int i = 0;i <coreCount;i++) {appendNodeService(sb, config, i, coreCount, apiKey);}
+        for (int i = 0; i < coreCount; i++) {
+            appendNodeService(sb, config, i, coreCount, apiKey);
+        }
 
         return sb.toString();
     }
@@ -52,6 +55,7 @@ sealed interface DockerComposeGenerator {
         var clusterName = config.cluster().name();
         var peers = buildComposePeers(clusterName, totalNodes, ports.cluster());
         var clusterSecret = resolveClusterSecret(config);
+
         sb.append("  ").append(nodeId).append(":\n");
         sb.append("    image: ").append(image).append('\n');
         sb.append("    container_name: aether-").append(nodeId).append('\n');
@@ -102,10 +106,13 @@ sealed interface DockerComposeGenerator {
     private static String buildComposePeers(String clusterName, int totalNodes, int clusterPort) {
         var sb = new StringBuilder();
 
-        for (int i = 0;i <totalNodes;i++) {
-            if (i > 0) {sb.append(',');}
+        for (int i = 0; i < totalNodes; i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
 
             var nodeNum = i + 1;
+
             sb.append("node-").append(nodeNum).append(":aether-node-").append(nodeNum).append(':').append(clusterPort);
         }
 
@@ -131,10 +138,13 @@ sealed interface DockerComposeGenerator {
 
     private static String generateRandomSecret() {
         var bytes = new byte[32];
+
         new SecureRandom().nextBytes(bytes);
         var sb = new StringBuilder(64);
 
-        for (byte b : bytes) {sb.append(String.format("%02x", b));}
+        for (byte b : bytes) {
+            sb.append(String.format("%02x", b));
+        }
 
         return sb.toString();
     }

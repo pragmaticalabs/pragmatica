@@ -163,7 +163,9 @@ public final class QuorumLossDetector {
     public Option<Long> belowThresholdSinceNanos() {
         var since = belowThresholdSinceNanos.get();
 
-        return since == Long.MIN_VALUE ? none() : some(since);
+        return since == Long.MIN_VALUE
+               ? none()
+               : some(since);
     }
 
     private void recompute() {
@@ -175,6 +177,7 @@ public final class QuorumLossDetector {
         if (threshold > 0 && quorumCount >= threshold) {
             armed = true;
         }
+
         reconcileWindow(nowBelow, now);
     }
 
@@ -226,7 +229,6 @@ public final class QuorumLossDetector {
         }
 
         pendingFuture.set(null);
-
         var intent = QuorumLossIntent.quorumLossIntent(timeSource.nanoTime(), quorumCount, threshold);
 
         listener.accept(intent);
@@ -235,11 +237,13 @@ public final class QuorumLossDetector {
     /// Same shape as `ClusterTopologyManagerRecord.quorumThreshold(int)` — `configured / 2 + 1`.
     /// Returns `0` for unknown (`coreCount < 1`).
     private static int requiredThresholdFor(int coreCount) {
-        return coreCount < 1 ? 0 : coreCount / 2 + 1;
+        return coreCount < 1
+               ? 0
+               : coreCount / 2 + 1;
     }
 
     @Contract
     private static void ignoreIntent(QuorumLossIntent intent) {
-        // intentionally empty — default listener prior to wiring
+    // intentionally empty — default listener prior to wiring
     }
 }

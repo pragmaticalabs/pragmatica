@@ -7,7 +7,8 @@ package org.pragmatica.aether.slice.generation;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public enum GenerationReason {
+@Codec
+public enum GenerationReason {
     LEADER_ELECTED,
     MEMBER_ADDED,
     MEMBER_REMOVED,

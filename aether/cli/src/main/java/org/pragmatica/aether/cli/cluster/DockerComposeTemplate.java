@@ -32,6 +32,7 @@ final class DockerComposeTemplate {
                          int appPortBase,
                          int clusterPort) {
         var sb = new StringBuilder(2048);
+
         appendHeader(sb, clusterName, nodes);
         appendCommon(sb, clusterName, nodes, image, clusterPort);
         sb.append("services:\n");
@@ -76,6 +77,7 @@ final class DockerComposeTemplate {
     private static void appendNode(StringBuilder sb, String clusterName, int idx, int mgmtPortBase, int appPortBase) {
         var name = "aether-" + clusterName + "-node-" + idx;
         var nodeId = "node-" + idx;
+
         sb.append("  ").append(name).append(":\n");
         sb.append("    <<: *node-common\n");
         sb.append("    container_name: ").append(name).append("\n");
@@ -95,8 +97,11 @@ final class DockerComposeTemplate {
     private static String buildPeers(String clusterName, int nodes, int clusterPort) {
         var sb = new StringBuilder();
 
-        for (int i = 1;i <= nodes;i++) {
-            if (i > 1) {sb.append(",");}
+        for (int i = 1; i <= nodes; i++) {
+            if (i > 1) {
+                sb.append(",");
+            }
+
             sb.append("node-").append(i).append(":aether-").append(clusterName).append("-node-").append(i).append(":").append(clusterPort);
         }
 

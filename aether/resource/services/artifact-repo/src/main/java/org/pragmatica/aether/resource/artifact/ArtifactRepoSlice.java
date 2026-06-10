@@ -18,7 +18,8 @@ public record ArtifactRepoSlice(MavenProtocolHandler mavenHandler) implements Sl
         return new ArtifactRepoSlice(MavenProtocolHandler.mavenProtocolHandler(store));
     }
 
-    @Override public List<SliceMethod<?, ?>> methods() {
+    @Override
+    public List<SliceMethod<?, ?>> methods() {
         return List.of(new SliceMethod<>(MethodName.methodName("get").unwrap(),
                                          this::handleGet,
                                          new TypeToken<MavenProtocolHandler.MavenResponse>() {},
@@ -37,5 +38,5 @@ public record ArtifactRepoSlice(MavenProtocolHandler mavenHandler) implements Sl
         return mavenHandler.handlePut("/repository/" + request.path(), request.content());
     }
 
-    public record RepositoryRequest(String path, byte[] content){}
+    public record RepositoryRequest(String path, byte[] content) {}
 }

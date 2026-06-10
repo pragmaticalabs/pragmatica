@@ -144,14 +144,19 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                             List<AppliedMigration> applied,
                                             SqlConnector connector,
                                             String nodeId) {
-        if (baselines.isEmpty()) {return Promise.success(0);}
+        if (baselines.isEmpty()) {
+            return Promise.success(0);
+        }
 
         var maxBaseline = baselines.stream().mapToInt(ParsedMigration::version).max().orElse(0);
         var appliedVersioned = applied.stream().filter(a -> a.type() == MigrationType.VERSIONED).toList();
 
         if (!appliedVersioned.isEmpty()) {
             var maxApplied = appliedVersioned.stream().mapToInt(AppliedMigration::version).max().orElse(0);
-            if (maxApplied > 0) {return baselineConflict(datasource, maxApplied).promise();}
+
+            if (maxApplied > 0) {
+                return baselineConflict(datasource, maxApplied).promise();
+            }
         }
 
         return recordSyntheticBaselines(maxBaseline, connector, nodeId);

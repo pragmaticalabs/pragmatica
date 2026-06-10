@@ -7,13 +7,14 @@ package org.pragmatica.aether.worker.metrics;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public record ScalingEvidence(int memberCount,
-                                     double avgCpuUsage,
-                                     double avgP95LatencyMs,
-                                     long totalActiveInvocations,
-                                     double avgErrorRate,
-                                     long windowDurationMs,
-                                     long timestampMs) {
+@Codec
+public record ScalingEvidence(int memberCount,
+                              double avgCpuUsage,
+                              double avgP95LatencyMs,
+                              long totalActiveInvocations,
+                              double avgErrorRate,
+                              long windowDurationMs,
+                              long timestampMs) {
     public static ScalingEvidence scalingEvidence(int memberCount,
                                                   double avgCpuUsage,
                                                   double avgP95LatencyMs,

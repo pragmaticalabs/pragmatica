@@ -27,22 +27,28 @@ public record CloudDnsDnsProvider(GcpClient client, String managedZone) implemen
         return success(new CloudDnsDnsProvider(client, managedZone));
     }
 
-    @Override public Promise<Unit> upsertRecord(String hostname, List<String> addresses, DnsRecordType type) {
+    @Override
+    public Promise<Unit> upsertRecord(String hostname, List<String> addresses, DnsRecordType type) {
         log.info("Cloud DNS UPSERT {} {} -> {} (zone: {})",
                  type,
                  hostname,
                  addresses,
                  managedZone);
+
         return Promise.success(unit());
     }
 
-    @Override public Promise<Unit> removeRecord(String hostname, DnsRecordType type) {
+    @Override
+    public Promise<Unit> removeRecord(String hostname, DnsRecordType type) {
         log.info("Cloud DNS DELETE {} {} (zone: {})", type, hostname, managedZone);
+
         return Promise.success(unit());
     }
 
-    @Override public Promise<List<String>> resolve(String hostname) {
+    @Override
+    public Promise<List<String>> resolve(String hostname) {
         log.debug("Cloud DNS resolve {} (zone: {})", hostname, managedZone);
+
         return Promise.success(List.of());
     }
 }

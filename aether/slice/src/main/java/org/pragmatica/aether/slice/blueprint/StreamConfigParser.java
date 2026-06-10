@@ -33,25 +33,20 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-ZONE-03"}) public interface StreamConfigParser {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-ZONE-03"})
+public interface StreamConfigParser {
     String STREAMS_PREFIX = "streams.";
-
     int DEFAULT_PARTITIONS = 4;
-
     /// Per spec §11.1.1: when `version` is omitted on a producer-role declaration (or omitted with no
     /// explicit role — current parser-only assumption pending Wave 3 slice-binding role inference),
     /// default to `"1.0.0"`. The producer assumption is the safer default for the common case where
     /// the slice writes data.
     String DEFAULT_PRODUCER_VERSION = "1.0.0";
-
     /// Per spec §11.1.1: when `version` is omitted on an explicit consumer-role declaration, default
     /// to `"latest"`.
     String DEFAULT_CONSUMER_VERSION = StreamVersionSpec.LATEST_TOKEN;
-
     String ROLE_PRODUCER = "producer";
-
     String ROLE_CONSUMER = "consumer";
-
     /// Slice declares both producer and consumer bindings for the same stream alias (spec §11.1.2).
     /// Treated as producer for version-defaulting and the producer-rejects-latest rule.
     String ROLE_BOTH = "both";
@@ -101,33 +96,43 @@ import static org.pragmatica.lang.utils.Causes.cause;
     ///
     /// Returns [Result#failure] carrying a [org.pragmatica.lang.utils.Causes.CompositeCause]
     /// when any section fails; [Result#success] with the parsed map otherwise.
-    static Result<Map<String, StreamResource>> parseResourcesAggregating(String toml,
-                                                                          Map<String, String> roleHints) {
+    static Result<Map<String, StreamResource>> parseResourcesAggregating(String toml, Map<String, String> roleHints) {
         if (toml == null || toml.isBlank()) {
             return success(Map.of());
         }
+
         return TomlParser.parse(toml)
                          .mapError(err -> cause("Stream config parse error: " + err.message()))
                          .flatMap(doc -> aggregateStreamResources(doc, roleHints));
     }
 
     private static Result<Map<String, StreamResource>> aggregateStreamResources(TomlDocument doc,
-                                                                                 Map<String, String> roleHints) {
+                                                                                Map<String, String> roleHints) {
         var perSection = new ArrayList<Result<Map.Entry<String, StreamResource>>>();
+
         for (var sectionName : doc.sectionNames()) {
-            if (!isStreamSection(sectionName)) {continue;}
+            if (!isStreamSection(sectionName)) {
+                continue;
+            }
+
             var streamName = sectionName.substring(STREAMS_PREFIX.length());
-            if (streamName.contains(".")) {continue;}
-            perSection.add(parseStreamResource(doc, sectionName, streamName, roleHints)
-                                   .map(res -> Map.entry(streamName, res)));
+
+            if (streamName.contains(".")) {
+                continue;
+            }
+
+            perSection.add(parseStreamResource(doc, sectionName, streamName, roleHints).map(res -> Map.entry(streamName,
+                                                                                                             res)));
         }
-        return Result.allOf(perSection)
-                     .map(StreamConfigParser::toOrderedMap);
+
+        return Result.allOf(perSection).map(StreamConfigParser::toOrderedMap);
     }
 
     private static Map<String, StreamResource> toOrderedMap(List<Map.Entry<String, StreamResource>> entries) {
         var ordered = new LinkedHashMap<String, StreamResource>();
+
         entries.forEach(entry -> ordered.put(entry.getKey(), entry.getValue()));
+
         return Map.copyOf(ordered);
     }
 
@@ -138,43 +143,59 @@ import static org.pragmatica.lang.utils.Causes.cause;
     }
 
     private static Result<Map<String, StreamConfig>> parseStreamToml(String toml) {
-        return TomlParser.parse(toml).mapError(err -> cause("Stream config parse error: " + err.message()))
-                               .map(StreamConfigParser::extractStreamConfigs);
+        return TomlParser.parse(toml)
+                         .mapError(err -> cause("Stream config parse error: " + err.message()))
+                         .map(StreamConfigParser::extractStreamConfigs);
     }
 
-    private static Result<Map<String, StreamResource>> parseResourceToml(String toml,
-                                                                          Map<String, String> roleHints) {
-        return TomlParser.parse(toml).mapError(err -> cause("Stream config parse error: " + err.message()))
-                               .flatMap(doc -> extractStreamResources(doc, roleHints));
+    private static Result<Map<String, StreamResource>> parseResourceToml(String toml, Map<String, String> roleHints) {
+        return TomlParser.parse(toml)
+                         .mapError(err -> cause("Stream config parse error: " + err.message()))
+                         .flatMap(doc -> extractStreamResources(doc, roleHints));
     }
 
     private static Result<Map<String, StreamResource>> extractStreamResources(TomlDocument doc,
-                                                                               Map<String, String> roleHints) {
+                                                                              Map<String, String> roleHints) {
         var result = new LinkedHashMap<String, StreamResource>();
+
         for (var sectionName : doc.sectionNames()) {
-            if (!isStreamSection(sectionName)) {continue;}
+            if (!isStreamSection(sectionName)) {
+                continue;
+            }
+
             var streamName = sectionName.substring(STREAMS_PREFIX.length());
-            if (streamName.contains(".")) {continue;}  // skip sub-sections like streams.x.consumers.y
+
+            if (streamName.contains(".")) {
+                continue;
+            }  // skip sub-sections like streams.x.consumers.y
             var parsed = parseStreamResource(doc, sectionName, streamName, roleHints);
-            if (parsed.isFailure()) {return parsed.fold(Result::failure, _ -> success(Map.of()));}
+
+            if (parsed.isFailure()) {
+                return parsed.fold(Result::failure, _ -> success(Map.of()));
+            }
+
             parsed.onSuccess(res -> result.put(streamName, res));
         }
+
         return success(Map.copyOf(result));
     }
 
     private static Result<StreamResource> parseStreamResource(TomlDocument doc,
-                                                                String section,
-                                                                String streamName,
-                                                                Map<String, String> roleHints) {
+                                                              String section,
+                                                              String streamName,
+                                                              Map<String, String> roleHints) {
         var sourceOpt = doc.getString(section, "source");
         var versionOpt = doc.getString(section, "version");
         var explicitRoleOpt = doc.getString(section, "role");
         var hintOpt = option(roleHints.get(streamName));
-        var effectiveRoleOpt = explicitRoleOpt.isPresent() ? explicitRoleOpt : hintOpt;
+        var effectiveRoleOpt = explicitRoleOpt.isPresent()
+                               ? explicitRoleOpt
+                               : hintOpt;
 
         if (sourceOpt.isPresent() && versionOpt.isPresent()) {
             return Causes.cause("Stream resource '" + streamName + "' must not set both 'source' and 'version'").result();
         }
+
         if (sourceOpt.isPresent()) {
             return sourceOpt.fold(() -> missingStreamResource(streamName),
                                   source -> parseExternalResource(streamName, source));
@@ -184,6 +205,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
         // Consumer (explicit or inferred) → "latest". `both` inherits the producer default
         // (the safer pin since a producer-side write requires an exact triplet anyway).
         var resolvedVersion = versionOpt.or(defaultVersionForRole(effectiveRoleOpt));
+
         return parseOwnedResource(doc, section, streamName, resolvedVersion, effectiveRoleOpt);
     }
 
@@ -196,59 +218,63 @@ import static org.pragmatica.lang.utils.Causes.cause;
     }
 
     private static Result<StreamResource> missingStreamResource(String streamName) {
-        return Causes.<Cause>cause(
-                "Stream resource '" + streamName + "' must specify either 'version' (owned) or 'source' (external)"
-        ).result();
+        return Causes.<Cause> cause("Stream resource '" + streamName
+                                   + "' must specify either 'version' (owned) or 'source' (external)").result();
     }
 
     private static Result<StreamResource> parseExternalResource(String streamName, String source) {
-        return ResourceAddress.resourceAddress(source)
-                             .map(addr -> StreamResource.external(streamName, addr));
+        return ResourceAddress.resourceAddress(source).map(addr -> StreamResource.external(streamName, addr));
     }
 
     private static Result<StreamResource> parseOwnedResource(TomlDocument doc,
-                                                              String section,
-                                                              String streamName,
-                                                              String version,
-                                                              Option<String> roleOpt) {
+                                                             String section,
+                                                             String streamName,
+                                                             String version,
+                                                             Option<String> roleOpt) {
         return StreamVersionSpec.streamVersionSpec(version)
-                                 .flatMap(spec -> rejectProducerLatest(streamName, spec, roleOpt))
-                                 .map(spec -> StreamResource.owned(streamName,
-                                                                    spec,
-                                                                    parseStreamSection(doc, section, streamName)));
+                                .flatMap(spec -> rejectProducerLatest(streamName, spec, roleOpt))
+                                .map(spec -> StreamResource.owned(streamName,
+                                                                  spec,
+                                                                  parseStreamSection(doc, section, streamName)));
     }
 
     /// Spec §11.1.3: producer with `version = "latest"` (explicit, after defaulting) is a build-time
     /// error. Producers must pin to an exact triplet for write determinism. The `both` role is
     /// treated as a producer here — it implies the slice writes, which mandates an exact pin.
     private static Result<StreamVersionSpec> rejectProducerLatest(String streamName,
-                                                                   StreamVersionSpec spec,
-                                                                   Option<String> roleOpt) {
-        var producesEvents = roleOpt.map(String::trim)
-                                    .map(String::toLowerCase)
-                                    .filter(role -> ROLE_PRODUCER.equals(role) || ROLE_BOTH.equals(role))
-                                    .isPresent();
+                                                                  StreamVersionSpec spec,
+                                                                  Option<String> roleOpt) {
+        var producesEvents = roleOpt.map(String::trim).map(String::toLowerCase).filter(role -> ROLE_PRODUCER.equals(role) || ROLE_BOTH.equals(role)).isPresent();
+
         if (producesEvents && spec.isLatest()) {
-            return Causes.<Cause>cause(
-                    "Stream resource '" + streamName + "' has role '" + roleOpt.or("producer")
-                    + "' with version 'latest'; producers must pin to an exact MAJOR.MINOR.PATCH triplet "
-                    + "(spec §11.1.3)"
-            ).result();
+            return Causes.<Cause> cause("Stream resource '" + streamName
+                                       + "' has role '" + roleOpt.or("producer")
+                                       + "' with version 'latest'; producers must pin to an exact MAJOR.MINOR.PATCH triplet "
+                                       + "(spec §11.1.3)").result();
         }
+
         return success(spec);
     }
 
     private static Result<Map<String, ConsumerConfig>> parseConsumerToml(String toml, String streamName) {
-        return TomlParser.parse(toml).mapError(err -> cause("Stream config parse error: " + err.message()))
-                               .map(doc -> extractConsumerConfigs(doc, streamName));
+        return TomlParser.parse(toml)
+                         .mapError(err -> cause("Stream config parse error: " + err.message()))
+                         .map(doc -> extractConsumerConfigs(doc, streamName));
     }
 
     private static Map<String, StreamConfig> extractStreamConfigs(TomlDocument doc) {
         var result = new LinkedHashMap<String, StreamConfig>();
-        for (var sectionName : doc.sectionNames()) {if (isStreamSection(sectionName)) {
-            var streamName = sectionName.substring(STREAMS_PREFIX.length());
-            if (!streamName.contains(".")) {result.put(streamName, parseStreamSection(doc, sectionName, streamName));}
-        }}
+
+        for (var sectionName : doc.sectionNames()) {
+            if (isStreamSection(sectionName)) {
+                var streamName = sectionName.substring(STREAMS_PREFIX.length());
+
+                if (!streamName.contains(".")) {
+                    result.put(streamName, parseStreamSection(doc, sectionName, streamName));
+                }
+            }
+        }
+
         return Map.copyOf(result);
     }
 
@@ -260,14 +286,12 @@ import static org.pragmatica.lang.utils.Causes.cause;
         var partitions = doc.getInt(section, "partitions").or(DEFAULT_PARTITIONS);
         var retention = parseRetention(doc, section);
         var autoOffsetReset = doc.getString(section, "auto-offset-reset").or("latest");
-        var maxEventSizeBytes = doc.getString(section, "max-event-size").map(StreamConfigParser::parseSizeBytes)
-                                             .or(1_048_576L);
-        var consistencyMode = doc.getString(section, "consistency").map(StreamConfigParser::parseConsistencyMode)
-                                           .or(ConsistencyMode.EVENTUAL);
+        var maxEventSizeBytes = doc.getString(section, "max-event-size").map(StreamConfigParser::parseSizeBytes).or(1_048_576L);
+        var consistencyMode = doc.getString(section, "consistency").map(StreamConfigParser::parseConsistencyMode).or(ConsistencyMode.EVENTUAL);
         var minSyncReplicas = doc.getInt(section, "min-sync-replicas").or(0);
-        var compression = doc.getString(section, "compression").map(StreamConfigParser::parseCompression)
-                                       .or(StreamCompression.NONE);
+        var compression = doc.getString(section, "compression").map(StreamConfigParser::parseCompression).or(StreamCompression.NONE);
         var encryptionKeyId = doc.getString(section, "encryption-key-id");
+
         return StreamConfig.streamConfig(streamName,
                                          partitions,
                                          retention,
@@ -282,9 +306,9 @@ import static org.pragmatica.lang.utils.Causes.cause;
     private static RetentionPolicy parseRetention(TomlDocument doc, String section) {
         var retentionType = doc.getString(section, "retention").or("count");
         var retentionValue = doc.getString(section, "retention-value").or("");
-        var mode = doc.getString(section, "retention-mode").map(StreamConfigParser::parseRetentionMode)
-                                .or(RetentionMode.ANY);
-        return switch (retentionType.toLowerCase()){
+        var mode = doc.getString(section, "retention-mode").map(StreamConfigParser::parseRetentionMode).or(RetentionMode.ANY);
+
+        return switch (retentionType.toLowerCase()) {
             case "compound" -> parseCompoundRetention(doc, section, mode);
             case "time" -> RetentionPolicy.retentionPolicy(Long.MAX_VALUE,
                                                            Long.MAX_VALUE,
@@ -305,25 +329,29 @@ import static org.pragmatica.lang.utils.Causes.cause;
     private static Map<String, ConsumerConfig> extractConsumerConfigs(TomlDocument doc, String streamName) {
         var consumerPrefix = STREAMS_PREFIX + streamName + ".consumers.";
         var result = new LinkedHashMap<String, ConsumerConfig>();
-        for (var sectionName : doc.sectionNames()) {if (sectionName.startsWith(consumerPrefix)) {
-            var groupName = sectionName.substring(consumerPrefix.length());
-            if (!groupName.contains(".")) {result.put(groupName, parseConsumerSection(doc, sectionName, groupName));}
-        }}
+
+        for (var sectionName : doc.sectionNames()) {
+            if (sectionName.startsWith(consumerPrefix)) {
+                var groupName = sectionName.substring(consumerPrefix.length());
+
+                if (!groupName.contains(".")) {
+                    result.put(groupName, parseConsumerSection(doc, sectionName, groupName));
+                }
+            }
+        }
+
         return Map.copyOf(result);
     }
 
     private static ConsumerConfig parseConsumerSection(TomlDocument doc, String section, String groupName) {
         var batchSize = doc.getInt(section, "batch-size").or(1);
-        var processing = doc.getString(section, "processing").map(StreamConfigParser::parseProcessingMode)
-                                      .or(ProcessingMode.ORDERED);
-        var onFailure = doc.getString(section, "on-failure").map(StreamConfigParser::parseErrorStrategy)
-                                     .or(ErrorStrategy.RETRY);
-        var checkpointIntervalMs = doc.getString(section, "checkpoint-interval").map(StreamConfigParser::parseTimeMs)
-                                                .or(1000L);
+        var processing = doc.getString(section, "processing").map(StreamConfigParser::parseProcessingMode).or(ProcessingMode.ORDERED);
+        var onFailure = doc.getString(section, "on-failure").map(StreamConfigParser::parseErrorStrategy).or(ErrorStrategy.RETRY);
+        var checkpointIntervalMs = doc.getString(section, "checkpoint-interval").map(StreamConfigParser::parseTimeMs).or(1000L);
         var maxRetries = doc.getInt(section, "max-retries").or(3);
         var deadLetterStream = doc.getString(section, "dead-letter").or("");
-        var readPreference = doc.getString(section, "read-preference").map(StreamConfigParser::parseReadPreference)
-                                          .or(ReadPreference.GOVERNOR);
+        var readPreference = doc.getString(section, "read-preference").map(StreamConfigParser::parseReadPreference).or(ReadPreference.GOVERNOR);
+
         return ConsumerConfig.consumerConfig(groupName,
                                              batchSize,
                                              processing,
@@ -335,38 +363,36 @@ import static org.pragmatica.lang.utils.Causes.cause;
     }
 
     private static ProcessingMode parseProcessingMode(String value) {
-        return switch (value.toLowerCase()){
+        return switch (value.toLowerCase()) {
             case "parallel" -> ProcessingMode.PARALLEL;
             default -> ProcessingMode.ORDERED;
         };
     }
 
     private static ConsistencyMode parseConsistencyMode(String value) {
-        return switch (value.toLowerCase()){
+        return switch (value.toLowerCase()) {
             case "strong" -> ConsistencyMode.STRONG;
             default -> ConsistencyMode.EVENTUAL;
         };
     }
 
     private static RetentionPolicy parseCompoundRetention(TomlDocument doc, String section, RetentionMode mode) {
-        var maxAge = doc.getString(section, "max-age").map(StreamConfigParser::parseTimeMs)
-                                  .or(Long.MAX_VALUE);
-        var maxCount = doc.getString(section, "max-count").map(StreamConfigParser::parseCount)
-                                    .or(Long.MAX_VALUE);
-        var maxBytes = doc.getString(section, "max-bytes").map(StreamConfigParser::parseSizeBytes)
-                                    .or(Long.MAX_VALUE);
+        var maxAge = doc.getString(section, "max-age").map(StreamConfigParser::parseTimeMs).or(Long.MAX_VALUE);
+        var maxCount = doc.getString(section, "max-count").map(StreamConfigParser::parseCount).or(Long.MAX_VALUE);
+        var maxBytes = doc.getString(section, "max-bytes").map(StreamConfigParser::parseSizeBytes).or(Long.MAX_VALUE);
+
         return RetentionPolicy.retentionPolicy(maxCount, maxBytes, maxAge, mode);
     }
 
     private static RetentionMode parseRetentionMode(String value) {
-        return switch (value.toLowerCase()){
+        return switch (value.toLowerCase()) {
             case "all" -> RetentionMode.ALL;
             default -> RetentionMode.ANY;
         };
     }
 
     private static StreamCompression parseCompression(String value) {
-        return switch (value.toLowerCase()){
+        return switch (value.toLowerCase()) {
             case "lz4" -> StreamCompression.LZ4;
             case "zstd" -> StreamCompression.ZSTD;
             default -> StreamCompression.NONE;
@@ -374,7 +400,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
     }
 
     private static ReadPreference parseReadPreference(String value) {
-        return switch (value.toLowerCase()){
+        return switch (value.toLowerCase()) {
             case "nearest" -> ReadPreference.NEAREST;
             case "any-replica", "any_replica", "any", "replica", "follower-only", "follower_only", "follower" -> ReadPreference.ANY_REPLICA;
             default -> ReadPreference.GOVERNOR;
@@ -382,7 +408,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
     }
 
     private static ErrorStrategy parseErrorStrategy(String value) {
-        return switch (value.toLowerCase()){
+        return switch (value.toLowerCase()) {
             case "skip" -> ErrorStrategy.SKIP;
             case "stall" -> ErrorStrategy.STALL;
             default -> ErrorStrategy.RETRY;
@@ -390,26 +416,58 @@ import static org.pragmatica.lang.utils.Causes.cause;
     }
 
     private static long parseTimeMs(String value) {
-        if (value.isEmpty()) {return 24 * 60 * 60 * 1000L;}
+        if (value.isEmpty()) {
+            return 24 * 60 * 60 * 1000L;
+        }
+
         var trimmed = value.trim().toLowerCase();
-        if (trimmed.endsWith("h")) {return Long.parseLong(trimmed.substring(0, trimmed.length() - 1)) * 3_600_000L;}
-        if (trimmed.endsWith("m")) {return Long.parseLong(trimmed.substring(0, trimmed.length() - 1)) * 60_000L;}
-        if (trimmed.endsWith("s")) {return Long.parseLong(trimmed.substring(0, trimmed.length() - 1)) * 1_000L;}
-        if (trimmed.endsWith("d")) {return Long.parseLong(trimmed.substring(0, trimmed.length() - 1)) * 86_400_000L;}
+
+        if (trimmed.endsWith("h")) {
+            return Long.parseLong(trimmed.substring(0, trimmed.length() - 1)) * 3_600_000L;
+        }
+
+        if (trimmed.endsWith("m")) {
+            return Long.parseLong(trimmed.substring(0, trimmed.length() - 1)) * 60_000L;
+        }
+
+        if (trimmed.endsWith("s")) {
+            return Long.parseLong(trimmed.substring(0, trimmed.length() - 1)) * 1_000L;
+        }
+
+        if (trimmed.endsWith("d")) {
+            return Long.parseLong(trimmed.substring(0, trimmed.length() - 1)) * 86_400_000L;
+        }
+
         return Long.parseLong(trimmed);
     }
 
     private static long parseSizeBytes(String value) {
-        if (value.isEmpty()) {return 256 * 1024 * 1024L;}
+        if (value.isEmpty()) {
+            return 256 * 1024 * 1024L;
+        }
+
         var trimmed = value.trim().toUpperCase();
-        if (trimmed.endsWith("GB")) {return Long.parseLong(trimmed.substring(0, trimmed.length() - 2).trim()) * 1024 * 1024 * 1024L;}
-        if (trimmed.endsWith("MB")) {return Long.parseLong(trimmed.substring(0, trimmed.length() - 2).trim()) * 1024 * 1024L;}
-        if (trimmed.endsWith("KB")) {return Long.parseLong(trimmed.substring(0, trimmed.length() - 2).trim()) * 1024L;}
+
+        if (trimmed.endsWith("GB")) {
+            return Long.parseLong(trimmed.substring(0, trimmed.length() - 2).trim()) * 1024 * 1024 * 1024L;
+        }
+
+        if (trimmed.endsWith("MB")) {
+            return Long.parseLong(trimmed.substring(0, trimmed.length() - 2).trim()) * 1024 * 1024L;
+        }
+
+        if (trimmed.endsWith("KB")) {
+            return Long.parseLong(trimmed.substring(0, trimmed.length() - 2).trim()) * 1024L;
+        }
+
         return Long.parseLong(trimmed);
     }
 
     private static long parseCount(String value) {
-        if (value.isEmpty()) {return 100_000L;}
+        if (value.isEmpty()) {
+            return 100_000L;
+        }
+
         return Long.parseLong(value.trim());
     }
 }

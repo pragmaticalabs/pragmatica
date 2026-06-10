@@ -42,7 +42,9 @@ class ClusterListKeysCommand implements Callable<Integer> {
     private Result<String> fetchKeys() {
         var keysResult = ClusterHttpClient.fetch(CLUSTER_KEYS_LIST);
 
-        if (!showAudit) {return keysResult;}
+        if (!showAudit) {
+            return keysResult;
+        }
 
         return keysResult.flatMap(this::appendAudit);
     }

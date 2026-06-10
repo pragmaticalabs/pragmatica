@@ -76,8 +76,14 @@ public final class ProviderResolver {
 
         for (var entry : handle.credentialEnvVars().entrySet()) {
             var value = System.getenv(entry.getValue());
-            if (value == null || value.isBlank()) {missing.add(entry.getValue());} else {creds.put(entry.getKey(), value);}
+
+            if (value == null || value.isBlank()) {
+                missing.add(entry.getValue());
+            } else {
+                creds.put(entry.getKey(), value);
+            }
         }
+
         if (!missing.isEmpty()) {
             return new BootstrapError.ProvisionFailed(handle.provider(),
                                                       "Missing credential env vars for cleanup: " + String.join(", ",
@@ -85,6 +91,7 @@ public final class ProviderResolver {
         }
 
         var compute = new HashMap<String, String>();
+
         handle.region().onPresent(r -> compute.put("region", r));
 
         return Result.success(new CloudConfig(handle.provider(),
@@ -138,17 +145,23 @@ public final class ProviderResolver {
                                                 List<Long> sshKeyIds,
                                                 String userData) {
         var credentials = new HashMap<String, String>();
+
         source.credentials().onPresent(c -> {
-                                           credentials.put("credentials_file", c);
-                                           credentials.put("api_token", c);
-                                           credentials.put("access_key", c);
-                                       });
+            credentials.put("credentials_file", c);
+            credentials.put("api_token", c);
+            credentials.put("access_key", c);
+        });
         var compute = new HashMap<String, String>();
+
         source.region().onPresent(r -> compute.put("region", r));
         source.zone().onPresent(z -> compute.put("zone", z));
+        if (!sshKeyIds.isEmpty()) {
+            compute.put("ssh_key_ids", joinLongs(sshKeyIds));
+        }
 
-        if (!sshKeyIds.isEmpty()) {compute.put("ssh_key_ids", joinLongs(sshKeyIds));}
-        if (!userData.isEmpty()) {compute.put("user_data", userData);}
+        if (!userData.isEmpty()) {
+            compute.put("user_data", userData);
+        }
 
         return new CloudConfig(providerName,
                                Map.copyOf(credentials),

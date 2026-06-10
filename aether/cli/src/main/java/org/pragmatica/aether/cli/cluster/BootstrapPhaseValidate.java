@@ -45,7 +45,10 @@ sealed interface BootstrapPhaseValidate {
     }
 
     private static Result<ClusterBootstrapConfig> runPreflightChecks(ClusterBootstrapConfig config, boolean fullCheck) {
-        if (fullCheck) {return PreflightChecker.runFull(config);}
+        if (fullCheck) {
+            return PreflightChecker.runFull(config);
+        }
+
         return PreflightChecker.runDefault(config);
     }
 

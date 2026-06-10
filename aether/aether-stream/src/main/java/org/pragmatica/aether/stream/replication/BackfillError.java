@@ -12,14 +12,12 @@ public sealed interface BackfillError extends Cause {
         NO_SOURCE_REPLICA("No caught-up source replica available for backfill"),
         MALFORMED_RESPONSE("Malformed catch-up response: payload/timestamp count mismatch"),
         INCOMPLETE_BACKFILL("Catch-up applied fewer events than the source watermark — gap remains");
-
         private final String message;
-
         General(String message) {
             this.message = message;
         }
-
-        @Override public String message() {
+        @Override
+        public String message() {
             return message;
         }
     }

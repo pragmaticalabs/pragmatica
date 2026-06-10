@@ -17,6 +17,9 @@ public interface ReplicatedMap<K, V> {
     Promise<Option<V>> get(K key);
     Promise<Boolean> remove(K key);
     ReplicatedMap<K, V> subscribe(MapSubscription<K, V> subscription);
-    @Contract void forEach(BiConsumer<K, V> consumer);
+
+    @Contract
+    void forEach(BiConsumer<K, V> consumer);
+
     String name();
 }

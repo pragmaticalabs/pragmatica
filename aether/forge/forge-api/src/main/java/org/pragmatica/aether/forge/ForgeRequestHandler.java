@@ -14,13 +14,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") public final class ForgeRequestHandler {
+@SuppressWarnings("JBCT-RET-01")
+public final class ForgeRequestHandler {
     private static final Logger log = LoggerFactory.getLogger(ForgeRequestHandler.class);
-
     private static final String ACCESS_CONTROL_ALLOW_ORIGIN = "Access-Control-Allow-Origin";
-
     private static final String ACCESS_CONTROL_ALLOW_METHODS = "Access-Control-Allow-Methods";
-
     private static final String ACCESS_CONTROL_ALLOW_HEADERS = "Access-Control-Allow-Headers";
 
     private final ForgeApiHandler apiHandler;
@@ -37,14 +35,20 @@ import org.slf4j.LoggerFactory;
 
     public void handle(RequestContext request, ResponseWriter response) {
         var path = request.path();
+
         log.debug("Request: {} {}", request.method(), path);
         try {
             if (request.method() == org.pragmatica.http.HttpMethod.OPTIONS) {
                 handleCors(response);
+
                 return;
             }
-            if (path.startsWith("/api/")) {apiHandler.handle(request, withCors(response));} else {staticHandler.handle(request,
-                                                                                                                       response);}
+
+            if (path.startsWith("/api/")) {
+                apiHandler.handle(request, withCors(response));
+            } else {
+                staticHandler.handle(request, response);
+            }
         } catch (Exception e) {
             log.error("Error handling request: {}", e.getMessage(), e);
             response.error(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
@@ -53,14 +57,15 @@ import org.slf4j.LoggerFactory;
 
     private void handleCors(ResponseWriter response) {
         response.header(ACCESS_CONTROL_ALLOW_ORIGIN, "*").header(ACCESS_CONTROL_ALLOW_METHODS,
-                                                                 "GET, POST, PUT, DELETE, OPTIONS")
-                       .header(ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type")
-                       .write(HttpStatus.OK, new byte[0], CommonContentType.TEXT_PLAIN);
+                                                                 "GET, POST, PUT, DELETE, OPTIONS").header(ACCESS_CONTROL_ALLOW_HEADERS,
+                                                                                                           "Content-Type").write(HttpStatus.OK,
+                                                                                                                                 new byte[0],
+                                                                                                                                 CommonContentType.TEXT_PLAIN);
     }
 
     private ResponseWriter withCors(ResponseWriter response) {
-        return response.header(ACCESS_CONTROL_ALLOW_ORIGIN, "*").header(ACCESS_CONTROL_ALLOW_METHODS,
-                                                                        "GET, POST, PUT, DELETE, OPTIONS")
-                              .header(ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type");
+        return response.header(ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                       .header(ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, PUT, DELETE, OPTIONS")
+                       .header(ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type");
     }
 }

@@ -81,7 +81,9 @@ class JwksKeyStore implements AutoCloseable {
         var now = System.currentTimeMillis();
         var lastFetch = lastFetchTime.get();
 
-        if (now - lastFetch > cacheTtlMs && lastFetchTime.compareAndSet(lastFetch, now)) {fetchAndCacheKeys();}
+        if (now - lastFetch > cacheTtlMs && lastFetchTime.compareAndSet(lastFetch, now)) {
+            fetchAndCacheKeys();
+        }
     }
 
     private Result<PublicKey> refreshAndRetry(String kid) {
@@ -104,6 +106,7 @@ class JwksKeyStore implements AutoCloseable {
 
     private void refreshKeyCache(List<Map<String, Object>> keys) {
         var newCache = new ConcurrentHashMap<String, PublicKey>();
+
         keys.forEach(keyData -> cacheKeyInto(newCache, keyData));
         rawKeys.set(keys);
         keyCache.clear();
@@ -116,7 +119,9 @@ class JwksKeyStore implements AutoCloseable {
         var kid = stringValue(keyData, "kid");
         var kty = stringValue(keyData, "kty");
 
-        if (kid.isEmpty()) {return;}
+        if (kid.isEmpty()) {
+            return;
+        }
 
         buildPublicKey(kty, keyData).onSuccess(key -> targetCache.put(kid, key));
     }
@@ -125,7 +130,9 @@ class JwksKeyStore implements AutoCloseable {
         var kid = stringValue(keyData, "kid");
         var kty = stringValue(keyData, "kty");
 
-        if (kid.isEmpty()) {return;}
+        if (kid.isEmpty()) {
+            return;
+        }
 
         buildPublicKey(kty, keyData).onSuccess(key -> keyCache.put(kid, key));
     }
@@ -173,6 +180,7 @@ class JwksKeyStore implements AutoCloseable {
             default -> throw new IllegalArgumentException("Unsupported curve: " + crv);
         };
         var params = java.security.AlgorithmParameters.getInstance("EC");
+
         params.init(new java.security.spec.ECGenParameterSpec(curveName));
 
         return params.getParameterSpec(ECParameterSpec.class);
@@ -186,7 +194,9 @@ class JwksKeyStore implements AutoCloseable {
         var request = HttpRequest.newBuilder().uri(URI.create(jwksUrl)).header("Accept", "application/json").GET().build();
         var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
-        if (response.statusCode() != 200) {throw new RuntimeException("JWKS fetch returned HTTP " + response.statusCode());}
+        if (response.statusCode() != 200) {
+            throw new RuntimeException("JWKS fetch returned HTTP " + response.statusCode());
+        }
 
         return JSON.readString(response.body(),
                                MAP_TYPE)

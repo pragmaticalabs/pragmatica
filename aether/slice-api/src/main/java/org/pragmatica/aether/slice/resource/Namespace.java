@@ -13,6 +13,7 @@ import org.pragmatica.serialization.Codec;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+
 /// Namespace value object — the validated naming authority component of a [ResourceAddress].
 ///
 /// A namespace is either the reserved token `system` (framework-internal resources) or a
@@ -20,15 +21,13 @@ import java.util.regex.Pattern;
 /// This type owns the namespace grammar, length bounds and the `system` reservation; the raw
 /// string is rendered verbatim via [#value()] so the `namespace:name:version` wire form is
 /// unchanged. Parse-don't-validate: an instance is the proof that the grammar holds.
-@Codec public record Namespace(String value) {
+@Codec
+public record Namespace(String value) {
     public static final String SYSTEM = "system";
-
     /// Namespace applied to legacy / un-namespaced topic declarations when no blueprint coordinates
     /// are available to derive one (e.g. a bare `topicName` string with no deploy context).
     public static final String DEFAULT = "default";
-
     public static final Set<String> RESERVED = Set.of(SYSTEM);
-
     // Intentional deviation from spec text `[a-z0-9._-]+`: this pattern additionally requires a
     // leading alphanumeric (first char cannot be `.`, `_`, or `-`). Stricter and safe — avoids
     // ambiguous/relative-looking namespaces; can be relaxed to the spec form if a use case needs it.
@@ -45,8 +44,7 @@ import java.util.regex.Pattern;
     /// before the charset check, so operators using `SYSTEM` or `System.audit` get the more
     /// informative "reserved" diagnostic. The reserved check is case-insensitive.
     public static Result<Namespace> appNamespace(String value) {
-        return Verify.ensure(value, Namespace::isNotReserved, General.NAMESPACE_RESERVED_FOR_APPS)
-                     .flatMap(Namespace::namespace);
+        return Verify.ensure(value, Namespace::isNotReserved, General.NAMESPACE_RESERVED_FOR_APPS).flatMap(Namespace::namespace);
     }
 
     public boolean isSystem() {
@@ -61,17 +59,21 @@ import java.util.regex.Pattern;
         if (value == null) {
             return false;
         }
+
         var dot = value.indexOf('.');
-        var firstSegment = dot < 0 ? value : value.substring(0, dot);
-        return RESERVED.stream().anyMatch(reserved -> reserved.equalsIgnoreCase(value))
-               || RESERVED.stream().anyMatch(reserved -> reserved.equalsIgnoreCase(firstSegment));
+        var firstSegment = dot < 0
+                           ? value
+                           : value.substring(0, dot);
+
+        return RESERVED.stream().anyMatch(reserved -> reserved.equalsIgnoreCase(value)) || RESERVED.stream().anyMatch(reserved -> reserved.equalsIgnoreCase(firstSegment));
     }
 
     private static boolean isNotReserved(String value) {
-        return !isReserved(value);
+        return ! isReserved(value);
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return value;
     }
 }

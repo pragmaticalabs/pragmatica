@@ -7,7 +7,8 @@ package org.pragmatica.aether.slice.generation;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public enum HealthHint {
+@Codec
+public enum HealthHint {
     HEALTHY,
     SUSPECTED,
     FAULTY

@@ -60,6 +60,7 @@ public record ApplyState(String clusterName,
 
     public ApplyState withWaveStatus(int waveIndex, WaveStatus status) {
         var updated = new ArrayList<>(waves);
+
         updated.set(waveIndex, status);
 
         return applyState(clusterName, configHash, startedAt, waveIndex, updated, createdResources, destroyedNodeIds);
@@ -67,6 +68,7 @@ public record ApplyState(String clusterName,
 
     public ApplyState withResource(CreatedResource resource) {
         var updated = new ArrayList<>(createdResources);
+
         updated.add(resource);
 
         return applyState(clusterName, configHash, startedAt, currentWaveIndex, waves, updated, destroyedNodeIds);
@@ -74,6 +76,7 @@ public record ApplyState(String clusterName,
 
     public ApplyState withDestroyedNode(String nodeId) {
         var updated = new ArrayList<>(destroyedNodeIds);
+
         updated.add(nodeId);
 
         return applyState(clusterName, configHash, startedAt, currentWaveIndex, waves, createdResources, updated);
@@ -96,7 +99,9 @@ public record ApplyState(String clusterName,
     static Option<ApplyState> load(String clusterName) {
         var path = stateFilePath(clusterName);
 
-        if (!Files.exists(path)) {return none();}
+        if (!Files.exists(path)) {
+            return none();
+        }
 
         return Result.lift(PersistenceError::new,
                            () -> Files.readString(path))
@@ -112,6 +117,7 @@ public record ApplyState(String clusterName,
     @SuppressWarnings("JBCT-EX-01")
     private static Unit doSave(ApplyState state) throws Exception {
         var dir = AETHER_DIR.resolve(state.clusterName());
+
         Files.createDirectories(dir);
         Files.writeString(dir.resolve(STATE_FILE_NAME), toJson(state));
 
@@ -121,6 +127,7 @@ public record ApplyState(String clusterName,
     @SuppressWarnings("JBCT-EX-01")
     private static Unit doDelete(String clusterName) throws Exception {
         var path = stateFilePath(clusterName);
+
         Files.deleteIfExists(path);
 
         return Unit.unit();
@@ -134,6 +141,7 @@ public record ApplyState(String clusterName,
 
     static String toJson(ApplyState state) {
         var sb = new StringBuilder(512);
+
         sb.append("{\n");
         appendStringField(sb, "clusterName", state.clusterName());
         sb.append(",\n");
@@ -181,7 +189,9 @@ public record ApplyState(String clusterName,
 
         var statuses = new ArrayList<WaveStatus>();
 
-        for (var element : node) {statuses.add(parseWaveStatus(element.asText()));}
+        for (var element : node) {
+            statuses.add(parseWaveStatus(element.asText()));
+        }
 
         return List.copyOf(statuses);
     }
@@ -192,24 +202,33 @@ public record ApplyState(String clusterName,
 
     @SuppressWarnings("JBCT-PAT-01")
     private static List<CreatedResource> parseResources(JsonNode node) {
-        if (node.isMissingNode() || node.isNull() || !node.isArray()) {return List.of();}
+        if (node.isMissingNode() || node.isNull() || !node.isArray()) {
+            return List.of();
+        }
 
         var resources = new ArrayList<CreatedResource>();
 
         for (var element : node) {
             var resource = BootstrapStateJson.parseSingleResourceNode(element);
-            if (resource != null) {resources.add(resource);}
+
+            if (resource != null) {
+                resources.add(resource);
+            }
         }
 
         return List.copyOf(resources);
     }
 
     private static List<String> parseStringList(JsonNode node) {
-        if (node.isMissingNode() || node.isNull() || !node.isArray()) {return List.of();}
+        if (node.isMissingNode() || node.isNull() || !node.isArray()) {
+            return List.of();
+        }
 
         var result = new ArrayList<String>();
 
-        for (var element : node) {result.add(element.asText());}
+        for (var element : node) {
+            result.add(element.asText());
+        }
 
         return List.copyOf(result);
     }
@@ -222,9 +241,11 @@ public record ApplyState(String clusterName,
     @Contract
     private static void appendWaves(StringBuilder sb, List<WaveStatus> waves) {
         sb.append("  \"waves\": [");
+        for (int i = 0; i < waves.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
 
-        for (int i = 0;i <waves.size();i++) {
-            if (i > 0) {sb.append(", ");}
             sb.append('"').append(waves.get(i).name()).append('"');
         }
 
@@ -234,14 +255,18 @@ public record ApplyState(String clusterName,
     @Contract
     private static void appendResources(StringBuilder sb, List<CreatedResource> resources) {
         sb.append("  \"createdResources\": [");
-
-        for (int i = 0;i <resources.size();i++) {
-            if (i > 0) {sb.append(',');}
+        for (int i = 0; i < resources.size(); i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
 
             sb.append("\n    ");
             BootstrapStateJson.appendResourceJson(sb, resources.get(i));
         }
-        if (!resources.isEmpty()) {sb.append('\n');}
+
+        if (!resources.isEmpty()) {
+            sb.append('\n');
+        }
 
         sb.append("  ]");
     }
@@ -249,9 +274,11 @@ public record ApplyState(String clusterName,
     @Contract
     private static void appendStringList(StringBuilder sb, String key, List<String> values) {
         sb.append("  \"").append(escapeJson(key)).append("\": [");
+        for (int i = 0; i < values.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
 
-        for (int i = 0;i <values.size();i++) {
-            if (i > 0) {sb.append(", ");}
             sb.append('"').append(escapeJson(values.get(i))).append('"');
         }
 
@@ -259,7 +286,10 @@ public record ApplyState(String clusterName,
     }
 
     private static String escapeJson(String value) {
-        if (value == null) {return "";}
+        if (value == null) {
+            return "";
+        }
+
         return value.replace("\\", "\\\\")
                     .replace("\"", "\\\"")
                     .replace("\n", "\\n")

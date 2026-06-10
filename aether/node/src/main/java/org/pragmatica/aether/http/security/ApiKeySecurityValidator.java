@@ -35,12 +35,14 @@ class ApiKeySecurityValidator implements SecurityValidator {
 
     ApiKeySecurityValidator(Map<String, ApiKeyEntry> keyEntries) {
         var hashedEntries = new HashMap<String, ApiKeyEntry>();
+
         keyEntries.forEach((key, entry) -> hashedEntries.put(hashKey(key), entry));
         this.keyEntries = Map.copyOf(hashedEntries);
     }
 
     static Map<String, ApiKeyEntry> fromKeySet(Set<String> validKeys) {
         var entries = new HashMap<String, ApiKeyEntry>();
+
         validKeys.forEach(key -> entries.put(key, ApiKeyEntry.defaultEntry(key)));
 
         return entries;
@@ -112,6 +114,7 @@ class ApiKeySecurityValidator implements SecurityValidator {
 
     private static Option<String> extractCaseInsensitive(Map<String, List<String>> headers) {
         var value = headers.entrySet().stream().filter(e -> API_KEY_HEADER.equalsIgnoreCase(e.getKey())).map(Map.Entry::getValue).filter(values -> values != null && !values.isEmpty()).map(List::getFirst).findFirst();
+
         return Option.from(value);
     }
 

@@ -34,6 +34,7 @@ public record DerivedMetrics(double requestRate,
         double eventLoopScore = 1.0 - eventLoopSaturation;
         double heapScore = 1.0 - heapSaturation;
         double errorScore = Math.max(0, 1.0 - errorRate * 10);
+
         return (latencyScore * 0.3 + eventLoopScore * 0.3 + heapScore * 0.2 + errorScore * 0.2);
     }
 
@@ -42,7 +43,9 @@ public record DerivedMetrics(double requestRate,
     }
 
     public boolean hasCapacity() {
-        return eventLoopSaturation <0.5 && heapSaturation <0.6 && errorRate <0.01;
+        return eventLoopSaturation < 0.5
+               && heapSaturation < 0.6
+               && errorRate < 0.01;
     }
 
     public boolean deteriorating() {
@@ -50,6 +53,8 @@ public record DerivedMetrics(double requestRate,
     }
 
     public boolean improving() {
-        return cpuTrend <- 0.05 && latencyTrend <- 10.0 && errorTrend <0;
+        return cpuTrend < - 0.05
+               && latencyTrend < - 10.0
+               && errorTrend < 0;
     }
 }

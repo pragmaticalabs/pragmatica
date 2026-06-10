@@ -32,7 +32,7 @@ public record RollbackConfig(boolean enabled,
 
     public static RollbackConfig rollbackConfig(boolean enabled) {
         return enabled
-              ? ENABLED
-              : DISABLED;
+               ? ENABLED
+               : DISABLED;
     }
 }

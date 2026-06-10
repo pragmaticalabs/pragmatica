@@ -7,8 +7,8 @@ package org.pragmatica.aether.stream.consensus;
 import org.pragmatica.lang.Promise;
 
 
-@FunctionalInterface public interface ConsensusProposer {
+@FunctionalInterface
+public interface ConsensusProposer {
     Promise<Long> propose(StreamConsensusCommand command);
-
-    ConsensusProposer NOOP = _ -> Promise.success(- 1L);
+    ConsensusProposer NOOP = _ -> Promise.success(-1L);
 }

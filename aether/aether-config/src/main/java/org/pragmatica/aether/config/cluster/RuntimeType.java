@@ -26,9 +26,10 @@ public enum RuntimeType {
         return value;
     }
     public static Result<RuntimeType> runtimeType(String raw) {
-        return Arrays.stream(values()).filter(rt -> rt.value.equals(raw))
-                            .findFirst()
-                            .map(Result::success)
-                            .orElseGet(INVALID_TYPE::result);
+        return Arrays.stream(values())
+                     .filter(rt -> rt.value.equals(raw))
+                     .findFirst()
+                     .map(Result::success)
+                     .orElseGet(INVALID_TYPE::result);
     }
 }

@@ -19,27 +19,26 @@ import java.util.Map;
 /// `both` — derived from the bundled slice manifests' `StreamPublisher`/`StreamAccess` parameter
 /// bindings. Empty when the artifact carries no slice manifests (legacy DSL path or pre-Wave-3
 /// blueprint JARs).
-@Codec@CodecFor(Blueprint.class) public record BlueprintArtifact(Blueprint blueprint,
-                                                                 Option<String> resourcesConfig,
-                                                                 Map<String, List<MigrationEntry>> schemaMigrations,
-                                                                 Map<String, String> roleHints) {
+@Codec
+@CodecFor(Blueprint.class)
+public record BlueprintArtifact(Blueprint blueprint,
+                                Option<String> resourcesConfig,
+                                Map<String, List<MigrationEntry>> schemaMigrations,
+                                Map<String, String> roleHints) {
     public BlueprintArtifact {
         schemaMigrations = schemaMigrations == null
-                          ? Map.of()
-                          : Map.copyOf(schemaMigrations);
+                           ? Map.of()
+                           : Map.copyOf(schemaMigrations);
         roleHints = roleHints == null
-                   ? Map.of()
-                   : Map.copyOf(roleHints);
+                    ? Map.of()
+                    : Map.copyOf(roleHints);
     }
 
     public static BlueprintArtifact blueprintArtifact(Blueprint blueprint,
                                                       Option<String> resourcesConfig,
                                                       Map<String, List<MigrationEntry>> schemaMigrations,
                                                       Map<String, String> roleHints) {
-        return new BlueprintArtifact(blueprint,
-                                     resourcesConfig,
-                                     Map.copyOf(schemaMigrations),
-                                     Map.copyOf(roleHints));
+        return new BlueprintArtifact(blueprint, resourcesConfig, Map.copyOf(schemaMigrations), Map.copyOf(roleHints));
     }
 
     public static BlueprintArtifact blueprintArtifact(Blueprint blueprint,

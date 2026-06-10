@@ -28,13 +28,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///
 /// E2 Phase 2a (2026-05-28): the `nttObservation` migration-ramp feature flag is removed.
 /// NTT/LocalQuorumWatcher/LeaderReconciler now wire unconditionally.
-public record MembershipConfigBinding(TimeSpan nttDepartureTimeout,
-                                      TimeSpan quorumLossDrainThreshold) {
+public record MembershipConfigBinding(TimeSpan nttDepartureTimeout, TimeSpan quorumLossDrainThreshold) {
     public static final TimeSpan DEFAULT_NTT_DEPARTURE_TIMEOUT = timeSpan(15).seconds();
     public static final TimeSpan DEFAULT_QUORUM_LOSS_DRAIN_THRESHOLD = timeSpan(8).seconds();
 
     public static MembershipConfigBinding membershipConfigBinding() {
-        return new MembershipConfigBinding(DEFAULT_NTT_DEPARTURE_TIMEOUT,
-                                           DEFAULT_QUORUM_LOSS_DRAIN_THRESHOLD);
+        return new MembershipConfigBinding(DEFAULT_NTT_DEPARTURE_TIMEOUT, DEFAULT_QUORUM_LOSS_DRAIN_THRESHOLD);
     }
 }

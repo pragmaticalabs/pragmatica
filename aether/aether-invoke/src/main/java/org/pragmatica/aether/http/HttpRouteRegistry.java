@@ -30,9 +30,16 @@ import org.slf4j.LoggerFactory;
 public interface HttpRouteRegistry {
     Option<RouteInfo> findRoute(String httpMethod, String path);
     List<RouteInfo> allRoutes();
-    @SuppressWarnings("JBCT-RET-01") void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
-    @SuppressWarnings("JBCT-RET-01") void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
-    @SuppressWarnings("JBCT-RET-01") void evictNode(NodeId nodeId);
+
+    @SuppressWarnings("JBCT-RET-01")
+    void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
+
+    @SuppressWarnings("JBCT-RET-01")
+    void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
+
+    @SuppressWarnings("JBCT-RET-01")
+    void evictNode(NodeId nodeId);
+
     long staleFenceObservationCount();
 
     record RouteInfo(String httpMethod, String pathPrefix, Set<NodeId> nodes, String security) {
@@ -61,31 +68,43 @@ public interface HttpRouteRegistry {
                                  AtomicLong staleFenceCounter) implements HttpRouteRegistry {
             private static final Logger log = LoggerFactory.getLogger(httpRouteRegistry.class);
 
-            @Override@SuppressWarnings("JBCT-RET-01") public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
                 var key = valuePut.cause().key();
                 var value = valuePut.cause().value();
                 var nodeId = key.nodeId();
+
                 if (isStaleFence(nodeId,
                                  key.artifact().asString(),
-                                 value)) {return;}
+                                 value)) {
+                    return;
+                }
+
                 for (var route : value.routes()) {
-                    if (!route.isRoutable()) {continue;}
+                    if (!route.isRoutable()) {
+                        continue;
+                    }
+
                     var method = route.httpMethod();
                     var prefix = route.pathPrefix();
                     var security = route.security();
                     var ref = routesByMethod.computeIfAbsent(method, _ -> new AtomicReference<>(new TreeMap<>()));
+
                     ref.updateAndGet(current -> addNodeToRoute(current, method, prefix, nodeId, security));
                     log.debug("HttpRouteRegistry: Registered compound route {} {} node={}", method, prefix, nodeId);
                 }
             }
 
-            @Override public long staleFenceObservationCount() {
+            @Override
+            public long staleFenceObservationCount() {
                 return staleFenceCounter.get();
             }
 
             private boolean isStaleFence(NodeId nodeId, String artifact, NodeRoutesValue value) {
                 var valueTerm = value.observedCoreEpoch().rabiaTerm();
                 var observedTerm = snapshotSource.observedEpochRabiaTerm();
+
                 if (observedTerm - valueTerm > STALE_FENCE_TERM_THRESHOLD) {
                     staleFenceCounter.incrementAndGet();
                     log.warn("Stale route update for {}/{}: value.rabiaTerm={} observed.rabiaTerm={} — REJECTED (hard fence)",
@@ -93,35 +112,47 @@ public interface HttpRouteRegistry {
                              artifact,
                              valueTerm,
                              observedTerm);
+
                     return true;
                 }
+
                 return false;
             }
 
-            @Override@SuppressWarnings("JBCT-RET-01") public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
                 var key = valueRemove.cause().key();
                 var nodeId = key.nodeId();
-                routesByMethod.values()
-                                     .forEach(ref -> ref.updateAndGet(current -> removeNodeFromAllRoutes(current, nodeId)));
+
+                routesByMethod.values().forEach(ref -> ref.updateAndGet(current -> removeNodeFromAllRoutes(current,
+                                                                                                           nodeId)));
             }
 
             private TreeMap<String, RouteInfo> removeNodeFromAllRoutes(TreeMap<String, RouteInfo> current,
                                                                        NodeId nodeId) {
                 var updated = new TreeMap<String, RouteInfo>();
+
                 for (var entry : current.entrySet()) {
                     var route = entry.getValue();
+
                     if (!route.nodes().contains(nodeId)) {
                         updated.put(entry.getKey(), route);
                         continue;
                     }
+
                     var remaining = new HashSet<>(route.nodes());
+
                     remaining.remove(nodeId);
-                    if (!remaining.isEmpty()) {updated.put(entry.getKey(),
-                                                           RouteInfo.routeInfo(route.httpMethod(),
-                                                                               route.pathPrefix(),
-                                                                               Set.copyOf(remaining),
-                                                                               route.security()));}
+                    if (!remaining.isEmpty()) {
+                        updated.put(entry.getKey(),
+                                    RouteInfo.routeInfo(route.httpMethod(),
+                                                        route.pathPrefix(),
+                                                        Set.copyOf(remaining),
+                                                        route.security()));
+                    }
                 }
+
                 return updated;
             }
 
@@ -133,46 +164,60 @@ public interface HttpRouteRegistry {
                 var updated = new TreeMap<>(current);
                 var existing = updated.get(prefix);
                 var nodes = (existing != null)
-                           ? new HashSet<>(existing.nodes())
-                           : new HashSet<NodeId>();
+                            ? new HashSet<>(existing.nodes())
+                            : new HashSet<NodeId>();
                 var effectiveSecurity = (existing != null)
-                                       ? existing.security()
-                                       : security;
+                                        ? existing.security()
+                                        : security;
+
                 nodes.add(nodeId);
                 updated.put(prefix,
                             RouteInfo.routeInfo(method, prefix, Set.copyOf(nodes), effectiveSecurity));
+
                 return updated;
             }
 
-            @Override public Option<RouteInfo> findRoute(String httpMethod, String path) {
-                return Option.option(routesByMethod.get(httpMethod.toUpperCase())).map(AtomicReference::get)
-                                    .filter(routes -> !routes.isEmpty())
-                                    .flatMap(routes -> findMatchingRoute(routes, path));
+            @Override
+            public Option<RouteInfo> findRoute(String httpMethod, String path) {
+                return Option.option(routesByMethod.get(httpMethod.toUpperCase()))
+                             .map(AtomicReference::get)
+                             .filter(routes -> !routes.isEmpty())
+                             .flatMap(routes -> findMatchingRoute(routes, path));
             }
 
             private Option<RouteInfo> findMatchingRoute(TreeMap<String, RouteInfo> routes, String path) {
                 var normalizedPath = normalizePath(path);
-                return Option.option(routes.floorEntry(normalizedPath)).filter(entry -> isSameOrStartOfPath(normalizedPath,
-                                                                                                            entry.getKey()))
-                                    .map(Map.Entry::getValue);
+
+                return Option.option(routes.floorEntry(normalizedPath))
+                             .filter(entry -> isSameOrStartOfPath(normalizedPath,
+                                                                  entry.getKey()))
+                             .map(Map.Entry::getValue);
             }
 
-            @Override public List<RouteInfo> allRoutes() {
-                return routesByMethod.values().stream()
-                                            .map(AtomicReference::get)
-                                            .flatMap(map -> map.values().stream())
-                                            .toList();
+            @Override
+            public List<RouteInfo> allRoutes() {
+                return routesByMethod.values()
+                                     .stream()
+                                     .map(AtomicReference::get)
+                                     .flatMap(map -> map.values()
+                                                        .stream())
+                                     .toList();
             }
 
-            @Override@SuppressWarnings("JBCT-RET-01") public void evictNode(NodeId nodeId) {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void evictNode(NodeId nodeId) {
                 var totalAffected = new int[]{0};
+
                 routesByMethod.values().forEach(ref -> totalAffected[0] += evictNodeFromMethodRoutes(ref, nodeId));
                 log.info("Evicted node {} from route cache, {} routes affected", nodeId, totalAffected[0]);
             }
 
             private int evictNodeFromMethodRoutes(AtomicReference<TreeMap<String, RouteInfo>> ref, NodeId nodeId) {
                 var affected = new int[]{0};
+
                 ref.updateAndGet(current -> buildEvictedMap(current, nodeId, affected));
+
                 return affected[0];
             }
 
@@ -180,36 +225,56 @@ public interface HttpRouteRegistry {
                                                                NodeId nodeId,
                                                                int[] affected) {
                 var updated = new TreeMap<String, RouteInfo>();
+
                 for (var entry : current.entrySet()) {
                     var route = entry.getValue();
+
                     if (!route.nodes().contains(nodeId)) {
                         updated.put(entry.getKey(), route);
                         continue;
                     }
+
                     affected[0]++;
                     var remaining = new HashSet<>(route.nodes());
+
                     remaining.remove(nodeId);
-                    if (!remaining.isEmpty()) {updated.put(entry.getKey(),
-                                                           RouteInfo.routeInfo(route.httpMethod(),
-                                                                               route.pathPrefix(),
-                                                                               Set.copyOf(remaining),
-                                                                               route.security()));}
+                    if (!remaining.isEmpty()) {
+                        updated.put(entry.getKey(),
+                                    RouteInfo.routeInfo(route.httpMethod(),
+                                                        route.pathPrefix(),
+                                                        Set.copyOf(remaining),
+                                                        route.security()));
+                    }
                 }
+
                 return updated;
             }
 
             private String normalizePath(String path) {
-                if (path == null || path.isBlank()) {return "/";}
+                if (path == null || path.isBlank()) {
+                    return "/";
+                }
+
                 var normalized = path.strip();
-                if (!normalized.startsWith("/")) {normalized = "/" + normalized;}
-                if (!normalized.endsWith("/")) {normalized = normalized + "/";}
+
+                if (!normalized.startsWith("/")) {
+                    normalized = "/" + normalized;
+                }
+
+                if (!normalized.endsWith("/")) {
+                    normalized = normalized + "/";
+                }
+
                 return normalized;
             }
 
             private boolean isSameOrStartOfPath(String inputPath, String routePath) {
-                return (inputPath.length() == routePath.length() && inputPath.equals(routePath)) || (inputPath.length() > routePath.length() && inputPath.startsWith(routePath) && inputPath.charAt(routePath.length() - 1) == '/');
+                return (inputPath.length() == routePath.length() && inputPath.equals(routePath)) || (inputPath.length() > routePath.length()
+                                                                                                     && inputPath.startsWith(routePath)
+                                                                                                     && inputPath.charAt(routePath.length() - 1) == '/');
             }
         }
+
         return new httpRouteRegistry(new ConcurrentHashMap<>(), snapshotSource, new AtomicLong());
     }
 }

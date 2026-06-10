@@ -55,6 +55,7 @@ public final class BackupRoutes implements RouteSource {
                                                                                                            cause.message()),
                                                                     _ -> BackupResponse.backupResponse(true,
                                                                                                        "Backup completed"));
+
         AuditLog.backupCreated(response.success(), response.message());
         emitBackupCreated(response);
 
@@ -62,7 +63,9 @@ public final class BackupRoutes implements RouteSource {
     }
 
     private void emitBackupCreated(BackupResponse response) {
-        if (response.success()) {nodeSupplier.get().route(OperationalEvent.BackupCreated.backupCreated("latest", "api"));}
+        if (response.success()) {
+            nodeSupplier.get().route(OperationalEvent.BackupCreated.backupCreated("latest", "api"));
+        }
     }
 
     private List<BackupInfo> listBackups() {
@@ -76,6 +79,7 @@ public final class BackupRoutes implements RouteSource {
                                                                                                                          cause.message()),
                                                                                   _ -> BackupResponse.backupResponse(true,
                                                                                                                      "Restore completed"));
+
         AuditLog.backupRestored(response.success(), request.commit(), response.message());
         emitBackupRestored(request.commit(), response);
 

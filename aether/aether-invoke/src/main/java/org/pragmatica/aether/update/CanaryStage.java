@@ -13,12 +13,17 @@ import java.util.List;
 
 public record CanaryStage(int trafficPercent, int observationMinutes) {
     private static final Cause INVALID_TRAFFIC = Causes.cause("Traffic percent must be between 1 and 100");
-
     private static final Cause NEGATIVE_OBSERVATION = Causes.cause("Observation minutes must be non-negative");
 
     public static Result<CanaryStage> canaryStage(int trafficPercent, int observationMinutes) {
-        if (trafficPercent <1 || trafficPercent > 100) {return INVALID_TRAFFIC.result();}
-        if (observationMinutes <0) {return NEGATIVE_OBSERVATION.result();}
+        if (trafficPercent < 1 || trafficPercent > 100) {
+            return INVALID_TRAFFIC.result();
+        }
+
+        if (observationMinutes < 0) {
+            return NEGATIVE_OBSERVATION.result();
+        }
+
         return Result.success(new CanaryStage(trafficPercent, observationMinutes));
     }
 

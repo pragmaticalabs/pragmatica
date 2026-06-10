@@ -15,9 +15,7 @@ import java.util.List;
 ///
 /// Empty failures list is illegal — callers construct this only when at least one failure exists.
 /// For the success path warnings travel via [ValidatedStreamResources] instead.
-public record StreamValidationFailures(List<StreamValidationFailure> failures,
-                                       List<StreamValidationWarning> warnings) implements Cause {
-
+public record StreamValidationFailures(List<StreamValidationFailure> failures, List<StreamValidationWarning> warnings) implements Cause {
     public StreamValidationFailures {
         failures = List.copyOf(failures);
         warnings = List.copyOf(warnings);
@@ -28,18 +26,19 @@ public record StreamValidationFailures(List<StreamValidationFailure> failures,
         return new StreamValidationFailures(failures, warnings);
     }
 
-    @Override public String message() {
-        var builder = new StringBuilder("Stream resource validation failed (")
-                .append(failures.size())
-                .append(" error")
-                .append(failures.size() == 1 ? "" : "s")
-                .append("):");
+    @Override
+    public String message() {
+        var builder = new StringBuilder("Stream resource validation failed (").append(failures.size()).append(" error").append(failures.size() == 1
+                                                                                                                               ? ""
+                                                                                                                               : "s").append("):");
+
         failures.forEach(failure -> builder.append("\n  [")
-                                            .append(failure.rule())
-                                            .append("] ")
-                                            .append(failure.field())
-                                            .append(" — ")
-                                            .append(failure.message()));
+                                           .append(failure.rule())
+                                           .append("] ")
+                                           .append(failure.field())
+                                           .append(" — ")
+                                           .append(failure.message()));
+
         return builder.toString();
     }
 }

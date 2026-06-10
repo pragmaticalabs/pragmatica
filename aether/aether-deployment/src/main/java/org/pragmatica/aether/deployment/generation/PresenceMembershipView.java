@@ -19,9 +19,7 @@ import java.util.function.Supplier;
 ///
 /// presence sampler does not carry `desiredCoreSize` or the CTM-provisioned set, so those are supplied
 /// separately rather than read from the live presence set.
-record PresenceMembershipView(Set<NodeId> members,
-                              int desiredCoreSize,
-                              Set<NodeId> ctmProvisioned) implements MembershipView {
+record PresenceMembershipView(Set<NodeId> members, int desiredCoreSize, Set<NodeId> ctmProvisioned) implements MembershipView {
     PresenceMembershipView {
         members = Set.copyOf(members);
         ctmProvisioned = Set.copyOf(ctmProvisioned);

@@ -53,7 +53,9 @@ final class NodeLifecycleImpl implements NodeLifecycle {
         if (!transition(NodeState.ACTIVE, NodeState.DRAINING)) {
             var current = state.get();
 
-            if (current == NodeState.DRAINING || current == NodeState.STOPPED) {return Promise.unitPromise();}
+            if (current == NodeState.DRAINING || current == NodeState.STOPPED) {
+                return Promise.unitPromise();
+            }
 
             return NodeLifecycleError.General.NOT_ACTIVE.promise();
         }
@@ -73,17 +75,21 @@ final class NodeLifecycleImpl implements NodeLifecycle {
     public void addStateListener(Consumer<NodeStateChanged> listener) {
         listeners.add(listener);
         var current = state.get();
+
         notifyListener(listener, NodeStateChanged.nodeStateChanged(current, current));
     }
 
     private boolean transition(NodeState from, NodeState to) {
         synchronized (transitionLock) {
-            if (!state.compareAndSet(from, to)) {return false;}
+            if (!state.compareAndSet(from, to)) {
+                return false;
+            }
 
             log.info("NodeLifecycle: {} -> {}",
                      from,
                      to);
             var event = NodeStateChanged.nodeStateChanged(from, to);
+
             listeners.forEach(listener -> notifyListener(listener, event));
 
             return true;

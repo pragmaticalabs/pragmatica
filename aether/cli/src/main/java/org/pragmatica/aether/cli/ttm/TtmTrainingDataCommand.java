@@ -24,6 +24,7 @@ class TtmTrainingDataCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         return ClusterHttpClient.fetch(TTM_TRAINING_DATA).fold(TtmCliHelper::onFailure,
-                                                               json -> OutputFormatter.printQuery(json, parent.outputOptions()));
+                                                               json -> OutputFormatter.printQuery(json,
+                                                                                                  parent.outputOptions()));
     }
 }

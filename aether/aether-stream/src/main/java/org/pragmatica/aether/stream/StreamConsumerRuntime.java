@@ -25,11 +25,13 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     Option<TransactionalCursorCommit> transactionalCursorCommit();
     DeadLetterHandler deadLetterHandler();
 
-    @FunctionalInterface interface ConsumerCallback {
+    @FunctionalInterface
+    interface ConsumerCallback {
         Promise<Unit> onEvent(long offset, byte[] payload, long timestamp);
     }
 
-    @FunctionalInterface interface BatchConsumerCallback {
+    @FunctionalInterface
+    interface BatchConsumerCallback {
         Promise<Unit> onBatch(List<OffHeapRingBuffer.RawEvent> events);
     }
 

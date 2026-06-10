@@ -53,6 +53,7 @@ public final class WorkerConfigLoader {
                                                    "metrics_aggregation",
                                                    "metrics_aggregation_interval_ms",
                                                    WorkerConfig.DEFAULT_METRICS_AGGREGATION);
+
         return swimSettings.flatMap(swim -> sliceConfig.flatMap(slice -> assembleConfig(coreNodes,
                                                                                         clusterPort,
                                                                                         swimPort,
@@ -94,11 +95,16 @@ public final class WorkerConfigLoader {
     }
 
     private static List<String> parseCoreNodes(TomlDocument doc) {
-        return doc.getStringList("worker", "core_nodes").or(List.of());
+        return doc.getStringList("worker", "core_nodes")
+                  .or(List.of());
     }
 
-    @SuppressWarnings("JBCT-STY-05") private static Result<SwimSettings> parseSwimSettings(TomlDocument doc) {
-        if (!doc.hasSection("worker.swim")) {return success(SwimSettings.swimSettings());}
+    @SuppressWarnings("JBCT-STY-05")
+    private static Result<SwimSettings> parseSwimSettings(TomlDocument doc) {
+        if (!doc.hasSection("worker.swim")) {
+            return success(SwimSettings.swimSettings());
+        }
+
         var period = parseTimeSpanOrMs(doc, "worker.swim", "period", "period_ms", SwimSettings.DEFAULT_PERIOD);
         var probeTimeout = parseTimeSpanOrMs(doc,
                                              "worker.swim",
@@ -112,12 +118,15 @@ public final class WorkerConfigLoader {
                                                "suspect_timeout_ms",
                                                SwimSettings.DEFAULT_SUSPECT_TIMEOUT);
         var maxPiggyback = doc.getInt("worker.swim", "max_piggyback").or(SwimSettings.DEFAULT_MAX_PIGGYBACK);
+
         return SwimSettings.swimSettings(period, probeTimeout, indirectProbes, suspectTimeout, maxPiggyback);
     }
 
-    @SuppressWarnings("JBCT-STY-05") private static Result<SliceConfig> parseSliceConfig(TomlDocument doc) {
-        return doc.getStringList("slice", "repositories").map(SliceConfig::sliceConfigFromNames)
-                                .or(success(SliceConfig.sliceConfig()));
+    @SuppressWarnings("JBCT-STY-05")
+    private static Result<SliceConfig> parseSliceConfig(TomlDocument doc) {
+        return doc.getStringList("slice", "repositories")
+                  .map(SliceConfig::sliceConfigFromNames)
+                  .or(success(SliceConfig.sliceConfig()));
     }
 
     private static TimeSpan parseTimeSpanOrMs(TomlDocument doc,
@@ -126,10 +135,14 @@ public final class WorkerConfigLoader {
                                               String msKey,
                                               TimeSpan defaultValue) {
         var fromString = doc.getString(section, stringKey).flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
-                                                                                                                   .option())
-                                      .map(ts -> TimeSpan.fromDuration(ts.duration()));
-        if (fromString.isPresent()) {return fromString.unwrap();}
-        return doc.getLong(section, msKey).map(ms -> timeSpan(ms).millis())
-                          .or(defaultValue);
+                                                                                                          .option()).map(ts -> TimeSpan.fromDuration(ts.duration()));
+
+        if (fromString.isPresent()) {
+            return fromString.unwrap();
+        }
+
+        return doc.getLong(section, msKey)
+                  .map(ms -> timeSpan(ms).millis())
+                  .or(defaultValue);
     }
 }

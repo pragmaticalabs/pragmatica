@@ -53,7 +53,9 @@ class ClusterCreateKeyCommand implements Callable<Integer> {
                              ? "VIEWER"
                              : role.trim().toUpperCase();
 
-        if (!VALID_ROLES.contains(normalizedRole)) {return new CreateKeyError.InvalidRole(role).result();}
+        if (!VALID_ROLES.contains(normalizedRole)) {
+            return new CreateKeyError.InvalidRole(role).result();
+        }
 
         var newKey = generateApiKey();
         var newKeyHash = KvStoreApiKeyHasher.hashKey(newKey);
@@ -102,6 +104,7 @@ class ClusterCreateKeyCommand implements Callable<Integer> {
 
     private static String generateApiKey() {
         var bytes = new byte[KEY_BYTES];
+
         new SecureRandom().nextBytes(bytes);
 
         return Base64.getUrlEncoder()

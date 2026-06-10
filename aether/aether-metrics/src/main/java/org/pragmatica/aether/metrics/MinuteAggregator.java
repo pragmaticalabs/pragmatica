@@ -19,13 +19,9 @@ public final class MinuteAggregator {
     private static final int DEFAULT_CAPACITY = 120;
 
     private final RingBuffer<MinuteAggregate> aggregates;
-
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
-
     private long currentMinute = 0;
-
     private final List<ComprehensiveSnapshot> currentSamples = new ArrayList<>(60);
-
     private final List<Double> currentLatencies = new ArrayList<>(60);
 
     private MinuteAggregator(int capacity) {
@@ -44,23 +40,33 @@ public final class MinuteAggregator {
         lock.writeLock().lock();
         try {
             long minute = MinuteAggregate.alignToMinute(snapshot.timestamp());
-            if (currentMinute != minute && !currentSamples.isEmpty()) {finalizeCurrentMinute();}
+
+            if (currentMinute != minute && !currentSamples.isEmpty()) {
+                finalizeCurrentMinute();
+            }
+
             currentMinute = minute;
             currentSamples.add(snapshot);
-            if (snapshot.avgLatencyMs() > 0) {currentLatencies.add(snapshot.avgLatencyMs());}
+            if (snapshot.avgLatencyMs() > 0) {
+                currentLatencies.add(snapshot.avgLatencyMs());
+            }
         } finally {
             lock.writeLock().unlock();
         }
+
         return unitResult();
     }
 
     public Result<Unit> flush() {
         lock.writeLock().lock();
         try {
-            if (!currentSamples.isEmpty()) {finalizeCurrentMinute();}
+            if (!currentSamples.isEmpty()) {
+                finalizeCurrentMinute();
+            }
         } finally {
             lock.writeLock().unlock();
         }
+
         return unitResult();
     }
 
@@ -77,7 +83,11 @@ public final class MinuteAggregator {
         lock.readLock().lock();
         try {
             var all = aggregates.toList();
-            if (all.size() <= count) {return all;}
+
+            if (all.size() <= count) {
+                return all;
+            }
+
             return all.subList(all.size() - count, all.size());
         } finally {
             lock.readLock().unlock();
@@ -98,10 +108,17 @@ public final class MinuteAggregator {
         try {
             var recentAggregates = recent(windowMinutes);
             float[][] result = new float[windowMinutes][];
-            for (int i = 0;i <windowMinutes;i++) {result[i] = new float[MinuteAggregate.featureNames().length];}
+
+            for (int i = 0; i < windowMinutes; i++) {
+                result[i] = new float[MinuteAggregate.featureNames().length];
+            }
+
             int offset = windowMinutes - recentAggregates.size();
-            for (int i = 0;i <recentAggregates.size();i++) {result[offset + i] = recentAggregates.get(i)
-                                                                                                     .toFeatureArray();}
+
+            for (int i = 0; i < recentAggregates.size(); i++) {
+                result[offset + i] = recentAggregates.get(i).toFeatureArray();
+            }
+
             return result;
         } finally {
             lock.readLock().unlock();
@@ -127,10 +144,14 @@ public final class MinuteAggregator {
     }
 
     private void finalizeCurrentMinute() {
-        if (currentSamples.isEmpty()) {return;}
+        if (currentSamples.isEmpty()) {
+            return;
+        }
+
         double sumCpu = 0, sumHeap = 0, sumLag = 0, sumLatency = 0;
         long sumInvocations = 0, sumGcPause = 0;
         double sumErrorRate = 0;
+
         for (var sample : currentSamples) {
             sumCpu += sample.cpuUsage();
             sumHeap += sample.heapUsage();
@@ -140,16 +161,18 @@ public final class MinuteAggregator {
             sumGcPause += sample.gc().totalPauseMs();
             sumErrorRate += sample.errorRate();
         }
+
         int n = currentSamples.size();
         double p50 = 0, p95 = 0, p99 = 0;
+
         if (!currentLatencies.isEmpty()) {
-            double[] sorted = currentLatencies.stream().mapToDouble(Double::doubleValue)
-                                                     .sorted()
-                                                     .toArray();
+            double[] sorted = currentLatencies.stream().mapToDouble(Double::doubleValue).sorted().toArray();
+
             p50 = percentile(sorted, 50);
             p95 = percentile(sorted, 95);
             p99 = percentile(sorted, 99);
         }
+
         int events = 0;
         var aggregate = MinuteAggregate.minuteAggregate(currentMinute,
                                                         sumCpu / n,
@@ -164,14 +187,19 @@ public final class MinuteAggregator {
                                                         sumErrorRate / n,
                                                         events,
                                                         n);
+
         aggregates.add(aggregate);
         currentSamples.clear();
         currentLatencies.clear();
     }
 
     private double percentile(double[] sorted, int percentile) {
-        if (sorted.length == 0) {return 0;}
+        if (sorted.length == 0) {
+            return 0;
+        }
+
         int index = (int) Math.ceil(percentile / 100.0 * sorted.length) - 1;
+
         return sorted[Math.max(0, Math.min(index, sorted.length - 1))];
     }
 }

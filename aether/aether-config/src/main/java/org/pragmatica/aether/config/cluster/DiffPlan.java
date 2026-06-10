@@ -27,7 +27,10 @@ public record DiffPlan(List<DiffAction> additions,
     }
 
     public boolean isEmpty() {
-        return additions.isEmpty() && modifications.isEmpty() && removals.isEmpty() && immutable.isEmpty();
+        return additions.isEmpty()
+               && modifications.isEmpty()
+               && removals.isEmpty()
+               && immutable.isEmpty();
     }
 
     public boolean hasImmutableChanges() {
@@ -35,7 +38,8 @@ public record DiffPlan(List<DiffAction> additions,
     }
 
     public List<DiffAction> allActions() {
-        return Stream.of(additions, modifications, removals, immutable).flatMap(List::stream)
-                        .toList();
+        return Stream.of(additions, modifications, removals, immutable)
+                     .flatMap(List::stream)
+                     .toList();
     }
 }

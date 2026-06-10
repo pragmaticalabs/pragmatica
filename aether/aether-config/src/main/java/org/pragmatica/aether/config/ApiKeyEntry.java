@@ -12,14 +12,14 @@ public record ApiKeyEntry(String name, Set<String> roles, String authorizationRo
 
     public ApiKeyEntry {
         name = name == null || name.isBlank()
-              ? "unnamed"
-              : name;
+               ? "unnamed"
+               : name;
         roles = roles == null || roles.isEmpty()
-               ? Set.of("service")
-               : Set.copyOf(roles);
+                ? Set.of("service")
+                : Set.copyOf(roles);
         authorizationRole = authorizationRole == null || authorizationRole.isBlank()
-                           ? DEFAULT_ROLE
-                           : authorizationRole.toUpperCase();
+                            ? DEFAULT_ROLE
+                            : authorizationRole.toUpperCase();
     }
 
     public static ApiKeyEntry apiKeyEntry(String name, Set<String> roles) {
@@ -33,6 +33,7 @@ public record ApiKeyEntry(String name, Set<String> roles, String authorizationRo
     public static ApiKeyEntry defaultEntry(String keyValue) {
         var hash = Integer.toHexString(keyValue.hashCode());
         var name = "key-" + hash;
+
         return new ApiKeyEntry(name, Set.of("service"), DEFAULT_ROLE);
     }
 }

@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.Collectors;
 
+
 /// Counts the number of timeouts fired per `TimeoutSubsystem`. Backed by one
 /// `LongAdder` per subsystem (zero-contention multi-writer accumulator). Snapshot
 /// reads return a stable point-in-time view via `LongAdder::sum`.
@@ -27,7 +28,9 @@ import java.util.stream.Collectors;
 /// and TC-07-G3 can already query the endpoint to detect regressions in the
 /// shape itself.
 public interface TimeoutMetricsRegistry {
-    @Contract void recordTimeout(TimeoutSubsystem subsystem);
+    @Contract
+    void recordTimeout(TimeoutSubsystem subsystem);
+
     Map<TimeoutSubsystem, Long> snapshot();
     long firedCount(TimeoutSubsystem subsystem);
 
@@ -55,12 +58,14 @@ public interface TimeoutMetricsRegistry {
             return counters.entrySet()
                            .stream()
                            .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
-                                                                  entry -> entry.getValue().sum()));
+                                                                 entry -> entry.getValue()
+                                                                               .sum()));
         }
 
         @Override
         public long firedCount(TimeoutSubsystem subsystem) {
-            return counters.get(subsystem).sum();
+            return counters.get(subsystem)
+                           .sum();
         }
     }
 }

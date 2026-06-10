@@ -17,19 +17,18 @@ public record QualifiedName(SourceSpan span, List<Identifier> parts) {
 
     public Option<Identifier> schema() {
         return parts.size() > 1
-              ? Option.present(parts.getFirst())
-              : Option.empty();
+               ? Option.present(parts.getFirst())
+               : Option.empty();
     }
 
     public String normalized() {
         return String.join(".",
-                           parts.stream().map(Identifier::normalized)
-                                       .toList());
+                           parts.stream().map(Identifier::normalized).toList());
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return String.join(".",
-                           parts.stream().map(Identifier::toString)
-                                       .toList());
+                           parts.stream().map(Identifier::toString).toList());
     }
 }

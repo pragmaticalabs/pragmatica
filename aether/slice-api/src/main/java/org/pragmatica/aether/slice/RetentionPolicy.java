@@ -10,15 +10,14 @@ import org.pragmatica.serialization.Codec;
 import static org.pragmatica.lang.Option.none;
 
 
-@Codec public record RetentionPolicy(long maxCount,
+@Codec
+public record RetentionPolicy(long maxCount,
                               long maxBytes,
                               long maxAgeMs,
                               RetentionMode mode,
                               Option<TierAwareRetention> tierAwareRetention) {
     private static final long DEFAULT_MAX_COUNT = 100_000;
-
     private static final long DEFAULT_MAX_BYTES = 256 * 1024 * 1024L;
-
     private static final long DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000L;
 
     public static RetentionPolicy retentionPolicy() {
@@ -49,7 +48,7 @@ import static org.pragmatica.lang.Option.none;
     }
 
     public boolean shouldEvict(long count, long bytes, long ageMs) {
-        return switch (mode){
+        return switch (mode) {
             case ANY -> count > maxCount || bytes > maxBytes || ageMs > maxAgeMs;
             case ALL -> exceedsAllConfiguredLimits(count, bytes, ageMs);
         };
@@ -59,6 +58,9 @@ import static org.pragmatica.lang.Option.none;
         var countExceeded = maxCount == Long.MAX_VALUE || count > maxCount;
         var bytesExceeded = maxBytes == Long.MAX_VALUE || bytes > maxBytes;
         var ageExceeded = maxAgeMs == Long.MAX_VALUE || ageMs > maxAgeMs;
-        return countExceeded && bytesExceeded && ageExceeded;
+
+        return countExceeded
+               && bytesExceeded
+               && ageExceeded;
     }
 }

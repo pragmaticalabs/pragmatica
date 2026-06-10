@@ -7,7 +7,8 @@ package org.pragmatica.aether.slice.generation;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public enum ClusterMode {
+@Codec
+public enum ClusterMode {
     CORE_ONLY,
     HIERARCHICAL
 }

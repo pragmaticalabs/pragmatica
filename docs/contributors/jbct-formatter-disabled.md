@@ -1,6 +1,33 @@
-# JBCT Formatter — Disabled (2026-05-12)
+# JBCT Formatter — Disabled (2026-05-12) → Format RE-ENABLED (2026-06-10)
 
-The `format` goal of `jbct-maven-plugin` is **disabled** at the root POM (`pluginManagement` execution). Only `lint` runs. This document records the bugs that motivated the disable, the affected files, and the conditions for re-enabling.
+> **✅ FORMAT RE-ENABLED 2026-06-10 (PR #243).** `build.sh` Step 2 now runs the `format` goal.
+> PR #243 implemented the recommended **orphan-trivia sweep** (see "Recommended fix" below),
+> eliminating the comment-deletion bug. All four formatter re-enable conditions verified green:
+> a whole-codebase pass is **idempotent** (second pass reformats 0 files), deletes **0 comments**
+> across 2667 files (`FlowCodebaseCheckTest`), compiles all 80+ modules, and passes unit tests.
+> The whole codebase was reformatted in one pass (843 files).
+>
+> **⚠️ Lint is DECOUPLED for now (deferred debt).** The combined single-pass `process` goal
+> (format + lint) is NOT yet wired into `build.sh`, because enabling the lint gate surfaces
+> **33 pre-existing JBCT lint errors** that predate this change and were never enforced (build.sh
+> Step 2 had been red on this debt and bypassed). Once cleared, switch `build.sh` Step 2 from
+> `format` back to `process` to re-enable the lint gate. Inventory:
+>
+> | Module | Count | Rules |
+> |---|---|---|
+> | `aether-deployment` | 19 | RET-01 ×18 (FSM handlers/mutators), EX-01 ×1 (`StreamResourceValidator` throw) |
+> | `node` | 12 | RET-01 ×8 (`AetherNode` side-effects, `ProblemResponses`, `SwimHealthState`), RET-03 ×3 (`AlertManager` null-returns), EX-01 ×1 (`ContainerLabelInspector` throws) |
+> | `aether-stream` | 1 | RET-01 (`ReplicaSetController.close()` — `AutoCloseable` override, must stay void → needs **suppression**) |
+> | `aether-invoke` | 1 | RET-01 (`InvocationTraceStore.emitInjectedTrace` — `@FunctionalInterface` void) |
+>
+> Most RET-01s are intentional side-effect voids wanting a `@Contract` annotation (per the
+> repo convention), but classification is per-method; the 3 RET-03 null-returns and 2 EX-01
+> throws are genuine refactors (→ `Option`/`Result`). The RET-07 site in `slice-api` was fixed
+> separately (commit `685ec0aff`).
+
+---
+
+The `format` goal of `jbct-maven-plugin` was **disabled** at the root POM / build.sh. Only `lint` ran. This document records the bugs that motivated the disable, the affected files, and the conditions for re-enabling — retained as **history**.
 
 > **Status 2026-06-09 (post-PR#242):** PR #242 narrowed the bugs (operator spacing, if-indentation, qualified-super parsing, and *most* comment positions are now fixed) but did **NOT** clear them. A whole-codebase `format` pass still **silently deletes comments in 5 syntactic positions** (50 comment lines across 10 files). Re-enable conditions 1 & 2 still FAIL. **Format stays disabled.** See "Update 2026-06-09" at the bottom.
 

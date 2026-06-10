@@ -17,7 +17,8 @@ import static org.pragmatica.lang.utils.Causes.fromThrowable;
 
 public sealed interface DatabaseConnectorError extends Cause {
     record unused() implements DatabaseConnectorError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "unused";
         }
     }
@@ -27,11 +28,13 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new ConnectionFailed(message, cause));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Connection failed: " + message;
         }
 
-        @Override public Option<Cause> source() {
+        @Override
+        public Option<Cause> source() {
             return cause.map(t -> fromThrowable(t));
         }
     }
@@ -45,7 +48,9 @@ public sealed interface DatabaseConnectorError extends Cause {
     }
 
     static ConnectionFailed connectionFailed(Throwable cause) {
-        return ConnectionFailed.connectionFailed(cause.getMessage(), option(cause)).unwrap();
+        return ConnectionFailed.connectionFailed(cause.getMessage(),
+                                                 option(cause))
+                               .unwrap();
     }
 
     record QueryFailed(String sql, String message, Option<Throwable> cause) implements DatabaseConnectorError {
@@ -53,16 +58,19 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new QueryFailed(sql, message, cause));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Query failed: " + message + " [SQL: " + truncateSql(sql) + "]";
         }
 
-        @Override public Option<Cause> source() {
+        @Override
+        public Option<Cause> source() {
             return cause.map(t -> fromThrowable(t));
         }
 
         private static String truncateSql(String sql) {
-            return option(sql).map(DatabaseConnectorError::limitLength).or("null");
+            return option(sql).map(DatabaseConnectorError::limitLength)
+                         .or("null");
         }
     }
 
@@ -71,7 +79,10 @@ public sealed interface DatabaseConnectorError extends Cause {
     }
 
     static QueryFailed queryFailed(String sql, Throwable cause) {
-        return QueryFailed.queryFailed(sql, cause.getMessage(), option(cause)).unwrap();
+        return QueryFailed.queryFailed(sql,
+                                       cause.getMessage(),
+                                       option(cause))
+                          .unwrap();
     }
 
     record ConstraintViolation(String constraint, String message) implements DatabaseConnectorError {
@@ -79,7 +90,8 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new ConstraintViolation(constraint, message));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Constraint violation (" + constraint + "): " + message;
         }
     }
@@ -93,7 +105,8 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new TimedOut(operation));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Operation timed out: " + operation;
         }
     }
@@ -107,7 +120,8 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new TransactionRolledBack(reason));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Transaction rolled back: " + reason;
         }
     }
@@ -118,14 +132,16 @@ public sealed interface DatabaseConnectorError extends Cause {
 
     enum TransactionNotActive implements DatabaseConnectorError {
         INSTANCE;
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Transaction is required for this operation";
         }
     }
 
     enum ResultNotFound implements DatabaseConnectorError {
         INSTANCE;
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Query returned no result when one was expected";
         }
     }
@@ -135,7 +151,8 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new MultipleResults(count));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Expected single result but got " + count;
         }
     }
@@ -149,7 +166,8 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new ConfigurationError(reason));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Configuration error: " + reason;
         }
     }
@@ -160,7 +178,8 @@ public sealed interface DatabaseConnectorError extends Cause {
 
     enum PoolExhausted implements DatabaseConnectorError {
         INSTANCE;
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Connection pool exhausted - no connections available";
         }
     }
@@ -170,11 +189,14 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new DatabaseFailure(cause));
         }
 
-        @Override public String message() {
-            return "Database operation failed: " + option(cause.getMessage()).or(() -> cause.getClass().getName());
+        @Override
+        public String message() {
+            return "Database operation failed: " + option(cause.getMessage()).or(() -> cause.getClass()
+                                                                                            .getName());
         }
 
-        @Override public Option<Cause> source() {
+        @Override
+        public Option<Cause> source() {
             return some(fromThrowable(cause));
         }
     }
@@ -185,7 +207,7 @@ public sealed interface DatabaseConnectorError extends Cause {
 
     private static String limitLength(String s) {
         return s.length() <= 100
-              ? s
-              : s.substring(0, 97) + "...";
+               ? s
+               : s.substring(0, 97) + "...";
     }
 }

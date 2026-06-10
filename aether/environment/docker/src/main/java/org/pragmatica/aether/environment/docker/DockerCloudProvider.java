@@ -23,41 +23,47 @@ public record DockerCloudProvider(ComputeProvider computeProvider) implements Cl
         return new DockerCloudProvider(computeProvider);
     }
 
-    @Override public Promise<QuotaStatus> checkQuota(NodeGroupConfig group) {
+    @Override
+    public Promise<QuotaStatus> checkQuota(NodeGroupConfig group) {
         return Promise.success(QuotaStatus.unknown(group.count()));
     }
 
-    @Override public Promise<List<ProvisionedNode>> provision(NodeGroupConfig group) {
+    @Override
+    public Promise<List<ProvisionedNode>> provision(NodeGroupConfig group) {
         return CloudProviderSupport.provisionVia(computeProvider, group);
     }
 
-    @Override public Promise<List<ProvisionedNode>> provisionSpot(NodeGroupConfig group) {
+    @Override
+    public Promise<List<ProvisionedNode>> provisionSpot(NodeGroupConfig group) {
         return EnvironmentError.operationNotSupported("Docker does not support preemptible instances").promise();
     }
 
-    @Override public Promise<Unit> destroy(List<String> nodeIds) {
+    @Override
+    public Promise<Unit> destroy(List<String> nodeIds) {
         return CloudProviderSupport.destroyVia(computeProvider, nodeIds);
     }
 
-    @Override public Promise<List<NodeAddress>> addresses(List<String> nodeIds) {
+    @Override
+    public Promise<List<NodeAddress>> addresses(List<String> nodeIds) {
         return CloudProviderSupport.addressesVia(computeProvider, nodeIds);
     }
 
-    @Override public boolean supportsPreemptible() {
+    @Override
+    public boolean supportsPreemptible() {
         return false;
     }
 
-    @Override public Promise<Unit> openIngress(String sourceId,
-                                               int port,
-                                               String protocol,
-                                               String sourceCidr,
-                                               String description) {
-        return EnvironmentError.operationNotSupported("openIngress (Docker does not support ingress management)")
-                                                     .promise();
+    @Override
+    public Promise<Unit> openIngress(String sourceId,
+                                     int port,
+                                     String protocol,
+                                     String sourceCidr,
+                                     String description) {
+        return EnvironmentError.operationNotSupported("openIngress (Docker does not support ingress management)").promise();
     }
 
-    @Override public Promise<Unit> closeIngress(String sourceId, int port, String protocol, String sourceCidr) {
-        return EnvironmentError.operationNotSupported("closeIngress (Docker does not support ingress management)")
-                                                     .promise();
+    @Override
+    public Promise<Unit> closeIngress(String sourceId, int port, String protocol, String sourceCidr) {
+        return EnvironmentError.operationNotSupported("closeIngress (Docker does not support ingress management)").promise();
     }
 }

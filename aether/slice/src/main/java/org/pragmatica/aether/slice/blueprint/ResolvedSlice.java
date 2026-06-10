@@ -17,11 +17,13 @@ import static org.pragmatica.lang.Verify.Is;
 import static org.pragmatica.lang.Verify.ensure;
 
 
-@Codec@SuppressWarnings({"JBCT-NAM-01", "JBCT-UTIL-02"}) public record ResolvedSlice(Artifact artifact,
-                                                                                     int instances,
-                                                                                     int minAvailable,
-                                                                                     boolean isDependency,
-                                                                                     Set<Artifact> dependencies) {
+@Codec
+@SuppressWarnings({"JBCT-NAM-01", "JBCT-UTIL-02"})
+public record ResolvedSlice(Artifact artifact,
+                            int instances,
+                            int minAvailable,
+                            boolean isDependency,
+                            Set<Artifact> dependencies) {
     private static final Cause NULL_ARTIFACT = Causes.cause("Artifact cannot be null");
 
     private static final Fn1<Cause, Integer> INVALID_INSTANCES = Causes.forOneValue("Instances must be positive, got: %s");
@@ -42,8 +44,9 @@ import static org.pragmatica.lang.Verify.ensure;
                                                  boolean isDependency,
                                                  Set<Artifact> dependencies) {
         var safeDeps = dependencies == null
-                      ? Set.<Artifact>of()
-                      : Set.copyOf(dependencies);
+                       ? Set.<Artifact> of()
+                       : Set.copyOf(dependencies);
+
         return new ResolvedSlice(artifact, instances, minAvailable, isDependency, safeDeps);
     }
 

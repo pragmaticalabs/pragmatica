@@ -27,14 +27,17 @@ public interface ResourceFactory<T, C> {
     }
 
     default Promise<Unit> close(T resource) {
-        if (resource instanceof AutoCloseable closeable) {return Promise.promise(promise -> {
-                                                                                     try {
-                                                                                         closeable.close();
-                                                                                         promise.succeed(Unit.unit());
-                                                                                     } catch (Exception e) {
-                                                                                         promise.succeed(Unit.unit());
-                                                                                     }
-                                                                                 });}
+        if (resource instanceof AutoCloseable closeable) {
+            return Promise.promise(promise -> {
+                try {
+                    closeable.close();
+                    promise.succeed(Unit.unit());
+                } catch (Exception e) {
+                    promise.succeed(Unit.unit());
+                }
+            });
+        }
+
         return Promise.unitPromise();
     }
 }

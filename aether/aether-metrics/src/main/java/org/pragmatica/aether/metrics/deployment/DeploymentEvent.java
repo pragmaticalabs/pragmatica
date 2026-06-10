@@ -11,7 +11,7 @@ import org.pragmatica.messaging.Message;
 
 
 public sealed interface DeploymentEvent extends Message.Local {
-    record unused() implements DeploymentEvent{}
+    record unused() implements DeploymentEvent {}
 
     record DeploymentStarted(Artifact artifact, NodeId targetNode, long timestamp) implements DeploymentEvent {
         public static DeploymentStarted deploymentStarted(Artifact artifact, NodeId targetNode, long timestamp) {

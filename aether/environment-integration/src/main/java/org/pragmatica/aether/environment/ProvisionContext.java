@@ -53,9 +53,7 @@ public record ProvisionContext(String clusterName,
                                String provisionedBy,
                                Map<String, String> extraTags) {
     public static final int DEFAULT_CORE_MAX = 3;
-
     public static final String PROVISIONED_BY_BOOTSTRAP = "bootstrap";
-
     public static final String PROVISIONED_BY_CTM = "ctm";
 
     public ProvisionContext {
@@ -114,10 +112,7 @@ public record ProvisionContext(String clusterName,
     /// source profile name and the pre-allocated node id; [#provisionedBy] is fixed to
     /// [#PROVISIONED_BY_BOOTSTRAP]. Shared with the CTM auto-heal path
     /// ([#forReplacement]) so both intents are minted through one preparation path.
-    public static ProvisionContext forBootstrap(String clusterName,
-                                                String role,
-                                                String sourceName,
-                                                String nodeId) {
+    public static ProvisionContext forBootstrap(String clusterName, String role, String sourceName, String nodeId) {
         return new ProvisionContext(clusterName,
                                     role,
                                     sourceName,
@@ -133,10 +128,7 @@ public record ProvisionContext(String clusterName,
     /// [#coreMax]. Role/source are fixed to `core`/`default` and [#provisionedBy] to
     /// [#PROVISIONED_BY_CTM]. Shared with the bootstrap path ([#forBootstrap]) so both
     /// intents are minted through one preparation path.
-    public static ProvisionContext forReplacement(String clusterName,
-                                                  String nodeId,
-                                                  String peers,
-                                                  int coreMax) {
+    public static ProvisionContext forReplacement(String clusterName, String nodeId, String peers, int coreMax) {
         return new ProvisionContext(clusterName,
                                     "core",
                                     "default",

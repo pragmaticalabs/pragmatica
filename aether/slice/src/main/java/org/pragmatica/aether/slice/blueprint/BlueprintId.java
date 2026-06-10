@@ -13,19 +13,22 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public record BlueprintId(Artifact artifact) {
+@Codec
+public record BlueprintId(Artifact artifact) {
     private static final Fn1<Cause, String> INVALID_FORMAT = Causes.forOneValue("Invalid blueprint ID format: %s");
 
     public static Result<BlueprintId> blueprintId(String input) {
-        return Artifact.artifact(input).mapError(_ -> INVALID_FORMAT.apply(input))
-                                .map(BlueprintId::new);
+        return Artifact.artifact(input)
+                       .mapError(_ -> INVALID_FORMAT.apply(input))
+                       .map(BlueprintId::new);
     }
 
     public static BlueprintId blueprintId(Artifact artifact) {
         return new BlueprintId(artifact);
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return asString();
     }
 

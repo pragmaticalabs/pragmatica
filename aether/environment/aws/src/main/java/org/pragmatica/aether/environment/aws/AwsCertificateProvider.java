@@ -28,23 +28,26 @@ public final class AwsCertificateProvider implements CertificateProvider {
     }
 
     private static Result<AwsCertificateProvider> buildFromSecrets(AwsSecretsProvider secrets, String secretPrefix) {
-        return CloudCertificateProvider.cloudCertificateProvider(secrets, secretPrefix)
-                                                                .map(AwsCertificateProvider::new);
+        return CloudCertificateProvider.cloudCertificateProvider(secrets, secretPrefix).map(AwsCertificateProvider::new);
     }
 
-    @Override public Result<CertificateBundle> issueCertificate(String nodeId, String hostname) {
+    @Override
+    public Result<CertificateBundle> issueCertificate(String nodeId, String hostname) {
         return delegate.issueCertificate(nodeId, hostname);
     }
 
-    @Override public Result<CertificateBundle> caCertificate() {
+    @Override
+    public Result<CertificateBundle> caCertificate() {
         return delegate.caCertificate();
     }
 
-    @Override public Result<GossipKey> currentGossipKey() {
+    @Override
+    public Result<GossipKey> currentGossipKey() {
         return delegate.currentGossipKey();
     }
 
-    @Override public Option<GossipKey> previousGossipKey() {
+    @Override
+    public Option<GossipKey> previousGossipKey() {
         return delegate.previousGossipKey();
     }
 }

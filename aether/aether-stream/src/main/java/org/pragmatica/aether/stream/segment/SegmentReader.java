@@ -27,7 +27,6 @@ import static org.pragmatica.lang.Option.none;
 
 public final class SegmentReader {
     private static final Logger log = LoggerFactory.getLogger(SegmentReader.class);
-
     private static final int PER_EVENT_HEADER = Long.BYTES + Long.BYTES + Integer.BYTES;
 
     private final StorageInstance storage;
@@ -53,7 +52,11 @@ public final class SegmentReader {
     public Promise<List<RawEvent>> readEvents(String streamName, int partition, long fromOffset, int maxEvents) {
         var endOffset = fromOffset + maxEvents - 1;
         var refs = index.segmentRange(streamName, partition, fromOffset, endOffset);
-        if (refs.isEmpty()) {return Promise.success(List.of());}
+
+        if (refs.isEmpty()) {
+            return Promise.success(List.of());
+        }
+
         return readFromSegmentRefs(streamName, partition, refs, fromOffset, maxEvents);
     }
 
@@ -72,32 +75,42 @@ public final class SegmentReader {
                                                     long fromOffset,
                                                     int remaining,
                                                     List<RawEvent> accumulated) {
-        if (refIndex >= refs.size() || remaining <= 0) {return Promise.success(accumulated);}
+        if (refIndex >= refs.size() || remaining <= 0) {
+            return Promise.success(accumulated);
+        }
+
         var ref = refs.get(refIndex);
         var refName = buildRefName(streamName, partition, ref);
-        return storage.resolveRef(refName).async(SegmentError.General.SEGMENT_REF_NOT_FOUND)
-                                 .flatMap(storage::get)
-                                 .flatMap(opt -> opt.async(SegmentError.General.SEGMENT_DATA_NOT_FOUND))
-                                 .map(bytes -> decryptAndDecompress(bytes, ref))
-                                 .map(bytes -> deserializeAndFilter(bytes, fromOffset, remaining))
-                                 .flatMap(events -> continueWithImmutableAccumulation(streamName,
-                                                                                      partition,
-                                                                                      refs,
-                                                                                      refIndex,
-                                                                                      fromOffset,
-                                                                                      remaining,
-                                                                                      accumulated,
-                                                                                      events));
+
+        return storage.resolveRef(refName)
+                      .async(SegmentError.General.SEGMENT_REF_NOT_FOUND)
+                      .flatMap(storage::get)
+                      .flatMap(opt -> opt.async(SegmentError.General.SEGMENT_DATA_NOT_FOUND))
+                      .map(bytes -> decryptAndDecompress(bytes, ref))
+                      .map(bytes -> deserializeAndFilter(bytes, fromOffset, remaining))
+                      .flatMap(events -> continueWithImmutableAccumulation(streamName,
+                                                                           partition,
+                                                                           refs,
+                                                                           refIndex,
+                                                                           fromOffset,
+                                                                           remaining,
+                                                                           accumulated,
+                                                                           events));
     }
 
     private byte[] decryptAndDecompress(byte[] data, SegmentIndex.SegmentRef ref) {
         var decrypted = decryptIfNeeded(data, ref);
+
         return decompressIfNeeded(decrypted, ref);
     }
 
     private byte[] decryptIfNeeded(byte[] data, SegmentIndex.SegmentRef ref) {
-        if (!ref.encrypted()) {return data;}
-        return encryptor.flatMap(enc -> decryptWithEncryptor(enc, data)).or(data);
+        if (!ref.encrypted()) {
+            return data;
+        }
+
+        return encryptor.flatMap(enc -> decryptWithEncryptor(enc, data))
+                        .or(data);
     }
 
     private static Option<byte[]> decryptWithEncryptor(BlockEncryptor enc, byte[] data) {
@@ -107,30 +120,49 @@ public final class SegmentReader {
     }
 
     private static Result<byte[]> extractIvAndDecrypt(BlockEncryptor enc, byte[] data) {
-        if (data.length <Integer.BYTES) {return SegmentError.General.SEGMENT_DATA_NOT_FOUND.result();}
-        var ivLength = ((data[0] & 0xFF)<<24) | ((data[1] & 0xFF)<<16) | ((data[2] & 0xFF)<<8) | (data[3] & 0xFF);
-        if (data.length <Integer.BYTES + ivLength) {return SegmentError.General.SEGMENT_DATA_NOT_FOUND.result();}
+        if (data.length < Integer.BYTES) {
+            return SegmentError.General.SEGMENT_DATA_NOT_FOUND.result();
+        }
+
+        var ivLength = ((data[0] & 0xFF) << 24) | ((data[1] & 0xFF) << 16) | ((data[2] & 0xFF) << 8) | (data[3] & 0xFF);
+
+        if (data.length < Integer.BYTES + ivLength) {
+            return SegmentError.General.SEGMENT_DATA_NOT_FOUND.result();
+        }
+
         var iv = new byte[ivLength];
+
         System.arraycopy(data, Integer.BYTES, iv, 0, ivLength);
         var ciphertext = new byte[data.length - Integer.BYTES - ivLength];
+
         System.arraycopy(data, Integer.BYTES + ivLength, ciphertext, 0, ciphertext.length);
         var params = EncryptionParams.encryptionParams("AES/GCM/NoPadding", iv, "");
+
         return enc.decrypt(ciphertext, params);
     }
 
     private static byte[] decompressIfNeeded(byte[] data, SegmentIndex.SegmentRef ref) {
-        if (ref.compressionOrdinal() == 0 || ref.originalSize() == 0) {return data;}
+        if (ref.compressionOrdinal() == 0 || ref.originalSize() == 0) {
+            return data;
+        }
+
         var compression = compressionFromOrdinal(ref.compressionOrdinal());
-        return compression.codec().decompress(data,
-                                              ref.originalSize())
-                                .onFailure(cause -> log.warn("Segment decompression failed, returning raw: {}",
-                                                             cause.message()))
-                                .or(data);
+
+        return compression.codec()
+                          .decompress(data,
+                                      ref.originalSize())
+                          .onFailure(cause -> log.warn("Segment decompression failed, returning raw: {}",
+                                                       cause.message()))
+                          .or(data);
     }
 
     private static Compression compressionFromOrdinal(int ordinal) {
         var values = Compression.values();
-        if (ordinal >= 0 && ordinal <values.length) {return values[ordinal];}
+
+        if (ordinal >= 0 && ordinal < values.length) {
+            return values[ordinal];
+        }
+
         return Compression.NONE;
     }
 
@@ -144,6 +176,7 @@ public final class SegmentReader {
                                                                       List<RawEvent> events) {
         var combined = List.copyOf(Stream.concat(accumulated.stream(), events.stream()).toList());
         var newRemaining = remaining - events.size();
+
         return readNextSegment(streamName, partition, refs, refIndex + 1, fromOffset, newRemaining, combined);
     }
 
@@ -154,10 +187,15 @@ public final class SegmentReader {
     static List<RawEvent> deserializeAndFilter(byte[] serialized, long fromOffset, int maxEvents) {
         var buffer = ByteBuffer.wrap(serialized).order(ByteOrder.BIG_ENDIAN);
         var result = new ArrayList<RawEvent>();
-        while (buffer.remaining() >= PER_EVENT_HEADER && result.size() <maxEvents) {
+
+        while (buffer.remaining() >= PER_EVENT_HEADER && result.size() < maxEvents) {
             var event = readSingleEvent(buffer);
-            if (event.offset() >= fromOffset) {result.add(event);}
+
+            if (event.offset() >= fromOffset) {
+                result.add(event);
+            }
         }
+
         return List.copyOf(result);
     }
 
@@ -166,7 +204,9 @@ public final class SegmentReader {
         var timestamp = buffer.getLong();
         var len = buffer.getInt();
         var data = new byte[len];
+
         buffer.get(data);
+
         return RawEvent.rawEvent(offset, data, timestamp);
     }
 }

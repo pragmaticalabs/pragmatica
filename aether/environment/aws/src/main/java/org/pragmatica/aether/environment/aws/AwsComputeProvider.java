@@ -40,63 +40,74 @@ import static org.pragmatica.lang.Result.success;
 
 public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) implements ComputeProvider {
     private static final Logger log = LoggerFactory.getLogger(AwsComputeProvider.class);
-
     private static final String MANAGED_TAG_KEY = "aether-managed";
-
     private static final String MANAGED_TAG_VALUE = "true";
-
     private static final String NODE_ID_TAG = "aether-node-id";
 
     public static Result<AwsComputeProvider> awsComputeProvider(AwsClient client, AwsEnvironmentConfig config) {
         return success(new AwsComputeProvider(client, config));
     }
 
-    @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
+    @Override
+    public Promise<InstanceInfo> provision(InstanceType instanceType) {
         return client.runInstances(buildRunRequest(Option.empty(),
                                                    config.userData())).flatMap(response -> tagAndMapFirstInstance(response,
                                                                                                                   defaultTags()))
-                                  .flatMap(info -> confirmRunning(info, ReadinessPolicy.cloudDefault()))
+                                  .flatMap(info -> confirmRunning(info,
+                                                                  ReadinessPolicy.cloudDefault()))
                                   .mapError(AwsComputeProvider::toProvisionError);
     }
-    @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
+
+    @Override
+    public Promise<InstanceInfo> provision(ProvisionSpec spec) {
         var zone = extractAvailabilityZone(spec.placement());
         var userData = spec.userData().or(config.userData());
         var tags = tagsFor(spec.context());
-        return client.runInstances(buildRunRequest(zone, userData)).flatMap(response -> tagAndMapFirstInstance(response,
-                                                                                                               tags))
-                                  .flatMap(info -> confirmRunning(info, ReadinessPolicy.cloudDefault()))
-                                  .mapError(AwsComputeProvider::toProvisionError);
+
+        return client.runInstances(buildRunRequest(zone, userData))
+                     .flatMap(response -> tagAndMapFirstInstance(response, tags))
+                     .flatMap(info -> confirmRunning(info,
+                                                     ReadinessPolicy.cloudDefault()))
+                     .mapError(AwsComputeProvider::toProvisionError);
     }
 
-    @Override public Promise<Unit> terminate(InstanceId instanceId) {
+    @Override
+    public Promise<Unit> terminate(InstanceId instanceId) {
         return client.terminateInstances(List.of(instanceId.value()))
-                                        .mapError(cause -> toTerminateError(instanceId, cause));
+                     .mapError(cause -> toTerminateError(instanceId, cause));
     }
 
-    @Override public Promise<List<InstanceInfo>> listInstances() {
-        return client.describeInstances().map(AwsComputeProvider::toInstanceInfoList)
-                                       .mapError(AwsComputeProvider::toListInstancesError);
+    @Override
+    public Promise<List<InstanceInfo>> listInstances() {
+        return client.describeInstances()
+                     .map(AwsComputeProvider::toInstanceInfoList)
+                     .mapError(AwsComputeProvider::toListInstancesError);
     }
 
-    @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
-        return tagFilter.entrySet().stream()
-                                 .findFirst()
-                                 .map(entry -> describeByTag(entry.getKey(),
-                                                             entry.getValue()))
-                                 .orElseGet(this::listInstances);
+    @Override
+    public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
+        return tagFilter.entrySet()
+                        .stream()
+                        .findFirst()
+                        .map(entry -> describeByTag(entry.getKey(),
+                                                    entry.getValue()))
+                        .orElseGet(this::listInstances);
     }
 
-    @Override public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
+    @Override
+    public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
         return client.describeInstances("instance-id",
                                         instanceId.value()).map(AwsComputeProvider::firstInstanceOrThrow)
                                        .mapError(AwsComputeProvider::toProvisionError);
     }
 
-    @Override public Promise<Unit> restart(InstanceId id) {
+    @Override
+    public Promise<Unit> restart(InstanceId id) {
         return client.rebootInstances(List.of(id.value()));
     }
 
-    @Override public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
+    @Override
+    public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
         return client.createTags(List.of(id.value()),
                                  tags);
     }
@@ -104,9 +115,10 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     private Promise<InstanceInfo> tagAndMapFirstInstance(RunInstancesResponse response, Map<String, String> tags) {
         var instance = response.instances().getFirst();
         var instanceId = instance.instanceId();
-        return client.createTags(List.of(instanceId), tags)
-                     .onFailure(cause -> rollbackPartialInstance(instanceId, cause))
-                     .map(unit -> toInstanceInfo(instance));
+
+        return client.createTags(List.of(instanceId),
+                                 tags).onFailure(cause -> rollbackPartialInstance(instanceId, cause))
+                                .map(unit -> toInstanceInfo(instance));
     }
 
     /// Rollback hook for partial provisions. `runInstances` succeeded (we have an
@@ -119,39 +131,56 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
         log.warn("Provision failed for AWS instance {} after runInstances succeeded ({}); attempting rollback via terminateInstances",
                  instanceId,
                  cause.message());
-        client.terminateInstances(List.of(instanceId))
-              .onFailure(rollbackCause -> log.warn("Rollback terminateInstances for {} failed: {}",
-                                                    instanceId,
-                                                    rollbackCause.message()))
-              .onSuccess(ignored -> log.info("Rollback terminated partial AWS instance {}", instanceId));
+        client.terminateInstances(List.of(instanceId)).onFailure(rollbackCause -> log.warn("Rollback terminateInstances for {} failed: {}",
+                                                                                           instanceId,
+                                                                                           rollbackCause.message())).onSuccess(ignored -> log.info("Rollback terminated partial AWS instance {}",
+                                                                                                                                                   instanceId));
     }
 
     private static Map<String, String> defaultTags() {
-        return Map.of(MANAGED_TAG_KEY, MANAGED_TAG_VALUE,
-                      NODE_ID_TAG, IdGenerator.generate("aether-node"));
+        return Map.of(MANAGED_TAG_KEY, MANAGED_TAG_VALUE, NODE_ID_TAG, IdGenerator.generate("aether-node"));
     }
 
     private static Map<String, String> tagsFor(ProvisionContext ctx) {
         var tags = new java.util.HashMap<String, String>();
+
         tags.put(MANAGED_TAG_KEY, MANAGED_TAG_VALUE);
         var clusterName = resolveClusterName(ctx);
-        if (!clusterName.isEmpty()) {tags.put("aether-cluster", clusterName);}
-        if (!ctx.role().isEmpty()) {tags.put("aether-role", ctx.role());}
-        if (!ctx.sourceName().isEmpty()) {tags.put("aether-source", ctx.sourceName());}
+
+        if (!clusterName.isEmpty()) {
+            tags.put("aether-cluster", clusterName);
+        }
+
+        if (!ctx.role().isEmpty()) {
+            tags.put("aether-role", ctx.role());
+        }
+
+        if (!ctx.sourceName().isEmpty()) {
+            tags.put("aether-source", ctx.sourceName());
+        }
+
         tags.put(NODE_ID_TAG, ctx.resolveNodeId());
         tags.putAll(ctx.extraTags());
+
         return Map.copyOf(tags);
     }
 
     private static String resolveClusterName(ProvisionContext ctx) {
-        if (!ctx.clusterName().isEmpty()) {return ctx.clusterName();}
+        if (!ctx.clusterName().isEmpty()) {
+            return ctx.clusterName();
+        }
+
         var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
-        return fromEnv != null && !fromEnv.isEmpty() ? fromEnv : "";
+
+        return fromEnv != null && !fromEnv.isEmpty()
+               ? fromEnv
+               : "";
     }
 
     private Promise<List<InstanceInfo>> describeByTag(String tagKey, String tagValue) {
-        return client.describeInstances(tagKey, tagValue).map(AwsComputeProvider::toInstanceInfoList)
-                                       .mapError(AwsComputeProvider::toListInstancesError);
+        return client.describeInstances(tagKey, tagValue)
+                     .map(AwsComputeProvider::toInstanceInfoList)
+                     .mapError(AwsComputeProvider::toListInstancesError);
     }
 
     private RunInstancesRequest buildRunRequest(Option<String> availabilityZone, String userData) {
@@ -171,7 +200,7 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     }
 
     private static Option<String> zoneFromHint(PlacementHint hint) {
-        return switch (hint){
+        return switch (hint) {
             case PlacementHint.ZoneHint zone -> Option.some(zone.zoneName());
             case PlacementHint.HostGroupHint ignored -> logUnsupported("HostGroupHint");
             case PlacementHint.AffinityHint ignored -> logUnsupported("AffinityHint");
@@ -181,11 +210,13 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
 
     private static Option<String> logUnsupported(String hintType) {
         log.debug("AWS provider ignoring {} — not yet supported", hintType);
+
         return Option.empty();
     }
 
     static InstanceInfo toInstanceInfo(Instance instance) {
         var tags = extractTags(instance);
+
         return new InstanceInfo(new InstanceId(instance.instanceId()),
                                 mapStatus(instance.instanceState().name()),
                                 collectAddresses(instance),
@@ -199,13 +230,14 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     }
 
     private static List<InstanceInfo> toInstanceInfoList(DescribeInstancesResponse response) {
-        return response.allInstances().stream()
-                                    .map(AwsComputeProvider::toInstanceInfo)
-                                    .toList();
+        return response.allInstances()
+                       .stream()
+                       .map(AwsComputeProvider::toInstanceInfo)
+                       .toList();
     }
 
     static InstanceStatus mapStatus(String ec2Status) {
-        return switch (ec2Status){
+        return switch (ec2Status) {
             case "pending" -> InstanceStatus.PROVISIONING;
             case "running" -> InstanceStatus.RUNNING;
             case "stopping", "stopped" -> InstanceStatus.STOPPING;
@@ -217,7 +249,10 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     static List<String> collectAddresses(Instance instance) {
         var publicIp = option(instance.publicIpAddress());
         var privateIp = option(instance.privateIpAddress());
-        return Stream.concat(publicIp.stream(), privateIp.stream()).toList();
+
+        return Stream.concat(publicIp.stream(),
+                             privateIp.stream())
+                     .toList();
     }
 
     static Map<String, String> extractTags(Instance instance) {
@@ -227,7 +262,8 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     }
 
     private static Map<String, String> tagsToMap(List<Instance.Tag> tags) {
-        return tags.stream().collect(Collectors.toMap(Instance.Tag::key, Instance.Tag::value));
+        return tags.stream()
+                   .collect(Collectors.toMap(Instance.Tag::key, Instance.Tag::value));
     }
 
     private static EnvironmentError toProvisionError(Cause cause) {

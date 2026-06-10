@@ -45,6 +45,7 @@ public class Prompt {
         var hint = defaultValue == null || defaultValue.isEmpty()
                    ? ": "
                    : " [" + defaultValue + "]: ";
+
         out.print(question + hint);
         out.flush();
         var input = readLine();
@@ -58,41 +59,53 @@ public class Prompt {
         var hint = defaultYes
                    ? "[Y/n]"
                    : "[y/N]";
+
         out.print(question + " " + hint + " ");
         out.flush();
         var input = readLine().toLowerCase();
 
-        if (input.isEmpty()) {return defaultYes;}
+        if (input.isEmpty()) {
+            return defaultYes;
+        }
 
         return "y".equals(input) || "yes".equals(input);
     }
 
     public <T> T choice(String question, List<T> options, T defaultOption) {
-        if (options.isEmpty()) {throw new IllegalArgumentException("choice() requires at least one option");}
+        if (options.isEmpty()) {
+            throw new IllegalArgumentException("choice() requires at least one option");
+        }
 
         var defaultIdx = options.indexOf(defaultOption);
 
         while (true) {
             out.println(question);
-
-            for (int i = 0;i <options.size();i++) {
+            for (int i = 0; i < options.size(); i++) {
                 var marker = i == defaultIdx
                              ? "*"
                              : " ";
+
                 out.println("  " + marker + " " + (i + 1) + ") " + options.get(i));
             }
 
             var hint = defaultIdx >= 0
                        ? " [" + (defaultIdx + 1) + "]: "
                        : ": ";
+
             out.print("Choice" + hint);
             out.flush();
             var input = readLine();
 
-            if (input.isEmpty() && defaultIdx >= 0) {return options.get(defaultIdx);}
+            if (input.isEmpty() && defaultIdx >= 0) {
+                return options.get(defaultIdx);
+            }
+
             try {
                 var idx = Integer.parseInt(input) - 1;
-                if (idx >= 0 && idx <options.size()) {return options.get(idx);}
+
+                if (idx >= 0 && idx < options.size()) {
+                    return options.get(idx);
+                }
             } catch (NumberFormatException ignored) {}
 
             out.println("  Please pick a number 1-" + options.size() + ".");

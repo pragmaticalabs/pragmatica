@@ -19,8 +19,10 @@ public record AwsSecretsProvider(AwsClient client) implements SecretsProvider {
         return success(new AwsSecretsProvider(client));
     }
 
-    @Override public Promise<String> resolveSecret(String secretPath) {
-        return client.getSecretValue(secretPath).mapError(cause -> toSecretError(secretPath, cause));
+    @Override
+    public Promise<String> resolveSecret(String secretPath) {
+        return client.getSecretValue(secretPath)
+                     .mapError(cause -> toSecretError(secretPath, cause));
     }
 
     private static EnvironmentError toSecretError(String path, Cause cause) {

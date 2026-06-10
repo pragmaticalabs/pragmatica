@@ -8,6 +8,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 
-@FunctionalInterface public interface SecretRotationCallback {
+@FunctionalInterface
+public interface SecretRotationCallback {
     Result<Unit> onRotated(String secretPath, String newValue);
 }

@@ -209,7 +209,8 @@ public final class ClusterConfigRoutes implements RouteSource {
                    .entrySet()
                    .stream()
                    .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
-                                                         entry -> entry.getValue().name()));
+                                                         entry -> entry.getValue()
+                                                                       .name()));
     }
 
     private static String reconcilerStateName(ManageableNode node) {
@@ -223,7 +224,8 @@ public final class ClusterConfigRoutes implements RouteSource {
 
     private static Option<CertificateStatusResponse> buildCertificateExpiry(ManageableNode node) {
         return node.certRenewalScheduler()
-                   .map(scheduler -> toCertStatus(node.tlsEnabled(), scheduler));
+                   .map(scheduler -> toCertStatus(node.tlsEnabled(),
+                                                  scheduler));
     }
 
     private static CertificateStatusResponse toCertStatus(boolean tlsEnabled, CertificateRenewalScheduler scheduler) {
@@ -304,8 +306,13 @@ public final class ClusterConfigRoutes implements RouteSource {
                                         String tomlContent) {
         var plan = ClusterBootstrapConfigDiff.diff(storedConfig, desired);
 
-        if (plan.hasImmutableChanges()) {return buildImmutableChangeError(plan).promise();}
-        if (plan.isEmpty()) {return buildDryRunResponse(stored, plan);}
+        if (plan.hasImmutableChanges()) {
+            return buildImmutableChangeError(plan).promise();
+        }
+
+        if (plan.isEmpty()) {
+            return buildDryRunResponse(stored, plan);
+        }
 
         return applier.apply(plan.allActions())
                       .flatMap(_ -> storeUpdatedConfig(desired,
@@ -315,6 +322,7 @@ public final class ClusterConfigRoutes implements RouteSource {
 
     private static ClusterConfigError.ValidationFailed buildImmutableChangeError(DiffPlan plan) {
         var errors = plan.immutable().stream().map(a -> (ClusterConfigError) new ClusterConfigError.ImmutableFieldChange(a.description())).toList();
+
         return new ClusterConfigError.ValidationFailed(errors);
     }
 
@@ -330,6 +338,7 @@ public final class ClusterConfigRoutes implements RouteSource {
         if (expectedVersion != 0 && storedVersion != expectedVersion) {
             return new ClusterConfigError.VersionConflict(expectedVersion, storedVersion).promise();
         }
+
         return Promise.unitPromise().map(u -> (Object) u);
     }
 
@@ -362,6 +371,7 @@ public final class ClusterConfigRoutes implements RouteSource {
 
     private static Promise<Object> buildDryRunResponse(ClusterConfigValue stored, DiffPlan plan) {
         var descriptions = plan.allActions().stream().map(ClusterConfigRoutes::formatAction).toList();
+
         return Promise.success((Object) new DryRunResponse(stored.clusterName(),
                                                            stored.configVersion(),
                                                            stored.configVersion(),
@@ -389,6 +399,7 @@ public final class ClusterConfigRoutes implements RouteSource {
     private Promise<ScaleClusterResponse> executeScale(ClusterConfigValue stored, ScaleRequest request) {
         var previousCount = stored.coreCount();
         var newVersion = stored.configVersion() + 1;
+
         emitSetDesiredSizeSignal(request.coreCount());
 
         return storeScaledConfig(stored, request.coreCount(), newVersion).map(_ -> new ScaleClusterResponse(true,
@@ -402,10 +413,21 @@ public final class ClusterConfigRoutes implements RouteSource {
     }
 
     private static Promise<Object> validateScaleAsync(int coreCount, int coreMin, int coreMax) {
-        if (coreCount <3) {return new ClusterConfigError.QuorumSafetyViolation(coreCount, 3).promise();}
-        if (coreCount % 2 == 0) {return new ClusterConfigError.InvalidCoreCount(coreCount).promise();}
-        if (coreCount <coreMin) {return new ClusterConfigError.QuorumSafetyViolation(coreCount, coreMin).promise();}
-        if (coreCount > coreMax) {return new ClusterConfigError.InvalidCoreMax(coreMax, coreCount).promise();}
+        if (coreCount < 3) {
+            return new ClusterConfigError.QuorumSafetyViolation(coreCount, 3).promise();
+        }
+
+        if (coreCount % 2 == 0) {
+            return new ClusterConfigError.InvalidCoreCount(coreCount).promise();
+        }
+
+        if (coreCount < coreMin) {
+            return new ClusterConfigError.QuorumSafetyViolation(coreCount, coreMin).promise();
+        }
+
+        if (coreCount > coreMax) {
+            return new ClusterConfigError.InvalidCoreMax(coreMax, coreCount).promise();
+        }
 
         return Promise.unitPromise().map(u -> (Object) u);
     }
@@ -436,7 +458,9 @@ public final class ClusterConfigRoutes implements RouteSource {
         var currentVersion = stored.version();
         var targetVersion = request.targetVersion();
 
-        if (currentVersion.equals(targetVersion)) {return new UpgradeError.AlreadyAtVersion(targetVersion).promise();}
+        if (currentVersion.equals(targetVersion)) {
+            return new UpgradeError.AlreadyAtVersion(targetVersion).promise();
+        }
 
         log.info("Cluster upgrade initiated: {} -> {}",
                  currentVersion,

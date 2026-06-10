@@ -14,13 +14,9 @@ import java.util.jar.Manifest;
 
 public final class BuildInfo {
     private static final String DEV_VERSION = "dev";
-
     private static final String UNKNOWN_DATE = "unknown";
-
     private static final String VERSION_KEY = "Implementation-Version";
-
     private static final String BUILD_DATE_KEY = "Implementation-Build-Date";
-
     private static final BuildInfo CURRENT = load();
 
     private final String version;
@@ -48,19 +44,21 @@ public final class BuildInfo {
     }
 
     private static BuildInfo load() {
-        return Option.option(BuildInfo.class.getProtectionDomain().getCodeSource()).map(java.security.CodeSource::getLocation)
-                            .flatMap(BuildInfo::toJarFile)
-                            .flatMap(BuildInfo::readManifest)
-                            .map(BuildInfo::fromManifest)
-                            .or(BuildInfo::fallback);
+        return Option.option(BuildInfo.class.getProtectionDomain().getCodeSource())
+                     .map(java.security.CodeSource::getLocation)
+                     .flatMap(BuildInfo::toJarFile)
+                     .flatMap(BuildInfo::readManifest)
+                     .map(BuildInfo::fromManifest)
+                     .or(BuildInfo::fallback);
     }
 
     private static Option<File> toJarFile(URL url) {
         try {
             var file = new File(url.toURI());
+
             return file.isFile()
-                  ? Option.some(file)
-                  : Option.empty();
+                   ? Option.some(file)
+                   : Option.empty();
         } catch (Exception _) {
             return Option.empty();
         }
@@ -78,6 +76,7 @@ public final class BuildInfo {
         var attrs = manifest.getMainAttributes();
         var version = Option.option(attrs.getValue(VERSION_KEY)).or(DEV_VERSION);
         var date = Option.option(attrs.getValue(BUILD_DATE_KEY)).or(UNKNOWN_DATE);
+
         return new BuildInfo(version, date);
     }
 

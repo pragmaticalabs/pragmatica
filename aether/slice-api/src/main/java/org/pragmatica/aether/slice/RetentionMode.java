@@ -6,7 +6,9 @@ package org.pragmatica.aether.slice;
 
 import org.pragmatica.serialization.Codec;
 
-@Codec public enum RetentionMode {
+
+@Codec
+public enum RetentionMode {
     ALL,
     ANY
 }

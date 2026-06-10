@@ -13,4 +13,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 
-@ResourceQualifier(type = ContentStore.class, config = "storage") @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.PARAMETER) public@interface ContentStoreQualifier {}
+@ResourceQualifier(type = ContentStore.class, config = "storage")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+public @interface ContentStoreQualifier {}

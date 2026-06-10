@@ -43,9 +43,7 @@ public interface ObservabilityInterceptor {
 
 class ObservabilityInterceptorImpl implements ObservabilityInterceptor {
     private static final Logger traceLog = LoggerFactory.getLogger("org.pragmatica.aether.trace");
-
     private static final String ENTRY_CALLER = "HTTP";
-
     private static final String UNKNOWN_CALLER = "unknown";
 
     private final AdaptiveSampler sampler;
@@ -63,14 +61,18 @@ class ObservabilityInterceptorImpl implements ObservabilityInterceptor {
         this.depthLookup = depthLookup;
     }
 
-    @Override public <R> Promise<R> intercept(Artifact slice,
-                                              MethodName method,
-                                              String requestId,
-                                              int depth,
-                                              boolean local,
-                                              Fn0<Promise<R>> proceed) {
+    @Override
+    public <R> Promise<R> intercept(Artifact slice,
+                                    MethodName method,
+                                    String requestId,
+                                    int depth,
+                                    boolean local,
+                                    Fn0<Promise<R>> proceed) {
         sampler.recordInvocation();
-        if (isAlreadySampled()) {return interceptWithTracing(slice, method, requestId, depth, local, proceed);}
+        if (isAlreadySampled()) {
+            return interceptWithTracing(slice, method, requestId, depth, local, proceed);
+        }
+
         return interceptUnsampled(slice, method, requestId, depth, local, proceed);
     }
 
@@ -89,14 +91,18 @@ class ObservabilityInterceptorImpl implements ObservabilityInterceptor {
                                               boolean local,
                                               Fn0<Promise<R>> proceed) {
         var startNs = System.nanoTime();
-        if (!shouldSampleAtEntry(depth)) {return proceed.apply()
-                                                              .onFailure(cause -> recordAndLogFailure(slice,
-                                                                                                      method,
-                                                                                                      requestId,
-                                                                                                      depth,
-                                                                                                      local,
-                                                                                                      startNs,
-                                                                                                      cause.message()));}
+
+        if (!shouldSampleAtEntry(depth)) {
+            return proceed.apply()
+                          .onFailure(cause -> recordAndLogFailure(slice,
+                                                                  method,
+                                                                  requestId,
+                                                                  depth,
+                                                                  local,
+                                                                  startNs,
+                                                                  cause.message()));
+        }
+
         return interceptWithTracing(slice, method, requestId, depth, local, proceed);
     }
 
@@ -107,27 +113,30 @@ class ObservabilityInterceptorImpl implements ObservabilityInterceptor {
                                                 boolean local,
                                                 Fn0<Promise<R>> proceed) {
         var startNs = System.nanoTime();
-        return proceed.apply().onSuccess(_ -> recordAndLogSuccess(slice, method, requestId, depth, local, startNs))
-                            .onFailure(cause -> recordAndLogFailure(slice,
-                                                                    method,
-                                                                    requestId,
-                                                                    depth,
-                                                                    local,
-                                                                    startNs,
-                                                                    cause.message()));
+
+        return proceed.apply()
+                      .onSuccess(_ -> recordAndLogSuccess(slice, method, requestId, depth, local, startNs))
+                      .onFailure(cause -> recordAndLogFailure(slice,
+                                                              method,
+                                                              requestId,
+                                                              depth,
+                                                              local,
+                                                              startNs,
+                                                              cause.message()));
     }
 
-    @SuppressWarnings("JBCT-RET-01") private void recordAndLogSuccess(Artifact slice,
-                                                                      MethodName method,
-                                                                      String requestId,
-                                                                      int depth,
-                                                                      boolean local,
-                                                                      long startNs) {
+    @SuppressWarnings("JBCT-RET-01")
+    private void recordAndLogSuccess(Artifact slice,
+                                     MethodName method,
+                                     String requestId,
+                                     int depth,
+                                     boolean local,
+                                     long startNs) {
         var durationNs = System.nanoTime() - startNs;
         var callee = formatCallee(slice, method);
         var caller = depth == 0
-                    ? ENTRY_CALLER
-                    : UNKNOWN_CALLER;
+                     ? ENTRY_CALLER
+                     : UNKNOWN_CALLER;
         var node = invocationNode(requestId,
                                   depth,
                                   Instant.now(),
@@ -139,22 +148,24 @@ class ObservabilityInterceptorImpl implements ObservabilityInterceptor {
                                   Option.empty(),
                                   local,
                                   0);
+
         traceStore.record(node);
         logAtDepth(depth, slice, method, node);
     }
 
-    @SuppressWarnings("JBCT-RET-01") private void recordAndLogFailure(Artifact slice,
-                                                                      MethodName method,
-                                                                      String requestId,
-                                                                      int depth,
-                                                                      boolean local,
-                                                                      long startNs,
-                                                                      String errorMessage) {
+    @SuppressWarnings("JBCT-RET-01")
+    private void recordAndLogFailure(Artifact slice,
+                                     MethodName method,
+                                     String requestId,
+                                     int depth,
+                                     boolean local,
+                                     long startNs,
+                                     String errorMessage) {
         var durationNs = System.nanoTime() - startNs;
         var callee = formatCallee(slice, method);
         var caller = depth == 0
-                    ? ENTRY_CALLER
-                    : UNKNOWN_CALLER;
+                     ? ENTRY_CALLER
+                     : UNKNOWN_CALLER;
         var node = invocationNode(requestId,
                                   depth,
                                   Instant.now(),
@@ -166,6 +177,7 @@ class ObservabilityInterceptorImpl implements ObservabilityInterceptor {
                                   Option.option(errorMessage),
                                   local,
                                   0);
+
         traceStore.record(node);
         traceLog.error("[trace] [requestId={}] FAILURE {}/{} depth={} duration={}ms error={}",
                        requestId,
@@ -176,39 +188,46 @@ class ObservabilityInterceptorImpl implements ObservabilityInterceptor {
                        errorMessage);
     }
 
-    @SuppressWarnings("JBCT-RET-01") private void logAtDepth(int depth,
-                                                             Artifact slice,
-                                                             MethodName method,
-                                                             InvocationNode node) {
+    @SuppressWarnings("JBCT-RET-01")
+    private void logAtDepth(int depth, Artifact slice, MethodName method, InvocationNode node) {
         var threshold = depthLookup.apply(slice.base().asString(),
                                           method.name());
-        if (depth <= threshold) {traceLog.info("[trace] [requestId={}] {} depth={} duration={}ms",
-                                               node.requestId(),
-                                               node.callee(),
-                                               node.depth(),
-                                               node.durationMs());} else if (depth <= threshold + 2) {traceLog.debug("[trace] [requestId={}] {} depth={} duration={}ms",
-                                                                                                                     node.requestId(),
-                                                                                                                     node.callee(),
-                                                                                                                     node.depth(),
-                                                                                                                     node.durationMs());} else {traceLog.trace("[trace] [requestId={}] {} depth={} duration={}ms",
-                                                                                                                                                               node.requestId(),
-                                                                                                                                                               node.callee(),
-                                                                                                                                                               node.depth(),
-                                                                                                                                                               node.durationMs());}
+
+        if (depth <= threshold) {
+            traceLog.info("[trace] [requestId={}] {} depth={} duration={}ms",
+                          node.requestId(),
+                          node.callee(),
+                          node.depth(),
+                          node.durationMs());
+        } else if (depth <= threshold + 2) {
+            traceLog.debug("[trace] [requestId={}] {} depth={} duration={}ms",
+                           node.requestId(),
+                           node.callee(),
+                           node.depth(),
+                           node.durationMs());
+        } else {
+            traceLog.trace("[trace] [requestId={}] {} depth={} duration={}ms",
+                           node.requestId(),
+                           node.callee(),
+                           node.depth(),
+                           node.durationMs());
+        }
     }
 
     private static String formatCallee(Artifact slice, MethodName method) {
-        return slice.base().asString() + "/" + method.name();
+        return slice.base()
+                    .asString() + "/" + method.name();
     }
 }
 
 class NoOpObservabilityInterceptor implements ObservabilityInterceptor {
-    @Override public <R> Promise<R> intercept(Artifact slice,
-                                              MethodName method,
-                                              String requestId,
-                                              int depth,
-                                              boolean local,
-                                              Fn0<Promise<R>> proceed) {
+    @Override
+    public <R> Promise<R> intercept(Artifact slice,
+                                    MethodName method,
+                                    String requestId,
+                                    int depth,
+                                    boolean local,
+                                    Fn0<Promise<R>> proceed) {
         return proceed.apply();
     }
 }

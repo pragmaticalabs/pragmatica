@@ -12,12 +12,14 @@ import java.util.List;
 import static org.pragmatica.aether.environment.docker.DockerError.COMMAND_EXECUTION_FAILED;
 
 
-@Contract public record ProcessCommandRunner() implements DockerCommandRunner {
+@Contract
+public record ProcessCommandRunner() implements DockerCommandRunner {
     public static ProcessCommandRunner processCommandRunner() {
         return new ProcessCommandRunner();
     }
 
-    @Override public Promise<String> execute(List<String> command) {
+    @Override
+    public Promise<String> execute(List<String> command) {
         return Promise.lift(COMMAND_EXECUTION_FAILED, () -> runProcess(command));
     }
 
@@ -25,7 +27,11 @@ import static org.pragmatica.aether.environment.docker.DockerError.COMMAND_EXECU
         var process = new ProcessBuilder(command).redirectErrorStream(true).start();
         var output = new String(process.getInputStream().readAllBytes()).trim();
         var exitCode = process.waitFor();
-        if (exitCode != 0) {throw new RuntimeException("Docker command failed (exit " + exitCode + "): " + output);}
+
+        if (exitCode != 0) {
+            throw new RuntimeException("Docker command failed (exit " + exitCode + "): " + output);
+        }
+
         return output;
     }
 }

@@ -39,9 +39,7 @@ public final class SwimHealthContext {
     private final BooleanSupplier isLeaderSupplier;
     private final PeerObservationStore observationStore;
     private final SwimConfig swimConfig;
-
     private final LongSupplier clock;
-
     /// Phase-aware SWIM cold-boot suppression (D.3, 2026-05-11). `true` when the
     /// cluster is in `COLD_BOOT` phase (FAULTY for never-HEALTHY peers should be
     /// suppressed to `UnknownObserved`); `false` in `NORMAL` and `RECOVERING` (always
@@ -224,6 +222,7 @@ public final class SwimHealthContext {
     @Contract
     public void bufferHealthObservation(NodeId nodeId, HealthHint hint) {
         var epoch = epochSupplier.get();
+
         observationStore.pushHealth(new PeerHealthObservation(nodeId,
                                                               toWire(hint),
                                                               epoch.rabiaTerm(),

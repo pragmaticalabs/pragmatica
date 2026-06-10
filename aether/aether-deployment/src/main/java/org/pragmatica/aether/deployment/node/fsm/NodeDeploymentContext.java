@@ -219,7 +219,10 @@ public final class NodeDeploymentContext {
     }
 
     public NodeDeploymentState newDormantWithSuspended(List<SuspendedSlice> suspended) {
-        if (suspended.isEmpty()) {return dormant;}
+        if (suspended.isEmpty()) {
+            return dormant;
+        }
+
         return new NodeDeploymentState.Dormant(this, suspended);
     }
 

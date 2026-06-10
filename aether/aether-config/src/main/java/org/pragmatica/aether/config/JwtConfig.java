@@ -18,9 +18,7 @@ public record JwtConfig(String jwksUrl,
                         long cacheTtlSeconds,
                         long clockSkewSeconds) {
     public static final String DEFAULT_ROLE_CLAIM = "role";
-
     public static final long DEFAULT_CACHE_TTL_SECONDS = 3600;
-
     public static final long DEFAULT_CLOCK_SKEW_SECONDS = 30;
 
     public static Result<JwtConfig> jwtConfig(String jwksUrl,
@@ -46,7 +44,7 @@ public record JwtConfig(String jwksUrl,
                                      cacheTtlSeconds <= 0
                                      ? DEFAULT_CACHE_TTL_SECONDS
                                      : cacheTtlSeconds,
-                                     clockSkewSeconds <0
+                                     clockSkewSeconds < 0
                                      ? DEFAULT_CLOCK_SKEW_SECONDS
                                      : clockSkewSeconds));
     }

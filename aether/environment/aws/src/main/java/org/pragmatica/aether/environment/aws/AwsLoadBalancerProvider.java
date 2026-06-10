@@ -35,86 +35,103 @@ public record AwsLoadBalancerProvider(AwsClient client, String targetGroupArn) i
         return success(new AwsLoadBalancerProvider(client, targetGroupArn));
     }
 
-    @Override public Promise<Unit> onRouteChanged(RouteChange routeChange) {
+    @Override
+    public Promise<Unit> onRouteChanged(RouteChange routeChange) {
         log.debug("Registering {} targets for route {} {}",
                   routeChange.nodeIps().size(),
                   routeChange.httpMethod(),
                   routeChange.pathPrefix());
         var instanceIds = List.copyOf(routeChange.nodeIps());
+
         return client.registerTargets(targetGroupArn, instanceIds);
     }
 
-    @Override public Promise<Unit> onNodeRemoved(String nodeIp) {
+    @Override
+    public Promise<Unit> onNodeRemoved(String nodeIp) {
         log.debug("Deregistering target {} from target group {}", nodeIp, targetGroupArn);
+
         return client.deregisterTargets(targetGroupArn, List.of(nodeIp));
     }
 
-    @Override public Promise<LoadBalancerInfo> loadBalancerInfo() {
-        return client.describeTargetHealth(targetGroupArn).map(this::toLoadBalancerInfo);
+    @Override
+    public Promise<LoadBalancerInfo> loadBalancerInfo() {
+        return client.describeTargetHealth(targetGroupArn)
+                     .map(this::toLoadBalancerInfo);
     }
 
     private LoadBalancerInfo toLoadBalancerInfo(List<TargetHealth> targets) {
-        var targetInfos = targets.stream().map(t -> new LoadBalancerInfo.TargetInfo(t.targetId(),
-                                                                                    t.state(),
-                                                                                    1))
-                                        .toList();
+        var targetInfos = targets.stream().map(t -> new LoadBalancerInfo.TargetInfo(t.targetId(), t.state(), 1)).toList();
+
         return new LoadBalancerInfo(targetGroupArn, targetGroupArn, "", "active", targetInfos);
     }
 
-    @Override public Promise<Unit> deregisterWithDrain(String nodeIp, TimeSpan drainTimeout) {
+    @Override
+    public Promise<Unit> deregisterWithDrain(String nodeIp, TimeSpan drainTimeout) {
         return onNodeRemoved(nodeIp);
     }
 
-    @Override public Promise<Unit> reconcile(LoadBalancerState state) {
+    @Override
+    public Promise<Unit> reconcile(LoadBalancerState state) {
         log.debug("Reconciling target group {} with {} active nodes",
                   targetGroupArn,
                   state.activeNodeIps().size());
         var desiredIds = state.activeNodeIps();
-        return client.describeTargetHealth(targetGroupArn).map(AwsLoadBalancerProvider::currentTargetIds)
-                                          .flatMap(currentIds -> reconcileDiff(currentIds, desiredIds));
+
+        return client.describeTargetHealth(targetGroupArn)
+                     .map(AwsLoadBalancerProvider::currentTargetIds)
+                     .flatMap(currentIds -> reconcileDiff(currentIds, desiredIds));
     }
 
     private static Set<String> currentTargetIds(List<TargetHealth> targets) {
-        return targets.stream().map(TargetHealth::targetId)
-                             .collect(Collectors.toSet());
+        return targets.stream()
+                      .map(TargetHealth::targetId)
+                      .collect(Collectors.toSet());
     }
 
     private static List<String> missingIds(Set<String> currentIds, Set<String> desiredIds) {
-        return desiredIds.stream().filter(Predicate.not(currentIds::contains))
-                                .toList();
+        return desiredIds.stream()
+                         .filter(Predicate.not(currentIds::contains))
+                         .toList();
     }
 
     private static List<String> surplusIds(Set<String> currentIds, Set<String> desiredIds) {
-        return currentIds.stream().filter(Predicate.not(desiredIds::contains))
-                                .toList();
+        return currentIds.stream()
+                         .filter(Predicate.not(desiredIds::contains))
+                         .toList();
     }
 
     private Promise<Unit> reconcileDiff(Set<String> currentIds, Set<String> desiredIds) {
         var idsToRegister = missingIds(currentIds, desiredIds);
         var idsToDeregister = surplusIds(currentIds, desiredIds);
+
         log.debug("Reconciliation diff: {} to add, {} to remove", idsToRegister.size(), idsToDeregister.size());
         var registerOp = registerIfNotEmpty(idsToRegister);
         var deregisterOp = deregisterIfNotEmpty(idsToDeregister);
         var all = Stream.concat(registerOp.stream(), deregisterOp.stream()).toList();
+
         return combineAll(all);
     }
 
     private java.util.Optional<Promise<Unit>> registerIfNotEmpty(List<String> ids) {
         return ids.isEmpty()
-              ? java.util.Optional.empty()
-              : java.util.Optional.of(client.registerTargets(targetGroupArn, ids));
+               ? java.util.Optional.empty()
+               : java.util.Optional.of(client.registerTargets(targetGroupArn, ids));
     }
 
     private java.util.Optional<Promise<Unit>> deregisterIfNotEmpty(List<String> ids) {
         return ids.isEmpty()
-              ? java.util.Optional.empty()
-              : java.util.Optional.of(client.deregisterTargets(targetGroupArn, ids));
+               ? java.util.Optional.empty()
+               : java.util.Optional.of(client.deregisterTargets(targetGroupArn, ids));
     }
 
     private static Promise<Unit> combineAll(Collection<Promise<Unit>> promises) {
-        if (promises.isEmpty()) {return Promise.success(Unit.unit());}
-        return Promise.allOf(promises).map(AwsLoadBalancerProvider::collectResults)
-                            .flatMap(Result::async);
+        if (promises.isEmpty()) {
+            return Promise.success(Unit.unit());
+        }
+
+        return Promise.allOf(promises)
+                      .map(AwsLoadBalancerProvider::collectResults)
+                      .flatMap(Result::async);
     }
 
     private static Result<Unit> collectResults(List<Result<Unit>> results) {

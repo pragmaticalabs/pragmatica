@@ -27,6 +27,6 @@ public final class StreamLifecycleEventPolicy {
     /// Returns true when a lifecycle event for `address` should be emitted into the cluster
     /// event stream. False when `address` is in the system namespace.
     public static boolean shouldEmit(ResourceAddress address) {
-        return !address.isSystem();
+        return ! address.isSystem();
     }
 }

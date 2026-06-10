@@ -5,7 +5,6 @@
 package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.aether.slice.resource.ResourceAddress;
-
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -33,13 +32,16 @@ public interface StreamRegistry {
             General(String message) {
                 this.message = message;
             }
-            @Override public String message() {
+            @Override
+            public String message() {
                 return message;
             }
         }
 
-        @SuppressWarnings("unused") record unused() implements StreamRegistryError {
-            @Override public String message() {
+        @SuppressWarnings("unused")
+        record unused() implements StreamRegistryError {
+            @Override
+            public String message() {
                 return "";
             }
         }
@@ -50,10 +52,8 @@ public interface StreamRegistry {
     /// existence first; the default contract treats duplicate registration as an error so callers
     /// notice unexpected collisions.
     Result<StreamRegistryEntry> register(StreamRegistryEntry entry);
-
     /// Fetch the entry for an exact address. [Option.none] if not found.
     Option<StreamRegistryEntry> lookup(ResourceAddress address);
-
     /// Resolve a version spec to a concrete entry.
     ///
     ///  - [StreamVersionSpec.Exact] — exact lookup of `(namespace, stream, version)`.
@@ -61,7 +61,6 @@ public interface StreamRegistry {
     ///    `(namespace, stream, *)` by semver ordering; fails with [General.NO_VERSIONS_REGISTERED]
     ///    if no version is registered.
     Result<StreamRegistryEntry> resolve(String namespace, String stream, StreamVersionSpec spec);
-
     /// Increment the reference count for the entry at the given address. Fails if no entry exists.
     ///
     /// Returns [Promise] because consensus-backed implementations must wait for the cluster to
@@ -70,14 +69,12 @@ public interface StreamRegistry {
     /// (TOCTOU race + silent consensus failure). For in-memory implementations the returned promise
     /// is already resolved.
     Promise<StreamRegistryEntry> acquireReference(ResourceAddress address);
-
     /// Decrement the reference count for the entry at the given address. When the count reaches
     /// zero the entry is removed. Fails if no entry exists or the count is already zero.
     ///
     /// Returns [Promise] for the same reason as [#acquireReference] — consensus-backed
     /// implementations must observe the apply outcome before reporting `removed`.
     Promise<ReleaseOutcome> releaseReference(ResourceAddress address);
-
     /// Snapshot of all registered entries in undefined order.
     List<StreamRegistryEntry> snapshot();
 

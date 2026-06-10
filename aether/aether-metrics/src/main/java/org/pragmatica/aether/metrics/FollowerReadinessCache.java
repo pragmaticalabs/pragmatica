@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 
+
 /// Readiness-broadcast (failover-readability): a follower's cache of the LEADER's authoritative
 /// `NodeId → NodeReportedState` view, delivered piggy-backed on `ClusterSyncPing.readinessView`.
 ///
@@ -53,10 +54,12 @@ final class FollowerReadinessCache {
     /// Store the leader-broadcast view IFF `sender` is the node this follower currently believes is
     /// leader and `wireView` is non-empty. Empty views and views from non-leaders are ignored (a
     /// no-op leaves the prior snapshot intact). Idempotent and lock-free.
-    @Contract void maybeStore(NodeId sender, long term, Map<NodeId, String> wireView) {
+    @Contract
+    void maybeStore(NodeId sender, long term, Map<NodeId, String> wireView) {
         if (wireView.isEmpty() || !leaderManager.leader().map(sender::equals).or(false)) {
             return;
         }
+
         snapshot.set(new Snapshot(Option.some(sender), term, parseView(wireView), nowNanos.getAsLong()));
     }
 
@@ -69,11 +72,13 @@ final class FollowerReadinessCache {
     /// The cached view when [isFresh]; otherwise the empty map. Used by `reportedStates()` as the
     /// follower fallback.
     Map<NodeId, NodeReportedState> freshView() {
-        return freshSnapshot().map(Snapshot::view).or(Map.of());
+        return freshSnapshot().map(Snapshot::view)
+                            .or(Map.of());
     }
 
     private Option<Snapshot> freshSnapshot() {
         var current = snapshot.get();
+
         return current.cachedLeader()
                       .filter(this::matchesCurrentLeader)
                       .filter(_ -> withinTtl(current.tick()))
@@ -81,7 +86,9 @@ final class FollowerReadinessCache {
     }
 
     private boolean matchesCurrentLeader(NodeId cachedLeader) {
-        return leaderManager.leader().map(cachedLeader::equals).or(false);
+        return leaderManager.leader()
+                            .map(cachedLeader::equals)
+                            .or(false);
     }
 
     private boolean withinTtl(long tick) {

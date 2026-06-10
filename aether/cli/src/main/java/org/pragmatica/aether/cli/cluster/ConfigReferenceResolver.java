@@ -32,9 +32,11 @@ sealed interface ConfigReferenceResolver {
         var matcher = REFERENCE_PATTERN.matcher(tomlContent);
         var unresolved = new LinkedHashSet<String>();
         var resolved = new ArrayList<ResolvedMatch>();
-        collectMatches(matcher, unresolved, resolved, secretsProvider);
 
-        if (!unresolved.isEmpty()) {return new ClusterConfigError.SecretResolutionFailed(formatUnresolved(unresolved)).result();}
+        collectMatches(matcher, unresolved, resolved, secretsProvider);
+        if (!unresolved.isEmpty()) {
+            return new ClusterConfigError.SecretResolutionFailed(formatUnresolved(unresolved)).result();
+        }
 
         return success(applyReplacements(tomlContent, resolved));
     }
@@ -47,6 +49,7 @@ sealed interface ConfigReferenceResolver {
             var type = matcher.group(1);
             var name = matcher.group(2);
             var fullRef = matcher.group(0);
+
             resolveReference(type, name, fullRef, unresolved, resolved, secretsProvider);
         }
     }
@@ -65,6 +68,7 @@ sealed interface ConfigReferenceResolver {
 
             return;
         }
+
         if ("secrets".equals(type)) {
             resolveViaProvider(secretsProvider, name, fullRef, envVarName, unresolved, resolved);
 
@@ -116,7 +120,9 @@ sealed interface ConfigReferenceResolver {
     private static String applyReplacements(String content, ArrayList<ResolvedMatch> resolved) {
         var result = content;
 
-        for (var match : resolved) {result = result.replace(match.reference(), match.value());}
+        for (var match : resolved) {
+            result = result.replace(match.reference(), match.value());
+        }
 
         return result;
     }

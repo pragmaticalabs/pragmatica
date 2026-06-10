@@ -32,6 +32,7 @@ sealed interface BootstrapPhaseFormation {
     static Result<BootstrapContext> execute(BootstrapContext ctx) {
         ClusterBootstrapOrchestrator.logPhase(CLUSTER_FORMATION, "Establishing cluster quorum");
         var apiKey = ClusterBootstrapOrchestrator.generateApiKey();
+
         System.out.printf("  API key generated (%d bytes, Base64 URL-encoded)%n",
                           ClusterBootstrapOrchestrator.API_KEY_BYTES);
         var managementPort = ctx.config().operations().ports().management();
@@ -65,15 +66,17 @@ sealed interface BootstrapPhaseFormation {
 
         return storeClusterConfig(updatedCtx).flatMap(_ -> storeApiKey(updatedCtx, apiKey))
                                  .map(_ -> {
-                                     persistApiKeyFile(ctx.config().cluster().name(),
-                                                       apiKey);
-                                     return updatedCtx;
-                                 });
+                                          persistApiKeyFile(ctx.config().cluster().name(),
+                                                            apiKey);
+
+                                          return updatedCtx;
+                                      });
     }
 
     @Contract
     private static void persistApiKeyFile(String clusterName, String apiKey) {
         var keyFile = Path.of(System.getProperty("user.home"), ".aether", "clusters", clusterName, "api-key");
+
         try {
             Files.createDirectories(keyFile.getParent());
             Files.writeString(keyFile, apiKey);
@@ -82,6 +85,7 @@ sealed interface BootstrapPhaseFormation {
             var _ = file.setReadable(true, true);
             var _ = file.setWritable(false, false);
             var _ = file.setWritable(true, true);
+
             System.out.printf("  API key persisted to %s%n", keyFile);
         } catch (IOException e) {
             System.err.println("  Warning: failed to persist API key file: " + e.getMessage());
@@ -93,7 +97,9 @@ sealed interface BootstrapPhaseFormation {
                                               int managementPort,
                                               long timeoutMs,
                                               String scheme) {
-        if (addresses.isEmpty()) {return Result.unitResult();}
+        if (addresses.isEmpty()) {
+            return Result.unitResult();
+        }
 
         System.out.printf("  Waiting for %d node(s) to become healthy (timeout: %ds)%n",
                           addresses.size(),
@@ -108,7 +114,11 @@ sealed interface BootstrapPhaseFormation {
     }
 
     private static Result<Unit> checkAllHealthy(List<Result<Unit>> results) {
-        for (var result : results) {if (result.isFailure()) {return result;}}
+        for (var result : results) {
+            if (result.isFailure()) {
+                return result;
+            }
+        }
 
         System.out.println("  All nodes healthy");
 
@@ -117,17 +127,21 @@ sealed interface BootstrapPhaseFormation {
 
     private static Promise<Unit> pollSingleNodeHealth(String ip, int port, long timeoutMs, String scheme) {
         return Promise.promise(resolver -> {
-                                   var url = scheme + "://" + ip + ":" + port + "/health/live";
-                                   var deadline = System.currentTimeMillis() + timeoutMs;
-                                   while (System.currentTimeMillis() <deadline) {
-                                   if (ClusterBootstrapOrchestrator.httpGet(url).isSuccess()) {
-                                   resolver.resolve(Result.unitResult());
-                                   return;
-                               }
-                                   ClusterBootstrapOrchestrator.sleepQuietly(ClusterBootstrapOrchestrator.POLL_INTERVAL_MS);
-                               }
-                                   resolver.resolve(new BootstrapError.QuorumNotEstablished(0, 1).result());
-                               });
+            var url = scheme + "://" + ip + ":" + port + "/health/live";
+            var deadline = System.currentTimeMillis() + timeoutMs;
+
+            while (System.currentTimeMillis() < deadline) {
+                if (ClusterBootstrapOrchestrator.httpGet(url).isSuccess()) {
+                    resolver.resolve(Result.unitResult());
+
+                    return;
+                }
+
+                ClusterBootstrapOrchestrator.sleepQuietly(ClusterBootstrapOrchestrator.POLL_INTERVAL_MS);
+            }
+
+            resolver.resolve(new BootstrapError.QuorumNotEstablished(0, 1).result());
+        });
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -136,17 +150,20 @@ sealed interface BootstrapPhaseFormation {
                                               long timeoutMs,
                                               int requiredCores,
                                               String scheme) {
-        if (addresses.isEmpty()) {return Result.unitResult();}
+        if (addresses.isEmpty()) {
+            return Result.unitResult();
+        }
 
         var endpoint = addresses.getFirst().publicIp();
         var url = scheme + "://" + endpoint + ":" + managementPort + "/health/ready";
+
         System.out.printf("  Waiting for quorum at %s (need %d core(s), timeout: %ds)%n",
                           url,
                           requiredCores,
                           timeoutMs / 1000);
         var deadline = System.currentTimeMillis() + timeoutMs;
 
-        while (System.currentTimeMillis() <deadline) {
+        while (System.currentTimeMillis() < deadline) {
             var response = ClusterBootstrapOrchestrator.httpGet(url);
 
             if (response.isSuccess()) {
@@ -163,7 +180,9 @@ sealed interface BootstrapPhaseFormation {
 
     @SuppressWarnings("JBCT-EX-01")
     private static Result<Unit> storeClusterConfig(BootstrapContext ctx) {
-        if (ctx.addresses().isEmpty()) {return Result.unitResult();}
+        if (ctx.addresses().isEmpty()) {
+            return Result.unitResult();
+        }
 
         var endpoint = buildManagementEndpoint(ctx);
         var configJson = buildConfigJson(ctx.rawTomlContent());
@@ -174,7 +193,9 @@ sealed interface BootstrapPhaseFormation {
 
     @SuppressWarnings("JBCT-EX-01")
     private static Result<Unit> storeApiKey(BootstrapContext ctx, String apiKey) {
-        if (ctx.addresses().isEmpty()) {return Result.unitResult();}
+        if (ctx.addresses().isEmpty()) {
+            return Result.unitResult();
+        }
 
         var endpoint = buildManagementEndpoint(ctx);
         var keyHash = KvStoreApiKeyHasher.hashKey(apiKey);
@@ -228,7 +249,7 @@ sealed interface BootstrapPhaseFormation {
         var attempts = 0;
         var lastError = "no attempts made";
 
-        while (System.currentTimeMillis() <deadline) {
+        while (System.currentTimeMillis() < deadline) {
             attempts++;
             var result = ClusterBootstrapOrchestrator.httpPost(url, body, apiKey);
 
@@ -239,11 +260,11 @@ sealed interface BootstrapPhaseFormation {
                                       attempts,
                                       System.currentTimeMillis() - start);
                 }
+
                 return Result.unitResult();
             }
 
             lastError = extractFailureMessage(result);
-
             if (attempts == 1 || attempts % 5 == 0) {
                 System.out.printf("  Waiting for %s store (attempt %d): %s%n", operation, attempts, lastError);
             }
@@ -267,6 +288,7 @@ sealed interface BootstrapPhaseFormation {
         var scheme = ctx.config().operations().tls().autoGenerate()
                      ? "https"
                      : "http";
+
         return scheme + "://" + ip + ":" + port;
     }
 
@@ -275,7 +297,10 @@ sealed interface BootstrapPhaseFormation {
     }
 
     private static String escapeJsonString(String s) {
-        if (s == null) {return "";}
+        if (s == null) {
+            return "";
+        }
+
         return s.replace("\\", "\\\\")
                 .replace("\"", "\\\"")
                 .replace("\n", "\\n")

@@ -14,9 +14,7 @@ import java.util.Map;
 ///
 /// Carries the parsed-and-validated stream resource map alongside any non-blocking warnings (spec
 /// §11.1.3 multi-version pin recommendation). Callers proceed with deploy on this value.
-public record ValidatedStreamResources(Map<String, StreamResource> resources,
-                                       List<StreamValidationWarning> warnings) {
-
+public record ValidatedStreamResources(Map<String, StreamResource> resources, List<StreamValidationWarning> warnings) {
     public ValidatedStreamResources {
         resources = Map.copyOf(resources);
         warnings = List.copyOf(warnings);

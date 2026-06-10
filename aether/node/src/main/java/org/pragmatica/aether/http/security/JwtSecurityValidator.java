@@ -112,6 +112,7 @@ class JwtSecurityValidator implements SecurityValidator {
                                                           String expected,
                                                           String label) {
         var actual = Option.option(payload.get(claimName)).map(Object::toString).or("");
+
         return expected.equals(actual)
                ? success(payload)
                : new SecurityError.IssuerMismatch(label + " mismatch").result();
@@ -132,6 +133,7 @@ class JwtSecurityValidator implements SecurityValidator {
                    ? success(payload)
                    : new SecurityError.AudienceMismatch("Audience mismatch").result();
         }
+
         if (audValue instanceof List<?> list) {
             var match = list.stream().anyMatch(v -> expected.equals(String.valueOf(v)));
 
@@ -220,11 +222,15 @@ class JwtSecurityValidator implements SecurityValidator {
                                                                                                                                                                                                                       0,
                                                                                                                                                                                                                       BEARER_PREFIX.length())).map(v -> v.substring(BEARER_PREFIX.length())
                                                                                                                                                                                                                                                          .trim()).findFirst();
+
         return Option.from(value);
     }
 
     private static long tolong(Object value) {
-        if (value instanceof Number n) {return n.longValue();}
+        if (value instanceof Number n) {
+            return n.longValue();
+        }
+
         return Long.parseLong(String.valueOf(value));
     }
 }

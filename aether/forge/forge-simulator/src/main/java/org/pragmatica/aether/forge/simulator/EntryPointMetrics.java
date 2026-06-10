@@ -26,7 +26,6 @@ public final class EntryPointMetrics {
     private static final long[] BUCKET_BOUNDARIES_MS = {1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000};
 
     private final Map<String, EntryPointStats> stats = new ConcurrentHashMap<>();
-
     private final AtomicLong lastSnapshotTime = new AtomicLong(System.currentTimeMillis());
 
     private EntryPointMetrics() {}
@@ -37,16 +36,19 @@ public final class EntryPointMetrics {
 
     public Result<Unit> recordSuccess(String entryPoint, long latencyNanos) {
         getOrCreate(entryPoint).recordSuccess(latencyNanos);
+
         return unitResult();
     }
 
     public Result<Unit> recordFailure(String entryPoint, long latencyNanos) {
         getOrCreate(entryPoint).recordFailure(latencyNanos);
+
         return unitResult();
     }
 
     public Result<Unit> setRate(String entryPoint, int callsPerSecond) {
         getOrCreate(entryPoint).currentRate.set(callsPerSecond);
+
         return unitResult();
     }
 
@@ -55,7 +57,9 @@ public final class EntryPointMetrics {
         var previousTime = lastSnapshotTime.getAndSet(now);
         var elapsedMs = now - previousTime;
         var result = new ArrayList<EntryPointSnapshot>();
+
         stats.forEach((name, stat) -> result.add(stat.snapshotAndReset(name, elapsedMs)));
+
         return result;
     }
 
@@ -63,13 +67,16 @@ public final class EntryPointMetrics {
         var now = System.currentTimeMillis();
         var elapsedMs = now - lastSnapshotTime.get();
         var result = new ArrayList<EntryPointSnapshot>();
+
         stats.forEach((name, stat) -> result.add(stat.snapshot(name, elapsedMs)));
+
         return result;
     }
 
     public Result<Unit> reset() {
         stats.values().forEach(EntryPointStats::reset);
         lastSnapshotTime.set(System.currentTimeMillis());
+
         return unitResult();
     }
 
@@ -87,8 +94,8 @@ public final class EntryPointMetrics {
                                    AtomicLong windowLatencyNanos,
                                    AtomicLong[] histogram) {
         static Result<EntryPointStats> entryPointStats() {
-            var hist = IntStream.range(0, BUCKET_BOUNDARIES_MS.length + 1).mapToObj(_ -> new AtomicLong())
-                                      .toArray(AtomicLong[]::new);
+            var hist = IntStream.range(0, BUCKET_BOUNDARIES_MS.length + 1).mapToObj(_ -> new AtomicLong()).toArray(AtomicLong[]::new);
+
             return success(new EntryPointStats(new AtomicLong(),
                                                new AtomicLong(),
                                                new AtomicLong(),
@@ -99,7 +106,8 @@ public final class EntryPointMetrics {
                                                hist));
         }
 
-        @Contract void recordSuccess(long latencyNanos) {
+        @Contract
+        void recordSuccess(long latencyNanos) {
             totalCount.incrementAndGet();
             successCount.incrementAndGet();
             totalLatencyNanos.addAndGet(latencyNanos);
@@ -108,7 +116,8 @@ public final class EntryPointMetrics {
             recordLatency(latencyNanos);
         }
 
-        @Contract void recordFailure(long latencyNanos) {
+        @Contract
+        void recordFailure(long latencyNanos) {
             totalCount.incrementAndGet();
             failureCount.incrementAndGet();
             totalLatencyNanos.addAndGet(latencyNanos);
@@ -120,25 +129,30 @@ public final class EntryPointMetrics {
         private void recordLatency(long latencyNanos) {
             var latencyMs = latencyNanos / 1_000_000;
             var bucket = findBucket(latencyMs);
+
             histogram[bucket].incrementAndGet();
         }
 
         private int findBucket(long latencyMs) {
-            return IntStream.range(0, BUCKET_BOUNDARIES_MS.length).filter(i -> latencyMs <= BUCKET_BOUNDARIES_MS[i])
-                                  .findFirst()
-                                  .orElse(BUCKET_BOUNDARIES_MS.length);
+            return IntStream.range(0, BUCKET_BOUNDARIES_MS.length)
+                            .filter(i -> latencyMs <= BUCKET_BOUNDARIES_MS[i])
+                            .findFirst()
+                            .orElse(BUCKET_BOUNDARIES_MS.length);
         }
 
         EntryPointSnapshot snapshotAndReset(String name, long elapsedMs) {
             var snap = snapshot(name, elapsedMs);
+
             windowCount.set(0);
             windowLatencyNanos.set(0);
+
             return snap;
         }
 
         EntryPointSnapshot snapshot(String name, long elapsedMs) {
             var total = totalCount.get();
             var rates = calculateRates(total, windowCount.get(), elapsedMs);
+
             return buildSnapshot(name, total, rates);
         }
 
@@ -148,6 +162,7 @@ public final class EntryPointMetrics {
             var failures = failureCount.get();
             var p50 = estimatePercentile(50, total);
             var p99 = estimatePercentile(99, total);
+
             return EntryPointSnapshot.entryPointSnapshot(name,
                                                          rate,
                                                          total,
@@ -158,53 +173,68 @@ public final class EntryPointMetrics {
                                                          rates.rps(),
                                                          p50,
                                                          p99)
-            .unwrap();
+                                     .unwrap();
         }
 
         private SnapshotRates calculateRates(long total, long windowCnt, long elapsedMs) {
             var successRate = calculateSuccessRate(total);
             var avgLatencyMs = calculateAvgLatency(windowCnt);
             var rps = calculateRps(windowCnt, elapsedMs);
+
             return SnapshotRates.snapshotRates(successRate, avgLatencyMs, rps).unwrap();
         }
 
         private double calculateSuccessRate(long total) {
-            if (Verify.Is.nonPositive(total)) {return 100.0;}
+            if (Verify.Is.nonPositive(total)) {
+                return 100.0;
+            }
+
             return successCount.get() * 100.0 / total;
         }
 
         private double calculateAvgLatency(long windowCnt) {
-            if (Verify.Is.nonPositive(windowCnt)) {return 0.0;}
+            if (Verify.Is.nonPositive(windowCnt)) {
+                return 0.0;
+            }
+
             return (windowLatencyNanos.get() / windowCnt) / 1_000_000.0;
         }
 
         private static double calculateRps(long windowCnt, long elapsedMs) {
-            if (Verify.Is.nonPositive(elapsedMs)) {return 0.0;}
+            if (Verify.Is.nonPositive(elapsedMs)) {
+                return 0.0;
+            }
+
             return windowCnt * 1000.0 / elapsedMs;
         }
 
         private double estimatePercentile(int percentile, long total) {
-            if (total == 0) {return 0.0;}
+            if (total == 0) {
+                return 0.0;
+            }
+
             var targetCount = (long)(total * percentile / 100.0);
+
             return findBucketForPercentile(targetCount);
         }
 
         private double findBucketForPercentile(long targetCount) {
             var cumulative = new AtomicLong(0);
-            var matchingBucket = IntStream.range(0, histogram.length).filter(i -> cumulative.addAndGet(histogram[i].get()) >= targetCount)
-                                                .findFirst();
+            var matchingBucket = IntStream.range(0, histogram.length).filter(i -> cumulative.addAndGet(histogram[i].get()) >= targetCount).findFirst();
+
             return matchingBucket.isPresent()
-                  ? bucketBoundary(matchingBucket.getAsInt())
-                  : 10000.0;
+                   ? bucketBoundary(matchingBucket.getAsInt())
+                   : 10000.0;
         }
 
         private static double bucketBoundary(int bucketIndex) {
-            return bucketIndex <BUCKET_BOUNDARIES_MS.length
-                  ? BUCKET_BOUNDARIES_MS[bucketIndex]
-                  : 10000.0;
+            return bucketIndex < BUCKET_BOUNDARIES_MS.length
+                   ? BUCKET_BOUNDARIES_MS[bucketIndex]
+                   : 10000.0;
         }
 
-        @Contract void reset() {
+        @Contract
+        void reset() {
             totalCount.set(0);
             successCount.set(0);
             failureCount.set(0);
@@ -254,7 +284,9 @@ public final class EntryPointMetrics {
         }
 
         public String toJson() {
-            return String.format("{\"name\":\"%s\",\"rate\":%d,\"totalCalls\":%d,\"successCalls\":%d," + "\"failureCalls\":%d,\"successRate\":%.2f,\"avgLatencyMs\":%.2f," + "\"requestsPerSecond\":%.1f,\"p50LatencyMs\":%.1f,\"p99LatencyMs\":%.1f}",
+            return String.format("{\"name\":\"%s\",\"rate\":%d,\"totalCalls\":%d,\"successCalls\":%d,"
+                                + "\"failureCalls\":%d,\"successRate\":%.2f,\"avgLatencyMs\":%.2f,"
+                                + "\"requestsPerSecond\":%.1f,\"p50LatencyMs\":%.1f,\"p99LatencyMs\":%.1f}",
                                  name,
                                  rate,
                                  totalCalls,

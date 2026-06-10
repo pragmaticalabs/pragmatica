@@ -23,20 +23,28 @@ public record StreamConsensusCommand(String streamName, int partition, byte[] pa
         return new StreamConsensusCommand(streamName, partition, payload, timestamp);
     }
 
-    @Override public byte[] payload() {
+    @Override
+    public byte[] payload() {
         return payload.clone();
     }
 
-    @Override public boolean equals(Object o) {
-        return o instanceof StreamConsensusCommand other && partition == other.partition && timestamp == other.timestamp && streamName.equals(other.streamName) && Arrays.equals(payload,
-                                                                                                                                                                                 other.payload);
+    @Override
+    public boolean equals(Object o) {
+        return o instanceof StreamConsensusCommand other
+               && partition == other.partition
+               && timestamp == other.timestamp
+               && streamName.equals(other.streamName)
+               && Arrays.equals(payload, other.payload);
     }
 
-    @Override public int hashCode() {
+    @Override
+    public int hashCode() {
         var result = streamName.hashCode();
+
         result = 31 * result + partition;
         result = 31 * result + Arrays.hashCode(payload);
         result = 31 * result + Long.hashCode(timestamp);
+
         return result;
     }
 }

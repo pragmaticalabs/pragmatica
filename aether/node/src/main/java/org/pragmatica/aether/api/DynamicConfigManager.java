@@ -50,6 +50,7 @@ public class DynamicConfigManager {
                                                             DynamicConfigurationProvider provider,
                                                             NodeId self) {
         var manager = new DynamicConfigManager(clusterNode, kvStore, provider, self);
+
         manager.loadFromKvStore();
 
         return manager;
@@ -62,7 +63,9 @@ public class DynamicConfigManager {
     }
 
     private void loadConfig(ConfigKey key, ConfigValue value) {
-        if (key.isClusterWide()) {applyLoadedConfig(value);} else {
+        if (key.isClusterWide()) {
+            applyLoadedConfig(value);
+        } else {
             key.nodeScope().filter(self::equals).onPresent(_ -> applyLoadedConfig(value));
         }
     }
@@ -92,6 +95,7 @@ public class DynamicConfigManager {
     @SuppressWarnings("JBCT-RET-01")
     public void onConfigRemove(ValueRemove<ConfigKey, ConfigValue> valueRemove) {
         var configKey = valueRemove.cause().key();
+
         if (shouldApply(configKey)) {
             provider.remove(configKey.key());
             log.debug("Config removed from cluster: {}", configKey.key());
@@ -170,7 +174,9 @@ public class DynamicConfigManager {
     }
 
     private Unit applyNodeConfig(String key, String value, NodeId nodeId) {
-        if (nodeId.equals(self)) {provider.put(key, value);}
+        if (nodeId.equals(self)) {
+            provider.put(key, value);
+        }
 
         log.info("Node config set and persisted: {}={} for node {}", key, redactIfSensitive(key, value), nodeId.id());
 
@@ -185,7 +191,9 @@ public class DynamicConfigManager {
     }
 
     private Unit removeNodeScopedConfig(String key, NodeId nodeId) {
-        if (nodeId.equals(self)) {provider.remove(key);}
+        if (nodeId.equals(self)) {
+            provider.remove(key);
+        }
 
         log.info("Node config removed and persisted: {} for node {}", key, nodeId.id());
 
@@ -193,7 +201,10 @@ public class DynamicConfigManager {
     }
 
     private boolean shouldApply(ConfigKey configKey) {
-        if (configKey.isClusterWide()) {return true;}
+        if (configKey.isClusterWide()) {
+            return true;
+        }
+
         return configKey.nodeScope()
                         .filter(self::equals)
                         .isPresent();
@@ -201,6 +212,7 @@ public class DynamicConfigManager {
 
     private String mapToJson(Map<String, String> map) {
         var sb = new StringBuilder();
+
         sb.append("{");
         boolean first = true;
 
@@ -219,6 +231,7 @@ public class DynamicConfigManager {
 
     private String escapeJson(String s) {
         if (s == null) return "";
+
         return s.replace("\\", "\\\\")
                 .replace("\"", "\\\"")
                 .replace("\n", "\\n")
@@ -231,7 +244,9 @@ public class DynamicConfigManager {
     private static String redactIfSensitive(String key, String value) {
         var lower = key.toLowerCase();
 
-        if (lower.contains("password") || lower.contains("secret") || lower.contains("key") || lower.contains("token")) {return "***REDACTED***";}
+        if (lower.contains("password") || lower.contains("secret") || lower.contains("key") || lower.contains("token")) {
+            return "***REDACTED***";
+        }
 
         return value;
     }

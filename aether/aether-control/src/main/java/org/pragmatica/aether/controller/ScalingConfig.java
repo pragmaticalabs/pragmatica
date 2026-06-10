@@ -22,25 +22,23 @@ public record ScalingConfig(int windowSize,
                             Map<ScalingMetric, Double> weights,
                             double errorRateBlockThreshold) {
     private static final int DEFAULT_WINDOW_SIZE = 10;
-
     private static final int FORGE_WINDOW_SIZE = 5;
-
     private static final TimeSpan DEFAULT_EVALUATION_INTERVAL = timeSpan(5).seconds();
-
     private static final double DEFAULT_SCALE_UP_THRESHOLD = 1.5;
-
     private static final double DEFAULT_SCALE_DOWN_THRESHOLD = 0.5;
-
     private static final double DEFAULT_ERROR_RATE_BLOCK_THRESHOLD = 0.1;
 
-    @Deprecated static final double ERROR_RATE_BLOCK_THRESHOLD = DEFAULT_ERROR_RATE_BLOCK_THRESHOLD;
+    @Deprecated
+    static final double ERROR_RATE_BLOCK_THRESHOLD = DEFAULT_ERROR_RATE_BLOCK_THRESHOLD;
 
     public static ScalingConfig productionDefaults() {
         var weights = new EnumMap<ScalingMetric, Double>(ScalingMetric.class);
+
         weights.put(ScalingMetric.CPU, 0.4);
         weights.put(ScalingMetric.ACTIVE_INVOCATIONS, 0.4);
         weights.put(ScalingMetric.P95_LATENCY, 0.2);
         weights.put(ScalingMetric.ERROR_RATE, 0.0);
+
         return new ScalingConfig(DEFAULT_WINDOW_SIZE,
                                  DEFAULT_EVALUATION_INTERVAL,
                                  DEFAULT_SCALE_UP_THRESHOLD,
@@ -51,10 +49,12 @@ public record ScalingConfig(int windowSize,
 
     public static ScalingConfig forgeDefaults() {
         var weights = new EnumMap<ScalingMetric, Double>(ScalingMetric.class);
+
         weights.put(ScalingMetric.CPU, 0.0);
         weights.put(ScalingMetric.ACTIVE_INVOCATIONS, 0.6);
         weights.put(ScalingMetric.P95_LATENCY, 0.4);
         weights.put(ScalingMetric.ERROR_RATE, 0.0);
+
         return new ScalingConfig(FORGE_WINDOW_SIZE,
                                  DEFAULT_EVALUATION_INTERVAL,
                                  DEFAULT_SCALE_UP_THRESHOLD,
@@ -97,26 +97,30 @@ public record ScalingConfig(int windowSize,
 
     private static Result<Unit> validatePositive(double value, String name) {
         return value > 0
-              ? Result.unitResult()
-              : Causes.cause(name + " must be positive, got: " + value).result();
+               ? Result.unitResult()
+               : Causes.cause(name + " must be positive, got: " + value).result();
     }
 
     private static Result<Unit> validatePositive(int value, String name) {
         return value > 0
-              ? Result.unitResult()
-              : Causes.cause(name + " must be positive, got: " + value).result();
+               ? Result.unitResult()
+               : Causes.cause(name + " must be positive, got: " + value).result();
     }
 
     private static Result<Unit> validateThresholdOrder(double scaleUp, double scaleDown) {
         return scaleUp > scaleDown
-              ? Result.unitResult()
-              : Causes.cause("scaleUpThreshold must be greater than scaleDownThreshold, got: " + scaleUp + " <= " + scaleDown)
-                            .result();
+               ? Result.unitResult()
+               : Causes.cause("scaleUpThreshold must be greater than scaleDownThreshold, got: " + scaleUp
+                             + " <= " + scaleDown).result();
     }
 
     private static Result<Unit> validateWeights(Map<ScalingMetric, Double> weights) {
-        for (var entry : weights.entrySet()) {if (entry.getValue() <0) {return Causes.cause("Weight for " + entry.getKey() + " must be >= 0, got: " + entry.getValue())
-                                                                                           .result();}}
+        for (var entry : weights.entrySet()) {
+            if (entry.getValue() < 0) {
+                return Causes.cause("Weight for " + entry.getKey() + " must be >= 0, got: " + entry.getValue()).result();
+            }
+        }
+
         return Result.unitResult();
     }
 
@@ -126,8 +130,10 @@ public record ScalingConfig(int windowSize,
 
     public Result<ScalingConfig> withWeight(ScalingMetric metric, double newWeight) {
         var newWeights = new EnumMap<ScalingMetric, Double>(ScalingMetric.class);
+
         newWeights.putAll(weights);
         newWeights.put(metric, newWeight);
+
         return scalingConfig(windowSize,
                              evaluationInterval.millis(),
                              scaleUpThreshold,

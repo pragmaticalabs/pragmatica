@@ -9,15 +9,18 @@ import org.pragmatica.lang.Promise;
 
 
 public final class MetricsInterceptorFactory implements ResourceFactory<MetricsMethodInterceptor, MetricsConfig> {
-    @Override public Class<MetricsMethodInterceptor> resourceType() {
+    @Override
+    public Class<MetricsMethodInterceptor> resourceType() {
         return MetricsMethodInterceptor.class;
     }
 
-    @Override public Class<MetricsConfig> configType() {
+    @Override
+    public Class<MetricsConfig> configType() {
         return MetricsConfig.class;
     }
 
-    @Override public Promise<MetricsMethodInterceptor> provision(MetricsConfig config) {
+    @Override
+    public Promise<MetricsMethodInterceptor> provision(MetricsConfig config) {
         return Promise.success(new MetricsMethodInterceptor(config));
     }
 }

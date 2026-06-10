@@ -13,7 +13,9 @@ import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
 
 
-@Codec@CodecFor(MethodName.class) public sealed interface InvocationMessage extends ProtocolMessage {
+@Codec
+@CodecFor(MethodName.class)
+public sealed interface InvocationMessage extends ProtocolMessage {
     @Override
     default StreamType streamType() {
         return StreamType.INVOKE;

@@ -52,6 +52,7 @@ public final class StorageFactory {
                                                String nodeId,
                                                Option<DHTClient> dhtClient) {
         var result = new LinkedHashMap<String, StorageSetup>();
+
         configs.forEach((name, config) -> createOne(name, config, nodeId, dhtClient).onSuccess(setup -> result.put(name,
                                                                                                                    setup))
                                                    .onFailure(cause -> log.error("Failed to create storage '{}': {}",
@@ -129,6 +130,7 @@ public final class StorageFactory {
         var snapshotConfig = buildSnapshotConfig(config, nodeId);
         var snapshotManager = SnapshotManager.snapshotManager(metadataStore, snapshotConfig);
         var readinessGate = StorageReadinessGate.storageReadinessGate();
+
         restoreAndSignalReady(name, snapshotManager, metadataStore, readinessGate);
         log.info("Storage '{}' created: {} tier(s), snapshot path={}", name, tiers.size(), config.snapshotPath());
 

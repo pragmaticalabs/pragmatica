@@ -22,8 +22,8 @@ public interface SecretsProvider {
     }
 
     default Promise<Map<String, String>> resolveSecrets(List<String> secretPaths) {
-        var futures = secretPaths.stream().map(path -> resolveSecret(path).map(value -> Map.entry(path, value)))
-                                        .toList();
+        var futures = secretPaths.stream().map(path -> resolveSecret(path).map(value -> Map.entry(path, value))).toList();
+
         return Promise.allOf(futures).map(SecretsProvider::collectEntries);
     }
 
@@ -33,7 +33,11 @@ public interface SecretsProvider {
 
     private static Map<String, String> collectEntries(List<Result<Map.Entry<String, String>>> results) {
         var map = new HashMap<String, String>();
-        for (var result : results) {result.onSuccess(entry -> map.put(entry.getKey(), entry.getValue()));}
+
+        for (var result : results) {
+            result.onSuccess(entry -> map.put(entry.getKey(), entry.getValue()));
+        }
+
         return Map.copyOf(map);
     }
 }

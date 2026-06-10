@@ -100,6 +100,7 @@ public interface OrderProcessing {
                                                                               total -> total.compareTo(BigDecimal.ZERO) > 0);
             }
         }
+
         return new orderProcessing(orders, users);
     }
 

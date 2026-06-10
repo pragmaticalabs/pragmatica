@@ -51,7 +51,6 @@ import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.resource.ScheduleConfig;
 import org.pragmatica.aether.resource.StreamNameConfig;
 import org.pragmatica.aether.resource.TopicConfig;
-import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -143,7 +142,6 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                      ctx.self().id());
             ctx.activeOnEntryCallback().onPresent(Runnable::run);
             processPendingLoadCommands();
-
             if (!pendingReactivation.isEmpty()) {
                 log.info("Node {} has {} suspended slices to reactivate",
                          ctx.self().id(),
@@ -169,6 +167,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private void handleQuorumDisappeared(TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
             var suspended = suspendSlices();
+
             log.info("Node {} NodeDeploymentManager deactivated with {} suspended slices",
                      ctx.self().id(),
                      suspended.size());
@@ -177,6 +176,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private void handleShutdown(TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
             var suspended = suspendSlices();
+
             log.info("Node {} NodeDeploymentManager shutting down with {} suspended slices",
                      ctx.self().id(),
                      suspended.size());
@@ -201,6 +201,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             var value = valuePut.cause().value();
             var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId());
             var sliceNodeValue = SliceNodeValue.sliceNodeValue(value.state());
+
             log.debug("NodeArtifactKey put received for key: {}, state: {}", key, value.state());
             recordDeployment(sliceKey, sliceNodeValue);
             processStateTransition(sliceKey, value.state());
@@ -217,6 +218,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             }
 
             var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId());
+
             tx.handle(() -> handleSliceValueRemove(sliceKey));
         }
 
@@ -229,6 +231,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             var key = valuePut.cause().key();
             var value = valuePut.cause().value();
             var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), ctx.self());
+
             routingEpochAckTracker.observeAck(sliceKey, key.nodeId(), value.observedCoreEpoch()).onPresent(this::fastTransitionToActive);
         }
 
@@ -238,12 +241,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private void processPendingLoadEntry(NodeArtifactKey key, NodeArtifactValue value) {
-            if (!key.isForNode(ctx.self()) || value.state() != SliceState.LOAD) {return;}
+            if (!key.isForNode(ctx.self()) || value.state() != SliceState.LOAD) {
+                return;
+            }
 
             log.info("Node {} found pending LOAD command for {}, processing",
                      ctx.self().id(),
                      key.artifact());
             var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId());
+
             recordDeployment(sliceKey,
                              SliceNodeValue.sliceNodeValue(value.state()));
             processStateTransition(sliceKey, value.state());
@@ -276,7 +282,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private void fastTransitionToActive(SliceNodeKey sliceKey) {
             var current = Option.option(deployments.get(sliceKey)).map(SliceDeployment::state);
 
-            if (!current.map(state -> state == SliceState.ROUTING).or(false)) {return;}
+            if (!current.map(state -> state == SliceState.ROUTING).or(false)) {
+                return;
+            }
 
             log.debug("Cross-node ack threshold reached for {} — fast-transitioning ROUTING → ACTIVE",
                       sliceKey.artifact());
@@ -286,9 +294,11 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private void handleSliceValueRemove(SliceNodeKey sliceKey) {
             log.debug("ValueRemove received for key: {}", sliceKey);
             var deployment = Option.option(deployments.remove(sliceKey));
-            routingEpochAckTracker.clear(sliceKey);
 
-            if (shouldForceCleanup(deployment)) {forceCleanupSlice(sliceKey);}
+            routingEpochAckTracker.clear(sliceKey);
+            if (shouldForceCleanup(deployment)) {
+                forceCleanupSlice(sliceKey);
+            }
         }
 
         private void recordDeployment(SliceNodeKey sliceKey, SliceNodeValue sliceNodeValue) {
@@ -297,16 +307,18 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             var previousDeployment = Option.option(deployments.get(sliceKey));
             var previousState = previousDeployment.map(SliceDeployment::state);
             var deployment = SliceDeployment.sliceDeployment(sliceKey, state, timestamp);
+
             deployments.put(sliceKey, deployment);
             var effectiveFromState = previousState.or(state);
+
             ctx.router().route(StateTransition.stateTransition(sliceKey.artifact(),
                                                                ctx.self(),
                                                                effectiveFromState,
                                                                state,
                                                                timestamp));
-
             if (state == SliceState.FAILED) {
                 var errorMessage = sliceNodeValue.failureReason().or("Unknown failure");
+
                 previousState.onPresent(prevState -> ctx.router()
                                                         .route(DeploymentFailed.deploymentFailed(sliceKey.artifact(),
                                                                                                  ctx.self(),
@@ -323,9 +335,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private void forceCleanupSlice(SliceNodeKey sliceKey) {
             unpublishEndpoints(sliceKey).flatMap(this::unpublishTopicSubscriptions).flatMap(this::unpublishStreamSubscriptions).flatMap(key -> releaseStreamReferences(key).map(_ -> key)).flatMap(this::unpublishScheduledTasks).flatMap(this::unpublishHttpRoutes).withSuccess(this::unregisterSliceFromInvocation).flatMap(key -> ctx.sliceStore()
-                                                                                                                                                                                                                                                                             .deactivateSlice(key.artifact())).flatMap(_ -> ctx.sliceStore()
-                                                                                                                                                                                                                                                                                                                               .unloadSlice(sliceKey.artifact())).onFailure(cause -> logCleanupFailure(sliceKey,
-                                                                                                                                                                                                                                                                                                                                                                                                       cause));
+                                                                                                                                                                                                                                                                                                                                        .deactivateSlice(key.artifact())).flatMap(_ -> ctx.sliceStore()
+                                                                                                                                                                                                                                                                                                                                                                                          .unloadSlice(sliceKey.artifact())).onFailure(cause -> logCleanupFailure(sliceKey,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                  cause));
         }
 
         private void logCleanupFailure(SliceNodeKey sliceKey, Cause cause) {
@@ -381,17 +393,21 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private void handleSliceNotFoundForActivation(SliceNodeKey sliceKey) {
             var cause = SLICE_NOT_FOUND_FOR_ACTIVATION.apply(sliceKey.artifact().asString());
+
             log.error("Slice {} state is ACTIVATE but not found in SliceStore", sliceKey.artifact());
             transitionToFailed(sliceKey, cause);
         }
 
         private void performActivation(SliceNodeKey sliceKey) {
             transitionTo(sliceKey, SliceState.ACTIVATING).flatMap(this::activateSliceWithTimeout).flatMap(this::registerSliceForInvocation).flatMap(this::publishTopicSubscriptions).flatMap(this::publishStreamSubscriptions).flatMap(this::publishScheduledTasks).flatMap(this::registerAndNotifyConfig).flatMap(this::publishRoutesIfPresent).flatMap(this::transitionToActiveWithStreamRefs).flatMap(this::publishEndpoints).timeout(ctx.activationChainTimeout()).withFailure(cause -> handleActivationFailure(sliceKey,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                  cause));
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    cause));
         }
 
         private Promise<SliceNodeKey> publishRoutesIfPresent(SliceNodeKey sliceKey) {
-            if (!sliceHasHttpRoutes(sliceKey.artifact())) {return Promise.success(sliceKey);}
+            if (!sliceHasHttpRoutes(sliceKey.artifact())) {
+                return Promise.success(sliceKey);
+            }
+
             return transitionTo(sliceKey, SliceState.ROUTING).withSuccess(this::registerEpochAckExpectation)
                                .flatMap(key -> publishHttpRoutes(key).map(_ -> key));
         }
@@ -399,13 +415,16 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private void registerEpochAckExpectation(SliceNodeKey sliceKey) {
             var targets = collectTargetNodesForArtifact(sliceKey);
 
-            if (targets.isEmpty()) {return;}
+            if (targets.isEmpty()) {
+                return;
+            }
 
             routingEpochAckTracker.registerExpectation(sliceKey, Epoch.ZERO, targets);
         }
 
         private Set<NodeId> collectTargetNodesForArtifact(SliceNodeKey sliceKey) {
             var targets = new HashSet<NodeId>();
+
             ctx.kvStore().forEach(NodeArtifactKey.class,
                                   NodeArtifactValue.class,
                                   (k, v) -> collectTargetIfMatches(targets, sliceKey, k, v));
@@ -417,9 +436,17 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                             SliceNodeKey sliceKey,
                                             NodeArtifactKey key,
                                             NodeArtifactValue value) {
-            if (!key.artifact().equals(sliceKey.artifact())) {return;}
-            if (key.nodeId().equals(ctx.self())) {return;}
-            if (value.state() == SliceState.FAILED || value.state() == SliceState.UNLOAD || value.state() == SliceState.UNLOADING) {return;}
+            if (!key.artifact().equals(sliceKey.artifact())) {
+                return;
+            }
+
+            if (key.nodeId().equals(ctx.self())) {
+                return;
+            }
+
+            if (value.state() == SliceState.FAILED || value.state() == SliceState.UNLOAD || value.state() == SliceState.UNLOADING) {
+                return;
+            }
 
             targets.add(key.nodeId());
         }
@@ -459,6 +486,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private Promise<Unit> publishHttpRoutes(SliceNodeKey sliceKey) {
             var artifact = sliceKey.artifact();
+
             log.debug("publishHttpRoutes called for {} - httpRoutePublisher.isPresent={}, sliceInvokerFacade.isPresent={}",
                       artifact,
                       ctx.httpRoutePublisher().isPresent(),
@@ -478,6 +506,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                   SliceInvokerFacade facade,
                                                   SliceStore.LoadedSlice ls) {
             var classLoader = ls.slice().getClass().getClassLoader();
+
             log.debug("Publishing HTTP routes for {} using classLoader={}",
                       artifact,
                       classLoader.getClass().getName());
@@ -504,6 +533,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private Result<Unit> registerSliceBridge(Artifact artifact, Slice slice) {
             var sliceCodec = slice.codec(ctx.nodeCodec());
             var sliceBridge = DefaultSliceBridge.defaultSliceBridge(artifact, slice, sliceCodec);
+
             ctx.invocationHandler().registerSlice(artifact, sliceBridge);
             log.debug("Registered slice {} for invocation", artifact);
 
@@ -512,6 +542,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private void unregisterSliceFromInvocation(SliceNodeKey sliceKey) {
             var artifact = sliceKey.artifact();
+
             ctx.invocationHandler().unregisterSlice(artifact);
             log.debug("Unregistered slice {} from invocation", artifact);
         }
@@ -527,7 +558,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private Promise<Unit> publishEndpointsForSlice(Artifact artifact, Slice slice) {
             var methods = slice.methods();
 
-            if (methods.isEmpty()) {return Promise.unitPromise();}
+            if (methods.isEmpty()) {
+                return Promise.unitPromise();
+            }
 
             int instanceNumber = Math.abs(ctx.self().id().hashCode());
             var methodNames = methods.stream().map(m -> m.name()
@@ -556,8 +589,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private void performDeactivation(SliceNodeKey sliceKey) {
             transitionTo(sliceKey, SliceState.DEACTIVATING).flatMap(this::unpublishEndpoints).flatMap(this::unpublishTopicSubscriptions).flatMap(this::unpublishStreamSubscriptions).flatMap(key -> releaseStreamReferences(key).map(_ -> key)).flatMap(this::unpublishScheduledTasks).flatMap(this::unpublishHttpRoutes).withSuccess(this::unregisterSliceFromInvocation).withSuccess(this::unregisterConfig).flatMap(this::deactivateSliceWithTimeout).flatMap(key -> transitionTo(key,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            SliceState.LOADED)).withFailure(cause -> handleDeactivationFailure(sliceKey,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               cause));
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     SliceState.LOADED)).withFailure(cause -> handleDeactivationFailure(sliceKey,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        cause));
         }
 
         private Promise<SliceNodeKey> deactivateSliceWithTimeout(SliceNodeKey sliceKey) {
@@ -594,7 +627,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private Promise<Unit> unpublishEndpointsForSlice(Artifact artifact, Slice slice) {
             var methods = slice.methods();
 
-            if (methods.isEmpty()) {return Promise.unitPromise();}
+            if (methods.isEmpty()) {
+                return Promise.unitPromise();
+            }
 
             var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(ctx.self(), artifact);
             var nodeArtifactValue = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
@@ -621,7 +656,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private Promise<Unit> doPublishTopicSubscriptions(Artifact artifact, Slice slice) {
             var entries = readSubscriptionsFromManifest(artifact, slice);
 
-            if (entries.isEmpty()) {return Promise.unitPromise();}
+            if (entries.isEmpty()) {
+                return Promise.unitPromise();
+            }
 
             var commands = entries.stream().<KVCommand<AetherKey>> map(entry -> buildTopicSubscriptionPutCommand(artifact,
                                                                                                                  entry)).toList();
@@ -654,7 +691,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private Promise<Unit> doUnpublishTopicSubscriptions(Artifact artifact, Slice slice) {
             var entries = readSubscriptionsFromManifest(artifact, slice);
 
-            if (entries.isEmpty()) {return Promise.unitPromise();}
+            if (entries.isEmpty()) {
+                return Promise.unitPromise();
+            }
 
             var commands = entries.stream().<KVCommand<AetherKey>> map(entry -> buildTopicSubscriptionRemoveCommand(artifact,
                                                                                                                     entry)).toList();
@@ -694,9 +733,12 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             var classLoader = slice.getClass().getClassLoader();
 
             for (var iface : slice.getClass().getInterfaces()) {
-                if (iface == Slice.class) {continue;}
+                if (iface == Slice.class) {
+                    continue;
+                }
 
                 var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
+
                 readReactiveEntriesFromManifest(classLoader, manifestPath, result);
             }
 
@@ -708,17 +750,21 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                      String manifestPath,
                                                      List<ReactiveManifestEntry> result) {
             try (var is = classLoader.getResourceAsStream(manifestPath)) {
-                if (is == null) {return;}
+                if (is == null) {
+                    return;
+                }
 
                 var props = new Properties();
+
                 props.load(is);
                 var count = Integer.parseInt(props.getProperty("reactive.count", "0"));
 
-                for (int i = 0;i <count;i++) {
+                for (int i = 0; i < count; i++) {
                     var prefix = "reactive." + i + ".";
                     var category = props.getProperty(prefix + "category", "");
                     var method = props.getProperty(prefix + "method", "");
                     var config = props.getProperty(prefix + "config", "");
+
                     result.add(new ReactiveManifestEntry(category, method, config, props, prefix));
                 }
             } catch (Exception e) {
@@ -734,7 +780,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             for (var entry : reactive) {
                 if ("subscription".equals(entry.category())) {
                     resolveTopicAddress(artifact, entry.config()).flatMap(address -> MethodName.methodName(entry.method()).map(method -> new SubscriptionManifestEntry(address,
-                                                                                                                                                                      method))).option().onPresent(result::add);
+                                                                                                                                                                       method))).option().onPresent(result::add);
                 }
             }
 
@@ -758,11 +804,14 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private Result<ResourceAddress> resolveTopicAddress(Artifact artifact, TopicConfig config) {
             var declared = config.topicName();
+
             if (declared != null && declared.contains(":")) {
                 return config.address();
             }
-            return BlueprintNamespace.deriveNamespace(artifact)
-                                     .flatMap(namespace -> ResourceAddress.resourceAddress(namespace, declared, ResourceVersion.defaultVersion()));
+
+            return BlueprintNamespace.deriveNamespace(artifact).flatMap(namespace -> ResourceAddress.resourceAddress(namespace,
+                                                                                                                     declared,
+                                                                                                                     ResourceVersion.defaultVersion()));
         }
 
         private Promise<SliceNodeKey> publishScheduledTasks(SliceNodeKey sliceKey) {
@@ -777,7 +826,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private Promise<Unit> doPublishScheduledTasks(Artifact artifact, Slice slice) {
             var entries = readScheduledTasksFromManifest(slice);
 
-            if (entries.isEmpty()) {return Promise.unitPromise();}
+            if (entries.isEmpty()) {
+                return Promise.unitPromise();
+            }
 
             var commands = new ArrayList<KVCommand<AetherKey>>();
 
@@ -786,7 +837,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                                                                                      entry,
                                                                                                                                      config)));
             }
-            if (commands.isEmpty()) {return Promise.unitPromise();}
+
+            if (commands.isEmpty()) {
+                return Promise.unitPromise();
+            }
 
             return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Published {} scheduled tasks for {}",
                                                                         commands.size(),
@@ -819,7 +873,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private Promise<Unit> doUnpublishScheduledTasks(Artifact artifact, Slice slice) {
             var entries = readScheduledTasksFromManifest(slice);
 
-            if (entries.isEmpty()) {return Promise.unitPromise();}
+            if (entries.isEmpty()) {
+                return Promise.unitPromise();
+            }
 
             var commands = entries.stream().<KVCommand<AetherKey>> map(entry -> buildScheduledTaskRemoveCommand(artifact,
                                                                                                                 entry)).toList();
@@ -843,6 +899,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private Promise<SliceNodeKey> registerAndNotifyConfig(SliceNodeKey sliceKey) {
             var artifact = sliceKey.artifact();
+
             findLoadedSlice(artifact).onPresent(ls -> registerSliceForConfigUpdates(artifact, ls.slice()));
 
             return Promise.success(sliceKey);
@@ -851,13 +908,17 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private void registerSliceForConfigUpdates(Artifact artifact, Slice slice) {
             var entries = readConfigUpdateEntriesFromManifest(slice);
 
-            if (entries.isEmpty()) {return;}
+            if (entries.isEmpty()) {
+                return;
+            }
 
             var classLoader = slice.getClass().getClassLoader();
             var factoryClassName = entries.getFirst().factoryClassName();
             var sliceInstance = extractSliceInstance(slice);
+
             configNotificationManager.register(artifact, sliceInstance, classLoader, factoryClassName);
             var sections = entries.stream().map(ConfigUpdateManifestEntry::configSection).toList();
+
             configNotificationManager.notifyInitial(artifact, sections, buildConfigFacade(artifact));
             log.debug("Registered slice {} for config updates on sections: {}", artifact, sections);
         }
@@ -867,7 +928,12 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private Object extractSliceInstance(Slice slice) {
-            for (var iface : slice.getClass().getInterfaces()) {if (iface != Slice.class) {return slice;}}
+            for (var iface : slice.getClass().getInterfaces()) {
+                if (iface != Slice.class) {
+                    return slice;
+                }
+            }
+
             return slice;
         }
 
@@ -877,9 +943,12 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             var classLoader = slice.getClass().getClassLoader();
 
             for (var iface : slice.getClass().getInterfaces()) {
-                if (iface == Slice.class) {continue;}
+                if (iface == Slice.class) {
+                    continue;
+                }
 
                 var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
+
                 readConfigUpdateEntries(classLoader, manifestPath, result);
             }
 
@@ -891,22 +960,28 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                              String manifestPath,
                                              List<ConfigUpdateManifestEntry> result) {
             try (var is = classLoader.getResourceAsStream(manifestPath)) {
-                if (is == null) {return;}
+                if (is == null) {
+                    return;
+                }
 
                 var props = new Properties();
+
                 props.load(is);
                 var factoryClassName = props.getProperty("slice.factory", "");
 
-                if (factoryClassName.isEmpty()) {return;}
+                if (factoryClassName.isEmpty()) {
+                    return;
+                }
 
                 var count = Integer.parseInt(props.getProperty("reactive.count", "0"));
 
-                for (int i = 0;i <count;i++) {
+                for (int i = 0; i < count; i++) {
                     var prefix = "reactive." + i + ".";
                     var category = props.getProperty(prefix + "category", "");
 
                     if ("config-update".equals(category)) {
                         var configSection = props.getProperty(prefix + "config");
+
                         if (configSection != null) {
                             result.add(new ConfigUpdateManifestEntry(configSection, factoryClassName));
                         }
@@ -960,7 +1035,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private Promise<Unit> doPublishStreamSubscriptions(Artifact artifact, Slice slice) {
             var entries = readStreamSubscriptionsFromManifest(artifact, slice);
 
-            if (entries.isEmpty()) {return Promise.unitPromise();}
+            if (entries.isEmpty()) {
+                return Promise.unitPromise();
+            }
 
             var commands = entries.stream().<KVCommand<AetherKey>> map(entry -> buildStreamSubscriptionPutCommand(artifact,
                                                                                                                   entry)).toList();
@@ -1001,7 +1078,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private Promise<Unit> doUnpublishStreamSubscriptions(Artifact artifact, Slice slice) {
             var entries = readStreamSubscriptionsFromManifest(artifact, slice);
 
-            if (entries.isEmpty()) {return Promise.unitPromise();}
+            if (entries.isEmpty()) {
+                return Promise.unitPromise();
+            }
 
             var commands = entries.stream().<KVCommand<AetherKey>> map(entry -> buildStreamSubscriptionRemoveCommand(artifact,
                                                                                                                      entry)).toList();
@@ -1041,6 +1120,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 if ("stream".equals(entry.category())) {
                     var batchMode = Boolean.parseBoolean(entry.getProperty("batch"));
                     var eventType = entry.getProperty("eventType");
+
                     resolveStreamName(artifact, entry.config()).flatMap(streamName -> MethodName.methodName(entry.method()).map(method -> new StreamSubscriptionManifestEntry(streamName,
                                                                                                                                                                               entry.config(),
                                                                                                                                                                               method,
@@ -1065,7 +1145,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private void handleUnloading(SliceNodeKey sliceKey) {
             transitionTo(sliceKey, SliceState.UNLOADING).flatMap(this::unpublishEndpoints).flatMap(this::unpublishTopicSubscriptions).flatMap(this::unpublishStreamSubscriptions).flatMap(key -> releaseStreamReferences(key).map(_ -> key)).flatMap(this::unpublishScheduledTasks).flatMap(this::unpublishHttpRoutes).withSuccess(this::unregisterSliceFromInvocation).flatMap(this::unloadSliceWithTimeout).flatMap(this::deleteSliceNodeKey).withSuccess(this::removeFromDeployments).withFailure(cause -> handleUnloadFailure(sliceKey,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                       cause));
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  cause));
         }
 
         private Promise<SliceNodeKey> unloadSliceWithTimeout(SliceNodeKey sliceKey) {
@@ -1107,11 +1187,11 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         // KvBackedStreamRegistry acquire/release command builders (NOT the Promise-returning
         // acquireReference/releaseReference wrappers, which would split the consensus round and break
         // the §8.5 atomic-batch invariant).
-
         /// Spec §8.5: piggyback per-stream refcount increments on the same consensus round as the
         /// SliceNodeValue ACTIVE put. N active replicas ⇒ N refs (per-instance accounting).
         private Promise<SliceNodeKey> transitionToActiveWithStreamRefs(SliceNodeKey sliceKey) {
             var refCommands = buildStreamRefCommands(sliceKey, RefcountAction.ACQUIRE);
+
             return updateSliceStateWithExtraCommands(sliceKey,
                                                      SliceNodeValue.sliceNodeValue(SliceState.ACTIVE),
                                                      refCommands);
@@ -1123,30 +1203,53 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// the deactivate/unload chain (the slice is already leaving ACTIVE).
         private Promise<Unit> releaseStreamReferences(SliceNodeKey sliceKey) {
             var commands = buildStreamRefCommands(sliceKey, RefcountAction.RELEASE);
-            if (commands.isEmpty()) {return Promise.unitPromise();}
+
+            if (commands.isEmpty()) {
+                return Promise.unitPromise();
+            }
+
             return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Released {} stream refs for {}",
                                                                         commands.size(),
                                                                         sliceKey.artifact()))
-                                              .onFailure(cause -> log.warn("Failed to release stream refs for {}: {}",
-                                                                           sliceKey.artifact(),
-                                                                           cause.message()));
+                                 .onFailure(cause -> log.warn("Failed to release stream refs for {}: {}",
+                                                              sliceKey.artifact(),
+                                                              cause.message()));
         }
 
-        private enum RefcountAction {ACQUIRE, RELEASE}
+        private enum RefcountAction {
+            ACQUIRE,
+            RELEASE
+        }
 
         private List<KVCommand<AetherKey>> buildStreamRefCommands(SliceNodeKey sliceKey, RefcountAction action) {
             var loaded = findLoadedSlice(sliceKey.artifact());
-            if (loaded.isEmpty()) {return List.of();}
+
+            if (loaded.isEmpty()) {
+                return List.of();
+            }
+
             var declarations = readStreamRoleDeclarationsFromManifest(loaded.unwrap().slice());
-            if (declarations.isEmpty()) {return List.of();}
+
+            if (declarations.isEmpty()) {
+                return List.of();
+            }
+
             var bindings = lookupStreamBindings(sliceKey);
-            if (bindings.isEmpty()) {return List.of();}
+
+            if (bindings.isEmpty()) {
+                return List.of();
+            }
+
             var registry = streamRegistry();
             var commands = new ArrayList<KVCommand<AetherKey>>();
+
             for (var declaration : declarations) {
-                bindings.flatMap(b -> b.addressFor(declaration.alias()))
-                        .onPresent(address -> appendRefCommand(registry, commands, address, action));
+                bindings.flatMap(b -> b.addressFor(declaration.alias())).onPresent(address -> appendRefCommand(registry,
+                                                                                                               commands,
+                                                                                                               address,
+                                                                                                               action));
             }
+
             return List.copyOf(commands);
         }
 
@@ -1195,22 +1298,35 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// uniformly.
         private record StreamRoleDeclaration(String alias, @SuppressWarnings("unused") String role) {}
 
-        @SuppressWarnings("JBCT-EX-01") private List<StreamRoleDeclaration> readStreamRoleDeclarationsFromManifest(Slice slice) {
+        @SuppressWarnings("JBCT-EX-01")
+        private List<StreamRoleDeclaration> readStreamRoleDeclarationsFromManifest(Slice slice) {
             var result = new ArrayList<StreamRoleDeclaration>();
             var classLoader = slice.getClass().getClassLoader();
+
             for (var iface : slice.getClass().getInterfaces()) {
-                if (iface == Slice.class) {continue;}
-                appendStreamRoleDeclarations(classLoader, "META-INF/slice/" + iface.getSimpleName() + ".manifest", result);
+                if (iface == Slice.class) {
+                    continue;
+                }
+
+                appendStreamRoleDeclarations(classLoader,
+                                             "META-INF/slice/" + iface.getSimpleName() + ".manifest",
+                                             result);
             }
+
             return result;
         }
 
-        @SuppressWarnings("JBCT-EX-01") private void appendStreamRoleDeclarations(ClassLoader classLoader,
-                                                                                  String manifestPath,
-                                                                                  List<StreamRoleDeclaration> sink) {
+        @SuppressWarnings("JBCT-EX-01")
+        private void appendStreamRoleDeclarations(ClassLoader classLoader,
+                                                  String manifestPath,
+                                                  List<StreamRoleDeclaration> sink) {
             try (var is = classLoader.getResourceAsStream(manifestPath)) {
-                if (is == null) {return;}
+                if (is == null) {
+                    return;
+                }
+
                 var props = new Properties();
+
                 props.load(is);
                 appendRoleEntries(props, "stream.publisher.", "stream.publishers.count", "producer", sink);
                 appendRoleEntries(props, "stream.access.", "stream.access.count", "consumer", sink);
@@ -1225,23 +1341,42 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                               String defaultRole,
                                               List<StreamRoleDeclaration> sink) {
             var count = parseManifestCount(props.getProperty(countKey));
+
             for (int i = 0; i < count; i++) {
                 var configSection = props.getProperty(prefix + i + ".config");
-                if (configSection == null || configSection.isEmpty()) {continue;}
+
+                if (configSection == null || configSection.isEmpty()) {
+                    continue;
+                }
+
                 var alias = aliasOf(configSection);
-                if (alias.isEmpty()) {continue;}
+
+                if (alias.isEmpty()) {
+                    continue;
+                }
+
                 sink.add(new StreamRoleDeclaration(alias, props.getProperty(prefix + i + ".role", defaultRole)));
             }
         }
 
         private static int parseManifestCount(String raw) {
-            if (raw == null || raw.isEmpty()) {return 0;}
-            try {return Integer.parseInt(raw.trim());} catch (NumberFormatException _) {return 0;}
+            if (raw == null || raw.isEmpty()) {
+                return 0;
+            }
+
+            try {
+                return Integer.parseInt(raw.trim());
+            } catch (NumberFormatException _) {
+                return 0;
+            }
         }
 
         private static String aliasOf(String configSection) {
             var prefix = "streams.";
-            return configSection.startsWith(prefix) ? configSection.substring(prefix.length()) : "";
+
+            return configSection.startsWith(prefix)
+                   ? configSection.substring(prefix.length())
+                   : "";
         }
 
         /// Variant of [#updateSliceStateWithRetry] that batches `extraCommands` (the stream-ref
@@ -1263,7 +1398,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       attempt,
                       extraCommands.size());
             var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(ctx.self(), sliceKey.artifact());
-            var transitionedAt = value.state().isTransitional() ? ctx.nowMs() : 0L;
+            var transitionedAt = value.state().isTransitional()
+                                 ? ctx.nowMs()
+                                 : 0L;
             var nodeArtifactValue = value.state() == SliceState.FAILED
                                     ? new NodeArtifactValue(SliceState.FAILED,
                                                             value.failureReason(),
@@ -1273,6 +1410,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                             0L)
                                     : NodeArtifactValue.nodeArtifactValue(value.state(), transitionedAt);
             var commands = new ArrayList<KVCommand<AetherKey>>();
+
             commands.add(new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue));
             commands.addAll(extraCommands);
 
@@ -1296,8 +1434,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                          CONSENSUS_MAX_RETRIES,
                          sliceKey.artifact(),
                          value.state());
+
                 return Causes.cause("Consensus batch timed out after " + CONSENSUS_MAX_RETRIES + " retries").promise();
             }
+
             return updateSliceStateWithExtraCommandsAndRetry(sliceKey, value, extraCommands, attempt + 1);
         }
 
@@ -1318,7 +1458,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                  Cause originalCause,
                                                  Cause writeCause,
                                                  int attempt) {
-            if (attempt <MAX_TRANSITION_RETRIES) {
+            if (attempt < MAX_TRANSITION_RETRIES) {
                 log.warn("Failed to write FAILED state for {} (attempt {}/{}), retrying in {}ms: {}",
                          sliceKey.artifact(),
                          attempt + 1,
@@ -1381,6 +1521,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                          CONSENSUS_MAX_RETRIES,
                          sliceKey.artifact(),
                          value.state());
+
                 return Causes.cause("Consensus operation timed out after " + CONSENSUS_MAX_RETRIES + " retries").promise();
             }
 
@@ -1388,6 +1529,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       sliceKey.artifact(),
                       value.state(),
                       attempt + 1);
+
             return updateSliceStateWithRetry(sliceKey, value, attempt + 1);
         }
 
@@ -1410,6 +1552,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       commands.size(),
                       attempt + 1,
                       CONSENSUS_MAX_RETRIES);
+
             return applyWithRetry(commands, attempt + 1);
         }
 
@@ -1430,7 +1573,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                     log.debug("Suspending active slice {}", sliceKey.artifact());
                     suspendSlice(sliceKey);
                     suspended.add(SuspendedSlice.suspendedSlice(sliceKey, deployment));
-                } else {log.debug("Slice {} in state {} - not suspending", sliceKey.artifact(), deployment.state());}
+                } else {
+                    log.debug("Slice {} in state {} - not suspending", sliceKey.artifact(), deployment.state());
+                }
             }
 
             log.debug("Suspended {} active slices, ready for reactivation", suspended.size());
@@ -1457,13 +1602,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             }
 
             log.info("Reactivating {} suspended slices after quorum restored", suspended.size());
-
-            for (var suspendedSlice : suspended) {reactivateSingleSuspendedSlice(suspendedSlice);}
+            for (var suspendedSlice : suspended) {
+                reactivateSingleSuspendedSlice(suspendedSlice);
+            }
         }
 
         private void reactivateSingleSuspendedSlice(SuspendedSlice suspendedSlice) {
             var sliceKey = suspendedSlice.key();
             var deployment = suspendedSlice.deployment();
+
             deployments.put(sliceKey, deployment);
             var loadedSlice = findLoadedSlice(sliceKey.artifact());
 
@@ -1491,12 +1638,13 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         @Contract
         public void deactivateAllSlices() {
             log.warn("Deactivating all {} slices due to quorum loss", deployments.size());
-
             for (var entry : deployments.entrySet()) {
                 var sliceKey = entry.getKey();
                 var deployment = entry.getValue();
 
-                if (deployment.state() == SliceState.ACTIVE) {forceCleanupSlice(sliceKey);}
+                if (deployment.state() == SliceState.ACTIVE) {
+                    forceCleanupSlice(sliceKey);
+                }
             }
 
             deployments.clear();

@@ -75,6 +75,7 @@ public interface ClusterDeploymentManager {
     Promise<Unit> activate();
     Promise<Unit> deactivate();
     boolean isActive();
+
     @Contract
     @MessageReceiver
     void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut);
@@ -139,7 +140,10 @@ public interface ClusterDeploymentManager {
         BEST_EFFORT,
         ALL_OR_NOTHING;
         public static DeploymentAtomicity parse(String value) {
-            if (value == null || value.isBlank()) {return ALL_OR_NOTHING;}
+            if (value == null || value.isBlank()) {
+                return ALL_OR_NOTHING;
+            }
+
             return switch (value.trim()
                                 .toLowerCase()
                                 .replace("-", "_")) {
@@ -312,6 +316,7 @@ public interface ClusterDeploymentManager {
                                countedMembersSupplier,
                                readyNodesSupplier,
                                drainingNodesSupplier);
+
         return new ClusterDeploymentManagerAdapter(ctx);
     }
 
@@ -382,6 +387,7 @@ public interface ClusterDeploymentManager {
                                                atomicity,
                                                coreMax,
                                                reconcileInterval);
+
         ctxHolder.set(ctx);
 
         return ctx.dormant();

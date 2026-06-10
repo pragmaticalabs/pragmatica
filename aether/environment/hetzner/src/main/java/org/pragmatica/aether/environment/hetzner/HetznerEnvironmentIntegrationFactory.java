@@ -22,17 +22,18 @@ import static org.pragmatica.aether.environment.hetzner.HetznerEnvironmentConfig
 
 
 public record HetznerEnvironmentIntegrationFactory() implements EnvironmentIntegrationFactory {
-    @Override public String providerName() {
+    @Override
+    public String providerName() {
         return "hetzner";
     }
 
-    @Override public Result<EnvironmentIntegration> create(CloudConfig config) {
+    @Override
+    public Result<EnvironmentIntegration> create(CloudConfig config) {
         return buildEnvironmentConfig(config).flatMap(HetznerEnvironmentIntegration::hetznerEnvironmentIntegration)
                                      .map(EnvironmentIntegration.class::cast);
     }
 
     private static final String DEFAULT_SERVER_TYPE = "cx33";
-
     private static final String DEFAULT_IMAGE = "ubuntu-22.04";
 
     private static Result<HetznerEnvironmentConfig> buildEnvironmentConfig(CloudConfig config) {
@@ -41,10 +42,15 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
 
     private static Result<Map<String, String>> validateCredentials(Map<String, String> creds) {
         var missing = new ArrayList<String>();
-        if (blank(creds.get("api_token"))) {missing.add("HCLOUD_TOKEN");}
-        if (!missing.isEmpty()) {return Result.failure(EnvironmentError.CredentialsMissing.credentialsMissing("hetzner",
-                                                                                                              missing)
-        .unwrap());}
+
+        if (blank(creds.get("api_token"))) {
+            missing.add("HCLOUD_TOKEN");
+        }
+
+        if (!missing.isEmpty()) {
+            return Result.failure(EnvironmentError.CredentialsMissing.credentialsMissing("hetzner", missing).unwrap());
+        }
+
         return Result.success(creds);
     }
 
@@ -55,6 +61,7 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
     private static Result<HetznerEnvironmentConfig> buildFromValidated(Map<String, String> creds, CloudConfig config) {
         var compute = config.compute();
         var hetznerConfig = HetznerConfig.hetznerConfig(creds.get("api_token"));
+
         return hetznerEnvironmentConfig(hetznerConfig,
                                         nonBlank(compute.get("server_type"),
                                                  DEFAULT_SERVER_TYPE),
@@ -74,7 +81,11 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
                                                               Map<String, String> lbMap) {
         var lbIdStr = lbMap.getOrDefault("load_balancer_id", "");
         var portStr = lbMap.getOrDefault("destination_port", "");
-        if (lbIdStr.isEmpty() || portStr.isEmpty()) {return envConfig;}
+
+        if (lbIdStr.isEmpty() || portStr.isEmpty()) {
+            return envConfig;
+        }
+
         return hetznerLbConfig(Long.parseLong(lbIdStr),
                                Integer.parseInt(portStr)).map(lb -> withLoadBalancer(envConfig, lb))
                               .or(envConfig);
@@ -85,11 +96,12 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
         var clusterName = discoveryMap.getOrDefault("cluster_name", "");
         var pollInterval = discoveryMap.getOrDefault("poll_interval_ms", "");
         var result = clusterName.isEmpty()
-                    ? envConfig
-                    : envConfig.withDiscovery(clusterName);
+                     ? envConfig
+                     : envConfig.withDiscovery(clusterName);
+
         return pollInterval.isEmpty()
-              ? result
-              : result.withDiscoveryPollInterval(Long.parseLong(pollInterval));
+               ? result
+               : result.withDiscoveryPollInterval(Long.parseLong(pollInterval));
     }
 
     private static HetznerEnvironmentConfig withLoadBalancer(HetznerEnvironmentConfig envConfig,
@@ -109,16 +121,20 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
     }
 
     private static List<Long> parseLongList(String value) {
-        if (value.isEmpty()) {return List.of();}
-        return Arrays.stream(value.split(",")).map(String::trim)
-                            .filter(s -> !s.isEmpty())
-                            .map(Long::parseLong)
-                            .toList();
+        if (value.isEmpty()) {
+            return List.of();
+        }
+
+        return Arrays.stream(value.split(","))
+                     .map(String::trim)
+                     .filter(s -> !s.isEmpty())
+                     .map(Long::parseLong)
+                     .toList();
     }
 
     private static String nonBlank(String value, String fallback) {
         return value == null || value.isBlank()
-              ? fallback
-              : value;
+               ? fallback
+               : value;
     }
 }

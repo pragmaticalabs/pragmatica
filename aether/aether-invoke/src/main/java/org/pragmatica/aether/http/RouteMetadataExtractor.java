@@ -23,13 +23,16 @@ public interface RouteMetadataExtractor {
 }
 
 class RouteMetadataExtractorImpl implements RouteMetadataExtractor {
-    @Override public List<HttpRouteDefinition> extract(RouteSource routes, String artifactCoord) {
-        return routes.routes().map(route -> toDefinition(route, artifactCoord))
-                            .toList();
+    @Override
+    public List<HttpRouteDefinition> extract(RouteSource routes, String artifactCoord) {
+        return routes.routes()
+                     .map(route -> toDefinition(route, artifactCoord))
+                     .toList();
     }
 
     private HttpRouteDefinition toDefinition(Route<?> route, String artifactCoord) {
         var security = resolveSecurityPolicy(route);
+
         return httpRouteDefinition(route.method().name(),
                                    extractPathPrefix(route.path()),
                                    artifactCoord,
@@ -39,21 +42,23 @@ class RouteMetadataExtractorImpl implements RouteMetadataExtractor {
 
     private static SecurityPolicy resolveSecurityPolicy(Route<?> route) {
         return route.security() instanceof SecurityPolicy sp
-              ? sp
-              : SecurityPolicy.publicRoute();
+               ? sp
+               : SecurityPolicy.publicRoute();
     }
 
     private String extractPathPrefix(String path) {
         int placeholderIndex = path.indexOf('{');
+
         return placeholderIndex > 0
-              ? path.substring(0, placeholderIndex)
-              : path;
+               ? path.substring(0, placeholderIndex)
+               : path;
     }
 
     private String deriveSliceMethod(Route<?> route) {
         var name = route.name();
+
         return name.isEmpty()
-              ? route.path()
-              : name;
+               ? route.path()
+               : name;
     }
 }

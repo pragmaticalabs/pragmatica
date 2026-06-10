@@ -39,6 +39,7 @@ public interface EmailerService {
                                                  List.of(recipientFor(event)),
                                                  "Notification from " + event.senderId(),
                                                  NotificationBody.Text.text(event.message()));
+
             return sender.send(email)
                          .onSuccess(_ -> sentCount.incrementAndGet())
                          .onFailure(_ -> failedCount.incrementAndGet())

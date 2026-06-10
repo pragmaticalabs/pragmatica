@@ -148,7 +148,9 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     @Contract
     private void performLeaderChangeBootstrap(Set<NodeId> coreMembers) {
         cluster.onPresent(clusterNode -> applyLeaderChangeBootstrapBatch(clusterNode, coreMembers));
-        if (cluster.isEmpty()) {fireBootstrapCommitted();}
+        if (cluster.isEmpty()) {
+            fireBootstrapCommitted();
+        }
     }
 
     @Contract
@@ -158,18 +160,20 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         var batch = new ArrayList<KVCommand<AetherKey>>();
         var corePlan = planCoreBootstrap(coreMembers);
         var configPlan = planClusterConfigSeed();
+
         corePlan.onPresent(plan -> batch.add(plan.command()));
         configPlan.onPresent(plan -> batch.add(plan.command()));
-
         if (batch.isEmpty()) {
             fireBootstrapCommitted();
 
             return;
         }
+
         if (leaderEpochChanged(capturedEpoch)) {
             log.info("Leader epoch changed during DHT bootstrap planning (captured={}, current={}); skipping partition write — next leader will retry",
                      capturedEpoch,
                      leaderEpochSupplier.get());
+
             return;
         }
 
@@ -177,9 +181,12 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         configPlan.onPresent(this::logClusterConfigSeed);
         var hasCore = corePlan.isPresent();
 
-        if (hasCore) {bootstrapAttempts.incrementAndGet();}
+        if (hasCore) {
+            bootstrapAttempts.incrementAndGet();
+        }
 
         var commandCount = batch.size();
+
         clusterNode.apply(List.copyOf(batch)).onFailure(cause -> log.warn("Leader-change bootstrap batch failed ({} commands, attempt {}/{}): {}",
                                                                           commandCount,
                                                                           bootstrapAttempts.get(),
@@ -189,11 +196,15 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     }
 
     private boolean leaderEpochChanged(Option<Long> captured) {
-        if (captured.isEmpty()) {return false;}
+        if (captured.isEmpty()) {
+            return false;
+        }
 
         var current = leaderEpochSupplier.get();
 
-        if (current.isEmpty()) {return false;}
+        if (current.isEmpty()) {
+            return false;
+        }
 
         return ! captured.unwrap()
                          .equals(current.unwrap());
@@ -201,7 +212,9 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
     @Contract
     private void onLeaderChangeBootstrapCommitted(boolean hasCore, int commandCount) {
-        if (hasCore) {bootstrapComplete.set(true);}
+        if (hasCore) {
+            bootstrapComplete.set(true);
+        }
 
         log.info("Leader-change bootstrap committed: {} commands", commandCount);
         fireBootstrapCommitted();
@@ -211,42 +224,52 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     private void fireBootstrapCommitted() {
         var callback = bootstrapCommittedCallback.get();
 
-        if (callback == null) {return;}
+        if (callback == null) {
+            return;
+        }
 
         Result.lift(callback::run).onFailure(cause -> log.warn("Bootstrap-committed callback threw: {}", cause.message()));
     }
 
     @Contract
     private void attemptBootstrap(Set<NodeId> coreMembers) {
-        if (bootstrapComplete.get()) {return;}
+        if (bootstrapComplete.get()) {
+            return;
+        }
+
         cluster.onPresent(clusterNode -> applyCoreBootstrapRetry(clusterNode, coreMembers));
     }
 
     @Contract
-    private void applyCoreBootstrapRetry(ClusterNode<KVCommand<AetherKey>> clusterNode,
-                                         Set<NodeId> coreMembers) {
+    private void applyCoreBootstrapRetry(ClusterNode<KVCommand<AetherKey>> clusterNode, Set<NodeId> coreMembers) {
         planCoreBootstrap(coreMembers).onPresent(plan -> writeCoreBootstrap(clusterNode, plan));
     }
 
     private Option<CoreBootstrapPlan> planCoreBootstrap(Set<NodeId> coreMembers) {
-        if (bootstrapComplete.get()) {return Option.none();}
+        if (bootstrapComplete.get()) {
+            return Option.none();
+        }
 
         var self = selfSupplier.get();
         var partitions = collectPartitions(kvSnapshotSupplier.get());
         var existing = Option.option(partitions.get(BootstrapModule.CORE_PARTITION_ID));
 
-        return decideCoreOwnership(existing, coreMembers, self).map(command -> new CoreBootstrapPlan(command, existing, self));
+        return decideCoreOwnership(existing, coreMembers, self).map(command -> new CoreBootstrapPlan(command,
+                                                                                                     existing,
+                                                                                                     self));
     }
 
     private Option<ClusterConfigSeedPlan> planClusterConfigSeed() {
         var existing = kvSnapshotSupplier.get().get(ClusterConfigKey.CURRENT);
 
-        if (existing instanceof ClusterConfigValue) {return Option.none();}
+        if (existing instanceof ClusterConfigValue) {
+            return Option.none();
+        }
 
         var baseline = configBaselineSupplier.get();
         var coreCount = baseline.coreCount();
 
-        if (coreCount <3) {
+        if (coreCount < 3) {
             log.debug("Skipping ClusterConfigValue seed: configured core count {} below quorum minimum", coreCount);
 
             return Option.none();
@@ -254,7 +277,6 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
         var coreMin = Math.max(SEED_CORE_MIN, baseline.coreMin());
         var coreMax = normalizeCoreMax(coreCount, baseline.coreMax());
-
         // Seed the cluster name from AETHER_CLUSTER_NAME so the KV-seeded ClusterConfigValue
         // and the env-sourced name agree (Main.verifyClusterNamePresent keys on the same env).
         // Empty remains the last-resort fallback for self-bootstrap paths with no env name.
@@ -289,7 +311,9 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     /// Source the bootstrap-seed cluster name from `AETHER_CLUSTER_NAME` (empty when unset),
     /// so KV and the node-side env gate agree on the cluster identity.
     private static String seedClusterName() {
-        return Option.option(System.getenv("AETHER_CLUSTER_NAME")).filter(s -> !s.isBlank()).or("");
+        return Option.option(System.getenv("AETHER_CLUSTER_NAME"))
+                     .filter(s -> !s.isBlank())
+                     .or("");
     }
 
     @Contract
@@ -311,8 +335,11 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
     @Contract
     private void retryBootstrapIfNeeded() {
-        if (!isLeaderSupplier.getAsBoolean()) {return;}
-        if (!bootstrapComplete.get() && bootstrapAttempts.get() <BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS) {
+        if (!isLeaderSupplier.getAsBoolean()) {
+            return;
+        }
+
+        if (!bootstrapComplete.get() && bootstrapAttempts.get() < BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS) {
             attemptBootstrap(coreMembersSupplier.get());
         }
 
@@ -322,12 +349,12 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     @Contract
     private void retryConfigSeedIfNeeded() {
         cluster.onPresent(clusterNode -> planClusterConfigSeed().onPresent(plan -> {
-                                                                               logClusterConfigSeed(plan);
-                                                                               clusterNode.apply(List.of(plan.command()))
-                                                                                          .onFailure(cause -> log.warn("Config seed retry failed: {}",
-                                                                                                                       cause.message()))
-                                                                                          .onSuccess(_ -> log.info("Config seed applied on retry"));
-                                                                           }));
+            logClusterConfigSeed(plan);
+            clusterNode.apply(List.of(plan.command()))
+                       .onFailure(cause -> log.warn("Config seed retry failed: {}",
+                                                    cause.message()))
+                       .onSuccess(_ -> log.info("Config seed applied on retry"));
+        }));
     }
 
     private Option<KVCommand<AetherKey>> decideCoreOwnership(Option<DhtPartitionOwnershipValue> existing,
@@ -350,12 +377,13 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                                                       NodeId self) {
         var recordedOwner = owner.ownerNodeId();
 
-        if (recordedOwner.equals(self)) {return false;}
-
+        if (recordedOwner.equals(self)) {
+            return false;
+        }
         // Presence-derived (membership-v2 finale): rewrite ownership when the recorded owner is
         // no longer a current core member. Absence from the FSM counted-members set IS the stale
         // signal — there is no synthetic STOPPED/DRAINING lifecycle state to consult anymore.
-        return !coreMembers.contains(recordedOwner);
+        return ! coreMembers.contains(recordedOwner);
     }
 
     private KVCommand<AetherKey> buildInitialCorePartition(NodeId self) {
@@ -376,6 +404,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                                                                           epoch,
                                                                           ownershipTerm,
                                                                           hlcClock.now());
+
         return new KVCommand.Put<AetherKey, AetherValue>(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey(BootstrapModule.CORE_PARTITION_ID),
                                                          value);
     }
@@ -388,6 +417,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
             log.info("Leader epoch changed during DHT bootstrap retry (captured={}, current={}); skipping partition write",
                      capturedEpoch,
                      leaderEpochSupplier.get());
+
             return;
         }
 
@@ -407,7 +437,9 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                                                        entry -> (DhtPartitionOwnershipValue) entry.getValue()));
     }
 
-    private record CoreBootstrapPlan(KVCommand<AetherKey> command, Option<DhtPartitionOwnershipValue> existing, NodeId self) {}
+    private record CoreBootstrapPlan(KVCommand<AetherKey> command,
+                                     Option<DhtPartitionOwnershipValue> existing,
+                                     NodeId self) {}
 
     private record ClusterConfigSeedPlan(KVCommand<AetherKey> command, int coreCount, int coreMin, int coreMax) {}
 }

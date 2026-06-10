@@ -32,6 +32,7 @@ public record CircuitBreakerConfig(int failureThreshold, TimeSpan resetTimeout, 
         var validThreshold = ensure(failureThreshold, Verify.Is::positive);
         var validTimeout = ensure(resetTimeout, Verify.Is::notNull);
         var validAttempts = ensure(testAttempts, Verify.Is::positive);
+
         return all(validThreshold, validTimeout, validAttempts).map(CircuitBreakerConfig::new);
     }
 }

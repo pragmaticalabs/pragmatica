@@ -26,13 +26,14 @@ public final class PgSegmentSink implements SegmentSink {
         return new PgSegmentSink(store);
     }
 
-    @Override public Promise<Unit> seal(SealedSegment segment) {
+    @Override
+    public Promise<Unit> seal(SealedSegment segment) {
         return store.storeSegment(segment.streamName(),
                                   segment.partition(),
                                   segment.startOffset(),
                                   segment.endOffset(),
                                   segment.serializedEvents())
-        .onSuccess(_ -> logDemoted(segment));
+                    .onSuccess(_ -> logDemoted(segment));
     }
 
     private static void logDemoted(SealedSegment segment) {

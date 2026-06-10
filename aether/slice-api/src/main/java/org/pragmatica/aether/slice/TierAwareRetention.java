@@ -6,9 +6,10 @@ package org.pragmatica.aether.slice;
 
 import org.pragmatica.serialization.Codec;
 
-@Codec public record TierAwareRetention(long postSealBufferMs, long postSealMaxCount) {
-    private static final long DEFAULT_POST_SEAL_BUFFER_MS = 60_000L;
 
+@Codec
+public record TierAwareRetention(long postSealBufferMs, long postSealMaxCount) {
+    private static final long DEFAULT_POST_SEAL_BUFFER_MS = 60_000L;
     private static final long DEFAULT_POST_SEAL_MAX_COUNT = 10_000L;
 
     public static TierAwareRetention tierAwareRetention(long postSealBufferMs, long postSealMaxCount) {

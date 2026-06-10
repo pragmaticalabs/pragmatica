@@ -43,12 +43,15 @@ public class DashboardWebSocketHandler implements WebSocketHandler {
     private void onOpen(WebSocketSession session) {
         sessions.put(session.id(), session);
         log.info("Dashboard client connected: {}", session.id());
-
-        if (authenticator.onOpen(session)) {session.send(metricsPublisher.buildInitialState());}
+        if (authenticator.onOpen(session)) {
+            session.send(metricsPublisher.buildInitialState());
+        }
     }
 
     private void onText(WebSocketSession session, String message) {
-        if (authenticator.onMessage(session, message)) {return;}
+        if (authenticator.onMessage(session, message)) {
+            return;
+        }
 
         log.debug("Received from dashboard client {}: {}", session.id(), message);
         handleClientMessage(session, message);
@@ -56,7 +59,13 @@ public class DashboardWebSocketHandler implements WebSocketHandler {
 
     @SuppressWarnings("JBCT-PAT-01")
     private void handleClientMessage(WebSocketSession session, String message) {
-        if (message.contains("\"type\":\"SUBSCRIBE\"")) {log.debug("Client {} subscribed to streams", session.id());} else if (message.contains("\"type\":\"SET_THRESHOLD\"")) {metricsPublisher.handleSetThreshold(message);} else if (message.contains("\"type\":\"GET_HISTORY\"")) {session.send(metricsPublisher.buildHistoryResponse(message));}
+        if (message.contains("\"type\":\"SUBSCRIBE\"")) {
+            log.debug("Client {} subscribed to streams", session.id());
+        } else if (message.contains("\"type\":\"SET_THRESHOLD\"")) {
+            metricsPublisher.handleSetThreshold(message);
+        } else if (message.contains("\"type\":\"GET_HISTORY\"")) {
+            session.send(metricsPublisher.buildHistoryResponse(message));
+        }
     }
 
     private void onClose(WebSocketSession session) {
@@ -67,11 +76,14 @@ public class DashboardWebSocketHandler implements WebSocketHandler {
 
     public static void broadcast(String message) {
         var auth = authenticatorRef.get();
+
         sessions.values().forEach(session -> sendIfAuthenticated(session, message, auth));
     }
 
     private static void sendIfAuthenticated(WebSocketSession session, String message, WebSocketAuthenticator auth) {
-        if (session.isOpen() && (auth == null || auth.isAuthenticated(session.id()))) {session.send(message);}
+        if (session.isOpen() && (auth == null || auth.isAuthenticated(session.id()))) {
+            session.send(message);
+        }
     }
 
     public static int connectedClients() {

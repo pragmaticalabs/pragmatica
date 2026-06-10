@@ -34,7 +34,6 @@ final class DefaultReplicationManager implements ReplicationManager {
     private final ReplicaRegistry registry;
     private final ReplicationTransport transport;
     private final Option<ReplicationBatcher> batcher;
-
     private final ConcurrentHashMap<PendingAckKey, PendingAck> pendingAcks = new ConcurrentHashMap<>();
 
     DefaultReplicationManager(NodeId governorId, ReplicaRegistry registry, ReplicationTransport transport) {
@@ -54,37 +53,52 @@ final class DefaultReplicationManager implements ReplicationManager {
         this.batcher = some(batcher);
     }
 
-    @Contract@Override public void replicateEvent(String streamName,
-                                                  int partition,
-                                                  long offset,
-                                                  byte[] payload,
-                                                  long timestamp) {
-        batcher.onPresent(b -> b.add(streamName, partition, offset, payload, timestamp))
-                         .onEmpty(() -> replicateImmediately(streamName, partition, offset, payload, timestamp));
+    @Contract
+    @Override
+    public void replicateEvent(String streamName, int partition, long offset, byte[] payload, long timestamp) {
+        batcher.onPresent(b -> b.add(streamName, partition, offset, payload, timestamp)).onEmpty(() -> replicateImmediately(streamName,
+                                                                                                                            partition,
+                                                                                                                            offset,
+                                                                                                                            payload,
+                                                                                                                            timestamp));
     }
 
-    @Contract@Override public void handleAck(ReplicationMessage.ReplicateAck ack) {
+    @Contract
+    @Override
+    public void handleAck(ReplicationMessage.ReplicateAck ack) {
         registry.updateWatermark(ack.streamName(), ack.partition(), ack.replicaId(), ack.confirmedOffset());
         resolvePendingAck(ack.streamName(), ack.partition(), ack.confirmedOffset());
     }
 
-    @Override public ReplicaRegistry registry() {
+    @Override
+    public ReplicaRegistry registry() {
         return registry;
     }
 
-    @Contract@Override public void close() {
+    @Contract
+    @Override
+    public void close() {
         batcher.onPresent(ReplicationBatcher::close);
     }
 
     private void replicateImmediately(String streamName, int partition, long offset, byte[] payload, long timestamp) {
         var replicas = registry.replicasFor(streamName, partition);
-        if (replicas.isEmpty()) {return;}
+
+        if (replicas.isEmpty()) {
+            return;
+        }
+
         sendToAllReplicas(replicas, streamName, partition, offset, payload, timestamp);
     }
 
-    @Override public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
+    @Override
+    public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
         var replicaCount = registry.replicasFor(streamName, partition).size();
-        if (replicaCount <minAcks) {return NOT_ENOUGH_REPLICAS.promise();}
+
+        if (replicaCount < minAcks) {
+            return NOT_ENOUGH_REPLICAS.promise();
+        }
+
         return registerPendingAck(streamName, partition, offset, minAcks);
     }
 
@@ -95,6 +109,7 @@ final class DefaultReplicationManager implements ReplicationManager {
                                    byte[] payload,
                                    long timestamp) {
         var message = replicateEvents(governorId, streamName, partition, offset, List.of(payload), List.of(timestamp));
+
         replicas.forEach(replica -> transport.send(replica.nodeId(), message));
     }
 
@@ -102,8 +117,10 @@ final class DefaultReplicationManager implements ReplicationManager {
         Promise<Unit> promise = Promise.promise();
         var key = new PendingAckKey(streamName, partition, offset);
         var pending = new PendingAck(promise, new AtomicInteger(minAcks));
+
         pendingAcks.put(key, pending);
         SharedScheduler.schedule(() -> timeoutPendingAck(key), DEFAULT_ACK_TIMEOUT);
+
         return promise;
     }
 
@@ -114,7 +131,10 @@ final class DefaultReplicationManager implements ReplicationManager {
     /// ack correctly satisfy a lower-offset await.
     private void resolvePendingAck(String streamName, int partition, long confirmedOffset) {
         pendingAcks.forEach((key, pending) -> {
-            if (key.streamName().equals(streamName) && key.partition() == partition && key.offset() <= confirmedOffset) {
+            if (key.streamName()
+                   .equals(streamName)
+                && key.partition() == partition
+                && key.offset() <= confirmedOffset) {
                 decrementAndResolve(key, pending);
             }
         });
@@ -128,10 +148,11 @@ final class DefaultReplicationManager implements ReplicationManager {
     }
 
     private void timeoutPendingAck(PendingAckKey key) {
-        option(pendingAcks.remove(key)).onPresent(pending -> pending.promise().resolve(REPLICATION_TIMEOUT.result()));
+        option(pendingAcks.remove(key)).onPresent(pending -> pending.promise()
+                                                                    .resolve(REPLICATION_TIMEOUT.result()));
     }
 
-    record PendingAckKey(String streamName, int partition, long offset){}
+    record PendingAckKey(String streamName, int partition, long offset) {}
 
-    record PendingAck(Promise<Unit> promise, AtomicInteger remaining){}
+    record PendingAck(Promise<Unit> promise, AtomicInteger remaining) {}
 }

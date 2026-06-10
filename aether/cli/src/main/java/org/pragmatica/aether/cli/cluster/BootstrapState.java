@@ -94,13 +94,16 @@ public record BootstrapState(String clusterName,
     public static BootstrapState initialState(String clusterName, String configHash, String startedAt) {
         var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
 
-        for (var phase : BootstrapPhase.values()) {phases.put(phase, PhaseStatus.PENDING);}
+        for (var phase : BootstrapPhase.values()) {
+            phases.put(phase, PhaseStatus.PENDING);
+        }
 
         return bootstrapState(clusterName, configHash, startedAt, phases, List.of(), List.of(), List.of(), "", Map.of());
     }
 
     public BootstrapState withPhaseStatus(BootstrapPhase phase, PhaseStatus status) {
         var updated = new EnumMap<>(phases);
+
         updated.put(phase, status);
 
         return bootstrapState(clusterName,
@@ -116,6 +119,7 @@ public record BootstrapState(String clusterName,
 
     public BootstrapState withResource(CreatedResource resource) {
         var updated = new ArrayList<>(createdResources);
+
         updated.add(resource);
 
         return bootstrapState(clusterName,
@@ -179,6 +183,7 @@ public record BootstrapState(String clusterName,
 
     public BootstrapState withSource(String sourceName, SourceCleanupHandle handle) {
         var merged = new HashMap<String, SourceCleanupHandle>(sources);
+
         merged.put(sourceName, handle);
 
         return withSources(merged);

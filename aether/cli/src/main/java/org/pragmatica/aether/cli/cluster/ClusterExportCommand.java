@@ -70,7 +70,9 @@ class ClusterExportCommand implements Callable<Integer> {
     private static int onSuccess(JsonNode root, boolean withStatus) {
         var tomlContent = root.path("tomlContent").asText("");
 
-        if (withStatus) {printStatusHeader(root);}
+        if (withStatus) {
+            printStatusHeader(root);
+        }
 
         System.out.println(tomlContent);
 
@@ -81,6 +83,7 @@ class ClusterExportCommand implements Callable<Integer> {
         var clusterName = root.path("clusterName").asText("unknown");
         var configVersion = root.path("configVersion").asText("?");
         var coreCount = root.path("coreCount").asText("?");
+
         System.out.printf("# --- Exported from cluster \"%s\" at %s ---%n", clusterName, Instant.now());
         System.out.printf("# Config version: %s%n", configVersion);
         System.out.printf("# Core count: %s%n", coreCount);
@@ -98,6 +101,7 @@ class ClusterExportCommand implements Callable<Integer> {
         var desiredCount = status.path("desiredCoreCount").asText("?");
         var leader = status.path("leaderId").asText("none");
         var certExpires = status.path("certificateExpiresAt").asText("N/A");
+
         System.out.printf("# Actual core nodes: %s/%s%n", actualCount, desiredCount);
         System.out.printf("# Leader: %s%n", leader);
         System.out.printf("# Certificate expires: %s%n", certExpires);

@@ -17,21 +17,24 @@ import static org.pragmatica.lang.Option.option;
 public record CachingSecretsProvider(SecretsProvider delegate,
                                      TimeSpan ttl,
                                      ConcurrentHashMap<String, CachedEntry> cache) implements SecretsProvider {
-    record CachedEntry(String value, long expiresAtMillis){}
+    record CachedEntry(String value, long expiresAtMillis) {}
 
     public static CachingSecretsProvider cachingSecretsProvider(SecretsProvider delegate, TimeSpan ttl) {
         return new CachingSecretsProvider(delegate, ttl, new ConcurrentHashMap<>());
     }
 
-    @Override public Promise<String> resolveSecret(String secretPath) {
+    @Override
+    public Promise<String> resolveSecret(String secretPath) {
         return lookupCached(secretPath).orElse(() -> delegateAndCache(secretPath));
     }
 
     private Promise<String> delegateAndCache(String secretPath) {
-        return delegate.resolveSecret(secretPath).onSuccess(value -> cacheValue(secretPath, value));
+        return delegate.resolveSecret(secretPath)
+                       .onSuccess(value -> cacheValue(secretPath, value));
     }
 
-    @Contract private void cacheValue(String secretPath, String value) {
+    @Contract
+    private void cacheValue(String secretPath, String value) {
         cache.put(secretPath,
                   new CachedEntry(value,
                                   System.currentTimeMillis() + ttl.millis()));
@@ -44,6 +47,7 @@ public record CachingSecretsProvider(SecretsProvider delegate,
 
     private Promise<String> expireAndMiss(String secretPath) {
         cache.remove(secretPath);
+
         return EnvironmentError.secretResolutionFailed(secretPath, new IllegalStateException("Cache miss")).promise();
     }
 

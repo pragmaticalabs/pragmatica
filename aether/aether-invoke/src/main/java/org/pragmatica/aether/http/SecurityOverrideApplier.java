@@ -15,13 +15,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings({"JBCT-UTIL-02", "JBCT-ZONE-02"}) public interface SecurityOverrideApplier {
+@SuppressWarnings({"JBCT-UTIL-02", "JBCT-ZONE-02"})
+public interface SecurityOverrideApplier {
     Logger LOG = LoggerFactory.getLogger(SecurityOverrideApplier.class);
 
     static List<HttpRouteDefinition> applyOverrides(List<HttpRouteDefinition> routes, SecurityOverrides overrides) {
-        if (overrides.isEmpty()) {return routes;}
-        return routes.stream().map(route -> applyOverrideToRoute(route, overrides))
-                            .toList();
+        if (overrides.isEmpty()) {
+            return routes;
+        }
+
+        return routes.stream()
+                     .map(route -> applyOverrideToRoute(route, overrides))
+                     .toList();
     }
 
     private static HttpRouteDefinition applyOverrideToRoute(HttpRouteDefinition route, SecurityOverrides overrides) {
@@ -36,7 +41,7 @@ import org.slf4j.LoggerFactory;
     private static HttpRouteDefinition applyWithPolicy(HttpRouteDefinition route,
                                                        SecurityPolicy newPolicy,
                                                        SecurityOverridePolicy policy) {
-        return switch (policy){
+        return switch (policy) {
             case FULL -> applyAndLog(route, newPolicy);
             case STRENGTHEN_ONLY -> applyIfStronger(route, newPolicy);
             case NONE -> rejectOverride(route, newPolicy);
@@ -44,12 +49,16 @@ import org.slf4j.LoggerFactory;
     }
 
     private static HttpRouteDefinition applyIfStronger(HttpRouteDefinition route, SecurityPolicy newPolicy) {
-        if (newPolicy.strength() >= route.security().strength()) {return applyAndLog(route, newPolicy);}
+        if (newPolicy.strength() >= route.security().strength()) {
+            return applyAndLog(route, newPolicy);
+        }
+
         LOG.warn("Security override rejected (STRENGTHEN_ONLY): {} {} would weaken from {} to {}",
                  route.httpMethod(),
                  route.pathPrefix(),
                  route.security().asString(),
                  newPolicy.asString());
+
         return route;
     }
 
@@ -59,6 +68,7 @@ import org.slf4j.LoggerFactory;
                  route.pathPrefix(),
                  route.security().asString(),
                  newPolicy.asString());
+
         return HttpRouteDefinition.httpRouteDefinition(route.httpMethod(),
                                                        route.pathPrefix(),
                                                        route.artifactCoord(),
@@ -71,6 +81,7 @@ import org.slf4j.LoggerFactory;
                  route.httpMethod(),
                  route.pathPrefix(),
                  newPolicy.asString());
+
         return route;
     }
 }

@@ -11,13 +11,9 @@ import java.util.regex.Pattern;
 
 public sealed interface InputValidators {
     Pattern CIDR_PATTERN = Pattern.compile("^(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})$");
-
     Pattern HOSTNAME_PATTERN = Pattern.compile("^[a-zA-Z0-9]([-a-zA-Z0-9.]*[a-zA-Z0-9])?$");
-
     Pattern IPV4_PATTERN = Pattern.compile("^(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})$");
-
     Pattern ENV_VAR_PATTERN = Pattern.compile("^[A-Z_][A-Z0-9_]*$");
-
     Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
 
     static Result<String> validateCidr(String raw) {
@@ -29,8 +25,10 @@ public sealed interface InputValidators {
         if (!matcher.matches()) {
             return new ClusterInitError.InvalidValue("CIDR", value, "expected a.b.c.d/N (e.g. 10.0.0.0/8)").result();
         }
-        for (int i = 1;i <= 4;i++) {
+
+        for (int i = 1; i <= 4; i++) {
             var octet = Integer.parseInt(matcher.group(i));
+
             if (octet > 255) {
                 return new ClusterInitError.InvalidValue("CIDR", value, "octet " + i + " out of range (0-255)").result();
             }
@@ -50,8 +48,13 @@ public sealed interface InputValidators {
                     ? ""
                     : raw.trim();
 
-        if (value.isEmpty()) {return new ClusterInitError.InvalidValue("host", "", "must not be empty").result();}
-        if (IPV4_PATTERN.matcher(value).matches() || HOSTNAME_PATTERN.matcher(value).matches()) {return Result.success(value);}
+        if (value.isEmpty()) {
+            return new ClusterInitError.InvalidValue("host", "", "must not be empty").result();
+        }
+
+        if (IPV4_PATTERN.matcher(value).matches() || HOSTNAME_PATTERN.matcher(value).matches()) {
+            return Result.success(value);
+        }
 
         return new ClusterInitError.InvalidValue("host", value, "expected hostname or IPv4 address").result();
     }
@@ -60,10 +63,13 @@ public sealed interface InputValidators {
         var value = raw == null
                     ? ""
                     : raw.trim();
+
         try {
             var port = Integer.parseInt(value);
 
-            if (port <1 || port > 65535) {return new ClusterInitError.InvalidValue("port", value, "must be 1-65535").result();}
+            if (port < 1 || port > 65535) {
+                return new ClusterInitError.InvalidValue("port", value, "must be 1-65535").result();
+            }
 
             return Result.success(port);
         } catch (@SuppressWarnings("JBCT-EX-01") NumberFormatException e) {

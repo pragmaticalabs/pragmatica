@@ -22,10 +22,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// E2 Phase 2a (2026-05-28): the `nttObservation` migration-ramp feature flag is
 /// removed. NTT/LocalQuorumWatcher/LeaderReconciler now wire unconditionally — the
 /// observation-only ramp completed in Phase 1.6.
-public record MembershipConfig(TimeSpan nttDepartureTimeout,
-                               TimeSpan quorumLossDrainThreshold) {
+public record MembershipConfig(TimeSpan nttDepartureTimeout, TimeSpan quorumLossDrainThreshold) {
     public static MembershipConfig membershipConfig() {
-        return new MembershipConfig(timeSpan(15).seconds(),
-                                    timeSpan(8).seconds());
+        return new MembershipConfig(timeSpan(15).seconds(), timeSpan(8).seconds());
     }
 }

@@ -16,8 +16,8 @@ public record Identifier(SourceSpan span, String value, QuoteStyle style) {
 
     public String normalized() {
         return style == QuoteStyle.UNQUOTED
-              ? value.toLowerCase()
-              : value;
+               ? value.toLowerCase()
+               : value;
     }
 
     public static Identifier unquoted(SourceSpan span, String value) {
@@ -28,9 +28,10 @@ public record Identifier(SourceSpan span, String value, QuoteStyle style) {
         return new Identifier(span, value, QuoteStyle.DOUBLE_QUOTED);
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return style == QuoteStyle.UNQUOTED
-              ? normalized()
-              : "\"" + value + "\"";
+               ? normalized()
+               : "\"" + value + "\"";
     }
 }

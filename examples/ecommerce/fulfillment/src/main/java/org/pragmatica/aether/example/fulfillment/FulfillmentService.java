@@ -117,6 +117,7 @@ public interface FulfillmentService {
                                                    "Origin",
                                                    "Shipment created",
                                                    Shipment.ShipmentStatus.LABEL_CREATED));
+
             return new TrackingInfo(shipment.trackingNumber(), shipment.status(), shipment.estimatedDelivery(), events);
         }
     }
@@ -306,7 +307,9 @@ public interface FulfillmentService {
             private Money calculateShippingCost(ShippingOption option,
                                                 List<LineItem> items,
                                                 boolean freeShippingEligible) {
-                if (option == ShippingOption.STANDARD && freeShippingEligible) {return Money.ZERO_USD;}
+                if (option == ShippingOption.STANDARD && freeShippingEligible) {
+                    return Money.ZERO_USD;
+                }
 
                 var baseCost = option.cost();
                 var totalItems = items.stream().mapToInt(i -> i.quantity()
@@ -322,6 +325,7 @@ public interface FulfillmentService {
                 return baseCost;
             }
         }
+
         return new fulfillmentService(db);
     }
 }

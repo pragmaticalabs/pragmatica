@@ -17,7 +17,7 @@ public enum AbTestState {
     ROLLED_BACK,
     FAILED;
     public Set<AbTestState> validTransitions() {
-        return switch (this){
+        return switch (this) {
             case PENDING -> Set.of(DEPLOYING_VARIANTS, FAILED);
             case DEPLOYING_VARIANTS -> Set.of(ACTIVE, ROLLING_BACK, FAILED);
             case ACTIVE -> Set.of(CONCLUDING, ROLLING_BACK, FAILED);

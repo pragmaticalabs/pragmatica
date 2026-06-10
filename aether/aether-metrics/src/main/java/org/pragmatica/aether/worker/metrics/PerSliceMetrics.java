@@ -8,11 +8,12 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public record PerSliceMetrics(Artifact artifact,
-                                     long activeInvocations,
-                                     double p95LatencyMs,
-                                     double errorRate,
-                                     long totalCalls) {
+@Codec
+public record PerSliceMetrics(Artifact artifact,
+                              long activeInvocations,
+                              double p95LatencyMs,
+                              double errorRate,
+                              long totalCalls) {
     public static PerSliceMetrics perSliceMetrics(Artifact artifact,
                                                   long activeInvocations,
                                                   double p95LatencyMs,

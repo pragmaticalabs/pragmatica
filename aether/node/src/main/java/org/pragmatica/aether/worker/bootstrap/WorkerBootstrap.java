@@ -57,6 +57,7 @@ public interface WorkerBootstrap {
             @Override
             public void onSnapshotRequest(SnapshotRequest request, byte[] kvState, long sequenceNumber) {
                 var response = SnapshotResponse.snapshotResponse(kvState, sequenceNumber);
+
                 delegateRouter.route(new NetworkServiceMessage.Send(request.requester(), response));
                 LOG.info("Sent snapshot to {} at sequence {}",
                          request.requester().id(),
@@ -80,6 +81,7 @@ public interface WorkerBootstrap {
 
             private void sendSnapshotRequest(NodeId source) {
                 var request = SnapshotRequest.snapshotRequest(selfId);
+
                 delegateRouter.route(new NetworkServiceMessage.Send(source, request));
                 LOG.info("Requested snapshot from {}", source.id());
             }
@@ -98,6 +100,7 @@ public interface WorkerBootstrap {
                 LOG.info("Snapshot applied successfully at sequence {}", sequenceNumber);
             }
         }
+
         return new workerBootstrap(selfId,
                                    delegateRouter,
                                    kvStore,

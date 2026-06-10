@@ -10,15 +10,18 @@ import org.pragmatica.lang.Promise;
 
 
 public final class RateGuardFactory implements ResourceFactory<RateGuard, RateGuardConfig> {
-    @Override public Class<RateGuard> resourceType() {
+    @Override
+    public Class<RateGuard> resourceType() {
         return RateGuard.class;
     }
 
-    @Override public Class<RateGuardConfig> configType() {
+    @Override
+    public Class<RateGuardConfig> configType() {
         return RateGuardConfig.class;
     }
 
-    @Override public Promise<RateGuard> provision(RateGuardConfig config) {
+    @Override
+    public Promise<RateGuard> provision(RateGuardConfig config) {
         return Promise.success(DefaultRateGuard.defaultRateGuard(config));
     }
 }

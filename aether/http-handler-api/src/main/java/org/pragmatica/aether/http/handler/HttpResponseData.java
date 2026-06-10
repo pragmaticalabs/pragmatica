@@ -14,7 +14,8 @@ import java.util.Objects;
 import static org.pragmatica.lang.Result.success;
 
 
-@Codec public record HttpResponseData(int statusCode, Map<String, String> headers, byte[] body) {
+@Codec
+public record HttpResponseData(int statusCode, Map<String, String> headers, byte[] body) {
     private static final byte[] EMPTY_BODY = new byte[0];
 
     private static final Map<String, String> JSON_HEADERS = Map.of("Content-Type", "application/json; charset=UTF-8");
@@ -23,7 +24,9 @@ import static org.pragmatica.lang.Result.success;
 
     public HttpResponseData {
         Objects.requireNonNull(headers, "headers");
-        if (body == null || body.length == 0) {body = EMPTY_BODY;}
+        if (body == null || body.length == 0) {
+            body = EMPTY_BODY;
+        }
     }
 
     public static Result<HttpResponseData> httpResponseData(Result<Integer> statusCode,

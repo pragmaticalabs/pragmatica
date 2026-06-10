@@ -14,13 +14,15 @@ public sealed interface FailoverRecoveryError extends Cause {
         General(String message) {
             this.message = message;
         }
-        @Override public String message() {
+        @Override
+        public String message() {
             return message;
         }
     }
 
     record CatchupFailed(String streamName, int partition, Cause underlying) implements FailoverRecoveryError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Catch-up failed for %s[%d]: %s".formatted(streamName, partition, underlying.message());
         }
     }

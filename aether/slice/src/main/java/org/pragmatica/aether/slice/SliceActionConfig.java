@@ -21,13 +21,14 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-@SuppressWarnings("JBCT-SEQ-01") public record SliceActionConfig(TimeSpan loadingTimeout,
-                                                                 TimeSpan activatingTimeout,
-                                                                 TimeSpan deactivatingTimeout,
-                                                                 TimeSpan unloadingTimeout,
-                                                                 TimeSpan startStopTimeout,
-                                                                 List<Repository> repositories,
-                                                                 Option<Path> frameworkJarsPath) {
+@SuppressWarnings("JBCT-SEQ-01")
+public record SliceActionConfig(TimeSpan loadingTimeout,
+                                TimeSpan activatingTimeout,
+                                TimeSpan deactivatingTimeout,
+                                TimeSpan unloadingTimeout,
+                                TimeSpan startStopTimeout,
+                                List<Repository> repositories,
+                                Option<Path> frameworkJarsPath) {
     public static SliceActionConfig sliceActionConfig() {
         return new SliceActionConfig(timeSpan(2).minutes(),
                                      timeSpan(1).minutes(),
@@ -49,7 +50,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
     }
 
     public Result<TimeSpan> timeoutFor(SliceState state) {
-        return switch (state){
+        return switch (state) {
             case SliceState.LOADING -> success(loadingTimeout);
             case SliceState.ACTIVATING -> success(activatingTimeout);
             case SliceState.DEACTIVATING -> success(deactivatingTimeout);

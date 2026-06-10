@@ -46,7 +46,6 @@ import static org.pragmatica.lang.Unit.unit;
 public final class StreamPartitionManager implements AutoCloseable {
     private static final long DEFAULT_MAX_TOTAL_BYTES = 128 * 1024 * 1024L;
     private static final TimeSpan COMMIT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
-
     private static final Logger log = LoggerFactory.getLogger(StreamPartitionManager.class);
 
     /// Default exhaustion sink — no-op. Wave 3 (`AetherNode`) replaces it with a binding to the
@@ -135,8 +134,13 @@ public final class StreamPartitionManager implements AutoCloseable {
         for (;;) {
             var current = totalAllocatedBytes.get();
 
-            if (current + bytes > maxTotalBytes) {return false;}
-            if (totalAllocatedBytes.compareAndSet(current, current + bytes)) {return true;}
+            if (current + bytes > maxTotalBytes) {
+                return false;
+            }
+
+            if (totalAllocatedBytes.compareAndSet(current, current + bytes)) {
+                return true;
+            }
         }
     }
 
@@ -190,7 +194,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// own rate-of-fire is bounded by its growth attempts (once frozen it stops asking), and Wave 3
     /// adds the per-(stream,phase) 60s throttle on the sink side. See spec §4.5c / reconciliation #6.
     private boolean reserveForGrowth(StreamConfig config, long bytes) {
-        if (tryReserve(bytes)) {return true;}
+        if (tryReserve(bytes)) {
+            return true;
+        }
 
         exhaustionSink.accept(Exhaustion.growth(config, bytes, availableBytes(), maxTotalBytes));
 
@@ -204,7 +210,9 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         var floorBytes = floorBytes(config);
 
-        if (!tryReserve(floorBytes)) {return reportFloorExhaustion(config, floorBytes);}
+        if (!tryReserve(floorBytes)) {
+            return reportFloorExhaustion(config, floorBytes);
+        }
 
         return StreamEntry.fromConfig(config,
                                       evictionListener,
@@ -298,6 +306,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     private void applyRemoveCommand(ClusterNode<KVCommand<AetherKey>> node, String streamName) {
         var key = StreamConfigKey.streamConfigKey(streamName);
         var remove = new KVCommand.Remove<AetherKey>(key);
+
         node.apply(List.of(remove)).onFailure(cause -> log.warn("Failed to publish stream config removal for {}: {}",
                                                                 streamName,
                                                                 cause.message()));
@@ -308,6 +317,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     public void onStreamConfigPut(ValuePut<StreamConfigKey, StreamConfigValue> put) {
         var streamName = put.cause().key().streamName();
         var config = put.cause().value().config();
+
         streams.computeIfAbsent(streamName, _ -> hydrateEntry(config));
     }
 
@@ -315,6 +325,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @MessageReceiver
     public void onStreamConfigRemove(ValueRemove<StreamConfigKey, StreamConfigValue> remove) {
         var streamName = remove.cause().key().streamName();
+
         removeAndReleaseIfPresent(streamName);
     }
 
@@ -457,6 +468,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     public int reapIdleStreams() {
         var now = System.currentTimeMillis();
         var reaped = new AtomicInteger(0);
+
         streams.forEach((name, entry) -> reapIfIdle(name, entry, now, reaped));
 
         return reaped.get();
@@ -470,6 +482,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         if (isEmpty && isExpired && isIdle) {
             var capturedActivity = entry.lastActivity();
+
             streams.computeIfPresent(name, (_, current) -> removeIfStillIdle(current, capturedActivity, reaped));
         }
     }
@@ -482,6 +495,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
             return null;
         }
+
         return current;
     }
 
@@ -502,6 +516,7 @@ public final class StreamPartitionManager implements AutoCloseable {
             return new StreamError.EventTooLarge(payload.length,
                                                  entry.config().maxEventSizeBytes()).result();
         }
+
         return success(unit());
     }
 
@@ -513,9 +528,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     private static Result<OffHeapRingBuffer> resolvePartitionInEntry(String streamName,
                                                                      int partition,
                                                                      StreamEntry entry) {
-        if (partition <0 || partition >= entry.partitions().length) {
+        if (partition < 0 || partition >= entry.partitions().length) {
             return new StreamError.PartitionOutOfRange(streamName, partition, entry.partitions().length).result();
         }
+
         return success(entry.partitions() [partition]);
     }
 
@@ -576,8 +592,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     private static List<PartitionInfo> buildAllPartitionInfo(StreamEntry entry) {
         var infos = new ArrayList<PartitionInfo>();
 
-        for (int i = 0;i <entry.partitions().length;i++) {
+        for (int i = 0; i < entry.partitions().length; i++) {
             var buffer = entry.partitions() [i];
+
             infos.add(PartitionInfo.partitionInfo(i, buffer.headOffset(), buffer.tailOffset(), buffer.eventCount()));
         }
 
@@ -698,7 +715,7 @@ public final class StreamPartitionManager implements AutoCloseable {
             var policy = deriveEvictionPolicy(config);
             var results = new ArrayList<Result<OffHeapRingBuffer>>(config.partitions());
 
-            for (int i = 0;i <config.partitions();i++) {
+            for (int i = 0; i < config.partitions(); i++) {
                 results.add(OffHeapRingBuffer.offHeapRingBuffer(config.name(),
                                                                 i,
                                                                 retention.maxCount(),
@@ -733,7 +750,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         long allocatedBytes() {
             var total = 0L;
 
-            for (var buffer : partitions) {total += buffer.allocatedBytes();}
+            for (var buffer : partitions) {
+                total += buffer.allocatedBytes();
+            }
 
             return total;
         }
@@ -745,7 +764,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         long controlBytes() {
             var total = 0L;
 
-            for (var buffer : partitions) {total += buffer.controlBytes();}
+            for (var buffer : partitions) {
+                total += buffer.controlBytes();
+            }
 
             return total;
         }
@@ -779,7 +800,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         @Contract
         @Override
         public void close() {
-            for (var buffer : partitions) {buffer.close();}
+            for (var buffer : partitions) {
+                buffer.close();
+            }
         }
     }
 }

@@ -18,16 +18,22 @@ public sealed interface IpDetector {
 
         try {
             var ifaces = NetworkInterface.getNetworkInterfaces();
+
             while (ifaces.hasMoreElements()) {
                 var iface = ifaces.nextElement();
 
-                if (iface.isLoopback() || !iface.isUp()) {continue;}
+                if (iface.isLoopback() || !iface.isUp()) {
+                    continue;
+                }
 
                 var addrs = iface.getInetAddresses();
 
                 while (addrs.hasMoreElements()) {
                     var addr = addrs.nextElement();
-                    if (addr instanceof Inet4Address ip4 && !ip4.isLoopbackAddress() && !ip4.isLinkLocalAddress()) {result.add(ip4.getHostAddress());}
+
+                    if (addr instanceof Inet4Address ip4 && !ip4.isLoopbackAddress() && !ip4.isLinkLocalAddress()) {
+                        result.add(ip4.getHostAddress());
+                    }
                 }
             }
         } catch (SocketException ignored) {}

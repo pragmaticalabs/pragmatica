@@ -26,7 +26,12 @@ public final class ProcessorError {
     }
 
     public static String typeMismatch(String param, String javaType, String column, String table, String pgType) {
-        return PREFIX + "Type mismatch: parameter '" + param + "' is " + javaType + " but column '" + table + "." + column + "' is " + pgType;
+        return PREFIX
+             + "Type mismatch: parameter '" + param
+             + "' is " + javaType
+             + " but column '" + table
+             + "." + column
+             + "' is " + pgType;
     }
 
     public static String notNullColumnMissing(String column, String table, String recordType) {
@@ -38,11 +43,18 @@ public final class ProcessorError {
     }
 
     public static String invalidReturnType(String methodName) {
-        return PREFIX + "Method '" + methodName + "' must return Promise<T>, Promise<Option<T>>, Promise<List<T>>, Promise<Unit>, Promise<Long>, or Promise<Boolean>";
+        return PREFIX
+             + "Method '" + methodName
+             + "' must return Promise<T>, Promise<Option<T>>, Promise<List<T>>, Promise<Unit>, Promise<Long>, or Promise<Boolean>";
     }
 
     public static String unsupportedScalarReturn(String methodName, String typeName) {
-        return PREFIX + "Method '" + methodName + "' returns unsupported scalar type '" + typeName + "'. Expected a record, Long, Boolean, String, Unit, or one of: BigDecimal, Instant, LocalDate, " + "LocalDateTime, LocalTime, OffsetDateTime, OffsetTime, UUID, Duration, byte[], Short, Integer, " + "Double, Float.";
+        return PREFIX
+             + "Method '" + methodName
+             + "' returns unsupported scalar type '" + typeName
+             + "'. Expected a record, Long, Boolean, String, Unit, or one of: BigDecimal, Instant, LocalDate, "
+             + "LocalDateTime, LocalTime, OffsetDateTime, OffsetTime, UUID, Duration, byte[], Short, Integer, "
+             + "Double, Float.";
     }
 
     public static String cannotInferTable(String methodName) {
@@ -62,7 +74,10 @@ public final class ProcessorError {
     }
 
     public static String sqlConnectorWithQueryAnnotation(String interfaceName) {
-        return PREFIX + "Interface '" + interfaceName + "' uses @Query but its qualifier references SqlConnector, " + "not PgSqlConnector. Use a PgSqlConnector-based qualifier.";
+        return PREFIX
+             + "Interface '" + interfaceName
+             + "' uses @Query but its qualifier references SqlConnector, "
+             + "not PgSqlConnector. Use a PgSqlConnector-based qualifier.";
     }
 
     public static String sqlParseFailed(String methodName, String detail) {

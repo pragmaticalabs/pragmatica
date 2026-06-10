@@ -7,12 +7,14 @@ package org.pragmatica.aether.slice.blueprint;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public enum SecurityOverridePolicy {
+@Codec
+public enum SecurityOverridePolicy {
     STRENGTHEN_ONLY,
     FULL,
     NONE;
     public static SecurityOverridePolicy fromString(String raw) {
-        return switch (raw.toLowerCase().strip()){
+        return switch (raw.toLowerCase()
+                          .strip()) {
             case "strengthen_only" -> STRENGTHEN_ONLY;
             case "full" -> FULL;
             case "none" -> NONE;

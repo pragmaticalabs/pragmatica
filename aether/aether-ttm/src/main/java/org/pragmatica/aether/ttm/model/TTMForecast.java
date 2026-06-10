@@ -37,7 +37,7 @@ public record TTMForecast(long timestamp,
     }
 
     public boolean indicatesLoadDecrease(float currentCpu, float currentInvocations) {
-        return predictedCpuUsage() <currentCpu * 0.8f && predictedInvocations() <currentInvocations * 0.8f;
+        return predictedCpuUsage() < currentCpu * 0.8f && predictedInvocations() < currentInvocations * 0.8f;
     }
 
     public boolean requiresAction() {

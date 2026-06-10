@@ -14,15 +14,10 @@ public record AutoHealSpec(boolean enabled,
                            String decommissionedRetention,
                            String swimHintsTtl) {
     public static final String DEFAULT_STALE_OBSERVATION_TTL = "30s";
-
     public static final int DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD = 10;
-
     public static final String DEFAULT_PROVISIONING_TIMEOUT = "60s";
-
     public static final String DEFAULT_PROVISION_STABILITY_WINDOW = "30s";
-
     public static final String DEFAULT_DECOMMISSIONED_RETENTION = "24h";
-
     // Aligned with the SWIM/NTT detection window: SwimConfig.suspectTimeout (10s) and
     // MembershipConfig.nttDepartureTimeout (15s). Set to 15s so the hint is a short-lived
     // backstop, not a 60s stall: a still-degraded node is re-stamped by SWIM probe rounds

@@ -12,13 +12,13 @@ import java.util.List;
 public sealed interface HealthSignal {
     Epoch observedAt();
 
-    record PingTimeout(NodeId nodeId, int missedIntervals, Epoch observedAt) implements HealthSignal{}
+    record PingTimeout(NodeId nodeId, int missedIntervals, Epoch observedAt) implements HealthSignal {}
 
-    record SwimHint(NodeId nodeId, HealthHint state, Epoch observedAt) implements HealthSignal{}
+    record SwimHint(NodeId nodeId, HealthHint state, Epoch observedAt) implements HealthSignal {}
 
-    record QuicDisconnect(NodeId nodeId, Epoch observedAt) implements HealthSignal{}
+    record QuicDisconnect(NodeId nodeId, Epoch observedAt) implements HealthSignal {}
 
-    record DrainCompleted(NodeId nodeId, Epoch observedAt) implements HealthSignal{}
+    record DrainCompleted(NodeId nodeId, Epoch observedAt) implements HealthSignal {}
 
     record GovernorAnnounced(String communityId, NodeId governor, long communityTerm, Epoch observedAt) implements HealthSignal {
         public GovernorAnnounced(String communityId, NodeId governor, long communityTerm) {
@@ -56,7 +56,8 @@ public sealed interface HealthSignal {
             this(observer, peer, hint, observedAtEpoch, 0L);
         }
 
-        @Override public Epoch observedAt() {
+        @Override
+        public Epoch observedAt() {
             return observedAtEpoch;
         }
     }
@@ -70,7 +71,8 @@ public sealed interface HealthSignal {
             this(observer, peer, state, observedAtEpoch, 0L);
         }
 
-        @Override public Epoch observedAt() {
+        @Override
+        public Epoch observedAt() {
             return observedAtEpoch;
         }
     }

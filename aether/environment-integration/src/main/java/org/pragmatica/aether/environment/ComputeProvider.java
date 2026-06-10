@@ -40,7 +40,8 @@ public interface ComputeProvider {
         return listInstances(selector.requiredTags());
     }
 
-    @Contract default void resetProvisionerState(String clusterName) {}
+    @Contract
+    default void resetProvisionerState(String clusterName) {}
 
     /// Confirm INFRASTRUCTURE readiness of a freshly-created instance: poll
     /// [#instanceStatus] (this provider's OWN primitive) until it reports
@@ -51,9 +52,8 @@ public interface ComputeProvider {
     /// instead of minting a phantom node. Readiness here is infra-only — it does NOT
     /// wait for cluster-join / first-pong / KV-registration (that is CTM's concern).
     default Promise<InstanceInfo> confirmRunning(InstanceInfo created, ReadinessPolicy policy) {
-        return pollUntilRunning(created, policy)
-                .timeout(policy.timeout())
-                .mapError(cause -> toReadinessTimeout(created, policy, cause));
+        return pollUntilRunning(created, policy).timeout(policy.timeout())
+                               .mapError(cause -> toReadinessTimeout(created, policy, cause));
     }
 
     private Promise<InstanceInfo> pollUntilRunning(InstanceInfo created, ReadinessPolicy policy) {
@@ -64,30 +64,35 @@ public interface ComputeProvider {
         return switch (observed.status()) {
             case InstanceStatus.Running ignored -> Promise.success(created.withStatus(InstanceStatus.RUNNING));
             case InstanceStatus.Provisioning ignored -> retryPoll(created, policy);
-            default -> ComputeProviderLog.bootCrashed(created.id(), observed.status())
-                                         .promise();
+            default -> ComputeProviderLog.bootCrashed(created.id(), observed.status()).promise();
         };
     }
 
     private Promise<InstanceInfo> retryPoll(InstanceInfo created, ReadinessPolicy policy) {
-        return Promise.promise(policy.pollInterval(), Result::unitResult)
+        return Promise.promise(policy.pollInterval(),
+                               Result::unitResult)
                       .flatMap(ignored -> pollUntilRunning(created, policy));
     }
 
     private static Cause toReadinessTimeout(InstanceInfo created, ReadinessPolicy policy, Cause cause) {
         return switch (cause) {
             case EnvironmentError.ProvisionReadinessTimeout ignored -> cause;
-            default -> ComputeProviderLog.readinessTimeout(created.id(), policy.timeout().millis(), cause);
+            default -> ComputeProviderLog.readinessTimeout(created.id(),
+                                                           policy.timeout().millis(),
+                                                           cause);
         };
     }
 
     private static List<InstanceInfo> filterByTags(List<InstanceInfo> instances, Map<String, String> tagFilter) {
-        return instances.stream().filter(instance -> matchesTags(instance, tagFilter))
-                               .toList();
+        return instances.stream()
+                        .filter(instance -> matchesTags(instance, tagFilter))
+                        .toList();
     }
 
     private static boolean matchesTags(InstanceInfo instance, Map<String, String> tagFilter) {
-        return tagFilter.entrySet().stream()
-                                 .allMatch(entry -> entry.getValue().equals(instance.tags().get(entry.getKey())));
+        return tagFilter.entrySet()
+                        .stream()
+                        .allMatch(entry -> entry.getValue()
+                                                .equals(instance.tags().get(entry.getKey())));
     }
 }

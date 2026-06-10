@@ -42,29 +42,38 @@ public record ClusterTopology(int totalNodes,
         }
 
         public double availability() {
-            if (desiredInstances <= 0) {return 1.0;}
+            if (desiredInstances <= 0) {
+                return 1.0;
+            }
+
             return Math.min(1.0, (double) activeInstances / desiredInstances);
         }
     }
 
     public double healthScore() {
-        if (totalNodes == 0) {return 0.0;}
+        if (totalNodes == 0) {
+            return 0.0;
+        }
+
         double nodeHealth = (double) healthyNodes / totalNodes;
         double quorumHealth = hasQuorum
-                             ? 1.0
-                             : 0.0;
+                              ? 1.0
+                              : 0.0;
         double leaderHealth = leaderId.isPresent()
-                             ? 1.0
-                             : 0.0;
+                              ? 1.0
+                              : 0.0;
+
         return (nodeHealth * 0.4 + quorumHealth * 0.4 + leaderHealth * 0.2);
     }
 
     public boolean healthy() {
-        return hasQuorum && leaderId.isPresent() && healthyNodes == totalNodes;
+        return hasQuorum
+               && leaderId.isPresent()
+               && healthyNodes == totalNodes;
     }
 
     public boolean degraded() {
-        return hasQuorum && (healthyNodes <totalNodes || leaderId.isEmpty());
+        return hasQuorum && (healthyNodes < totalNodes || leaderId.isEmpty());
     }
 
     public boolean critical() {

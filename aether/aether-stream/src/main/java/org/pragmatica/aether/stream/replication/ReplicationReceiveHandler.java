@@ -9,13 +9,14 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.messaging.MessageReceiver;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.util.List;
 import java.util.function.BiConsumer;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateAck.replicateAck;
+
 
 /// Replica-side receive/apply for the A6 replication path.
 ///
@@ -51,7 +52,8 @@ public final class ReplicationReceiveHandler {
 
     /// Non-replicating, offset-preserving append seam. In production this is
     /// `StreamPartitionManager::appendRecovered`.
-    @FunctionalInterface public interface RecoveredAppender {
+    @FunctionalInterface
+    public interface RecoveredAppender {
         Result<Long> appendRecovered(String streamName, int partition, byte[] payload, long timestamp);
     }
 
@@ -73,7 +75,10 @@ public final class ReplicationReceiveHandler {
     public static ReplicationReceiveHandler replicationReceiveHandler(NodeId self,
                                                                       RecoveredAppender appender,
                                                                       ReplicationTransport transport) {
-        return new ReplicationReceiveHandler(self, appender, transport, (_, _) -> {});
+        return new ReplicationReceiveHandler(self,
+                                             appender,
+                                             transport,
+                                             (_, _) -> {});
     }
 
     /// Factory with an explicit `onGap` repair seam, fired `(streamName, partition)` whenever a batch
@@ -85,11 +90,14 @@ public final class ReplicationReceiveHandler {
         return new ReplicationReceiveHandler(self, appender, transport, onGap);
     }
 
-    @Contract @MessageReceiver public void onReplicateEvents(ReplicationMessage.ReplicateEvents message) {
+    @Contract
+    @MessageReceiver
+    public void onReplicateEvents(ReplicationMessage.ReplicateEvents message) {
         var payloads = message.payloads();
         var timestamps = message.timestamps();
         var fromOffset = message.fromOffset();
         var applied = applyBatch(message.streamName(), message.partition(), fromOffset, payloads, timestamps);
+
         if (applied < payloads.size()) {
             // Partial (or zero) apply: a gap remains. Surface it so the replica is repaired rather than
             // left silently behind — re-enter SYNCING/backfill from the acked watermark.
@@ -101,10 +109,13 @@ public final class ReplicationReceiveHandler {
                      message.governorId());
             onGap.accept(message.streamName(), message.partition());
         }
+
         if (applied <= 0) {
             return;
         }
+
         var highestApplied = fromOffset + applied - 1;
+
         transport.send(message.governorId(),
                        replicateAck(self, message.streamName(), message.partition(), highestApplied));
     }
@@ -115,8 +126,10 @@ public final class ReplicationReceiveHandler {
                            List<byte[]> payloads,
                            List<Long> timestamps) {
         var applied = 0;
+
         for (var i = 0; i < payloads.size(); i++) {
             var result = appender.appendRecovered(streamName, partition, payloads.get(i), timestamps.get(i));
+
             if (result.isFailure()) {
                 result.onFailure(cause -> log.warn("ReplicationReceiveHandler: append failed for {}[{}] at index {}: {}",
                                                    streamName,
@@ -125,8 +138,10 @@ public final class ReplicationReceiveHandler {
                                                    cause.message()));
                 break;
             }
+
             applied++;
         }
+
         return applied;
     }
 }

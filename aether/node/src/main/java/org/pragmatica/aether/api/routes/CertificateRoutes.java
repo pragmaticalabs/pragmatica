@@ -31,7 +31,7 @@ import java.util.stream.Stream;
 public final class CertificateRoutes implements RouteSource {
     private static final String DEV_MODE_ENV = "AETHER_INSECURE_DEV_MODE";
     private static final int MIN_VALIDITY_SECONDS = 1;
-    private static final int MAX_VALIDITY_SECONDS = 86_400; // 24h ceiling — defensive against absurd inputs
+    private static final int MAX_VALIDITY_SECONDS = 86_400;  // 24h ceiling — defensive against absurd inputs
 
     private final Supplier<ManageableNode> nodeSupplier;
     private final BooleanSupplier devModeEnabled;
@@ -49,7 +49,7 @@ public final class CertificateRoutes implements RouteSource {
     /// rather than mutating the JVM-wide environment. Mirrors the pattern used by
     /// `ScheduledTaskRoutes.scheduledTaskRoutes(..., BooleanSupplier)`.
     public static CertificateRoutes certificateRoutes(Supplier<ManageableNode> nodeSupplier,
-                                                       BooleanSupplier devModeEnabled) {
+                                                      BooleanSupplier devModeEnabled) {
         return new CertificateRoutes(nodeSupplier, devModeEnabled);
     }
 
@@ -74,30 +74,42 @@ public final class CertificateRoutes implements RouteSource {
         if (!devModeEnabled.getAsBoolean()) {
             return CertConfigureError.DEV_MODE_DISABLED.promise();
         }
+
         return validateRequest(req).flatMap(this::applyShortValidity);
     }
 
     private Promise<CertConfigureShortValidityRequest> validateRequest(CertConfigureShortValidityRequest req) {
-        if (req == null) {return CertConfigureError.MISSING_BODY.promise();}
-        if (req.validitySeconds() < MIN_VALIDITY_SECONDS) {return CertConfigureError.VALIDITY_TOO_LOW.promise();}
-        if (req.validitySeconds() > MAX_VALIDITY_SECONDS) {return CertConfigureError.VALIDITY_TOO_HIGH.promise();}
+        if (req == null) {
+            return CertConfigureError.MISSING_BODY.promise();
+        }
+
+        if (req.validitySeconds() < MIN_VALIDITY_SECONDS) {
+            return CertConfigureError.VALIDITY_TOO_LOW.promise();
+        }
+
+        if (req.validitySeconds() > MAX_VALIDITY_SECONDS) {
+            return CertConfigureError.VALIDITY_TOO_HIGH.promise();
+        }
+
         return Promise.success(req);
     }
 
     private Promise<CertConfigureShortValidityResponse> applyShortValidity(CertConfigureShortValidityRequest req) {
         return nodeSupplier.get()
-                            .certRenewalScheduler()
-                            .map(scheduler -> respond(req, scheduler.configureShortValidity(req.validitySeconds())))
-                            .or(CertConfigureError.SCHEDULER_NOT_CONFIGURED.promise());
+                           .certRenewalScheduler()
+                           .map(scheduler -> respond(req,
+                                                     scheduler.configureShortValidity(req.validitySeconds())))
+                           .or(CertConfigureError.SCHEDULER_NOT_CONFIGURED.promise());
     }
 
     private static Promise<CertConfigureShortValidityResponse> respond(CertConfigureShortValidityRequest req,
-                                                                        Instant newNotAfter) {
+                                                                       Instant newNotAfter) {
         var secondsRemaining = Duration.between(Instant.now(), newNotAfter).toSeconds();
+
         return Promise.success(new CertConfigureShortValidityResponse("short_validity_configured",
-                                                                       req.validitySeconds(),
-                                                                       newNotAfter.toString(),
-                                                                       secondsRemaining));
+                                                                      req.validitySeconds(),
+                                                                      newNotAfter.toString(),
+                                                                      secondsRemaining));
     }
 
     private enum CertConfigureError implements Cause {
@@ -106,7 +118,6 @@ public final class CertificateRoutes implements RouteSource {
         VALIDITY_TOO_LOW("validitySeconds must be >= " + MIN_VALIDITY_SECONDS),
         VALIDITY_TOO_HIGH("validitySeconds must be <= " + MAX_VALIDITY_SECONDS),
         SCHEDULER_NOT_CONFIGURED("CertificateRenewalScheduler is not configured (TLS may be disabled)");
-
         private final String message;
         CertConfigureError(String message) {
             this.message = message;

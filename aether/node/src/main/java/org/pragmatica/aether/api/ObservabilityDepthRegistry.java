@@ -52,6 +52,7 @@ public class ObservabilityDepthRegistry {
                                                                         KVStore<AetherKey, AetherValue> kvStore,
                                                                         ObservabilityConfig defaultConfig) {
         var registry = new ObservabilityDepthRegistry(clusterNode, kvStore, defaultConfig);
+
         registry.loadFromKvStore();
 
         return registry;
@@ -59,6 +60,7 @@ public class ObservabilityDepthRegistry {
 
     public static ObservabilityDepthRegistry readOnly(KVStore<AetherKey, AetherValue> kvStore) {
         var registry = new ObservabilityDepthRegistry(null, kvStore, ObservabilityConfig.DEFAULT);
+
         registry.loadFromKvStore();
 
         return registry;
@@ -73,6 +75,7 @@ public class ObservabilityDepthRegistry {
         var registryKey = key.artifactBase() + "/" + key.methodName();
         var config = ObservabilityConfig.observabilityConfig(value.depthThreshold(),
                                                              ObservabilityConfig.DEFAULT.targetTracesPerSec());
+
         registry.put(registryKey, config);
         log.debug("Loaded observability depth from KV-Store: {} -> depthThreshold={}",
                   registryKey,
@@ -122,6 +125,7 @@ public class ObservabilityDepthRegistry {
         var registryKey = depthKey.artifactBase() + "/" + depthKey.methodName();
         var config = ObservabilityConfig.observabilityConfig(depthValue.depthThreshold(),
                                                              ObservabilityConfig.DEFAULT.targetTracesPerSec());
+
         registry.put(registryKey, config);
         log.debug("Observability depth updated from cluster: {} -> depthThreshold={}",
                   registryKey,
@@ -133,6 +137,7 @@ public class ObservabilityDepthRegistry {
     public void onDepthRemove(ValueRemove<ObservabilityDepthKey, ObservabilityDepthValue> valueRemove) {
         var depthKey = valueRemove.cause().key();
         var registryKey = depthKey.artifactBase() + "/" + depthKey.methodName();
+
         registry.remove(registryKey);
         log.debug("Observability depth removed from cluster: {}", registryKey);
     }
@@ -141,6 +146,7 @@ public class ObservabilityDepthRegistry {
         var registryKey = artifactBase + "/" + methodName;
         var config = ObservabilityConfig.observabilityConfig(depthThreshold,
                                                              ObservabilityConfig.DEFAULT.targetTracesPerSec());
+
         registry.put(registryKey, config);
         log.info("Observability depth set for {}/{}: depthThreshold={}", artifactBase, methodName, depthThreshold);
 
@@ -149,6 +155,7 @@ public class ObservabilityDepthRegistry {
 
     private Unit removeFromRegistry(String artifactBase, String methodName) {
         var registryKey = artifactBase + "/" + methodName;
+
         registry.remove(registryKey);
         log.info("Observability depth removed for {}/{}", artifactBase, methodName);
 

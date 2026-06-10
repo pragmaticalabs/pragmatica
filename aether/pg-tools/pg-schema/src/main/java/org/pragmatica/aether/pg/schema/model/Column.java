@@ -14,7 +14,7 @@ public record Column(String name,
                      Option<String> generatedExpr,
                      Option<IdentitySpec> identity,
                      Option<String> comment) {
-    public record IdentitySpec(IdentityKind kind){}
+    public record IdentitySpec(IdentityKind kind) {}
 
     public enum IdentityKind {
         ALWAYS,

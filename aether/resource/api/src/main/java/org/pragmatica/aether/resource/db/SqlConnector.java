@@ -18,7 +18,8 @@ public interface SqlConnector extends DatabaseConnector {
     Promise<int[]> batch(String sql, List<Object[]> paramsList);
     <T> Promise<T> transactional(TransactionCallback<T> callback);
 
-    @FunctionalInterface interface TransactionCallback<T> {
+    @FunctionalInterface
+    interface TransactionCallback<T> {
         Promise<T> execute(SqlConnector connector);
     }
 }

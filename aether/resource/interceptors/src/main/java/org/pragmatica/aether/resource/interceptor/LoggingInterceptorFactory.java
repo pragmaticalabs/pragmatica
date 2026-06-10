@@ -9,15 +9,18 @@ import org.pragmatica.lang.Promise;
 
 
 public final class LoggingInterceptorFactory implements ResourceFactory<LoggingMethodInterceptor, LogConfig> {
-    @Override public Class<LoggingMethodInterceptor> resourceType() {
+    @Override
+    public Class<LoggingMethodInterceptor> resourceType() {
         return LoggingMethodInterceptor.class;
     }
 
-    @Override public Class<LogConfig> configType() {
+    @Override
+    public Class<LogConfig> configType() {
         return LogConfig.class;
     }
 
-    @Override public Promise<LoggingMethodInterceptor> provision(LogConfig config) {
+    @Override
+    public Promise<LoggingMethodInterceptor> provision(LogConfig config) {
         return Promise.success(new LoggingMethodInterceptor(config));
     }
 }

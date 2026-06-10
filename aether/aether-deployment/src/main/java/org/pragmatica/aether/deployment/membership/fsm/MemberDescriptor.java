@@ -8,6 +8,7 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Option;
 import org.pragmatica.net.tcp.NodeAddress;
 
+
 /// Last-wins per-member network descriptor: the peer's latest-known dial [`NodeAddress`] (preferring
 /// `resolvedAddress`), plus its `role` and `source` labels. Orthogonal to the lifecycle FSM — it is
 /// upserted whenever a NodeInfo-bearing SWIM observation (JoinAnnounced / MemberDiscovered) arrives,
@@ -21,7 +22,6 @@ public record MemberDescriptor(Option<NodeAddress> address, String role, String 
     /// The explicit non-core role label. A member self-asserting this role is excluded from the
     /// connectable core set.
     private static final String ROLE_WORKER = "worker";
-
     /// The unknown descriptor: no address, blank role (→ counts as core), blank source.
     public static final MemberDescriptor UNKNOWN = new MemberDescriptor(Option.none(), "", "");
 
@@ -42,6 +42,6 @@ public record MemberDescriptor(Option<NodeAddress> address, String role, String 
     /// axis (transport active/passive); classification deliberately uses the self-asserted label.
     /// Role-based isolation hardening (cryptographic role attestation) is tracked under #241.
     public boolean isCore() {
-        return !ROLE_WORKER.equals(role);
+        return ! ROLE_WORKER.equals(role);
     }
 }

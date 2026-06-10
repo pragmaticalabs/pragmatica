@@ -11,21 +11,24 @@ import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public record WorkerMetricsPong(NodeId sender,
-                                       double cpuUsage,
-                                       double heapUsage,
-                                       long activeInvocations,
-                                       double p95LatencyMs,
-                                       double errorRate,
-                                       long timestampMs,
-                                       Epoch observedCommunityEpoch) implements Message.Wired {
+@Codec
+public record WorkerMetricsPong(NodeId sender,
+                                double cpuUsage,
+                                double heapUsage,
+                                long activeInvocations,
+                                double p95LatencyMs,
+                                double errorRate,
+                                long timestampMs,
+                                Epoch observedCommunityEpoch) implements Message.Wired {
     @Override
     public StreamType streamType() {
         return StreamType.METRICS;
     }
 
     public WorkerMetricsPong {
-        if (observedCommunityEpoch == null) {observedCommunityEpoch = Epoch.ZERO;}
+        if (observedCommunityEpoch == null) {
+            observedCommunityEpoch = Epoch.ZERO;
+        }
     }
 
     public static WorkerMetricsPong workerMetricsPong(NodeId sender,

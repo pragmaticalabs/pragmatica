@@ -8,8 +8,10 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 
 
-@FunctionalInterface public interface WatermarkStore {
-    @Contract void persistWatermark(String streamName, int partition, NodeId nodeId, long confirmedOffset);
+@FunctionalInterface
+public interface WatermarkStore {
+    @Contract
+    void persistWatermark(String streamName, int partition, NodeId nodeId, long confirmedOffset);
 
     WatermarkStore NOOP = (_, _, _, _) -> {};
 }

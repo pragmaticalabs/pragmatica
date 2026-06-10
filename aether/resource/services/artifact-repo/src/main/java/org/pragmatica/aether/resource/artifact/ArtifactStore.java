@@ -23,8 +23,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 
-import static org.pragmatica.lang.io.TimeSpan.timeSpan;
-
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
@@ -38,6 +36,7 @@ import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
@@ -53,15 +52,20 @@ public interface ArtifactStore {
             content = content.clone();
         }
 
-        @Override public byte[] content() {
+        @Override
+        public byte[] content() {
             return content.clone();
         }
 
-        @Override public boolean equals(Object o) {
-            return o instanceof ResolvedArtifact other && Arrays.equals(content, other.content) && metadata.equals(other.metadata);
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof ResolvedArtifact other
+                   && Arrays.equals(content, other.content)
+                   && metadata.equals(other.metadata);
         }
 
-        @Override public int hashCode() {
+        @Override
+        public int hashCode() {
             return 31 * Arrays.hashCode(content) + metadata.hashCode();
         }
     }
@@ -90,7 +94,7 @@ public interface ArtifactStore {
         }
     }
 
-    record DeployResult(Artifact artifact, long size, String md5, String sha1){}
+    record DeployResult(Artifact artifact, long size, String md5, String sha1) {}
 
     record ArtifactMetadata(long size,
                             int chunkCount,
@@ -99,8 +103,13 @@ public interface ArtifactStore {
                             long deployedAt,
                             List<String> blockIds) {
         public byte[] toBytes() {
-            var data = size + ":" + chunkCount + ":" + md5 + ":" + sha1 + ":" + deployedAt + ":" + String.join(",",
-                                                                                                               blockIds);
+            var data = size
+                     + ":" + chunkCount
+                     + ":" + md5
+                     + ":" + sha1
+                     + ":" + deployedAt
+                     + ":" + String.join(",", blockIds);
+
             return data.getBytes(StandardCharsets.UTF_8);
         }
 
@@ -111,8 +120,13 @@ public interface ArtifactStore {
         private static Option<ArtifactMetadata> parseMetadataBytes(byte[] bytes) {
             try {
                 var parts = new String(bytes, StandardCharsets.UTF_8).split(":");
-                if (parts.length != 6) {return none();}
+
+                if (parts.length != 6) {
+                    return none();
+                }
+
                 var ids = List.of(parts[5].split(","));
+
                 return some(new ArtifactMetadata(Long.parseLong(parts[0]),
                                                  Integer.parseInt(parts[1]),
                                                  parts[2],
@@ -127,25 +141,29 @@ public interface ArtifactStore {
 
     sealed interface ArtifactStoreError extends Cause {
         record NotFound(Artifact artifact) implements ArtifactStoreError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Artifact not found: " + artifact.asString();
             }
         }
 
         record DeployFailed(Artifact artifact, String reason) implements ArtifactStoreError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Failed to deploy " + artifact.asString() + ": " + reason;
             }
         }
 
         record ResolveFailed(Artifact artifact, String reason) implements ArtifactStoreError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Failed to resolve " + artifact.asString() + ": " + reason;
             }
         }
 
         record CorruptedArtifact(Artifact artifact) implements ArtifactStoreError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Corrupted artifact: " + artifact.asString();
             }
         }
@@ -165,9 +183,7 @@ public interface ArtifactStore {
 
 class ArtifactStoreImpl implements ArtifactStore {
     private static final Logger log = LoggerFactory.getLogger(ArtifactStoreImpl.class);
-
     private static final int CHUNK_SIZE = 64 * 1024;
-
     /// Upper bound on the number of chunk puts/gets kept in flight at once during the
     /// deploy and resolve fan-outs. 8 × 64KB `CHUNK_SIZE` = 512KB of in-flight payload on
     /// the per-peer dedicated DHT QUIC lane — comfortably under that lane's 1MB write-buffer
@@ -179,7 +195,6 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// reads/writes complete. Intentionally a constant (not configurable): a derived 1MB/2 budget
     /// over a fixed 64KB chunk size; no speculative config surface.
     private static final int MAX_CONCURRENT_CHUNKS = 8;
-
     /// Aggregate timeout for `deploy()` chunk fan-out. `DistributedDHTClient.put` has its
     /// own 10s per-chunk timeout; this caps the worst-case dominator chunk of `Promise.allOf`
     /// plus the downstream metadata/versions writes so the HTTP request returns rather than
@@ -208,16 +223,15 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// `Option.empty()` (legitimate "not found") is NEVER retried — only a transient
     /// FAILURE triggers a retry.
     private final DhtRetryPolicy retryPolicy;
-
     private final DHTClient dht;
     private final StorageInstance storage;
-
     private final AtomicInteger artifactCount = new AtomicInteger(0);
-
     private final AtomicInteger chunkCount = new AtomicInteger(0);
 
     ArtifactStoreImpl(DHTClient dht, StorageInstance storage) {
-        this(dht, storage, dht.config().retryPolicy());
+        this(dht,
+             storage,
+             dht.config().retryPolicy());
     }
 
     ArtifactStoreImpl(DHTClient dht, StorageInstance storage, DhtRetryPolicy retryPolicy) {
@@ -226,11 +240,13 @@ class ArtifactStoreImpl implements ArtifactStore {
         this.retryPolicy = retryPolicy;
     }
 
-    @Override public Metrics metrics() {
+    @Override
+    public Metrics metrics() {
         return Metrics.metrics(artifactCount.get(), chunkCount.get());
     }
 
-    @Override public Promise<DeployResult> deploy(Artifact artifact, byte[] content) {
+    @Override
+    public Promise<DeployResult> deploy(Artifact artifact, byte[] content) {
         log.info("Deploying artifact: {} ({} bytes)", artifact.asString(), content.length);
         var md5 = computeHash(content, "MD5");
         var sha1 = computeHash(content, "SHA-1");
@@ -246,47 +262,58 @@ class ArtifactStoreImpl implements ArtifactStore {
         // CORRECTNESS: boundedFanOut preserves chunk order — blockIds are recorded into
         // metadata in chunk order and reassembled in that order on resolve; reordering
         // corrupts the artifact.
-        return boundedFanOut(chunks, MAX_CONCURRENT_CHUNKS, this::storagePutWithRetry)
-                            .flatMap(blockIds -> storeMetadataAndVersions(artifact,
-                                                                          blockIds,
-                                                                          chunks.size(),
-                                                                          md5,
-                                                                          sha1,
-                                                                          content.length))
+        return boundedFanOut(chunks, MAX_CONCURRENT_CHUNKS, this::storagePutWithRetry).flatMap(blockIds -> storeMetadataAndVersions(artifact,
+                                                                                                                                    blockIds,
+                                                                                                                                    chunks.size(),
+                                                                                                                                    md5,
+                                                                                                                                    sha1,
+                                                                                                                                    content.length))
                             .timeout(DEPLOY_TIMEOUT);
     }
 
-    @Override public Promise<byte[]> resolve(Artifact artifact) {
+    @Override
+    public Promise<byte[]> resolve(Artifact artifact) {
         return resolveWithMetadata(artifact).map(ResolvedArtifact::content);
     }
 
-    @Override public Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact) {
+    @Override
+    public Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact) {
         log.debug("Resolving artifact: {}", artifact.asString());
-        return dhtGetWithRetry(metaKey(artifact))
-                      .flatMap(metaOpt -> metaOpt.flatMap(ArtifactMetadata::fromBytes).async(new ArtifactStoreError.NotFound(artifact))
-                                                         .flatMap(meta -> resolveChunksFromStorage(artifact, meta)));
+
+        return dhtGetWithRetry(metaKey(artifact)).flatMap(metaOpt -> metaOpt.flatMap(ArtifactMetadata::fromBytes)
+                                                                            .async(new ArtifactStoreError.NotFound(artifact))
+                                                                            .flatMap(meta -> resolveChunksFromStorage(artifact,
+                                                                                                                      meta)));
     }
 
-    @Override public Promise<Boolean> exists(Artifact artifact) {
+    @Override
+    public Promise<Boolean> exists(Artifact artifact) {
         return dht.exists(metaKey(artifact));
     }
 
-    @Override public Promise<Option<ArtifactMetadata>> metadata(Artifact artifact) {
+    @Override
+    public Promise<Option<ArtifactMetadata>> metadata(Artifact artifact) {
         return dht.get(metaKey(artifact))
-                      .map(opt -> opt.flatMap(ArtifactMetadata::fromBytes));
+                  .map(opt -> opt.flatMap(ArtifactMetadata::fromBytes));
     }
 
-    @Override public Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId) {
+    @Override
+    public Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId) {
         var versionsKey = versionsKey(groupId, artifactId);
-        return dht.get(versionsKey).map(opt -> opt.map(this::parseVersionsList).or(List.of()));
+
+        return dht.get(versionsKey)
+                  .map(opt -> opt.map(this::parseVersionsList)
+                                 .or(List.of()));
     }
 
-    @Override public Promise<Unit> delete(Artifact artifact) {
+    @Override
+    public Promise<Unit> delete(Artifact artifact) {
         log.info("Deleting artifact: {}", artifact.asString());
+
         return dht.get(metaKey(artifact))
-                      .flatMap(metaOpt -> metaOpt.flatMap(ArtifactMetadata::fromBytes).map(meta -> deleteMetadata(artifact,
-                                                                                                                  meta))
-                                                         .or(Promise.unitPromise()));
+                  .flatMap(metaOpt -> metaOpt.flatMap(ArtifactMetadata::fromBytes)
+                                             .map(meta -> deleteMetadata(artifact, meta))
+                                             .or(Promise.unitPromise()));
     }
 
     private Promise<DeployResult> storeMetadataAndVersions(Artifact artifact,
@@ -295,12 +322,12 @@ class ArtifactStoreImpl implements ArtifactStore {
                                                            String md5,
                                                            String sha1,
                                                            int contentLength) {
-        var hexIds = blockIds.stream().map(BlockId::hexString)
-                                    .toList();
+        var hexIds = blockIds.stream().map(BlockId::hexString).toList();
         var metadata = new ArtifactMetadata(contentLength, chunkCount, md5, sha1, System.currentTimeMillis(), hexIds);
+
         return dhtPutWithRetry(metaKey(artifact),
                                metadata.toBytes()).flatMap(_ -> updateVersionsList(artifact))
-                      .map(_ -> recordDeployMetrics(artifact, contentLength, chunkCount, md5, sha1));
+                              .map(_ -> recordDeployMetrics(artifact, contentLength, chunkCount, md5, sha1));
     }
 
     private Promise<ResolvedArtifact> resolveChunksFromStorage(Artifact artifact, ArtifactMetadata meta) {
@@ -309,8 +336,8 @@ class ArtifactStoreImpl implements ArtifactStore {
         // metadata order; reordering corrupts the artifact.
         return boundedFanOut(meta.blockIds(),
                              MAX_CONCURRENT_CHUNKS,
-                             hex -> fetchSingleBlock(hex, corruptedError))
-                            .map(blocks -> reassembleChunks(blocks, (int) meta.size()))
+                             hex -> fetchSingleBlock(hex, corruptedError)).map(blocks -> reassembleChunks(blocks,
+                                                                                                          (int) meta.size()))
                             .flatMap(content -> verifyIntegrity(artifact, content, meta));
     }
 
@@ -328,9 +355,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     ///
     /// First-failure: on any batch failure the aggregate fails with that cause and no further
     /// batch is started (the recursion short-circuits through `flatMap`).
-    private <I, R> Promise<List<R>> boundedFanOut(List<I> items,
-                                                  int maxInFlight,
-                                                  Function<I, Promise<R>> op) {
+    private <I, R> Promise<List<R>> boundedFanOut(List<I> items, int maxInFlight, Function<I, Promise<R>> op) {
         return runBatchFrom(items, maxInFlight, op, 0, new ArrayList<>());
     }
 
@@ -342,55 +367,65 @@ class ArtifactStoreImpl implements ArtifactStore {
         if (start >= items.size()) {
             return Promise.success(List.copyOf(accumulated));
         }
+
         var end = Math.min(start + maxInFlight, items.size());
-        var batchPromises = items.subList(start, end).stream()
-                                       .map(op)
-                                       .toList();
+        var batchPromises = items.subList(start, end).stream().map(op).toList();
+
         return Promise.allOf(batchPromises)
-                            .flatMap(results -> Result.firstFailureOf(results).async())
-                            .flatMap(batchResults -> runBatchFrom(items,
-                                                                  maxInFlight,
-                                                                  op,
-                                                                  end,
-                                                                  concat(accumulated, batchResults)));
+                      .flatMap(results -> Result.firstFailureOf(results).async())
+                      .flatMap(batchResults -> runBatchFrom(items,
+                                                            maxInFlight,
+                                                            op,
+                                                            end,
+                                                            concat(accumulated, batchResults)));
     }
 
     private static <R> List<R> concat(List<R> head, List<R> tail) {
         var combined = new ArrayList<R>(head.size() + tail.size());
+
         combined.addAll(head);
         combined.addAll(tail);
+
         return combined;
     }
 
     private Promise<byte[]> fetchSingleBlock(String hex, ArtifactStoreError.CorruptedArtifact error) {
-        return BlockId.fromHex(hex).async()
-                              .flatMap(this::storageGetWithRetry)
-                              .flatMap(opt -> opt.async(error));
+        return BlockId.fromHex(hex)
+                      .async()
+                      .flatMap(this::storageGetWithRetry)
+                      .flatMap(opt -> opt.async(error));
     }
 
     private Promise<ResolvedArtifact> verifyIntegrity(Artifact artifact, byte[] content, ArtifactMetadata meta) {
         var computedSha1 = computeHash(content, "SHA-1");
+
         if (!computedSha1.equals(meta.sha1())) {
             log.error("Integrity verification failed for {}: expected SHA1={}, computed={}",
                       artifact.asString(),
                       meta.sha1(),
                       computedSha1);
+
             return new ArtifactStoreError.CorruptedArtifact(artifact).promise();
         }
+
         log.debug("Integrity verified for {}: SHA1={}", artifact.asString(), computedSha1);
+
         return Promise.success(new ResolvedArtifact(content, meta));
     }
 
     private Promise<Unit> deleteMetadata(Artifact artifact, ArtifactMetadata meta) {
-        return dht.remove(metaKey(artifact)).map(_ -> recordDeleteMetrics(meta));
+        return dht.remove(metaKey(artifact))
+                  .map(_ -> recordDeleteMetrics(meta));
     }
 
     private Promise<Unit> updateVersionsList(Artifact artifact) {
         var versionsKey = versionsKey(artifact.groupId(), artifact.artifactId());
-        return dht.get(versionsKey).map(opt -> addVersionIfAbsent(opt,
-                                                                  artifact.version()))
-                      .flatMap(versions -> dhtPutWithRetry(versionsKey,
-                                                           serializeVersionsList(versions)));
+
+        return dht.get(versionsKey)
+                  .map(opt -> addVersionIfAbsent(opt,
+                                                 artifact.version()))
+                  .flatMap(versions -> dhtPutWithRetry(versionsKey,
+                                                       serializeVersionsList(versions)));
     }
 
     private Promise<Unit> dhtPutWithRetry(byte[] key, byte[] value) {
@@ -398,26 +433,31 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     private Promise<Unit> dhtPutWithRetry(byte[] key, byte[] value, int attempt) {
-        var result = Promise.<Unit>promise();
+        var result = Promise.<Unit> promise();
+
         dht.put(key, value).onResult(r -> r.onSuccess(_ -> result.resolve(r))
-                                            .onFailure(cause -> handlePutFailure(key, value, attempt, cause, result)));
+                                           .onFailure(cause -> handlePutFailure(key, value, attempt, cause, result)));
+
         return result;
     }
 
     private void handlePutFailure(byte[] key, byte[] value, int attempt, Cause cause, Promise<Unit> result) {
         var nextAttempt = attempt + 1;
+
         if (!isTransientDhtFailure(cause) || nextAttempt >= retryPolicy.maxAttempts()) {
             result.fail(cause);
+
             return;
         }
+
         var backoff = retryPolicy.backoffFor(attempt);
+
         log.warn("DHT put attempt {} of {} failed (transient): {}; retrying after {}ms",
                  nextAttempt,
                  retryPolicy.maxAttempts(),
                  cause.message(),
                  backoff.millis());
-        SharedScheduler.schedule(() -> dhtPutWithRetry(key, value, nextAttempt).onResult(result::resolve),
-                                 backoff);
+        SharedScheduler.schedule(() -> dhtPutWithRetry(key, value, nextAttempt).onResult(result::resolve), backoff);
     }
 
     private static boolean isTransientDhtFailure(Cause cause) {
@@ -435,26 +475,31 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     private Promise<Option<byte[]>> dhtGetWithRetry(byte[] key, int attempt) {
-        var result = Promise.<Option<byte[]>>promise();
+        var result = Promise.<Option<byte[]>> promise();
+
         dht.get(key).onResult(r -> r.onSuccess(_ -> result.resolve(r))
                                     .onFailure(cause -> handleGetFailure(key, attempt, cause, result)));
+
         return result;
     }
 
     private void handleGetFailure(byte[] key, int attempt, Cause cause, Promise<Option<byte[]>> result) {
         var nextAttempt = attempt + 1;
+
         if (!isTransientDhtFailure(cause) || nextAttempt >= retryPolicy.maxAttempts()) {
             result.fail(cause);
+
             return;
         }
+
         var backoff = retryPolicy.backoffFor(attempt);
+
         log.warn("DHT get attempt {} of {} failed (transient): {}; retrying after {}ms",
                  nextAttempt,
                  retryPolicy.maxAttempts(),
                  cause.message(),
                  backoff.millis());
-        SharedScheduler.schedule(() -> dhtGetWithRetry(key, nextAttempt).onResult(result::resolve),
-                                 backoff);
+        SharedScheduler.schedule(() -> dhtGetWithRetry(key, nextAttempt).onResult(result::resolve), backoff);
     }
 
     /// Per-chunk read variant of `dhtGetWithRetry` for the resolve fan-out. The artifact
@@ -467,26 +512,31 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     private Promise<Option<byte[]>> storageGetWithRetry(BlockId id, int attempt) {
-        var result = Promise.<Option<byte[]>>promise();
+        var result = Promise.<Option<byte[]>> promise();
+
         storage.get(id).onResult(r -> r.onSuccess(_ -> result.resolve(r))
                                        .onFailure(cause -> handleStorageGetFailure(id, attempt, cause, result)));
+
         return result;
     }
 
     private void handleStorageGetFailure(BlockId id, int attempt, Cause cause, Promise<Option<byte[]>> result) {
         var nextAttempt = attempt + 1;
+
         if (!isTransientDhtFailure(cause) || nextAttempt >= retryPolicy.maxAttempts()) {
             result.fail(cause);
+
             return;
         }
+
         var backoff = retryPolicy.backoffFor(attempt);
+
         log.warn("Storage chunk get attempt {} of {} failed (transient): {}; retrying after {}ms",
                  nextAttempt,
                  retryPolicy.maxAttempts(),
                  cause.message(),
                  backoff.millis());
-        SharedScheduler.schedule(() -> storageGetWithRetry(id, nextAttempt).onResult(result::resolve),
-                                 backoff);
+        SharedScheduler.schedule(() -> storageGetWithRetry(id, nextAttempt).onResult(result::resolve), backoff);
     }
 
     /// Per-chunk variant of `dhtPutWithRetry` for the deploy fan-out. The artifact
@@ -499,45 +549,63 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     private Promise<BlockId> storagePutWithRetry(byte[] chunk, int attempt) {
-        var result = Promise.<BlockId>promise();
+        var result = Promise.<BlockId> promise();
+
         storage.put(chunk).onResult(r -> r.onSuccess(_ -> result.resolve(r))
-                                            .onFailure(cause -> handleStoragePutFailure(chunk, attempt, cause, result)));
+                                          .onFailure(cause -> handleStoragePutFailure(chunk, attempt, cause, result)));
+
         return result;
     }
 
     private void handleStoragePutFailure(byte[] chunk, int attempt, Cause cause, Promise<BlockId> result) {
         var nextAttempt = attempt + 1;
+
         if (!isTransientDhtFailure(cause) || nextAttempt >= retryPolicy.maxAttempts()) {
             result.fail(cause);
+
             return;
         }
+
         var backoff = retryPolicy.backoffFor(attempt);
+
         log.warn("Storage chunk put attempt {} of {} failed (transient): {}; retrying after {}ms",
                  nextAttempt,
                  retryPolicy.maxAttempts(),
                  cause.message(),
                  backoff.millis());
-        SharedScheduler.schedule(() -> storagePutWithRetry(chunk, nextAttempt).onResult(result::resolve),
-                                 backoff);
+        SharedScheduler.schedule(() -> storagePutWithRetry(chunk, nextAttempt).onResult(result::resolve), backoff);
     }
 
     private List<Version> addVersionIfAbsent(Option<byte[]> existingData, Version version) {
         var versions = new ArrayList<>(existingData.map(this::parseVersionsList).or(List.of()));
-        if (!versions.contains(version)) {versions.add(version);}
+
+        if (!versions.contains(version)) {
+            versions.add(version);
+        }
+
         return versions;
     }
 
-    @Contract private List<Version> parseVersionsList(byte[] data) {
+    @Contract
+    private List<Version> parseVersionsList(byte[] data) {
         var str = new String(data, StandardCharsets.UTF_8);
-        if (str.isEmpty()) {return new ArrayList<>();}
+
+        if (str.isEmpty()) {
+            return new ArrayList<>();
+        }
+
         var versions = new ArrayList<Version>();
-        for (var v : str.split(",")) {Version.version(v).onSuccess(versions::add);}
+
+        for (var v : str.split(",")) {
+            Version.version(v).onSuccess(versions::add);
+        }
+
         return versions;
     }
 
     private byte[] serializeVersionsList(List<Version> versions) {
-        var str = versions.stream().map(Version::withQualifier)
-                                 .collect(Collectors.joining(","));
+        var str = versions.stream().map(Version::withQualifier).collect(Collectors.joining(","));
+
         return str.getBytes(StandardCharsets.UTF_8);
     }
 
@@ -549,46 +617,57 @@ class ArtifactStoreImpl implements ArtifactStore {
         artifactCount.incrementAndGet();
         chunkCount.addAndGet(chunks);
         log.info("Deployed artifact: {} ({} chunks)", artifact.asString(), chunks);
+
         return new DeployResult(artifact, contentLength, md5, sha1);
     }
 
     private Unit recordDeleteMetrics(ArtifactMetadata meta) {
         artifactCount.decrementAndGet();
-        chunkCount.addAndGet(- meta.chunkCount());
+        chunkCount.addAndGet(-meta.chunkCount());
+
         return unit();
     }
 
     private byte[] metaKey(Artifact artifact) {
-        var key = "artifacts/" + artifact.groupId().id() + "/" + artifact.artifactId().id() + "/" + artifact.version()
-                                                                                                                    .withQualifier() + "/meta";
+        var key = "artifacts/" + artifact.groupId().id()
+                + "/" + artifact.artifactId().id()
+                + "/" + artifact.version().withQualifier()
+                + "/meta";
+
         return key.getBytes(StandardCharsets.UTF_8);
     }
 
     private byte[] versionsKey(GroupId groupId, ArtifactId artifactId) {
         var key = "artifacts/" + groupId.id() + "/" + artifactId.id() + "/versions";
+
         return key.getBytes(StandardCharsets.UTF_8);
     }
 
     private List<byte[]> splitIntoChunks(byte[] content) {
         var chunks = new ArrayList<byte[]>();
         int offset = 0;
-        while (offset <content.length) {
+
+        while (offset < content.length) {
             int length = Math.min(CHUNK_SIZE, content.length - offset);
             var chunk = new byte[length];
+
             System.arraycopy(content, offset, chunk, 0, length);
             chunks.add(chunk);
             offset += length;
         }
+
         return chunks;
     }
 
     private byte[] reassembleChunks(List<byte[]> chunks, int totalSize) {
         var result = new byte[totalSize];
         int offset = 0;
+
         for (var chunk : chunks) {
             System.arraycopy(chunk, 0, result, offset, chunk.length);
             offset += chunk.length;
         }
+
         return result;
     }
 
@@ -596,6 +675,7 @@ class ArtifactStoreImpl implements ArtifactStore {
         try {
             var md = MessageDigest.getInstance(algorithm);
             var hash = md.digest(content);
+
             return HexFormat.of().formatHex(hash);
         } catch (Exception e) {
             return "";

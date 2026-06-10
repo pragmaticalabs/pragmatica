@@ -124,13 +124,15 @@ record GovernorAnnouncerRecord(NodeId self,
     @Contract
     @Override
     public void onMembershipChange(List<SwimMember> swimMembers) {
-        if (!started.get()) {return;}
+        if (!started.get()) {
+            return;
+        }
 
         var previous = currentGovernorRef.get();
         var elected = GovernorElection.evaluateElection(self, swimMembers, previous);
         var aliveMembers = swimMembers.stream().filter(m -> m.state() == SwimMember.MemberState.ALIVE).map(SwimMember::nodeId).toList();
-        lastAliveMembers.set(List.copyOf(aliveMembers));
 
+        lastAliveMembers.set(List.copyOf(aliveMembers));
         switch (elected) {
             case GovernorState.Governor g -> onSelfElected(previous, aliveMembers);
             case GovernorState.Follower f -> onFollowerElected(previous, f.governorId(), aliveMembers);
@@ -146,8 +148,9 @@ record GovernorAnnouncerRecord(NodeId self,
         }
 
         currentGovernorRef.set(Option.some(self));
-
-        if (previous.filter(self::equals).isPresent()) {return;}
+        if (previous.filter(self::equals).isPresent()) {
+            return;
+        }
 
         writeGovernorChange(aliveMembers);
         startPeriodicReannouncement();
@@ -158,7 +161,9 @@ record GovernorAnnouncerRecord(NodeId self,
         currentGovernorRef.set(Option.some(governorId));
         if (previous.filter(self::equals).isPresent()) {
             periodicTask.cancel();
-            if (aliveMembers.isEmpty()) {writeDissolved();}
+            if (aliveMembers.isEmpty()) {
+                writeDissolved();
+            }
         }
     }
 
@@ -170,6 +175,7 @@ record GovernorAnnouncerRecord(NodeId self,
                                                     tcpAddressSupplier.get(),
                                                     observedCoreEpochSupplier.get(),
                                                     hlcClock.now());
+
         applyAnnouncement(updated, "governor-change");
     }
 
@@ -177,6 +183,7 @@ record GovernorAnnouncerRecord(NodeId self,
     private void writeReannouncement() {
         var current = lastAnnouncement.get();
         var refreshed = current.withMembers(lastAliveMembers.get(), tcpAddressSupplier.get());
+
         applyAnnouncement(refreshed, "reannounce");
     }
 
@@ -184,6 +191,7 @@ record GovernorAnnouncerRecord(NodeId self,
     private void writeDissolved() {
         var current = lastAnnouncement.get();
         var dissolved = current.withDissolved();
+
         applyAnnouncement(dissolved, "dissolved");
     }
 
@@ -199,6 +207,7 @@ record GovernorAnnouncerRecord(NodeId self,
 
         var key = GovernorAnnouncementKey.forCommunity(communityId);
         var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
+
         cluster.apply(List.<KVCommand<AetherKey>> of(command)).onFailure(cause -> log.warn("Failed to write GovernorAnnouncementKey({}) [{}]: {}",
                                                                                            communityId,
                                                                                            reason,
@@ -213,7 +222,9 @@ record GovernorAnnouncerRecord(NodeId self,
 
     @Contract
     private void tickReannounce() {
-        if (!started.get() || !isGovernor()) {return;}
+        if (!started.get() || !isGovernor()) {
+            return;
+        }
 
         var alive = lastAliveMembers.get();
 

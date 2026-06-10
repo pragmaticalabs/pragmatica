@@ -18,9 +18,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") public interface ScheduledTaskStateRegistry {
-    @MessageReceiver void onStatePut(ValuePut<ScheduledTaskStateKey, ScheduledTaskStateValue> valuePut);
-    @MessageReceiver void onStateRemove(ValueRemove<ScheduledTaskStateKey, ScheduledTaskStateValue> valueRemove);
+@SuppressWarnings("JBCT-RET-01")
+public interface ScheduledTaskStateRegistry {
+    @MessageReceiver
+    void onStatePut(ValuePut<ScheduledTaskStateKey, ScheduledTaskStateValue> valuePut);
+
+    @MessageReceiver
+    void onStateRemove(ValueRemove<ScheduledTaskStateKey, ScheduledTaskStateValue> valueRemove);
+
     Option<ScheduledTaskStateValue> stateFor(ScheduledTaskStateKey key);
     Map<ScheduledTaskStateKey, ScheduledTaskStateValue> allStates();
 
@@ -28,27 +33,34 @@ import org.slf4j.LoggerFactory;
         record scheduledTaskStateRegistry(Map<ScheduledTaskStateKey, ScheduledTaskStateValue> states) implements ScheduledTaskStateRegistry {
             private static final Logger log = LoggerFactory.getLogger(ScheduledTaskStateRegistry.class);
 
-            @Override public void onStatePut(ValuePut<ScheduledTaskStateKey, ScheduledTaskStateValue> valuePut) {
+            @Override
+            public void onStatePut(ValuePut<ScheduledTaskStateKey, ScheduledTaskStateValue> valuePut) {
                 var key = valuePut.cause().key();
                 var value = valuePut.cause().value();
+
                 states.put(key, value);
                 log.debug("Updated execution state for task: {}", key);
             }
 
-            @Override public void onStateRemove(ValueRemove<ScheduledTaskStateKey, ScheduledTaskStateValue> valueRemove) {
+            @Override
+            public void onStateRemove(ValueRemove<ScheduledTaskStateKey, ScheduledTaskStateValue> valueRemove) {
                 var key = valueRemove.cause().key();
+
                 states.remove(key);
                 log.debug("Removed execution state for task: {}", key);
             }
 
-            @Override public Option<ScheduledTaskStateValue> stateFor(ScheduledTaskStateKey key) {
+            @Override
+            public Option<ScheduledTaskStateValue> stateFor(ScheduledTaskStateKey key) {
                 return Option.option(states.get(key));
             }
 
-            @Override public Map<ScheduledTaskStateKey, ScheduledTaskStateValue> allStates() {
+            @Override
+            public Map<ScheduledTaskStateKey, ScheduledTaskStateValue> allStates() {
                 return Map.copyOf(states);
             }
         }
+
         return new scheduledTaskStateRegistry(new ConcurrentHashMap<>());
     }
 }

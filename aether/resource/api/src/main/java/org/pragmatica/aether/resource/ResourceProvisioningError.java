@@ -16,7 +16,8 @@ public sealed interface ResourceProvisioningError extends Cause {
             return new FactoryNotFound(resourceType);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "No factory registered for resource type: " + resourceType.getName();
         }
     }
@@ -30,11 +31,15 @@ public sealed interface ResourceProvisioningError extends Cause {
             return new CreationFailed(resourceType, configSection, underlying);
         }
 
-        @Override public String message() {
-            return "Failed to create " + resourceType.getSimpleName() + " from config '" + configSection + "': " + underlying.message();
+        @Override
+        public String message() {
+            return "Failed to create " + resourceType.getSimpleName()
+                 + " from config '" + configSection
+                 + "': " + underlying.message();
         }
 
-        @Override public Option<Cause> source() {
+        @Override
+        public Option<Cause> source() {
             return some(underlying);
         }
     }
@@ -48,11 +53,13 @@ public sealed interface ResourceProvisioningError extends Cause {
             return new ConfigLoadFailed(configSection, configError);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Failed to load config for resource: " + configError.message();
         }
 
-        @Override public Option<Cause> source() {
+        @Override
+        public Option<Cause> source() {
             return some(configError);
         }
     }
@@ -63,7 +70,8 @@ public sealed interface ResourceProvisioningError extends Cause {
 
     enum ConfigServiceNotAvailable implements ResourceProvisioningError {
         INSTANCE;
-        @Override public String message() {
+        @Override
+        public String message() {
             return "ConfigService not available - call ConfigService.setInstance() first";
         }
     }

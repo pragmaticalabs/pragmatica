@@ -5,7 +5,6 @@
 package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.aether.slice.resource.ResourceAddress;
-
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
@@ -31,10 +30,12 @@ public sealed interface FrameworkStreamPublishers {
     /// {@link FrameworkStreamPublisherError.General#NOT_SYSTEM_NAMESPACE} so a misuse from inside
     /// the framework module surfaces immediately rather than silently delivering app-namespace
     /// events through the privileged SPI.
-    static <T> Result<FrameworkStreamPublisher<T>> systemStreamPublisher(ResourceAddress address, StreamPublisher<T> transport) {
+    static <T> Result<FrameworkStreamPublisher<T>> systemStreamPublisher(ResourceAddress address,
+                                                                         StreamPublisher<T> transport) {
         if (!address.isSystem()) {
             return FrameworkStreamPublisherError.General.NOT_SYSTEM_NAMESPACE.result();
         }
+
         return Result.success(new SystemStreamPublisher<>(address, transport));
     }
 
@@ -48,6 +49,7 @@ public sealed interface FrameworkStreamPublishers {
         if (!address.isSystem()) {
             return FrameworkStreamPublisherError.General.NOT_SYSTEM_NAMESPACE.result();
         }
+
         return Result.success(new TestSystemStreamPublisher<>(address, capture));
     }
 
@@ -55,24 +57,25 @@ public sealed interface FrameworkStreamPublishers {
     sealed interface FrameworkStreamPublisherError extends Cause {
         enum General implements FrameworkStreamPublisherError {
             NOT_SYSTEM_NAMESPACE("FrameworkStreamPublisher requires a system-namespace address");
-
             private final String message;
-
             General(String message) {
                 this.message = message;
             }
-
-            @Override public String message() {
+            @Override
+            public String message() {
                 return message;
             }
         }
 
-        @SuppressWarnings("unused") record unused() implements FrameworkStreamPublisherError {
-            @Override public String message() {
+        @SuppressWarnings("unused")
+        record unused() implements FrameworkStreamPublisherError {
+            @Override
+            public String message() {
                 return "";
             }
         }
     }
 
-    @SuppressWarnings("unused") record unused() implements FrameworkStreamPublishers {}
+    @SuppressWarnings("unused")
+    record unused() implements FrameworkStreamPublishers {}
 }

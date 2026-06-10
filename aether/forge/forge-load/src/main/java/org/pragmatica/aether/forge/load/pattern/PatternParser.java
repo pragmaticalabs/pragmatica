@@ -20,21 +20,24 @@ import static org.pragmatica.lang.Result.success;
 
 public sealed interface PatternParser {
     Pattern PATTERN_REGEX = Pattern.compile("\\$\\{([a-z]+)(?::(.*))?}");
-
     Fn1<Cause, String> UNKNOWN_TYPE = Causes.forOneValue("Unknown pattern type: %s");
-
     Fn1<Cause, String> INVALID_PATTERN = Causes.forOneValue("Invalid pattern syntax: %s");
 
     static Result<PatternGenerator> parse(String pattern) {
         var matcher = PATTERN_REGEX.matcher(pattern.trim());
-        if (!matcher.matches()) {return INVALID_PATTERN.apply(pattern).result();}
+
+        if (!matcher.matches()) {
+            return INVALID_PATTERN.apply(pattern).result();
+        }
+
         var type = matcher.group(1);
         var args = matcher.group(2);
+
         return dispatchByType(type, args, pattern);
     }
 
     private static Result<PatternGenerator> dispatchByType(String type, String args, String pattern) {
-        return switch (type){
+        return switch (type) {
             case UuidGenerator.TYPE -> toUuidGenerator();
             case RandomGenerator.TYPE -> toRandomGenerator(args, pattern);
             case RangeGenerator.TYPE -> toRangeGenerator(args, pattern);
@@ -79,15 +82,17 @@ public sealed interface PatternParser {
     }
 
     static boolean containsPatterns(String text) {
-        return option(text).filter(t -> t.contains("${")).isPresent();
+        return option(text).filter(t -> t.contains("${"))
+                     .isPresent();
     }
 
     static Option<String> extractType(String pattern) {
         var matcher = PATTERN_REGEX.matcher(pattern.trim());
+
         return matcher.matches()
-              ? some(matcher.group(1))
-              : none();
+               ? some(matcher.group(1))
+               : none();
     }
 
-    record unused() implements PatternParser{}
+    record unused() implements PatternParser {}
 }

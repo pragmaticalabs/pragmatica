@@ -10,31 +10,36 @@ import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
 
 public sealed interface SchemaErrors extends Cause {
     record TableNotFound(String tableName, SourceSpan span) implements SchemaErrors {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Table not found: " + tableName + " at " + span;
         }
     }
 
     record ColumnNotFound(String tableName, String columnName, SourceSpan span) implements SchemaErrors {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Column " + columnName + " not found in table " + tableName + " at " + span;
         }
     }
 
     record TypeNotFound(String typeName, SourceSpan span) implements SchemaErrors {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Type not found: " + typeName + " at " + span;
         }
     }
 
     record DuplicateTable(String tableName, SourceSpan span) implements SchemaErrors {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Table already exists: " + tableName + " at " + span;
         }
     }
 
     record ParseError(String detail, SourceSpan span) implements SchemaErrors {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Parse error: " + detail + " at " + span;
         }
     }

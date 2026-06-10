@@ -11,9 +11,9 @@ public sealed interface ScalingRecommendation {
         INSUFFICIENT_DATA
     }
 
-    record PreemptiveScaleUp(float predictedCpuPeak, float predictedLatency, int suggestedInstances) implements ScalingRecommendation{}
+    record PreemptiveScaleUp(float predictedCpuPeak, float predictedLatency, int suggestedInstances) implements ScalingRecommendation {}
 
-    record PreemptiveScaleDown(float predictedCpuTrough, int suggestedInstances) implements ScalingRecommendation{}
+    record PreemptiveScaleDown(float predictedCpuTrough, int suggestedInstances) implements ScalingRecommendation {}
 
-    record AdjustThresholds(double newCpuScaleUpThreshold, double newCpuScaleDownThreshold) implements ScalingRecommendation{}
+    record AdjustThresholds(double newCpuScaleUpThreshold, double newCpuScaleDownThreshold) implements ScalingRecommendation {}
 }

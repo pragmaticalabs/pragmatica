@@ -32,14 +32,22 @@ public final class DrainCommandRegistry {
     }
 
     /// Register `node` as a DRAIN target. Idempotent: repeated calls are no-ops. `null` ignored.
-    @Contract public void requestDrain(NodeId node) {
-        if (node == null) {return;}
+    @Contract
+    public void requestDrain(NodeId node) {
+        if (node == null) {
+            return;
+        }
+
         targets.add(node);
     }
 
     /// Clear `node` from the DRAIN target set. Idempotent: clearing an absent node is a no-op.
-    @Contract public void clearDrain(NodeId node) {
-        if (node == null) {return;}
+    @Contract
+    public void clearDrain(NodeId node) {
+        if (node == null) {
+            return;
+        }
+
         targets.remove(node);
     }
 

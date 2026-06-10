@@ -48,6 +48,7 @@ final class IndexedDeploymentMap implements DeploymentMap {
     public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
         var key = valuePut.cause().key();
         var value = valuePut.cause().value();
+
         index.put(new SliceNodeKey(key.artifact(), key.nodeId()),
                   value.state());
     }
@@ -56,6 +57,7 @@ final class IndexedDeploymentMap implements DeploymentMap {
     @Override
     public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
         var key = valueRemove.cause().key();
+
         index.remove(new SliceNodeKey(key.artifact(), key.nodeId()));
     }
 
@@ -120,9 +122,17 @@ final class IndexedDeploymentMap implements DeploymentMap {
     }
 
     private static SliceState higherState(SliceState a, SliceState b) {
-        if (a == SliceState.ACTIVE || b == SliceState.ACTIVE) {return SliceState.ACTIVE;}
-        if (a == SliceState.FAILED) {return b;}
-        if (b == SliceState.FAILED) {return a;}
+        if (a == SliceState.ACTIVE || b == SliceState.ACTIVE) {
+            return SliceState.ACTIVE;
+        }
+
+        if (a == SliceState.FAILED) {
+            return b;
+        }
+
+        if (b == SliceState.FAILED) {
+            return a;
+        }
 
         return a.ordinal() >= b.ordinal()
                ? a

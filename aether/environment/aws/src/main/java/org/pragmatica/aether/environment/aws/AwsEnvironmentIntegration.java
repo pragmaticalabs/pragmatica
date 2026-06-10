@@ -34,6 +34,7 @@ public record AwsEnvironmentIntegration(AwsComputeProvider computeProvider,
                                         Option<CertificateProvider> certProvider) implements EnvironmentIntegration {
     public static Result<AwsEnvironmentIntegration> awsEnvironmentIntegration(AwsEnvironmentConfig config) {
         var client = AwsClient.awsClient(config.awsConfig());
+
         return awsEnvironmentIntegration(client, config);
     }
 
@@ -44,13 +45,19 @@ public record AwsEnvironmentIntegration(AwsComputeProvider computeProvider,
         var discovery = resolveDiscoveryProvider(client, config);
         var secrets = resolveSecretsProvider(client);
         var certProv = resolveCertificateProvider(client, config);
-        return Result.all(compute, lbProvider)
-                         .map((cp, lb) -> new AwsEnvironmentIntegration(cp, lb, discovery, secrets, certProv));
+
+        return Result.all(compute, lbProvider).map((cp, lb) -> new AwsEnvironmentIntegration(cp,
+                                                                                             lb,
+                                                                                             discovery,
+                                                                                             secrets,
+                                                                                             certProv));
     }
 
     private static Result<Option<LoadBalancerProvider>> resolveLbProvider(AwsClient client,
                                                                           AwsEnvironmentConfig config) {
-        return config.loadBalancer().fold(() -> success(Option.empty()), lbConfig -> toLbOption(client, lbConfig));
+        return config.loadBalancer()
+                     .fold(() -> success(Option.empty()),
+                           lbConfig -> toLbOption(client, lbConfig));
     }
 
     private static Result<Option<LoadBalancerProvider>> toLbOption(AwsClient client,
@@ -63,7 +70,8 @@ public record AwsEnvironmentIntegration(AwsComputeProvider computeProvider,
     }
 
     private static Option<DiscoveryProvider> resolveDiscoveryProvider(AwsClient client, AwsEnvironmentConfig config) {
-        return config.clusterName().map(name -> awsDiscoveryProvider(client, config));
+        return config.clusterName()
+                     .map(name -> awsDiscoveryProvider(client, config));
     }
 
     private static Option<SecretsProvider> resolveSecretsProvider(AwsClient client) {
@@ -71,34 +79,40 @@ public record AwsEnvironmentIntegration(AwsComputeProvider computeProvider,
                                                                   TimeSpan.timeSpan(5).minutes()));
     }
 
-    @Override public Option<ComputeProvider> compute() {
+    @Override
+    public Option<ComputeProvider> compute() {
         return some(computeProvider);
     }
 
-    @Override public Option<SecretsProvider> secrets() {
+    @Override
+    public Option<SecretsProvider> secrets() {
         return secretsProvider;
     }
 
-    @Override public Option<LoadBalancerProvider> loadBalancer() {
+    @Override
+    public Option<LoadBalancerProvider> loadBalancer() {
         return loadBalancerProvider;
     }
 
-    @Override public Option<DiscoveryProvider> discovery() {
+    @Override
+    public Option<DiscoveryProvider> discovery() {
         return discoveryProvider;
     }
 
-    @Override public Option<CertificateProvider> certificateProvider() {
+    @Override
+    public Option<CertificateProvider> certificateProvider() {
         return certProvider;
     }
 
-    @Override public Option<FloatingIpProvider> floatingIp() {
+    @Override
+    public Option<FloatingIpProvider> floatingIp() {
         return empty();
     }
 
     private static Option<CertificateProvider> resolveCertificateProvider(AwsClient client,
                                                                           AwsEnvironmentConfig config) {
         return config.certificateSecretPrefix()
-                                             .flatMap(prefix -> awsCertificateProvider(client, prefix).map(CertificateProvider.class::cast)
-                                                                                      .option());
+                     .flatMap(prefix -> awsCertificateProvider(client, prefix).map(CertificateProvider.class::cast)
+                                                              .option());
     }
 }

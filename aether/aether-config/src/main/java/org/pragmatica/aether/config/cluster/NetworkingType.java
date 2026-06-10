@@ -22,9 +22,10 @@ public enum NetworkingType {
         return value;
     }
     public static Result<NetworkingType> networkingType(String raw) {
-        return Arrays.stream(values()).filter(nt -> nt.value.equals(raw))
-                            .findFirst()
-                            .map(Result::success)
-                            .orElseGet(INVALID_TYPE::result);
+        return Arrays.stream(values())
+                     .filter(nt -> nt.value.equals(raw))
+                     .findFirst()
+                     .map(Result::success)
+                     .orElseGet(INVALID_TYPE::result);
     }
 }

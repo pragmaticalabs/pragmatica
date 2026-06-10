@@ -61,7 +61,8 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         // Bare gossip join while the detector is Stopped/Starting carries no reachability
         // proof. Emit NO HEALTHY hint — let it arrive via `PeerConnected`/probe-ack once the
         // protocol is Running. Emitting HEALTHY here resurrects unreachable bare-gossip joins.
-        LOG.info("SWIM member joined (detector stopped/starting): {} — no HEALTHY hint until connection", member.nodeId());
+        LOG.info("SWIM member joined (detector stopped/starting): {} — no HEALTHY hint until connection",
+                 member.nodeId());
     }
 
     record Starting(SwimHealthContext ctx) implements SwimHealthState {
@@ -116,6 +117,7 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
 
                 return;
             }
+
             tx.transitionTo(new Running(ctx, swim, transport, encryptor, event.leader()));
         }
 
@@ -152,13 +154,14 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
             // startupDelay ≈ suspectTimeout would otherwise evict a reachable follower.
             // A GENUINELY-UNKNOWN peer is re-added so it can be probed.
             var peer = event.peer();
+
             if (swim.members().containsKey(peer)) {
                 promoteKnownMember(peer);
 
                 return;
             }
-            event.info().onPresent(info -> addSeedAndLog(peer, addressOf(info)))
-                        .onEmpty(() -> readdUnknownFromTopology(peer));
+
+            event.info().onPresent(info -> addSeedAndLog(peer, addressOf(info))).onEmpty(() -> readdUnknownFromTopology(peer));
         }
 
         private void promoteKnownMember(NodeId peer) {
@@ -173,7 +176,8 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
             // DEGRADED until the hint's TTL expires, even after the peer demonstrably recovered.
             swim.markAliveFromTransport(peer);
             ctx.reportHint(peer, HealthHint.HEALTHY);
-            LOG.debug("PeerConnected for known SWIM member {} — transport liveness proof, markAliveFromTransport (tombstone-gated) + HEALTHY hint clears stale suspicion", peer.id());
+            LOG.debug("PeerConnected for known SWIM member {} — transport liveness proof, markAliveFromTransport (tombstone-gated) + HEALTHY hint clears stale suspicion",
+                      peer.id());
         }
 
         private void readdUnknownFromTopology(NodeId peer) {

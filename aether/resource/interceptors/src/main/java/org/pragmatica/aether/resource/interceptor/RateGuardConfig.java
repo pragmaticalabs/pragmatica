@@ -22,6 +22,7 @@ public record RateGuardConfig(int requestsPerSecond, int burst, String type) {
         var validRate = ensure(requestsPerSecond, Verify.Is::positive);
         var validBurst = ensure(burst, Verify.Is::nonNegative);
         var validType = ensure(type, Verify.Is::notBlank);
+
         return all(validRate, validBurst, validType).map(RateGuardConfig::new);
     }
 

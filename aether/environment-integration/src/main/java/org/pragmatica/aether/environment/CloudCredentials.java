@@ -14,8 +14,9 @@ import java.util.Map;
 import java.util.function.Function;
 
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public sealed interface CloudCredentials {
-    record unused() implements CloudCredentials{}
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
+public sealed interface CloudCredentials {
+    record unused() implements CloudCredentials {}
 
     Function<String, String> SYSTEM_ENV = System::getenv;
 
@@ -24,7 +25,7 @@ import java.util.function.Function;
     }
 
     static Result<CloudConfig> fromEnvironment(String providerName, Function<String, String> envLookup) {
-        return switch (providerName){
+        return switch (providerName) {
             case "hetzner" -> hetzner(envLookup);
             case "aws" -> aws(envLookup);
             case "gcp" -> gcp(envLookup);
@@ -71,14 +72,23 @@ import java.util.function.Function;
                                                List<EnvVarSpec> specs) {
         var creds = new LinkedHashMap<String, String>();
         var missing = new ArrayList<String>();
+
         for (var s : specs) {
             var value = env.apply(s.envVar());
-            if (value == null || value.isBlank()) {if (s.required()) {missing.add(s.envVar());}} else {creds.put(s.credentialKey(),
-                                                                                                                 value);}
+
+            if (value == null || value.isBlank()) {
+                if (s.required()) {
+                    missing.add(s.envVar());
+                }
+            } else {
+                creds.put(s.credentialKey(), value);
+            }
         }
-        if (!missing.isEmpty()) {return Result.failure(EnvironmentError.CredentialsMissing.credentialsMissing(providerName,
-                                                                                                              missing)
-        .unwrap());}
+
+        if (!missing.isEmpty()) {
+            return Result.failure(EnvironmentError.CredentialsMissing.credentialsMissing(providerName, missing).unwrap());
+        }
+
         return Result.success(new CloudConfig(providerName,
                                               Map.copyOf(creds),
                                               Map.of(),
@@ -96,5 +106,5 @@ import java.util.function.Function;
         return new EnvVarSpec(envVar, credentialKey, required);
     }
 
-    record EnvVarSpec(String envVar, String credentialKey, boolean required){}
+    record EnvVarSpec(String envVar, String credentialKey, boolean required) {}
 }

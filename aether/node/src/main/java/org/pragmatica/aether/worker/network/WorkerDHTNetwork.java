@@ -78,7 +78,11 @@ public final class WorkerDHTNetwork implements DHTNetwork {
 
             return;
         }
-        if (tryCrossCommunityRelay(target, message)) {return;}
+
+        if (tryCrossCommunityRelay(target, message)) {
+            return;
+        }
+
         if (governorMesh.isPresent() && !isKnownInAnyCommunity(target)) {
             LOG.warn("DHT target {} not found in any known community — falling back to direct send (may fail)",
                      target.id());
@@ -104,7 +108,9 @@ public final class WorkerDHTNetwork implements DHTNetwork {
     private boolean relayCrossCommunity(GovernorMesh mesh, Serializer ser, NodeId target, ProtocolMessage message) {
         var targetCommunity = findCommunityFor(target);
 
-        if (targetCommunity.isEmpty()) {return false;}
+        if (targetCommunity.isEmpty()) {
+            return false;
+        }
 
         var community = targetCommunity.unwrap();
         var governor = mesh.governorFor(community);
@@ -117,6 +123,7 @@ public final class WorkerDHTNetwork implements DHTNetwork {
 
         var payload = ser.encode(message);
         var relay = DHTRelayMessage.dhtRelayMessage(target, payload);
+
         delegateRouter.route(new NetworkServiceMessage.Send(governor.unwrap(), relay));
         LOG.debug("Relayed DHT message to {} via governor {} in community '{}'",
                   target.id(),
@@ -127,7 +134,12 @@ public final class WorkerDHTNetwork implements DHTNetwork {
     }
 
     private Option<String> findCommunityFor(NodeId target) {
-        for (var entry : communityMembers.entrySet()) {if (entry.getValue().contains(target)) {return Option.option(entry.getKey());}}
+        for (var entry : communityMembers.entrySet()) {
+            if (entry.getValue().contains(target)) {
+                return Option.option(entry.getKey());
+            }
+        }
+
         return Option.empty();
     }
 }

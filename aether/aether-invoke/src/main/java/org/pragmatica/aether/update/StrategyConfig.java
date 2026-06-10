@@ -16,7 +16,7 @@ public sealed interface StrategyConfig {
         }
     }
 
-    record BlueGreenConfig(TimeSpan drainTimeout) implements StrategyConfig{}
+    record BlueGreenConfig(TimeSpan drainTimeout) implements StrategyConfig {}
 
-    record RollingConfig(boolean requireManualApproval) implements StrategyConfig{}
+    record RollingConfig(boolean requireManualApproval) implements StrategyConfig {}
 }

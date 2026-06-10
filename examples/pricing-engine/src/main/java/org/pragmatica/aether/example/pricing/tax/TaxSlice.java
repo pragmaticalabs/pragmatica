@@ -50,6 +50,7 @@ public interface TaxSlice {
                 return new TaxResponse(0, request.regionCode(), 0);
             }
         }
+
         return new taxSlice(db);
     }
 }

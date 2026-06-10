@@ -22,7 +22,6 @@ public record AppHttpConfig(boolean enabled,
                             Option<JwtConfig> jwtConfig,
                             HttpProtocol httpProtocol) {
     public static final int DEFAULT_APP_HTTP_PORT = 8070;
-
     public static final int DEFAULT_MAX_REQUEST_SIZE = 10 * 1024 * 1024;
 
     public AppHttpConfig {
@@ -72,8 +71,9 @@ public record AppHttpConfig(boolean enabled,
 
     public static AppHttpConfig appHttpConfig(int port, Set<String> apiKeys) {
         var mode = apiKeys.isEmpty()
-                  ? SecurityMode.NONE
-                  : SecurityMode.API_KEY;
+                   ? SecurityMode.NONE
+                   : SecurityMode.API_KEY;
+
         return appHttpConfig(true,
                              port,
                              wrapSimpleKeys(apiKeys),
@@ -97,13 +97,15 @@ public record AppHttpConfig(boolean enabled,
 
     private static int normalizeMaxRequestSize(int maxRequestSize) {
         return maxRequestSize > 0
-              ? maxRequestSize
-              : DEFAULT_MAX_REQUEST_SIZE;
+               ? maxRequestSize
+               : DEFAULT_MAX_REQUEST_SIZE;
     }
 
     private static Map<String, ApiKeyEntry> wrapSimpleKeys(Set<String> keys) {
         var map = new HashMap<String, ApiKeyEntry>();
+
         keys.forEach(key -> map.put(key, ApiKeyEntry.defaultEntry(key)));
+
         return Map.copyOf(map);
     }
 }

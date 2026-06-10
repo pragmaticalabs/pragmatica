@@ -10,7 +10,9 @@ import org.pragmatica.aether.slice.ExecutionMode;
 public record ScheduleConfig(String interval, String cron, ExecutionMode executionMode) {
     public ScheduleConfig {
         if (interval == null) interval = "";
+
         if (cron == null) cron = "";
+
         if (executionMode == null) executionMode = ExecutionMode.SINGLE;
     }
 }

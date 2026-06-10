@@ -15,8 +15,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.Comparator;
 import java.util.LinkedHashSet;
@@ -29,6 +27,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -118,7 +119,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// `volatile`. `activate` and `deactivate` are guarded by CAS on `isLeader`.
 public final class LeaderReconciler {
     private static final Logger log = LoggerFactory.getLogger(LeaderReconciler.class);
+
     private static final Consumer<ReconcileIntent> NOOP_LISTENER = intent -> {};
+
     private static final TimeSpan DEBOUNCE_DELAY = timeSpan(100L).millis();
     /// Sentinel for "not yet recorded" on the two single-shot/edge-triggered nanosecond
     /// timestamps below. `Long.MIN_VALUE` is unreachable by any real `timeSource.nanoTime()`
@@ -152,7 +155,6 @@ public final class LeaderReconciler {
     private final Supplier<String> clusterNameSupplier;
     private final TimeSource timeSource;
     private final NttTimerScheduler scheduler;
-
     private final AtomicBoolean isLeader = new AtomicBoolean(false);
     private final AtomicBoolean reconcileInFlight = new AtomicBoolean(false);
     private final AtomicBoolean rescheduleRequested = new AtomicBoolean(false);
@@ -179,8 +181,11 @@ public final class LeaderReconciler {
     /// schedule a second are deduped (a non-null ref short-circuits the schedule), and the ref is
     /// nulled when the follow-up fires so the next debounce window can arm a fresh one.
     private final AtomicReference<ScheduledFuture<?>> debounceReEvalFutureRef = new AtomicReference<>();
+
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
+
     private final ConcurrentHashMap<NodeId, Long> inFlightProvisioning = new ConcurrentHashMap<>();
+
     /// Provisioning-stickiness fix — supplier of the STICKILY-retained set of in-flight provisioning
     /// ids the prior leader broadcast (via the metrics ping's `dispatchedNodes`, retained term-fenced
     /// by `ClusterSyncCollector`). On leadership GAIN ([`#activate()`]) this set seeds
@@ -189,6 +194,7 @@ public final class LeaderReconciler {
     /// seed) so existing construction / tests keep working unchanged; `AetherNode` wires it to
     /// `ClusterSyncCollector::retainedDispatchedNodes`.
     private final AtomicReference<Supplier<Set<NodeId>>> retainedDispatchedSupplier = new AtomicReference<>(Set::of);
+
     private volatile Consumer<ReconcileIntent> reconcileListener = NOOP_LISTENER;
 
     private LeaderReconciler(MembershipConfig membershipConfig,
@@ -280,10 +286,13 @@ public final class LeaderReconciler {
         if (!isLeader.compareAndSet(false, true)) {
             return;
         }
+
         if (leaderTermSupplier.get() > 1L) {
             reachedFullMembership.set(true);
-            log.info("LeaderReconciler re-election activation (leaderTerm={}) — reachedFullMembership pre-latched", leaderTermSupplier.get());
+            log.info("LeaderReconciler re-election activation (leaderTerm={}) — reachedFullMembership pre-latched",
+                     leaderTermSupplier.get());
         }
+
         seedInFlightFromRetainedDispatched();
         var future = scheduler.schedule(this::onActivationDelayFire, leaderActivationDelay);
 
@@ -300,19 +309,25 @@ public final class LeaderReconciler {
     /// of 5" bug). Ids that are already members are skipped — the provision already fulfilled.
     private void seedInFlightFromRetainedDispatched() {
         var retained = retainedDispatchedSupplier.get().get();
+
         if (retained.isEmpty()) {
             return;
         }
+
         var now = timeSource.nanoTime();
         var currentMembers = membershipFsm.countedMembers();
+
         for (var id : retained) {
             if (currentMembers.contains(id)) {
                 continue;
             }
+
             inFlightProvisioning.putIfAbsent(id, now);
         }
+
         log.info("LeaderReconciler seeded in-flight provisioning from retained dispatched set (retained={}, inFlight={})",
-                 retained.size(), inFlightProvisioning.size());
+                 retained.size(),
+                 inFlightProvisioning.size());
     }
 
     /// Deactivate the leader-pinned reconciler. Idempotent. Cancels the pending one-shot
@@ -323,6 +338,7 @@ public final class LeaderReconciler {
         if (!isLeader.compareAndSet(true, false)) {
             return;
         }
+
         cancelPendingActivation();
         cancelInFlightSweep();
         cancelDebounceReEval();
@@ -338,6 +354,7 @@ public final class LeaderReconciler {
         if (!isLeader.get()) {
             return;
         }
+
         triggerReconcile(ReconcileTrigger.NTT_FIRE);
     }
 
@@ -361,6 +378,7 @@ public final class LeaderReconciler {
         if (!isLeader.get()) {
             return;
         }
+
         triggerReconcile(ReconcileTrigger.MEMBER_APPEARED);
     }
 
@@ -372,6 +390,7 @@ public final class LeaderReconciler {
         if (!isLeader.get()) {
             return;
         }
+
         triggerReconcile(ReconcileTrigger.CONFIG_CHANGE);
     }
 
@@ -460,8 +479,10 @@ public final class LeaderReconciler {
     private void triggerReconcile(ReconcileTrigger trigger) {
         if (!reconcileInFlight.compareAndSet(false, true)) {
             rescheduleRequested.set(true);
+
             return;
         }
+
         pendingTriggerRef.set(some(trigger));
         scheduler.schedule(this::runDebouncedReconcile, DEBOUNCE_DELAY);
     }
@@ -482,6 +503,7 @@ public final class LeaderReconciler {
         if (!isLeader.get()) {
             return;
         }
+
         activationFutureRef.set(null);
         log.info("LeaderReconciler activated (leadership gained) at nanoTime={}", timeSource.nanoTime());
         runReconcileBody(ReconcileTrigger.LEADER_ACTIVATION);
@@ -504,7 +526,6 @@ public final class LeaderReconciler {
         var now = timeSource.nanoTime();
 
         evictExpiredInFlightEntries(now);
-
         var currentMembers = membershipFsm.countedMembers();
         // Identity-match clear (provision-fulfillment signal). With the completed
         // "boot under the leader-supplied id" contract, the in-flight provisioning key is the
@@ -516,7 +537,6 @@ public final class LeaderReconciler {
         // that never arrive (failed boot). This runs BEFORE computing `effective`/effectiveCapacity
         // so a fulfilled id is never double-counted in the union.
         currentMembers.forEach(inFlightProvisioning::remove);
-
         var clusterMembershipCount = currentMembers.size();
         var configuredCoreCount = configuredCoreCountSupplier.getAsInt();
         // Effective capacity is the SIZE OF THE UNION of confirmed members and in-flight
@@ -529,7 +549,6 @@ public final class LeaderReconciler {
         // drains a healthy core node, drops the cluster below quorum, and dissolves it.
         // Deduplicating by NodeId counts each node exactly once.
         var effective = effectiveCapacity(currentMembers);
-
         // Arm-after-first-quorum latch (Bug C; membership-unification-spec P5 — identity-aware
         // reconciler, approximated by a quorum latch). Latch true the first time the cluster is
         // observed at configured QUORUM (not full membership); never resets. Arming at quorum
@@ -544,10 +563,12 @@ public final class LeaderReconciler {
         if (configuredCoreCount >= 1 && clusterMembershipCount >= quorumThreshold(configuredCoreCount)) {
             if (armedForProvisioning.compareAndSet(false, true)) {
                 log.info("Provisioning ARMED at nanoTime={} (clusterMembershipCount={}, configuredCoreCount={}, quorumThreshold={})",
-                         now, clusterMembershipCount, configuredCoreCount, quorumThreshold(configuredCoreCount));
+                         now,
+                         clusterMembershipCount,
+                         configuredCoreCount,
+                         quorumThreshold(configuredCoreCount));
             }
         }
-
         // Reached-full-membership latch (Bug C — cold-start-over is a FACT, not a timer). Sourced
         // from presence sampler's INDEPENDENT high-water mark ([`PresenceSampler#peakMembershipCount`]), NOT
         // the per-pass `clusterMembershipCount`: the reconciler is departure-triggered, so its FIRST
@@ -562,10 +583,11 @@ public final class LeaderReconciler {
         if (configuredCoreCount >= 1 && presenceSampler.peakMembershipCount() >= configuredCoreCount) {
             if (reachedFullMembership.compareAndSet(false, true)) {
                 log.info("Reached full membership at nanoTime={} (peakMembershipCount={}, configuredCoreCount={})",
-                         now, presenceSampler.peakMembershipCount(), configuredCoreCount);
+                         now,
+                         presenceSampler.peakMembershipCount(),
+                         configuredCoreCount);
             }
         }
-
         // Quorum-safety guard (spec §7.2, §I5; sub-quorum-must-dissolve). A sub-quorum
         // leader cannot distinguish "the majority died" from "I am the isolated minority",
         // so it MUST NOT provision replacements — a partitioned minority that provisioned
@@ -583,23 +605,31 @@ public final class LeaderReconciler {
         // appears, clear it the moment the deficit resolves. A transient reconnect dip clears the
         // anchor; a genuine departure lets it age.
         updateDeficitAnchor(now, effective, configuredCoreCount);
-
         var quorumSafe = clusterMembershipCount >= quorumThreshold(configuredCoreCount);
         var provisioningPermitted = quorumSafe && provisioningAllowed(now, effective, configuredCoreCount);
-        logProvisioningDecision(now, trigger, currentMembers, effective, configuredCoreCount, quorumSafe, provisioningPermitted);
-        var peersToProvision = provisioningPermitted ? computePeersToProvision(configuredCoreCount, effective) : Set.<NodeId>of();
-        var peersToDrain = quorumSafe ? computePeersToDrain(currentMembers, configuredCoreCount, effective) : Set.<NodeId>of();
+
+        logProvisioningDecision(now,
+                                trigger,
+                                currentMembers,
+                                effective,
+                                configuredCoreCount,
+                                quorumSafe,
+                                provisioningPermitted);
+        var peersToProvision = provisioningPermitted
+                               ? computePeersToProvision(configuredCoreCount, effective)
+                               : Set.<NodeId> of();
+        var peersToDrain = quorumSafe
+                           ? computePeersToDrain(currentMembers, configuredCoreCount, effective)
+                           : Set.<NodeId> of();
 
         dispatchProvisionActions(now, peersToProvision, currentMembers);
         dispatchDrainActions(peersToDrain);
-
         // Fix 2 — suppressed-deficit re-evaluation tick. A pass that has a quorum-safe, armed,
         // full-membership deficit suppressed ONLY by the deficit-debounce time gate schedules a
         // single follow-up reconcile after the remaining debounce window so the deficit is acted on
         // when the gate clears — instead of waiting for a presence sampler membership-change event that never
         // arrives while membership is stable in deficit. Deduped + bounded; does not busy-loop.
         scheduleDebounceReEvalIfNeeded(now, effective, configuredCoreCount, quorumSafe, provisioningPermitted);
-
         // Restart the debounce clock once we ACT on a deficit. The just-dispatched in-flight
         // placeholder makes `effective` meet target on the next pass (anchor would reset anyway),
         // but if the placeholder dies and the raw deficit re-opens with NO intervening at-target
@@ -680,6 +710,7 @@ public final class LeaderReconciler {
         if (!hasDeficit && !provisioningPermitted) {
             return;
         }
+
         log.info("LeaderReconciler pass: trigger={} clusterMembershipCount={} peakMembershipCount={} members={} effective={} configuredCoreCount={} armedForProvisioning={} reachedFullMembership={} deficitAgeMs={} quorumSafe={} reason={}",
                  trigger,
                  currentMembers.size(),
@@ -700,6 +731,7 @@ public final class LeaderReconciler {
         if (deficitSinceNanos == UNSET_NANOS) {
             return -1L;
         }
+
         return (now - deficitSinceNanos) / 1_000_000L;
     }
 
@@ -712,18 +744,23 @@ public final class LeaderReconciler {
         if (provisioningPermitted) {
             return "NONE_PROVISIONING";
         }
+
         if (effective >= configuredCoreCount) {
             return "NO_DEFICIT";
         }
+
         if (!quorumSafe) {
             return "NOT_QUORUM_SAFE";
         }
+
         if (!armedForProvisioning.get()) {
             return "NOT_ARMED";
         }
+
         if (!reachedFullMembership.get()) {
             return "COLD_START_NOT_FULL";
         }
+
         return "WITHIN_DEBOUNCE";
     }
 
@@ -745,7 +782,9 @@ public final class LeaderReconciler {
     /// (`configured / 2 + 1`). A configured count `< 1` is treated as `1` (a single-node
     /// cluster is its own quorum) so the guard never blocks the trivial bootstrap case.
     private static int quorumThreshold(int configuredCoreCount) {
-        return configuredCoreCount < 1 ? 1 : configuredCoreCount / 2 + 1;
+        return configuredCoreCount < 1
+               ? 1
+               : configuredCoreCount / 2 + 1;
     }
 
     /// Compute the set of synthetic placeholder NodeIds representing each missing slot
@@ -755,12 +794,14 @@ public final class LeaderReconciler {
         if (effective >= configuredCoreCount) {
             return Set.of();
         }
+
         var gap = configuredCoreCount - effective;
         var placeholders = new LinkedHashSet<NodeId>();
 
         for (var i = 0; i < gap; i++) {
             placeholders.add(NodeId.randomNodeId(replacementNodeIdPrefix()));
         }
+
         return Set.copyOf(placeholders);
     }
 
@@ -790,6 +831,7 @@ public final class LeaderReconciler {
         if (effective <= configuredCoreCount) {
             return Set.of();
         }
+
         var nominalExcess = effective - configuredCoreCount;
         var floorHeadroom = Math.max(0, currentMembers.size() - configuredCoreCount);
         var drainCount = Math.min(nominalExcess, floorHeadroom);
@@ -797,6 +839,7 @@ public final class LeaderReconciler {
         if (drainCount == 0) {
             return Set.of();
         }
+
         var ordered = new LinkedHashSet<NodeId>();
 
         currentMembers.stream().sorted(Comparator.comparing(NodeId::id).reversed()).limit(drainCount).forEach(ordered::add);
@@ -807,8 +850,11 @@ public final class LeaderReconciler {
     @Contract
     private void dispatchProvisionActions(long nowNanos, Set<NodeId> peersToProvision, Set<NodeId> currentMembers) {
         if (!peersToProvision.isEmpty()) {
-            log.info("LeaderReconciler dispatching provision for {} peer(s): {}", peersToProvision.size(), peersToProvision);
+            log.info("LeaderReconciler dispatching provision for {} peer(s): {}",
+                     peersToProvision.size(),
+                     peersToProvision);
         }
+
         peersToProvision.forEach(placeholder -> dispatchSingleProvision(nowNanos, placeholder, currentMembers));
     }
 
@@ -853,6 +899,7 @@ public final class LeaderReconciler {
         if (inFlightSweepFutureRef.get() != null) {
             return;
         }
+
         var future = scheduler.schedule(this::runInFlightSweep, inFlightExpiry);
 
         if (!inFlightSweepFutureRef.compareAndSet(null, future)) {
@@ -871,12 +918,14 @@ public final class LeaderReconciler {
         if (!isLeader.get()) {
             return;
         }
+
         var before = inFlightProvisioning.size();
 
         evictExpiredInFlightEntries(timeSource.nanoTime());
         if (inFlightProvisioning.size() < before) {
             triggerReconcile(ReconcileTrigger.NTT_FIRE);
         }
+
         if (!inFlightProvisioning.isEmpty()) {
             armInFlightSweep();
         }
@@ -895,16 +944,12 @@ public final class LeaderReconciler {
                                                 int configuredCoreCount,
                                                 boolean quorumSafe,
                                                 boolean provisioningPermitted) {
-        var suppressedByDebounceOnly = !provisioningPermitted
-                                       && quorumSafe
-                                       && armedForProvisioning.get()
-                                       && reachedFullMembership.get()
-                                       && effective < configuredCoreCount
-                                       && deficitSinceNanos != UNSET_NANOS;
+        var suppressedByDebounceOnly = !provisioningPermitted && quorumSafe && armedForProvisioning.get() && reachedFullMembership.get() && effective < configuredCoreCount && deficitSinceNanos != UNSET_NANOS;
 
         if (!suppressedByDebounceOnly || debounceReEvalFutureRef.get() != null) {
             return;
         }
+
         var future = scheduler.schedule(this::runDebounceReEval, debounceReEvalDelay(now));
 
         if (!debounceReEvalFutureRef.compareAndSet(null, future)) {
@@ -933,6 +978,7 @@ public final class LeaderReconciler {
         if (!isLeader.get()) {
             return;
         }
+
         triggerReconcile(ReconcileTrigger.NTT_FIRE);
     }
 

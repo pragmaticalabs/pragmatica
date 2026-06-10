@@ -78,9 +78,18 @@ public class DeployCommand implements Callable<Integer> {
 
             return 0;
         }
-        if (canary) {return deployWithStrategy("CANARY", buildCanaryBody());}
-        if (blueGreen) {return deployWithStrategy("BLUE_GREEN", buildBlueGreenBody());}
-        if (rolling) {return deployWithStrategy("ROLLING", buildRollingBody());}
+
+        if (canary) {
+            return deployWithStrategy("CANARY", buildCanaryBody());
+        }
+
+        if (blueGreen) {
+            return deployWithStrategy("BLUE_GREEN", buildBlueGreenBody());
+        }
+
+        if (rolling) {
+            return deployWithStrategy("ROLLING", buildRollingBody());
+        }
 
         return deployImmediate();
     }

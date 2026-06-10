@@ -20,8 +20,12 @@ import org.slf4j.LoggerFactory;
 
 
 public interface ArtifactDeploymentTracker {
-    @Contract void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
-    @Contract void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
+    @Contract
+    void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
+
+    @Contract
+    void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
+
     boolean isDeployed(Artifact artifact);
     Set<Artifact> deployedArtifacts();
     int deployedCount();
@@ -36,45 +40,54 @@ class ArtifactDeploymentTrackerImpl implements ArtifactDeploymentTracker {
 
     private final ConcurrentHashMap<Artifact, Integer> deploymentCounts = new ConcurrentHashMap<>();
 
-    @Override@Contract public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
-        var artifact = valuePut.cause().key()
-                                     .artifact();
+    @Override
+    @Contract
+    public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+        var artifact = valuePut.cause().key().artifact();
+
         deploymentCounts.compute(artifact, (_, count) -> incrementCount(count));
         log.debug("Artifact deployed (NodeArtifactKey): {} (total: {})",
                   artifact.asString(),
                   deploymentCounts.get(artifact));
     }
 
-    @Override@Contract public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
-        var artifact = valueRemove.cause().key()
-                                        .artifact();
+    @Override
+    @Contract
+    public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+        var artifact = valueRemove.cause().key().artifact();
+
         deploymentCounts.compute(artifact, (_, count) -> decrementCount(count));
         log.debug("Artifact undeployed (NodeArtifactKey): {} (remaining: {})",
                   artifact.asString(),
                   deploymentCounts.getOrDefault(artifact, 0));
     }
 
-    @SuppressWarnings("JBCT-RET-03") private static Integer incrementCount(Integer count) {
+    @SuppressWarnings("JBCT-RET-03")
+    private static Integer incrementCount(Integer count) {
         return count == null
-              ? 1
-              : count + 1;
+               ? 1
+               : count + 1;
     }
 
-    @SuppressWarnings("JBCT-RET-03") private static Integer decrementCount(Integer count) {
+    @SuppressWarnings("JBCT-RET-03")
+    private static Integer decrementCount(Integer count) {
         return (count == null || count <= 1)
-              ? null
-              : count - 1;
+               ? null
+               : count - 1;
     }
 
-    @Override public boolean isDeployed(Artifact artifact) {
+    @Override
+    public boolean isDeployed(Artifact artifact) {
         return deploymentCounts.containsKey(artifact);
     }
 
-    @Override public Set<Artifact> deployedArtifacts() {
+    @Override
+    public Set<Artifact> deployedArtifacts() {
         return Set.copyOf(deploymentCounts.keySet());
     }
 
-    @Override public int deployedCount() {
+    @Override
+    public int deployedCount() {
         return deploymentCounts.size();
     }
 }

@@ -5,7 +5,6 @@
 package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.aether.slice.resource.ResourceAddress;
-
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -29,6 +28,7 @@ public final class StreamNamespacesService {
 
     public static StreamNamespacesService inMemory() {
         var registry = new InMemoryStreamRegistry();
+
         return new StreamNamespacesService(registry, new SystemStreamBootstrap(registry));
     }
 

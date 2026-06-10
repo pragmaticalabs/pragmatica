@@ -33,41 +33,40 @@ public sealed interface LoadRoutes {
     }
 
     private static Route<LoadConfigResponse> getConfigRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadConfigResponse>get("/config").toJson(() -> getConfig(runner));
+        return Route.<LoadConfigResponse> get("/config").toJson(() -> getConfig(runner));
     }
 
     private static Route<LoadConfigUploadResponse> postConfigRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadConfigUploadResponse>post("/config")
+        return Route.<LoadConfigUploadResponse> post("/config")
                     .to(ctx -> uploadConfig(runner,
                                             ctx.bodyAsString()))
                     .asJson();
     }
 
     private static Route<LoadRunnerStatusResponse> getStatusRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadRunnerStatusResponse>get("/status").toJson(() -> getStatus(runner));
+        return Route.<LoadRunnerStatusResponse> get("/status").toJson(() -> getStatus(runner));
     }
 
     private static Route<LoadControlResponse> startRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadControlResponse>post("/start").toJson(_ -> start(runner));
+        return Route.<LoadControlResponse> post("/start").toJson(_ -> start(runner));
     }
 
     private static Route<LoadControlResponse> stopRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadControlResponse>post("/stop").toJson(_ -> stop(runner));
+        return Route.<LoadControlResponse> post("/stop").toJson(_ -> stop(runner));
     }
 
     private static Route<LoadControlResponse> pauseRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadControlResponse>post("/pause").toJson(_ -> pause(runner));
+        return Route.<LoadControlResponse> post("/pause").toJson(_ -> pause(runner));
     }
 
     private static Route<LoadControlResponse> resumeRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadControlResponse>post("/resume").toJson(_ -> resume(runner));
+        return Route.<LoadControlResponse> post("/resume").toJson(_ -> resume(runner));
     }
 
     private static LoadConfigResponse getConfig(ConfigurableLoadRunner runner) {
         var loadConfig = runner.config();
-        var targetInfos = loadConfig.targets().stream()
-                                            .map(LoadRoutes::toLoadTargetInfo)
-                                            .toList();
+        var targetInfos = loadConfig.targets().stream().map(LoadRoutes::toLoadTargetInfo).toList();
+
         return new LoadConfigResponse(loadConfig.targets().size(),
                                       loadConfig.totalRequestsPerSecond(),
                                       targetInfos);
@@ -77,61 +76,63 @@ public sealed interface LoadRoutes {
         return new LoadTargetInfo(t.name().or(t.target()),
                                   t.target(),
                                   t.rate().requestsPerSecond() + "/s",
-                                  t.duration().map(Object::toString)
-                                            .fold(() -> null,
-                                                  s -> s));
+                                  t.duration().map(Object::toString).fold(() -> null, s -> s));
     }
 
     private static Promise<LoadConfigUploadResponse> uploadConfig(ConfigurableLoadRunner runner, String toml) {
-        return runner.loadConfigFromString(toml).async()
-                                          .map(config -> new LoadConfigUploadResponse(true,
-                                                                                      config.targets().size(),
-                                                                                      config.totalRequestsPerSecond()));
+        return runner.loadConfigFromString(toml)
+                     .async()
+                     .map(config -> new LoadConfigUploadResponse(true,
+                                                                 config.targets().size(),
+                                                                 config.totalRequestsPerSecond()));
     }
 
     private static LoadRunnerStatusResponse getStatus(ConfigurableLoadRunner runner) {
         var state = runner.state();
         var targetMetrics = runner.allTargetMetrics();
-        var targetInfos = targetMetrics.values().stream()
-                                              .map(m -> new LoadRunnerTargetInfo(m.name(),
-                                                                                 m.targetRate(),
-                                                                                 m.actualRate(),
-                                                                                 m.totalRequests(),
-                                                                                 m.successCount(),
-                                                                                 m.failureCount(),
-                                                                                 m.avgLatencyMs(),
-                                                                                 m.successRate(),
-                                                                                 m.remainingDuration()
-                                                                                                    .map(ForgeApiResponses::formatDuration)))
-                                              .toList();
+        var targetInfos = targetMetrics.values().stream().map(m -> new LoadRunnerTargetInfo(m.name(),
+                                                                                            m.targetRate(),
+                                                                                            m.actualRate(),
+                                                                                            m.totalRequests(),
+                                                                                            m.successCount(),
+                                                                                            m.failureCount(),
+                                                                                            m.avgLatencyMs(),
+                                                                                            m.successRate(),
+                                                                                            m.remainingDuration()
+                                                                                             .map(ForgeApiResponses::formatDuration))).toList();
+
         return new LoadRunnerStatusResponse(state.name(), targetInfos.size(), targetInfos);
     }
 
     private static Promise<LoadControlResponse> start(ConfigurableLoadRunner runner) {
-        return runner.start().async()
-                           .map(state -> new LoadControlResponse(true,
-                                                                 state.name()));
+        return runner.start()
+                     .async()
+                     .map(state -> new LoadControlResponse(true,
+                                                           state.name()));
     }
 
     private static Promise<LoadControlResponse> stop(ConfigurableLoadRunner runner) {
         runner.stop();
+
         return Promise.success(new LoadControlResponse(true, "IDLE"));
     }
 
     private static Promise<LoadControlResponse> pause(ConfigurableLoadRunner runner) {
         runner.pause();
+
         return Promise.success(new LoadControlResponse(true,
                                                        runner.state().name()));
     }
 
     private static Promise<LoadControlResponse> resume(ConfigurableLoadRunner runner) {
         runner.resume();
+
         return Promise.success(new LoadControlResponse(true,
                                                        runner.state().name()));
     }
 
     private static Route<RateSetResponse> setTotalRateRoute(ConfigurableLoadRunner loadRunner) {
-        return Route.<RateSetResponse>post("/rate")
+        return Route.<RateSetResponse> post("/rate")
                     .withPath(aInteger())
                     .to(rate -> setTotalRate(loadRunner, rate))
                     .asJson();
@@ -139,8 +140,9 @@ public sealed interface LoadRoutes {
 
     private static Promise<RateSetResponse> setTotalRate(ConfigurableLoadRunner loadRunner, int rate) {
         loadRunner.setTotalRate(rate);
+
         return Promise.success(new RateSetResponse(true, rate));
     }
 
-    record unused() implements LoadRoutes{}
+    record unused() implements LoadRoutes {}
 }

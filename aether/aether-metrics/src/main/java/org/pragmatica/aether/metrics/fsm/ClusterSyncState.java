@@ -28,13 +28,13 @@ import org.slf4j.LoggerFactory;
 
 public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, ClusterFsmEvent> {
     Logger LOG = LoggerFactory.getLogger(ClusterSyncState.class);
-
     ClusterSyncContext ctx();
 
     record Dormant(ClusterSyncContext ctx) implements ClusterSyncState {
-        @Contract@Override public void handle(ClusterFsmEvent event,
-                                              TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
-            switch (event){
+        @Contract
+        @Override
+        public void handle(ClusterFsmEvent event, TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
+            switch (event) {
                 case QuorumEstablished _ -> tx.transitionTo(Pinging.fresh(ctx));
                 case Shutdown _ -> tx.transitionTo(ctx.stopped());
                 default -> tx.ignore();
@@ -43,12 +43,15 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
     }
 
     record Stopped(ClusterSyncContext ctx) implements ClusterSyncState {
-        @Contract@Override public void onEntry() {
+        @Contract
+        @Override
+        public void onEntry() {
             ctx.clearObservationBuffers();
         }
 
-        @Contract@Override public void handle(ClusterFsmEvent event,
-                                              TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
+        @Contract
+        @Override
+        public void handle(ClusterFsmEvent event, TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
             tx.ignore();
         }
     }
@@ -72,23 +75,30 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
                                ctx.schedulePeriodicEmission());
         }
 
-        @Contract@Override public void onEntry() {
+        @Contract
+        @Override
+        public void onEntry() {
             LOG.debug("ClusterSyncScheduler pinging started for node {}", ctx.self());
         }
 
-        @Contract@Override public void onExit() {
+        @Contract
+        @Override
+        public void onExit() {
             pingTimer.cancel(false);
             periodicEmissionTimer.cancel(false);
         }
 
-        @Contract@Override public void onCasLost() {
+        @Contract
+        @Override
+        public void onCasLost() {
             pingTimer.cancel(false);
             periodicEmissionTimer.cancel(false);
         }
 
-        @Contract@Override public void handle(ClusterFsmEvent event,
-                                              TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
-            switch (event){
+        @Contract
+        @Override
+        public void handle(ClusterFsmEvent event, TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
+            switch (event) {
                 case PingTick pt -> handlePingTick(pt, tx);
                 case PongReceived pr -> handlePongReceived(pr, tx);
                 case QuorumDisappeared _ -> handleQuorumDisappeared(tx);
@@ -106,19 +116,25 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
         private void handleNodeGone(NodeGone event, TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
             if (!lastSentEpoch.containsKey(event.node()) && !missedPings.containsKey(event.node())) {
                 tx.ignore();
+
                 return;
             }
+
             var nextLastSent = withoutKey(lastSentEpoch, event.node());
             var nextMissed = withoutKey(missedPings, event.node());
+
             tx.transitionToOrDrop(with(ctx, nextLastSent, nextMissed));
         }
 
         private void handlePongReceived(PongReceived event, TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
             if (!missedPings.containsKey(event.peer())) {
                 tx.ignore();
+
                 return;
             }
+
             var nextMissed = withoutKey(missedPings, event.peer());
+
             tx.transitionToOrDrop(with(ctx, lastSentEpoch, nextMissed));
         }
 
@@ -135,24 +151,33 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
             // simply starts producing on the not-leader→leader edge and stops on the reverse edge.
             if (!ctx.isLeader()) {
                 tx.ignore();
+
                 return;
             }
             // Broadcast recipients: every QUIC-connected peer (network.broadcast skips self).
             // The miss-tracking maps follow the same recipient set, excluding self.
             var recipients = List.copyOf(ctx.connectedPeers());
+
             if (recipients.isEmpty()) {
                 tx.ignore();
+
                 return;
             }
+
             var currentEpoch = event.currentEpoch();
             var rabiaTerm = ctx.currentRabiaTerm();
             var nextLastSent = new HashMap<>(lastSentEpoch);
             var nextMissed = new HashMap<>(missedPings);
+
             for (var peer : recipients) {
-                if (peer.equals(ctx.self())) {continue;}
+                if (peer.equals(ctx.self())) {
+                    continue;
+                }
+
                 nextLastSent.put(peer, currentEpoch);
                 nextMissed.put(peer, nextMissed.getOrDefault(peer, 0) + 1);
             }
+
             tx.transitionToOrDrop(with(ctx, Map.copyOf(nextLastSent), Map.copyOf(nextMissed)),
                                   () -> dispatchPing(recipients, currentEpoch, rabiaTerm, nextMissed));
         }
@@ -165,15 +190,23 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
             // then the per-peer miss-tracking the broadcast does not itself surface.
             ctx.broadcastPing(currentEpoch, rabiaTerm);
             for (var peer : recipients) {
-                if (peer.equals(ctx.self())) {continue;}
+                if (peer.equals(ctx.self())) {
+                    continue;
+                }
+
                 ctx.emitPingTimeoutIfExceeded(peer, nextMissed.get(peer));
             }
         }
 
         private static <V> Map<NodeId, V> withoutKey(Map<NodeId, V> source, NodeId key) {
-            if (!source.containsKey(key)) {return source;}
+            if (!source.containsKey(key)) {
+                return source;
+            }
+
             var copy = new HashMap<>(source);
+
             copy.remove(key);
+
             return Map.copyOf(copy);
         }
     }

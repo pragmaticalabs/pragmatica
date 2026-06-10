@@ -113,13 +113,16 @@ public interface CatalogSlice {
                                                                     resp.discountAmountCents(),
                                                                     List.of("catalog", "discount")));
                 }
+
                 return Promise.success(pricingContext(basePrice, 0, List.of("catalog")));
             }
 
             private Promise<PricingContext> taxFor(PriceRequest request, PricingContext ctx) {
                 var taxableAmount = ctx.basePrice() - ctx.discountAmount();
 
-                if (isTaxExempt(request.regionCode())) {return Promise.success(ctx.withTax(0));}
+                if (isTaxExempt(request.regionCode())) {
+                    return Promise.success(ctx.withTax(0));
+                }
 
                 return taxSlice.calculateTax(new TaxRequest(request.regionCode(),
                                                             taxableAmount))
@@ -129,7 +132,9 @@ public interface CatalogSlice {
             private Promise<PriceResponse> publishIfHighValue(PriceRequest request, PricingContext ctx) {
                 var response = toResponse(ctx);
 
-                if (response.totalPrice() > HIGH_VALUE_THRESHOLD_CENTS) {return publishHighValueEvent(request, response);}
+                if (response.totalPrice() > HIGH_VALUE_THRESHOLD_CENTS) {
+                    return publishHighValueEvent(request, response);
+                }
 
                 return Promise.success(response);
             }
@@ -139,6 +144,7 @@ public interface CatalogSlice {
                                                     request.quantity(),
                                                     response.totalPrice(),
                                                     request.regionCode());
+
                 return highValuePublisher.publish(event)
                                          .map(_ -> response);
             }
@@ -162,6 +168,7 @@ public interface CatalogSlice {
                 return new PricingContext(basePrice, discountAmount, 0, callPath);
             }
         }
+
         return new catalogSlice(db, discountSlice, taxSlice, highValuePublisher);
     }
 
@@ -176,6 +183,7 @@ public interface CatalogSlice {
 
         PricingContext withStep(String step) {
             var updated = new ArrayList<>(callPath);
+
             updated.add(step);
 
             return new PricingContext(basePrice, discountAmount, taxAmount, updated);

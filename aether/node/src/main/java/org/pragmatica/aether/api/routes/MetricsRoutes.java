@@ -55,6 +55,7 @@ import static org.pragmatica.http.routing.QueryParameter.aString;
 public final class MetricsRoutes implements RouteSource {
     private static final ContentType PROMETHEUS_CONTENT_TYPE = ContentType.contentType("text/plain; version=0.0.4; charset=utf-8",
                                                                                        ContentCategory.PLAIN_TEXT);
+
     private static final String DEV_MODE_ENV = "AETHER_INSECURE_DEV_MODE";
 
     private final Supplier<ManageableNode> nodeSupplier;
@@ -75,9 +76,9 @@ public final class MetricsRoutes implements RouteSource {
     public static MetricsRoutes metricsRoutes(Supplier<ManageableNode> nodeSupplier,
                                               ObservabilityRegistry observability) {
         return new MetricsRoutes(nodeSupplier,
-                                  observability,
-                                  TimeoutMetricsRegistry.timeoutMetricsRegistry(),
-                                  MetricsRoutes::devModeFromEnv);
+                                 observability,
+                                 TimeoutMetricsRegistry.timeoutMetricsRegistry(),
+                                 MetricsRoutes::devModeFromEnv);
     }
 
     /// Wiring-friendly factory that lets `ManagementServer` inject the
@@ -177,6 +178,7 @@ public final class MetricsRoutes implements RouteSource {
 
         for (var entry : node.deploymentMetricsCollector().allDeploymentMetrics().entrySet()) {
             var metricsList = entry.getValue().stream().map(this::toDeploymentMetrics).toList();
+
             deployments.put(entry.getKey().asString(),
                             metricsList);
         }
@@ -198,7 +200,9 @@ public final class MetricsRoutes implements RouteSource {
         var node = nodeSupplier.get();
         var recent = node.snapshotCollector().minuteAggregator().recent(1);
 
-        if (recent.isEmpty()) {return new ComprehensiveMetricsResponse(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);}
+        if (recent.isEmpty()) {
+            return new ComprehensiveMetricsResponse(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        }
 
         var agg = recent.getFirst();
 
@@ -245,6 +249,7 @@ public final class MetricsRoutes implements RouteSource {
         for (var entry : allMetrics.entrySet()) {
             var nodeId = entry.getKey();
             var metrics = entry.getValue();
+
             result.add(new NodeMetric(nodeId.id(),
                                       metrics.getOrDefault("cpuUsage", 0.0),
                                       metrics.getOrDefault("heapUsedMb", 0.0).longValue(),
@@ -274,6 +279,7 @@ public final class MetricsRoutes implements RouteSource {
         var snapshots = nodeSupplier.get().invocationMetrics().snapshot().stream().filter(snapshot -> matchesFilters(snapshot,
                                                                                                                      artifactFilter,
                                                                                                                      methodFilter)).map(this::toInvocationSnapshot).toList();
+
         return new InvocationMetricsResponse(snapshots);
     }
 
@@ -286,6 +292,7 @@ public final class MetricsRoutes implements RouteSource {
         boolean matchesMethod = methodFilter.map(filter -> snapshot.methodName()
                                                                    .name()
                                                                    .equals(filter)).or(true);
+
         return matchesArtifact && matchesMethod;
     }
 
@@ -312,6 +319,7 @@ public final class MetricsRoutes implements RouteSource {
                                                                                                                      .stream()
                                                                                                                      .map(slow -> toSlowInvocation(snapshot,
                                                                                                                                                    slow))).toList();
+
         return new SlowInvocationsResponse(slowInvocations);
     }
 
@@ -337,13 +345,15 @@ public final class MetricsRoutes implements RouteSource {
             var snapshots = new ArrayList<Map<String, Object>>();
 
             for (var snapshot : nodeEntry.getValue()) {
-                if (snapshot.timestamp() <cutoff) continue;
+                if (snapshot.timestamp() < cutoff) continue;
 
                 var point = new HashMap<String, Object>();
+
                 point.put("timestamp", snapshot.timestamp());
                 point.put("metrics", snapshot.metrics());
                 snapshots.add(point);
             }
+
             if (!snapshots.isEmpty()) {
                 nodes.put(nodeEntry.getKey().id(),
                           snapshots);
@@ -387,10 +397,13 @@ public final class MetricsRoutes implements RouteSource {
     private TimeoutMetricsResponse buildTimeoutMetricsResponse() {
         var snapshot = timeoutMetrics.snapshot();
         Map<String, SubsystemTimeoutCount> subsystems = new LinkedHashMap<>();
+
         for (var subsystem : TimeoutSubsystem.values()) {
             var count = snapshot.getOrDefault(subsystem, 0L);
+
             subsystems.put(subsystem.id(), new SubsystemTimeoutCount(count));
         }
+
         return new TimeoutMetricsResponse(subsystems);
     }
 
@@ -404,14 +417,27 @@ public final class MetricsRoutes implements RouteSource {
         if (!devModeEnabled.getAsBoolean()) {
             return BackfillError.DEV_MODE_DISABLED.promise();
         }
+
         return validateBackfillRequest(req).flatMap(this::executeBackfill);
     }
 
     private Promise<BackfillMetricsRequest> validateBackfillRequest(BackfillMetricsRequest req) {
-        if (req == null) {return BackfillError.MISSING_BODY.promise();}
-        if (req.metric() == null || req.metric().isBlank()) {return BackfillError.MISSING_METRIC.promise();}
-        if (req.startTimeMs() >= req.endTimeMs()) {return BackfillError.INVALID_WINDOW.promise();}
-        if (req.intervalMs() <= 0) {return BackfillError.INVALID_INTERVAL.promise();}
+        if (req == null) {
+            return BackfillError.MISSING_BODY.promise();
+        }
+
+        if (req.metric() == null || req.metric().isBlank()) {
+            return BackfillError.MISSING_METRIC.promise();
+        }
+
+        if (req.startTimeMs() >= req.endTimeMs()) {
+            return BackfillError.INVALID_WINDOW.promise();
+        }
+
+        if (req.intervalMs() <= 0) {
+            return BackfillError.INVALID_INTERVAL.promise();
+        }
+
         return Promise.success(req);
     }
 
@@ -422,29 +448,50 @@ public final class MetricsRoutes implements RouteSource {
         var generator = parseValueFn(req.valueFn());
         var windowMs = req.endTimeMs() - req.startTimeMs();
         long samplesWritten = 0;
+
         for (long t = req.startTimeMs(); t <= req.endTimeMs(); t += req.intervalMs()) {
-            var progress = windowMs == 0 ? 0.0 : (double) (t - req.startTimeMs()) / (double) windowMs;
+            var progress = windowMs == 0
+                           ? 0.0
+                           : (double)(t - req.startTimeMs()) / (double) windowMs;
             var value = generator.valueAt(progress);
-            collector.injectHistoricalSnapshot(nodeId, new MetricsSnapshot(t, Map.of(req.metric(), value)));
+
+            collector.injectHistoricalSnapshot(nodeId,
+                                               new MetricsSnapshot(t,
+                                                                   Map.of(req.metric(), value)));
             samplesWritten++;
         }
+
         return Promise.success(new BackfillMetricsResponse(nodeId.id(),
-                                                            req.metric(),
-                                                            samplesWritten,
-                                                            req.startTimeMs(),
-                                                            req.endTimeMs()));
+                                                           req.metric(),
+                                                           samplesWritten,
+                                                           req.startTimeMs(),
+                                                           req.endTimeMs()));
     }
 
     private static ValueGenerator parseValueFn(String valueFn) {
-        if (valueFn == null || valueFn.isBlank()) {return ValueGenerator.constant(0.0);}
-        if (valueFn.startsWith("constant:")) {return ValueGenerator.constant(parseDoubleOrZero(valueFn.substring("constant:".length())));}
-        if ("linear".equalsIgnoreCase(valueFn)) {return ValueGenerator.linear();}
-        if ("sine".equalsIgnoreCase(valueFn)) {return ValueGenerator.sine();}
+        if (valueFn == null || valueFn.isBlank()) {
+            return ValueGenerator.constant(0.0);
+        }
+
+        if (valueFn.startsWith("constant:")) {
+            return ValueGenerator.constant(parseDoubleOrZero(valueFn.substring("constant:".length())));
+        }
+
+        if ("linear".equalsIgnoreCase(valueFn)) {
+            return ValueGenerator.linear();
+        }
+
+        if ("sine".equalsIgnoreCase(valueFn)) {
+            return ValueGenerator.sine();
+        }
+
         return ValueGenerator.constant(0.0);
     }
 
     private static double parseDoubleOrZero(String raw) {
-        return Result.lift1(Double::parseDouble, raw.trim()).or(0.0);
+        return Result.lift1(Double::parseDouble,
+                            raw.trim())
+                     .or(0.0);
     }
 
     /// Synthetic-value generator used by the backfill route. `progress` is in
@@ -456,9 +503,17 @@ public final class MetricsRoutes implements RouteSource {
     private interface ValueGenerator {
         double valueAt(double progress);
 
-        static ValueGenerator constant(double v) {return _ -> v;}
-        static ValueGenerator linear() {return p -> p;}
-        static ValueGenerator sine() {return p -> 0.5 + 0.5 * Math.sin(2 * Math.PI * p);}
+        static ValueGenerator constant(double v) {
+            return _ -> v;
+        }
+
+        static ValueGenerator linear() {
+            return p -> p;
+        }
+
+        static ValueGenerator sine() {
+            return p -> 0.5 + 0.5 * Math.sin(2 * Math.PI * p);
+        }
     }
 
     private enum BackfillError implements Cause {

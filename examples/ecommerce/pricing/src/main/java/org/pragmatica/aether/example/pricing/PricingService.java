@@ -294,6 +294,7 @@ public interface PricingService {
                                   .map(DiscountResult::bulkDiscount)
                                   .async();
                 }
+
                 if (loyalCustomers.contains(request.customerId().value())) {
                     return request.subtotal()
                                   .percentage(5)
@@ -308,6 +309,7 @@ public interface PricingService {
         var discountCodes = new ConcurrentHashMap<String, DiscountCode>();
         var taxRates = new ConcurrentHashMap<String, BigDecimal>();
         Set<String> loyalCustomers = ConcurrentHashMap.newKeySet();
+
         initializePrices(productPrices);
         initializeDiscountCodes(discountCodes);
         initializeTaxRates(taxRates);

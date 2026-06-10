@@ -36,10 +36,10 @@ public final class MethodAnalyzer {
                                  ReturnKind returnKind,
                                  String returnTypeName,
                                  String connectorMethod,
-                                 boolean needsMapper){}
+                                 boolean needsMapper) {}
 
     public static String connectorMethod(ReturnKind kind) {
-        return switch (kind){
+        return switch (kind) {
             case SINGLE -> "queryOne";
             case OPTIONAL -> "queryOptional";
             case LIST -> "queryList";
@@ -54,7 +54,7 @@ public final class MethodAnalyzer {
                                                  List<String> selectColumns,
                                                  List<String> inputFieldNames,
                                                  ReturnKind returnKind) {
-        return switch (parsed.operation()){
+        return switch (parsed.operation()) {
             case FIND, FIND_ALL -> Option.present(generateFindSql(parsed, table.name(), selectColumns));
             case COUNT -> Option.present(generateCountSql(parsed, table.name()));
             case EXISTS -> Option.present(generateExistsSql(parsed, table.name()));
@@ -65,49 +65,67 @@ public final class MethodAnalyzer {
     }
 
     public static List<String> primaryKeyColumns(Table table) {
-        return table.constraints().stream()
-                                .filter(Constraint.PrimaryKey.class::isInstance)
-                                .map(Constraint.PrimaryKey.class::cast)
-                                .findFirst()
-                                .map(Constraint.PrimaryKey::columns)
-                                .orElse(List.of());
+        return table.constraints()
+                    .stream()
+                    .filter(Constraint.PrimaryKey.class::isInstance)
+                    .map(Constraint.PrimaryKey.class::cast)
+                    .findFirst()
+                    .map(Constraint.PrimaryKey::columns)
+                    .orElse(List.of());
     }
 
     public static List<String> findMissingRequiredColumns(Table table, List<String> inputColumnNames) {
-        return table.columns().stream()
-                            .filter(MethodAnalyzer::isRequiredColumn)
-                            .map(Column::name)
-                            .filter(name -> !inputColumnNames.contains(name))
-                            .toList();
+        return table.columns()
+                    .stream()
+                    .filter(MethodAnalyzer::isRequiredColumn)
+                    .map(Column::name)
+                    .filter(name -> !inputColumnNames.contains(name))
+                    .toList();
     }
 
     public static Option<String> resolveTableFromTypeName(String typeName, Schema schema) {
         var stripped = typeName.endsWith("Row")
-                      ? typeName.substring(0, typeName.length() - 3)
-                      : typeName;
+                       ? typeName.substring(0, typeName.length() - 3)
+                       : typeName;
         var tableName = NamingConvention.toSnakeCase(Character.toLowerCase(stripped.charAt(0)) + stripped.substring(1));
-        if (schema.table(tableName).isPresent()) {return Option.present(tableName);}
-        for (var candidate : pluralize(tableName)) {if (schema.table(candidate).isPresent()) {return Option.present(candidate);}}
-        return schema.tables().keySet()
-                            .stream()
-                            .filter(t -> t.equals(tableName) || t.endsWith("." + tableName))
-                            .findFirst()
-                            .map(Option::present)
-                            .orElse(Option.empty());
+
+        if (schema.table(tableName).isPresent()) {
+            return Option.present(tableName);
+        }
+
+        for (var candidate : pluralize(tableName)) {
+            if (schema.table(candidate).isPresent()) {
+                return Option.present(candidate);
+            }
+        }
+
+        return schema.tables()
+                     .keySet()
+                     .stream()
+                     .filter(t -> t.equals(tableName) || t.endsWith("." + tableName))
+                     .findFirst()
+                     .map(Option::present)
+                     .orElse(Option.empty());
     }
 
     private static List<String> pluralize(String name) {
         var candidates = new ArrayList<String>(3);
         var lastUnderscore = name.lastIndexOf('_');
         var prefix = lastUnderscore >= 0
-                    ? name.substring(0, lastUnderscore + 1)
-                    : "";
+                     ? name.substring(0, lastUnderscore + 1)
+                     : "";
         var lastSegment = lastUnderscore >= 0
-                         ? name.substring(lastUnderscore + 1)
-                         : name;
-        if (lastSegment.endsWith("s") || lastSegment.endsWith("x") || lastSegment.endsWith("z") || lastSegment.endsWith("sh") || lastSegment.endsWith("ch")) {candidates.add(prefix + lastSegment + "es");} else if (lastSegment.endsWith("y") && lastSegment.length() > 1 && !isVowel(lastSegment.charAt(lastSegment.length() - 2))) {candidates.add(prefix + lastSegment.substring(0,
-                                                                                                                                                                                                                                                                                                                                                                                     lastSegment.length() - 1) + "ies");}
+                          ? name.substring(lastUnderscore + 1)
+                          : name;
+
+        if (lastSegment.endsWith("s") || lastSegment.endsWith("x") || lastSegment.endsWith("z") || lastSegment.endsWith("sh") || lastSegment.endsWith("ch")) {
+            candidates.add(prefix + lastSegment + "es");
+        } else if (lastSegment.endsWith("y") && lastSegment.length() > 1 && !isVowel(lastSegment.charAt(lastSegment.length() - 2))) {
+            candidates.add(prefix + lastSegment.substring(0, lastSegment.length() - 1) + "ies");
+        }
+
         candidates.add(prefix + lastSegment + "s");
+
         return candidates;
     }
 
@@ -119,105 +137,132 @@ public final class MethodAnalyzer {
                                           String tableName,
                                           List<String> selectColumns) {
         var select = selectColumns.isEmpty()
-                    ? "*"
-                    : String.join(", ", selectColumns);
-        var sb = new StringBuilder("SELECT ").append(select)
-                                             .append(" FROM ")
-                                             .append(tableName);
+                     ? "*"
+                     : String.join(", ", selectColumns);
+        var sb = new StringBuilder("SELECT ").append(select).append(" FROM ").append(tableName);
+
         appendWhereClause(sb, parsed.conditions());
         appendOrderBy(sb, parsed.orderBy());
+
         return sb.toString();
     }
 
     private static String generateCountSql(MethodNameParser.ParsedMethod parsed, String tableName) {
         var sb = new StringBuilder("SELECT count(*) FROM ").append(tableName);
+
         appendWhereClause(sb, parsed.conditions());
+
         return sb.toString();
     }
 
     private static String generateExistsSql(MethodNameParser.ParsedMethod parsed, String tableName) {
         var sb = new StringBuilder("SELECT EXISTS(SELECT 1 FROM ").append(tableName);
+
         appendWhereClause(sb, parsed.conditions());
         sb.append(')');
+
         return sb.toString();
     }
 
     private static String generateDeleteSql(MethodNameParser.ParsedMethod parsed, String tableName) {
         var sb = new StringBuilder("DELETE FROM ").append(tableName);
+
         appendWhereClause(sb, parsed.conditions());
+
         return sb.toString();
     }
 
     private static String generateInsertSql(Table table, List<String> inputFieldNames, ReturnKind returnKind) {
-        var columns = inputFieldNames.stream().map(NamingConvention::toSnakeCase)
-                                            .toList();
+        var columns = inputFieldNames.stream().map(NamingConvention::toSnakeCase).toList();
         var sb = new StringBuilder("INSERT INTO ").append(table.name());
-        sb.append(" (").append(String.join(", ", columns))
-                 .append(")");
+
+        sb.append(" (").append(String.join(", ", columns)).append(")");
         sb.append(" VALUES (");
-        for (int i = 0;i <columns.size();i++) {
-            if (i > 0) {sb.append(", ");}
+        for (int i = 0; i < columns.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+
             sb.append('$').append(i + 1);
         }
+
         sb.append(')');
-        if (returnKind != ReturnKind.UNIT) {sb.append(" RETURNING *");}
+        if (returnKind != ReturnKind.UNIT) {
+            sb.append(" RETURNING *");
+        }
+
         return sb.toString();
     }
 
     private static Option<String> generateSaveSql(Table table, List<String> inputFieldNames, ReturnKind returnKind) {
         var pkColumns = primaryKeyColumns(table);
-        if (pkColumns.isEmpty()) {return Option.empty();}
-        var allColumns = inputFieldNames.stream().map(NamingConvention::toSnakeCase)
-                                               .toList();
-        var nonPkColumns = allColumns.stream().filter(c -> !pkColumns.contains(c))
-                                            .toList();
+
+        if (pkColumns.isEmpty()) {
+            return Option.empty();
+        }
+
+        var allColumns = inputFieldNames.stream().map(NamingConvention::toSnakeCase).toList();
+        var nonPkColumns = allColumns.stream().filter(c -> !pkColumns.contains(c)).toList();
         var sb = new StringBuilder("INSERT INTO ").append(table.name());
-        sb.append(" (").append(String.join(", ", allColumns))
-                 .append(")");
+
+        sb.append(" (").append(String.join(", ", allColumns)).append(")");
         sb.append(" VALUES (");
-        for (int i = 0;i <allColumns.size();i++) {
-            if (i > 0) {sb.append(", ");}
+        for (int i = 0; i < allColumns.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+
             sb.append('$').append(i + 1);
         }
+
         sb.append(')');
-        sb.append(" ON CONFLICT (").append(String.join(", ", pkColumns))
-                 .append(") DO UPDATE SET ");
-        for (int i = 0;i <nonPkColumns.size();i++) {
-            if (i > 0) {sb.append(", ");}
+        sb.append(" ON CONFLICT (").append(String.join(", ", pkColumns)).append(") DO UPDATE SET ");
+        for (int i = 0; i < nonPkColumns.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+
             var col = nonPkColumns.get(i);
             var paramIdx = allColumns.indexOf(col) + 1;
-            sb.append(col).append(" = $")
-                     .append(paramIdx);
+
+            sb.append(col).append(" = $").append(paramIdx);
         }
-        if (returnKind != ReturnKind.UNIT) {sb.append(" RETURNING *");}
+
+        if (returnKind != ReturnKind.UNIT) {
+            sb.append(" RETURNING *");
+        }
+
         return Option.present(sb.toString());
     }
 
     private static void appendWhereClause(StringBuilder sb, List<MethodNameParser.ColumnCondition> conditions) {
-        if (conditions.isEmpty()) {return;}
+        if (conditions.isEmpty()) {
+            return;
+        }
+
         sb.append(" WHERE ");
         var paramIdx = 1;
-        for (int i = 0;i <conditions.size();i++) {
-            if (i > 0) {sb.append(" AND ");}
+
+        for (int i = 0; i < conditions.size(); i++) {
+            if (i > 0) {
+                sb.append(" AND ");
+            }
+
             var cond = conditions.get(i);
+
             sb.append(cond.columnName());
-            switch (cond.operator()){
+            switch (cond.operator()) {
                 case IS_NULL, IS_NOT_NULL -> sb.append(' ').append(cond.operator().sql());
                 case BETWEEN -> {
-                    sb.append(" BETWEEN $").append(paramIdx)
-                             .append(" AND $")
-                             .append(paramIdx + 1);
+                    sb.append(" BETWEEN $").append(paramIdx).append(" AND $").append(paramIdx + 1);
                     paramIdx += 2;
                 }
                 case IN -> {
-                    sb.append(" IN ($").append(paramIdx)
-                             .append(')');
+                    sb.append(" IN ($").append(paramIdx).append(')');
                     paramIdx++;
                 }
                 default -> {
-                    sb.append(' ').append(cond.operator().sql())
-                             .append(" $")
-                             .append(paramIdx);
+                    sb.append(' ').append(cond.operator().sql()).append(" $").append(paramIdx);
                     paramIdx++;
                 }
             }
@@ -225,28 +270,54 @@ public final class MethodAnalyzer {
     }
 
     private static void appendOrderBy(StringBuilder sb, List<MethodNameParser.OrderByEntry> orderBy) {
-        if (orderBy.isEmpty()) {return;}
+        if (orderBy.isEmpty()) {
+            return;
+        }
+
         sb.append(" ORDER BY ");
-        for (int i = 0;i <orderBy.size();i++) {
-            if (i > 0) {sb.append(", ");}
+        for (int i = 0; i < orderBy.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+
             var entry = orderBy.get(i);
+
             sb.append(entry.columnName());
-            if (entry.direction() == MethodNameParser.SortDirection.DESC) {sb.append(" DESC");} else {sb.append(" ASC");}
+            if (entry.direction() == MethodNameParser.SortDirection.DESC) {
+                sb.append(" DESC");
+            } else {
+                sb.append(" ASC");
+            }
         }
     }
 
     private static final Set<String> AUTO_GENERATED_TYPE_NAMES = Set.of("serial", "smallserial", "bigserial");
 
     private static boolean isRequiredColumn(Column column) {
-        if (column.nullable()) {return false;}
-        if (column.defaultExpr().isPresent()) {return false;}
-        if (column.identity().isPresent()) {return false;}
-        if (column.generatedExpr().isPresent()) {return false;}
+        if (column.nullable()) {
+            return false;
+        }
+
+        if (column.defaultExpr().isPresent()) {
+            return false;
+        }
+
+        if (column.identity().isPresent()) {
+            return false;
+        }
+
+        if (column.generatedExpr().isPresent()) {
+            return false;
+        }
+
         return ! isAutoGeneratedType(column.type());
     }
 
     private static boolean isAutoGeneratedType(PgType type) {
-        if (type instanceof PgType.BuiltinType bt) {return AUTO_GENERATED_TYPE_NAMES.contains(BuiltinTypes.canonicalize(bt.name()));}
+        if (type instanceof PgType.BuiltinType bt) {
+            return AUTO_GENERATED_TYPE_NAMES.contains(BuiltinTypes.canonicalize(bt.name()));
+        }
+
         return false;
     }
 }

@@ -7,8 +7,8 @@ package org.pragmatica.aether.stream.replication;
 import org.pragmatica.lang.Result;
 
 
-@FunctionalInterface public interface StreamPartitionRecovery {
+@FunctionalInterface
+public interface StreamPartitionRecovery {
     Result<Long> appendRecoveredEvent(String streamName, int partition, byte[] payload, long timestamp);
-
     StreamPartitionRecovery NOOP = (_, _, _, _) -> Result.success(0L);
 }

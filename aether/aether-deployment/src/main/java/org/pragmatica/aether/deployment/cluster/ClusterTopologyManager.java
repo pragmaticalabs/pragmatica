@@ -79,7 +79,6 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// Drain is delivered as a heartbeat command (spec §7.5.4) and is heartbeat-reported /
     /// leader-cached — there is no KV drain record and no node-state KV write on this path.
     Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason);
-
     /// Membership v2 / E2 — reconcile current cluster membership against configured size
     /// (spec §7.4). Derives action from the SWIM-converged member count plus the KV
     /// configured count: shortfall → `provisionReplacement` per missing slot; surplus →

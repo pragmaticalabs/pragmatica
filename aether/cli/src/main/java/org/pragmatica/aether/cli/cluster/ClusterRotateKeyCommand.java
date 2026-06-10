@@ -77,13 +77,17 @@ class ClusterRotateKeyCommand implements Callable<Integer> {
     private static Result<String> extractFirstActiveKeyId(String json) {
         if (json.contains("\"ACTIVE\"")) {
             var idx = json.indexOf("\"keyId\"");
+
             if (idx >= 0) {
                 var start = json.indexOf("\"", idx + 7) + 1;
                 var end = json.indexOf("\"", start);
 
-                if (start > 0 && end > start) {return Result.success(json.substring(start, end));}
+                if (start > 0 && end > start) {
+                    return Result.success(json.substring(start, end));
+                }
             }
         }
+
         return new RotateKeyError.NoActiveKey().result();
     }
 
@@ -118,6 +122,7 @@ class ClusterRotateKeyCommand implements Callable<Integer> {
     @SuppressWarnings("JBCT-EX-01")
     private static Result<String> writeKeyFile(String clusterName, String newKey) {
         var keyFile = Path.of(System.getProperty("user.home"), ".aether", "clusters", clusterName, "api-key");
+
         try {
             Files.createDirectories(keyFile.getParent());
             Files.writeString(keyFile, newKey);
@@ -149,6 +154,7 @@ class ClusterRotateKeyCommand implements Callable<Integer> {
 
     private static String generateApiKey() {
         var bytes = new byte[KEY_BYTES];
+
         new SecureRandom().nextBytes(bytes);
 
         return Base64.getUrlEncoder()
@@ -157,7 +163,9 @@ class ClusterRotateKeyCommand implements Callable<Integer> {
     }
 
     private static long parseDurationMs(String duration) {
-        if (duration == null || duration.isEmpty()) {return 300_000;}
+        if (duration == null || duration.isEmpty()) {
+            return 300_000;
+        }
 
         var value = duration.substring(0, duration.length() - 1);
         var unit = duration.charAt(duration.length() - 1);

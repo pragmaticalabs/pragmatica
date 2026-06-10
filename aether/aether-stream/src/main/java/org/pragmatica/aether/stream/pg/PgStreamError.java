@@ -20,13 +20,15 @@ public sealed interface PgStreamError extends Cause {
         General(String message) {
             this.message = message;
         }
-        @Override public String message() {
+        @Override
+        public String message() {
             return message;
         }
     }
 
     record DatabaseFailure(Throwable cause) implements PgStreamError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "PostgreSQL stream operation failed: " + cause.getMessage();
         }
     }

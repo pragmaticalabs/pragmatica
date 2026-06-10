@@ -17,7 +17,8 @@ public record MethodName(String name) {
         return Result.all(ensure(name, Verify.Is::matches, METHOD_NAME_PATTERN)).map(MethodName::new);
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return name;
     }
 

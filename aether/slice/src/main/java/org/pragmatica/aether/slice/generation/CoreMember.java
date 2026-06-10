@@ -16,15 +16,18 @@ import org.pragmatica.serialization.Codec;
 /// this generation-snapshot record. A `CoreMember` therefore carries presence (it exists ⇒ the
 /// node is a current member), display address, the SWIM-derived `healthHint`, generation epochs,
 /// and the provisioning source.
-@Codec public record CoreMember(NodeId nodeId,
-                                String host,
-                                int port,
-                                HealthHint healthHint,
-                                Epoch joinedEpoch,
-                                Epoch lastSeenEpoch,
-                                ProvisioningSource provisioningSource) {
+@Codec
+public record CoreMember(NodeId nodeId,
+                         String host,
+                         int port,
+                         HealthHint healthHint,
+                         Epoch joinedEpoch,
+                         Epoch lastSeenEpoch,
+                         ProvisioningSource provisioningSource) {
     public CoreMember {
-        if (provisioningSource == null) {provisioningSource = ProvisioningSource.UNKNOWN;}
+        if (provisioningSource == null) {
+            provisioningSource = ProvisioningSource.UNKNOWN;
+        }
     }
 
     public static CoreMember coreMember(NodeId nodeId,
@@ -33,13 +36,7 @@ import org.pragmatica.serialization.Codec;
                                         HealthHint healthHint,
                                         Epoch joinedEpoch,
                                         Epoch lastSeenEpoch) {
-        return new CoreMember(nodeId,
-                              host,
-                              port,
-                              healthHint,
-                              joinedEpoch,
-                              lastSeenEpoch,
-                              ProvisioningSource.UNKNOWN);
+        return new CoreMember(nodeId, host, port, healthHint, joinedEpoch, lastSeenEpoch, ProvisioningSource.UNKNOWN);
     }
 
     public static CoreMember coreMember(NodeId nodeId,
@@ -53,22 +50,10 @@ import org.pragmatica.serialization.Codec;
     }
 
     public CoreMember withLastSeenEpoch(Epoch newLastSeenEpoch) {
-        return new CoreMember(nodeId,
-                              host,
-                              port,
-                              healthHint,
-                              joinedEpoch,
-                              newLastSeenEpoch,
-                              provisioningSource);
+        return new CoreMember(nodeId, host, port, healthHint, joinedEpoch, newLastSeenEpoch, provisioningSource);
     }
 
     public CoreMember withHealthHint(HealthHint newHealthHint) {
-        return new CoreMember(nodeId,
-                              host,
-                              port,
-                              newHealthHint,
-                              joinedEpoch,
-                              lastSeenEpoch,
-                              provisioningSource);
+        return new CoreMember(nodeId, host, port, newHealthHint, joinedEpoch, lastSeenEpoch, provisioningSource);
     }
 }

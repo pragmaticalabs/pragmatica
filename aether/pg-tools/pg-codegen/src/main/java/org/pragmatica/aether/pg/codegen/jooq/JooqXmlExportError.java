@@ -9,19 +9,22 @@ import org.pragmatica.lang.Cause;
 
 public sealed interface JooqXmlExportError extends Cause {
     record MissingSchema(String schemaName) implements JooqXmlExportError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Schema '" + schemaName + "' not found in input";
         }
     }
 
     record MarshalFailed(String detail) implements JooqXmlExportError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "XML marshalling failed: " + detail;
         }
     }
 
     record IoError(String detail) implements JooqXmlExportError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "I/O error writing XML: " + detail;
         }
     }

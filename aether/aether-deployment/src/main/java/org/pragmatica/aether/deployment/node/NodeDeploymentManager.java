@@ -338,6 +338,7 @@ public interface NodeDeploymentManager {
                                activationChainTimeout,
                                transitionRetryDelay,
                                currentEpochSupplier);
+
         return new DeploymentManagerAdapter(ctx);
     }
 
@@ -438,6 +439,7 @@ public interface NodeDeploymentManager {
                                             activationChainTimeout,
                                             transitionRetryDelay,
                                             currentEpochSupplier);
+
         ctxHolder.set(ctx);
 
         return ctx.dormant();
@@ -467,6 +469,7 @@ public interface NodeDeploymentManager {
             if (signal.isEmpty()) {
                 log.warn("Node {} active-entry without self-ready signal — node-lifecycle hook must be wired",
                          ctx.self().id());
+
                 return;
             }
 
@@ -482,13 +485,13 @@ public interface NodeDeploymentManager {
                 log.info("Node {} ignoring stale ClusterStateNotification: {}",
                          ctx.self().id(),
                          quorumStateNotification);
+
                 return;
             }
 
             log.info("Node {} received ClusterStateNotification: {}",
                      ctx.self().id(),
                      quorumStateNotification);
-
             switch (quorumStateNotification.state()) {
                 case ACTIVE -> dispatchQuorumEstablished();
                 case PASSIVE -> ctx.dispatch(new ClusterFsmEvent.QuorumDisappeared());

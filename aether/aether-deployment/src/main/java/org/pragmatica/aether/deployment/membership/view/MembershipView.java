@@ -62,14 +62,12 @@ public interface MembershipView {
     /// the [#membershipView(SwimHealthProvider)] factory and by tests that exercise
     /// pure-function semantics without quorum gating.
     BooleanSupplier ALWAYS_IN_QUORUM = () -> true;
-
     /// Snapshot of the cluster's effective membership at call time.
     ///
     /// Result is a flat map keyed by `NodeId` containing only **present** peers. Peers absent
     /// from the map are absent from the view — SWIM has not admitted them (or the local node is
     /// non-quorate).
     Map<NodeId, MemberView> snapshot();
-
     /// Single-peer lookup. Returns `Option.none()` for peers absent from the view.
     Option<MemberView> get(NodeId peer);
 
@@ -101,8 +99,7 @@ public interface MembershipView {
     /// `inQuorum` MUST be backed by the same `AtomicBoolean` that `TopologyObserver` mutates
     /// (exposed via `TopologyObserver#inQuorum()`). Constructing a second quorum source here
     /// re-creates the bug class this gating exists to eliminate.
-    static MembershipView strict(SwimHealthProvider swimHealth,
-                                 BooleanSupplier inQuorum) {
+    static MembershipView strict(SwimHealthProvider swimHealth, BooleanSupplier inQuorum) {
         return new MembershipViewImpl(swimHealth, inQuorum);
     }
 
@@ -136,8 +133,7 @@ public interface MembershipView {
 
         /// RC1 membership-v2 finale: the node-lifecycle KV atom is deleted; the view is
         /// derived purely from SWIM.
-        private MembershipViewImpl(SwimHealthProvider swimHealth,
-                                   BooleanSupplier inQuorum) {
+        private MembershipViewImpl(SwimHealthProvider swimHealth, BooleanSupplier inQuorum) {
             this.swimHealth = swimHealth;
             this.inQuorum = inQuorum;
         }
@@ -147,6 +143,7 @@ public interface MembershipView {
             var quorate = inQuorum.getAsBoolean();
             var swim = swimHealth.get().or(HealthSnapshot.healthSnapshot(Map.of()));
             var view = new HashMap<NodeId, MemberView>();
+
             swim.peerHealth().forEach((peer, swimState) -> putIfPresent(view, peer, swimState, quorate));
 
             return Map.copyOf(view);

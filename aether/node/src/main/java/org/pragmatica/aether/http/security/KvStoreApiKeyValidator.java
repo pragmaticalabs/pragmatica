@@ -58,7 +58,9 @@ class KvStoreApiKeyValidator implements SecurityValidator {
     private Result<SecurityContext> validateApiKey(HttpRequestContext request) {
         var configResult = configValidator.validate(request, SecurityPolicy.apiKeyRequired());
 
-        if (configResult.isSuccess()) {return configResult;}
+        if (configResult.isSuccess()) {
+            return configResult;
+        }
 
         var apiKeyOpt = extractApiKey(request.headers());
 
@@ -79,9 +81,12 @@ class KvStoreApiKeyValidator implements SecurityValidator {
     private boolean hasKvStoreKeys() {
         var kvStore = kvStoreSupplier.get();
 
-        if (kvStore == null) {return false;}
+        if (kvStore == null) {
+            return false;
+        }
 
         var found = new AtomicBoolean(false);
+
         kvStore.forEach(ApiKeyKey.class, ApiKeyValue.class, (_, _) -> found.set(true));
 
         return found.get();
@@ -91,19 +96,24 @@ class KvStoreApiKeyValidator implements SecurityValidator {
         var candidateHash = hashKey(apiKey);
         var kvStore = kvStoreSupplier.get();
 
-        if (kvStore == null) {return SecurityError.INVALID_API_KEY.result();}
+        if (kvStore == null) {
+            return SecurityError.INVALID_API_KEY.result();
+        }
 
         var candidateHashBytes = candidateHash.getBytes(StandardCharsets.UTF_8);
         var match = new AtomicReference<ApiKeyValue>();
+
         kvStore.forEach(ApiKeyKey.class,
                         ApiKeyValue.class,
                         (_, keyValue) -> {
                             if (match.get() != null) {
                             return;
                         }
+
                             if (!keyValue.isValidForAuth()) {
                             return;
                         }
+
                             if (MessageDigest.isEqual(candidateHashBytes,
                                                       keyValue.keyHash().getBytes(StandardCharsets.UTF_8))) {
                             match.set(keyValue);
@@ -123,7 +133,10 @@ class KvStoreApiKeyValidator implements SecurityValidator {
     }
 
     private static AuthorizationRole parseAuthorizationRole(String raw) {
-        if (raw == null || raw.isBlank()) {return AuthorizationRole.VIEWER;}
+        if (raw == null || raw.isBlank()) {
+            return AuthorizationRole.VIEWER;
+        }
+
         return switch (raw.toUpperCase()) {
             case "ADMIN" -> AuthorizationRole.ADMIN;
             case "OPERATOR" -> AuthorizationRole.OPERATOR;
@@ -147,6 +160,7 @@ class KvStoreApiKeyValidator implements SecurityValidator {
 
     private static Option<String> extractCaseInsensitive(Map<String, List<String>> headers) {
         var value = headers.entrySet().stream().filter(e -> API_KEY_HEADER.equalsIgnoreCase(e.getKey())).map(Map.Entry::getValue).filter(values -> values != null && !values.isEmpty()).map(List::getFirst).findFirst();
+
         return Option.from(value);
     }
 

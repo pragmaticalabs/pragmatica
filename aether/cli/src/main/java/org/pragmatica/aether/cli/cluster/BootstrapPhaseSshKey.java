@@ -42,8 +42,9 @@ public sealed interface BootstrapPhaseSshKey {
         ClusterBootstrapOrchestrator.logPhase(UPLOAD_SSH_KEYS,
                                               "Uploading %d operator SSH key(s) to cloud providers",
                                               ctx.sshPublicKeys().size());
-
-        if (ctx.sshPublicKeys().isEmpty()) {return success(ctx);}
+        if (ctx.sshPublicKeys().isEmpty()) {
+            return success(ctx);
+        }
 
         return uploadForAllSources(ctx, hetznerClientFactory);
     }
@@ -56,15 +57,21 @@ public sealed interface BootstrapPhaseSshKey {
         for (var entry : ctx.config().sources().entrySet()) {
             var source = entry.getValue();
 
-            if (source.type() != SourceType.CLOUD) {continue;}
+            if (source.type() != SourceType.CLOUD) {
+                continue;
+            }
 
             var providerName = source.provider().map(p -> p.value()).or("");
 
-            if (!"hetzner".equals(providerName)) {continue;}
+            if (!"hetzner".equals(providerName)) {
+                continue;
+            }
 
             var result = uploadForHetzner(nextCtx, source, hetznerClientFactory);
 
-            if (result.isFailure()) {return result;}
+            if (result.isFailure()) {
+                return result;
+            }
 
             nextCtx = result.unwrap();
         }
@@ -87,9 +94,12 @@ public sealed interface BootstrapPhaseSshKey {
             var currentCtx = nextCtx;
             var result = uploadOrReuse(client, key, currentCtx);
 
-            if (result.isFailure()) {return result.map(_ -> currentCtx);}
+            if (result.isFailure()) {
+                return result.map(_ -> currentCtx);
+            }
 
             var uploaded = result.unwrap();
+
             ids.add(uploaded.sshKeyId());
             nextCtx = uploaded.contextAfter();
         }
@@ -101,16 +111,21 @@ public sealed interface BootstrapPhaseSshKey {
     private static Result<UploadOutcome> uploadOrReuse(HetznerClient client, SshPublicKey key, BootstrapContext ctx) {
         var fingerprint = computeMd5Fingerprint(key);
 
-        if (fingerprint.isFailure()) {return fingerprint.map(_ -> new UploadOutcome(0L, ctx));}
+        if (fingerprint.isFailure()) {
+            return fingerprint.map(_ -> new UploadOutcome(0L, ctx));
+        }
 
         var existing = lookupExisting(client, fingerprint.unwrap());
 
-        if (existing.isFailure()) {return existing.map(_ -> new UploadOutcome(0L, ctx));}
+        if (existing.isFailure()) {
+            return existing.map(_ -> new UploadOutcome(0L, ctx));
+        }
 
         var existingOpt = existing.unwrap();
 
         if (existingOpt.isPresent()) {
             var existingKey = existingOpt.unwrap();
+
             System.out.printf("  Reusing existing Hetzner SSH key '%s' (id=%d)%n", existingKey.name(), existingKey.id());
 
             return success(new UploadOutcome(existingKey.id(), ctx));
@@ -162,8 +177,11 @@ public sealed interface BootstrapPhaseSshKey {
         var hex = HexFormat.of().formatHex(md5);
         var sb = new StringBuilder(hex.length() + (hex.length() / 2));
 
-        for (int i = 0;i <hex.length();i += 2) {
-            if (i > 0) {sb.append(':');}
+        for (int i = 0; i < hex.length(); i += 2) {
+            if (i > 0) {
+                sb.append(':');
+            }
+
             sb.append(hex, i, i + 2);
         }
 
@@ -173,7 +191,9 @@ public sealed interface BootstrapPhaseSshKey {
     private static Result<HetznerClient> defaultHetznerClientForSource(SourceProfile source) {
         var token = source.credentials().or(System.getenv("HCLOUD_TOKEN"));
 
-        if (token == null || token.isBlank()) {return new HetznerCredentialsMissing().result();}
+        if (token == null || token.isBlank()) {
+            return new HetznerCredentialsMissing().result();
+        }
 
         return success(HetznerClient.hetznerClient(HetznerConfig.hetznerConfig(token)));
     }

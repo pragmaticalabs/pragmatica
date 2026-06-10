@@ -38,7 +38,6 @@ public class AlertForwarder {
     private AlertForwarder(AlertConfig alertConfig) {
         this.config = alertConfig.webhook();
         this.enabled = alertConfig.enabled() && config.enabled();
-
         if (enabled && !config.urls().isEmpty()) {
             this.httpOps = Option.some(JdkHttpOperations.jdkHttpOperations(Duration.ofMillis(config.timeout().millis()),
                                                                            java.net.http.HttpClient.Redirect.NORMAL,
@@ -56,9 +55,12 @@ public class AlertForwarder {
     }
 
     public Promise<Unit> forward(AlertEvent event) {
-        if (!enabled || httpOps.isEmpty()) {return Promise.success(Unit.unit());}
+        if (!enabled || httpOps.isEmpty()) {
+            return Promise.success(Unit.unit());
+        }
 
         var payload = toJson(event);
+
         log.debug("Forwarding alert to {} webhooks: {}",
                   config.urls().size(),
                   event.alertId());
@@ -88,6 +90,7 @@ public class AlertForwarder {
     private Promise<Integer> doSend(HttpOperations ops, String url, String payload) {
         var request = HttpRequest.newBuilder().uri(URI.create(url)).timeout(Duration.ofMillis(config.timeout().millis())).header("Content-Type",
                                                                                                                                  "application/json").POST(HttpRequest.BodyPublishers.ofString(payload)).build();
+
         return ops.sendString(request)
                   .map(org.pragmatica.http.HttpResult::statusCode);
     }
@@ -97,7 +100,7 @@ public class AlertForwarder {
                                            String payload,
                                            int attempt,
                                            int statusCode) {
-        if (statusCode >= 200 && statusCode <300) {
+        if (statusCode >= 200 && statusCode < 300) {
             log.debug("Alert forwarded to {}", url);
 
             return Promise.success(Unit.unit());
@@ -109,10 +112,12 @@ public class AlertForwarder {
     }
 
     private Promise<Unit> retryOrFail(HttpOperations ops, String url, String payload, int attempt, String error) {
-        if (attempt <config.retryCount()) {
+        if (attempt < config.retryCount()) {
             var delayMs = jitteredBackoff(attempt);
+
             log.debug("Retrying webhook {} (attempt {}/{}) after {}ms", url, attempt + 1, config.retryCount(), delayMs);
             var promise = Promise.<Unit> promise();
+
             SharedScheduler.schedule(() -> sendWithRetry(ops, url, payload, attempt + 1).onResult(promise::resolve),
                                      TimeSpan.timeSpan(delayMs).millis());
 
@@ -125,18 +130,18 @@ public class AlertForwarder {
     }
 
     static long jitteredBackoff(int attempt) {
-        var base = Math.min(RETRY_BASE_MS * (1L<<attempt), RETRY_CAP_MS);
+        var base = Math.min(RETRY_BASE_MS * (1L<< attempt), RETRY_CAP_MS);
 
         return JitterUtil.applyJitter(base, JitterUtil.MIN_FACTOR_DEFAULT, JitterUtil.MAX_FACTOR_DEFAULT);
     }
 
     private String toJson(AlertEvent event) {
         var sb = new StringBuilder();
+
         sb.append("{");
         sb.append("\"alertId\":\"").append(event.alertId()).append("\",");
         sb.append("\"timestamp\":").append(event.timestamp()).append(",");
         sb.append("\"severity\":\"").append(event.severity()).append("\",");
-
         switch (event) {
             case AlertEvent.SliceFailureAlert sfa -> appendSliceFailureFields(sb, sfa);
             case AlertEvent.ThresholdAlert ta -> appendThresholdFields(sb, ta);

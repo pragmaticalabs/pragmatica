@@ -7,6 +7,7 @@ package org.pragmatica.aether.cli.stream;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.lang.Result;
 
+
 /// Adapter Leaf — wraps the canonical `<namespace>:<stream>:<version>` parser from the
 /// shared `slice-api` for use as a CLI argument. Surfaces the same structured
 /// `ResourceAddressError` causes that the rest of the platform uses, so error messages stay

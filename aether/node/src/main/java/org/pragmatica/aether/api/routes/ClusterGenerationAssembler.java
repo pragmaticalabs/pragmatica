@@ -42,6 +42,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+
 /// Live assembler for the cluster-generation STATUS view. Builds [`ClusterGenerationResponse`]
 /// directly from the per-node [`MembershipFsm`], the KV snapshot and the observed ping epoch —
 /// no KV-persisted generation snapshot is read. Replicates the wire-shape semantics of the
@@ -65,7 +66,8 @@ public sealed interface ClusterGenerationAssembler {
     }
 
     private static boolean isEmpty(MembershipFsm fsm, Epoch epoch) {
-        return fsm.coreMembers().isEmpty() && epoch.equals(Epoch.ZERO);
+        return fsm.coreMembers()
+                  .isEmpty() && epoch.equals(Epoch.ZERO);
     }
 
     private static ClusterGenerationResponse emptyResponse() {
@@ -113,11 +115,11 @@ public sealed interface ClusterGenerationAssembler {
     }
 
     // --- Members / core ---
-
     private static ClusterGenerationCore buildCore(MembershipFsm fsm, KVStore<AetherKey, AetherValue> kvStore) {
         var members = buildMembers(fsm);
 
-        return new ClusterGenerationCore(collectDesiredCoreSize(kvStore).or(members.size()), members);
+        return new ClusterGenerationCore(collectDesiredCoreSize(kvStore).or(members.size()),
+                                         members);
     }
 
     private static List<ClusterGenerationMember> buildMembers(MembershipFsm fsm) {
@@ -126,7 +128,9 @@ public sealed interface ClusterGenerationAssembler {
 
         return fsm.coreMembers()
                   .stream()
-                  .map(nodeId -> toMember(nodeId, descriptors.get(nodeId), hints))
+                  .map(nodeId -> toMember(nodeId,
+                                          descriptors.get(nodeId),
+                                          hints))
                   .toList();
     }
 
@@ -150,13 +154,15 @@ public sealed interface ClusterGenerationAssembler {
     }
 
     // --- Communities ---
-
     private static List<ClusterGenerationCommunity> buildCommunities(Map<String, GovernorAnnouncementValue> governors,
-                                                                    Map<String, DhtPartitionOwnershipValue> partitions,
-                                                                    Map<String, NodeId> spokesmanIndex) {
+                                                                     Map<String, DhtPartitionOwnershipValue> partitions,
+                                                                     Map<String, NodeId> spokesmanIndex) {
         return governors.entrySet()
                         .stream()
-                        .map(entry -> toCommunity(entry.getKey(), entry.getValue(), partitions, spokesmanIndex))
+                        .map(entry -> toCommunity(entry.getKey(),
+                                                  entry.getValue(),
+                                                  partitions,
+                                                  spokesmanIndex))
                         .toList();
     }
 
@@ -179,11 +185,15 @@ public sealed interface ClusterGenerationAssembler {
     }
 
     private static ClusterGenerationHealth toCommunityHealth(GovernorAnnouncementValue announcement) {
-        return new ClusterGenerationHealth(announcement.dissolved() ? 0 : announcement.memberCount(), 0, 0);
+        return new ClusterGenerationHealth(announcement.dissolved()
+                                           ? 0
+                                           : announcement.memberCount(),
+                                           0,
+                                           0);
     }
 
     private static List<String> collectPartitionIdsForCommunity(String communityId,
-                                                               Map<String, DhtPartitionOwnershipValue> partitions) {
+                                                                Map<String, DhtPartitionOwnershipValue> partitions) {
         return partitions.entrySet()
                          .stream()
                          .filter(entry -> communityId.equals(entry.getValue().ownerCommunityId()))
@@ -192,11 +202,11 @@ public sealed interface ClusterGenerationAssembler {
     }
 
     // --- Partitions ---
-
     private static List<ClusterGenerationPartition> buildPartitions(Map<String, DhtPartitionOwnershipValue> partitions) {
         return partitions.entrySet()
                          .stream()
-                         .map(entry -> toPartition(entry.getKey(), entry.getValue()))
+                         .map(entry -> toPartition(entry.getKey(),
+                                                   entry.getValue()))
                          .toList();
     }
 
@@ -209,10 +219,9 @@ public sealed interface ClusterGenerationAssembler {
     }
 
     // --- Cluster quiescence / mode ---
-
     private static ClusterQuiescenceEvaluator.ClusterResult evaluateCluster(MembershipFsm fsm,
-                                                                           Map<String, GovernorAnnouncementValue> governors,
-                                                                           Map<String, NodeId> spokesmanIndex) {
+                                                                            Map<String, GovernorAnnouncementValue> governors,
+                                                                            Map<String, NodeId> spokesmanIndex) {
         return ClusterQuiescenceEvaluator.evaluateCluster(fsm.healthHints().values(),
                                                           communityStates(governors),
                                                           countPendingSpokesmanRebalance(governors, spokesmanIndex));
@@ -234,7 +243,7 @@ public sealed interface ClusterGenerationAssembler {
     }
 
     private static int countPendingSpokesmanRebalance(Map<String, GovernorAnnouncementValue> governors,
-                                                     Map<String, NodeId> spokesmanIndex) {
+                                                      Map<String, NodeId> spokesmanIndex) {
         return (int) governors.keySet()
                               .stream()
                               .filter(communityId -> !spokesmanIndex.containsKey(communityId))
@@ -242,19 +251,20 @@ public sealed interface ClusterGenerationAssembler {
     }
 
     private static String deriveMode(Set<String> communityIds) {
-        return communityIds.stream().anyMatch(id -> !CORE_COMMUNITY_ID.equals(id))
+        return communityIds.stream()
+                           .anyMatch(id -> !CORE_COMMUNITY_ID.equals(id))
                ? ClusterMode.HIERARCHICAL.name()
                : ClusterMode.CORE_ONLY.name();
     }
 
     // --- KV enumeration (typed scans, no full-store copy) ---
-
     private static Map<String, GovernorAnnouncementValue> collectGovernors(KVStore<AetherKey, AetherValue> kvStore) {
         var result = new LinkedHashMap<String, GovernorAnnouncementValue>();
 
         kvStore.forEach(GovernorAnnouncementKey.class,
                         GovernorAnnouncementValue.class,
                         (key, value) -> result.put(key.communityId(), value));
+
         return result;
     }
 
@@ -264,29 +274,39 @@ public sealed interface ClusterGenerationAssembler {
         kvStore.forEach(DhtPartitionOwnershipKey.class,
                         DhtPartitionOwnershipValue.class,
                         (key, value) -> result.put(key.partitionId(), value));
+
         return result;
     }
 
     private static Map<NodeId, SpokesmanValue> collectSpokesmen(KVStore<AetherKey, AetherValue> kvStore) {
         var result = new LinkedHashMap<NodeId, SpokesmanValue>();
 
-        kvStore.forEach(SpokesmanKey.class, SpokesmanValue.class, (key, value) -> result.put(key.coreNodeId(), value));
+        kvStore.forEach(SpokesmanKey.class,
+                        SpokesmanValue.class,
+                        (key, value) -> result.put(key.coreNodeId(), value));
+
         return result;
     }
 
     private static Map<String, NodeId> buildSpokesmanIndex(Map<NodeId, SpokesmanValue> spokesmen) {
         return spokesmen.entrySet()
                         .stream()
-                        .flatMap(entry -> communityEntries(entry.getKey(), entry.getValue()))
-                        .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a));
+                        .flatMap(entry -> communityEntries(entry.getKey(),
+                                                           entry.getValue()))
+                        .collect(Collectors.toMap(Map.Entry::getKey,
+                                                  Map.Entry::getValue,
+                                                  (a, b) -> a));
     }
 
     private static Stream<Map.Entry<String, NodeId>> communityEntries(NodeId nodeId, SpokesmanValue value) {
-        return value.communities().stream().map(community -> Map.entry(community, nodeId));
+        return value.communities()
+                    .stream()
+                    .map(community -> Map.entry(community, nodeId));
     }
 
     private static Option<Integer> collectDesiredCoreSize(KVStore<AetherKey, AetherValue> kvStore) {
-        return kvStore.getTyped(ClusterConfigKey.CURRENT, ClusterConfigValue.class).map(ClusterConfigValue::coreCount);
+        return kvStore.getTyped(ClusterConfigKey.CURRENT, ClusterConfigValue.class)
+                      .map(ClusterConfigValue::coreCount);
     }
 
     private static EpochInfo toEpochInfo(Epoch epoch) {

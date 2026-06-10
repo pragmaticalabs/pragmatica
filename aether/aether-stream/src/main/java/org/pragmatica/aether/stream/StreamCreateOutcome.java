@@ -31,8 +31,8 @@ public sealed interface StreamCreateOutcome {
 
     private static Result<Unit> recoverAlreadyExists(Cause cause) {
         return cause == StreamError.General.STREAM_ALREADY_EXISTS
-              ? unitResult()
-              : cause.result();
+               ? unitResult()
+               : cause.result();
     }
 
     record unused() implements StreamCreateOutcome {}

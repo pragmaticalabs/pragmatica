@@ -14,19 +14,20 @@ import java.util.function.Supplier;
 
 record DefaultRateGuard(RateLimiter limiter, int limit) implements RateGuard {
     static DefaultRateGuard defaultRateGuard(RateGuardConfig config) {
-        var limiter = RateLimiter.builder().rate(config.requestsPerSecond())
-                                         .period(config.window())
-                                         .burst(config.burst())
-                                         .withDefaultTimeSource();
+        var limiter = RateLimiter.builder().rate(config.requestsPerSecond()).period(config.window()).burst(config.burst()).withDefaultTimeSource();
+
         return new DefaultRateGuard(limiter, config.requestsPerSecond());
     }
 
-    @Override public <T> Promise<T> guard(Supplier<Promise<T>> operation) {
+    @Override
+    public <T> Promise<T> guard(Supplier<Promise<T>> operation) {
         if (limiter.tryAcquire()) {
             return operation.get();
         }
+
         var retryAfterMs = limiter.retryAfter().millis();
         var resetAtMs = System.currentTimeMillis() + retryAfterMs;
+
         return Promise.failure(RateGuardError.LimitExceeded.limitExceeded(retryAfterMs, limit, 0, resetAtMs));
     }
 }

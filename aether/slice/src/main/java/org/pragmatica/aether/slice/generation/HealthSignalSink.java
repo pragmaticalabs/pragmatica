@@ -7,7 +7,8 @@ package org.pragmatica.aether.slice.generation;
 import org.pragmatica.lang.Contract;
 
 
-@Contract public interface HealthSignalSink {
+@Contract
+public interface HealthSignalSink {
     void emit(HealthSignal signal);
 
     static HealthSignalSink noop() {

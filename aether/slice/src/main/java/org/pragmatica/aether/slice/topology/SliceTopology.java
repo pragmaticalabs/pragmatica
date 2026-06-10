@@ -22,11 +22,11 @@ public record SliceTopology(String sliceName,
         subscribes = List.copyOf(subscribes);
     }
 
-    public record Route(String method, String path, String handler){}
+    public record Route(String method, String path, String handler) {}
 
-    public record SliceDep(String interfaceName, String artifact){}
+    public record SliceDep(String interfaceName, String artifact) {}
 
-    public record ResourceDep(String type, String config){}
+    public record ResourceDep(String type, String config) {}
 
     /// A published topic.
     ///
@@ -36,8 +36,8 @@ public record SliceTopology(String sliceName,
     /// already-namespaced declaration is kept as-is. Topology node identity and cross-slice pub/sub
     /// matching key on `address`, so a bare publisher and an explicitly-namespaced subscriber of the
     /// same logical topic connect.
-    public record TopicPub(String config, String address, String messageType){}
+    public record TopicPub(String config, String address, String messageType) {}
 
     /// A subscribed topic. See [TopicPub] for the `config` vs. `address` distinction.
-    public record TopicSub(String config, String address, String method, String messageType){}
+    public record TopicSub(String config, String address, String method, String messageType) {}
 }

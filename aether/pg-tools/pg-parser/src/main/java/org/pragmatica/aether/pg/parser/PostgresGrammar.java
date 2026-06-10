@@ -18,7 +18,10 @@ public final class PostgresGrammar {
 
     private static Result<String> loadGrammar() {
         try (var stream = PostgresGrammar.class.getResourceAsStream("postgres.peg")) {
-            if (stream == null) {return Causes.cause("postgres.peg resource not found").result();}
+            if (stream == null) {
+                return Causes.cause("postgres.peg resource not found").result();
+            }
+
             return Result.success(new String(stream.readAllBytes(), StandardCharsets.UTF_8));
         } catch (IOException e) {
             return Causes.cause("Failed to load postgres.peg: " + e.getMessage()).result();

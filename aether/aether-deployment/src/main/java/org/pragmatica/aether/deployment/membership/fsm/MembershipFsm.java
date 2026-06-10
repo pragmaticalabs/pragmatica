@@ -28,8 +28,6 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmObserver;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -43,6 +41,10 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 
 /// Per-member membership FSM manager (membership v2, **Phase 2 LIVE** — the authoritative
 /// membership-death decision-maker). It is no longer a passive shadow: it drives one
@@ -103,10 +105,8 @@ import java.util.stream.Collectors;
 /// monitor so the streak / co-confirmation flags stay internally consistent.
 public final class MembershipFsm {
     private static final Logger log = LoggerFactory.getLogger(MembershipFsm.class);
-
     /// FSM kind tag — groups all per-member FSMs under one name for observer dashboards.
     private static final String FSM_KIND = "membership";
-
     /// Up-hysteresis promotion threshold for this **edge-driven** manager (= 1). SWIM emits
     /// `HealthyObserved` once, on the edge into ALIVE — not as a periodic sample — so the first
     /// observation is the promotion signal. presence sampler's 2-sample
@@ -124,12 +124,10 @@ public final class MembershipFsm {
     private final FsmObserver<MembershipState, MembershipEvent> observer;
     private final PresenceSampler presenceSampler;
     private final Map<NodeId, MemberTracking> members = new ConcurrentHashMap<>();
-
     /// Wall-clock source (ms) used to stamp every fresh SUSPECT-inducing doubt and to age the
     /// quiesce SUSPECTED health-hint out after [`#suspectHintTtlMs`]. Injectable so tests can drive a
     /// controllable clock; production defaults to `System::currentTimeMillis`.
     private final LongSupplier wallClockMs;
-
     /// TTL (ms) after which a stale one-shot SWIM-suspect decays OUT of the quiesce health-hint
     /// (#68 — restores the parity the FSM migration dropped vs the legacy
     /// [`org.pragmatica.aether.deployment.generation.SwimHintsRegistry#currentTtlFiltered`]). The
@@ -178,15 +176,24 @@ public final class MembershipFsm {
 
     /// Factory with an explicit transition observer (transition logging / metrics), the system wall
     /// clock, and NO hint decay (TTL = `Long.MAX_VALUE`).
-    public static MembershipFsm membershipFsm(PresenceSampler presenceSampler, FsmObserver<MembershipState, MembershipEvent> observer) {
-        return new MembershipFsm(presenceSampler, observer, System::currentTimeMillis, Long.MAX_VALUE, DEFAULT_EVICTION_BACKSTOP);
+    public static MembershipFsm membershipFsm(PresenceSampler presenceSampler,
+                                              FsmObserver<MembershipState, MembershipEvent> observer) {
+        return new MembershipFsm(presenceSampler,
+                                 observer,
+                                 System::currentTimeMillis,
+                                 Long.MAX_VALUE,
+                                 DEFAULT_EVICTION_BACKSTOP);
     }
 
     /// Factory with an explicit SUSPECTED-hint decay TTL (ms) on the system wall clock and the
     /// default no-op observer. AetherNode uses this overload to wire the auto-heal SWIM-hints TTL so
     /// a stale one-shot SWIM-suspect on a still-present node decays out of the quiesce gate (#68).
     public static MembershipFsm membershipFsm(PresenceSampler presenceSampler, long suspectHintTtlMs) {
-        return new MembershipFsm(presenceSampler, FsmObserver.noop(), System::currentTimeMillis, suspectHintTtlMs, DEFAULT_EVICTION_BACKSTOP);
+        return new MembershipFsm(presenceSampler,
+                                 FsmObserver.noop(),
+                                 System::currentTimeMillis,
+                                 suspectHintTtlMs,
+                                 DEFAULT_EVICTION_BACKSTOP);
     }
 
     /// Factory with an explicit SUSPECTED-hint decay TTL (ms) AND the terminal-eviction backstop
@@ -194,8 +201,14 @@ public final class MembershipFsm {
     /// this overload to wire BOTH the auto-heal SWIM-hints TTL (#68) and the configured
     /// `MembershipConfig.quorumLossDrainThreshold` as the co-confirmed-death backstop (single source
     /// of truth shared with the minority self-drain).
-    public static MembershipFsm membershipFsm(PresenceSampler presenceSampler, long suspectHintTtlMs, TimeSpan evictionBackstop) {
-        return new MembershipFsm(presenceSampler, FsmObserver.noop(), System::currentTimeMillis, suspectHintTtlMs, evictionBackstop);
+    public static MembershipFsm membershipFsm(PresenceSampler presenceSampler,
+                                              long suspectHintTtlMs,
+                                              TimeSpan evictionBackstop) {
+        return new MembershipFsm(presenceSampler,
+                                 FsmObserver.noop(),
+                                 System::currentTimeMillis,
+                                 suspectHintTtlMs,
+                                 evictionBackstop);
     }
 
     /// Full factory: explicit observer, injectable wall clock (ms), and SUSPECTED-hint decay TTL
@@ -229,11 +242,12 @@ public final class MembershipFsm {
     /// no-op.
     @Contract
     public void onConfirmedDeparture(Consumer<NodeId> listener) {
-        this.onConfirmedDeparture = listener == null ? ignored -> {} : listener;
+        this.onConfirmedDeparture = listener == null
+                                    ? ignored -> {}
+                                    : listener;
     }
 
     // --- Boot seed ---
-
     /// One-time boot bootstrap: promote each id in the initially-known member snapshot (e.g. the
     /// configured topology member set) that the always-on FSM has not yet observed healthy. For every
     /// id that is UNTRACKED or currently OBSERVED, promote it straight to MEMBER (creating its FSM if
@@ -248,7 +262,6 @@ public final class MembershipFsm {
     }
 
     // --- Ingress (live taps feed these; always-on) ---
-
     /// Upsert the last-wins network descriptor (address + role + source) for `info.id()` from a
     /// NodeInfo-bearing SWIM observation (JoinAnnounced / MemberDiscovered). Leader-gate-free and
     /// orthogonal to the lifecycle FSM: it lazily creates the member's tracking via [`#trackingFor`]
@@ -334,7 +347,6 @@ public final class MembershipFsm {
     }
 
     // --- Aggregate (spec §3.4) ---
-
     /// Effective on-duty count = number of tracked members whose current state
     /// [`MembershipState#countsTowardEffective`] is true (MEMBER + SUSPECT — SUSPECT still counts, the
     /// churn cure).
@@ -352,7 +364,8 @@ public final class MembershipFsm {
     public Set<NodeId> countedMembers() {
         return members.entrySet()
                       .stream()
-                      .filter(entry -> entry.getValue().countsTowardEffective())
+                      .filter(entry -> entry.getValue()
+                                            .countsTowardEffective())
                       .map(Map.Entry::getKey)
                       .collect(Collectors.toCollection(LinkedHashSet::new));
     }
@@ -372,6 +385,7 @@ public final class MembershipFsm {
         var snapshot = new LinkedHashMap<NodeId, String>();
 
         members.forEach((id, tracking) -> snapshot.put(id, tracking.stateName()));
+
         return snapshot;
     }
 
@@ -397,6 +411,7 @@ public final class MembershipFsm {
         var nowMs = wallClockMs.getAsLong();
 
         members.forEach((id, tracking) -> projectLiveHint(snapshot, id, tracking, nowMs));
+
         return snapshot;
     }
 
@@ -423,11 +438,11 @@ public final class MembershipFsm {
         var snapshot = new LinkedHashMap<NodeId, MemberDescriptor>();
 
         members.forEach((id, tracking) -> snapshot.put(id, tracking.descriptor()));
+
         return snapshot;
     }
 
     // --- Projections (desired connection-set for the transport executor) ---
-
     /// The core membership set the transport executor should keep mesh-connected: counted members
     /// (MEMBER + SUSPECT) that are NOT explicitly role=worker. An unknown / absent role counts as
     /// included, so an all-core cluster with no role labels yields every counted member. Insertion-
@@ -435,7 +450,8 @@ public final class MembershipFsm {
     public Set<NodeId> coreMembers() {
         return members.entrySet()
                       .stream()
-                      .filter(entry -> entry.getValue().isCoreCountedMember())
+                      .filter(entry -> entry.getValue()
+                                            .isCoreCountedMember())
                       .map(Map.Entry::getKey)
                       .collect(Collectors.toCollection(LinkedHashSet::new));
     }
@@ -456,7 +472,8 @@ public final class MembershipFsm {
         // the consensus broadcast hot path, so insertion ordering is unused — skip the linked overhead.
         return members.entrySet()
                       .stream()
-                      .filter(entry -> entry.getValue().notDead())
+                      .filter(entry -> entry.getValue()
+                                            .notDead())
                       .map(Map.Entry::getKey)
                       .collect(Collectors.toCollection(HashSet::new));
     }
@@ -472,7 +489,9 @@ public final class MembershipFsm {
     public Set<PeerTarget> desiredConnections() {
         return members.entrySet()
                       .stream()
-                      .flatMap(entry -> entry.getValue().coreDialTarget(entry.getKey()).stream())
+                      .flatMap(entry -> entry.getValue()
+                                             .coreDialTarget(entry.getKey())
+                                             .stream())
                       .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
@@ -492,7 +511,6 @@ public final class MembershipFsm {
     }
 
     // --- Per-member transition drivers (presence sampler promotion + co-confirmation eviction) ---
-
     private void healthy(MemberTracking tracking, long incarnation) {
         tracking.dispatch(new SwimHealthy(incarnation));
         tracking.clearConfirmedDeath();
@@ -577,7 +595,6 @@ public final class MembershipFsm {
     }
 
     // --- Dispatch frame ---
-
     /// Run `action` against the (lazily-created) tracking for `id`, dispatching to the member's FSM.
     /// JBCT code returns errors as values (`Result`/`Option`), never throws, so no try/catch is needed.
     @Contract
@@ -593,6 +610,7 @@ public final class MembershipFsm {
 
     private MemberTracking newTracking(NodeId id) {
         var fsm = Fsm.fsm(FSM_KIND, id.id(), initialStateFactory(id), observer);
+
         return new MemberTracking(id, fsm, this::onEnteredDead);
     }
 
@@ -617,7 +635,6 @@ public final class MembershipFsm {
         private boolean livenessGoneSeen = false;
         private long lastDoubtAtMs = 0L;
         private MemberDescriptor descriptor = MemberDescriptor.UNKNOWN;
-
         /// Pending terminal-eviction backstop (#131 Model C). `Some(future)` while a co-confirmed-death
         /// backstop is armed and not yet fired/cancelled; `none()` otherwise. Held null-safe via
         /// [`Option`] and mutated only under the per-member monitor (consistent with the rest of this
@@ -661,6 +678,7 @@ public final class MembershipFsm {
 
         synchronized boolean bumpHealthyStreakReachedThreshold() {
             healthyStreak++;
+
             return healthyStreak >= UP_HYSTERESIS;
         }
 
@@ -702,6 +720,7 @@ public final class MembershipFsm {
             if (evictionBackstopHandle.filter(future -> !future.isDone()).isPresent()) {
                 return;
             }
+
             evictionBackstopHandle = Option.some(SharedScheduler.schedule(terminalAction, window));
         }
 
@@ -728,6 +747,7 @@ public final class MembershipFsm {
             if (!coConfirmedDead()) {
                 return;
             }
+
             dispatch(new DownHysteresisMet());
             dispatch(new Stopped());
             clearConfirmedDeath();
@@ -746,7 +766,8 @@ public final class MembershipFsm {
         }
 
         synchronized boolean countsTowardEffective() {
-            return fsm.current().countsTowardEffective();
+            return fsm.current()
+                      .countsTowardEffective();
         }
 
         /// Whether this member is still in the lifecycle (NOT terminally DEAD): true for
@@ -754,7 +775,7 @@ public final class MembershipFsm {
         /// [`#broadcastEligibleMembers`] — consensus must keep reaching joining/suspected
         /// peers, only a co-confirmed-DEAD zombie is excluded.
         synchronized boolean notDead() {
-            return !isDead();
+            return ! isDead();
         }
 
         /// Whether this member belongs in the core dial-set: it currently counts (MEMBER + SUSPECT)
@@ -782,12 +803,15 @@ public final class MembershipFsm {
         /// a newer/inconsistent address.
         synchronized Option<PeerTarget> coreDialTarget(NodeId memberId) {
             return isCoreCountedMember()
-                   ? descriptor.address().map(addr -> PeerTarget.peerTarget(memberId, addr))
+                   ? descriptor.address()
+                               .map(addr -> PeerTarget.peerTarget(memberId, addr))
                    : Option.none();
         }
 
         synchronized String stateName() {
-            return fsm.current().getClass().getSimpleName();
+            return fsm.current()
+                      .getClass()
+                      .getSimpleName();
         }
 
         /// FSM-state → quiescence health-hint projection. DEAD → FAULTY (unconditional); SUSPECT →

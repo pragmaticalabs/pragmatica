@@ -10,21 +10,24 @@ import org.pragmatica.lang.utils.Retry;
 
 
 public final class RetryInterceptorFactory implements ResourceFactory<RetryMethodInterceptor, RetryConfig> {
-    @Override public Class<RetryMethodInterceptor> resourceType() {
+    @Override
+    public Class<RetryMethodInterceptor> resourceType() {
         return RetryMethodInterceptor.class;
     }
 
-    @Override public Class<RetryConfig> configType() {
+    @Override
+    public Class<RetryConfig> configType() {
         return RetryConfig.class;
     }
 
-    @Override public Promise<RetryMethodInterceptor> provision(RetryConfig config) {
+    @Override
+    public Promise<RetryMethodInterceptor> provision(RetryConfig config) {
         return Promise.success(interceptor(config));
     }
 
     private static RetryMethodInterceptor interceptor(RetryConfig config) {
-        var retry = Retry.retry().attempts(config.maxAttempts())
-                               .strategy(config.backoffStrategy());
+        var retry = Retry.retry().attempts(config.maxAttempts()).strategy(config.backoffStrategy());
+
         return new RetryMethodInterceptor(retry);
     }
 }

@@ -68,7 +68,9 @@ public record MinuteAggregate(long minuteTimestamp,
     }
 
     public boolean healthy() {
-        return errorRate <0.1 && avgHeapUsage <0.9 && avgEventLoopLagMs <10.0;
+        return errorRate < 0.1
+               && avgHeapUsage < 0.9
+               && avgEventLoopLagMs < 10.0;
     }
 
     public float[] toFeatureArray() {

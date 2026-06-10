@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream.replication;
 
 import java.util.List;
 
+
 /// Narrow read-only view of the locally-known streams that the {@link ReplicaSetController}
 /// needs in order to recompute desired replica sets. Deliberately decoupled from the concrete
 /// `StreamPartitionManager` so the controller is unit-testable against a trivial fake.
@@ -19,7 +20,6 @@ public interface StreamCatalog {
     record StreamSpec(String name, int partitions, int minSyncReplicas) {}
 
     List<StreamSpec> streams();
-
     /// True when the given `(stream, partition)` holds at least one event locally. Used solely to
     /// decide whether a newly-assigned self-replica needs catch-up (A4 seam); an empty partition
     /// needs no backfill.

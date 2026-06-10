@@ -11,7 +11,6 @@ import static org.pragmatica.lang.Result.success;
 
 public record DockerConfig(String network, String image) {
     public static final String DEFAULT_NETWORK = "aether-network";
-
     public static final String DEFAULT_IMAGE = "ghcr.io/siy/aether-node:latest";
 
     public static Result<DockerConfig> dockerConfig(String network, String image) {

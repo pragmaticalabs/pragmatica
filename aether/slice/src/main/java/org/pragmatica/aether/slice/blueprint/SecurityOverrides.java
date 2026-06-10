@@ -14,9 +14,11 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
 
-@Codec@SuppressWarnings("JBCT-UTIL-02") public record SecurityOverrides(List<Entry> entries,
-                                                                        SecurityOverridePolicy policy) {
-    @Codec public record Entry(String routePattern, String securityLevel) {
+@Codec
+@SuppressWarnings("JBCT-UTIL-02")
+public record SecurityOverrides(List<Entry> entries, SecurityOverridePolicy policy) {
+    @Codec
+    public record Entry(String routePattern, String securityLevel) {
         public static Entry entry(String routePattern, String securityLevel) {
             return new Entry(routePattern, securityLevel);
         }
@@ -30,15 +32,18 @@ import static org.pragmatica.lang.Option.some;
     }
 
     public static SecurityOverrides fromMap(Map<String, String> overrideMap, SecurityOverridePolicy policy) {
-        var parsed = overrideMap.entrySet().stream()
-                                         .map(e -> Entry.entry(e.getKey(),
-                                                               e.getValue()))
-                                         .toList();
+        var parsed = overrideMap.entrySet().stream().map(e -> Entry.entry(e.getKey(), e.getValue())).toList();
+
         return securityOverrides(parsed, policy);
     }
 
     public Option<String> findMatch(String httpMethod, String pathPrefix) {
-        for (var entry : entries) {if (matchesRoute(entry.routePattern(), httpMethod, pathPrefix)) {return some(entry.securityLevel());}}
+        for (var entry : entries) {
+            if (matchesRoute(entry.routePattern(), httpMethod, pathPrefix)) {
+                return some(entry.securityLevel());
+            }
+        }
+
         return none();
     }
 
@@ -48,6 +53,7 @@ import static org.pragmatica.lang.Option.some;
 
     private static boolean matchesRoute(String pattern, String httpMethod, String pathPrefix) {
         var parts = splitMethodAndPath(pattern);
+
         return matchesMethod(parts.method(), httpMethod) && matchesPath(parts.path(), pathPrefix);
     }
 
@@ -58,23 +64,33 @@ import static org.pragmatica.lang.Option.some;
     private static boolean matchesPath(String patternPath, String pathPrefix) {
         if (patternPath.endsWith("/*")) {
             var base = patternPath.substring(0, patternPath.length() - 1);
+
             return pathPrefix.startsWith(base);
         }
+
         return normalizePath(patternPath).equals(normalizePath(pathPrefix));
     }
 
     private static String normalizePath(String path) {
         var trimmed = path.strip();
-        if (!trimmed.endsWith("/")) {return trimmed + "/";}
+
+        if (!trimmed.endsWith("/")) {
+            return trimmed + "/";
+        }
+
         return trimmed;
     }
 
-    private record MethodAndPath(String method, String path){}
+    private record MethodAndPath(String method, String path) {}
 
     private static MethodAndPath splitMethodAndPath(String pattern) {
         var spaceIdx = pattern.indexOf(' ');
-        if (spaceIdx > 0) {return new MethodAndPath(pattern.substring(0, spaceIdx).strip(),
-                                                    pattern.substring(spaceIdx + 1).strip());}
+
+        if (spaceIdx > 0) {
+            return new MethodAndPath(pattern.substring(0, spaceIdx).strip(),
+                                     pattern.substring(spaceIdx + 1).strip());
+        }
+
         return new MethodAndPath("*", pattern.strip());
     }
 }

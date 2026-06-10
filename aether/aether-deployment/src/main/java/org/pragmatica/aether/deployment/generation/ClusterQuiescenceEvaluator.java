@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue
 import java.util.ArrayList;
 import java.util.Collection;
 
+
 /// Pure cluster- and community-quiescence verdict logic. Reads the minimal inputs the verdict
 /// actually depends on (member health-hints and per-community quiescence states) so it can be
 /// reused live by HTTP routes without the surrounding projector machinery. No KV/IO/state.
@@ -34,6 +35,7 @@ public sealed interface ClusterQuiescenceEvaluator {
         if (memberSnapshot.hasFaulty() || memberSnapshot.hasSuspected() || communitySnapshot.hasDegraded()) {
             return new ClusterResult(ClusterQuiescence.DEGRADED, buildDegradedDetail(memberSnapshot, communitySnapshot));
         }
+
         if (communitySnapshot.hasConverging() || pendingRebalanceCount > 0) {
             return new ClusterResult(ClusterQuiescence.CONVERGING,
                                      buildConvergingDetail(communitySnapshot, pendingRebalanceCount));
@@ -45,8 +47,11 @@ public sealed interface ClusterQuiescenceEvaluator {
     /// Community-level verdict. Suspected/faulty counts are always 0 in production, so this hard-wires
     /// them: dissolved → DISSOLVING; governor not acked the community epoch → CONVERGING; else QUIESCED.
     static CommunityResult evaluateCommunity(GovernorAnnouncementValue announcement, Epoch lastAckAtCore) {
-        if (announcement.dissolved()) {return new CommunityResult(CommunityQuiescence.DISSOLVING, "community dissolved");}
-        if (lastAckAtCore.compareTo(announcement.communityEpoch()) <0) {
+        if (announcement.dissolved()) {
+            return new CommunityResult(CommunityQuiescence.DISSOLVING, "community dissolved");
+        }
+
+        if (lastAckAtCore.compareTo(announcement.communityEpoch()) < 0) {
             return new CommunityResult(CommunityQuiescence.CONVERGING,
                                        "governor has not acked epoch " + announcement.communityEpoch());
         }
@@ -59,8 +64,13 @@ public sealed interface ClusterQuiescenceEvaluator {
         var suspected = 0;
 
         for (var hint : memberHealths) {
-            if (hint == HealthHint.FAULTY) {faulty++;}
-            if (hint == HealthHint.SUSPECTED) {suspected++;}
+            if (hint == HealthHint.FAULTY) {
+                faulty++;
+            }
+
+            if (hint == HealthHint.SUSPECTED) {
+                suspected++;
+            }
         }
 
         return new MemberSnapshot(faulty, suspected);
@@ -86,10 +96,21 @@ public sealed interface ClusterQuiescenceEvaluator {
     private static String buildDegradedDetail(MemberSnapshot members, CommunityStatusSnapshot communities) {
         var parts = new ArrayList<String>();
 
-        if (members.faulty() > 0) {parts.add(members.faulty() + " members FAULTY");}
-        if (members.suspected() > 0) {parts.add(members.suspected() + " members SUSPECTED");}
-        if (communities.degraded() > 0) {parts.add(communities.degraded() + " communities DEGRADED");}
-        if (communities.dissolving() > 0) {parts.add(communities.dissolving() + " communities DISSOLVING");}
+        if (members.faulty() > 0) {
+            parts.add(members.faulty() + " members FAULTY");
+        }
+
+        if (members.suspected() > 0) {
+            parts.add(members.suspected() + " members SUSPECTED");
+        }
+
+        if (communities.degraded() > 0) {
+            parts.add(communities.degraded() + " communities DEGRADED");
+        }
+
+        if (communities.dissolving() > 0) {
+            parts.add(communities.dissolving() + " communities DISSOLVING");
+        }
 
         return String.join("; ", parts);
     }
@@ -97,8 +118,13 @@ public sealed interface ClusterQuiescenceEvaluator {
     private static String buildConvergingDetail(CommunityStatusSnapshot communities, int pendingRebalance) {
         var parts = new ArrayList<String>();
 
-        if (communities.converging() > 0) {parts.add(communities.converging() + " communities CONVERGING");}
-        if (pendingRebalance > 0) {parts.add(pendingRebalance + " communities awaiting spokesman");}
+        if (communities.converging() > 0) {
+            parts.add(communities.converging() + " communities CONVERGING");
+        }
+
+        if (pendingRebalance > 0) {
+            parts.add(pendingRebalance + " communities awaiting spokesman");
+        }
 
         return String.join("; ", parts);
     }

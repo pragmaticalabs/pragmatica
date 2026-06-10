@@ -115,6 +115,7 @@ public interface PaymentService {
 
         private static boolean isValidCardNumber(String number) {
             if (!number.matches("\\d{13,19}")) return false;
+
             return luhnCheck(number);
         }
 
@@ -122,7 +123,7 @@ public interface PaymentService {
             int sum = 0;
             boolean alternate = false;
 
-            for (int i = number.length() - 1;i >= 0;i--) {
+            for (int i = number.length() - 1; i >= 0; i--) {
                 int n = Character.digit(number.charAt(i), 10);
 
                 if (alternate) {
@@ -296,27 +297,44 @@ public interface PaymentService {
 
                     return new PaymentError.ProcessingFailed(e).promise();
                 }
+
                 return Promise.success(Unit.unit());
             }
 
             private Promise<Money> validatePaymentAmount(Money amount) {
-                if (amount.isZero()) {return new PaymentError.InvalidAmount("Amount cannot be zero").promise();}
-                if (amount.amount().compareTo(BigDecimal.valueOf(50000)) > 0) {return new PaymentError.InvalidAmount("Amount exceeds maximum ($50,000)").promise();}
+                if (amount.isZero()) {
+                    return new PaymentError.InvalidAmount("Amount cannot be zero").promise();
+                }
+
+                if (amount.amount().compareTo(BigDecimal.valueOf(50000)) > 0) {
+                    return new PaymentError.InvalidAmount("Amount exceeds maximum ($50,000)").promise();
+                }
 
                 return Promise.success(amount);
             }
 
             private Promise<PaymentResult> simulateAuthorization(ProcessPaymentRequest request) {
-                if (random.nextDouble() <DECLINE_RATE) {return new PaymentError.Declined("Card declined by issuer").promise();}
+                if (random.nextDouble() < DECLINE_RATE) {
+                    return new PaymentError.Declined("Card declined by issuer").promise();
+                }
+
                 return checkCardNumber(request);
             }
 
             private Promise<PaymentResult> checkCardNumber(ProcessPaymentRequest request) {
                 var cardNumber = request.paymentMethod().cardNumber();
 
-                if (cardNumber.endsWith("0000")) {return new PaymentError.Declined("Insufficient funds").promise();}
-                if (cardNumber.endsWith("1111")) {return new PaymentError.Declined("Card expired").promise();}
-                if (cardNumber.endsWith("2222")) {return new PaymentError.FraudSuspected().promise();}
+                if (cardNumber.endsWith("0000")) {
+                    return new PaymentError.Declined("Insufficient funds").promise();
+                }
+
+                if (cardNumber.endsWith("1111")) {
+                    return new PaymentError.Declined("Card expired").promise();
+                }
+
+                if (cardNumber.endsWith("2222")) {
+                    return new PaymentError.FraudSuspected().promise();
+                }
 
                 return Promise.success(PaymentResult.authorized(request.orderId(),
                                                                 request.amount(),
@@ -355,6 +373,7 @@ public interface PaymentService {
                          .map(_ -> refund);
             }
         }
+
         return new paymentService(db, new Random());
     }
 }

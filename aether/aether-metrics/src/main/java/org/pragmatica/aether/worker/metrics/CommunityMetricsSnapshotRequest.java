@@ -10,7 +10,8 @@ import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public record CommunityMetricsSnapshotRequest(NodeId sender, String communityId, long requestId) implements Message.Wired {
+@Codec
+public record CommunityMetricsSnapshotRequest(NodeId sender, String communityId, long requestId) implements Message.Wired {
     @Override
     public StreamType streamType() {
         return StreamType.METRICS;

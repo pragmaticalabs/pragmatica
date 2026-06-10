@@ -20,6 +20,9 @@ public record RetryConfig(int maxAttempts, TimeSpan initialDelay, TimeSpan maxDe
                                           long initialDelayMs,
                                           long maxDelayMs,
                                           double backoffMultiplier) {
-        return new RetryConfig(maxAttempts, timeSpan(initialDelayMs).millis(), timeSpan(maxDelayMs).millis(), backoffMultiplier);
+        return new RetryConfig(maxAttempts,
+                               timeSpan(initialDelayMs).millis(),
+                               timeSpan(maxDelayMs).millis(),
+                               backoffMultiplier);
     }
 }

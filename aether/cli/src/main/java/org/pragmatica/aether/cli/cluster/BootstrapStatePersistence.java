@@ -30,7 +30,9 @@ sealed interface BootstrapStatePersistence {
     static Option<BootstrapState> load(String clusterName) {
         var path = stateFilePath(clusterName);
 
-        if (!Files.exists(path)) {return none();}
+        if (!Files.exists(path)) {
+            return none();
+        }
 
         return Result.lift(PersistenceError::new,
                            () -> Files.readString(path))
@@ -49,6 +51,7 @@ sealed interface BootstrapStatePersistence {
 
     private static Unit doSave(BootstrapState state) throws Exception {
         var dir = AETHER_DIR.resolve(state.clusterName());
+
         Files.createDirectories(dir);
         Files.writeString(dir.resolve(STATE_FILE_NAME), state.toJson());
 
@@ -57,6 +60,7 @@ sealed interface BootstrapStatePersistence {
 
     private static Unit doDelete(String clusterName) throws Exception {
         var path = stateFilePath(clusterName);
+
         Files.deleteIfExists(path);
 
         return Unit.unit();

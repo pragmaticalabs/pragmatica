@@ -37,8 +37,8 @@ public record TransactionContext(String id,
                                               none()));
     }
 
-    @SuppressWarnings("JBCT-NAM-01") public static TransactionContext nestedContext(TransactionConfig config,
-                                                                                    TransactionContext parent) {
+    @SuppressWarnings("JBCT-NAM-01")
+    public static TransactionContext nestedContext(TransactionConfig config, TransactionContext parent) {
         return new TransactionContext(UUID.randomUUID().toString(),
                                       config,
                                       TransactionStatus.ACTIVE,
@@ -71,12 +71,14 @@ public record TransactionContext(String id,
     }
 
     public boolean isTimedOut() {
-        return config.timeout().filter(this::hasExceededTimeout)
-                             .isPresent();
+        return config.timeout()
+                     .filter(this::hasExceededTimeout)
+                     .isPresent();
     }
 
     private boolean hasExceededTimeout(TimeSpan timeout) {
         var elapsed = Duration.between(startTime, Instant.now());
+
         return elapsed.toMillis() > timeout.millis();
     }
 }

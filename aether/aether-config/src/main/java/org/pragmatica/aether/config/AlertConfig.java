@@ -33,10 +33,8 @@ public record AlertConfig(boolean enabled, WebhookConfig webhook, EventConfig ev
                            EventConfig.eventConfig(true).unwrap()).unwrap();
     }
 
-    @SuppressWarnings("JBCT-ZONE-02") public record WebhookConfig(boolean enabled,
-                                                                  List<String> urls,
-                                                                  int retryCount,
-                                                                  TimeSpan timeout) {
+    @SuppressWarnings("JBCT-ZONE-02")
+    public record WebhookConfig(boolean enabled, List<String> urls, int retryCount, TimeSpan timeout) {
         private static final WebhookConfig DISABLED = webhookConfig(false, List.of(), 0, timeSpan(0).millis()).unwrap();
 
         public static Result<WebhookConfig> webhookConfig(boolean enabled,
@@ -51,14 +49,14 @@ public record AlertConfig(boolean enabled, WebhookConfig webhook, EventConfig ev
         }
 
         public Result<WebhookConfig> check() {
-            return checkUrls().flatMap(WebhookConfig::checkRetryCount).flatMap(WebhookConfig::checkTimeout);
+            return checkUrls().flatMap(WebhookConfig::checkRetryCount)
+                            .flatMap(WebhookConfig::checkTimeout);
         }
 
         private Result<WebhookConfig> checkUrls() {
             return ! enabled || hasUrls()
-                  ? success(this)
-                  : AlertConfigError.InvalidAlertConfig.invalidAlertConfig("webhook.urls cannot be empty when enabled")
-                                                                          .result();
+                   ? success(this)
+                   : AlertConfigError.InvalidAlertConfig.invalidAlertConfig("webhook.urls cannot be empty when enabled").result();
         }
 
         private boolean hasUrls() {
@@ -67,14 +65,14 @@ public record AlertConfig(boolean enabled, WebhookConfig webhook, EventConfig ev
 
         private Result<WebhookConfig> checkRetryCount() {
             return retryCount >= 0
-                  ? success(this)
-                  : AlertConfigError.InvalidAlertConfig.invalidAlertConfig("webhook.retry_count must be >= 0").result();
+                   ? success(this)
+                   : AlertConfigError.InvalidAlertConfig.invalidAlertConfig("webhook.retry_count must be >= 0").result();
         }
 
         private Result<WebhookConfig> checkTimeout() {
             return ! enabled || timeout.millis() >= 100
-                  ? success(this)
-                  : AlertConfigError.InvalidAlertConfig.invalidAlertConfig("webhook.timeout must be >= 100ms").result();
+                   ? success(this)
+                   : AlertConfigError.InvalidAlertConfig.invalidAlertConfig("webhook.timeout must be >= 100ms").result();
         }
     }
 
@@ -90,7 +88,8 @@ public record AlertConfig(boolean enabled, WebhookConfig webhook, EventConfig ev
 
     public sealed interface AlertConfigError extends Cause {
         record unused() implements AlertConfigError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "unused";
             }
         }
@@ -104,7 +103,8 @@ public record AlertConfig(boolean enabled, WebhookConfig webhook, EventConfig ev
                 return invalidAlertConfig(detail, true).unwrap();
             }
 
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Invalid alert configuration: " + detail;
             }
         }

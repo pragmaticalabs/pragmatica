@@ -22,9 +22,9 @@ import org.pragmatica.serialization.Codec;
 /// owns the MAJOR.MINOR.PATCH grammar. Each VO is the proof that its component is valid, so this
 /// type only composes them — the string form `namespace:name:version` is rendered by delegating to
 /// each VO's raw value, keeping the KV/TOML wire form unchanged.
-@Codec public record ResourceAddress(Namespace namespace, ResourceName name, ResourceVersion version) {
+@Codec
+public record ResourceAddress(Namespace namespace, ResourceName name, ResourceVersion version) {
     public static final String SYSTEM_NAMESPACE = Namespace.SYSTEM;
-
     /// Namespace applied to legacy / un-namespaced topic declarations when no blueprint coordinates
     /// are available to derive one (e.g. a bare `topicName` string with no deploy context). The
     /// deploy path replaces this with the blueprint-derived namespace; this constant is only the
@@ -44,13 +44,16 @@ import org.pragmatica.serialization.Codec;
             General(String message) {
                 this.message = message;
             }
-            @Override public String message() {
+            @Override
+            public String message() {
                 return message;
             }
         }
 
-        @SuppressWarnings("unused") record unused() implements ResourceAddressError {
-            @Override public String message() {
+        @SuppressWarnings("unused")
+        record unused() implements ResourceAddressError {
+            @Override
+            public String message() {
                 return "";
             }
         }
@@ -61,13 +64,17 @@ import org.pragmatica.serialization.Codec;
         if (value == null) {
             return ResourceAddressError.General.NULL_VALUE.result();
         }
+
         if (value.isBlank()) {
             return ResourceAddressError.General.BLANK_VALUE.result();
         }
+
         var parts = value.split(":", -1);
+
         if (parts.length != 3) {
             return ResourceAddressError.General.WRONG_FORMAT.result();
         }
+
         return resourceAddress(parts[0], parts[1], parts[2]);
     }
 
@@ -78,13 +85,15 @@ import org.pragmatica.serialization.Codec;
     }
 
     public static Result<ResourceAddress> resourceAddress(String namespace, String name, ResourceVersion version) {
-        return Namespace.namespace(namespace)
-                        .flatMap(ns -> ResourceName.resourceName(name)
-                                                   .map(nm -> new ResourceAddress(ns, nm, version)));
+        return Namespace.namespace(namespace).flatMap(ns -> ResourceName.resourceName(name).map(nm -> new ResourceAddress(ns,
+                                                                                                                          nm,
+                                                                                                                          version)));
     }
 
     /// Build an address from already-validated VO components.
-    public static Result<ResourceAddress> resourceAddress(Namespace namespace, ResourceName name, ResourceVersion version) {
+    public static Result<ResourceAddress> resourceAddress(Namespace namespace,
+                                                          ResourceName name,
+                                                          ResourceVersion version) {
         return Result.success(new ResourceAddress(namespace, name, version));
     }
 
@@ -112,7 +121,8 @@ import org.pragmatica.serialization.Codec;
         return namespace.isSystem();
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return asString();
     }
 

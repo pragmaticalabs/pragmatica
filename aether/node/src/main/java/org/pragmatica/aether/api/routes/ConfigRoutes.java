@@ -84,21 +84,32 @@ public final class ConfigRoutes implements RouteSource {
     }
 
     private Result<SetConfigRequest> validateSetRequest(SetConfigRequest req) {
-        if (req.key() == null || req.key().isEmpty()) {return ConfigError.MISSING_FIELDS.result();}
-        if (req.value() == null || req.value().isEmpty()) {return ConfigError.MISSING_FIELDS.result();}
+        if (req.key() == null || req.key().isEmpty()) {
+            return ConfigError.MISSING_FIELDS.result();
+        }
+
+        if (req.value() == null || req.value().isEmpty()) {
+            return ConfigError.MISSING_FIELDS.result();
+        }
 
         return Result.success(req);
     }
 
     private Promise<ConfigRemovedResponse> handleDeleteConfig(String key) {
-        if (key.isEmpty()) {return ConfigError.KEY_REQUIRED.promise();}
+        if (key.isEmpty()) {
+            return ConfigError.KEY_REQUIRED.promise();
+        }
+
         return configManager.removeConfig(key)
                             .onSuccess(_ -> auditAndEmitConfigRemove(key, "cluster"))
                             .map(_ -> new ConfigRemovedResponse("config_removed", key));
     }
 
     private Promise<ConfigRemovedResponse> handleDeleteNodeConfig(String nodeIdStr, String key) {
-        if (nodeIdStr.isEmpty() || key.isEmpty()) {return ConfigError.KEY_REQUIRED.promise();}
+        if (nodeIdStr.isEmpty() || key.isEmpty()) {
+            return ConfigError.KEY_REQUIRED.promise();
+        }
+
         return NodeId.nodeId(nodeIdStr)
                      .async()
                      .flatMap(nodeId -> configManager.removeNodeConfig(key, nodeId)

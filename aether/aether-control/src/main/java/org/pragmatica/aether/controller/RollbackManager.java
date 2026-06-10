@@ -35,13 +35,21 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") public interface RollbackManager {
+@SuppressWarnings("JBCT-RET-01")
+public interface RollbackManager {
     Promise<Unit> activate();
     Promise<Unit> deactivate();
     boolean isActive();
-    @MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
-    @MessageReceiver void onPreviousVersionPut(ValuePut<PreviousVersionKey, PreviousVersionValue> valuePut);
-    @MessageReceiver void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event);
+
+    @MessageReceiver
+    void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
+
+    @MessageReceiver
+    void onPreviousVersionPut(ValuePut<PreviousVersionKey, PreviousVersionValue> valuePut);
+
+    @MessageReceiver
+    void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event);
+
     Option<RollbackStats> getStats(ArtifactBase artifactBase);
     void resetRollbackCount(ArtifactBase artifactBase);
 
@@ -103,10 +111,20 @@ import org.slf4j.LoggerFactory;
         }
 
         public Result<RollbackDecision> canRollback(RollbackConfig config, long currentTime) {
-            if (previousVersion.isEmpty()) {return RollbackError.General.NO_PREVIOUS_VERSION.result();}
+            if (previousVersion.isEmpty()) {
+                return RollbackError.General.NO_PREVIOUS_VERSION.result();
+            }
+
             var cooldownMs = config.cooldown().millis();
-            if (lastRollbackTimestamp > 0 && (currentTime - lastRollbackTimestamp) <cooldownMs) {return RollbackError.General.COOLDOWN_ACTIVE.result();}
-            if (rollbackCount >= config.maxRollbacks()) {return RollbackError.General.MAX_ROLLBACKS_EXCEEDED.result();}
+
+            if (lastRollbackTimestamp > 0 && (currentTime - lastRollbackTimestamp) < cooldownMs) {
+                return RollbackError.General.COOLDOWN_ACTIVE.result();
+            }
+
+            if (rollbackCount >= config.maxRollbacks()) {
+                return RollbackError.General.MAX_ROLLBACKS_EXCEEDED.result();
+            }
+
             return Result.success(RollbackDecision.rollbackDecision(previousVersion.unwrap(),
                                                                     currentVersion,
                                                                     rollbackCount + 1));
@@ -138,13 +156,15 @@ import org.slf4j.LoggerFactory;
             General(String message) {
                 this.message = message;
             }
-            @Override public String message() {
+            @Override
+            public String message() {
                 return message;
             }
         }
 
         record RollbackFailed(Artifact artifact, Cause cause) implements RollbackError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Rollback failed for " + artifact + ": " + cause.message();
             }
         }
@@ -154,7 +174,7 @@ import org.slf4j.LoggerFactory;
                          int rollbackCount,
                          long lastRollbackTimestamp,
                          Option<Version> lastRolledBackFrom,
-                         Option<Version> lastRolledBackTo){}
+                         Option<Version> lastRolledBackTo) {}
 
     static RollbackManager rollbackManager(NodeId self,
                                            RollbackConfig config,
@@ -168,66 +188,81 @@ import org.slf4j.LoggerFactory;
                                LeaderManager leaderManager,
                                ConcurrentHashMap<ArtifactBase, RollbackState> rollbackStates,
                                Logger log) implements RollbackManager {
-            @Override public Promise<Unit> activate() {
+            @Override
+            public Promise<Unit> activate() {
                 log.info("Node {} activating RollbackManager", self);
                 loadPreviousVersionsFromKvStore();
+
                 return Promise.unitPromise();
             }
 
-            @Override public Promise<Unit> deactivate() {
+            @Override
+            public Promise<Unit> deactivate() {
                 log.info("Node {} deactivating RollbackManager", self);
                 rollbackStates.clear();
+
                 return Promise.unitPromise();
             }
 
-            @Override public boolean isActive() {
+            @Override
+            public boolean isActive() {
                 return leaderManager.isLeader();
             }
 
-            @Override public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
-                trackVersionChange(valuePut.cause().key()
-                                                 .artifactBase(),
+            @Override
+            public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
+                trackVersionChange(valuePut.cause().key().artifactBase(),
                                    valuePut.cause().value());
             }
 
-            @Override public void onPreviousVersionPut(ValuePut<PreviousVersionKey, PreviousVersionValue> valuePut) {
-                updateLocalPreviousVersion(valuePut.cause().key()
-                                                         .artifactBase(),
+            @Override
+            public void onPreviousVersionPut(ValuePut<PreviousVersionKey, PreviousVersionValue> valuePut) {
+                updateLocalPreviousVersion(valuePut.cause().key().artifactBase(),
                                            valuePut.cause().value());
             }
 
-            @Override public void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event) {
+            @Override
+            public void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event) {
                 if (!config.enabled()) {
                     log.debug("Rollback disabled, ignoring AllInstancesFailed for {}", event.artifact());
+
                     return;
                 }
+
                 if (!config.triggerOnAllInstancesFailed()) {
                     log.debug("Rollback on AllInstancesFailed disabled, ignoring event for {}", event.artifact());
+
                     return;
                 }
+
                 if (!leaderManager.isLeader()) {
                     log.debug("Not leader, skipping rollback decision for {}", event.artifact());
+
                     return;
                 }
+
                 var artifactBase = event.artifact().base();
+
                 Option.option(rollbackStates.get(artifactBase)).onPresent(state -> initiateRollback(event.artifact(),
                                                                                                     state,
-                                                                                                    event.requestId()))
-                             .onEmpty(() -> log.warn("[requestId={}] No previous version tracked for {}, cannot rollback",
-                                                     event.requestId(),
-                                                     event.artifact()));
+                                                                                                    event.requestId())).onEmpty(() -> log.warn("[requestId={}] No previous version tracked for {}, cannot rollback",
+                                                                                                                                               event.requestId(),
+                                                                                                                                               event.artifact()));
             }
 
-            @Override public Option<RollbackStats> getStats(ArtifactBase artifactBase) {
+            @Override
+            public Option<RollbackStats> getStats(ArtifactBase artifactBase) {
                 return Option.option(rollbackStates.get(artifactBase)).map(RollbackState::toStats);
             }
 
-            @Override public void resetRollbackCount(ArtifactBase artifactBase) {
+            @Override
+            public void resetRollbackCount(ArtifactBase artifactBase) {
                 rollbackStates.computeIfPresent(artifactBase, (_, state) -> resetState(artifactBase, state));
             }
 
             private RollbackState resetState(ArtifactBase artifactBase, RollbackState state) {
                 log.info("Rollback count reset for {}", artifactBase);
+
                 return state.withReset();
             }
 
@@ -237,8 +272,9 @@ import org.slf4j.LoggerFactory;
             }
 
             private void loadPreviousVersionEntry(AetherKey key, AetherValue value) {
-                if (key instanceof PreviousVersionKey previousVersionKey && value instanceof PreviousVersionValue previousVersionValue) {updateLocalPreviousVersion(previousVersionKey.artifactBase(),
-                                                                                                                                                                    previousVersionValue);}
+                if (key instanceof PreviousVersionKey previousVersionKey && value instanceof PreviousVersionValue previousVersionValue) {
+                    updateLocalPreviousVersion(previousVersionKey.artifactBase(), previousVersionValue);
+                }
             }
 
             private void updateLocalPreviousVersion(ArtifactBase artifactBase, PreviousVersionValue value) {
@@ -248,16 +284,21 @@ import org.slf4j.LoggerFactory;
             private RollbackState computePreviousVersionUpdate(ArtifactBase ab,
                                                                RollbackState existing,
                                                                PreviousVersionValue value) {
-                return Option.option(existing).map(state -> state.withKVStoreUpdate(value.previousVersion(),
-                                                                                    value.currentVersion()))
-                                    .or(() -> RollbackState.fromKVStore(ab,
-                                                                        value.previousVersion(),
-                                                                        value.currentVersion()));
+                return Option.option(existing)
+                             .map(state -> state.withKVStoreUpdate(value.previousVersion(),
+                                                                   value.currentVersion()))
+                             .or(() -> RollbackState.fromKVStore(ab,
+                                                                 value.previousVersion(),
+                                                                 value.currentVersion()));
             }
 
             private void trackVersionChange(ArtifactBase artifactBase, SliceTargetValue sliceTargetValue) {
-                if (!leaderManager.isLeader()) {return;}
+                if (!leaderManager.isLeader()) {
+                    return;
+                }
+
                 var currentVersion = sliceTargetValue.currentVersion();
+
                 rollbackStates.compute(artifactBase,
                                        (ab, existing) -> computeVersionTracking(ab,
                                                                                 existing,
@@ -269,27 +310,34 @@ import org.slf4j.LoggerFactory;
                                                          RollbackState existing,
                                                          ArtifactBase artifactBase,
                                                          Version currentVersion) {
-                return Option.option(existing).map(state -> computeVersionChange(state, artifactBase, currentVersion))
-                                    .or(() -> initialDeploymentState(ab, artifactBase, currentVersion));
+                return Option.option(existing)
+                             .map(state -> computeVersionChange(state, artifactBase, currentVersion))
+                             .or(() -> initialDeploymentState(ab, artifactBase, currentVersion));
             }
 
             private RollbackState initialDeploymentState(ArtifactBase ab,
                                                          ArtifactBase artifactBase,
                                                          Version currentVersion) {
                 log.debug("First deployment of {}, no previous version to track", artifactBase);
+
                 return RollbackState.initial(ab, currentVersion);
             }
 
             private RollbackState computeVersionChange(RollbackState state,
                                                        ArtifactBase artifactBase,
                                                        Version newVersion) {
-                if (state.currentVersion().equals(newVersion)) {return state;}
+                if (state.currentVersion().equals(newVersion)) {
+                    return state;
+                }
+
                 var previousVersion = state.currentVersion();
+
                 log.info("Version change detected for {}: {} -> {}",
                          artifactBase,
                          previousVersion,
                          newVersion);
                 storePreviousVersion(artifactBase, previousVersion, newVersion);
+
                 return state.withVersionChange(newVersion);
             }
 
@@ -299,22 +347,24 @@ import org.slf4j.LoggerFactory;
                 var key = PreviousVersionKey.previousVersionKey(artifactBase);
                 var value = PreviousVersionValue.previousVersionValue(artifactBase, previousVersion, currentVersion);
                 var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
+
                 cluster.apply(List.of(command)).onSuccess(_ -> log.debug("Stored previous version {} for {} in KVStore",
                                                                          previousVersion,
-                                                                         artifactBase))
-                             .onFailure(cause -> log.error("Failed to store previous version for {}: {}",
-                                                           artifactBase,
-                                                           cause.message()));
+                                                                         artifactBase)).onFailure(cause -> log.error("Failed to store previous version for {}: {}",
+                                                                                                                     artifactBase,
+                                                                                                                     cause.message()));
             }
 
             private void initiateRollback(Artifact failedArtifact, RollbackState state, String requestId) {
                 var now = System.currentTimeMillis();
-                state.canRollback(config, now).onFailure(cause -> logRollbackSkipped(cause, requestId, failedArtifact))
-                                 .onSuccess(decision -> executeRollback(failedArtifact, decision, requestId));
+
+                state.canRollback(config, now).onFailure(cause -> logRollbackSkipped(cause, requestId, failedArtifact)).onSuccess(decision -> executeRollback(failedArtifact,
+                                                                                                                                                              decision,
+                                                                                                                                                              requestId));
             }
 
             private void logRollbackSkipped(Cause cause, String requestId, Artifact artifact) {
-                switch (cause){
+                switch (cause) {
                     case RollbackError.General.NO_PREVIOUS_VERSION -> log.warn("[requestId={}] No previous version available for {}, cannot rollback",
                                                                                requestId,
                                                                                artifact);
@@ -334,6 +384,7 @@ import org.slf4j.LoggerFactory;
 
             private void executeRollback(Artifact failedArtifact, RollbackDecision decision, String requestId) {
                 var rollbackArtifact = Artifact.artifact(failedArtifact.base(), decision.targetVersion());
+
                 log.warn("[requestId={}] INITIATING ROLLBACK: {} -> {} (rollback #{} of max {})",
                          requestId,
                          failedArtifact,
@@ -348,22 +399,21 @@ import org.slf4j.LoggerFactory;
                                                       String requestId) {
                 var artifactBase = rollbackArtifact.base();
                 var key = SliceTargetKey.sliceTargetKey(artifactBase);
-                var instanceCount = kvStore.get(key).map(v -> ((SliceTargetValue) v).targetInstances())
-                                               .or(1);
+                var instanceCount = kvStore.get(key).map(v -> ((SliceTargetValue) v).targetInstances()).or(1);
                 var value = SliceTargetValue.sliceTargetValue(decision.targetVersion(), instanceCount);
                 var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
                 var failedVersion = decision.failedVersion();
                 var targetVersion = decision.targetVersion();
+
                 cluster.apply(List.of(command)).onSuccess(_ -> recordRollbackCompleted(artifactBase,
                                                                                        failedVersion,
                                                                                        targetVersion,
                                                                                        requestId,
                                                                                        rollbackArtifact,
-                                                                                       instanceCount))
-                             .onFailure(cause -> log.error("[requestId={}] ROLLBACK FAILED: Could not update slice target for {}: {}",
-                                                           requestId,
-                                                           rollbackArtifact,
-                                                           cause.message()));
+                                                                                       instanceCount)).onFailure(cause -> log.error("[requestId={}] ROLLBACK FAILED: Could not update slice target for {}: {}",
+                                                                                                                                    requestId,
+                                                                                                                                    rollbackArtifact,
+                                                                                                                                    cause.message()));
             }
 
             private void recordRollbackCompleted(ArtifactBase artifactBase,
@@ -373,6 +423,7 @@ import org.slf4j.LoggerFactory;
                                                  Artifact rollbackArtifact,
                                                  int instanceCount) {
                 var timestamp = System.currentTimeMillis();
+
                 rollbackStates.computeIfPresent(artifactBase,
                                                 (_, state) -> state.withRollbackCompleted(failedVersion,
                                                                                           targetVersion,
@@ -390,7 +441,9 @@ import org.slf4j.LoggerFactory;
                                           leaderManager,
                                           new ConcurrentHashMap<>(),
                                           LoggerFactory.getLogger(RollbackManager.class));
+
         manager.loadPreviousVersionsFromKvStore();
+
         return manager;
     }
 
@@ -401,23 +454,31 @@ import org.slf4j.LoggerFactory;
     enum Disabled implements RollbackManager {
         INSTANCE;
         private static final Logger log = LoggerFactory.getLogger(RollbackManager.class);
-        @Override public Promise<Unit> activate() {
+        @Override
+        public Promise<Unit> activate() {
             return Promise.unitPromise();
         }
-        @Override public Promise<Unit> deactivate() {
+        @Override
+        public Promise<Unit> deactivate() {
             return Promise.unitPromise();
         }
-        @Override public boolean isActive() {
+        @Override
+        public boolean isActive() {
             return false;
         }
-        @Override public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {}
-        @Override public void onPreviousVersionPut(ValuePut<PreviousVersionKey, PreviousVersionValue> valuePut) {}
-        @Override public void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event) {
+        @Override
+        public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {}
+        @Override
+        public void onPreviousVersionPut(ValuePut<PreviousVersionKey, PreviousVersionValue> valuePut) {}
+        @Override
+        public void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event) {
             log.debug("Rollback disabled, ignoring AllInstancesFailed for {}", event.artifact());
         }
-        @Override public Option<RollbackStats> getStats(ArtifactBase artifactBase) {
+        @Override
+        public Option<RollbackStats> getStats(ArtifactBase artifactBase) {
             return Option.none();
         }
-        @Override public void resetRollbackCount(ArtifactBase artifactBase) {}
+        @Override
+        public void resetRollbackCount(ArtifactBase artifactBase) {}
     }
 }

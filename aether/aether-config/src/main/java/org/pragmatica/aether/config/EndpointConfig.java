@@ -9,7 +9,8 @@ public record EndpointConfig(String host, int port, String username, String pass
         return new EndpointConfig(host, port, username, password);
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return "EndpointConfig[host=" + host + ", port=" + port + ", username=" + username + ", password=***]";
     }
 }

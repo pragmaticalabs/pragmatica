@@ -28,6 +28,7 @@ sealed interface NodeConfigBuilder {
                                                         ctx.apiKey(),
                                                         dockerGid,
                                                         clusterSecret);
+
         return Result.all(DefaultNodeConfig.globalDefault(),
                           DefaultNodeConfig.sourceTypeDefault(source.type()))
                      .map((global, typeDefault) -> NodeConfigComposer.compose(global,

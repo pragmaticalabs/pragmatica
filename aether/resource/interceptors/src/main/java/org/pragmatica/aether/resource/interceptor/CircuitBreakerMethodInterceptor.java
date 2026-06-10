@@ -11,7 +11,8 @@ import org.pragmatica.lang.utils.CircuitBreaker;
 
 
 public record CircuitBreakerMethodInterceptor(CircuitBreaker breaker) implements MethodInterceptor {
-    @Override public <R, T> Fn1<Promise<R>, T> intercept(Fn1<Promise<R>, T> method) {
+    @Override
+    public <R, T> Fn1<Promise<R>, T> intercept(Fn1<Promise<R>, T> method) {
         return request -> breaker.execute(() -> method.apply(request));
     }
 }

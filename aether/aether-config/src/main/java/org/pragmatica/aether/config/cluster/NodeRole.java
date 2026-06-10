@@ -24,9 +24,10 @@ public enum NodeRole {
         return value;
     }
     public static Result<NodeRole> nodeRole(String raw) {
-        return Arrays.stream(values()).filter(nr -> nr.value.equals(raw))
-                            .findFirst()
-                            .map(Result::success)
-                            .orElseGet(INVALID_TYPE::result);
+        return Arrays.stream(values())
+                     .filter(nr -> nr.value.equals(raw))
+                     .findFirst()
+                     .map(Result::success)
+                     .orElseGet(INVALID_TYPE::result);
     }
 }

@@ -60,7 +60,7 @@ public final class StreamReadRouter {
                                                           long fromOffset,
                                                           int maxEvents,
                                                           ReadPreference preference) {
-        return switch (preference){
+        return switch (preference) {
             case GOVERNOR -> readLocal(streamName, partition, fromOffset, maxEvents);
             case ANY_REPLICA, NEAREST -> readFromReplica(streamName, partition, fromOffset, maxEvents);
         };
@@ -70,7 +70,8 @@ public final class StreamReadRouter {
                                                                 int partition,
                                                                 long fromOffset,
                                                                 int maxEvents) {
-        return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents).async();
+        return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents)
+                               .async();
     }
 
     private Promise<List<OffHeapRingBuffer.RawEvent>> readFromReplica(String streamName,
@@ -78,7 +79,7 @@ public final class StreamReadRouter {
                                                                       long fromOffset,
                                                                       int maxEvents) {
         return replicaRegistry.map(registry -> selectAndRead(registry, streamName, partition, fromOffset, maxEvents))
-                                  .or(() -> readLocal(streamName, partition, fromOffset, maxEvents));
+                              .or(() -> readLocal(streamName, partition, fromOffset, maxEvents));
     }
 
     private Promise<List<OffHeapRingBuffer.RawEvent>> selectAndRead(ReplicaRegistry registry,
@@ -86,15 +87,21 @@ public final class StreamReadRouter {
                                                                     int partition,
                                                                     long fromOffset,
                                                                     int maxEvents) {
-        var caughtUp = registry.replicasFor(streamName, partition).stream()
-                                           .filter(StreamReadRouter::isCaughtUp)
-                                           .toList();
-        if (caughtUp.isEmpty()) {return readLocal(streamName, partition, fromOffset, maxEvents);}
-        var remote = caughtUp.stream().filter(r -> !r.nodeId().equals(selfNodeId))
-                                    .toList();
-        if (remote.isEmpty()) {return readLocal(streamName, partition, fromOffset, maxEvents);}
+        var caughtUp = registry.replicasFor(streamName, partition).stream().filter(StreamReadRouter::isCaughtUp).toList();
+
+        if (caughtUp.isEmpty()) {
+            return readLocal(streamName, partition, fromOffset, maxEvents);
+        }
+
+        var remote = caughtUp.stream().filter(r -> !r.nodeId()
+                                                     .equals(selfNodeId)).toList();
+
+        if (remote.isEmpty()) {
+            return readLocal(streamName, partition, fromOffset, maxEvents);
+        }
+
         return forwardClient.map(client -> attemptPrimary(client, remote, streamName, partition, fromOffset, maxEvents))
-                                .or(() -> readLocal(streamName, partition, fromOffset, maxEvents));
+                            .or(() -> readLocal(streamName, partition, fromOffset, maxEvents));
     }
 
     private Promise<List<OffHeapRingBuffer.RawEvent>> attemptPrimary(StreamForwardClient client,
@@ -104,6 +111,7 @@ public final class StreamReadRouter {
                                                                      long fromOffset,
                                                                      int maxEvents) {
         var primary = pickReplica(pool);
+
         return client.readRemote(primary.nodeId(),
                                  streamName,
                                  partition,
@@ -129,23 +137,29 @@ public final class StreamReadRouter {
                                                                   long fromOffset,
                                                                   int maxEvents,
                                                                   Cause firstCause) {
-        var alternatives = pool.stream().filter(r -> !r.nodeId().equals(primary.nodeId()))
-                                      .toList();
-        if (alternatives.isEmpty()) {return firstCause.promise();}
+        var alternatives = pool.stream().filter(r -> !r.nodeId()
+                                                       .equals(primary.nodeId())).toList();
+
+        if (alternatives.isEmpty()) {
+            return firstCause.promise();
+        }
+
         metrics.recordRetry();
         var retry = pickReplica(alternatives);
+
         return client.readRemote(retry.nodeId(),
                                  streamName,
                                  partition,
                                  fromOffset,
                                  maxEvents)
-        .map(result -> toRawEvents(result.events(),
-                                   partition));
+                     .map(result -> toRawEvents(result.events(),
+                                                partition));
     }
 
     private static List<OffHeapRingBuffer.RawEvent> toRawEvents(List<RawEventDto> events, int partition) {
-        return events.stream().map(StreamReadRouter::toRawEvent)
-                            .toList();
+        return events.stream()
+                     .map(StreamReadRouter::toRawEvent)
+                     .toList();
     }
 
     private static OffHeapRingBuffer.RawEvent toRawEvent(RawEventDto dto) {

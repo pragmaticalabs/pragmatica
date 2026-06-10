@@ -25,12 +25,14 @@ public record ValidationResult(List<ValidationError> errors) {
     }
 
     public List<ValidationError> tableErrors() {
-        return errors.stream().filter(e -> e instanceof ValidationError.TableNotFound)
-                            .toList();
+        return errors.stream()
+                     .filter(e -> e instanceof ValidationError.TableNotFound)
+                     .toList();
     }
 
     public List<ValidationError> columnErrors() {
-        return errors.stream().filter(e -> e instanceof ValidationError.ColumnNotFound || e instanceof ValidationError.ColumnNotResolved)
-                            .toList();
+        return errors.stream()
+                     .filter(e -> e instanceof ValidationError.ColumnNotFound || e instanceof ValidationError.ColumnNotResolved)
+                     .toList();
     }
 }

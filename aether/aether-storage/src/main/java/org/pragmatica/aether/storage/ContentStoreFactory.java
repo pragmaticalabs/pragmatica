@@ -18,24 +18,30 @@ import org.pragmatica.storage.StorageInstance;
 public final class ContentStoreFactory implements ResourceFactory<ContentStore, ContentStoreConfig> {
     private static final Cause REQUIRES_CONTEXT = Causes.cause("ContentStore requires ProvisioningContext with StorageInstance extension");
 
-    @Override public Class<ContentStore> resourceType() {
+    @Override
+    public Class<ContentStore> resourceType() {
         return ContentStore.class;
     }
 
-    @Override public Class<ContentStoreConfig> configType() {
+    @Override
+    public Class<ContentStoreConfig> configType() {
         return ContentStoreConfig.class;
     }
 
-    @Override public Promise<ContentStore> provision(ContentStoreConfig config) {
+    @Override
+    public Promise<ContentStore> provision(ContentStoreConfig config) {
         return REQUIRES_CONTEXT.promise();
     }
 
-    @Override public Promise<ContentStore> provision(ContentStoreConfig config, ProvisioningContext context) {
-        return context.extension(StorageInstance.class).map(instance -> ContentStore.contentStore(instance, config))
-                                .async();
+    @Override
+    public Promise<ContentStore> provision(ContentStoreConfig config, ProvisioningContext context) {
+        return context.extension(StorageInstance.class)
+                      .map(instance -> ContentStore.contentStore(instance, config))
+                      .async();
     }
 
-    @Override public Promise<Unit> close(ContentStore resource) {
+    @Override
+    public Promise<Unit> close(ContentStore resource) {
         return Promise.unitPromise();
     }
 }

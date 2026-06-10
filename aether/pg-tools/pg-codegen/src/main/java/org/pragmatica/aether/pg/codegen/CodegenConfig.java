@@ -42,6 +42,8 @@ public record CodegenConfig(String targetPackage,
 
     public Path resolveOutputFile(String className) {
         var packagePath = targetPackage.replace('.', '/');
-        return outputDirectory.resolve(packagePath).resolve(className + ".java");
+
+        return outputDirectory.resolve(packagePath)
+                              .resolve(className + ".java");
     }
 }

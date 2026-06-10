@@ -28,6 +28,7 @@ public sealed interface ClusterConfigGenerator {
 
     static String generate(ClusterConfigAnswers answers) {
         var sb = new StringBuilder(2048);
+
         appendHeader(sb, answers);
         appendRoot(sb, answers);
         appendCluster(sb, answers);
@@ -86,7 +87,6 @@ public sealed interface ClusterConfigGenerator {
         appendKv(sb,
                  "type",
                  answers.target().value());
-
         switch (answers.target()) {
             case CLOUD -> answers.cloud().onPresent(cloud -> appendCloudFields(sb, cloud));
             case SSH -> answers.ssh().onPresent(ssh -> appendSshFields(sb, ssh));
@@ -122,7 +122,6 @@ public sealed interface ClusterConfigGenerator {
                      String.valueOf(answers.topology().core()));
         answers.cloud().onPresent(cloud -> appendKv(sb, "instance_type", cloud.instanceType()));
         appendBlank(sb);
-
         if (answers.topology().worker() > 0) {
             appendSection(sb, "source." + SOURCE_NAME + ".worker");
             appendKvBare(sb,
@@ -153,11 +152,16 @@ public sealed interface ClusterConfigGenerator {
     }
 
     private static void appendFirewall(StringBuilder sb, ClusterConfigAnswers answers) {
-        if (skipFirewall(answers)) {return;}
+        if (skipFirewall(answers)) {
+            return;
+        }
 
         var rules = effectiveFirewallRules(answers);
 
-        if (rules.isEmpty()) {return;}
+        if (rules.isEmpty()) {
+            return;
+        }
+
         for (var rule : rules) {
             appendArrayOfTablesHeader(sb, "source." + SOURCE_NAME + ".firewall.allow_ingress");
             appendKvBare(sb,
@@ -173,13 +177,17 @@ public sealed interface ClusterConfigGenerator {
     private static boolean skipFirewall(ClusterConfigAnswers answers) {
         var target = answers.target();
 
-        if (target == SourceType.DOCKER || target == SourceType.FORGE) {return true;}
+        if (target == SourceType.DOCKER || target == SourceType.FORGE) {
+            return true;
+        }
 
         return answers.firewallPreset() == FirewallPreset.OPEN;
     }
 
     private static List<FirewallRule> effectiveFirewallRules(ClusterConfigAnswers answers) {
-        if (answers.firewallPreset() == FirewallPreset.CUSTOM) {return answers.customFirewallRules();}
+        if (answers.firewallPreset() == FirewallPreset.CUSTOM) {
+            return answers.customFirewallRules();
+        }
 
         var adminCidr = answers.adminCidr().or(FirewallPresets.ANY_CIDR);
         var internalCidr = answers.internalCidr().or(FirewallPresets.DEFAULT_INTERNAL_CIDR);
@@ -215,7 +223,6 @@ public sealed interface ClusterConfigGenerator {
         }
 
         appendSection(sb, "operations.tls");
-
         switch (answers.tls()) {
             case TlsAnswers.AutoGenerate _ -> appendKvBare(sb, "auto_generate", "true");
             case TlsAnswers.Manual manual -> appendManualTls(sb, manual);
@@ -251,6 +258,7 @@ public sealed interface ClusterConfigGenerator {
     private static void appendPorts(StringBuilder sb, ClusterConfigAnswers answers) {
         appendSection(sb, "operations.ports");
         var docker = answers.target() == SourceType.DOCKER;
+
         appendKvBare(sb,
                      "cluster",
                      String.valueOf(docker
@@ -307,6 +315,7 @@ public sealed interface ClusterConfigGenerator {
 
             return;
         }
+
         sb.append("# ").append(comment).append('\n');
     }
 
@@ -329,8 +338,9 @@ public sealed interface ClusterConfigGenerator {
     private static String escapeString(String value) {
         var sb = new StringBuilder(value.length() + 4);
 
-        for (int i = 0;i <value.length();i++) {
+        for (int i = 0; i < value.length(); i++) {
             var ch = value.charAt(i);
+
             switch (ch) {
                 case '\\' -> sb.append("\\\\");
                 case '"' -> sb.append("\\\"");
@@ -347,8 +357,11 @@ public sealed interface ClusterConfigGenerator {
     private static String renderStringList(List<String> values) {
         var sb = new StringBuilder("[");
 
-        for (int i = 0;i <values.size();i++) {
-            if (i > 0) {sb.append(", ");}
+        for (int i = 0; i < values.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+
             sb.append('"').append(escapeString(values.get(i))).append('"');
         }
 

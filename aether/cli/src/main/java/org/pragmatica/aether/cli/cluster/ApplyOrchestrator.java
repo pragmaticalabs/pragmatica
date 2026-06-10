@@ -76,10 +76,13 @@ public final class ApplyOrchestrator {
     private static Result<Unit> checkClusterHealth(ClusterBootstrapConfig stored) {
         var addresses = collectKnownAddresses(stored);
 
-        if (addresses.isEmpty()) {return Result.unitResult();}
+        if (addresses.isEmpty()) {
+            return Result.unitResult();
+        }
 
         var address = addresses.getFirst();
         var managementPort = stored.operations().ports().management();
+
         ClusterHttpClient.checkClusterHealth(address, managementPort).onFailure(cause -> warnHealthCheckFailed(cause));
 
         return Result.unitResult();
@@ -108,12 +111,16 @@ public final class ApplyOrchestrator {
                                                           ClusterBootstrapConfig stored,
                                                           ClusterBootstrapConfig desired,
                                                           boolean skipConfirmation) {
-        if (plan.isEmpty()) {return success(plan);}
+        if (plan.isEmpty()) {
+            return success(plan);
+        }
 
         var planText = ClusterBootstrapConfigDiff.formatPlan(plan, stored, desired);
-        printPlan(planText);
 
-        if (skipConfirmation) {return success(plan);}
+        printPlan(planText);
+        if (skipConfirmation) {
+            return success(plan);
+        }
 
         return readConfirmation()
                ? success(plan)
@@ -148,6 +155,7 @@ public final class ApplyOrchestrator {
         var state = ApplyState.initialState(clusterName,
                                             configHash,
                                             Instant.now().toString());
+
         ApplyState.save(state);
 
         return WaveExecutor.execute(plan, stored, desired)
@@ -158,13 +166,16 @@ public final class ApplyOrchestrator {
     @Contract
     private static void markStateFailed(ApplyState state) {
         var failed = state.withWaveStatus(state.currentWaveIndex(), ApplyState.WaveStatus.FAILED);
+
         ApplyState.save(failed);
     }
 
     private static Result<ApplyState> validateResumeState(ApplyState state, ClusterBootstrapConfig desired) {
         var currentHash = ClusterBootstrapOrchestrator.computeConfigHash(desired);
 
-        if (!currentHash.equals(state.configHash())) {return new ApplyAborted("Config has changed since last apply (hash mismatch). Use fresh apply or restore the original config.").result();}
+        if (!currentHash.equals(state.configHash())) {
+            return new ApplyAborted("Config has changed since last apply (hash mismatch). Use fresh apply or restore the original config.").result();
+        }
 
         return success(state);
     }
@@ -198,7 +209,9 @@ public final class ApplyOrchestrator {
 
     @Contract
     private static void destroyCreatedResources(ApplyState state) {
-        for (var resource : state.createdResources()) {System.out.println("  Rollback: destroying " + resource.description());}
+        for (var resource : state.createdResources()) {
+            System.out.println("  Rollback: destroying " + resource.description());
+        }
     }
 
     public record ApplyAborted(String detail) implements Cause {

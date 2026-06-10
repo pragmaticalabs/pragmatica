@@ -29,8 +29,7 @@ public interface StreamPublisher<T> {
     Promise<Unit> publish(T event);
 
     default Promise<Unit> publishBatch(List<T> events) {
-        return Promise.allOf(events.stream().map(this::publish)
-                                          .toList()).mapToUnit();
+        return Promise.allOf(events.stream().map(this::publish).toList()).mapToUnit();
     }
 
     /// Resolver-side fail-safe: refuse to bind an app `StreamPublisher` for a system address.
@@ -42,6 +41,7 @@ public interface StreamPublisher<T> {
         if (address.isSystem()) {
             return StreamPublisherError.General.SYSTEM_ADDRESS_REFUSED.result();
         }
+
         return Result.success(address);
     }
 
@@ -49,20 +49,20 @@ public interface StreamPublisher<T> {
     sealed interface StreamPublisherError extends Cause {
         enum General implements StreamPublisherError {
             SYSTEM_ADDRESS_REFUSED("StreamPublisher cannot be bound to a system-namespace address; use FrameworkStreamPublisher");
-
             private final String message;
-
             General(String message) {
                 this.message = message;
             }
-
-            @Override public String message() {
+            @Override
+            public String message() {
                 return message;
             }
         }
 
-        @SuppressWarnings("unused") record unused() implements StreamPublisherError {
-            @Override public String message() {
+        @SuppressWarnings("unused")
+        record unused() implements StreamPublisherError {
+            @Override
+            public String message() {
                 return "";
             }
         }

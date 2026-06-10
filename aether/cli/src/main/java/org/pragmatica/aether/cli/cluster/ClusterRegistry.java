@@ -89,6 +89,7 @@ public record ClusterRegistry(Path registryPath, Option<String> currentContext, 
     public ClusterRegistry add(String name, String endpoint, Option<String> apiKeyEnv) {
         var filtered = removeByName(name);
         var updated = new ArrayList<>(filtered);
+
         updated.add(new ClusterEntry(name, endpoint, apiKeyEnv));
         var context = currentContext.or(name);
 
@@ -150,6 +151,7 @@ public record ClusterRegistry(Path registryPath, Option<String> currentContext, 
                 var name = section.substring(CLUSTERS_PREFIX.length());
                 var endpoint = doc.getString(section, "endpoint").or("");
                 var apiKeyEnv = doc.getString(section, "api_key_env");
+
                 result.add(new ClusterEntry(name, endpoint, apiKeyEnv));
             }
         }
@@ -161,12 +163,14 @@ public record ClusterRegistry(Path registryPath, Option<String> currentContext, 
     @Contract
     private void writeToFile() throws IOException {
         var content = buildFileContent();
+
         Files.createDirectories(registryPath.getParent());
         Files.writeString(registryPath, content);
     }
 
     private String buildFileContent() {
         var sb = new StringBuilder();
+
         appendCurrentSection(sb);
         appendClusterSections(sb);
 

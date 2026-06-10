@@ -27,12 +27,20 @@ import org.slf4j.LoggerFactory;
 
 
 public interface ScheduledTaskRegistry {
-    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onScheduledTaskPut(ValuePut<ScheduledTaskKey, ScheduledTaskValue> valuePut);
-    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onScheduledTaskRemove(ValueRemove<ScheduledTaskKey, ScheduledTaskValue> valueRemove);
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    void onScheduledTaskPut(ValuePut<ScheduledTaskKey, ScheduledTaskValue> valuePut);
+
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    void onScheduledTaskRemove(ValueRemove<ScheduledTaskKey, ScheduledTaskValue> valueRemove);
+
     List<ScheduledTask> allTasks();
     List<ScheduledTask> singleModeTasks();
     List<ScheduledTask> localTasks(NodeId self);
-    @SuppressWarnings("JBCT-RET-01") void setChangeListener(BiConsumer<ScheduledTaskKey, Option<ScheduledTask>> listener);
+
+    @SuppressWarnings("JBCT-RET-01")
+    void setChangeListener(BiConsumer<ScheduledTaskKey, Option<ScheduledTask>> listener);
 
     record ScheduledTask(String configSection,
                          Artifact artifact,
@@ -56,7 +64,9 @@ public interface ScheduledTaskRegistry {
                                      AtomicReference<BiConsumer<ScheduledTaskKey, Option<ScheduledTask>>> changeListener) implements ScheduledTaskRegistry {
             private static final Logger log = LoggerFactory.getLogger(ScheduledTaskRegistry.class);
 
-            @Override@SuppressWarnings("JBCT-RET-01") public void onScheduledTaskPut(ValuePut<ScheduledTaskKey, ScheduledTaskValue> valuePut) {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onScheduledTaskPut(ValuePut<ScheduledTaskKey, ScheduledTaskValue> valuePut) {
                 var key = valuePut.cause().key();
                 var value = valuePut.cause().value();
                 var task = new ScheduledTask(key.configSection(),
@@ -68,12 +78,16 @@ public interface ScheduledTaskRegistry {
                                              value.executionMode(),
                                              value.paused());
                 var previous = tasks.put(key, task);
+
                 log.debug("Registered scheduled task: {}", task);
                 notifyIfChanged(key, previous, task);
             }
 
-            @Override@SuppressWarnings("JBCT-RET-01") public void onScheduledTaskRemove(ValueRemove<ScheduledTaskKey, ScheduledTaskValue> valueRemove) {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onScheduledTaskRemove(ValueRemove<ScheduledTaskKey, ScheduledTaskValue> valueRemove) {
                 var key = valueRemove.cause().key();
+
                 Option.option(tasks.remove(key)).onPresent(removed -> handleTaskRemoved(key, removed));
             }
 
@@ -82,28 +96,38 @@ public interface ScheduledTaskRegistry {
                 notifyListener(key, Option.none());
             }
 
-            @Override public List<ScheduledTask> allTasks() {
+            @Override
+            public List<ScheduledTask> allTasks() {
                 return List.copyOf(tasks.values());
             }
 
-            @Override public List<ScheduledTask> singleModeTasks() {
-                return tasks.values().stream()
-                                   .filter(task -> task.executionMode() == ExecutionMode.SINGLE)
-                                   .toList();
+            @Override
+            public List<ScheduledTask> singleModeTasks() {
+                return tasks.values()
+                            .stream()
+                            .filter(task -> task.executionMode() == ExecutionMode.SINGLE)
+                            .toList();
             }
 
-            @Override public List<ScheduledTask> localTasks(NodeId self) {
-                return tasks.values().stream()
-                                   .filter(task -> task.registeredBy().equals(self))
-                                   .toList();
+            @Override
+            public List<ScheduledTask> localTasks(NodeId self) {
+                return tasks.values()
+                            .stream()
+                            .filter(task -> task.registeredBy()
+                                                .equals(self))
+                            .toList();
             }
 
-            @Override@SuppressWarnings("JBCT-RET-01") public void setChangeListener(BiConsumer<ScheduledTaskKey, Option<ScheduledTask>> listener) {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void setChangeListener(BiConsumer<ScheduledTaskKey, Option<ScheduledTask>> listener) {
                 changeListener.set(listener);
             }
 
             private void notifyIfChanged(ScheduledTaskKey key, ScheduledTask previous, ScheduledTask current) {
-                if (previous == null || scheduleChanged(previous, current)) {notifyListener(key, Option.some(current));}
+                if (previous == null || scheduleChanged(previous, current)) {
+                    notifyListener(key, Option.some(current));
+                }
             }
 
             private boolean scheduleChanged(ScheduledTask previous, ScheduledTask current) {
@@ -113,9 +137,13 @@ public interface ScheduledTaskRegistry {
 
             private void notifyListener(ScheduledTaskKey key, Option<ScheduledTask> task) {
                 var listener = changeListener.get();
-                if (listener != null) {listener.accept(key, task);}
+
+                if (listener != null) {
+                    listener.accept(key, task);
+                }
             }
         }
+
         return new scheduledTaskRegistry(new ConcurrentHashMap<>(), new AtomicReference<>());
     }
 }

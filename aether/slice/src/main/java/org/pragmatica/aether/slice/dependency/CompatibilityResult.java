@@ -7,10 +7,11 @@ package org.pragmatica.aether.slice.dependency;
 import org.pragmatica.aether.artifact.Version;
 
 
-@SuppressWarnings("JBCT-UTIL-02") public sealed interface CompatibilityResult {
-    record Compatible(Version loadedVersion) implements CompatibilityResult{}
+@SuppressWarnings("JBCT-UTIL-02")
+public sealed interface CompatibilityResult {
+    record Compatible(Version loadedVersion) implements CompatibilityResult {}
 
-    record Conflict(Version loadedVersion, VersionPattern required) implements CompatibilityResult{}
+    record Conflict(Version loadedVersion, VersionPattern required) implements CompatibilityResult {}
 
     default boolean isCompatible() {
         return this instanceof Compatible;
@@ -21,9 +22,12 @@ import org.pragmatica.aether.artifact.Version;
     }
 
     static CompatibilityResult check(Version loadedVersion, VersionPattern required) {
-        if (required.matches(loadedVersion)) {return new Compatible(loadedVersion);}
+        if (required.matches(loadedVersion)) {
+            return new Compatible(loadedVersion);
+        }
+
         return new Conflict(loadedVersion, required);
     }
 
-    record unused() implements CompatibilityResult{}
+    record unused() implements CompatibilityResult {}
 }

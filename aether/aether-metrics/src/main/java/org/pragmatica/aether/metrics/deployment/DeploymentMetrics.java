@@ -28,7 +28,7 @@ public record DeploymentMetrics(Artifact artifact,
         FAILED_LOADING,
         FAILED_ACTIVATING;
         public static DeploymentStatus deploymentStatus(String value) {
-            return switch (value){
+            return switch (value) {
                 case "IN_PROGRESS" -> IN_PROGRESS;
                 case "SUCCESS" -> SUCCESS;
                 case "FAILED_LOADING" -> FAILED_LOADING;
@@ -40,22 +40,35 @@ public record DeploymentMetrics(Artifact artifact,
 
     public long fullDeploymentTime() {
         return activeTime > 0
-              ? activeTime - startTime
-              : - 1;
+               ? activeTime - startTime
+               : -1;
     }
 
     public long netDeploymentTime() {
         return activeTime > 0 && loadedTime > 0
-              ? activeTime - loadedTime
-              : - 1;
+               ? activeTime - loadedTime
+               : -1;
     }
 
     public Map<String, Long> transitionLatencies() {
         var latencies = new LinkedHashMap<String, Long>();
-        if (loadTime > 0 && startTime > 0) {latencies.put("START_TO_LOAD", loadTime - startTime);}
-        if (loadedTime > 0 && loadTime > 0) {latencies.put("LOAD_TO_LOADED", loadedTime - loadTime);}
-        if (activateTime > 0 && loadedTime > 0) {latencies.put("LOADED_TO_ACTIVATE", activateTime - loadedTime);}
-        if (activeTime > 0 && activateTime > 0) {latencies.put("ACTIVATE_TO_ACTIVE", activeTime - activateTime);}
+
+        if (loadTime > 0 && startTime > 0) {
+            latencies.put("START_TO_LOAD", loadTime - startTime);
+        }
+
+        if (loadedTime > 0 && loadTime > 0) {
+            latencies.put("LOAD_TO_LOADED", loadedTime - loadTime);
+        }
+
+        if (activateTime > 0 && loadedTime > 0) {
+            latencies.put("LOADED_TO_ACTIVATE", activateTime - loadedTime);
+        }
+
+        if (activeTime > 0 && activateTime > 0) {
+            latencies.put("ACTIVATE_TO_ACTIVE", activeTime - activateTime);
+        }
+
         return latencies;
     }
 
@@ -71,20 +84,20 @@ public record DeploymentMetrics(Artifact artifact,
     }
 
     public static Option<DeploymentMetrics> fromEntry(DeploymentMetricsEntry entry) {
-        return Artifact.artifact(entry.artifact()).flatMap(artifact -> buildFromEntry(artifact, entry))
-                                .option();
+        return Artifact.artifact(entry.artifact())
+                       .flatMap(artifact -> buildFromEntry(artifact, entry))
+                       .option();
     }
 
     private static Result<DeploymentMetrics> buildFromEntry(Artifact artifact, DeploymentMetricsEntry entry) {
-        return NodeId.nodeId(entry.nodeId())
-                            .map(nodeId -> new DeploymentMetrics(artifact,
-                                                                 nodeId,
-                                                                 entry.startTime(),
-                                                                 entry.loadTime(),
-                                                                 entry.loadedTime(),
-                                                                 entry.activateTime(),
-                                                                 entry.activeTime(),
-                                                                 DeploymentStatus.deploymentStatus(entry.status())));
+        return NodeId.nodeId(entry.nodeId()).map(nodeId -> new DeploymentMetrics(artifact,
+                                                                                 nodeId,
+                                                                                 entry.startTime(),
+                                                                                 entry.loadTime(),
+                                                                                 entry.loadedTime(),
+                                                                                 entry.activateTime(),
+                                                                                 entry.activeTime(),
+                                                                                 DeploymentStatus.deploymentStatus(entry.status())));
     }
 
     public static DeploymentMetrics deploymentMetrics(Artifact artifact, NodeId nodeId, long timestamp) {

@@ -48,17 +48,20 @@ import org.slf4j.LoggerFactory;
 
 public interface ClusterSyncCollector {
     String CPU_USAGE = "cpu.usage";
-
     String HEAP_USED = "heap.used";
-
     String HEAP_MAX = "heap.max";
-
     String HEAP_USAGE = "heap.usage";
-
     Map<String, Double> collectLocal();
-    @Contract void recordCall(MethodName method, long durationMs);
-    @Contract void recordCustom(String name, double value);
-    @Contract void setInvocationMetricsProvider(InvocationMetricsCollector provider);
+
+    @Contract
+    void recordCall(MethodName method, long durationMs);
+
+    @Contract
+    void recordCustom(String name, double value);
+
+    @Contract
+    void setInvocationMetricsProvider(InvocationMetricsCollector provider);
+
     Map<NodeId, Map<String, Double>> allMetrics();
     Map<String, Double> metricsFor(NodeId nodeId);
     Map<NodeId, List<MetricsSnapshot>> historicalMetrics();
@@ -106,11 +109,10 @@ public interface ClusterSyncCollector {
     /// falls back to the cached leader view on followers and [hasAuthoritativeReadiness] reflects
     /// leader-or-fresh-cache. Default no-op so the many test doubles that implement this interface
     /// need no override. Production wires it in `AetherNode`.
-    @Contract default void setReadinessViewContext(LeaderManager leaderManager,
-                                                   LongSupplier nowNanos,
-                                                   TimeSpan pingInterval) {}
+    @Contract
+    default void setReadinessViewContext(LeaderManager leaderManager, LongSupplier nowNanos, TimeSpan pingInterval) {}
 
-    record MetricsSnapshot(long timestamp, Map<String, Double> metrics){}
+    record MetricsSnapshot(long timestamp, Map<String, Double> metrics) {}
 
     /// Test-only synthetic-history injection. Appends `snapshot` to the
     /// historical ring buffer for `nodeId` without going through the normal
@@ -120,29 +122,50 @@ public interface ClusterSyncCollector {
     /// without waiting hours for the sliding window to populate organically.
     /// Default no-op so the dozens of test stubs that implement this
     /// interface don't all need an override.
-    @Contract default void injectHistoricalSnapshot(NodeId nodeId, MetricsSnapshot snapshot) {}
+    @Contract
+    default void injectHistoricalSnapshot(NodeId nodeId, MetricsSnapshot snapshot) {}
 
-    @Contract void removeNode(NodeId nodeId);
-    @MessageReceiver@Contract void onMembershipDecision(MembershipDecision decision);
-    @MessageReceiver@Contract void onClusterSyncPing(ClusterSyncPing ping);
-    @MessageReceiver@Contract void onClusterSyncPong(ClusterSyncPong pong);
+    @Contract
+    void removeNode(NodeId nodeId);
+
+    @MessageReceiver
+    @Contract
+    void onMembershipDecision(MembershipDecision decision);
+
+    @MessageReceiver
+    @Contract
+    void onClusterSyncPing(ClusterSyncPing ping);
+
+    @MessageReceiver
+    @Contract
+    void onClusterSyncPong(ClusterSyncPong pong);
+
     long observedRabiaTerm();
     Epoch observedEpoch();
     List<CommunityReport> collectCommunityReports();
-    @Contract void setCommunityReportSupplier(Supplier<List<CommunityReport>> supplier);
-    @Contract void addPongListener(Consumer<ClusterSyncPong> listener);
+
+    @Contract
+    void setCommunityReportSupplier(Supplier<List<CommunityReport>> supplier);
+
+    @Contract
+    void addPongListener(Consumer<ClusterSyncPong> listener);
 
     long DEFAULT_slidingWindowMs = 2 * 60 * 60 * 1000L;
 
-    @Contract void setPongSignalFan(ClusterSyncPongSignalFan fan);
-    @Contract void setPeerObservationBuffer(PeerObservationBuffer buffer);
+    @Contract
+    void setPongSignalFan(ClusterSyncPongSignalFan fan);
+
+    @Contract
+    void setPeerObservationBuffer(PeerObservationBuffer buffer);
+
     /// RC1 (S01 fix) — wire the SWIM-backed predicate that answers "is this peer
     /// observed as ALIVE in our local SWIM membership view?". Used to verify owner-
     /// broadcast eviction hints (`ClusterSyncPing.evictionHints`) — when SWIM says
     /// ALIVE, the follower REFUSES the owner's hint, preserving the independent-
     /// observers property. Default no-op (test doubles inherit; production wires
     /// in `AetherNode` to consult `CoreSwimHealthDetector.healthOf`).
-    @Contract default void setPeerLocallyAlive(java.util.function.Predicate<NodeId> predicate) {}
+    @Contract
+    default void setPeerLocallyAlive(java.util.function.Predicate<NodeId> predicate) {}
 
     /// RC1 (S01 fix, owner-side symmetry) — query the SWIM-backed predicate wired via
     /// [setPeerLocallyAlive]. Returns whether `peer` is observed ALIVE (SWIM HEALTHY) in
@@ -151,7 +174,9 @@ public interface ClusterSyncCollector {
     /// peer on ping-timeout, so the owner refuses to evict a SWIM-HEALTHY peer — the same
     /// guard `processEvictionHints` already applies follower-side. Reuses the single
     /// predicate wired in `AetherNode` (no second wiring path).
-    default boolean peerLocallyAlive(NodeId peer) {return true;}
+    default boolean peerLocallyAlive(NodeId peer) {
+        return true;
+    }
 
     /// Emit one `PeerConnectivityObservation` per topology peer (excluding `self`)
     /// into the wired `PeerObservationBuffer`. Peers in `connected` get state
@@ -160,19 +185,22 @@ public interface ClusterSyncCollector {
     /// the leader-side aggregator continuously fed (eliminates the
     /// transition-only buffer-decay race). See
     /// `reachability-aggregator-spec.md` "Periodic Observation Mode".
-    @Contract void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs);
+    @Contract
+    void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs);
 
     /// Membership v2 (§7.5.3) — wire the node-reported readiness state supplier so
     /// `buildPong()` stamps `current().name()` (SYNCING|READY|DRAINING) onto
     /// `ClusterSyncPong.lifecycleState`. Default no-op leaves the field at the
     /// `NodeReportedState.SYNCING` default (test doubles inherit; production wires in `AetherNode`).
-    @Contract default void setNodeReportedStateSupplier(Supplier<NodeReportedState> supplier) {}
+    @Contract
+    default void setNodeReportedStateSupplier(Supplier<NodeReportedState> supplier) {}
 
     /// Membership v2 (§7.5.3) — wire the per-incarnation discriminator stamped onto
     /// `ClusterSyncPong.incarnation`. Default no-op leaves the field at `0L`
     /// (pre-migration). `AetherNode` wires this to the SWIM self-incarnation — the single
     /// `(NodeId, incarnation)` authority shared with SWIM membership.
-    @Contract default void setIncarnationSupplier(java.util.function.LongSupplier supplier) {}
+    @Contract
+    default void setIncarnationSupplier(java.util.function.LongSupplier supplier) {}
 
     /// Membership v2 (B5a) — wire the handler invoked whenever an inbound `ClusterSyncPing`
     /// carries THIS node in its global `drainNodes` set. Invoked AFTER the existing
@@ -180,7 +208,8 @@ public interface ClusterSyncCollector {
     /// `DrainProcedure.initiate(DrainReason.COMMANDED)` + `holder.onDrainStarted()`. The handler
     /// MUST be idempotent — it is invoked on every drain-targeted ping (DrainProcedure is CAS-guarded).
     /// Default no-op leaves pre-B5a behavior unchanged (test doubles inherit).
-    @Contract default void setDrainCommandHandler(Runnable handler) {}
+    @Contract
+    default void setDrainCommandHandler(Runnable handler) {}
 
     static ClusterSyncCollector clusterSyncCollector(NodeId self, ClusterNetwork network) {
         return new ClusterSyncCollectorImpl(self, network, DEFAULT_slidingWindowMs);
@@ -200,19 +229,14 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     private final ClusterNetwork network;
     private final OperatingSystemMXBean osMxBean;
     private final MemoryMXBean memoryMxBean;
-
     private final ConcurrentHashMap<MethodName, CallStats> callStats = new ConcurrentHashMap<>();
-
     private final ConcurrentHashMap<String, Double> customMetrics = new ConcurrentHashMap<>();
-
     private volatile InvocationMetricsCollector invocationMetricsProvider;
-
     private final ConcurrentHashMap<NodeId, Map<String, Double>> remoteMetrics = new ConcurrentHashMap<>();
 
     private final ConcurrentHashMap<NodeId, RingBuffer<MetricsSnapshot>> historicalMetricsMap = new ConcurrentHashMap<>();
 
     private final AtomicLong observedRabiaTerm = new AtomicLong();
-
     private final AtomicReference<Epoch> observedEpoch = new AtomicReference<>(Epoch.ZERO);
 
     private final AtomicReference<Supplier<List<CommunityReport>>> communityReportSupplier = new AtomicReference<>(List::of);
@@ -235,21 +259,18 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// stamps `current().name()` onto the pong's `lifecycleState` field, repurposing it
     /// to carry SYNCING|READY|DRAINING. Default `Option.none()` falls back to
     /// `NodeReportedState.SYNCING` until `setNodeReportedStateSupplier(...)` is wired.
-    private final AtomicReference<Option<Supplier<NodeReportedState>>> nodeReportedStateSupplier =
-        new AtomicReference<>(Option.none());
+    private final AtomicReference<Option<Supplier<NodeReportedState>>> nodeReportedStateSupplier = new AtomicReference<>(Option.none());
 
     /// Membership v2 (§7.5.3) — per-incarnation discriminator supplier. `buildPong()`
     /// stamps the value onto `ClusterSyncPong.incarnation`. Default `0L` (pre-migration)
     /// until `setIncarnationSupplier(...)` wires the SWIM self-incarnation (the single
     /// `(NodeId, incarnation)` authority) in `AetherNode`.
-    private final AtomicReference<java.util.function.LongSupplier> incarnationSupplier =
-        new AtomicReference<>(() -> 0L);
+    private final AtomicReference<java.util.function.LongSupplier> incarnationSupplier = new AtomicReference<>(() -> 0L);
 
     /// Membership v2 (B5a) — handler invoked when an inbound DRAIN ping is received. Default
     /// no-op until `setDrainCommandHandler(...)` wires the local `DrainProcedure`. Invoked on
     /// every DRAIN ping; the handler must be idempotent (DrainProcedure is CAS-guarded).
-    private final AtomicReference<Runnable> drainCommandHandler =
-        new AtomicReference<>(() -> {});
+    private final AtomicReference<Runnable> drainCommandHandler = new AtomicReference<>(() -> {});
 
     /// Readiness-broadcast (failover-readability) — the current leader signal, used both to decide
     /// whether `reportedStates()` serves the authoritative fan view (leader) or the follower cache
@@ -283,49 +304,71 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         this.memoryMxBean = ManagementFactory.getMemoryMXBean();
     }
 
-    @Override public Map<String, Double> collectLocal() {
+    @Override
+    public Map<String, Double> collectLocal() {
         var metrics = new HashMap<String, Double>();
+
         collectCpuMetrics(metrics);
         collectHeapMetrics(metrics);
         collectCallStatsMetrics(metrics);
         metrics.putAll(customMetrics);
         collectInvocationMetrics(metrics);
+
         return metrics;
     }
 
-    @Override @Contract public void recordCall(MethodName method, long durationMs) {
+    @Override
+    @Contract
+    public void recordCall(MethodName method, long durationMs) {
         callStats.computeIfAbsent(method, _ -> CallStats.callStats()).record(durationMs);
     }
 
-    @Override @Contract public void recordCustom(String name, double value) {
+    @Override
+    @Contract
+    public void recordCustom(String name, double value) {
         customMetrics.put(name, value);
     }
 
-    @Override @Contract public void setInvocationMetricsProvider(InvocationMetricsCollector provider) {
+    @Override
+    @Contract
+    public void setInvocationMetricsProvider(InvocationMetricsCollector provider) {
         this.invocationMetricsProvider = provider;
     }
 
-    @Override public Map<NodeId, Map<String, Double>> allMetrics() {
+    @Override
+    public Map<NodeId, Map<String, Double>> allMetrics() {
         var local = collectLocal();
+
         addToHistory(self, local);
         var result = new ConcurrentHashMap<>(remoteMetrics);
+
         result.put(self, local);
+
         return result;
     }
 
-    @Override public Map<String, Double> metricsFor(NodeId nodeId) {
-        if (nodeId.equals(self)) {return collectLocal();}
+    @Override
+    public Map<String, Double> metricsFor(NodeId nodeId) {
+        if (nodeId.equals(self)) {
+            return collectLocal();
+        }
+
         return remoteMetrics.getOrDefault(nodeId, Map.of());
     }
 
-    @Override public Map<NodeId, List<MetricsSnapshot>> historicalMetrics() {
+    @Override
+    public Map<NodeId, List<MetricsSnapshot>> historicalMetrics() {
         var cutoff = System.currentTimeMillis() - slidingWindowMs;
         var result = new ConcurrentHashMap<NodeId, List<MetricsSnapshot>>();
+
         historicalMetricsMap.forEach((nodeId, ringBuffer) -> addFilteredHistory(result, nodeId, ringBuffer, cutoff));
+
         return result;
     }
 
-    @Override @Contract public void removeNode(NodeId nodeId) {
+    @Override
+    @Contract
+    public void removeNode(NodeId nodeId) {
         remoteMetrics.remove(nodeId);
         historicalMetricsMap.remove(nodeId);
     }
@@ -334,18 +377,23 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     @Contract
     public void injectHistoricalSnapshot(NodeId nodeId, MetricsSnapshot snapshot) {
         var ringBuffer = historicalMetricsMap.computeIfAbsent(nodeId, _ -> RingBuffer.ringBuffer(ringBufferCapacity));
+
         ringBuffer.add(snapshot);
     }
 
-    @Override @Contract public void onMembershipDecision(MembershipDecision decision) {
-        switch (decision){
+    @Override
+    @Contract
+    public void onMembershipDecision(MembershipDecision decision) {
+        switch (decision) {
             case MembershipDecision.NodeRemoved(var removedNode, _, _, _) -> removeNode(removedNode);
             case MembershipDecision.NodeDecommissioned(var decommissioned, _, _, _) -> removeNode(decommissioned);
             default -> {}
         }
     }
 
-    @Override @Contract public void onClusterSyncPing(ClusterSyncPing ping) {
+    @Override
+    @Contract
+    public void onClusterSyncPing(ClusterSyncPing ping) {
         log.debug("ClusterSync: received PING from {} (rabiaTerm={}, epoch={}:{})",
                   ping.sender(),
                   ping.rabiaTerm(),
@@ -356,10 +404,13 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
                      ping.sender(),
                      ping.rabiaTerm(),
                      observedRabiaTerm.get());
+
             return;
         }
+
         ping.allMetrics().forEach(this::storeRemoteMetrics);
         var incomingEpoch = Epoch.epoch(ping.epochTerm(), ping.epochCounter());
+
         advanceObservedEpoch(incomingEpoch);
         // RC1 (S01 fix): owner's eviction hints are SUGGESTIONS — verify against local
         // liveness evidence before acting. If we've received traffic from the peer
@@ -380,6 +431,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         // replacements → over-provisioning). Stored after the global fence accepted the ping.
         retainDispatchedNodes(ping);
         var pong = buildPong();
+
         log.debug("ClusterSync: sending PONG to {} (epoch={}:{})",
                   ping.sender(),
                   pong.observedEpochTerm(),
@@ -397,7 +449,10 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// `drainNodes` set targets THIS node. The leader broadcasts one uniform ping carrying the
     /// global drain set; each receiver self-checks `drainNodes.contains(self)`.
     private void handleDrainCommand(ClusterSyncPing ping) {
-        if (!ping.drainNodes().contains(self)) {return;}
+        if (!ping.drainNodes().contains(self)) {
+            return;
+        }
+
         log.info("ClusterSync: drainNodes from {} includes self — invoking local drain handler", ping.sender());
         drainCommandHandler.get().run();
     }
@@ -410,22 +465,31 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// — strong enough evidence that the peer is genuinely reachable.
     private void processEvictionHints(ClusterSyncPing ping) {
         var hints = ping.evictionHints();
-        if (hints.isEmpty()) {return;}
+
+        if (hints.isEmpty()) {
+            return;
+        }
+
         var aliveCheck = peerLocallyAlive.get();
+
         for (var peer : hints) {
-            if (peer.equals(self)) {continue;}
-            if (aliveCheck.test(peer)) {
-                log.debug("ClusterSync: ignored eviction hint for {} from {} — SWIM says ALIVE",
-                          peer, ping.sender());
+            if (peer.equals(self)) {
                 continue;
             }
-            log.info("ClusterSync: acting on eviction hint for {} from {} (SWIM not ALIVE)",
-                     peer, ping.sender());
+
+            if (aliveCheck.test(peer)) {
+                log.debug("ClusterSync: ignored eviction hint for {} from {} — SWIM says ALIVE", peer, ping.sender());
+                continue;
+            }
+
+            log.info("ClusterSync: acting on eviction hint for {} from {} (SWIM not ALIVE)", peer, ping.sender());
             network.disconnect(new NetworkServiceMessage.DisconnectNode(peer));
         }
     }
 
-    @Override @Contract public void onClusterSyncPong(ClusterSyncPong pong) {
+    @Override
+    @Contract
+    public void onClusterSyncPong(ClusterSyncPong pong) {
         log.debug("ClusterSync: received PONG from {} (epoch={}:{})",
                   pong.sender(),
                   pong.observedEpochTerm(),
@@ -434,31 +498,42 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
             remoteMetrics.put(pong.sender(), pong.metrics());
             addToHistory(pong.sender(), pong.metrics());
         }
+
         pongSignalFan.get().fan(pong);
         pongListeners.forEach(listener -> listener.accept(pong));
     }
 
-    @Override @Contract public void setPongSignalFan(ClusterSyncPongSignalFan fan) {
+    @Override
+    @Contract
+    public void setPongSignalFan(ClusterSyncPongSignalFan fan) {
         pongSignalFan.set(fan);
     }
 
-    @Override public Map<NodeId, NodeReportedState> reportedStates() {
+    @Override
+    public Map<NodeId, NodeReportedState> reportedStates() {
         return isLeader()
-               ? pongSignalFan.get().readinessSnapshot()
-               : readinessCache.get().map(FollowerReadinessCache::freshView).or(Map.of());
+               ? pongSignalFan.get()
+                              .readinessSnapshot()
+               : readinessCache.get()
+                               .map(FollowerReadinessCache::freshView)
+                               .or(Map.of());
     }
 
-    @Override public Map<NodeId, String> authoritativeReadinessView() {
+    @Override
+    public Map<NodeId, String> authoritativeReadinessView() {
         return stringifyView(pongSignalFan.get().readinessSnapshot());
     }
 
-    @Override public boolean hasAuthoritativeReadiness() {
-        return isLeader() || readinessCache.get().map(FollowerReadinessCache::isFresh).or(false);
+    @Override
+    public boolean hasAuthoritativeReadiness() {
+        return isLeader() || readinessCache.get()
+                                           .map(FollowerReadinessCache::isFresh)
+                                           .or(false);
     }
 
-    @Override @Contract public void setReadinessViewContext(LeaderManager leaderManager,
-                                                            LongSupplier nowNanos,
-                                                            TimeSpan pingInterval) {
+    @Override
+    @Contract
+    public void setReadinessViewContext(LeaderManager leaderManager, LongSupplier nowNanos, TimeSpan pingInterval) {
         this.leaderManager.set(Option.option(leaderManager));
         this.readinessCache.set(buildReadinessCache(leaderManager, nowNanos, pingInterval));
     }
@@ -466,7 +541,9 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     private static Option<FollowerReadinessCache> buildReadinessCache(LeaderManager leaderManager,
                                                                       LongSupplier nowNanos,
                                                                       TimeSpan pingInterval) {
-        return Option.all(Option.option(leaderManager), Option.option(nowNanos), Option.option(pingInterval))
+        return Option.all(Option.option(leaderManager),
+                          Option.option(nowNanos),
+                          Option.option(pingInterval))
                      .map(ClusterSyncCollectorImpl::newReadinessCache);
     }
 
@@ -479,7 +556,9 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     }
 
     private boolean isLeader() {
-        return leaderManager.get().map(LeaderManager::isLeader).or(false);
+        return leaderManager.get()
+                            .map(LeaderManager::isLeader)
+                            .or(false);
     }
 
     private void cacheReadinessView(ClusterSyncPing ping) {
@@ -493,107 +572,139 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// fence). No TTL: the retained set survives a leaderless gap so a freshly-elected leader can seed
     /// from it. Lock-free CAS so concurrent ping handling never clobbers a higher-term retention.
     private void retainDispatchedNodes(ClusterSyncPing ping) {
-        retainedDispatched.updateAndGet(current ->
-            current.filter(retained -> retained.term() > ping.rabiaTerm())
-                   .orElse(Option.some(new RetainedDispatched(ping.rabiaTerm(), Set.copyOf(ping.dispatchedNodes())))));
+        retainedDispatched.updateAndGet(current -> current.filter(retained -> retained.term() > ping.rabiaTerm())
+                                                          .orElse(Option.some(new RetainedDispatched(ping.rabiaTerm(),
+                                                                                                     Set.copyOf(ping.dispatchedNodes())))));
     }
 
-    @Override public Set<NodeId> retainedDispatchedNodes() {
-        return retainedDispatched.get().map(RetainedDispatched::nodes).or(Set.of());
+    @Override
+    public Set<NodeId> retainedDispatchedNodes() {
+        return retainedDispatched.get()
+                                 .map(RetainedDispatched::nodes)
+                                 .or(Set.of());
     }
 
     private static Map<NodeId, String> stringifyView(Map<NodeId, NodeReportedState> view) {
         return view.entrySet()
                    .stream()
                    .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
-                                                         e -> e.getValue().name()));
+                                                         e -> e.getValue()
+                                                               .name()));
     }
 
-    @Override @Contract public void setPeerObservationBuffer(PeerObservationBuffer buffer) {
+    @Override
+    @Contract
+    public void setPeerObservationBuffer(PeerObservationBuffer buffer) {
         peerObservationBuffer.set(buffer == null
                                   ? PeerObservationBuffer.NOOP
                                   : buffer);
     }
 
-    @Override @Contract public void setPeerLocallyAlive(java.util.function.Predicate<NodeId> predicate) {
+    @Override
+    @Contract
+    public void setPeerLocallyAlive(java.util.function.Predicate<NodeId> predicate) {
         peerLocallyAlive.set(predicate == null
                              ? _ -> true
                              : predicate);
     }
 
-    @Override public boolean peerLocallyAlive(NodeId peer) {
-        return peerLocallyAlive.get().test(peer);
+    @Override
+    public boolean peerLocallyAlive(NodeId peer) {
+        return peerLocallyAlive.get()
+                               .test(peer);
     }
 
-    @Override @Contract public void setNodeReportedStateSupplier(Supplier<NodeReportedState> supplier) {
+    @Override
+    @Contract
+    public void setNodeReportedStateSupplier(Supplier<NodeReportedState> supplier) {
         nodeReportedStateSupplier.set(Option.option(supplier));
     }
 
-    @Override @Contract public void setIncarnationSupplier(java.util.function.LongSupplier supplier) {
+    @Override
+    @Contract
+    public void setIncarnationSupplier(java.util.function.LongSupplier supplier) {
         incarnationSupplier.set(supplier == null
                                 ? () -> 0L
                                 : supplier);
     }
 
-    @Override @Contract public void setDrainCommandHandler(Runnable handler) {
+    @Override
+    @Contract
+    public void setDrainCommandHandler(Runnable handler) {
         drainCommandHandler.set(handler == null
                                 ? () -> {}
                                 : handler);
     }
 
-    @Override @Contract public void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs) {
+    @Override
+    @Contract
+    public void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs) {
         var buffer = peerObservationBuffer.get();
         var epoch = observedEpoch.get();
         var epochTerm = epoch.rabiaTerm();
         var epochCounter = epoch.localCounter();
-        topology.stream()
-                .filter(peer -> !peer.equals(self))
-                .map(peer -> new PeerConnectivityObservation(peer,
-                                                             connected.contains(peer)
-                                                                 ? ConnectivityState.CONNECTED
-                                                                 : ConnectivityState.DISCONNECTED,
-                                                             epochTerm,
-                                                             epochCounter,
-                                                             nowMs))
-                .forEach(buffer::pushConnectivity);
+
+        topology.stream().filter(peer -> !peer.equals(self)).map(peer -> new PeerConnectivityObservation(peer,
+                                                                                                         connected.contains(peer)
+                                                                                                         ? ConnectivityState.CONNECTED
+                                                                                                         : ConnectivityState.DISCONNECTED,
+                                                                                                         epochTerm,
+                                                                                                         epochCounter,
+                                                                                                         nowMs)).forEach(buffer::pushConnectivity);
     }
 
-    @Override public long observedRabiaTerm() {
+    @Override
+    public long observedRabiaTerm() {
         return observedRabiaTerm.get();
     }
 
-    @Override public Epoch observedEpoch() {
+    @Override
+    public Epoch observedEpoch() {
         return observedEpoch.get();
     }
 
-    @Override public List<CommunityReport> collectCommunityReports() {
-        return communityReportSupplier.get().get();
+    @Override
+    public List<CommunityReport> collectCommunityReports() {
+        return communityReportSupplier.get()
+                                      .get();
     }
 
-    @Override @Contract public void setCommunityReportSupplier(Supplier<List<CommunityReport>> supplier) {
+    @Override
+    @Contract
+    public void setCommunityReportSupplier(Supplier<List<CommunityReport>> supplier) {
         communityReportSupplier.set(supplier);
     }
 
-    @Override @Contract public void addPongListener(Consumer<ClusterSyncPong> listener) {
+    @Override
+    @Contract
+    public void addPongListener(Consumer<ClusterSyncPong> listener) {
         pongListeners.add(listener);
     }
 
     private boolean acceptPingFencing(ClusterSyncPing ping) {
         var currentTerm = observedRabiaTerm.get();
-        if (ping.rabiaTerm() < currentTerm) {return false;}
-        if (ping.rabiaTerm() > currentTerm) {observedRabiaTerm.set(ping.rabiaTerm());}
+
+        if (ping.rabiaTerm() < currentTerm) {
+            return false;
+        }
+
+        if (ping.rabiaTerm() > currentTerm) {
+            observedRabiaTerm.set(ping.rabiaTerm());
+        }
+
         return true;
     }
 
     private void advanceObservedEpoch(Epoch incomingEpoch) {
         observedEpoch.updateAndGet(prev -> incomingEpoch.isStrictlyAfter(prev)
-                                          ? incomingEpoch
-                                          : prev);
+                                           ? incomingEpoch
+                                           : prev);
     }
 
     private ClusterSyncPong buildPong() {
         var epoch = observedEpoch.get();
         var buffer = peerObservationBuffer.get();
+
         return new ClusterSyncPong(self,
                                    collectLocal(),
                                    observedRabiaTerm.get(),
@@ -620,18 +731,23 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     private void collectCpuMetrics(Map<String, Double> metrics) {
         double systemLoad = osMxBean.getSystemLoadAverage();
+
         if (systemLoad >= 0) {
             int processors = osMxBean.getAvailableProcessors();
+
             metrics.put(CPU_USAGE, Math.min(1.0, systemLoad / processors));
         }
     }
 
     private void collectHeapMetrics(Map<String, Double> metrics) {
         var heapUsage = memoryMxBean.getHeapMemoryUsage();
+
         metrics.put(HEAP_USED, (double) heapUsage.getUsed());
         metrics.put(HEAP_MAX, (double) heapUsage.getMax());
-        if (heapUsage.getMax() > 0) {metrics.put(HEAP_USAGE,
-                                                 (double) heapUsage.getUsed() / heapUsage.getMax());}
+        if (heapUsage.getMax() > 0) {
+            metrics.put(HEAP_USAGE,
+                        (double) heapUsage.getUsed() / heapUsage.getMax());
+        }
     }
 
     private void collectCallStatsMetrics(Map<String, Double> metrics) {
@@ -640,15 +756,22 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     private void addMethodStats(Map<String, Double> metrics, MethodName method, CallStats stats) {
         var prefix = "method." + method.name() + ".";
+
         metrics.put(prefix + "calls", (double) stats.count.sum());
         metrics.put(prefix + "duration.total", stats.totalDuration.sum());
-        if (stats.count.sum() > 0) {metrics.put(prefix + "duration.avg",
-                                                stats.totalDuration.sum() / stats.count.sum());}
+        if (stats.count.sum() > 0) {
+            metrics.put(prefix + "duration.avg",
+                        stats.totalDuration.sum() / stats.count.sum());
+        }
     }
 
     private void collectInvocationMetrics(Map<String, Double> metrics) {
         var invMetrics = invocationMetricsProvider;
-        if (invMetrics == null) {return;}
+
+        if (invMetrics == null) {
+            return;
+        }
+
         invMetrics.snapshot().forEach(snapshot -> addInvocationSnapshot(metrics, snapshot));
     }
 
@@ -656,6 +779,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
                                        InvocationMetricsCollector.MethodSnapshot snapshot) {
         var prefix = "inv|" + snapshot.artifact().asString() + "|" + snapshot.methodName().name() + "|";
         var m = snapshot.metrics();
+
         metrics.put(prefix + "count", (double) m.count());
         metrics.put(prefix + "success", (double) m.successCount());
         metrics.put(prefix + "failure", (double) m.failureCount());
@@ -676,11 +800,15 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
                                     RingBuffer<MetricsSnapshot> ringBuffer,
                                     long cutoff) {
         var filtered = ringBuffer.filter(s -> s.timestamp() >= cutoff);
-        if (!filtered.isEmpty()) {result.put(nodeId, filtered);}
+
+        if (!filtered.isEmpty()) {
+            result.put(nodeId, filtered);
+        }
     }
 
     private void addToHistory(NodeId nodeId, Map<String, Double> metrics) {
         var ringBuffer = historicalMetricsMap.computeIfAbsent(nodeId, _ -> RingBuffer.ringBuffer(ringBufferCapacity));
+
         ringBuffer.add(new MetricsSnapshot(System.currentTimeMillis(), metrics));
     }
 
@@ -689,7 +817,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
             return new CallStats(new LongAdder(), new DoubleAdder());
         }
 
-        @Contract void record(long durationMs) {
+        @Contract
+        void record(long durationMs) {
             count.increment();
             totalDuration.add(durationMs);
         }

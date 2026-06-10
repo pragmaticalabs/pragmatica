@@ -10,7 +10,8 @@ import org.pragmatica.serialization.Codec;
 import static org.pragmatica.lang.Option.none;
 
 
-@Codec public record StreamConfig(String name,
+@Codec
+public record StreamConfig(String name,
                            int partitions,
                            RetentionPolicy retention,
                            String autoOffsetReset,
@@ -20,11 +21,8 @@ import static org.pragmatica.lang.Option.none;
                            StreamCompression compression,
                            Option<String> encryptionKeyId) {
     private static final int DEFAULT_PARTITIONS = 4;
-
     private static final String DEFAULT_AUTO_OFFSET_RESET = "latest";
-
     private static final long DEFAULT_MAX_EVENT_SIZE_BYTES = 1_048_576L;
-
     private static final int DEFAULT_MIN_SYNC_REPLICAS = 0;
 
     public static final StreamConfig DEFAULT = new StreamConfig("",

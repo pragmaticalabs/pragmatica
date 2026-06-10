@@ -56,7 +56,9 @@ public final class ContainerLabelInspector {
     }
 
     private static Option<Boolean> detectContainer() {
-        if (Files.exists(Path.of(DOCKERENV_MARKER))) {return Option.some(true);}
+        if (Files.exists(Path.of(DOCKERENV_MARKER))) {
+            return Option.some(true);
+        }
 
         log.debug("ContainerLabelInspector: no {} marker — not running in Docker, skipping label inspection",
                   DOCKERENV_MARKER);
@@ -88,10 +90,12 @@ public final class ContainerLabelInspector {
 
             return Option.empty();
         }
+
         try (var channel = SocketChannel.open(UnixDomainSocketAddress.of(socketPath))) {
             channel.configureBlocking(true);
             var request = "GET /containers/" + containerId
                         + "/json HTTP/1.1\r\nHost: docker\r\nConnection: close\r\nAccept: application/json\r\n\r\n";
+
             channel.write(ByteBuffer.wrap(request.getBytes(StandardCharsets.UTF_8)));
 
             return Option.some(readAll(channel));
@@ -107,11 +111,16 @@ public final class ContainerLabelInspector {
         var out = new ByteArrayOutputStream();
         var deadline = System.currentTimeMillis() + READ_TIMEOUT_MS;
 
-        while (System.currentTimeMillis() <deadline) {
+        while (System.currentTimeMillis() < deadline) {
             var read = channel.read(buf);
 
-            if (read <0) {break;}
-            if (read == 0) {continue;}
+            if (read < 0) {
+                break;
+            }
+
+            if (read == 0) {
+                continue;
+            }
 
             out.write(buf.array(), 0, buf.position());
             buf.clear();
@@ -128,9 +137,13 @@ public final class ContainerLabelInspector {
                                                                     Map<String, String> labels) {
         var labelValue = labels.getOrDefault("aether.cluster", "");
 
-        if (configuredClusterName.isEmpty() || labelValue.isEmpty()) {return Result.success(labels);}
-        if (!configuredClusterName.equals(labelValue)) {return new ContainerLabelMismatch(configuredClusterName,
-                                                                                          labelValue).result();}
+        if (configuredClusterName.isEmpty() || labelValue.isEmpty()) {
+            return Result.success(labels);
+        }
+
+        if (!configuredClusterName.equals(labelValue)) {
+            return new ContainerLabelMismatch(configuredClusterName, labelValue).result();
+        }
 
         return Result.success(labels);
     }
@@ -138,7 +151,7 @@ public final class ContainerLabelInspector {
     private static Option<Map<String, String>> extractLabels(String httpResponse) {
         var bodyStart = httpResponse.indexOf("\r\n\r\n");
 
-        if (bodyStart <0) {
+        if (bodyStart < 0) {
             log.debug("ContainerLabelInspector: malformed HTTP response (no body separator)");
 
             return Option.empty();
@@ -156,13 +169,14 @@ public final class ContainerLabelInspector {
     }
 
     private static final Pattern LABELS_SECTION = Pattern.compile("\"Labels\"\\s*:\\s*\\{([^}]*)\\}");
-
     private static final Pattern LABEL_ENTRY = Pattern.compile("\"([^\"]+)\"\\s*:\\s*\"([^\"]*)\"");
 
     static Map<String, String> parseLabels(String body) {
         var sectionMatcher = LABELS_SECTION.matcher(body);
 
-        if (!sectionMatcher.find()) {return Map.of();}
+        if (!sectionMatcher.find()) {
+            return Map.of();
+        }
 
         return parseEntries(sectionMatcher.group(1));
     }
@@ -171,7 +185,9 @@ public final class ContainerLabelInspector {
         var entries = new java.util.HashMap<String, String>();
         var entryMatcher = LABEL_ENTRY.matcher(labelsBlock);
 
-        while (entryMatcher.find()) {entries.put(entryMatcher.group(1), entryMatcher.group(2));}
+        while (entryMatcher.find()) {
+            entries.put(entryMatcher.group(1), entryMatcher.group(2));
+        }
 
         return Map.copyOf(entries);
     }

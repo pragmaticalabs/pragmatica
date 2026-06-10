@@ -31,7 +31,8 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
 
-@SuppressWarnings("JBCT-EX-01") public final class JdbcJooqConnector implements JooqConnector {
+@SuppressWarnings("JBCT-EX-01")
+public final class JdbcJooqConnector implements JooqConnector {
     private static final System.Logger LOG = System.getLogger(JdbcJooqConnector.class.getName());
 
     private final DatabaseConnectorConfig config;
@@ -48,6 +49,7 @@ import static org.pragmatica.lang.Unit.unit;
 
     public static JdbcJooqConnector jdbcJooqConnector(DatabaseConnectorConfig config, DataSource dataSource) {
         var dialect = JooqConnector.mapDialect(config.effectiveType());
+
         return new JdbcJooqConnector(config, dataSource, dialect);
     }
 
@@ -57,39 +59,48 @@ import static org.pragmatica.lang.Unit.unit;
         return new JdbcJooqConnector(config, dataSource, dialect);
     }
 
-    @Override public DSLContext dsl() {
+    @Override
+    public DSLContext dsl() {
         return dsl;
     }
 
-    @Override public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
+    @Override
+    public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
         return Promise.lift(e -> mapException(e, query.getSQL()), () -> doFetchOne(query));
     }
 
-    @Override public <R extends Record> Promise<Option<R>> fetchOptional(ResultQuery<R> query) {
+    @Override
+    public <R extends Record> Promise<Option<R>> fetchOptional(ResultQuery<R> query) {
         return Promise.lift(e -> mapException(e, query.getSQL()), () -> doFetchOptional(query));
     }
 
-    @Override public <R extends Record> Promise<List<R>> fetch(ResultQuery<R> query) {
+    @Override
+    public <R extends Record> Promise<List<R>> fetch(ResultQuery<R> query) {
         return Promise.lift(e -> mapException(e, query.getSQL()), () -> doFetch(query));
     }
 
-    @Override public Promise<Integer> execute(Query query) {
+    @Override
+    public Promise<Integer> execute(Query query) {
         return Promise.lift(e -> mapException(e, query.getSQL()), () -> doExecute(query));
     }
 
-    @Override public <T> Promise<T> transactional(TransactionCallback<T> callback) {
+    @Override
+    public <T> Promise<T> transactional(TransactionCallback<T> callback) {
         return Promise.lift(DatabaseConnectorError::databaseFailure, () -> runTransaction(callback));
     }
 
-    @Override public DatabaseConnectorConfig config() {
+    @Override
+    public DatabaseConnectorConfig config() {
         return config;
     }
 
-    @Override public Promise<Boolean> isHealthy() {
+    @Override
+    public Promise<Boolean> isHealthy() {
         return Promise.lift(DatabaseConnectorError::databaseFailure, () -> checkHealth(dataSource)).recover(_ -> false);
     }
 
-    @Override public Promise<Unit> stop() {
+    @Override
+    public Promise<Unit> stop() {
         return Promise.lift(DatabaseConnectorError::databaseFailure, () -> closeDataSource(dataSource));
     }
 
@@ -123,9 +134,11 @@ import static org.pragmatica.lang.Unit.unit;
             try {
                 var transactionalConnector = new TransactionalJooqConnector(config, conn, dialect);
                 var result = callback.execute(transactionalConnector).await();
+
                 return result.fold(cause -> rollbackAndFail(conn, cause), value -> commitAndReturn(conn, value));
             } catch (Exception e) {
                 rollbackSilently(conn);
+
                 throw e;
             }
         }
@@ -133,11 +146,14 @@ import static org.pragmatica.lang.Unit.unit;
 
     private <T> T rollbackAndFail(Connection conn, org.pragmatica.lang.Cause cause) {
         rollbackSilently(conn);
-        return cause.<T>result().unwrap();
+
+        return cause.<T> result()
+                    .unwrap();
     }
 
     private <T> T commitAndReturn(Connection conn, T value) {
         commitConnection(conn);
+
         return value;
     }
 
@@ -147,11 +163,13 @@ import static org.pragmatica.lang.Unit.unit;
         } catch (SQLException e) {
             LOG.log(System.Logger.Level.DEBUG, "Rollback failed", e);
         }
+
         return unit();
     }
 
     private Unit commitConnection(Connection conn) {
         Result.lift(DatabaseConnectorError::databaseFailure, conn::commit).unwrap();
+
         return unit();
     }
 
@@ -162,52 +180,63 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private static Unit closeDataSource(DataSource dataSource) throws Exception {
-        if (dataSource instanceof AutoCloseable closeable) {closeable.close();}
+        if (dataSource instanceof AutoCloseable closeable) {
+            closeable.close();
+        }
+
         return unit();
     }
 
     static DatabaseConnectorError mapException(Throwable throwable, String sql) {
-        return switch (throwable){
+        return switch (throwable) {
             case SQLTimeoutException _ -> DatabaseConnectorError.timeout(sql);
             case SQLIntegrityConstraintViolationException e -> DatabaseConnectorError.constraintViolation(e.getMessage());
             case SQLTransactionRollbackException e -> DatabaseConnectorError.transactionRollback(e.getMessage());
-            case SQLException e -> option(e.getSQLState()).filter(s -> s.startsWith("08"))
-                                         .map(_ -> (DatabaseConnectorError) DatabaseConnectorError.connectionFailed(e.getMessage(),
-                                                                                                                    e))
-                                         .or(() -> DatabaseConnectorError.queryFailed(sql, e));
+            case SQLException e -> option(e.getSQLState()).filter(s -> s.startsWith("08")).map(_ -> (DatabaseConnectorError) DatabaseConnectorError.connectionFailed(e.getMessage(),
+                                                                                                                                                                     e)).or(() -> DatabaseConnectorError.queryFailed(sql,
+                                                                                                                                                                                                                     e));
             default -> DatabaseConnectorError.databaseFailure(throwable);
         };
     }
 
     private record TransactionalJooqConnector(DatabaseConnectorConfig config, Connection conn, SQLDialect dialect) implements JooqConnector {
-        @Override public DSLContext dsl() {
+        @Override
+        public DSLContext dsl() {
             return DSL.using(conn, dialect);
         }
 
-        @Override public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
+        @Override
+        public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
             return Promise.lift(e -> mapException(e, query.getSQL()), () -> txFetchOne(query));
         }
 
-        @Override public <R extends Record> Promise<Option<R>> fetchOptional(ResultQuery<R> query) {
+        @Override
+        public <R extends Record> Promise<Option<R>> fetchOptional(ResultQuery<R> query) {
             return Promise.lift(e -> mapException(e, query.getSQL()), () -> txFetchOptional(query));
         }
 
-        @Override public <R extends Record> Promise<List<R>> fetch(ResultQuery<R> query) {
+        @Override
+        public <R extends Record> Promise<List<R>> fetch(ResultQuery<R> query) {
             return Promise.lift(e -> mapException(e, query.getSQL()),
                                 () -> DSL.using(conn, dialect).fetch(query));
         }
 
-        @Override public Promise<Integer> execute(Query query) {
+        @Override
+        public Promise<Integer> execute(Query query) {
             return Promise.lift(e -> mapException(e, query.getSQL()),
                                 () -> DSL.using(conn, dialect).execute(query));
         }
 
-        @Override public <T> Promise<T> transactional(TransactionCallback<T> callback) {
+        @Override
+        public <T> Promise<T> transactional(TransactionCallback<T> callback) {
             return callback.execute(this);
         }
 
-        @Override public Promise<Boolean> isHealthy() {
-            return Promise.lift(DatabaseConnectorError::databaseFailure, () -> conn.isValid(5)).recover(_ -> false);
+        @Override
+        public Promise<Boolean> isHealthy() {
+            return Promise.lift(DatabaseConnectorError::databaseFailure,
+                                () -> conn.isValid(5))
+                          .recover(_ -> false);
         }
 
         private <R extends Record> R txFetchOne(ResultQuery<R> query) {

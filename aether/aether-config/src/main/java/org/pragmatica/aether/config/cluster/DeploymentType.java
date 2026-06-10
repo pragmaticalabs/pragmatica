@@ -29,9 +29,10 @@ public enum DeploymentType {
         return value;
     }
     public static Result<DeploymentType> deploymentType(String raw) {
-        return Arrays.stream(values()).filter(dt -> dt.value.equals(raw))
-                            .findFirst()
-                            .map(Result::success)
-                            .orElseGet(INVALID_TYPE::result);
+        return Arrays.stream(values())
+                     .filter(dt -> dt.value.equals(raw))
+                     .findFirst()
+                     .map(Result::success)
+                     .orElseGet(INVALID_TYPE::result);
     }
 }

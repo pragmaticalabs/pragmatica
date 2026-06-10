@@ -63,6 +63,7 @@ public final class ProblemResponses {
                                     String requestId) {
         var problem = ProblemDetail.problemDetail(status, detail, instance, requestId);
         var serverStatus = toServerStatus(status.code());
+
         MAPPER.writeAsString(problem).onSuccess(json -> response.header(ResponseWriter.X_REQUEST_ID, requestId)
                                                                 .write(serverStatus,
                                                                        json.getBytes(StandardCharsets.UTF_8),
@@ -93,8 +94,11 @@ public final class ProblemResponses {
 
     private static org.pragmatica.http.HttpStatus toServerStatus(int code) {
         for (var status : org.pragmatica.http.HttpStatus.values()) {
-            if (status.code() == code) {return status;}
+            if (status.code() == code) {
+                return status;
+            }
         }
+
         return org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR;
     }
 

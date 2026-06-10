@@ -20,7 +20,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") public class EventWebSocketPublisher {
+@SuppressWarnings("JBCT-RET-01")
+public class EventWebSocketPublisher {
     private static final Logger log = LoggerFactory.getLogger(EventWebSocketPublisher.class);
 
     private final EventWebSocketHandler handler;
@@ -31,7 +32,6 @@ import org.slf4j.LoggerFactory;
     private final AtomicReference<Option<ScheduledFuture<?>>> taskRef = new AtomicReference<>(Option.none());
 
     private final AtomicBoolean running = new AtomicBoolean(false);
-
     private final AtomicReference<Instant> lastBroadcast = new AtomicReference<>(Instant.EPOCH);
 
     private EventWebSocketPublisher(EventWebSocketHandler handler,
@@ -58,32 +58,42 @@ import org.slf4j.LoggerFactory;
     }
 
     public void start() {
-        if (!running.compareAndSet(false, true)) {return;}
+        if (!running.compareAndSet(false, true)) {
+            return;
+        }
+
         taskRef.set(Option.some(SharedScheduler.scheduleAtFixedRate(this::publish,
                                                                     TimeSpan.timeSpan(intervalMs).millis())));
         log.info("Event WebSocket publisher started ({}ms interval)", intervalMs);
     }
 
     public void stop() {
-        if (!running.compareAndSet(true, false)) {return;}
+        if (!running.compareAndSet(true, false)) {
+            return;
+        }
+
         taskRef.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
         log.info("Event WebSocket publisher stopped");
     }
 
     private void publish() {
-        if (handler.connectedClients() == 0) {return;}
+        if (handler.connectedClients() == 0) {
+            return;
+        }
+
         var since = lastBroadcast.get();
         var now = Instant.now();
-        Promise<?> ignored = eventsSinceProvider.apply(since)
-                                                .onSuccess(events -> broadcastIfPresent(events, now))
-                                                .onFailure(cause -> log.error("Error publishing events via WebSocket: {}", cause.message()));
+        Promise<?> ignored = eventsSinceProvider.apply(since).onSuccess(events -> broadcastIfPresent(events, now)).onFailure(cause -> log.error("Error publishing events via WebSocket: {}",
+                                                                                                                                                cause.message()));
     }
 
     private void broadcastIfPresent(List<ClusterEvent> newEvents, Instant now) {
         if (!newEvents.isEmpty()) {
             var json = jsonSerializer.apply(newEvents);
+
             handler.broadcast(json);
         }
+
         lastBroadcast.set(now);
     }
 }

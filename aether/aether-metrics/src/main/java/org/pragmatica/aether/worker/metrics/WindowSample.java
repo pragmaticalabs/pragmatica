@@ -7,12 +7,13 @@ package org.pragmatica.aether.worker.metrics;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public record WindowSample(double avgCpuUsage,
-                                  double avgHeapUsage,
-                                  long totalActiveInvocations,
-                                  double avgP95LatencyMs,
-                                  double avgErrorRate,
-                                  long timestampMs) {
+@Codec
+public record WindowSample(double avgCpuUsage,
+                           double avgHeapUsage,
+                           long totalActiveInvocations,
+                           double avgP95LatencyMs,
+                           double avgErrorRate,
+                           long timestampMs) {
     public static WindowSample windowSample(double avgCpuUsage,
                                             double avgHeapUsage,
                                             long totalActiveInvocations,

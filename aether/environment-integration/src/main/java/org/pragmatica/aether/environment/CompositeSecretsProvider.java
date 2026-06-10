@@ -15,9 +15,14 @@ public record CompositeSecretsProvider(List<SecretsProvider> providers) implemen
         return new CompositeSecretsProvider(List.of(providers));
     }
 
-    @Override public Promise<String> resolveSecret(String secretPath) {
+    @Override
+    public Promise<String> resolveSecret(String secretPath) {
         var result = initialFailure(secretPath);
-        for (var provider : providers) {result = chainNextProvider(result, provider, secretPath);}
+
+        for (var provider : providers) {
+            result = chainNextProvider(result, provider, secretPath);
+        }
+
         return result;
     }
 
@@ -30,8 +35,6 @@ public record CompositeSecretsProvider(List<SecretsProvider> providers) implemen
     }
 
     private static Promise<String> initialFailure(String secretPath) {
-        return EnvironmentError.secretResolutionFailed(secretPath,
-                                                       new IllegalStateException("No providers configured"))
-        .promise();
+        return EnvironmentError.secretResolutionFailed(secretPath, new IllegalStateException("No providers configured")).promise();
     }
 }

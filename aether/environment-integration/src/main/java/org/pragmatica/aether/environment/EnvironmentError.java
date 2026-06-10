@@ -16,7 +16,8 @@ public sealed interface EnvironmentError extends Cause {
             return success(new ProvisionFailed(cause));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Node provisioning failed: " + cause.getMessage();
         }
     }
@@ -26,7 +27,8 @@ public sealed interface EnvironmentError extends Cause {
             return success(new TerminateFailed(instanceId, cause));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Instance termination failed for '" + instanceId.value() + "': " + cause.getMessage();
         }
     }
@@ -36,7 +38,8 @@ public sealed interface EnvironmentError extends Cause {
             return success(new InstanceNotFound(instanceId));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Instance not found: " + instanceId.value();
         }
     }
@@ -47,17 +50,19 @@ public sealed interface EnvironmentError extends Cause {
     /// lets the caller (CTM) free the slot and avoids minting a node that poisons quorum.
     /// `lastStatus` records the terminal status observed (e.g. `Provisioning` on timeout,
     /// or `Terminated` when the container/VM exited during boot).
-    record ProvisionReadinessTimeout(InstanceId instanceId, InstanceStatus lastStatus, long timeoutMillis)
-            implements EnvironmentError {
+    record ProvisionReadinessTimeout(InstanceId instanceId, InstanceStatus lastStatus, long timeoutMillis) implements EnvironmentError {
         public static Result<ProvisionReadinessTimeout> provisionReadinessTimeout(InstanceId instanceId,
                                                                                   InstanceStatus lastStatus,
                                                                                   long timeoutMillis) {
             return success(new ProvisionReadinessTimeout(instanceId, lastStatus, timeoutMillis));
         }
 
-        @Override public String message() {
-            return "Instance '" + instanceId.value() + "' did not reach RUNNING within " + timeoutMillis
-                   + "ms (last observed status: " + lastStatus + "); refusing to report a phantom provision success.";
+        @Override
+        public String message() {
+            return "Instance '" + instanceId.value()
+                 + "' did not reach RUNNING within " + timeoutMillis
+                 + "ms (last observed status: " + lastStatus
+                 + "); refusing to report a phantom provision success.";
         }
     }
 
@@ -66,7 +71,8 @@ public sealed interface EnvironmentError extends Cause {
             return success(new ListInstancesFailed(cause));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Failed to list instances: " + cause.getMessage();
         }
     }
@@ -76,7 +82,8 @@ public sealed interface EnvironmentError extends Cause {
             return success(new SecretResolutionFailed(path, cause));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Secret resolution failed for '" + path + "': " + cause.getMessage();
         }
     }
@@ -86,7 +93,8 @@ public sealed interface EnvironmentError extends Cause {
             return success(new DiscoveryFailed(detail, cause));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Discovery failed: " + detail + " — " + cause.getMessage();
         }
     }
@@ -96,7 +104,8 @@ public sealed interface EnvironmentError extends Cause {
             return success(new OperationNotSupported(operation));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Operation not supported: " + operation;
         }
     }
@@ -107,7 +116,8 @@ public sealed interface EnvironmentError extends Cause {
             return success(new CredentialsMissing(provider, java.util.List.copyOf(missingEnvVars)));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Cloud credentials missing for provider '" + provider + "': set " + String.join(", ", missingEnvVars);
         }
     }
@@ -117,7 +127,8 @@ public sealed interface EnvironmentError extends Cause {
             return success(new unused());
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "";
         }
     }

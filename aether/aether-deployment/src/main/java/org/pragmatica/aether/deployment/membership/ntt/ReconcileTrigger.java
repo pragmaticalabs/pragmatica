@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.ntt;
 
-
 /// Trigger classification for a [`ReconcileIntent`] emission (spec §7.4 E2 Phase 1.5
 /// "fully state-derived reconcile"). All paths converge on a single idempotent CAS-
 /// debounced `triggerReconcile` call in [`LeaderReconciler`]:

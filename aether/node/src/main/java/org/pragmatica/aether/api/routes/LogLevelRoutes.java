@@ -58,15 +58,26 @@ public final class LogLevelRoutes implements RouteSource {
     }
 
     private Result<SetLogLevelRequest> validateSetRequest(SetLogLevelRequest req) {
-        if (req.logger() == null || req.logger().isEmpty()) {return LogLevelError.MISSING_FIELDS.result();}
-        if (req.level() == null || req.level().isEmpty()) {return LogLevelError.MISSING_FIELDS.result();}
-        if (!VALID_LEVELS.contains(req.level().toUpperCase())) {return LogLevelError.INVALID_LEVEL.result();}
+        if (req.logger() == null || req.logger().isEmpty()) {
+            return LogLevelError.MISSING_FIELDS.result();
+        }
+
+        if (req.level() == null || req.level().isEmpty()) {
+            return LogLevelError.MISSING_FIELDS.result();
+        }
+
+        if (!VALID_LEVELS.contains(req.level().toUpperCase())) {
+            return LogLevelError.INVALID_LEVEL.result();
+        }
 
         return Result.success(req);
     }
 
     private Promise<LogLevelResetResponse> handleResetLevel(String loggerName) {
-        if (loggerName.isEmpty()) {return LogLevelError.LOGGER_REQUIRED.promise();}
+        if (loggerName.isEmpty()) {
+            return LogLevelError.LOGGER_REQUIRED.promise();
+        }
+
         return logLevelRegistry.resetLevel(loggerName)
                                .map(_ -> new LogLevelResetResponse("level_reset", loggerName));
     }

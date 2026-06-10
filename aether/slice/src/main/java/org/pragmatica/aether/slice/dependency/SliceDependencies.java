@@ -11,15 +11,17 @@ import java.util.Arrays;
 import java.util.List;
 
 
-@SuppressWarnings({"JBCT-RET-05", "JBCT-PAT-01"}) public interface SliceDependencies {
+@SuppressWarnings({"JBCT-RET-05", "JBCT-PAT-01"})
+public interface SliceDependencies {
     static Result<List<DependencyDescriptor>> load(String sliceClassName, ClassLoader classLoader) {
-        return StreamOps.readResource(classLoader, "META-INF/dependencies/" + sliceClassName).map(SliceDependencies::parseDependencies)
-                                     .orElse(Result.success(List.of()));
+        return StreamOps.readResource(classLoader, "META-INF/dependencies/" + sliceClassName)
+                        .map(SliceDependencies::parseDependencies)
+                        .orElse(Result.success(List.of()));
     }
 
     private static List<DependencyDescriptor> parseDependencies(String content) {
-        return Arrays.stream(content.split("\n")).flatMap(line -> DependencyDescriptor.dependencyDescriptor(line)
-                                                                                                           .stream())
-                            .toList();
+        return Arrays.stream(content.split("\n"))
+                     .flatMap(line -> DependencyDescriptor.dependencyDescriptor(line).stream())
+                     .toList();
     }
 }

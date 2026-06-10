@@ -13,7 +13,8 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-@SuppressWarnings({"JBCT-ZONE-02", "JBCT-ZONE-03"}) public record SliceConfig(List<RepositoryType> repositories) {
+@SuppressWarnings({"JBCT-ZONE-02", "JBCT-ZONE-03"})
+public record SliceConfig(List<RepositoryType> repositories) {
     private static final SliceConfig DEFAULT = sliceConfig(List.of(new RepositoryType.Local())).unwrap();
 
     public static Result<SliceConfig> sliceConfig(List<RepositoryType> repositories) {
@@ -24,7 +25,8 @@ import static org.pragmatica.lang.Result.success;
         return DEFAULT;
     }
 
-    @SuppressWarnings("JBCT-NAM-01") public static Result<SliceConfig> sliceConfigFromNames(List<String> repositoryNames) {
+    @SuppressWarnings("JBCT-NAM-01")
+    public static Result<SliceConfig> sliceConfigFromNames(List<String> repositoryNames) {
         return checkNotEmpty(repositoryNames).flatMap(SliceConfig::toRepositoryTypes);
     }
 
@@ -37,21 +39,23 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static Result<List<String>> checkNotEmpty(List<String> repositoryNames) {
-        return option(repositoryNames).filter(names -> !names.isEmpty()).toResult(emptyListError());
+        return option(repositoryNames).filter(names -> !names.isEmpty())
+                     .toResult(emptyListError());
     }
 
     private static SliceConfigError.InvalidSliceConfig emptyListError() {
         return SliceConfigError.InvalidSliceConfig.invalidSliceConfig("repositories list cannot be empty");
     }
 
-    @SuppressWarnings("JBCT-NAM-01") private static Result<SliceConfig> toRepositoryTypes(List<String> names) {
-        return Result.allOf(names.stream().map(RepositoryType::repositoryType)
-                                        .toList()).map(SliceConfig::new);
+    @SuppressWarnings("JBCT-NAM-01")
+    private static Result<SliceConfig> toRepositoryTypes(List<String> names) {
+        return Result.allOf(names.stream().map(RepositoryType::repositoryType).toList()).map(SliceConfig::new);
     }
 
     public sealed interface SliceConfigError extends Cause {
         record unused() implements SliceConfigError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "unused";
             }
         }
@@ -65,7 +69,8 @@ import static org.pragmatica.lang.Result.success;
                 return invalidSliceConfig(detail, true).unwrap();
             }
 
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Invalid slice configuration: " + detail;
             }
         }

@@ -40,17 +40,26 @@ public record ComprehensiveSnapshot(long timestamp,
                                                                                 Map.of());
 
     public double heapUsage() {
-        if (heapMax <= 0) {return 0.0;}
+        if (heapMax <= 0) {
+            return 0.0;
+        }
+
         return (double) heapUsed / heapMax;
     }
 
     public double successRate() {
-        if (totalInvocations <= 0) {return 1.0;}
+        if (totalInvocations <= 0) {
+            return 1.0;
+        }
+
         return (double) successfulInvocations / totalInvocations;
     }
 
     public double errorRate() {
-        if (totalInvocations <= 0) {return 0.0;}
+        if (totalInvocations <= 0) {
+            return 0.0;
+        }
+
         return (double) failedInvocations / totalInvocations;
     }
 
@@ -59,10 +68,13 @@ public record ComprehensiveSnapshot(long timestamp,
     }
 
     public boolean consensusHealthy() {
-        return consensus.hasLeader() && consensus.avgDecisionLatencyMs() <100.0;
+        return consensus.hasLeader() && consensus.avgDecisionLatencyMs() < 100.0;
     }
 
     public boolean healthy() {
-        return eventLoopHealthy() && consensusHealthy() && heapUsage() <0.9 && errorRate() <0.1;
+        return eventLoopHealthy()
+               && consensusHealthy()
+               && heapUsage() < 0.9
+               && errorRate() < 0.1;
     }
 }

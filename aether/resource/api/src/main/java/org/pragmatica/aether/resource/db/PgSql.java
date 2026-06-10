@@ -12,4 +12,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 
-@ResourceQualifier(type = PgSqlConnector.class, config = "database") @Retention(RetentionPolicy.RUNTIME) @Target({ElementType.PARAMETER, ElementType.TYPE}) public@interface PgSql {}
+@ResourceQualifier(type = PgSqlConnector.class, config = "database")
+@Retention(RetentionPolicy.RUNTIME)
+@Target({ElementType.PARAMETER, ElementType.TYPE})
+public @interface PgSql {}

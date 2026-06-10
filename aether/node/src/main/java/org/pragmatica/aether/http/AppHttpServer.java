@@ -373,6 +373,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                        java.util.function.Supplier<RouteTable> routeTableSupplier,
                                                        java.util.function.BooleanSupplier quorumEstablishedSupplier) {
         var ctx = new AppHttpContext(fsm, routeTableSupplier, quorumEstablishedSupplier);
+
         ctxHolder.set(ctx);
 
         return ctx.stopped();
@@ -449,9 +450,10 @@ class AppHttpServerAdapter implements AppHttpServer {
         java.util.Objects.requireNonNull(context, "AppHttpContext must be wired before AppHttpServer.start()");
         java.util.Objects.requireNonNull(context.routeTableSupplier(),
                                          "context.routeTableSupplier must be wired before AppHttpServer.start()");
-
-        if (context.routeTableSupplier() == AppHttpContext.EMPTY_ROUTE_TABLE_SENTINEL) {throw new IllegalStateException("AppHttpServer.start(): routeTableSupplier is the default "
-                                                                                                                       + "RouteTable::empty sentinel — RouteRegistry wiring missed");}
+        if (context.routeTableSupplier() == AppHttpContext.EMPTY_ROUTE_TABLE_SENTINEL) {
+            throw new IllegalStateException("AppHttpServer.start(): routeTableSupplier is the default "
+                                           + "RouteTable::empty sentinel — RouteRegistry wiring missed");
+        }
     }
 
     private void onStartCompleted() {
@@ -499,6 +501,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                          wg)).or(HttpServer.http3Server(serverConfig,
                                                                                                         quicSslContext,
                                                                                                         this::handleRequest));
+
         return serverPromise.map(this::registerStartedH3Server)
                             .onFailure(cause -> log.error("Failed to start App HTTP/3 server on port {}: {}",
                                                           config.port(),
@@ -513,6 +516,7 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     private HttpServerConfig buildServerConfig() {
         var serverConfig = HttpServerConfig.httpServerConfig("app-http", config.port()).withMaxContentLength(config.maxRequestSize());
+
         return tls.map(serverConfig::withTls)
                   .or(serverConfig);
     }
@@ -534,6 +538,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     @Override
     public Promise<Unit> stop() {
         var servers = context.currentServers();
+
         context.dispatch(new AppHttpEvents.StopRequested());
 
         return context.stopServersAsync(servers.server(),
@@ -543,11 +548,14 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     @Override
     public Promise<Unit> rotateCertificate(CertificateBundle newBundle) {
-        if (!config.enabled()) {return Promise.success(unit());}
+        if (!config.enabled()) {
+            return Promise.success(unit());
+        }
 
         log.info("Rotating app HTTP server TLS certificate");
         var previous = context.currentServers();
         var currentRoutes = context.currentRoutes();
+
         context.dispatch(new AppHttpEvents.CertRotationRequested(newBundle));
 
         return context.stopServersAsync(previous.server(),
@@ -561,8 +569,13 @@ class AppHttpServerAdapter implements AppHttpServer {
     private Promise<AppHttpContext.ServerPair> restartWithNewBundle(CertificateBundle newBundle) {
         var protocol = config.httpProtocol();
 
-        if (protocol.includesH1() && protocol.includesH3()) {return restartDualWithBundle(newBundle);}
-        if (protocol.includesH1()) {return restartH1OnlyWithBundle(newBundle);}
+        if (protocol.includesH1() && protocol.includesH3()) {
+            return restartDualWithBundle(newBundle);
+        }
+
+        if (protocol.includesH1()) {
+            return restartH1OnlyWithBundle(newBundle);
+        }
 
         return restartH3OnlyWithBundle(newBundle);
     }
@@ -628,6 +641,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                          wg)).or(HttpServer.http3Server(serverConfig,
                                                                                                         quicSslContext,
                                                                                                         this::handleRequest));
+
         return serverPromise.map(Option::some);
     }
 
@@ -672,8 +686,8 @@ class AppHttpServerAdapter implements AppHttpServer {
     @Contract
     public void onQuorumStateChange(ClusterStateNotification notification) {
         var established = notification.state() == ClusterStateNotification.State.ACTIVE;
-        quorumEstablished = established;
 
+        quorumEstablished = established;
         if (established) {
             log.info("Quorum established — marking route sync complete");
             context.dispatch(new ClusterFsmEvent.QuorumEstablished());
@@ -714,12 +728,14 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     private void handleRequest(RequestContext request, ResponseWriter response) {
         var requestId = request.requestId();
+
         InvocationContext.runWithRequestId(requestId, () -> handleRequestInScope(request, response, requestId));
     }
 
     private void handleRequestInScope(RequestContext request, ResponseWriter response, String requestId) {
         var method = request.method().name();
         var path = request.path();
+
         log.trace("Received {} {} [{}]", method, path, requestId);
         var routeTable = context.currentRoutes();
         var normalizedPath = normalizePath(path);
@@ -739,6 +755,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         }
 
         var httpContext = toHttpRequestContext(request, requestId);
+
         securityValidator.validate(httpContext, effectivePolicy).flatMap(ctx -> enforceRoleIfRequired(ctx,
                                                                                                       effectivePolicy)).apply(cause -> handleSecurityFailure(response,
                                                                                                                                                              cause,
@@ -766,7 +783,9 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                            RouteTable routeTable) {
         var localPolicy = httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method, normalizedPath)).map(LocalRouteInfo::security).filter(AppHttpServerAdapter::isExplicitPolicy);
 
-        if (localPolicy.isPresent()) {return localPolicy;}
+        if (localPolicy.isPresent()) {
+            return localPolicy;
+        }
 
         return findMatchingRemoteRoute(routeTable.remoteRoutes(),
                                        method,
@@ -796,6 +815,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                    ? Result.success(context)
                    : new SecurityError.InsufficientRole("Access denied: role '" + roleName + "' required").result();
         }
+
         return Result.success(context);
     }
 
@@ -810,7 +830,9 @@ class AppHttpServerAdapter implements AppHttpServer {
                                        String requestId) {
         var principal = securityContext.principal().value();
 
-        if (config.securityEnabled()) {AuditLog.authSuccess(requestId, principal, method, path);}
+        if (config.securityEnabled()) {
+            AuditLog.authSuccess(requestId, principal, method, path);
+        }
 
         ScopedValue.where(SecurityContextHolder.scopedValue(), securityContext).run(() -> InvocationContext.runWithContext(requestId,
                                                                                                                            principal,
@@ -833,6 +855,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                  String requestId) {
         if (httpRoutePublisher.isPresent()) {
             var localRouteOpt = findMatchingLocalRoute(routeTable.localRoutes(), method, normalizedPath);
+
             if (localRouteOpt.isPresent()) {
                 dispatchLocalRoute(request,
                                    response,
@@ -841,6 +864,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                    normalizedPath,
                                    localRouteOpt.unwrap(),
                                    requestId);
+
                 return;
             }
         }
@@ -865,6 +889,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                     String requestId) {
         if (shouldForwardForStrategy(localRouteKey, method, normalizedPath, routeTable)) {
             var remoteRouteOpt = findMatchingRemoteRoute(routeTable.remoteRoutes(), method, normalizedPath);
+
             if (remoteRouteOpt.isPresent()) {
                 log.debug("Deployment strategy routing — forwarding {} {} to remote [{}]",
                           method,
@@ -875,6 +900,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                 return;
             }
         }
+
         handleLocalRoute(request, response, localRouteKey, requestId);
     }
 
@@ -896,8 +922,10 @@ class AppHttpServerAdapter implements AppHttpServer {
                         "Node starting, routes not yet synchronized",
                         request.path(),
                         requestId);
+
             return;
         }
+
         if (routeRegistry.findRoute(method, request.path()).isPresent()) {
             log.debug("Route table propagation lag for {} {} [{}] — registry has it, snapshot not refreshed yet",
                       method,
@@ -908,6 +936,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                         "Route table propagating; retry after a moment",
                         request.path(),
                         requestId);
+
             return;
         }
 
@@ -955,6 +984,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                                              method,
                                                                                              normalizedPath);
         }
+
         if (routing.isAllNew()) {
             return localVersion.equals(activeRouting.oldVersion()) && hasMatchingRemoteRoute(routeTable.remoteRoutes(),
                                                                                              method,
@@ -972,7 +1002,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                             RouteTable routeTable) {
         boolean localIsNew = localVersion.equals(activeRouting.newVersion());
         int random = ThreadLocalRandom.current().nextInt(routing.totalWeight());
-        boolean shouldRouteToNew = random <routing.newWeight();
+        boolean shouldRouteToNew = random < routing.newWeight();
         boolean shouldForward = localIsNew
                                 ? !shouldRouteToNew
                                 : shouldRouteToNew;
@@ -992,6 +1022,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                        String requestId,
                                        String method) {
         var statusAndMessage = mapSecurityError(cause);
+
         recordSecurityDenial(cause, path, requestId, method);
         maybeAddAuthenticateHeader(response, statusAndMessage.status());
         sendProblem(response, statusAndMessage.status(), statusAndMessage.clientMessage(), path, requestId);
@@ -1005,11 +1036,16 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     @Contract
     private void maybeAddAuthenticateHeader(ResponseWriter response, HttpStatus status) {
-        if (status == HttpStatus.UNAUTHORIZED) {addAuthenticateHeader(response);}
+        if (status == HttpStatus.UNAUTHORIZED) {
+            addAuthenticateHeader(response);
+        }
     }
 
     private static String classifyDenialType(Cause cause) {
-        if (cause == SecurityError.NO_VALIDATOR_CONFIGURED) {return "no_validator";}
+        if (cause == SecurityError.NO_VALIDATOR_CONFIGURED) {
+            return "no_validator";
+        }
+
         return switch (cause) {
             case SecurityError.InsufficientRole _ -> "insufficient_role";
             case SecurityError.AccessDenied _ -> "insufficient_role";
@@ -1082,6 +1118,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         var withLeading = path.startsWith("/")
                           ? path
                           : "/" + path;
+
         return withLeading.endsWith("/")
                ? withLeading
                : withLeading + "/";
@@ -1093,6 +1130,7 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     private void sendHealthResponse(ResponseWriter response, String requestId) {
         var body = "{\"status\":\"UP\",\"nodeId\":\"" + selfNodeId.id() + "\"}";
+
         response.header(ResponseWriter.X_REQUEST_ID, requestId).header("X-Node-Id", selfNodeId.id()).write(org.pragmatica.http.HttpStatus.OK,
                                                                                                            body.getBytes(StandardCharsets.UTF_8),
                                                                                                            CommonContentType.APPLICATION_JSON);
@@ -1129,6 +1167,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         var httpCtx = toHttpRequestContext(request, requestId);
         var routeInfo = resolveRouteInfo(routeKey.httpMethod(), routeKey.pathPrefix());
         var startTime = System.nanoTime();
+
         routeInfo.onPresent(info -> recordMetricsStart(info));
         router.handle(httpCtx).onSuccess(responseData -> handleLocalRouterSuccess(response,
                                                                                   responseData,
@@ -1216,7 +1255,6 @@ class AppHttpServerAdapter implements AppHttpServer {
                   route.pathPrefix(),
                   route.nodes().size(),
                   requestId);
-
         if (httpForwarder.isEmpty()) {
             log.error("HTTP forwarding not configured [{}]", requestId);
             sendProblem(response,
@@ -1229,6 +1267,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         }
 
         var httpCtx = toHttpRequestContext(request, requestId);
+
         httpForwarder.unwrap().forward(httpCtx, route.httpMethod(), route.pathPrefix(), requestId).onSuccess(responseData -> sendResponse(response,
                                                                                                                                           responseData,
                                                                                                                                           requestId)).onFailure(cause -> sendProblem(response,
@@ -1242,7 +1281,6 @@ class AppHttpServerAdapter implements AppHttpServer {
     @Contract
     public void onHttpForwardRequest(HttpForwardRequest request) {
         log.trace("Received HttpForwardRequest [{}] correlationId={}", request.requestId(), request.correlationId());
-
         if (deserializer.isEmpty() || serializer.isEmpty() || clusterNetwork.isEmpty()) {
             log.error("[{}] Cannot handle forward request - missing dependencies", request.requestId());
 
@@ -1252,6 +1290,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         var des = deserializer.unwrap();
         var ser = serializer.unwrap();
         var network = clusterNetwork.unwrap();
+
         Result.<HttpRequestContext, byte[]> lift1(des::decode, request.requestData()).onFailure(cause -> logAndSendForwardError(network,
                                                                                                                                 request,
                                                                                                                                 "Deserialization failed",
@@ -1288,6 +1327,7 @@ class AppHttpServerAdapter implements AppHttpServer {
 
         var routeInfo = resolveRouteInfo(method, normalizedPath);
         var startTime = System.nanoTime();
+
         routeInfo.onPresent(this::recordMetricsStart);
         routerOpt.unwrap().handle(httpCtx).onSuccess(responseData -> handleForwardSuccess(network,
                                                                                           request,
@@ -1349,6 +1389,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                       true,
                                                       payload,
                                                       request.pipeline());
+
         network.send(request.sender(), forwardResponse);
         log.trace("Sent forward success response [{}]", request.requestId());
     }
@@ -1360,6 +1401,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                       false,
                                                       errorMessage.getBytes(StandardCharsets.UTF_8),
                                                       request.pipeline());
+
         network.send(request.sender(), forwardResponse);
         log.trace("Sent forward error response [{}]: {}", request.requestId(), errorMessage);
     }
@@ -1445,6 +1487,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                              String instance,
                              String requestId) {
         var problem = ProblemDetail.problemDetail(status, detail, instance, requestId);
+
         JSON_MAPPER.writeAsString(problem).onSuccess(json -> response.header(ResponseWriter.X_REQUEST_ID, requestId)
                                                                      .header("X-Node-Id",
                                                                              selfNodeId.id())
@@ -1472,21 +1515,28 @@ class AppHttpServerAdapter implements AppHttpServer {
             var truncatedBody = fullBody.length() > MAX_WARN_BODY_LENGTH
                                 ? fullBody.substring(0, MAX_WARN_BODY_LENGTH) + "...(truncated)"
                                 : fullBody;
+
             log.warn("HTTP error response [{}]: {} body={}", requestId, responseData.statusCode(), truncatedBody);
             log.debug("HTTP error response full body [{}]: {}", requestId, fullBody);
-        } else {log.trace("Sending response [{}]: {} {}", requestId, responseData.statusCode(), responseData.headers());}
+        } else {
+            log.trace("Sending response [{}]: {} {}", requestId, responseData.statusCode(), responseData.headers());
+        }
 
         var writer = response.header(ResponseWriter.X_REQUEST_ID, requestId).header("X-Node-Id", selfNodeId.id());
 
-        for (var entry : responseData.headers().entrySet()) {writer = writer.header(entry.getKey(), entry.getValue());}
+        for (var entry : responseData.headers().entrySet()) {
+            writer = writer.header(entry.getKey(), entry.getValue());
+        }
 
         var contentType = Option.option(responseData.headers().get("Content-Type")).map(ct -> org.pragmatica.http.ContentType.contentType(ct,
                                                                                                                                           org.pragmatica.http.ContentCategory.JSON)).or(CommonContentType.APPLICATION_JSON);
+
         writer.write(toServerStatus(responseData.statusCode()), responseData.body(), contentType);
     }
 
     private void sendPlainError(ResponseWriter response, HttpStatus status, String requestId) {
         var content = "{\"error\":\"" + status.message() + "\"}";
+
         response.header(ResponseWriter.X_REQUEST_ID, requestId).header("X-Node-Id", selfNodeId.id()).write(toServerStatus(status.code()),
                                                                                                            content.getBytes(StandardCharsets.UTF_8),
                                                                                                            CommonContentType.APPLICATION_JSON);
@@ -1516,6 +1566,7 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     private void recordMetricsSuccess(ResolvedRoute route, long startTime, int requestBytes, int responseBytes) {
         var durationNs = System.nanoTime() - startTime;
+
         metricsCollector.onPresent(mc -> recordSuccessMetrics(mc, route, durationNs, requestBytes, responseBytes));
     }
 
@@ -1531,6 +1582,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     private void recordMetricsFailure(ResolvedRoute route, long startTime, int requestBytes, Cause cause) {
         var durationNs = System.nanoTime() - startTime;
         var errorType = cause.getClass().getSimpleName();
+
         metricsCollector.onPresent(mc -> recordFailureMetrics(mc, route, durationNs, requestBytes, errorType));
     }
 

@@ -21,8 +21,8 @@ public sealed interface JavaTypeAccessor {
 
         public Option<String> importStatement() {
             return importFqn.isEmpty()
-                  ? Option.empty()
-                  : Option.present(importFqn);
+                   ? Option.empty()
+                   : Option.present(importFqn);
         }
     }
 
@@ -72,28 +72,34 @@ public sealed interface JavaTypeAccessor {
                                                       Map.entry("java.util.UUID", AccessorInfo.object("java.util.UUID")));
 
     static AccessorInfo forField(String javaTypeName) {
-        if (javaTypeName.endsWith("[]") && !javaTypeName.equals("byte[]")) {return arrayAccessor(javaTypeName);}
+        if (javaTypeName.endsWith("[]") && !javaTypeName.equals("byte[]")) {
+            return arrayAccessor(javaTypeName);
+        }
+
         var info = SCALARS.get(javaTypeName);
+
         return info != null
-              ? info
-              : new AccessorInfo("getString", "", "");
+               ? info
+               : new AccessorInfo("getString", "", "");
     }
 
     static Option<AccessorInfo> forScalarReturn(String javaTypeName) {
         var info = SCALARS.get(javaTypeName);
+
         return info != null
-              ? Option.present(info)
-              : Option.empty();
+               ? Option.present(info)
+               : Option.empty();
     }
 
     private static AccessorInfo arrayAccessor(String javaTypeName) {
         var elementType = javaTypeName.substring(0, javaTypeName.length() - 2);
         var boxed = boxedElement(elementType);
+
         return new AccessorInfo("getObject", boxed + "[].class", elementImport(boxed));
     }
 
     private static String boxedElement(String elementType) {
-        return switch (elementType){
+        return switch (elementType) {
             case "int", "java.lang.Integer", "Integer" -> "Integer";
             case "long", "java.lang.Long", "Long" -> "Long";
             case "short", "java.lang.Short", "Short" -> "Short";
@@ -112,9 +118,9 @@ public sealed interface JavaTypeAccessor {
 
     private static String elementImport(String boxedElement) {
         return boxedElement.contains(".")
-              ? boxedElement
-              : "";
+               ? boxedElement
+               : "";
     }
 
-    record unused() implements JavaTypeAccessor{}
+    record unused() implements JavaTypeAccessor {}
 }

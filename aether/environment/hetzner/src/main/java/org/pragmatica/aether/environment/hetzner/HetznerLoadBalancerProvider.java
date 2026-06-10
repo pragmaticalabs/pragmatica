@@ -37,40 +37,48 @@ public record HetznerLoadBalancerProvider(HetznerClient client, long loadBalance
         return success(new HetznerLoadBalancerProvider(client, loadBalancerId, destinationPort));
     }
 
-    @Override public Promise<Unit> onRouteChanged(RouteChange routeChange) {
+    @Override
+    public Promise<Unit> onRouteChanged(RouteChange routeChange) {
         log.debug("Adding {} IP targets for route {} {}",
                   routeChange.nodeIps().size(),
                   routeChange.httpMethod(),
                   routeChange.pathPrefix());
-        var targets = routeChange.nodeIps().stream()
-                                         .map(this::ipTargetRegistration)
-                                         .toList();
+        var targets = routeChange.nodeIps().stream().map(this::ipTargetRegistration).toList();
+
         return combineAll(targets);
     }
 
-    @Override public Promise<Unit> onNodeRemoved(String nodeIp) {
+    @Override
+    public Promise<Unit> onNodeRemoved(String nodeIp) {
         log.debug("Removing IP target {} from load balancer {}", nodeIp, loadBalancerId);
+
         return client.removeIpTarget(loadBalancerId, nodeIp);
     }
 
-    @Override public Promise<LoadBalancerInfo> loadBalancerInfo() {
-        return client.getLoadBalancer(loadBalancerId).map(this::toLbInfo);
+    @Override
+    public Promise<LoadBalancerInfo> loadBalancerInfo() {
+        return client.getLoadBalancer(loadBalancerId)
+                     .map(this::toLbInfo);
     }
 
     private LoadBalancerInfo toLbInfo(LoadBalancer lb) {
-        var targets = resolveCurrentIps(lb.targets()).stream()
-                                       .map(ip -> new LoadBalancerInfo.TargetInfo(ip, "healthy", 1))
-                                       .toList();
+        var targets = resolveCurrentIps(lb.targets()).stream().map(ip -> new LoadBalancerInfo.TargetInfo(ip,
+                                                                                                         "healthy",
+                                                                                                         1)).toList();
+
         return new LoadBalancerInfo(String.valueOf(loadBalancerId), lb.name(), "", "active", targets);
     }
 
-    @Override public Promise<Unit> reconcile(LoadBalancerState state) {
+    @Override
+    public Promise<Unit> reconcile(LoadBalancerState state) {
         log.debug("Reconciling load balancer {} with {} active nodes",
                   loadBalancerId,
                   state.activeNodeIps().size());
         var desiredIps = state.activeNodeIps();
-        return client.getLoadBalancer(loadBalancerId).map(this::currentIpsFromLb)
-                                     .flatMap(currentIps -> reconcileDiff(currentIps, desiredIps));
+
+        return client.getLoadBalancer(loadBalancerId)
+                     .map(this::currentIpsFromLb)
+                     .flatMap(currentIps -> reconcileDiff(currentIps, desiredIps));
     }
 
     private Set<String> currentIpsFromLb(LoadBalancer lb) {
@@ -86,13 +94,15 @@ public record HetznerLoadBalancerProvider(HetznerClient client, long loadBalance
     }
 
     private static Set<String> resolveCurrentIps(List<Target> targets) {
-        return targets.stream().filter(HetznerLoadBalancerProvider::isIpTarget)
-                             .map(HetznerLoadBalancerProvider::ipOf)
-                             .collect(Collectors.toSet());
+        return targets.stream()
+                      .filter(HetznerLoadBalancerProvider::isIpTarget)
+                      .map(HetznerLoadBalancerProvider::ipOf)
+                      .collect(Collectors.toSet());
     }
 
     private static String ipOf(Target target) {
-        return target.ip().ip();
+        return target.ip()
+                     .ip();
     }
 
     private static boolean isIpTarget(Target target) {
@@ -100,28 +110,33 @@ public record HetznerLoadBalancerProvider(HetznerClient client, long loadBalance
     }
 
     private static List<String> missingIps(Set<String> currentIps, Set<String> desiredIps) {
-        return desiredIps.stream().filter(Predicate.not(currentIps::contains))
-                                .toList();
+        return desiredIps.stream()
+                         .filter(Predicate.not(currentIps::contains))
+                         .toList();
     }
 
     private static List<String> surplusIps(Set<String> currentIps, Set<String> desiredIps) {
-        return currentIps.stream().filter(Predicate.not(desiredIps::contains))
-                                .toList();
+        return currentIps.stream()
+                         .filter(Predicate.not(desiredIps::contains))
+                         .toList();
     }
 
     private Promise<Unit> reconcileDiff(Set<String> currentIps, Set<String> desiredIps) {
         var ipsToRegister = missingIps(currentIps, desiredIps);
         var ipsToUnregister = surplusIps(currentIps, desiredIps);
+
         log.debug("Reconciliation diff: {} to add, {} to remove", ipsToRegister.size(), ipsToUnregister.size());
         var registerOps = ipsToRegister.stream().map(this::ipTargetRegistration);
         var unregisterOps = ipsToUnregister.stream().map(this::ipTargetUnregistration);
         var all = Stream.concat(registerOps, unregisterOps).toList();
+
         return combineAll(all);
     }
 
     private static Promise<Unit> combineAll(Collection<Promise<Unit>> promises) {
-        return Promise.allOf(promises).map(HetznerLoadBalancerProvider::collectResults)
-                            .flatMap(Result::async);
+        return Promise.allOf(promises)
+                      .map(HetznerLoadBalancerProvider::collectResults)
+                      .flatMap(Result::async);
     }
 
     private static Result<Unit> collectResults(List<Result<Unit>> results) {

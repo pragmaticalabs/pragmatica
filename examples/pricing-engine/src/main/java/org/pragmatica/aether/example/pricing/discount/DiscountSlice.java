@@ -51,6 +51,7 @@ public interface DiscountSlice {
                 return new DiscountResponse(0, "");
             }
         }
+
         return new discountSlice(db);
     }
 }

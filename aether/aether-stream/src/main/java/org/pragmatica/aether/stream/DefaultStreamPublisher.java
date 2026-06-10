@@ -137,85 +137,100 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                             governorResolver);
     }
 
-    @Override public Promise<Unit> publish(T event) {
+    @Override
+    public Promise<Unit> publish(T event) {
         var bytes = serializer.encode(event);
         var partition = resolvePartition(event);
         var timestamp = System.currentTimeMillis();
-        return switch (consistencyMode){
+
+        return switch (consistencyMode) {
             case EVENTUAL -> publishEventual(partition, bytes, timestamp);
             case STRONG -> publishStrong(partition, bytes, timestamp);
         };
     }
 
-    @Override public Promise<Unit> publishBatch(List<T> events) {
-        if (events.isEmpty()) {return Promise.unitPromise();}
-        if (consistencyMode == ConsistencyMode.STRONG) {return publishBatchStrong(events);}
+    @Override
+    public Promise<Unit> publishBatch(List<T> events) {
+        if (events.isEmpty()) {
+            return Promise.unitPromise();
+        }
+
+        if (consistencyMode == ConsistencyMode.STRONG) {
+            return publishBatchStrong(events);
+        }
+
         return publishBatchEventual(events);
     }
 
     private Promise<Unit> publishBatchStrong(List<T> events) {
-        return Promise.allOf(events.stream().map(this::publish)
-                                          .toList()).mapToUnit();
+        return Promise.allOf(events.stream().map(this::publish).toList()).mapToUnit();
     }
 
     private Promise<Unit> publishBatchEventual(List<T> events) {
-        var payloads = events.stream().map(serializer::encode)
-                                    .toList();
+        var payloads = events.stream().map(serializer::encode).toList();
         var timestamps = new long[events.size()];
         var now = System.currentTimeMillis();
+
         Arrays.fill(timestamps, now);
         var partition = resolvePartition(events.getFirst());
-        return partitionManager.partitionBuffer(streamName, partition).toResult(StreamError.General.PARTITION_NOT_LOCAL)
-                                               .flatMap(buffer -> buffer.appendBatch(payloads, timestamps))
-                                               .mapToUnit()
-                                               .async();
+
+        return partitionManager.partitionBuffer(streamName, partition)
+                               .toResult(StreamError.General.PARTITION_NOT_LOCAL)
+                               .flatMap(buffer -> buffer.appendBatch(payloads, timestamps))
+                               .mapToUnit()
+                               .async();
     }
 
     private Promise<Unit> publishEventual(int partition, byte[] bytes, long timestamp) {
-        if (partitionManager.partitionBuffer(streamName, partition).isPresent()) {return publishLocalEventual(partition,
-                                                                                                              bytes,
-                                                                                                              timestamp);}
+        if (partitionManager.partitionBuffer(streamName, partition).isPresent()) {
+            return publishLocalEventual(partition, bytes, timestamp);
+        }
+
         return publishRemote(partition, bytes, timestamp);
     }
 
     private Promise<Unit> publishLocalEventual(int partition, byte[] bytes, long timestamp) {
-        if (minSyncReplicas <= 0) {return partitionManager.publishLocal(streamName, partition, bytes, timestamp).mapToUnit()
-                                                                       .async();}
-        return partitionManager.publishLocal(streamName, partition, bytes, timestamp).async()
-                                            .flatMap(offset -> partitionManager.awaitReplication(streamName,
-                                                                                                 partition,
-                                                                                                 offset,
-                                                                                                 minSyncReplicas));
+        if (minSyncReplicas <= 0) {
+            return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
+                                   .mapToUnit()
+                                   .async();
+        }
+
+        return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
+                               .async()
+                               .flatMap(offset -> partitionManager.awaitReplication(streamName,
+                                                                                    partition,
+                                                                                    offset,
+                                                                                    minSyncReplicas));
     }
 
     private Promise<Unit> publishRemote(int partition, byte[] bytes, long timestamp) {
         return resolveForwardClientAndGovernor().flatMap(pair -> pair.client()
-                                                                            .publishRemote(pair.governorId(),
-                                                                                           streamName,
-                                                                                           partition,
-                                                                                           bytes,
-                                                                                           timestamp))
+                                                                     .publishRemote(pair.governorId(),
+                                                                                    streamName,
+                                                                                    partition,
+                                                                                    bytes,
+                                                                                    timestamp))
                                               .mapToUnit();
     }
 
     private Promise<ForwardTarget> resolveForwardClientAndGovernor() {
         return forwardClient.async(StreamForwardError.General.GOVERNOR_UNAVAILABLE)
-                                  .flatMap(this::resolveGovernorForClient);
+                            .flatMap(this::resolveGovernorForClient);
     }
 
     private Promise<ForwardTarget> resolveGovernorForClient(StreamForwardClient client) {
-        return governorResolver.flatMap(Fn0::apply).async(StreamForwardError.General.GOVERNOR_UNAVAILABLE)
-                                       .map(governorId -> new ForwardTarget(client, governorId));
+        return governorResolver.flatMap(Fn0::apply)
+                               .async(StreamForwardError.General.GOVERNOR_UNAVAILABLE)
+                               .map(governorId -> new ForwardTarget(client, governorId));
     }
 
-    private record ForwardTarget(StreamForwardClient client, NodeId governorId){}
+    private record ForwardTarget(StreamForwardClient client, NodeId governorId) {}
 
     private Promise<Unit> publishStrong(int partition, byte[] bytes, long timestamp) {
-        return consensusPath.async(StreamError.General.CONSENSUS_PATH_UNAVAILABLE).flatMap(path -> path.publish(streamName,
-                                                                                                                partition,
-                                                                                                                bytes,
-                                                                                                                timestamp))
-                                  .mapToUnit();
+        return consensusPath.async(StreamError.General.CONSENSUS_PATH_UNAVAILABLE)
+                            .flatMap(path -> path.publish(streamName, partition, bytes, timestamp))
+                            .mapToUnit();
     }
 
     /// Resolve the target partition for `event`. A configured key extractor routes through the STABLE
@@ -224,10 +239,11 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     /// every node/JVM (m2). Keyless publishes fall back to round-robin.
     private int resolvePartition(T event) {
         return partitionKeyExtractor.map(extractor -> stablePartition(extractor.apply(event)))
-                                    .or(() -> (int) (roundRobinCounter.getAndIncrement() % partitionCount));
+                                    .or(() -> (int)(roundRobinCounter.getAndIncrement() % partitionCount));
     }
 
     private int stablePartition(Object key) {
-        return (int) Math.floorMod(ReplicaPlacement.stableHash64(String.valueOf(key)), (long) partitionCount);
+        return (int) Math.floorMod(ReplicaPlacement.stableHash64(String.valueOf(key)),
+                                   (long) partitionCount);
     }
 }

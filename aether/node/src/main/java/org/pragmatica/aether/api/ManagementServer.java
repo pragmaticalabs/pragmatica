@@ -5,7 +5,6 @@
 package org.pragmatica.aether.api;
 
 import org.pragmatica.aether.slice.resource.ResourceAddress;
-
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.http.forward.HttpForwarder;
@@ -200,9 +199,9 @@ class ManagementServerImpl implements ManagementServer {
     private final Option<Serializer> forwardSerializer;
     private final Option<Deserializer> forwardDeserializer;
     private final ForwardingTimeouts forwardingTimeouts;
-
     private final Consumer<NodeId> drainCommandSink;
     private final Supplier<Set<NodeId>> pendingDrainsSupplier;
+
     private final AtomicReference<Option<HttpForwarder>> mgmtForwarderRef = new AtomicReference<>(Option.empty());
 
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
@@ -272,6 +271,7 @@ class ManagementServerImpl implements ManagementServer {
         this.tls = tls;
         this.probeJsonMapper = JsonMapper.defaultJsonMapper();
         var routeSources = new ArrayList<RouteSource>();
+
         this.statusRoutes = StatusRoutes.statusRoutes(nodeSupplier,
                                                       () -> nodeSupplier.get()
                                                                         .appHttpServer());
@@ -320,7 +320,6 @@ class ManagementServerImpl implements ManagementServer {
     @Override
     public Promise<Unit> start() {
         log.info("Starting management server on port {} (protocol: {})", port, httpProtocol);
-
         if (httpProtocol.includesH1()) {
             return startH1Server().flatMap(_ -> httpProtocol.includesH3()
                                                 ? startH3Server()
@@ -364,6 +363,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                          wg)).or(HttpServer.http3Server(serverConfig,
                                                                                                         quicSslContext,
                                                                                                         this::handleRequest));
+
         return serverPromise.map(this::registerStartedH3Server)
                             .onFailure(cause -> log.error("Failed to start management HTTP/3 server on port {}: {}",
                                                           port,
@@ -423,6 +423,7 @@ class ManagementServerImpl implements ManagementServer {
     private Promise<Unit> stopHttpServers() {
         var h1Stop = Option.option(serverRef.getAndSet(null)).map(HttpServer::stop).or(Promise.success(unit()));
         var h3Stop = Option.option(h3ServerRef.getAndSet(null)).map(HttpServer::stop).or(Promise.success(unit()));
+
         return h1Stop.flatMap(_ -> h3Stop);
     }
 
@@ -488,6 +489,7 @@ class ManagementServerImpl implements ManagementServer {
         var transport = tls.isPresent()
                         ? "HTTPS"
                         : "HTTP";
+
         log.info("{} management server started on port {} (protocol: {}, dashboard at /)", transport, port, httpProtocol);
     }
 
@@ -495,6 +497,7 @@ class ManagementServerImpl implements ManagementServer {
         var spm = nodeSupplier.get().streamPartitionManager();
         Supplier<Number> usedBytes = spm::totalAllocatedBytes;
         Supplier<Number> usedRatio = () -> computeStreamMemoryRatio(spm);
+
         observability.gauge("aether.streams.memory.used.bytes", usedBytes);
         observability.gauge("aether.streams.memory.used.ratio", usedRatio);
     }
@@ -517,6 +520,7 @@ class ManagementServerImpl implements ManagementServer {
         var allMetrics = node.metricsCollector().allMetrics();
         var deployments = node.deploymentMap().allDeployments();
         var sb = new StringBuilder(4096);
+
         sb.append("{\"uptimeSeconds\":").append(node.uptimeSeconds());
         appendNodeMetrics(sb, allMetrics, leaderId);
         appendSlices(sb, deployments);
@@ -553,6 +557,7 @@ class ManagementServerImpl implements ManagementServer {
         var cpuUsage = metrics.getOrDefault("cpu.usage", 0.0);
         var heapUsed = metrics.getOrDefault("heap.used", 0.0);
         var heapMax = metrics.getOrDefault("heap.max", 1.0);
+
         sb.append("{\"nodeId\":\"").append(escapeJson(nodeId)).append("\"");
         sb.append(",\"isLeader\":").append(leaderId.equals(nodeId));
         sb.append(",\"cpuUsage\":").append(cpuUsage);
@@ -611,6 +616,7 @@ class ManagementServerImpl implements ManagementServer {
             if (!first) sb.append(",");
 
             var nodeId = entry.getKey().id();
+
             sb.append("{\"id\":\"").append(escapeJson(nodeId)).append("\"");
             sb.append(",\"isLeader\":").append(leaderId.equals(nodeId));
             sb.append("}");
@@ -626,6 +632,7 @@ class ManagementServerImpl implements ManagementServer {
     @SuppressWarnings("JBCT-PAT-01")
     static String buildEventsJson(List<ClusterEvent> events) {
         var sb = new StringBuilder(256);
+
         sb.append("[");
         var first = true;
 
@@ -670,6 +677,7 @@ class ManagementServerImpl implements ManagementServer {
         var path = ctx.path();
         var method = ctx.method();
         var methodName = method.name();
+
         log.debug("Received {} {}", method, path);
         var instrumented = InstrumentedResponseWriter.instrumentedResponseWriter(response);
 
@@ -678,17 +686,20 @@ class ManagementServerImpl implements ManagementServer {
 
             return;
         }
+
         if (isDashboardPath(path)) {
             staticFileHandler.handle(ctx, instrumented);
             recordRequestMetrics(methodName, path, instrumented, startTime);
 
             return;
         }
+
         if (rejectSystemStreamWrite(ctx, instrumented, path, methodName)) {
             recordRequestMetrics(methodName, path, instrumented, startTime);
 
             return;
         }
+
         if (securityEnabled) {
             var auth = validateManagementSecurity(ctx, instrumented, path, method);
 
@@ -697,8 +708,13 @@ class ManagementServerImpl implements ManagementServer {
 
                 return;
             }
-            auth.onSuccess(sc -> ScopedValue.where(SecurityContextHolder.scopedValue(), sc)
-                                            .run(() -> dispatchManagementRequest(ctx, instrumented, methodName, startTime)));
+
+            auth.onSuccess(sc -> ScopedValue.where(SecurityContextHolder.scopedValue(),
+                                                   sc)
+                                            .run(() -> dispatchManagementRequest(ctx,
+                                                                                 instrumented,
+                                                                                 methodName,
+                                                                                 startTime)));
 
             return;
         }
@@ -712,12 +728,16 @@ class ManagementServerImpl implements ManagementServer {
                                            long startTime) {
         var path = ctx.path();
 
-        if (tryForwardToRouteOwner(ctx, instrumented, methodName, startTime)) {return;}
+        if (tryForwardToRouteOwner(ctx, instrumented, methodName, startTime)) {
+            return;
+        }
+
         if (router.handle(ctx, instrumented)) {
             recordRequestMetrics(methodName, path, instrumented, startTime);
 
             return;
         }
+
         for (var handler : legacyRoutes) {
             if (handler.handle(ctx, instrumented)) {
                 recordRequestMetrics(methodName, path, instrumented, startTime);
@@ -736,11 +756,15 @@ class ManagementServerImpl implements ManagementServer {
                                            long startTime) {
         var methodOpt = parseRoutingMethod(ctx.method().name());
 
-        if (methodOpt.isEmpty()) {return false;}
+        if (methodOpt.isEmpty()) {
+            return false;
+        }
 
         var matched = ManagementRoute.match(methodOpt.unwrap(), ctx.path()).option();
 
-        if (matched.isEmpty()) {return false;}
+        if (matched.isEmpty()) {
+            return false;
+        }
 
         var matchedRoute = matched.unwrap();
         var target = matchedRoute.route().target();
@@ -769,7 +793,9 @@ class ManagementServerImpl implements ManagementServer {
                                           long startTime) {
         var node = nodeSupplier.get();
 
-        if (node.isLeader()) {return false;}
+        if (node.isLeader()) {
+            return false;
+        }
 
         forwardManagementRequest(ctx, response, methodName, startTime);
 
@@ -783,7 +809,9 @@ class ManagementServerImpl implements ManagementServer {
         var node = nodeSupplier.get();
 
         if (node.topologyConfig().coreNodes().stream().anyMatch(info -> info.id()
-                                                                            .equals(node.self()))) {return false;}
+                                                                            .equals(node.self()))) {
+            return false;
+        }
 
         forwardManagementRequest(ctx, response, methodName, startTime);
 
@@ -798,11 +826,15 @@ class ManagementServerImpl implements ManagementServer {
         var node = nodeSupplier.get();
         var ownerResult = node.taskGroupOwnerResolver().apply(group);
 
-        if (ownerResult.isFailure()) {return false;}
+        if (ownerResult.isFailure()) {
+            return false;
+        }
 
         var owner = ownerResult.unwrap();
 
-        if (owner.equals(node.self())) {return false;}
+        if (owner.equals(node.self())) {
+            return false;
+        }
 
         forwardManagementRequest(ctx, response, methodName, startTime);
 
@@ -820,15 +852,21 @@ class ManagementServerImpl implements ManagementServer {
                                               int paramIndex) {
         var paramNames = matched.route().paramNames();
 
-        if (paramIndex <0 || paramIndex >= paramNames.size()) {return false;}
+        if (paramIndex < 0 || paramIndex >= paramNames.size()) {
+            return false;
+        }
 
         var targetId = matched.params().get(paramNames.get(paramIndex));
 
-        if (targetId == null) {return false;}
+        if (targetId == null) {
+            return false;
+        }
 
         var node = nodeSupplier.get();
 
-        if (targetId.equals(node.self().id())) {return false;}
+        if (targetId.equals(node.self().id())) {
+            return false;
+        }
 
         forwardManagementRequest(ctx, response, methodName, startTime);
 
@@ -841,6 +879,7 @@ class ManagementServerImpl implements ManagementServer {
                                           long startTime) {
         var path = ctx.path();
         var requestId = ctx.requestId();
+
         ensureMgmtForwarder().fold(() -> sendForwardUnavailable(response, path, requestId, methodName, startTime),
                                    forwarder -> {
                                        forwarder.forwardManagement(toManagementRequestContext(ctx, path),
@@ -854,6 +893,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                                                           path,
                                                                                                           response,
                                                                                                           startTime));
+
                                        return Unit.unit();
                                    });
     }
@@ -861,8 +901,13 @@ class ManagementServerImpl implements ManagementServer {
     private Option<HttpForwarder> ensureMgmtForwarder() {
         var existing = mgmtForwarderRef.get();
 
-        if (existing.isPresent()) {return existing;}
-        if (clusterNetwork.isEmpty() || forwardSerializer.isEmpty() || forwardDeserializer.isEmpty()) {return Option.empty();}
+        if (existing.isPresent()) {
+            return existing;
+        }
+
+        if (clusterNetwork.isEmpty() || forwardSerializer.isEmpty() || forwardDeserializer.isEmpty()) {
+            return Option.empty();
+        }
 
         var node = nodeSupplier.get();
         var fwd = HttpForwarder.httpForwarder(node.self(),
@@ -901,6 +946,7 @@ class ManagementServerImpl implements ManagementServer {
     private void sendForwardedResponse(InstrumentedResponseWriter response, HttpResponseData responseData) {
         var contentType = Option.option(responseData.headers().get("Content-Type")).map(ct -> ContentType.contentType(ct,
                                                                                                                       ContentCategory.JSON)).or(CommonContentType.APPLICATION_JSON);
+
         response.write(toServerStatus(responseData.statusCode()), responseData.body(), contentType);
     }
 
@@ -930,12 +976,18 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private static HttpStatus toServerStatus(int code) {
-        for (var status : HttpStatus.values()) {if (status.code() == code) {return status;}}
+        for (var status : HttpStatus.values()) {
+            if (status.code() == code) {
+                return status;
+            }
+        }
+
         return HttpStatus.INTERNAL_SERVER_ERROR;
     }
 
     private void recordRequestMetrics(String method, String path, InstrumentedResponseWriter writer, long startTime) {
         var durationNanos = System.nanoTime() - startTime;
+
         requestObserver.recordRequest(method, path, writer.statusCategory(), durationNanos);
     }
 
@@ -951,7 +1003,6 @@ class ManagementServerImpl implements ManagementServer {
         log.trace("Received management HttpForwardRequest [{}] correlationId={}",
                   request.requestId(),
                   request.correlationId());
-
         if (forwardDeserializer.isEmpty() || forwardSerializer.isEmpty() || clusterNetwork.isEmpty()) {
             log.error("[{}] Cannot handle management forward request - missing dependencies", request.requestId());
 
@@ -961,6 +1012,7 @@ class ManagementServerImpl implements ManagementServer {
         var des = forwardDeserializer.unwrap();
         var ser = forwardSerializer.unwrap();
         var network = clusterNetwork.unwrap();
+
         Result.<HttpRequestContext, byte[]> lift1(des::decode, request.requestData()).onFailure(cause -> sendManagementForwardError(network,
                                                                                                                                     request,
                                                                                                                                     "Deserialization failed: " + cause.message())).onSuccess(context -> dispatchManagementForward(context,
@@ -986,6 +1038,7 @@ class ManagementServerImpl implements ManagementServer {
 
                 return;
             }
+
             if (validateManagementSecurity(serverCtx, responseCapture, context.path(), method.unwrap()).isFailure()) {
                 responseCapture.completion().onSuccess(responseData -> sendManagementForwardSuccess(network,
                                                                                                     request,
@@ -993,9 +1046,11 @@ class ManagementServerImpl implements ManagementServer {
                                                                                                     responseData)).onFailure(cause -> sendManagementForwardError(network,
                                                                                                                                                                  request,
                                                                                                                                                                  cause.message()));
+
                 return;
             }
         }
+
         if (router.handle(serverCtx, responseCapture)) {
             responseCapture.completion().onSuccess(responseData -> sendManagementForwardSuccess(network,
                                                                                                 request,
@@ -1003,8 +1058,10 @@ class ManagementServerImpl implements ManagementServer {
                                                                                                 responseData)).onFailure(cause -> sendManagementForwardError(network,
                                                                                                                                                              request,
                                                                                                                                                              cause.message()));
+
             return;
         }
+
         for (var handler : legacyRoutes) {
             if (handler.handle(serverCtx, responseCapture)) {
                 responseCapture.completion().onSuccess(responseData -> sendManagementForwardSuccess(network,
@@ -1013,6 +1070,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                                                     responseData)).onFailure(cause -> sendManagementForwardError(network,
                                                                                                                                                                  request,
                                                                                                                                                                  cause.message()));
+
                 return;
             }
         }
@@ -1025,6 +1083,7 @@ class ManagementServerImpl implements ManagementServer {
         var notFound = new HttpResponseData(HttpStatus.NOT_FOUND.code(),
                                             Map.of("Content-Type", ProblemResponses.problemContentType()),
                                             notFoundBody);
+
         sendManagementForwardSuccess(network, request, ser, notFound);
     }
 
@@ -1046,6 +1105,7 @@ class ManagementServerImpl implements ManagementServer {
                                                       true,
                                                       payload,
                                                       Pipeline.MANAGEMENT);
+
         network.send(request.sender(), forwardResponse);
         log.trace("Sent management forward success response [{}]", request.requestId());
     }
@@ -1058,6 +1118,7 @@ class ManagementServerImpl implements ManagementServer {
                                                       false,
                                                       errorMessage.getBytes(StandardCharsets.UTF_8),
                                                       Pipeline.MANAGEMENT);
+
         network.send(request.sender(), forwardResponse);
     }
 
@@ -1072,15 +1133,18 @@ class ManagementServerImpl implements ManagementServer {
             var httpStatus = "UP".equals(liveness.status())
                              ? HttpStatus.OK
                              : HttpStatus.SERVICE_UNAVAILABLE;
+
             writeProbeJson(response, liveness, httpStatus);
 
             return true;
         }
+
         if ("/health/ready".equals(path)) {
             var readiness = statusRoutes.buildReadinessResponse();
             var httpStatus = "UP".equals(readiness.status())
                              ? HttpStatus.OK
                              : HttpStatus.SERVICE_UNAVAILABLE;
+
             writeProbeJson(response, readiness, httpStatus);
 
             return true;
@@ -1108,8 +1172,13 @@ class ManagementServerImpl implements ManagementServer {
     /// (`/api/streams/{publish,publish-batch,delete}/system/...`,
     /// `/api/streams/groups/{create,delete}/system/...`) or the legacy colon-form
     /// (`/api/streams/...` with a `system:<stream>:<version>` name segment).
-    private boolean rejectSystemStreamWrite(RequestContext ctx, ResponseWriter response, String path, String methodName) {
-        if (!isSystemStreamWriteOverHttp(methodName, path)) {return false;}
+    private boolean rejectSystemStreamWrite(RequestContext ctx,
+                                            ResponseWriter response,
+                                            String path,
+                                            String methodName) {
+        if (!isSystemStreamWriteOverHttp(methodName, path)) {
+            return false;
+        }
 
         ProblemResponses.writeProblem(response,
                                       org.pragmatica.http.routing.HttpStatus.METHOD_NOT_ALLOWED,
@@ -1131,10 +1200,7 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private static boolean isMutatingMethod(String methodName) {
-        return "POST".equalsIgnoreCase(methodName)
-               || "PUT".equalsIgnoreCase(methodName)
-               || "DELETE".equalsIgnoreCase(methodName)
-               || "PATCH".equalsIgnoreCase(methodName);
+        return "POST".equalsIgnoreCase(methodName) || "PUT".equalsIgnoreCase(methodName) || "DELETE".equalsIgnoreCase(methodName) || "PATCH".equalsIgnoreCase(methodName);
     }
 
     /// Detect the `system` namespace in either route shape. Path-based routes carry the namespace
@@ -1143,12 +1209,22 @@ class ManagementServerImpl implements ManagementServer {
     /// `system%3Aaudit%3A1.0.0`). Matching any decoded segment that equals `system` or begins with
     /// `system:` covers both without parsing the full address.
     private static boolean targetsSystemNamespace(String path) {
-        var withoutQuery = path.indexOf('?') >= 0 ? path.substring(0, path.indexOf('?')) : path;
+        var withoutQuery = path.indexOf('?') >= 0
+                           ? path.substring(0, path.indexOf('?'))
+                           : path;
+
         for (var raw : withoutQuery.split("/")) {
-            if (raw.isEmpty()) {continue;}
+            if (raw.isEmpty()) {
+                continue;
+            }
+
             var seg = URLDecoder.decode(raw, StandardCharsets.UTF_8);
-            if (ResourceAddress.SYSTEM_NAMESPACE.equalsIgnoreCase(seg)
-                || seg.regionMatches(true, 0, SYSTEM_NAMESPACE_COLON, 0, SYSTEM_NAMESPACE_COLON.length())) {
+
+            if (ResourceAddress.SYSTEM_NAMESPACE.equalsIgnoreCase(seg) || seg.regionMatches(true,
+                                                                                            0,
+                                                                                            SYSTEM_NAMESPACE_COLON,
+                                                                                            0,
+                                                                                            SYSTEM_NAMESPACE_COLON.length())) {
                 return true;
             }
         }
@@ -1158,8 +1234,8 @@ class ManagementServerImpl implements ManagementServer {
 
     private static final String STREAM_WRITE_PATH_PREFIX = "/api/streams";
 
-    private static final String SYSTEM_NAMESPACE_COLON =
-            org.pragmatica.aether.slice.resource.ResourceAddress.SYSTEM_NAMESPACE + ":";
+    private static final String SYSTEM_NAMESPACE_COLON = org.pragmatica.aether.slice.resource.ResourceAddress.SYSTEM_NAMESPACE
+                                                       + ":";
 
     private Result<SecurityContext> validateManagementSecurity(RequestContext ctx,
                                                                ResponseWriter response,
@@ -1187,15 +1263,13 @@ class ManagementServerImpl implements ManagementServer {
         return RoleEnforcer.enforce(sc, permission).onFailure(_ -> auditAccessDenied(sc, method, path, permission));
     }
 
-    private void auditAccessDenied(SecurityContext sc,
-                                   String method,
-                                   String path,
-                                   RoutePermission permission) {
+    private void auditAccessDenied(SecurityContext sc, String method, String path, RoutePermission permission) {
         var principal = sc.isAuthenticated()
                         ? sc.principal().value()
                         : "anonymous";
         var actualRole = sc.authorizationRole().name();
         var requiredRole = permission.minimumRole().name();
+
         AuditLog.accessDenied(principal, method, path, actualRole, requiredRole);
         nodeSupplier.get().route(OperationalEvent.AccessDenied.accessDenied(principal,
                                                                             method,
@@ -1204,12 +1278,11 @@ class ManagementServerImpl implements ManagementServer {
                                                                             requiredRole));
     }
 
-    private static void logManagementAccess(SecurityContext securityContext,
-                                            String method,
-                                            String path) {
+    private static void logManagementAccess(SecurityContext securityContext, String method, String path) {
         var principal = securityContext.isAuthenticated()
                         ? securityContext.principal().value()
                         : "anonymous";
+
         AuditLog.managementAccess("mgmt", principal, method, path);
     }
 
@@ -1230,8 +1303,8 @@ class ManagementServerImpl implements ManagementServer {
                                                  String requestId) {
         AuditLog.authFailure("mgmt", cause.message(), method, path);
         var status = resolveSecurityErrorStatus(cause);
-        requestObserver.recordSecurityDenial(classifyDenialType(cause), method, path);
 
+        requestObserver.recordSecurityDenial(classifyDenialType(cause), method, path);
         if (status == HttpStatus.UNAUTHORIZED) {
             response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"");
         }
@@ -1241,8 +1314,11 @@ class ManagementServerImpl implements ManagementServer {
 
     private static org.pragmatica.http.routing.HttpStatus toRoutingStatus(HttpStatus status) {
         for (var s : org.pragmatica.http.routing.HttpStatus.values()) {
-            if (s.code() == status.code()) {return s;}
+            if (s.code() == status.code()) {
+                return s;
+            }
         }
+
         return org.pragmatica.http.routing.HttpStatus.INTERNAL_SERVER_ERROR;
     }
 
@@ -1294,8 +1370,13 @@ final class InstrumentedResponseWriter implements ResponseWriter {
     }
 
     String statusCategory() {
-        if (statusCode >= 500) {return "5xx";}
-        if (statusCode >= 400) {return "4xx";}
+        if (statusCode >= 500) {
+            return "5xx";
+        }
+
+        if (statusCode >= 400) {
+            return "4xx";
+        }
 
         return "2xx";
     }

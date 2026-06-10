@@ -213,18 +213,18 @@ public sealed interface ManagementApiResponses {
     ///   Unknown values fall back to constant 0.0.
     /// Gated by `AETHER_INSECURE_DEV_MODE=true` — same gate pattern as
     /// `/api/scheduled-tasks/inject` and `/api/alerts/inject`.
-    record BackfillMetricsRequest(String metric,
-                                  long startTimeMs,
-                                  long endTimeMs,
-                                  long intervalMs,
-                                  String valueFn) {}
+    record BackfillMetricsRequest(String metric, long startTimeMs, long endTimeMs, long intervalMs, String valueFn) {}
 
     /// Response shape for `POST /api/metrics/backfill`. `samplesWritten` is
     /// the number of synthetic snapshots appended to the ring buffer for the
     /// local node; `nodeId` identifies which node received the backfill (the
     /// route is `LOCAL`, so this is always the entry-point node). Tests can
     /// assert `samplesWritten == floor((endTimeMs - startTimeMs) / intervalMs) + 1`.
-    record BackfillMetricsResponse(String nodeId, String metric, long samplesWritten, long startTimeMs, long endTimeMs) {}
+    record BackfillMetricsResponse(String nodeId,
+                                   String metric,
+                                   long samplesWritten,
+                                   long startTimeMs,
+                                   long endTimeMs) {}
 
     record InvocationMetricsResponse(List<InvocationSnapshot> snapshots) {}
 
@@ -306,9 +306,9 @@ public sealed interface ManagementApiResponses {
     /// counters to the KV state so this endpoint can produce true per-node breakdowns.
     /// See `aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-H.
     record ScheduledTaskExecutionsByNodeResponse(String section,
-                                                  String artifact,
-                                                  String method,
-                                                  List<ScheduledTaskNodeExecution> executions) {}
+                                                 String artifact,
+                                                 String method,
+                                                 List<ScheduledTaskNodeExecution> executions) {}
 
     record ScheduledTaskNodeExecution(String nodeId, int count, long lastExecutionMs) {}
 
@@ -330,9 +330,9 @@ public sealed interface ManagementApiResponses {
     /// `secondsUntilExpiry` is the post-configuration delta. The scheduler advances
     /// to its `Renewing` state on the next Tick (40% of `validitySeconds` later).
     record CertConfigureShortValidityResponse(String status,
-                                               int validitySeconds,
-                                               String newExpiresAt,
-                                               long secondsUntilExpiry) {}
+                                              int validitySeconds,
+                                              String newExpiresAt,
+                                              long secondsUntilExpiry) {}
 
     record LogLevelSetResponse(String status, String logger, String level) {}
 
@@ -659,9 +659,5 @@ public sealed interface ManagementApiResponses {
     /// to CORE until an operator promotes it). `newRole` is the role just
     /// written. `nodeId` is the target node. `success=true` is returned only
     /// once the consensus write succeeds.
-    record PromoteNodeResponse(boolean success,
-                                String nodeId,
-                                String previousRole,
-                                String newRole,
-                                String message) {}
+    record PromoteNodeResponse(boolean success, String nodeId, String previousRole, String newRole, String message) {}
 }

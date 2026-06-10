@@ -35,14 +35,15 @@ public record LintDiagnostic(String ruleId,
         return new LintDiagnostic(ruleId, Severity.INFO, message, span, Option.empty());
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         var sb = new StringBuilder();
-        sb.append(severity).append(" [")
-                 .append(ruleId)
-                 .append("] ")
-                 .append(message);
+
+        sb.append(severity).append(" [").append(ruleId).append("] ").append(message);
         sb.append(" at ").append(span);
-        suggestion.onPresent(s -> sb.append("\n  Suggestion: ").append(s));
+        suggestion.onPresent(s -> sb.append("\n  Suggestion: ")
+                                    .append(s));
+
         return sb.toString();
     }
 }

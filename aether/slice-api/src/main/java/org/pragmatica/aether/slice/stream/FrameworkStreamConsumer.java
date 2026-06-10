@@ -5,7 +5,6 @@
 package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.aether.slice.resource.ResourceAddress;
-
 import org.pragmatica.aether.slice.StreamAccess;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.aether.slice.StreamAccess.StreamMetadata;
@@ -41,12 +40,8 @@ import java.util.List;
 ///     Constructed via {@link FrameworkStreamConsumers#testConsumer}.
 public sealed interface FrameworkStreamConsumer<T> permits SystemStreamConsumer, TestSystemStreamConsumer {
     Promise<List<StreamEvent<T>>> fetch(long fromOffset, int maxEvents);
-
     Promise<List<StreamEvent<T>>> fetch(int partition, long fromOffset, int maxEvents);
-
     Promise<Unit> commit(String consumerGroup, int partition, long offset);
-
     Promise<Option<Long>> committedOffset(String consumerGroup, int partition);
-
     Promise<StreamMetadata> metadata();
 }

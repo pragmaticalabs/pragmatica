@@ -176,6 +176,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
     private Promise<Unit> runMigration(String datasourceName, SchemaVersionValue value) {
         var startTime = System.currentTimeMillis();
+
         emitMigrationStarted(datasourceName, value);
 
         return updateStatus(datasourceName, value, SchemaStatus.MIGRATING).flatMap(_ -> resolveAndParseMigrations(datasourceName,
@@ -186,6 +187,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
     private void emitMigrationStarted(String datasourceName, SchemaVersionValue value) {
         var artifactCoords = Option.option(value.artifactCoords()).or("");
+
         AuditLog.schemaMigrationStarted(datasourceName, artifactCoords, self.id());
         router.onPresent(r -> r.route(MigrationStarted.migrationStarted(datasourceName, artifactCoords, self)));
     }
@@ -196,6 +198,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                         int currentVersion,
                                         long durationMs) {
         var artifactCoords = Option.option(value.artifactCoords()).or("");
+
         AuditLog.schemaMigrationCompleted(datasourceName, artifactCoords, appliedCount, currentVersion, durationMs);
         router.onPresent(r -> r.route(MigrationCompleted.migrationCompleted(datasourceName,
                                                                             artifactCoords,
@@ -210,7 +213,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         var attemptNumber = value.attemptCount() + 1;
         var artifactCoords = Option.option(value.artifactCoords()).or("");
 
-        if (classification == FailureClassification.TRANSIENT && attemptNumber <MAX_RETRIES) {
+        if (classification == FailureClassification.TRANSIENT && attemptNumber < MAX_RETRIES) {
             scheduleRetry(datasourceName, value, cause, classification, attemptNumber, artifactCoords);
         } else {
             emitPermanentFailure(datasourceName, value, cause, classification, attemptNumber, artifactCoords);
@@ -232,6 +235,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                                           attemptNumber,
                                                                           MAX_RETRIES,
                                                                           nextRetryMs);
+
         log.warn("Schema migration failed (transient) for '{}': {} — retrying in {}s (attempt {}/{})",
                  datasourceName,
                  cause.message(),
@@ -242,6 +246,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                                                  artifactCoords,
                                                                                  attemptNumber,
                                                                                  nextRetryMs);
+
         AuditLog.schemaMigrationRetrying(datasourceName, artifactCoords, attemptNumber, nextRetryMs);
         router.onPresent(r -> r.route(MigrationRetrying.migrationRetrying(datasourceName,
                                                                           artifactCoords,
@@ -268,6 +273,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                                           attemptNumber,
                                                                           MAX_RETRIES,
                                                                           0);
+
         log.error("Schema migration failed (permanent) for '{}': {}", datasourceName, explanation);
         AuditLog.schemaMigrationFailed(datasourceName, artifactCoords, classification.name(), cause.message());
         router.onPresent(r -> r.route(MigrationFailed.migrationFailed(datasourceName,
@@ -284,10 +290,21 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     static FailureClassification classifyFailure(Cause cause) {
-        if (cause instanceof SchemaError.DatasourceUnreachable) {return FailureClassification.TRANSIENT;}
-        if (cause instanceof SchemaError.LockAcquisitionFailed) {return FailureClassification.TRANSIENT;}
-        if (cause instanceof SchemaError.MigrationFailed) {return FailureClassification.PERMANENT;}
-        if (cause instanceof SchemaError.ChecksumMismatch) {return FailureClassification.PERMANENT;}
+        if (cause instanceof SchemaError.DatasourceUnreachable) {
+            return FailureClassification.TRANSIENT;
+        }
+
+        if (cause instanceof SchemaError.LockAcquisitionFailed) {
+            return FailureClassification.TRANSIENT;
+        }
+
+        if (cause instanceof SchemaError.MigrationFailed) {
+            return FailureClassification.PERMANENT;
+        }
+
+        if (cause instanceof SchemaError.ChecksumMismatch) {
+            return FailureClassification.PERMANENT;
+        }
 
         return FailureClassification.UNKNOWN;
     }
@@ -295,7 +312,9 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     static long calculateBackoff(int attemptNumber) {
         var multiplier = 1L;
 
-        for (var i = 0;i <attemptNumber;i++) {multiplier *= 3;}
+        for (var i = 0; i < attemptNumber; i++) {
+            multiplier *= 3;
+        }
 
         return BACKOFF_BASE_MS * multiplier;
     }
@@ -311,7 +330,9 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private final java.util.Set<String> inFlightMigrations = ConcurrentHashMap.newKeySet();
 
     private Promise<Unit> acquireLock(String datasourceName) {
-        if (!inFlightMigrations.add(datasourceName)) {return LOCK_HELD.promise();}
+        if (!inFlightMigrations.add(datasourceName)) {
+            return LOCK_HELD.promise();
+        }
 
         var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(datasourceName);
 
@@ -463,6 +484,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
     private Promise<Unit> markCompleted(String datasourceName, SchemaVersionValue value, long startTime) {
         var durationMs = System.currentTimeMillis() - startTime;
+
         emitMigrationCompleted(datasourceName, value, 0, value.currentVersion(), durationMs);
 
         return updateStatus(datasourceName, value, SchemaStatus.COMPLETED);

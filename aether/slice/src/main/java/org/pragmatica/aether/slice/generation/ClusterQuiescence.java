@@ -7,7 +7,8 @@ package org.pragmatica.aether.slice.generation;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public enum ClusterQuiescence {
+@Codec
+public enum ClusterQuiescence {
     QUIESCED,
     CONVERGING,
     DEGRADED

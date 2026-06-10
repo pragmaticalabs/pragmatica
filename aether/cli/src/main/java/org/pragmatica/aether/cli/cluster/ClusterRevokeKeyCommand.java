@@ -60,6 +60,7 @@ class ClusterRevokeKeyCommand implements Callable<Integer> {
         var message = immediate
                       ? "Key " + keyId + " revoked immediately."
                       : "Key " + keyId + " revoked with grace period.";
+
         return OutputFormatter.printAction(json, parent.outputOptions(), message);
     }
 

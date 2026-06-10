@@ -19,7 +19,7 @@ public enum DeploymentState {
     ROLLED_BACK,
     FAILED;
     public Set<DeploymentState> validTransitions() {
-        return switch (this){
+        return switch (this) {
             case PENDING -> Set.of(DEPLOYING, FAILED);
             case DEPLOYING -> Set.of(DEPLOYED, ROLLING_BACK, FAILED);
             case DEPLOYED -> Set.of(ROUTING, PROMOTING, COMPLETED, ROLLING_BACK, FAILED);

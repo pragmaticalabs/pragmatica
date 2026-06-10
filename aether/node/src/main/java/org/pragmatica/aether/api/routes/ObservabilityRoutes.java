@@ -121,19 +121,24 @@ public final class ObservabilityRoutes implements RouteSource {
     }
 
     private Promise<List<TraceView>> handleQueryTraces(Option<String> limitOpt,
-                                              Option<String> methodOpt,
-                                              Option<String> statusOpt,
-                                              Option<String> minDepthOpt,
-                                              Option<String> maxDepthOpt) {
+                                                       Option<String> methodOpt,
+                                                       Option<String> statusOpt,
+                                                       Option<String> minDepthOpt,
+                                                       Option<String> maxDepthOpt) {
         var limit = limitOpt.map(ObservabilityRoutes::parseIntOrDefault).or(DEFAULT_LIMIT);
+
         return traceStore.query(node -> matchesTraceFilters(node, methodOpt, statusOpt, minDepthOpt, maxDepthOpt),
                                 limit)
                          .map(ObservabilityRoutes::toTraceViews);
     }
 
     private Promise<List<TraceView>> handleTraceByRequestId(String requestId) {
-        if (requestId.isEmpty()) {return ObservabilityError.REQUEST_ID_REQUIRED.promise();}
-        return traceStore.forRequest(requestId).map(ObservabilityRoutes::toTraceViews);
+        if (requestId.isEmpty()) {
+            return ObservabilityError.REQUEST_ID_REQUIRED.promise();
+        }
+
+        return traceStore.forRequest(requestId)
+                         .map(ObservabilityRoutes::toTraceViews);
     }
 
     private TraceStats handleTraceStats() {
@@ -156,15 +161,26 @@ public final class ObservabilityRoutes implements RouteSource {
     }
 
     private Promise<DepthRemovedResponse> handleDeleteDepth(String artifact, String method) {
-        if (artifact.isEmpty() || method.isEmpty()) {return ObservabilityError.KEY_REQUIRED.promise();}
+        if (artifact.isEmpty() || method.isEmpty()) {
+            return ObservabilityError.KEY_REQUIRED.promise();
+        }
+
         return depthRegistry.removeConfig(artifact, method)
                             .map(_ -> new DepthRemovedResponse("depth_removed", artifact, method));
     }
 
     private static Result<SetDepthRequest> validateSetDepthRequest(SetDepthRequest req) {
-        if (req.artifact() == null || req.artifact().isEmpty()) {return ObservabilityError.MISSING_FIELDS.result();}
-        if (req.method() == null || req.method().isEmpty()) {return ObservabilityError.MISSING_FIELDS.result();}
-        if (req.depthThreshold() <0) {return ObservabilityError.INVALID_DEPTH.result();}
+        if (req.artifact() == null || req.artifact().isEmpty()) {
+            return ObservabilityError.MISSING_FIELDS.result();
+        }
+
+        if (req.method() == null || req.method().isEmpty()) {
+            return ObservabilityError.MISSING_FIELDS.result();
+        }
+
+        if (req.depthThreshold() < 0) {
+            return ObservabilityError.INVALID_DEPTH.result();
+        }
 
         return Result.success(req);
     }

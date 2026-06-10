@@ -10,13 +10,15 @@ import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public sealed interface HttpForwardMessage extends ProtocolMessage {
+@Codec
+public sealed interface HttpForwardMessage extends ProtocolMessage {
     @Override
     default StreamType streamType() {
         return StreamType.FORWARD;
     }
 
-    @Codec enum Pipeline {
+    @Codec
+    enum Pipeline {
         APP,
         MANAGEMENT
     }
@@ -25,12 +27,12 @@ import org.pragmatica.serialization.Codec;
                               String correlationId,
                               String requestId,
                               byte[] requestData,
-                              Pipeline pipeline) implements HttpForwardMessage{}
+                              Pipeline pipeline) implements HttpForwardMessage {}
 
     record HttpForwardResponse(NodeId sender,
                                String correlationId,
                                String requestId,
                                boolean success,
                                byte[] payload,
-                               Pipeline pipeline) implements HttpForwardMessage{}
+                               Pipeline pipeline) implements HttpForwardMessage {}
 }

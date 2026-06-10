@@ -45,7 +45,10 @@ public final class InFlightRequestTracker {
     /// was admitted should call `tryEnter()` instead.
     @Contract
     public void enter() {
-        if (!acceptingNewWork.get()) {return;}
+        if (!acceptingNewWork.get()) {
+            return;
+        }
+
         counter.incrementAndGet();
     }
 
@@ -53,7 +56,9 @@ public final class InFlightRequestTracker {
     /// incremented; returns `false` if the node has begun self-draining and the
     /// caller MUST reject the request (HTTP 503, abort handler).
     public boolean tryEnter() {
-        if (!acceptingNewWork.get()) {return false;}
+        if (!acceptingNewWork.get()) {
+            return false;
+        }
 
         counter.incrementAndGet();
 
@@ -63,7 +68,10 @@ public final class InFlightRequestTracker {
     @Contract
     public void exit() {
         var updated = counter.updateAndGet(v -> Math.max(0, v - 1));
-        if (updated == 0 && !acceptingNewWork.get()) {fireDrainCallbackIfPending();}
+
+        if (updated == 0 && !acceptingNewWork.get()) {
+            fireDrainCallbackIfPending();
+        }
     }
 
     public int count() {
@@ -82,7 +90,9 @@ public final class InFlightRequestTracker {
     @Contract
     public void setAcceptingNewWork(boolean accepting) {
         acceptingNewWork.set(accepting);
-        if (!accepting && counter.get() == 0) {fireDrainCallbackIfPending();}
+        if (!accepting && counter.get() == 0) {
+            fireDrainCallbackIfPending();
+        }
     }
 
     /// Register a single callback that fires once when the in-flight count reaches zero
@@ -91,14 +101,21 @@ public final class InFlightRequestTracker {
     @Contract
     public void onAllDrained(Runnable callback) {
         onAllDrained.set(callback);
-        if (!acceptingNewWork.get() && counter.get() == 0) {fireDrainCallbackIfPending();}
+        if (!acceptingNewWork.get() && counter.get() == 0) {
+            fireDrainCallbackIfPending();
+        }
     }
 
     private void fireDrainCallbackIfPending() {
         var callback = onAllDrained.get();
 
-        if (callback == null) {return;}
-        if (!drainCallbackFired.compareAndSet(false, true)) {return;}
+        if (callback == null) {
+            return;
+        }
+
+        if (!drainCallbackFired.compareAndSet(false, true)) {
+            return;
+        }
 
         callback.run();
     }

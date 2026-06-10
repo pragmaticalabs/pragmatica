@@ -63,7 +63,7 @@ public final class JooqTypeMapper {
     }
 
     public static TypeMapping map(PgType type, String defaultSchema) {
-        return switch (type){
+        return switch (type) {
             case BuiltinType b -> mapBuiltin(b);
             case ArrayType a -> mapArray(a);
             case EnumType e -> mapUserDefined(e.name(), schemaOrDefault(e.schema(), defaultSchema));
@@ -75,7 +75,8 @@ public final class JooqTypeMapper {
 
     private static TypeMapping mapBuiltin(BuiltinType type) {
         var modifiers = type.modifiers();
-        return switch (type.name()){
+
+        return switch (type.name()) {
             case "int2", "smallint" -> TypeMapping.typeMapping("smallint", "int2", "pg_catalog");
             case "int4", "integer", "int" -> TypeMapping.typeMapping("integer", "int4", "pg_catalog");
             case "int8", "bigint" -> TypeMapping.typeMapping("bigint", "int8", "pg_catalog");
@@ -120,43 +121,71 @@ public final class JooqTypeMapper {
 
     private static TypeMapping mapNumeric(List<Integer> modifiers) {
         var mapping = TypeMapping.typeMapping("numeric", "numeric", "pg_catalog");
-        if (modifiers.size() >= 2) {return mapping.withNumericPrecision(modifiers.get(0), modifiers.get(1));}
-        if (modifiers.size() == 1) {return mapping.withNumericPrecision(modifiers.getFirst(), 0);}
+
+        if (modifiers.size() >= 2) {
+            return mapping.withNumericPrecision(modifiers.get(0), modifiers.get(1));
+        }
+
+        if (modifiers.size() == 1) {
+            return mapping.withNumericPrecision(modifiers.getFirst(), 0);
+        }
+
         return mapping;
     }
 
     private static TypeMapping mapVarchar(List<Integer> modifiers) {
         var mapping = TypeMapping.typeMapping("character varying", "varchar", "pg_catalog");
-        if (!modifiers.isEmpty()) {return mapping.withCharacterMaximumLength(modifiers.getFirst());}
+
+        if (!modifiers.isEmpty()) {
+            return mapping.withCharacterMaximumLength(modifiers.getFirst());
+        }
+
         return mapping;
     }
 
     private static TypeMapping mapChar(List<Integer> modifiers) {
         var mapping = TypeMapping.typeMapping("character", "bpchar", "pg_catalog");
-        if (!modifiers.isEmpty()) {return mapping.withCharacterMaximumLength(modifiers.getFirst());}
+
+        if (!modifiers.isEmpty()) {
+            return mapping.withCharacterMaximumLength(modifiers.getFirst());
+        }
+
         return mapping.withCharacterMaximumLength(1);
     }
 
     private static TypeMapping mapTimestamp(String dataType, String udtName, List<Integer> modifiers) {
         var mapping = TypeMapping.typeMapping(dataType, udtName, "pg_catalog");
-        if (!modifiers.isEmpty()) {return mapping.withDatetimePrecision(modifiers.getFirst());}
+
+        if (!modifiers.isEmpty()) {
+            return mapping.withDatetimePrecision(modifiers.getFirst());
+        }
+
         return mapping;
     }
 
     private static TypeMapping mapBit(List<Integer> modifiers) {
         var mapping = TypeMapping.typeMapping("bit", "bit", "pg_catalog");
-        if (!modifiers.isEmpty()) {return mapping.withCharacterMaximumLength(modifiers.getFirst());}
+
+        if (!modifiers.isEmpty()) {
+            return mapping.withCharacterMaximumLength(modifiers.getFirst());
+        }
+
         return mapping.withCharacterMaximumLength(1);
     }
 
     private static TypeMapping mapVarbit(List<Integer> modifiers) {
         var mapping = TypeMapping.typeMapping("bit varying", "varbit", "pg_catalog");
-        if (!modifiers.isEmpty()) {return mapping.withCharacterMaximumLength(modifiers.getFirst());}
+
+        if (!modifiers.isEmpty()) {
+            return mapping.withCharacterMaximumLength(modifiers.getFirst());
+        }
+
         return mapping;
     }
 
     private static TypeMapping mapArray(ArrayType type) {
         var elementMapping = map(type.elementType(), "pg_catalog");
+
         return TypeMapping.typeMapping("ARRAY", "_" + elementMapping.udtName(), elementMapping.udtSchema());
     }
 
@@ -166,7 +195,7 @@ public final class JooqTypeMapper {
 
     private static String schemaOrDefault(String schema, String defaultSchema) {
         return schema.isEmpty()
-              ? defaultSchema
-              : schema;
+               ? defaultSchema
+               : schema;
     }
 }

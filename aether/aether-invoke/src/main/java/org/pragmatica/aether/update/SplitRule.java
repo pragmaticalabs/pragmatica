@@ -17,9 +17,11 @@ public sealed interface SplitRule {
             return new HeaderHashSplit(headerName, variantCount);
         }
 
-        @Override public String resolveVariant(Map<String, String> headers, Map<String, String> cookies) {
+        @Override
+        public String resolveVariant(Map<String, String> headers, Map<String, String> cookies) {
             var value = headers.getOrDefault(headerName, "");
             var hash = Math.abs(value.hashCode()) % variantCount;
+
             return "variant-" + hash;
         }
     }
@@ -29,9 +31,11 @@ public sealed interface SplitRule {
             return new CookieHashSplit(cookieName, variantCount);
         }
 
-        @Override public String resolveVariant(Map<String, String> headers, Map<String, String> cookies) {
+        @Override
+        public String resolveVariant(Map<String, String> headers, Map<String, String> cookies) {
             var value = cookies.getOrDefault(cookieName, "");
             var hash = Math.abs(value.hashCode()) % variantCount;
+
             return "variant-" + hash;
         }
     }
@@ -43,8 +47,10 @@ public sealed interface SplitRule {
             return new HeaderMatchSplit(headerName, valueToVariant, defaultVariant);
         }
 
-        @Override public String resolveVariant(Map<String, String> headers, Map<String, String> cookies) {
+        @Override
+        public String resolveVariant(Map<String, String> headers, Map<String, String> cookies) {
             var value = headers.getOrDefault(headerName, "");
+
             return valueToVariant.getOrDefault(value, defaultVariant);
         }
     }
@@ -60,23 +66,34 @@ public sealed interface SplitRule {
             }
         }
 
-        @Override public String resolveVariant(Map<String, String> headers, Map<String, String> cookies) {
-            var totalWeight = weights.stream().mapToInt(VariantWeight::weight)
-                                            .sum();
-            if (totalWeight <= 0) {return weights.isEmpty()
-                                         ? "variant-0"
-                                         : weights.getFirst().variant();}
+        @Override
+        public String resolveVariant(Map<String, String> headers, Map<String, String> cookies) {
+            var totalWeight = weights.stream().mapToInt(VariantWeight::weight).sum();
+
+            if (totalWeight <= 0) {
+                return weights.isEmpty()
+                       ? "variant-0"
+                       : weights.getFirst()
+                                .variant();
+            }
+
             var random = ThreadLocalRandom.current().nextInt(totalWeight);
+
             return selectVariantByWeight(random);
         }
 
         private String selectVariantByWeight(int random) {
             var cumulative = 0;
+
             for (var vw : weights) {
                 cumulative += vw.weight();
-                if (random <cumulative) {return vw.variant();}
+                if (random < cumulative) {
+                    return vw.variant();
+                }
             }
-            return weights.getLast().variant();
+
+            return weights.getLast()
+                          .variant();
         }
     }
 }

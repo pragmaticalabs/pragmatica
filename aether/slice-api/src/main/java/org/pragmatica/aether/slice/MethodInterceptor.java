@@ -8,6 +8,7 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
 
 
-@FunctionalInterface public interface MethodInterceptor {
+@FunctionalInterface
+public interface MethodInterceptor {
     <R, T> Fn1<Promise<R>, T> intercept(Fn1<Promise<R>, T> method);
 }

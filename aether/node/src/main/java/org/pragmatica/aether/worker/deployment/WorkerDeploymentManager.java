@@ -74,9 +74,12 @@ public interface WorkerDeploymentManager {
                                        Supplier<String> communityIdSupplier) implements WorkerDeploymentManager {
             @Override
             public void onDirectivePut(WorkerSliceDirectiveValue directive) {
-                if (isDirectiveForDifferentCommunity(directive)) {return;}
+                if (isDirectiveForDifferentCommunity(directive)) {
+                    return;
+                }
 
                 var artifact = directive.artifact();
+
                 directives.put(artifact, directive);
                 log.info("Received worker directive for {} with {} target instances",
                          artifact,
@@ -125,7 +128,9 @@ public interface WorkerDeploymentManager {
                 } else if (assigned == 0 && needsUndeploy(current)) {
                     deployments.remove(artifact);
                     teardownSlice(artifact);
-                } else {current.onPresent(c -> deployments.put(artifact, c.withInstances(assigned)));}
+                } else {
+                    current.onPresent(c -> deployments.put(artifact, c.withInstances(assigned)));
+                }
             }
 
             private static boolean needsDeploy(Option<WorkerSliceDeployment> current) {
@@ -140,6 +145,7 @@ public interface WorkerDeploymentManager {
 
             private void loadAndActivateSlice(Artifact artifact) {
                 var sliceKey = new SliceNodeKey(artifact, self);
+
                 forwardSliceStateUpdate(sliceKey, SliceState.LOADING);
                 sliceStore.loadSlice(artifact).flatMap(_ -> transitionToLoaded(artifact, sliceKey)).flatMap(_ -> sliceStore.activateSlice(artifact)).flatMap(_ -> transitionToActive(artifact,
                                                                                                                                                                                      sliceKey)).flatMap(_ -> publishEndpoints(artifact)).onSuccess(_ -> log.info("Slice {} fully deployed and active on worker {}",
@@ -178,6 +184,7 @@ public interface WorkerDeploymentManager {
 
             private void teardownSlice(Artifact artifact) {
                 var sliceKey = new SliceNodeKey(artifact, self);
+
                 log.info("Tearing down slice {} on worker {}", artifact, self.id());
                 unpublishEndpoints(artifact).flatMap(_ -> sliceStore.deactivateSlice(artifact)).flatMap(_ -> sliceStore.unloadSlice(artifact)).onSuccess(_ -> forwardSliceRemoval(sliceKey)).onSuccess(_ -> log.info("Slice {} torn down on worker {}",
                                                                                                                                                                                                                      artifact,
@@ -196,13 +203,16 @@ public interface WorkerDeploymentManager {
             private Promise<Unit> publishEndpointsForSlice(Artifact artifact, Slice slice) {
                 var methods = slice.methods();
 
-                if (methods.isEmpty()) {return Promise.unitPromise();}
+                if (methods.isEmpty()) {
+                    return Promise.unitPromise();
+                }
 
                 int instanceNumber = Math.abs(self.id().hashCode());
                 var methodNames = methods.stream().map(m -> m.name()
                                                              .name()).toList();
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, artifact);
                 var nodeArtifactValue = NodeArtifactValue.activeNodeArtifactValue(instanceNumber, methodNames);
+
                 forwardPut(nodeArtifactKey, nodeArtifactValue, "publish-endpoints-" + artifact);
                 log.debug("Published {} endpoints for slice {} on worker", methods.size(), artifact);
 
@@ -218,10 +228,13 @@ public interface WorkerDeploymentManager {
             private Promise<Unit> unpublishEndpointsForSlice(Artifact artifact, Slice slice) {
                 var methods = slice.methods();
 
-                if (methods.isEmpty()) {return Promise.unitPromise();}
+                if (methods.isEmpty()) {
+                    return Promise.unitPromise();
+                }
 
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, artifact);
                 var nodeArtifactValue = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
+
                 forwardPut(nodeArtifactKey, nodeArtifactValue, "unpublish-endpoints-" + artifact);
 
                 return Promise.unitPromise();
@@ -231,24 +244,28 @@ public interface WorkerDeploymentManager {
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, sliceKey.artifact());
                 var nodeArtifactValue = NodeArtifactValue.nodeArtifactValue(state);
                 var correlationId = nextCorrelationId("state-" + state.name().toLowerCase());
+
                 forwardPut(nodeArtifactKey, nodeArtifactValue, correlationId);
             }
 
             private void forwardSliceRemoval(SliceNodeKey sliceKey) {
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, sliceKey.artifact());
                 var correlationId = nextCorrelationId("remove");
+
                 forwardRemove(nodeArtifactKey, correlationId);
             }
 
             @SuppressWarnings("unchecked")
             private <K extends AetherKey> void forwardPut(K key, Object value, String correlationId) {
                 KVCommand<AetherKey> command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
+
                 mutationForwarder.forward(WorkerMutation.workerMutation(self, correlationId, command));
             }
 
             @SuppressWarnings("unchecked")
             private <K extends AetherKey> void forwardRemove(K key, String correlationId) {
                 KVCommand<AetherKey> command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
+
                 mutationForwarder.forward(WorkerMutation.workerMutation(self, correlationId, command));
             }
 
@@ -265,6 +282,7 @@ public interface WorkerDeploymentManager {
                                                                                .equals(artifact)).findFirst());
             }
         }
+
         return new workerDeploymentManager(self,
                                            sliceStore,
                                            mutationForwarder,

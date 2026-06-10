@@ -23,7 +23,10 @@ public sealed interface OutputFormatter {
     }
 
     static int printQuery(String json, OutputOptions options, TableSpec tableSpec) {
-        if (options.isQuiet()) {return ExitCode.SUCCESS;}
+        if (options.isQuiet()) {
+            return ExitCode.SUCCESS;
+        }
+
         return switch (options.format()) {
             case JSON -> printJson(json);
             case VALUE -> printValue(json, options.field());
@@ -33,7 +36,10 @@ public sealed interface OutputFormatter {
     }
 
     static int printAction(String json, OutputOptions options, String successMessage) {
-        if (options.isQuiet()) {return ExitCode.SUCCESS;}
+        if (options.isQuiet()) {
+            return ExitCode.SUCCESS;
+        }
+
         return switch (options.format()) {
             case JSON -> printJson(json);
             case VALUE -> printValue(json, options.field());
@@ -47,7 +53,9 @@ public sealed interface OutputFormatter {
     }
 
     private static int printValue(String json, String fieldPath) {
-        if (fieldPath == null) {return printJson(json);}
+        if (fieldPath == null) {
+            return printJson(json);
+        }
         // Detect server-side error envelope (e.g., `{"error":"..."}` from a forward failure
         // or 4xx/5xx response). Surface the actual error instead of the misleading
         // "Path not found: <fieldPath>" — that message implied the field was renamed
@@ -63,18 +71,25 @@ public sealed interface OutputFormatter {
     }
 
     private static int printTable(String json, TableSpec tableSpec) {
-        if (tableSpec == null) {return printJson(json);}
+        if (tableSpec == null) {
+            return printJson(json);
+        }
+
         return MAPPER.readTree(json).fold(OutputFormatter::handleParseError, node -> renderTable(node, tableSpec));
     }
 
     private static int printCsv(String json, TableSpec tableSpec) {
-        if (tableSpec == null) {return printJson(json);}
+        if (tableSpec == null) {
+            return printJson(json);
+        }
+
         return MAPPER.readTree(json).fold(OutputFormatter::handleParseError, node -> renderCsv(node, tableSpec));
     }
 
     private static int renderTable(JsonNode root, TableSpec tableSpec) {
         var dataNodes = resolveDataNodes(root, tableSpec.arrayPath());
         var out = System.out;
+
         printTableHeader(out, tableSpec.columns());
         printTableSeparator(out, tableSpec.columns());
         dataNodes.forEach(node -> printTableRow(out, node, tableSpec.columns()));
@@ -85,11 +100,13 @@ public sealed interface OutputFormatter {
     private static void printTableHeader(PrintStream out, List<Column> columns) {
         var format = buildFormatString(columns);
         var headers = columns.stream().map(Column::header).toArray();
+
         out.printf(format, headers);
     }
 
     private static void printTableSeparator(PrintStream out, List<Column> columns) {
         var joiner = new StringJoiner("  ");
+
         columns.forEach(col -> joiner.add("\u2500".repeat(col.width())));
         out.println(joiner);
     }
@@ -97,11 +114,13 @@ public sealed interface OutputFormatter {
     private static void printTableRow(PrintStream out, JsonNode node, List<Column> columns) {
         var format = buildFormatString(columns);
         var values = columns.stream().map(col -> extractColumnValue(node, col)).toArray();
+
         out.printf(format, values);
     }
 
     private static String buildFormatString(List<Column> columns) {
         var joiner = new StringJoiner("  ");
+
         columns.forEach(col -> joiner.add("%-" + col.width() + "s"));
 
         return joiner + "%n";
@@ -118,6 +137,7 @@ public sealed interface OutputFormatter {
     private static int renderCsv(JsonNode root, TableSpec tableSpec) {
         var dataNodes = resolveDataNodes(root, tableSpec.arrayPath());
         var out = System.out;
+
         printCsvHeader(out, tableSpec.columns());
         dataNodes.forEach(node -> printCsvRow(out, node, tableSpec.columns()));
 
@@ -126,12 +146,14 @@ public sealed interface OutputFormatter {
 
     private static void printCsvHeader(PrintStream out, List<Column> columns) {
         var joiner = new StringJoiner(",");
+
         columns.forEach(col -> joiner.add(col.header()));
         out.println(joiner);
     }
 
     private static void printCsvRow(PrintStream out, JsonNode node, List<Column> columns) {
         var joiner = new StringJoiner(",");
+
         columns.forEach(col -> joiner.add(escapeCsvValue(navigateToField(node, col.jsonPath()))));
         out.println(joiner);
     }
@@ -147,7 +169,9 @@ public sealed interface OutputFormatter {
 
         for (var segment : dotPath.split("\\.")) {
             current = current.path(segment);
-            if (current.isMissingNode()) {return "";}
+            if (current.isMissingNode()) {
+                return "";
+            }
         }
 
         return current.isValueNode()
@@ -161,7 +185,11 @@ public sealed interface OutputFormatter {
                      : root;
         var nodes = new ArrayList<JsonNode>();
 
-        if (target.isArray()) {target.forEach(nodes::add);} else {nodes.add(target);}
+        if (target.isArray()) {
+            target.forEach(nodes::add);
+        } else {
+            nodes.add(target);
+        }
 
         return nodes;
     }
@@ -169,7 +197,9 @@ public sealed interface OutputFormatter {
     private static JsonNode navigateToNode(JsonNode root, String dotPath) {
         var current = root;
 
-        for (var segment : dotPath.split("\\.")) {current = current.path(segment);}
+        for (var segment : dotPath.split("\\.")) {
+            current = current.path(segment);
+        }
 
         return current;
     }
@@ -221,8 +251,13 @@ public sealed interface OutputFormatter {
     /// detectable via the `error` field for backward compat with any external endpoint that
     /// hasn't migrated to the canonical envelope.
     private static boolean looksLikeError(JsonNode node) {
-        if (node == null || !node.isObject()) {return false;}
-        if (isProblemDetail(node)) {return true;}
+        if (node == null || !node.isObject()) {
+            return false;
+        }
+
+        if (isProblemDetail(node)) {
+            return true;
+        }
 
         return node.has("error");
     }
@@ -232,18 +267,22 @@ public sealed interface OutputFormatter {
 
         return statusNode.isInt()
                && statusNode.asInt() >= 400
-               && statusNode.asInt() <600;
+               && statusNode.asInt() < 600;
     }
 
     private static String extractErrorField(JsonNode node) {
         if (isProblemDetail(node)) {
             var detail = node.path("detail");
 
-            if (detail.isTextual()) {return detail.asText();}
+            if (detail.isTextual()) {
+                return detail.asText();
+            }
 
             var title = node.path("title");
 
-            if (title.isTextual()) {return title.asText();}
+            if (title.isTextual()) {
+                return title.asText();
+            }
 
             return node.toString();
         }
@@ -256,19 +295,29 @@ public sealed interface OutputFormatter {
     }
 
     static int printError(String message, OutputOptions options) {
-        if (options.format() == OutputFormat.JSON) {System.err.println("{\"error\":\"" + message.replace("\"", "\\\"")
-                                                                      + "\"}");} else {System.err.println("Error: " + message);}
+        if (options.format() == OutputFormat.JSON) {
+            System.err.println("{\"error\":\"" + message.replace("\"", "\\\"") + "\"}");
+        } else {
+            System.err.println("Error: " + message);
+        }
+
         return ExitCode.ERROR;
     }
 
     static int printNotFound(String message, OutputOptions options) {
-        if (options.format() == OutputFormat.JSON) {System.err.println("{\"error\":\"" + message.replace("\"", "\\\"")
-                                                                      + "\"}");} else {System.err.println("Error: " + message);}
+        if (options.format() == OutputFormat.JSON) {
+            System.err.println("{\"error\":\"" + message.replace("\"", "\\\"") + "\"}");
+        } else {
+            System.err.println("Error: " + message);
+        }
+
         return ExitCode.NOT_FOUND;
     }
 
     static int checkResponseError(String response, OutputOptions options, String actionLabel) {
-        if (!isErrorResponse(response)) {return -1;}
+        if (!isErrorResponse(response)) {
+            return -1;
+        }
 
         var message = actionLabel + ": " + extractErrorMessage(response);
 
@@ -278,11 +327,17 @@ public sealed interface OutputFormatter {
     }
 
     private static boolean containsNotFound(JsonNode node) {
-        if (isProblemDetail(node)) {return node.path("status")
-                                               .asInt() == 404;}
-        if (!node.has("error")) {return false;}
+        if (isProblemDetail(node)) {
+            return node.path("status")
+                       .asInt() == 404;
+        }
+
+        if (!node.has("error")) {
+            return false;
+        }
 
         var errorText = node.path("error").asText().toLowerCase();
+
         return errorText.contains("not found") || errorText.contains("404");
     }
 

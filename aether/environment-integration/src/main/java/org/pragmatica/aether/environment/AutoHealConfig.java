@@ -20,15 +20,10 @@ public record AutoHealConfig(TimeSpan retryInterval,
                              TimeSpan decommissionedRetention,
                              TimeSpan swimHintsTtl) {
     public static final TimeSpan DEFAULT_STALE_OBSERVATION_TTL = timeSpan(30).seconds();
-
     public static final int DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD = 10;
-
     public static final TimeSpan DEFAULT_PROVISIONING_TIMEOUT = timeSpan(60).seconds();
-
     public static final TimeSpan DEFAULT_PROVISION_STABILITY_WINDOW = timeSpan(30).seconds();
-
     public static final TimeSpan DEFAULT_DECOMMISSIONED_RETENTION = timeSpan(60).seconds();
-
     // Aligned with the SWIM/NTT detection window: SwimConfig.suspectTimeout (10s) and
     // MembershipConfig.nttDepartureTimeout (15s). This is the value that actually reaches the
     // running SwimHintsRegistry (AetherNode wires config.autoHeal().swimHintsTtl()); lowered

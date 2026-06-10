@@ -41,25 +41,25 @@ public final class StreamNamespacesRoutes implements RouteSource {
     public record StreamNamespacesEntryResponse(StreamRegistryEntryDto entry) {}
 
     public record StreamRegistryEntryDto(String namespace,
-                                          String stream,
-                                          String version,
-                                          String registeredBy,
-                                          long registeredAtEpochMs,
-                                          int refCount) {
+                                         String stream,
+                                         String version,
+                                         String registeredBy,
+                                         long registeredAtEpochMs,
+                                         int refCount) {
         static StreamRegistryEntryDto fromEntry(StreamRegistryEntry entry) {
             return new StreamRegistryEntryDto(entry.address().namespace().value(),
-                                               entry.address().name().value(),
-                                               entry.address().version().asString(),
-                                               entry.registeredBy().name(),
-                                               entry.registeredAtEpochMillis(),
-                                               entry.refCount());
+                                              entry.address().name().value(),
+                                              entry.address().version().asString(),
+                                              entry.registeredBy().name(),
+                                              entry.registeredAtEpochMillis(),
+                                              entry.refCount());
         }
     }
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<StreamNamespacesListResponse>route(ManagementRoute.STREAM_NAMESPACES_LIST)
-                                         .toJson(this::listAll),
-                         ManagementRoutes.<StreamNamespacesEntryResponse>route(ManagementRoute.STREAM_NAMESPACES_GET)
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<StreamNamespacesListResponse> route(ManagementRoute.STREAM_NAMESPACES_LIST).toJson(this::listAll),
+                         ManagementRoutes.<StreamNamespacesEntryResponse> route(ManagementRoute.STREAM_NAMESPACES_GET)
                                          .withPath(PathParameter.aString(),
                                                    PathParameter.aString(),
                                                    PathParameter.aString())
@@ -68,17 +68,16 @@ public final class StreamNamespacesRoutes implements RouteSource {
     }
 
     private StreamNamespacesListResponse listAll() {
-        var entries = service.snapshot().stream()
-                             .map(StreamRegistryEntryDto::fromEntry)
-                             .toList();
+        var entries = service.snapshot().stream().map(StreamRegistryEntryDto::fromEntry).toList();
+
         return new StreamNamespacesListResponse(entries);
     }
 
     private Result<StreamNamespacesEntryResponse> lookupEntry(String namespace, String stream, String version) {
         return ResourceAddress.resourceAddress(namespace, stream, version)
-                             .flatMap(address -> service.lookup(address)
+                              .flatMap(address -> service.lookup(address)
                                                          .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))
-                             .map(StreamRegistryEntryDto::fromEntry)
-                             .map(StreamNamespacesEntryResponse::new);
+                              .map(StreamRegistryEntryDto::fromEntry)
+                              .map(StreamNamespacesEntryResponse::new);
     }
 }

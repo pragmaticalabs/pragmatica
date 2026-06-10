@@ -24,7 +24,8 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.option;
 
 
-@SuppressWarnings("JBCT-SEQ-01") public class SharedLibraryClassLoader extends URLClassLoader {
+@SuppressWarnings("JBCT-SEQ-01")
+public class SharedLibraryClassLoader extends URLClassLoader {
     private static final Logger log = LoggerFactory.getLogger(SharedLibraryClassLoader.class);
 
     private final Map<String, Version> loadedArtifacts = new ConcurrentHashMap<>();
@@ -39,30 +40,37 @@ import static org.pragmatica.lang.Option.option;
 
     public Option<CompatibilityResult> checkCompatibility(String groupId, String artifactId, VersionPattern required) {
         var key = artifactKey(groupId, artifactId);
+
         return option(loadedArtifacts.get(key)).map(loadedVersion -> CompatibilityResult.check(loadedVersion, required));
     }
 
     public synchronized Result<Unit> addArtifact(String groupId, String artifactId, Version version, URL jarUrl) {
         var key = artifactKey(groupId, artifactId);
+
         if (loadedArtifacts.containsKey(key)) {
             log.warn("Artifact {} already loaded with version {}, ignoring request to load version {}",
                      key,
                      loadedArtifacts.get(key).withQualifier(),
                      version.withQualifier());
+
             return Result.unitResult();
         }
+
         addURL(jarUrl);
         loadedArtifacts.put(key, version);
         log.debug("Added shared artifact {}:{} from {}", key, version.withQualifier(), jarUrl);
+
         return Result.unitResult();
     }
 
     public synchronized Result<Unit> registerRuntimeProvided(String groupId, String artifactId, Version version) {
         var key = artifactKey(groupId, artifactId);
+
         if (!loadedArtifacts.containsKey(key)) {
             loadedArtifacts.put(key, version);
             log.debug("Registered runtime-provided artifact {}:{}", key, version.withQualifier());
         }
+
         return Result.unitResult();
     }
 
@@ -78,7 +86,9 @@ import static org.pragmatica.lang.Option.option;
         return Map.copyOf(loadedArtifacts);
     }
 
-    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) @Override public void close() throws IOException {
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+    @Override
+    public void close() throws IOException {
         loadedArtifacts.clear();
         super.close();
     }

@@ -26,42 +26,49 @@ import java.util.function.Function;
 public final class StreamPublisherFactory implements ResourceFactory<StreamPublisher, StreamConfig> {
     private static final Cause REQUIRES_CONTEXT = Causes.cause("StreamPublisher requires ProvisioningContext with runtime extensions");
 
-    @Override public Class<StreamPublisher> resourceType() {
+    @Override
+    public Class<StreamPublisher> resourceType() {
         return StreamPublisher.class;
     }
 
-    @Override public Class<StreamConfig> configType() {
+    @Override
+    public Class<StreamConfig> configType() {
         return StreamConfig.class;
     }
 
-    @Override public Promise<StreamPublisher> provision(StreamConfig config) {
+    @Override
+    public Promise<StreamPublisher> provision(StreamConfig config) {
         return REQUIRES_CONTEXT.promise();
     }
 
-    @Override public Promise<StreamPublisher> provision(StreamConfig config, ProvisioningContext context) {
-        return context.extension(StreamPartitionManager.class).flatMap(manager -> context.extension(Serializer.class)
-                                                                                                   .flatMap(serializer -> buildPublisher(manager,
-                                                                                                                                         serializer,
-                                                                                                                                         config,
-                                                                                                                                         context)))
-                                .async();
+    @Override
+    public Promise<StreamPublisher> provision(StreamConfig config, ProvisioningContext context) {
+        return context.extension(StreamPartitionManager.class)
+                      .flatMap(manager -> context.extension(Serializer.class)
+                                                 .flatMap(serializer -> buildPublisher(manager,
+                                                                                       serializer,
+                                                                                       config,
+                                                                                       context)))
+                      .async();
     }
 
-    @SuppressWarnings("unchecked") private static Result<StreamPublisher> buildPublisher(StreamPartitionManager manager,
-                                                                                         Serializer serializer,
-                                                                                         StreamConfig config,
-                                                                                         ProvisioningContext context) {
+    @SuppressWarnings("unchecked")
+    private static Result<StreamPublisher> buildPublisher(StreamPartitionManager manager,
+                                                          Serializer serializer,
+                                                          StreamConfig config,
+                                                          ProvisioningContext context) {
         return ensureStreamExists(manager, config).map(_ -> assemblePublisher(manager, serializer, config, context));
     }
 
-    @SuppressWarnings("unchecked") private static StreamPublisher assemblePublisher(StreamPartitionManager manager,
-                                                                                    Serializer serializer,
-                                                                                    StreamConfig config,
-                                                                                    ProvisioningContext context) {
+    @SuppressWarnings("unchecked")
+    private static StreamPublisher assemblePublisher(StreamPartitionManager manager,
+                                                     Serializer serializer,
+                                                     StreamConfig config,
+                                                     ProvisioningContext context) {
         var keyExtractor = extractPartitionKeyFunction(context);
         var forwardClient = context.extension(StreamForwardClient.class).option();
-        var governorResolver = context.extension(GovernorResolver.class).option()
-                                                .map(GovernorResolver::resolver);
+        var governorResolver = context.extension(GovernorResolver.class).option().map(GovernorResolver::resolver);
+
         return DefaultStreamPublisher.streamPublisher(manager,
                                                       serializer,
                                                       config.name(),
@@ -74,9 +81,10 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
                                                       governorResolver);
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes"}) private static <T> Option<Function<T, Object>> extractPartitionKeyFunction(ProvisioningContext context) {
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static <T> Option<Function<T, Object>> extractPartitionKeyFunction(ProvisioningContext context) {
         return context.keyExtractor()
-                                   .map(fn -> (Function<T, Object>) input -> ((org.pragmatica.lang.Functions.Fn1) fn).apply(input));
+                      .map(fn -> (Function<T, Object>) input -> ((org.pragmatica.lang.Functions.Fn1) fn).apply(input));
     }
 
     private static Result<Unit> ensureStreamExists(StreamPartitionManager manager, StreamConfig config) {

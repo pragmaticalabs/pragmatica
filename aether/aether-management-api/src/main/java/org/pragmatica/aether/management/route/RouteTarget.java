@@ -9,9 +9,7 @@ import org.pragmatica.aether.slice.delegation.TaskGroup;
 
 public sealed interface RouteTarget {
     RouteTarget ANY = new AnyCoreNode();
-
     RouteTarget LOCAL = new LocalNode();
-
     RouteTarget LEADER = new LeaderNode();
 
     static RouteTarget taskGroup(TaskGroup group) {
@@ -25,13 +23,13 @@ public sealed interface RouteTarget {
         return new NodeIdParam(paramIndex);
     }
 
-    record TaskGroupTarget(TaskGroup group) implements RouteTarget{}
+    record TaskGroupTarget(TaskGroup group) implements RouteTarget {}
 
-    record AnyCoreNode() implements RouteTarget{}
+    record AnyCoreNode() implements RouteTarget {}
 
-    record LocalNode() implements RouteTarget{}
+    record LocalNode() implements RouteTarget {}
 
-    record LeaderNode() implements RouteTarget{}
+    record LeaderNode() implements RouteTarget {}
 
-    record NodeIdParam(int paramIndex) implements RouteTarget{}
+    record NodeIdParam(int paramIndex) implements RouteTarget {}
 }

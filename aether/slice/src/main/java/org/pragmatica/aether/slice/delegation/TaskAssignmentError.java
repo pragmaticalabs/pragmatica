@@ -13,7 +13,8 @@ public sealed interface TaskAssignmentError extends Cause {
     }
 
     record NotAssigned(TaskGroup group) implements TaskAssignmentError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Task group " + group + " has no current owner assignment";
         }
     }

@@ -26,7 +26,8 @@ import static org.pragmatica.http.routing.Route.in;
 import static org.pragmatica.http.routing.Route.post;
 
 
-@SuppressWarnings("JBCT-RET-01") public sealed interface SimulatorRoutes {
+@SuppressWarnings("JBCT-RET-01")
+public sealed interface SimulatorRoutes {
     record InventoryState(AtomicLong reservations,
                           AtomicLong releases,
                           AtomicLong stockOuts,
@@ -67,48 +68,48 @@ import static org.pragmatica.http.routing.Route.post;
     }
 
     private static Route<InventoryModeResponse> getInventoryModeRoute(InventoryState state) {
-        return Route.<InventoryModeResponse>get("/inventory/mode").toJson(() -> getInventoryMode(state));
+        return Route.<InventoryModeResponse> get("/inventory/mode").toJson(() -> getInventoryMode(state));
     }
 
     private static Route<InventoryModeSetResponse> setInventoryModeRoute(InventoryState state,
                                                                          Consumer<EventLogEntry> eventLogger) {
-        return Route.<InventoryModeSetResponse>post("/inventory/mode")
+        return Route.<InventoryModeSetResponse> post("/inventory/mode")
                     .withPath(aString())
                     .to(mode -> setInventoryMode(state, eventLogger, mode))
                     .asJson();
     }
 
     private static Route<InventoryMetricsResponse> inventoryMetricsRoute(InventoryState state) {
-        return Route.<InventoryMetricsResponse>get("/inventory/metrics").toJson(() -> getInventoryMetrics(state));
+        return Route.<InventoryMetricsResponse> get("/inventory/metrics").toJson(() -> getInventoryMetrics(state));
     }
 
     private static Route<PlaceOrderResponse> placeOrderRoute(Supplier<SimulatorConfig> configSupplier) {
-        return Route.<PlaceOrderResponse>post("/orders/place").toJson(_ -> placeOrder(configSupplier));
+        return Route.<PlaceOrderResponse> post("/orders/place").toJson(_ -> placeOrder(configSupplier));
     }
 
     private static Route<OrderStatusResponse> getOrderRoute(Supplier<SimulatorConfig> configSupplier) {
-        return Route.<OrderStatusResponse>get("/orders")
+        return Route.<OrderStatusResponse> get("/orders")
                     .withPath(aString())
                     .to(orderId -> getOrderStatus(configSupplier, orderId))
                     .asJson();
     }
 
     private static Route<CancelOrderResponse> cancelOrderRoute(Supplier<SimulatorConfig> configSupplier) {
-        return Route.<CancelOrderResponse>post("/orders/cancel")
+        return Route.<CancelOrderResponse> post("/orders/cancel")
                     .withPath(aString())
                     .to(orderId -> cancelOrder(configSupplier, orderId))
                     .asJson();
     }
 
     private static Route<CheckStockResponse> checkStockRoute(Supplier<SimulatorConfig> configSupplier) {
-        return Route.<CheckStockResponse>get("/inventory")
+        return Route.<CheckStockResponse> get("/inventory")
                     .withPath(aString())
                     .to(productId -> checkStock(configSupplier, productId))
                     .asJson();
     }
 
     private static Route<GetPriceResponse> getPriceRoute(Supplier<SimulatorConfig> configSupplier) {
-        return Route.<GetPriceResponse>get("/pricing")
+        return Route.<GetPriceResponse> get("/pricing")
                     .withPath(aString())
                     .to(productId -> getPrice(configSupplier, productId))
                     .asJson();
@@ -124,11 +125,14 @@ import static org.pragmatica.http.routing.Route.post;
                                                                       Consumer<EventLogEntry> eventLogger,
                                                                       String mode) {
         boolean infinite = "infinite".equalsIgnoreCase(mode);
+
         state.setInfiniteMode(infinite);
         String modeStr = infinite
-                        ? "infinite"
-                        : "realistic";
+                         ? "infinite"
+                         : "realistic";
+
         eventLogger.accept(new EventLogEntry("INVENTORY_MODE", "Inventory mode set to " + modeStr));
+
         return Promise.success(new InventoryModeSetResponse(true, modeStr));
     }
 
@@ -147,8 +151,10 @@ import static org.pragmatica.http.routing.Route.post;
     private static PlaceOrderResponse buildPlaceOrderResponse() {
         var random = ThreadLocalRandom.current();
         var orderId = String.format("ORD-%08d", random.nextInt(100_000_000));
+
         DataGenerator.OrderIdGenerator.trackOrderId(orderId);
         var total = 10.00 + random.nextDouble() * 990.00;
+
         return new PlaceOrderResponse(true, orderId, "CONFIRMED", String.format("USD %.2f", total));
     }
 
@@ -163,6 +169,7 @@ import static org.pragmatica.http.routing.Route.post;
         var status = statuses.get(random.nextInt(statuses.size()));
         var total = 10.00 + random.nextDouble() * 990.00;
         var itemCount = 1 + random.nextInt(5);
+
         return new OrderStatusResponse(true, orderId, status, String.format("USD %.2f", total), itemCount);
     }
 
@@ -180,6 +187,7 @@ import static org.pragmatica.http.routing.Route.post;
     private static CheckStockResponse buildCheckStockResponse(String productId) {
         var random = ThreadLocalRandom.current();
         var available = random.nextInt(1000);
+
         return new CheckStockResponse(true, productId, available, available > 0);
     }
 
@@ -190,14 +198,17 @@ import static org.pragmatica.http.routing.Route.post;
     private static GetPriceResponse buildGetPriceResponse(String productId) {
         var random = ThreadLocalRandom.current();
         var price = 5.00 + random.nextDouble() * 495.00;
+
         return new GetPriceResponse(true, productId, String.format("USD %.2f", price));
     }
 
     private static Promise<Unit> applySimulation(Supplier<SimulatorConfig> configSupplier, String sliceName) {
         var config = configSupplier.get();
         var sliceConfig = config.sliceConfig(sliceName);
-        return sliceConfig.buildSimulation().apply();
+
+        return sliceConfig.buildSimulation()
+                          .apply();
     }
 
-    record unused() implements SimulatorRoutes{}
+    record unused() implements SimulatorRoutes {}
 }

@@ -64,8 +64,13 @@ class ClusterApplyCommand implements Callable<Integer> {
     }
 
     private int dispatch() {
-        if (resume) {return handleResume();}
-        if (rollback) {return handleRollback();}
+        if (resume) {
+            return handleResume();
+        }
+
+        if (rollback) {
+            return handleRollback();
+        }
 
         return readConfigFile().flatMap(this::executeApply)
                              .fold(ClusterApplyCommand::onFailure, v -> v);
@@ -96,6 +101,7 @@ class ClusterApplyCommand implements Callable<Integer> {
                           result.nodesAdded(),
                           result.nodesModified(),
                           result.nodesRemoved());
+
         return ExitCode.SUCCESS;
     }
 
@@ -138,6 +144,7 @@ class ClusterApplyCommand implements Callable<Integer> {
                                       dryRun
                                       ? 0
                                       : expectedVersion);
+
         return ClusterHttpClient.post(CLUSTER_CONFIG_APPLY, jsonBody).map(this::printResult);
     }
 

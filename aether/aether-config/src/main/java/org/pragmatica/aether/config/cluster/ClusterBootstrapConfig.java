@@ -41,24 +41,27 @@ public record ClusterBootstrapConfig(String configVersion,
 
     public Result<ClusterBootstrapConfig> withClusterName(String newName) {
         return cluster.withName(newName)
-                               .map(updated -> new ClusterBootstrapConfig(configVersion,
-                                                                          updated,
-                                                                          coreTopology,
-                                                                          sources,
-                                                                          runtimes,
-                                                                          infrastructure,
-                                                                          operations));
+                      .map(updated -> new ClusterBootstrapConfig(configVersion,
+                                                                 updated,
+                                                                 coreTopology,
+                                                                 sources,
+                                                                 runtimes,
+                                                                 infrastructure,
+                                                                 operations));
     }
 
     public int derivedCoreCount() {
-        return sources.values().stream()
-                             .flatMap(s -> Option.option(s.roles().get(NodeRole.CORE)).stream())
-                             .mapToInt(ClusterBootstrapConfig::roleSize)
-                             .sum();
+        return sources.values()
+                      .stream()
+                      .flatMap(s -> Option.option(s.roles().get(NodeRole.CORE)).stream())
+                      .mapToInt(ClusterBootstrapConfig::roleSize)
+                      .sum();
     }
 
     private static int roleSize(RoleSubTable role) {
-        return role.count().or(0) + role.hosts().map(List::size)
-                                              .or(0);
+        return role.count()
+                   .or(0) + role.hosts()
+                                .map(List::size)
+                                .or(0);
     }
 }

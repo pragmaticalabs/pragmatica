@@ -36,9 +36,7 @@ import static org.pragmatica.lang.Option.option;
 @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"})
 class ClusterBootstrapCommand implements Callable<Integer> {
     private static final int POLL_INTERVAL_MS = 2000;
-
     private static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
-
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
     private static final String READY_PHASE = "CONVERGED";
     private static final String CLUSTER_PHASE_FIELD = "state";
@@ -87,18 +85,25 @@ class ClusterBootstrapCommand implements Callable<Integer> {
 
             return ExitCode.USAGE;
         }
+
         return parseConfig().flatMap(this::applyClusterNameOverride)
                           .flatMap(this::confirmAndBootstrap)
                           .fold(ClusterBootstrapCommand::onFailure, this::onSuccess);
     }
 
     private boolean isOverrideAcceptable() {
-        if (clusterNameOverride == null || clusterNameOverride.isBlank()) {return true;}
+        if (clusterNameOverride == null || clusterNameOverride.isBlank()) {
+            return true;
+        }
+
         return CLUSTER_NAME_PATTERN.matcher(clusterNameOverride).matches();
     }
 
     private Result<ParsedConfig> applyClusterNameOverride(ParsedConfig parsed) {
-        if (clusterNameOverride == null || clusterNameOverride.isBlank()) {return Result.success(parsed);}
+        if (clusterNameOverride == null || clusterNameOverride.isBlank()) {
+            return Result.success(parsed);
+        }
+
         return parsed.config()
                      .withClusterName(clusterNameOverride)
                      .map(updated -> new ParsedConfig(updated,
@@ -127,8 +132,8 @@ class ClusterBootstrapCommand implements Callable<Integer> {
 
     private Result<ClusterBootstrapOrchestrator.BootstrapResult> confirmAndBootstrap(ParsedConfig parsed) {
         var config = parsed.config();
-        printPlan(config);
 
+        printPlan(config);
         if (!skipConfirmation && !confirmBootstrap(config.cluster().name())) {
             System.out.println("Aborted.");
 
@@ -148,6 +153,7 @@ class ClusterBootstrapCommand implements Callable<Integer> {
     private static void printPlan(ClusterBootstrapConfig config) {
         var cluster = config.cluster();
         var ports = config.operations().ports();
+
         System.out.println();
         System.out.println("Bootstrap plan:");
         System.out.printf("  Cluster:     %s%n", cluster.name());
@@ -172,6 +178,7 @@ class ClusterBootstrapCommand implements Callable<Integer> {
 
     private static void printRoleEntry(NodeRole role, RoleSubTable sub) {
         var size = sub.count().or(0) + sub.hosts().map(List::size).or(0);
+
         System.out.printf("      %s: %d nodes%n", role.value(), size);
     }
 
@@ -183,8 +190,9 @@ class ClusterBootstrapCommand implements Callable<Integer> {
 
     private int onSuccess(ClusterBootstrapOrchestrator.BootstrapResult result) {
         System.out.println("Step 12/12: Done.");
-
-        if (waitForCompletion) {return pollUntilHealthy(result);}
+        if (waitForCompletion) {
+            return pollUntilHealthy(result);
+        }
 
         return ExitCode.SUCCESS;
     }
@@ -201,12 +209,18 @@ class ClusterBootstrapCommand implements Callable<Integer> {
     }
 
     private static void applyEndpointOverride(ClusterBootstrapOrchestrator.BootstrapResult result) {
-        if (result.endpoint() == null || result.endpoint().isBlank()) {return;}
+        if (result.endpoint() == null || result.endpoint().isBlank()) {
+            return;
+        }
+
         ClusterHttpClient.setEndpointOverride(result.endpoint());
     }
 
     private static void applyApiKeyOverride(ClusterBootstrapOrchestrator.BootstrapResult result) {
-        if (result.apiKey() == null || result.apiKey().isBlank()) {return;}
+        if (result.apiKey() == null || result.apiKey().isBlank()) {
+            return;
+        }
+
         ClusterHttpClient.setApiKeyOverride(result.apiKey());
     }
 
@@ -219,7 +233,7 @@ class ClusterBootstrapCommand implements Callable<Integer> {
         out.printf("Waiting for cluster to become healthy (timeout: %ds)...%n", timeoutSec);
         var deadline = System.currentTimeMillis() + (long) timeoutSec * 1000;
 
-        while (System.currentTimeMillis() <deadline) {
+        while (System.currentTimeMillis() < deadline) {
             var phase = queryClusterPhase(fetcher);
 
             if (isReady(phase)) {
@@ -263,11 +277,14 @@ class ClusterBootstrapCommand implements Callable<Integer> {
     }
 
     private static int onFailure(Cause cause) {
-        if (cause instanceof AbortedError) {return ExitCode.SUCCESS;}
+        if (cause instanceof AbortedError) {
+            return ExitCode.SUCCESS;
+        }
 
         System.err.println("Error: " + cause.message());
-
-        if (cause instanceof ClusterBootstrapOrchestrator.BootstrapError.BootstrapFailedWithOrphans) {return ExitCode.CLEANUP_FAILED;}
+        if (cause instanceof ClusterBootstrapOrchestrator.BootstrapError.BootstrapFailedWithOrphans) {
+            return ExitCode.CLEANUP_FAILED;
+        }
 
         return ExitCode.ERROR;
     }

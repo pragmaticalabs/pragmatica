@@ -44,15 +44,12 @@ import java.util.stream.Stream;
 /// short-circuits before role evaluation.
 public final class StreamApiRoutes implements RouteSource {
     private static final Cause STREAM_NOT_FOUND = Causes.cause("Stream not found");
-
     private static final Cause GROUP_NOT_FOUND = Causes.cause("Consumer group not found");
-
     private static final int DEFAULT_PARTITIONS = 4;
 
-    private static final RetentionPolicy MANAGEMENT_API_RETENTION = RetentionPolicy.retentionPolicy(
-            10_000,
-            4 * 1024 * 1024L,
-            60 * 60 * 1000L);
+    private static final RetentionPolicy MANAGEMENT_API_RETENTION = RetentionPolicy.retentionPolicy(10_000,
+                                                                                                    4 * 1024 * 1024L,
+                                                                                                    60 * 60 * 1000L);
 
     private final Supplier<ManageableNode> nodeSupplier;
     private final StreamNamespacesService namespacesService;
@@ -109,6 +106,7 @@ public final class StreamApiRoutes implements RouteSource {
                                          String registeredBy) {
         static StreamMetadataResponse fromEntry(StreamRegistryEntry entry) {
             var retention = entry.retention();
+
             return new StreamMetadataResponse(entry.address().namespace().value(),
                                               entry.address().name().value(),
                                               entry.address().version().asString(),
@@ -132,8 +130,7 @@ public final class StreamApiRoutes implements RouteSource {
 
     public record GroupResponse(String address, String groupId, String status) {}
 
-    public record GroupListResponse(String address,
-                                    List<GroupSummary> groups) {}
+    public record GroupListResponse(String address, List<GroupSummary> groups) {}
 
     public record GroupSummary(String groupId, Map<String, List<ConsumerInfo>> consumersByStream) {}
 
@@ -144,95 +141,98 @@ public final class StreamApiRoutes implements RouteSource {
     /// `maxEvents` records; the `nextOffset` field tells the caller where to resume on the next
     /// poll, and `hasMore` is `true` iff the page filled to `maxEvents` (meaning the producer
     /// likely has more queued than fit in this page).
-    public record StreamEventsResponse(String address,
-                                       List<EventEntry> events,
-                                       long nextOffset,
-                                       boolean hasMore) {}
+    public record StreamEventsResponse(String address, List<EventEntry> events, long nextOffset, boolean hasMore) {}
 
     public record EventEntry(long offset, Instant timestamp, int partition, String payload) {}
 
-    @Override public Stream<Route<?>> routes() {
+    @Override
+    public Stream<Route<?>> routes() {
         return Stream.of(
-            // ---------- Read routes (ALL_AUTHENTICATED via GET) ----------
-            ManagementRoutes.<StreamListResponse>route(ManagementRoute.STREAMS_LIST)
-                            .withQuery(QueryParameter.aString("namespace"),
-                                       QueryParameter.aInteger("limit"),
-                                       QueryParameter.aString("cursor"))
-                            .toResult(this::listStreams)
-                            .asJson(),
-            ManagementRoutes.<VersionsListResponse>route(ManagementRoute.STREAMS_VERSIONS_LIST)
-                            .withPath(PathParameter.aString(), PathParameter.aString())
-                            .toResult(this::listVersions)
-                            .asJson(),
-            ManagementRoutes.<StreamMetadataResponse>route(ManagementRoute.STREAMS_LATEST)
-                            .withPath(PathParameter.aString(), PathParameter.aString())
-                            .toResult(this::resolveLatest)
-                            .asJson(),
-            ManagementRoutes.<StreamMetadataResponse>route(ManagementRoute.STREAMS_METADATA)
-                            .withPath(PathParameter.aString(),
-                                      PathParameter.aString(),
-                                      PathParameter.aString())
-                            .toResult(this::streamMetadata)
-                            .asJson(),
-            ManagementRoutes.<GroupListResponse>route(ManagementRoute.STREAMS_GROUPS_LIST)
-                            .withPath(PathParameter.aString(),
-                                      PathParameter.aString(),
-                                      PathParameter.aString())
-                            .toResult(this::listGroups)
-                            .asJson(),
-            // ---------- Tail subscription (Wave 6B: SSE/WebSocket deferred to issue #212) ----------
-            ManagementRoutes.<StreamMetadataResponse>route(ManagementRoute.STREAMS_TAIL)
-                            .withPath(PathParameter.aString(),
-                                      PathParameter.aString(),
-                                      PathParameter.aString())
-                            .toResult(this::tailDeferred)
-                            .asJson(),
-            // ---------- Polling-based paginated event read (Wave 6B; RC1) ----------
-            ManagementRoutes.<StreamEventsResponse>route(ManagementRoute.STREAMS_EVENTS)
-                            .withPath(PathParameter.aString(),
-                                      PathParameter.aString(),
-                                      PathParameter.aString())
-                            .withQuery(QueryParameter.aLong("fromOffset"),
-                                       QueryParameter.aInteger("maxEvents"))
-                            .toResult(this::streamEvents)
-                            .asJson(),
-            // ---------- Write routes (OPERATOR_AND_ABOVE for /api/streams) ----------
-            ManagementRoutes.<PublishResponse>route(ManagementRoute.STREAMS_PUBLISH)
-                            .withPath(PathParameter.aString(),
-                                      PathParameter.aString(),
-                                      PathParameter.aString())
-                            .withBody(PublishRequest.class)
-                            .toResult(this::publishEvent)
-                            .asJson(),
-            ManagementRoutes.<PublishBatchResponse>route(ManagementRoute.STREAMS_PUBLISH_BATCH)
-                            .withPath(PathParameter.aString(),
-                                      PathParameter.aString(),
-                                      PathParameter.aString())
-                            .withBody(PublishRequest[].class)
-                            .toResult(this::publishBatch)
-                            .asJson(),
-            ManagementRoutes.<GroupResponse>route(ManagementRoute.STREAMS_GROUP_CREATE)
-                            .withPath(PathParameter.aString(),
-                                      PathParameter.aString(),
-                                      PathParameter.aString())
-                            .withBody(GroupCreateRequest.class)
-                            .toResult(this::createGroup)
-                            .asJson(),
-            ManagementRoutes.<GroupResponse>route(ManagementRoute.STREAMS_GROUP_DELETE)
-                            .withPath(PathParameter.aString(),
-                                      PathParameter.aString(),
-                                      PathParameter.aString(),
-                                      PathParameter.aString())
-                            .toResult(this::deleteGroup)
-                            .asJson(),
-            // ---------- Destructive (ADMIN_ONLY via override) ----------
-            ManagementRoutes.<DeleteResponse>route(ManagementRoute.STREAMS_DELETE)
-                            .withPath(PathParameter.aString(),
-                                      PathParameter.aString(),
-                                      PathParameter.aString())
-                            .toResult(this::deleteStream)
-                            .asJson()
-        );
+        // ---------- Read routes (ALL_AUTHENTICATED via GET) ----------
+        ManagementRoutes.<StreamListResponse> route(ManagementRoute.STREAMS_LIST)
+                        .withQuery(QueryParameter.aString("namespace"),
+                                   QueryParameter.aInteger("limit"),
+                                   QueryParameter.aString("cursor"))
+                        .toResult(this::listStreams)
+                        .asJson(),
+                         ManagementRoutes.<VersionsListResponse> route(ManagementRoute.STREAMS_VERSIONS_LIST)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString())
+                                         .toResult(this::listVersions)
+                                         .asJson(),
+                         ManagementRoutes.<StreamMetadataResponse> route(ManagementRoute.STREAMS_LATEST)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString())
+                                         .toResult(this::resolveLatest)
+                                         .asJson(),
+                         ManagementRoutes.<StreamMetadataResponse> route(ManagementRoute.STREAMS_METADATA)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString())
+                                         .toResult(this::streamMetadata)
+                                         .asJson(),
+                         ManagementRoutes.<GroupListResponse> route(ManagementRoute.STREAMS_GROUPS_LIST)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString())
+                                         .toResult(this::listGroups)
+                                         .asJson(),
+
+        // ---------- Tail subscription (Wave 6B: SSE/WebSocket deferred to issue #212) ----------
+        ManagementRoutes.<StreamMetadataResponse> route(ManagementRoute.STREAMS_TAIL)
+                        .withPath(PathParameter.aString(),
+                                  PathParameter.aString(),
+                                  PathParameter.aString())
+                        .toResult(this::tailDeferred)
+                        .asJson(),
+
+        // ---------- Polling-based paginated event read (Wave 6B; RC1) ----------
+        ManagementRoutes.<StreamEventsResponse> route(ManagementRoute.STREAMS_EVENTS)
+                        .withPath(PathParameter.aString(),
+                                  PathParameter.aString(),
+                                  PathParameter.aString())
+                        .withQuery(QueryParameter.aLong("fromOffset"),
+                                   QueryParameter.aInteger("maxEvents"))
+                        .toResult(this::streamEvents)
+                        .asJson(),
+
+        // ---------- Write routes (OPERATOR_AND_ABOVE for /api/streams) ----------
+        ManagementRoutes.<PublishResponse> route(ManagementRoute.STREAMS_PUBLISH)
+                        .withPath(PathParameter.aString(),
+                                  PathParameter.aString(),
+                                  PathParameter.aString())
+                        .withBody(PublishRequest.class)
+                        .toResult(this::publishEvent)
+                        .asJson(),
+                         ManagementRoutes.<PublishBatchResponse> route(ManagementRoute.STREAMS_PUBLISH_BATCH)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString())
+                                         .withBody(PublishRequest[].class)
+                                         .toResult(this::publishBatch)
+                                         .asJson(),
+                         ManagementRoutes.<GroupResponse> route(ManagementRoute.STREAMS_GROUP_CREATE)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString())
+                                         .withBody(GroupCreateRequest.class)
+                                         .toResult(this::createGroup)
+                                         .asJson(),
+                         ManagementRoutes.<GroupResponse> route(ManagementRoute.STREAMS_GROUP_DELETE)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString())
+                                         .toResult(this::deleteGroup)
+                                         .asJson(),
+
+        // ---------- Destructive (ADMIN_ONLY via override) ----------
+        ManagementRoutes.<DeleteResponse> route(ManagementRoute.STREAMS_DELETE)
+                        .withPath(PathParameter.aString(),
+                                  PathParameter.aString(),
+                                  PathParameter.aString())
+                        .toResult(this::deleteStream)
+                        .asJson());
     }
 
     // ============================ Handlers ============================
@@ -242,39 +242,53 @@ public final class StreamApiRoutes implements RouteSource {
         var snapshot = namespacesService.snapshot();
         var filtered = namespace.fold(() -> snapshot,
                                       ns -> snapshot.stream()
-                                                    .filter(e -> e.address().namespace().value().equals(ns))
+                                                    .filter(e -> e.address()
+                                                                  .namespace()
+                                                                  .value()
+                                                                  .equals(ns))
                                                     .toList());
         var capped = limit.fold(() -> filtered,
-                                n -> filtered.stream().limit(n).toList());
+                                n -> filtered.stream()
+                                             .limit(n)
+                                             .toList());
         var summaries = capped.stream().map(StreamSummary::fromEntry).toList();
+
         return Result.success(new StreamListResponse(summaries));
     }
 
     private Result<VersionsListResponse> listVersions(String namespace, String stream) {
-        var versions = namespacesService.snapshot().stream()
-                                       .filter(e -> e.address().namespace().value().equals(namespace))
-                                       .filter(e -> e.address().name().value().equals(stream))
-                                       .map(StreamSummary::fromEntry)
-                                       .toList();
-        if (versions.isEmpty()) {return STREAM_NOT_FOUND.result();}
+        var versions = namespacesService.snapshot().stream().filter(e -> e.address()
+                                                                          .namespace()
+                                                                          .value()
+                                                                          .equals(namespace)).filter(e -> e.address()
+                                                                                                           .name()
+                                                                                                           .value()
+                                                                                                           .equals(stream)).map(StreamSummary::fromEntry).toList();
+
+        if (versions.isEmpty()) {
+            return STREAM_NOT_FOUND.result();
+        }
+
         return Result.success(new VersionsListResponse(namespace, stream, versions));
     }
 
     private Result<StreamMetadataResponse> resolveLatest(String namespace, String stream) {
-        return namespacesService.resolve(namespace, stream, StreamVersionSpec.latest())
+        return namespacesService.resolve(namespace,
+                                         stream,
+                                         StreamVersionSpec.latest())
                                 .map(StreamMetadataResponse::fromEntry);
     }
 
     private Result<StreamMetadataResponse> streamMetadata(String namespace, String stream, String version) {
         return ResourceAddress.resourceAddress(namespace, stream, version)
-                            .flatMap(addr -> namespacesService.lookup(addr)
-                                                              .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))
-                            .map(StreamMetadataResponse::fromEntry);
+                              .flatMap(addr -> namespacesService.lookup(addr)
+                                                                .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))
+                              .map(StreamMetadataResponse::fromEntry);
     }
 
     private Result<GroupListResponse> listGroups(String namespace, String stream, String version) {
-        return ResourceAddress.resourceAddress(namespace, stream, version)
-                            .map(addr -> new GroupListResponse(addr.asString(), List.of()));
+        return ResourceAddress.resourceAddress(namespace, stream, version).map(addr -> new GroupListResponse(addr.asString(),
+                                                                                                             List.of()));
     }
 
     /// Wave 6B: Tail subscription via SSE/WebSocket is deferred to issue #212 — the streaming
@@ -283,9 +297,10 @@ public final class StreamApiRoutes implements RouteSource {
     /// is the always-available polling fallback that the `aether stream tail` CLI now drives).
     private Result<StreamMetadataResponse> tailDeferred(String namespace, String stream, String version) {
         return Causes.cause("Tail subscription via SSE/WebSocket is deferred to issue #212. "
-                                    + "For polling-based tail, use GET /api/streams/"
-                                    + namespace + "/" + stream + "/" + version
-                                    + "/events?fromOffset=N&maxEvents=K.").result();
+                           + "For polling-based tail, use GET /api/streams/" + namespace
+                           + "/" + stream
+                           + "/" + version
+                           + "/events?fromOffset=N&maxEvents=K.").result();
     }
 
     /// Spec event-stream-namespaces §16: paginated event read for polling-based tail subscription.
@@ -300,12 +315,15 @@ public final class StreamApiRoutes implements RouteSource {
                                                       Option<Integer> maxEvents) {
         var offset = fromOffset.or(0L);
         var limit = clampMaxEvents(maxEvents.or(DEFAULT_MAX_EVENTS));
-        return ResourceAddress.resourceAddress(namespace, stream, version)
-                            .flatMap(addr -> readEventsAtAddress(addr, offset, limit));
+
+        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> readEventsAtAddress(addr,
+                                                                                                               offset,
+                                                                                                               limit));
     }
 
     private Result<StreamEventsResponse> readEventsAtAddress(ResourceAddress addr, long fromOffset, int maxEvents) {
         var streamName = addr.asString();
+
         return namespacesService.lookup(addr)
                                 .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND)
                                 .flatMap(_ -> streamManager().readLocal(streamName, 0, fromOffset, maxEvents))
@@ -318,9 +336,10 @@ public final class StreamApiRoutes implements RouteSource {
                                                             int maxEvents) {
         var entries = events.stream().map(StreamApiRoutes::toEventEntry).toList();
         var nextOffset = events.isEmpty()
-                ? fromOffset
-                : events.getLast().offset() + 1;
+                         ? fromOffset
+                         : events.getLast().offset() + 1;
         var hasMore = events.size() >= maxEvents;
+
         return new StreamEventsResponse(addr.asString(), entries, nextOffset, hasMore);
     }
 
@@ -332,8 +351,14 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     private static int clampMaxEvents(int requested) {
-        if (requested < 1) {return 1;}
-        if (requested > MAX_EVENTS_PER_PAGE) {return MAX_EVENTS_PER_PAGE;}
+        if (requested < 1) {
+            return 1;
+        }
+
+        if (requested > MAX_EVENTS_PER_PAGE) {
+            return MAX_EVENTS_PER_PAGE;
+        }
+
         return requested;
     }
 
@@ -344,40 +369,39 @@ public final class StreamApiRoutes implements RouteSource {
                                                  String stream,
                                                  String version,
                                                  PublishRequest request) {
-        return ResourceAddress.resourceAddress(namespace, stream, version)
-                            .flatMap(addr -> publishOne(addr, request).map(offset -> new PublishResponse(addr.asString(),
-                                                                                                          offset)));
+        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> publishOne(addr, request).map(offset -> new PublishResponse(addr.asString(),
+                                                                                                                                                       offset)));
     }
 
     private Result<PublishBatchResponse> publishBatch(String namespace,
                                                       String stream,
                                                       String version,
                                                       PublishRequest[] requests) {
-        return ResourceAddress.resourceAddress(namespace, stream, version)
-                            .flatMap(addr -> publishMany(addr, requests));
+        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> publishMany(addr, requests));
     }
 
     private Result<PublishBatchResponse> publishMany(ResourceAddress addr, PublishRequest[] requests) {
-        var perEvent = java.util.Arrays.stream(requests)
-                                       .map(req -> publishOne(addr, req))
-                                       .toList();
-        return Result.allOf(perEvent)
-                     .map(offsets -> new PublishBatchResponse(addr.asString(), offsets.size(), offsets));
+        var perEvent = java.util.Arrays.stream(requests).map(req -> publishOne(addr, req)).toList();
+
+        return Result.allOf(perEvent).map(offsets -> new PublishBatchResponse(addr.asString(), offsets.size(), offsets));
     }
 
     private Result<Long> publishOne(ResourceAddress addr, PublishRequest request) {
         var streamName = addr.asString();
         var payload = decodePayload(request.data());
+
         return ensureStreamExists(streamName).flatMap(_ -> streamManager().publishLocal(streamName,
-                                                                                         0,
-                                                                                         payload,
-                                                                                         System.currentTimeMillis()));
+                                                                                        0,
+                                                                                        payload,
+                                                                                        System.currentTimeMillis()));
     }
 
     /// Adapter boundary: JSON `data` may legally be absent (null on the wire). Wrap into Option,
     /// then encode UTF-8. Empty body == empty payload, not an error.
     private static byte[] decodePayload(String data) {
-        return Option.option(data).map(StreamApiRoutes::utf8Bytes).or(EMPTY_PAYLOAD);
+        return Option.option(data)
+                     .map(StreamApiRoutes::utf8Bytes)
+                     .or(EMPTY_PAYLOAD);
     }
 
     private static byte[] utf8Bytes(String s) {
@@ -387,50 +411,51 @@ public final class StreamApiRoutes implements RouteSource {
     private static final byte[] EMPTY_PAYLOAD = new byte[0];
 
     private Result<org.pragmatica.lang.Unit> ensureStreamExists(String streamName) {
-        var config = StreamConfig.streamConfig(streamName,
-                                               DEFAULT_PARTITIONS,
-                                               MANAGEMENT_API_RETENTION,
-                                               "latest");
-        return streamManager().createStream(config).recover(_ -> org.pragmatica.lang.Unit.unit());
+        var config = StreamConfig.streamConfig(streamName, DEFAULT_PARTITIONS, MANAGEMENT_API_RETENTION, "latest");
+
+        return streamManager().createStream(config)
+                            .recover(_ -> org.pragmatica.lang.Unit.unit());
     }
 
     private Result<GroupResponse> createGroup(String namespace,
                                               String stream,
                                               String version,
                                               GroupCreateRequest request) {
-        return ResourceAddress.resourceAddress(namespace, stream, version)
-                            .flatMap(addr -> joinGroupAtAddress(addr, request));
+        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> joinGroupAtAddress(addr,
+                                                                                                              request));
     }
 
     private Result<GroupResponse> joinGroupAtAddress(ResourceAddress addr, GroupCreateRequest request) {
         var streamName = addr.asString();
         var consumerId = "operator-" + System.nanoTime();
+
         return coordinator.joinGroup(request.groupId(),
                                      streamName,
                                      DEFAULT_PARTITIONS,
                                      consumerId,
                                      nodeSupplier.get().self())
-                          .map(_ -> new GroupResponse(addr.asString(), request.groupId(), "created"));
+                          .map(_ -> new GroupResponse(addr.asString(),
+                                                      request.groupId(),
+                                                      "created"));
     }
 
-    private Result<GroupResponse> deleteGroup(String namespace,
-                                              String stream,
-                                              String version,
-                                              String group) {
-        return ResourceAddress.resourceAddress(namespace, stream, version)
-                            .flatMap(addr -> leaveGroupAtAddress(addr, group));
+    private Result<GroupResponse> deleteGroup(String namespace, String stream, String version, String group) {
+        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> leaveGroupAtAddress(addr,
+                                                                                                               group));
     }
 
     private Result<GroupResponse> leaveGroupAtAddress(ResourceAddress addr, String group) {
         var streamName = addr.asString();
         var status = coordinator.groupStatus(group);
-        if (status.isEmpty()) {return GROUP_NOT_FOUND.result();}
+
+        if (status.isEmpty()) {
+            return GROUP_NOT_FOUND.result();
+        }
+
         var consumers = status.getOrDefault(streamName, List.of());
-        var leaveResults = consumers.stream()
-                                    .map(c -> coordinator.leaveGroup(group, streamName, c.consumerId()))
-                                    .toList();
-        return Result.allOf(leaveResults)
-                     .map(_ -> new GroupResponse(addr.asString(), group, "deleted"));
+        var leaveResults = consumers.stream().map(c -> coordinator.leaveGroup(group, streamName, c.consumerId())).toList();
+
+        return Result.allOf(leaveResults).map(_ -> new GroupResponse(addr.asString(), group, "deleted"));
     }
 
     private Result<DeleteResponse> deleteStream(String namespace, String stream, String version) {
@@ -439,13 +464,16 @@ public final class StreamApiRoutes implements RouteSource {
 
     private Result<DeleteResponse> destroyAtAddress(ResourceAddress addr) {
         var streamName = addr.asString();
+
         return streamManager().destroyStream(streamName)
-                              .recover(_ -> org.pragmatica.lang.Unit.unit())
-                              .map(_ -> new DeleteResponse(addr.asString(), "deleted"));
+                            .recover(_ -> org.pragmatica.lang.Unit.unit())
+                            .map(_ -> new DeleteResponse(addr.asString(),
+                                                         "deleted"));
     }
 
     private StreamPartitionManager streamManager() {
-        return nodeSupplier.get().streamPartitionManager();
+        return nodeSupplier.get()
+                           .streamPartitionManager();
     }
 
     private static int defaultPartitionCount() {

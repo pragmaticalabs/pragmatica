@@ -85,8 +85,7 @@ public interface EnvironmentIntegration {
                                                      discovery,
                                                      certificateProvider,
                                                      dns,
-                                                     floatingIp)
-        .unwrap();
+                                                     floatingIp).unwrap();
     }
 
     record FacetedEnvironment(Option<ComputeProvider> compute,

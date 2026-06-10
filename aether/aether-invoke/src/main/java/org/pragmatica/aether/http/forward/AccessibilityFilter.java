@@ -8,6 +8,7 @@ import org.pragmatica.consensus.NodeId;
 
 import java.util.List;
 
+
 /// Data-path forwarder accessibility gate (silent-death fix). Narrows a candidate target list
 /// to the nodes that are currently *reachable* per the membership tracker (NTT), independent of
 /// the QUIC CONNECTED phase. On a hard node kill the dead node keeps its QUIC channel CONNECTED
@@ -20,7 +21,6 @@ import java.util.List;
 @FunctionalInterface
 public interface AccessibilityFilter {
     List<NodeId> keepOnlyAccessible(List<NodeId> candidates);
-
     /// Default no-op filter: returns candidates unchanged (back-compat for call sites and tests
     /// that do not wire NTT).
     AccessibilityFilter IDENTITY = candidates -> candidates;

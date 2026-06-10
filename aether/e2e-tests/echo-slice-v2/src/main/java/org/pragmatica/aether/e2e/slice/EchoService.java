@@ -32,8 +32,13 @@ public interface EchoService {
         private static final int MAX_LENGTH = 10000;
 
         public static Result<EchoRequest> echoRequest(String message) {
-            if (message == null || Verify.Is.blank(message)) {return MESSAGE_REQUIRED.apply(message).result();}
-            if (message.length() > MAX_LENGTH) {return MESSAGE_TOO_LONG.apply(message.length()).result();}
+            if (message == null || Verify.Is.blank(message)) {
+                return MESSAGE_REQUIRED.apply(message).result();
+            }
+
+            if (message.length() > MAX_LENGTH) {
+                return MESSAGE_TOO_LONG.apply(message.length()).result();
+            }
 
             return success(new EchoRequest(message));
         }
@@ -68,12 +73,18 @@ public interface EchoService {
             if (operation == null || !VALID_OPERATIONS.contains(operation.toLowerCase())) {
                 return INVALID_OPERATION.apply(operation).result();
             }
+
             return success(operation.toLowerCase());
         }
 
         private static Result<String> parseValue(String value) {
-            if (value == null || Verify.Is.empty(value)) {return VALUE_REQUIRED.apply(value).result();}
-            if (value.length() > MAX_LENGTH) {return VALUE_TOO_LONG.apply(value.length()).result();}
+            if (value == null || Verify.Is.empty(value)) {
+                return VALUE_REQUIRED.apply(value).result();
+            }
+
+            if (value.length() > MAX_LENGTH) {
+                return VALUE_TOO_LONG.apply(value.length()).result();
+            }
 
             return success(value);
         }
@@ -83,7 +94,10 @@ public interface EchoService {
         private static final Fn1<Cause, Integer> INVALID_CODE = Causes.forOneValue("HTTP code must be 400-599, got: %d");
 
         public static Result<FailRequest> failRequest(int code) {
-            if (code <400 || code > 599) {return INVALID_CODE.apply(code).result();}
+            if (code < 400 || code > 599) {
+                return INVALID_CODE.apply(code).result();
+            }
+
             return success(new FailRequest(code));
         }
     }

@@ -10,6 +10,8 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 
-@Retention(RetentionPolicy.SOURCE) @Target(ElementType.METHOD) public@interface Table {
+@Retention(RetentionPolicy.SOURCE)
+@Target(ElementType.METHOD)
+public @interface Table {
     Class<?> value();
 }

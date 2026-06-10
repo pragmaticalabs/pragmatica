@@ -23,7 +23,8 @@ public record SliceMethod<R, T>(MethodName name,
         return success(new SliceMethod<>(name, method, returnType, parameterType));
     }
 
-    @Override public Promise<R> apply(T param1) {
+    @Override
+    public Promise<R> apply(T param1) {
         return method.apply(param1);
     }
 }

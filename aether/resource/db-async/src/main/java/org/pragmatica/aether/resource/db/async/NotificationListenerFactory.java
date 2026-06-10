@@ -26,61 +26,68 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public final class NotificationListenerFactory implements ResourceFactory<PgNotificationSubscriber, PgNotificationConfig> {
     private static final Cause CONFIG_SERVICE_MISSING = Causes.cause("ConfigService not available for datasource resolution");
 
-    @Override public Class<PgNotificationSubscriber> resourceType() {
+    @Override
+    public Class<PgNotificationSubscriber> resourceType() {
         return PgNotificationSubscriber.class;
     }
 
-    @Override public Class<PgNotificationConfig> configType() {
+    @Override
+    public Class<PgNotificationConfig> configType() {
         return PgNotificationConfig.class;
     }
 
-    @Override public Promise<PgNotificationSubscriber> provision(PgNotificationConfig config) {
+    @Override
+    public Promise<PgNotificationSubscriber> provision(PgNotificationConfig config) {
         return resolveDatasourceConfig(config.datasource()).flatMap(dbConfig -> createDedicatedConnection(dbConfig).flatMap(connection -> subscribeToChannels(connection,
                                                                                                                                                               config.channels())));
     }
 
-    @Override public Promise<Unit> close(PgNotificationSubscriber resource) {
-        if (resource instanceof NotificationListenerHandle handle) {return handle.close();}
+    @Override
+    public Promise<Unit> close(PgNotificationSubscriber resource) {
+        if (resource instanceof NotificationListenerHandle handle) {
+            return handle.close();
+        }
+
         return Promise.unitPromise();
     }
 
     private static Promise<DatabaseConnectorConfig> resolveDatasourceConfig(String datasource) {
-        return ConfigService.instance().toResult(CONFIG_SERVICE_MISSING)
-                                     .flatMap(svc -> svc.config(datasource, DatabaseConnectorConfig.class))
-                                     .async();
+        return ConfigService.instance()
+                            .toResult(CONFIG_SERVICE_MISSING)
+                            .flatMap(svc -> svc.config(datasource, DatabaseConnectorConfig.class))
+                            .async();
     }
 
     private static Promise<Connection> createDedicatedConnection(DatabaseConnectorConfig config) {
-        return Promise.lift(DatabaseConnectorError::databaseFailure,
-                            () -> buildPlainConnectible(config))
-        .flatMap(Connectible::getConnection);
+        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> buildPlainConnectible(config)).flatMap(Connectible::getConnection);
     }
 
     private static Connectible buildPlainConnectible(DatabaseConnectorConfig config) {
         var builder = new NettyConnectibleBuilder();
+
         builder.hostname(config.effectiveHost());
         builder.port(config.effectivePort());
         builder.database(config.effectiveDatabase());
         config.effectiveUsername().onPresent(builder::username);
         config.effectivePassword().onPresent(builder::password);
         builder.maxConnections(1);
+
         return builder.plain();
     }
 
     private static Promise<PgNotificationSubscriber> subscribeToChannels(Connection connection, List<String> channels) {
         var handle = new NotificationListenerHandle(connection);
         var subscriptions = channels.stream().map(channel -> connection.subscribe(channel, handle::onNotification)
-                                                                                 .map(handle::addListening))
-                                           .toList();
+                                                                       .map(handle::addListening)).toList();
+
         return Promise.allOf(subscriptions).map(_ -> handle);
     }
 }
 
-@SuppressWarnings("JBCT-RET-01") final class NotificationListenerHandle implements PgNotificationSubscriber {
+@SuppressWarnings("JBCT-RET-01")
+final class NotificationListenerHandle implements PgNotificationSubscriber {
     private final Connection connection;
-
     private final List<Listening> listenings = new CopyOnWriteArrayList<>();
-
     private volatile java.util.function.Consumer<org.pragmatica.aether.slice.PgNotification> callback;
 
     NotificationListenerHandle(Connection connection) {
@@ -93,17 +100,21 @@ public final class NotificationListenerFactory implements ResourceFactory<PgNoti
 
     void onNotification(String channel, String payload, int pid) {
         var cb = this.callback;
-        if (cb != null) {cb.accept(org.pragmatica.aether.slice.PgNotification.pgNotification(channel, payload, pid));}
+
+        if (cb != null) {
+            cb.accept(org.pragmatica.aether.slice.PgNotification.pgNotification(channel, payload, pid));
+        }
     }
 
     Listening addListening(Listening listening) {
         listenings.add(listening);
+
         return listening;
     }
 
     Promise<Unit> close() {
-        var unlistens = listenings.stream().map(Listening::unlisten)
-                                         .toList();
+        var unlistens = listenings.stream().map(Listening::unlisten).toList();
+
         return Promise.allOf(unlistens).flatMap(_ -> connection.close());
     }
 }

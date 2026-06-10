@@ -29,23 +29,28 @@ public record DockerEnvironmentIntegration(DockerComputeProvider computeProvider
         return DockerComputeProvider.dockerComputeProvider(runner, config).map(DockerEnvironmentIntegration::new);
     }
 
-    @Override public Option<ComputeProvider> compute() {
+    @Override
+    public Option<ComputeProvider> compute() {
         return some(computeProvider);
     }
 
-    @Override public Option<SecretsProvider> secrets() {
+    @Override
+    public Option<SecretsProvider> secrets() {
         return empty();
     }
 
-    @Override public Option<LoadBalancerProvider> loadBalancer() {
+    @Override
+    public Option<LoadBalancerProvider> loadBalancer() {
         return empty();
     }
 
-    @Override public Option<DiscoveryProvider> discovery() {
+    @Override
+    public Option<DiscoveryProvider> discovery() {
         return empty();
     }
 
-    @Override public Option<FloatingIpProvider> floatingIp() {
+    @Override
+    public Option<FloatingIpProvider> floatingIp() {
         return some(noopFloatingIpProvider());
     }
 }

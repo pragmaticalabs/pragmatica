@@ -35,6 +35,7 @@ public record AbTestDeployment(String testId,
                                                     Map<String, Version> variantVersions,
                                                     SplitRule splitRule) {
         var now = System.currentTimeMillis();
+
         return new AbTestDeployment(testId,
                                     artifactBase,
                                     baselineVersion,
@@ -49,8 +50,10 @@ public record AbTestDeployment(String testId,
     }
 
     public Result<AbTestDeployment> transitionTo(AbTestState newState) {
-        if (!state.validTransitions().contains(newState)) {return INVALID_TRANSITION.apply(state + " -> " + newState)
-                                                                                          .result();}
+        if (!state.validTransitions().contains(newState)) {
+            return INVALID_TRANSITION.apply(state + " -> " + newState).result();
+        }
+
         return Result.success(new AbTestDeployment(testId,
                                                    artifactBase,
                                                    baselineVersion,
@@ -101,8 +104,7 @@ public record AbTestDeployment(String testId,
     }
 
     public Version newVersion() {
-        return Option.from(variantVersions.values().stream()
-                                                 .findFirst()).or(baselineVersion);
+        return Option.from(variantVersions.values().stream().findFirst()).or(baselineVersion);
     }
 
     public boolean isTerminal() {

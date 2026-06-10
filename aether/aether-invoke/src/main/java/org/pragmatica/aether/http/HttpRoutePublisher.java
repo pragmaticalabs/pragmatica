@@ -41,10 +41,12 @@ import org.slf4j.LoggerFactory;
 
 public interface HttpRoutePublisher {
     Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, SliceInvokerFacade invokerFacade);
+
     Promise<Unit> publishRoutes(Artifact artifact,
                                 ClassLoader classLoader,
                                 Object sliceInstance,
                                 SliceInvokerFacade invokerFacade);
+
     boolean hasRoutes(ClassLoader classLoader, Object sliceInstance);
     Promise<Unit> unpublishRoutes(Artifact artifact);
     Option<HttpRequestHandler> getHandler(Artifact artifact);
@@ -85,13 +87,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     private final NodeId selfNodeId;
     private final ClusterNode<KVCommand<AetherKey>> cluster;
     private final GenerationSnapshotSource snapshotSource;
-
     private final Map<Artifact, HttpRequestHandler> handlers = new ConcurrentHashMap<>();
-
     private final Map<Artifact, SliceRouter> sliceRouters = new ConcurrentHashMap<>();
-
     private final Map<Artifact, List<HttpRouteDefinition>> publishedRoutes = new ConcurrentHashMap<>();
-
     private final RouteMetadataExtractor routeMetadataExtractor = RouteMetadataExtractor.routeMetadataExtractor();
 
     private final AtomicReference<SecurityOverrides> activeOverrides = new AtomicReference<>(SecurityOverrides.EMPTY);
@@ -104,44 +102,54 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         this.snapshotSource = snapshotSource;
     }
 
-    @Override public Promise<Unit> publishRoutes(Artifact artifact,
-                                                 ClassLoader classLoader,
-                                                 SliceInvokerFacade invokerFacade) {
+    @Override
+    public Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, SliceInvokerFacade invokerFacade) {
         log.debug("publishRoutes(3-arg) called for artifact={}, classLoader={}",
                   artifact,
                   classLoader.getClass().getName());
         var factories = ServiceLoader.load(HttpRequestHandlerFactory.class, classLoader);
         var iterator = factories.iterator();
+
         if (!iterator.hasNext()) {
             log.debug("ServiceLoader: No HttpRequestHandlerFactory found for slice {}", artifact);
+
             return Promise.unitPromise();
         }
+
         var factory = iterator.next();
+
         log.debug("ServiceLoader: Found HttpRequestHandlerFactory for slice {}: {}",
                   artifact,
                   factory.getClass().getName());
         var handler = factory.create(invokerFacade);
+
         handlers.put(artifact, handler);
         var routes = handler.routes();
+
         log.debug("Route extraction: {} routes found for slice {}", routes.size(), artifact);
         if (routes.isEmpty()) {
             log.debug("No HTTP routes defined for slice {}, skipping publication", artifact);
+
             return Promise.unitPromise();
         }
+
         publishedRoutes.put(artifact, routes);
+
         return publishRoutesToCluster(routes, artifact);
     }
 
-    @Override public Promise<Unit> publishRoutes(Artifact artifact,
-                                                 ClassLoader classLoader,
-                                                 Object sliceInstance,
-                                                 SliceInvokerFacade invokerFacade) {
+    @Override
+    public Promise<Unit> publishRoutes(Artifact artifact,
+                                       ClassLoader classLoader,
+                                       Object sliceInstance,
+                                       SliceInvokerFacade invokerFacade) {
         log.debug("publishRoutes(4-arg) called for artifact={}, sliceInstance={}, classLoader={}",
                   artifact,
                   sliceInstance.getClass().getName(),
                   classLoader.getClass().getName());
         var routerFactories = ServiceLoader.load(SliceRouterFactory.class, classLoader);
         int factoryCount = 0;
+
         for (var factory : routerFactories) {
             factoryCount++;
             log.debug("ServiceLoader: Checking SliceRouterFactory {} for slice type match with {}",
@@ -150,69 +158,92 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
             if (factory.sliceType().isInstance(sliceInstance)) {
                 log.debug("ServiceLoader: SliceRouterFactory {} matches slice instance",
                           factory.getClass().getName());
+
                 return publishViaSliceRouterFactory(artifact, factory, sliceInstance);
             }
         }
+
         log.debug("ServiceLoader: {} SliceRouterFactory(s) found, none matched. Falling back to HttpRequestHandlerFactory",
                   factoryCount);
+
         return publishRoutes(artifact, classLoader, invokerFacade);
     }
 
-    @SuppressWarnings("unchecked") private Promise<Unit> publishViaSliceRouterFactory(Artifact artifact,
-                                                                                      SliceRouterFactory<?> factory,
-                                                                                      Object sliceInstance) {
+    @SuppressWarnings("unchecked")
+    private Promise<Unit> publishViaSliceRouterFactory(Artifact artifact,
+                                                       SliceRouterFactory<?> factory,
+                                                       Object sliceInstance) {
         log.debug("publishViaSliceRouterFactory: artifact={}, factory={}",
                   artifact,
                   factory.getClass().getName());
         var typedFactory = (SliceRouterFactory<Object>) factory;
         var router = typedFactory.create(sliceInstance);
+
         sliceRouters.put(artifact, router);
         if (factory instanceof RouteSource routeSource) {
             var routes = routeMetadataExtractor.extract(routeSource, artifact.asString());
+
             log.debug("Route extraction: {} routes found for slice {} via SliceRouterFactory", routes.size(), artifact);
             if (routes.isEmpty()) {
                 log.debug("No HTTP routes defined for slice {}, skipping publication", artifact);
+
                 return Promise.unitPromise();
             }
+
             publishedRoutes.put(artifact, routes);
+
             return publishRoutesToCluster(routes, artifact);
         }
+
         log.warn("SliceRouterFactory {} does not implement RouteSource, no routes published",
                  factory.getClass().getName());
+
         return Promise.unitPromise();
     }
 
-    @Override public boolean hasRoutes(ClassLoader classLoader, Object sliceInstance) {
+    @Override
+    public boolean hasRoutes(ClassLoader classLoader, Object sliceInstance) {
         var routerFactories = ServiceLoader.load(SliceRouterFactory.class, classLoader);
-        for (var factory : routerFactories) {if (factory.sliceType().isInstance(sliceInstance) && factory instanceof RouteSource routeSource) {return ! routeMetadataExtractor.extract(routeSource,
-                                                                                                                                                                                       "")
-        .isEmpty();}}
+
+        for (var factory : routerFactories) {
+            if (factory.sliceType().isInstance(sliceInstance) && factory instanceof RouteSource routeSource) {
+                return ! routeMetadataExtractor.extract(routeSource, "")
+                                               .isEmpty();
+            }
+        }
+
         var handlerFactories = ServiceLoader.load(HttpRequestHandlerFactory.class, classLoader);
-        return handlerFactories.iterator().hasNext();
+
+        return handlerFactories.iterator()
+                               .hasNext();
     }
 
-    @Override public Unit updateSecurityOverrides(SecurityOverrides overrides) {
+    @Override
+    public Unit updateSecurityOverrides(SecurityOverrides overrides) {
         activeOverrides.set(overrides);
         log.info("Updated security overrides: {} entries, policy={}",
                  overrides.entries().size(),
                  overrides.policy());
+
         return Unit.unit();
     }
 
     private Promise<Unit> publishRoutesToCluster(List<HttpRouteDefinition> routes, Artifact artifact) {
         var effectiveRoutes = SecurityOverrideApplier.applyOverrides(routes, activeOverrides.get());
+
         log.debug("Publishing {} HTTP routes for slice {}", effectiveRoutes.size(), artifact);
-        var routeEntries = effectiveRoutes.stream().map(HttpRoutePublisherImpl::toRouteEntry)
-                                                 .toList();
+        var routeEntries = effectiveRoutes.stream().map(HttpRoutePublisherImpl::toRouteEntry).toList();
         var key = NodeRoutesKey.nodeRoutesKey(selfNodeId, artifact);
         var stampedEpoch = Epoch.epoch(snapshotSource.observedEpochRabiaTerm(), 0L);
         var value = NodeRoutesValue.nodeRoutesValue(routeEntries, stampedEpoch);
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
-        return cluster.apply(List.of(command)).mapToUnit()
-                            .onSuccess(_ -> log.debug("Published {} HTTP routes for slice {} stamped with epoch {}",
-                                                      routes.size(),
-                                                      artifact,
-                                                      stampedEpoch));
+
+        return cluster.apply(List.of(command))
+                      .mapToUnit()
+                      .onSuccess(_ -> log.debug("Published {} HTTP routes for slice {} stamped with epoch {}",
+                                                routes.size(),
+                                                artifact,
+                                                stampedEpoch));
     }
 
     private static RouteEntry toRouteEntry(HttpRouteDefinition route) {
@@ -222,63 +253,101 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                                       route.security().asString());
     }
 
-    @Override public Promise<Unit> unpublishRoutes(Artifact artifact) {
+    @Override
+    public Promise<Unit> unpublishRoutes(Artifact artifact) {
         handlers.remove(artifact);
         sliceRouters.remove(artifact);
         var routes = publishedRoutes.remove(artifact);
-        if (routes == null || routes.isEmpty()) {return Promise.unitPromise();}
+
+        if (routes == null || routes.isEmpty()) {
+            return Promise.unitPromise();
+        }
+
         return unpublishRoutesFromCluster(artifact, routes);
     }
 
     private Promise<Unit> unpublishRoutesFromCluster(Artifact artifact, List<HttpRouteDefinition> routes) {
         KVCommand<AetherKey> command = new KVCommand.Remove<>(NodeRoutesKey.nodeRoutesKey(selfNodeId, artifact));
-        return cluster.apply(List.of(command)).mapToUnit()
-                            .onSuccess(_ -> log.debug("Unpublished {} HTTP routes for {}",
-                                                      routes.size(),
-                                                      artifact))
-                            .onFailure(cause -> log.error("Failed to unpublish HTTP routes for {}: {}",
-                                                          artifact,
-                                                          cause.message()));
+
+        return cluster.apply(List.of(command))
+                      .mapToUnit()
+                      .onSuccess(_ -> log.debug("Unpublished {} HTTP routes for {}",
+                                                routes.size(),
+                                                artifact))
+                      .onFailure(cause -> log.error("Failed to unpublish HTTP routes for {}: {}",
+                                                    artifact,
+                                                    cause.message()));
     }
 
-    @Override public Option<HttpRequestHandler> getHandler(Artifact artifact) {
+    @Override
+    public Option<HttpRequestHandler> getHandler(Artifact artifact) {
         return Option.option(handlers.get(artifact));
     }
 
-    @Override public Option<SliceRouter> getSliceRouter(Artifact artifact) {
+    @Override
+    public Option<SliceRouter> getSliceRouter(Artifact artifact) {
         return Option.option(sliceRouters.get(artifact));
     }
 
-    @Override public Set<HttpNodeRouteKey> allLocalRoutes() {
+    @Override
+    public Set<HttpNodeRouteKey> allLocalRoutes() {
         var localRoutes = new java.util.HashSet<HttpNodeRouteKey>();
-        for (var routes : publishedRoutes.values()) {for (var route : routes) {localRoutes.add(HttpNodeRouteKey.httpNodeRouteKey(route.httpMethod(),
-                                                                                                                                 route.pathPrefix(),
-                                                                                                                                 selfNodeId));}}
+
+        for (var routes : publishedRoutes.values()) {
+            for (var route : routes) {
+                localRoutes.add(HttpNodeRouteKey.httpNodeRouteKey(route.httpMethod(), route.pathPrefix(), selfNodeId));
+            }
+        }
+
         return Set.copyOf(localRoutes);
     }
 
-    @Override public Option<SliceRouter> findLocalRouter(String httpMethod, String pathPrefix) {
+    @Override
+    public Option<SliceRouter> findLocalRouter(String httpMethod, String pathPrefix) {
         for (var entry : publishedRoutes.entrySet()) {
             var artifact = entry.getKey();
             var routes = entry.getValue();
-            for (var route : routes) {if (route.httpMethod().equalsIgnoreCase(httpMethod) && route.pathPrefix()
-                                                                                                             .equals(pathPrefix)) {return Option.option(sliceRouters.get(artifact));}}
+
+            for (var route : routes) {
+                if (route.httpMethod().equalsIgnoreCase(httpMethod) && route.pathPrefix().equals(pathPrefix)) {
+                    return Option.option(sliceRouters.get(artifact));
+                }
+            }
         }
+
         return Option.none();
     }
 
-    @Override public Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path) {
+    @Override
+    public Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path) {
         var normalizedPath = normalizePath(path);
-        for (var routes : publishedRoutes.values()) {for (var route : routes) {if (route.httpMethod()
-                                                                                                   .equalsIgnoreCase(httpMethod) && normalizedPath.startsWith(route.pathPrefix())) {return Option.some(LocalRouteInfo.localRouteInfo(route));}}}
+
+        for (var routes : publishedRoutes.values()) {
+            for (var route : routes) {
+                if (route.httpMethod().equalsIgnoreCase(httpMethod) && normalizedPath.startsWith(route.pathPrefix())) {
+                    return Option.some(LocalRouteInfo.localRouteInfo(route));
+                }
+            }
+        }
+
         return Option.none();
     }
 
     private String normalizePath(String path) {
-        if (path == null || path.isBlank()) {return "/";}
+        if (path == null || path.isBlank()) {
+            return "/";
+        }
+
         var normalized = path.strip();
-        if (!normalized.startsWith("/")) {normalized = "/" + normalized;}
-        if (!normalized.endsWith("/")) {normalized = normalized + "/";}
+
+        if (!normalized.startsWith("/")) {
+            normalized = "/" + normalized;
+        }
+
+        if (!normalized.endsWith("/")) {
+            normalized = normalized + "/";
+        }
+
         return normalized;
     }
 }

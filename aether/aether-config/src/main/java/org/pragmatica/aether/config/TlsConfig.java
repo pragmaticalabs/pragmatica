@@ -44,24 +44,26 @@ public record TlsConfig(boolean autoGenerate, String certPath, String keyPath, S
     }
 
     public boolean hasProvidedCertificates() {
-        return ! autoGenerate && !certPath.isBlank() && !keyPath.isBlank();
+        return ! autoGenerate
+               && !certPath.isBlank()
+               && !keyPath.isBlank();
     }
 
     public Option<Path> certFile() {
         return certPath.isBlank()
-              ? none()
-              : option(Path.of(certPath));
+               ? none()
+               : option(Path.of(certPath));
     }
 
     public Option<Path> keyFile() {
         return keyPath.isBlank()
-              ? none()
-              : option(Path.of(keyPath));
+               ? none()
+               : option(Path.of(keyPath));
     }
 
     public Option<Path> caFile() {
         return caPath.isBlank()
-              ? none()
-              : option(Path.of(caPath));
+               ? none()
+               : option(Path.of(caPath));
     }
 }

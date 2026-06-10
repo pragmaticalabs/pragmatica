@@ -20,6 +20,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.UpHystere
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
 
+
 /// Per-member shadow membership FSM (Phase 1, model only — no wiring, no behaviour change).
 ///
 /// Each instance tracks the lifecycle of one peer identity as observed through SWIM gossip,
@@ -44,21 +45,13 @@ import org.pragmatica.statemachine.TransitionRequest;
 /// last incarnation the cluster ever attributed to this identity. Rejoin fencing (spec §4 bug #2):
 /// a `SwimHealthy(inc)` arriving in DEAD reopens the identity (→ OBSERVED) only when
 /// `inc > terminalIncarnation`; a same-or-lower incarnation is a stale gossip echo and is ignored.
-public sealed interface MembershipState extends FsmState<MembershipState, MembershipEvent>
-        permits MembershipState.Observed,
-                MembershipState.Member,
-                MembershipState.Suspect,
-                MembershipState.Departing,
-                MembershipState.Dead {
-
+public sealed interface MembershipState extends FsmState<MembershipState, MembershipEvent> permits MembershipState.Observed, MembershipState.Member, MembershipState.Suspect, MembershipState.Departing, MembershipState.Dead {
     MembershipContext ctx();
-
     /// Whether this member contributes to the effective on-duty count. The flap-resistant cure:
     /// SUSPECT still counts, so a transient SWIM doubt never drops the effective size.
     boolean countsTowardEffective();
 
     // --- State records ---
-
     /// Seen, not yet promoted. Does not count toward the effective set.
     record Observed(MembershipContext ctx) implements MembershipState {
         @Override
@@ -155,10 +148,7 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
             switch (event) {
                 case Stopped _ -> tx.transitionTo(ctx.dead());
                 case SwimDeparted e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
-                case SwimHealthy _, PeerConnected _, UpHysteresisMet _,
-                     SwimSuspect _, SwimFaulty _, PeerDisconnected _, LivenessGone _,
-                     DownHysteresisMet _, SwimUnknown _, DrainRequested _,
-                     JoinGraceExpiredNeverHealthy _ -> tx.ignore();
+                case SwimHealthy _, PeerConnected _, UpHysteresisMet _, SwimSuspect _, SwimFaulty _, PeerDisconnected _, LivenessGone _, DownHysteresisMet _, SwimUnknown _, DrainRequested _, JoinGraceExpiredNeverHealthy _ -> tx.ignore();
             }
         }
     }
@@ -193,7 +183,6 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
     }
 
     // --- Shared action helpers ---
-
     /// MEMBER/SUSPECT doubt path (`SwimSuspect` / `SwimFaulty`): record the incarnation for DEAD
     /// stamping, then move to SUSPECT (which still counts toward effective).
     private static void doubtToSuspect(MembershipContext ctx,

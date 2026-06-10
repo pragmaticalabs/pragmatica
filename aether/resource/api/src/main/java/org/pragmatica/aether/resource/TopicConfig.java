@@ -8,6 +8,7 @@ import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.lang.Result;
 
+
 /// Pub/sub topic configuration.
 ///
 /// The wire/TOML shape is a single `topicName` field, kept verbatim for backward compatibility:
@@ -30,7 +31,9 @@ public record TopicConfig(String topicName) {
     /// as-is. The deploy path overrides the placeholder namespace with the blueprint-derived one.
     public Result<ResourceAddress> address() {
         return topicName != null && topicName.contains(":")
-              ? ResourceAddress.resourceAddress(topicName)
-              : ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, topicName, ResourceVersion.defaultVersion());
+               ? ResourceAddress.resourceAddress(topicName)
+               : ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE,
+                                                 topicName,
+                                                 ResourceVersion.defaultVersion());
     }
 }

@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.ntt;
 
-
 /// Structured intent emitted by [`LeaderReconciler`] per reconciliation decision
 /// (spec §7.4 — E2 Phase 1.5 simplification). The reconcile is fully state-derived,
 /// so observers receive only the *count delta* (provisions / drains issued this pass);

@@ -32,29 +32,33 @@ public sealed interface StreamVersionSpec {
             General(String message) {
                 this.message = message;
             }
-            @Override public String message() {
+            @Override
+            public String message() {
                 return message;
             }
         }
 
-        @SuppressWarnings("unused") record unused() implements StreamVersionSpecError {
-            @Override public String message() {
+        @SuppressWarnings("unused")
+        record unused() implements StreamVersionSpecError {
+            @Override
+            public String message() {
                 return "";
             }
         }
     }
 
     String asString();
-
     boolean isLatest();
 
     /// Exact version pin.
     record Exact(ResourceVersion version) implements StreamVersionSpec {
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return version.asString();
         }
 
-        @Override public boolean isLatest() {
+        @Override
+        public boolean isLatest() {
             return false;
         }
     }
@@ -62,12 +66,12 @@ public sealed interface StreamVersionSpec {
     /// Latest marker — resolved at subscribe time.
     enum Latest implements StreamVersionSpec {
         INSTANCE;
-
-        @Override public String asString() {
+        @Override
+        public String asString() {
             return LATEST_TOKEN;
         }
-
-        @Override public boolean isLatest() {
+        @Override
+        public boolean isLatest() {
             return true;
         }
     }
@@ -76,12 +80,15 @@ public sealed interface StreamVersionSpec {
         if (value == null) {
             return StreamVersionSpecError.General.NULL_VALUE.result();
         }
+
         if (value.isBlank()) {
             return StreamVersionSpecError.General.BLANK_VALUE.result();
         }
+
         if (LATEST_TOKEN.equalsIgnoreCase(value.trim())) {
             return success(Latest.INSTANCE);
         }
+
         return ResourceVersion.resourceVersion(value).map(Exact::new);
     }
 

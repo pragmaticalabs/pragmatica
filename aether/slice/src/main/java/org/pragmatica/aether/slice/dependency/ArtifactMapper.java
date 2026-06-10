@@ -12,15 +12,24 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-PAT-01"}) public interface ArtifactMapper {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-PAT-01"})
+public interface ArtifactMapper {
     static Result<Artifact> toArtifact(String className, String version) {
         var lastDot = className.lastIndexOf('.');
-        if (lastDot <= 0) {return INVALID_CLASS_NAME.apply(className).result();}
+
+        if (lastDot <= 0) {
+            return INVALID_CLASS_NAME.apply(className).result();
+        }
+
         var groupId = className.substring(0, lastDot);
         var simpleName = className.substring(lastDot + 1);
-        if (simpleName.isEmpty() || !Character.isUpperCase(simpleName.charAt(0))) {return INVALID_CLASS_NAME.apply(className)
-                                                                                                                  .result();}
+
+        if (simpleName.isEmpty() || !Character.isUpperCase(simpleName.charAt(0))) {
+            return INVALID_CLASS_NAME.apply(className).result();
+        }
+
         var artifactId = toKebabCase(simpleName);
+
         return Artifact.artifact(groupId + ":" + artifactId + ":" + version);
     }
 
@@ -34,6 +43,7 @@ import org.pragmatica.lang.utils.Causes;
 
     static Result<Artifact> toArtifact(ArtifactDependency dependency) {
         var version = extractVersion(dependency.versionPattern());
+
         return Artifact.artifact(dependency.groupId() + ":" + dependency.artifactId() + ":" + version);
     }
 
@@ -41,45 +51,70 @@ import org.pragmatica.lang.utils.Causes;
         var groupId = artifact.groupId().id();
         var artifactId = artifact.artifactId().id();
         var simpleName = toPascalCase(artifactId);
+
         return groupId + "." + simpleName;
     }
 
     static String toClassName(String groupId, String artifactId) {
         var simpleName = toPascalCase(artifactId);
+
         return groupId + "." + simpleName;
     }
 
     private static String toKebabCase(String pascalCase) {
-        if (pascalCase == null || pascalCase.isEmpty()) {return pascalCase;}
+        if (pascalCase == null || pascalCase.isEmpty()) {
+            return pascalCase;
+        }
+
         var result = new StringBuilder();
         var chars = pascalCase.toCharArray();
-        for (int i = 0;i <chars.length;i++) {
+
+        for (int i = 0; i < chars.length; i++) {
             var c = chars[i];
+
             if (Character.isUpperCase(c)) {
                 if (i > 0) {
                     var prevUpper = Character.isUpperCase(chars[i - 1]);
-                    var nextLower = (i + 1 <chars.length) && Character.isLowerCase(chars[i + 1]);
-                    if (!prevUpper || nextLower) {result.append('-');}
+                    var nextLower = (i + 1 < chars.length) && Character.isLowerCase(chars[i + 1]);
+
+                    if (!prevUpper || nextLower) {
+                        result.append('-');
+                    }
                 }
+
                 result.append(Character.toLowerCase(c));
-            } else {result.append(c);}
+            } else {
+                result.append(c);
+            }
         }
+
         return result.toString();
     }
 
     private static String toPascalCase(String kebabCase) {
-        if (kebabCase == null || kebabCase.isEmpty()) {return kebabCase;}
+        if (kebabCase == null || kebabCase.isEmpty()) {
+            return kebabCase;
+        }
+
         var result = new StringBuilder();
         var capitalizeNext = true;
-        for (var c : kebabCase.toCharArray()) {if (c == '-') {capitalizeNext = true;} else if (capitalizeNext) {
-            result.append(Character.toUpperCase(c));
-            capitalizeNext = false;
-        } else {result.append(c);}}
+
+        for (var c : kebabCase.toCharArray()) {
+            if (c == '-') {
+                capitalizeNext = true;
+            } else if (capitalizeNext) {
+                result.append(Character.toUpperCase(c));
+                capitalizeNext = false;
+            } else {
+                result.append(c);
+            }
+        }
+
         return result.toString();
     }
 
     private static String extractVersion(VersionPattern pattern) {
-        return switch (pattern){
+        return switch (pattern) {
             case VersionPattern.Exact(Version version) -> version.withQualifier();
             case VersionPattern.Range(Version from, _, _, _) -> from.withQualifier();
             case VersionPattern.Comparison(_, Version version) -> version.withQualifier();

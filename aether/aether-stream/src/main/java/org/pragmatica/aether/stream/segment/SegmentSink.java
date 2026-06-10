@@ -10,8 +10,8 @@ import org.pragmatica.lang.Unit;
 import static org.pragmatica.lang.Unit.unit;
 
 
-@FunctionalInterface public interface SegmentSink {
+@FunctionalInterface
+public interface SegmentSink {
     Promise<Unit> seal(SealedSegment segment);
-
     SegmentSink DISCARD = _ -> Promise.success(unit());
 }

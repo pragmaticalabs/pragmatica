@@ -30,17 +30,19 @@ public sealed interface SliceRuntime {
 
     static Result<Unit> setSliceInvoker(SliceInvokerFacade invoker) {
         SliceRuntimeHolder.INVOKER_REF.set(invoker);
+
         return success(unit());
     }
 
     static Result<Unit> clear() {
         SliceRuntimeHolder.INVOKER_REF.set(null);
+
         return success(unit());
     }
 }
 
 sealed interface SliceRuntimeHolder {
-    record unused() implements SliceRuntimeHolder{}
+    record unused() implements SliceRuntimeHolder {}
 
     java.util.concurrent.atomic.AtomicReference<SliceInvokerFacade> INVOKER_REF = new java.util.concurrent.atomic.AtomicReference<>();
 }

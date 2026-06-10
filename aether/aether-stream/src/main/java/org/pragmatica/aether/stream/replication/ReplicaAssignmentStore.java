@@ -8,8 +8,10 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 
 
-@FunctionalInterface public interface ReplicaAssignmentStore {
-    @Contract void persistAssignment(String streamName, int partition, NodeId nodeId, boolean assigned);
+@FunctionalInterface
+public interface ReplicaAssignmentStore {
+    @Contract
+    void persistAssignment(String streamName, int partition, NodeId nodeId, boolean assigned);
 
     ReplicaAssignmentStore NOOP = (_, _, _, _) -> {};
 }

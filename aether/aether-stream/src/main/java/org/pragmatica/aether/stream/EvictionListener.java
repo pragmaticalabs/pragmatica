@@ -9,8 +9,10 @@ import org.pragmatica.lang.Contract;
 import java.util.List;
 
 
-@FunctionalInterface public interface EvictionListener {
-    @Contract void onEviction(String streamName, int partition, List<OffHeapRingBuffer.RawEvent> events);
+@FunctionalInterface
+public interface EvictionListener {
+    @Contract
+    void onEviction(String streamName, int partition, List<OffHeapRingBuffer.RawEvent> events);
 
     EvictionListener NOOP = (_, _, _) -> {};
 }

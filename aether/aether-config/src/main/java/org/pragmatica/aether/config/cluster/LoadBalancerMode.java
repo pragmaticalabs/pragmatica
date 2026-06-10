@@ -24,9 +24,10 @@ public enum LoadBalancerMode {
         return value;
     }
     public static Result<LoadBalancerMode> loadBalancerMode(String raw) {
-        return Arrays.stream(values()).filter(lm -> lm.value.equals(raw))
-                            .findFirst()
-                            .map(Result::success)
-                            .orElseGet(INVALID_TYPE::result);
+        return Arrays.stream(values())
+                     .filter(lm -> lm.value.equals(raw))
+                     .findFirst()
+                     .map(Result::success)
+                     .orElseGet(INVALID_TYPE::result);
     }
 }

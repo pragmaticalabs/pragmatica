@@ -107,6 +107,7 @@ public final class DeployRoutes implements RouteSource {
 
     private DeploymentListResponse listDeployments() {
         var responses = deploymentManager().list().stream().map(DeployRoutes::toResponse).toList();
+
         return new DeploymentListResponse(responses);
     }
 
@@ -184,7 +185,9 @@ public final class DeployRoutes implements RouteSource {
     }
 
     private static Result<HealthThresholds> parseThresholds(Map<String, Object> raw) {
-        if (raw == null || raw.isEmpty()) {return Result.success(HealthThresholds.DEFAULT);}
+        if (raw == null || raw.isEmpty()) {
+            return Result.success(HealthThresholds.DEFAULT);
+        }
 
         var maxErrorRate = toDouble(raw.get("maxErrorRate"), HealthThresholds.DEFAULT.maxErrorRate());
         var maxLatencyMs = toLong(raw.get("maxLatencyMs"),
@@ -194,7 +197,10 @@ public final class DeployRoutes implements RouteSource {
     }
 
     private static Result<CleanupPolicy> parseCleanupPolicy(String raw) {
-        if (raw == null || raw.isEmpty()) {return Result.success(CleanupPolicy.GRACE_PERIOD);}
+        if (raw == null || raw.isEmpty()) {
+            return Result.success(CleanupPolicy.GRACE_PERIOD);
+        }
+
         return switch (raw.toUpperCase()) {
             case "IMMEDIATE" -> Result.success(CleanupPolicy.IMMEDIATE);
             case "GRACE_PERIOD" -> Result.success(CleanupPolicy.GRACE_PERIOD);
@@ -219,11 +225,15 @@ public final class DeployRoutes implements RouteSource {
 
     @SuppressWarnings("unchecked")
     private static Result<StrategyConfig> parseCanaryConfig(Map<String, Object> raw) {
-        if (raw == null) {return MISSING_CANARY_STAGES.result();}
+        if (raw == null) {
+            return MISSING_CANARY_STAGES.result();
+        }
 
         var rawStages = (List<Map<String, Object>>) raw.get("stages");
 
-        if (rawStages == null || rawStages.isEmpty()) {return MISSING_CANARY_STAGES.result();}
+        if (rawStages == null || rawStages.isEmpty()) {
+            return MISSING_CANARY_STAGES.result();
+        }
 
         return Result.allOf(rawStages.stream().map(DeployRoutes::parseCanaryStage).toList()).map(stages -> new CanaryConfig(stages,
                                                                                                                             CanaryAnalysisConfig.DEFAULT));
@@ -240,6 +250,7 @@ public final class DeployRoutes implements RouteSource {
         var drainTimeoutMs = raw != null
                              ? toLong(raw.get("drainTimeoutMs"), 30_000L)
                              : 30_000L;
+
         return Result.success(new BlueGreenConfig(timeSpan(drainTimeoutMs).millis()));
     }
 
@@ -273,17 +284,26 @@ public final class DeployRoutes implements RouteSource {
     }
 
     private static double toDouble(Object value, double defaultValue) {
-        if (value instanceof Number n) {return n.doubleValue();}
+        if (value instanceof Number n) {
+            return n.doubleValue();
+        }
+
         return defaultValue;
     }
 
     private static long toLong(Object value, long defaultValue) {
-        if (value instanceof Number n) {return n.longValue();}
+        if (value instanceof Number n) {
+            return n.longValue();
+        }
+
         return defaultValue;
     }
 
     private static int toInt(Object value, int defaultValue) {
-        if (value instanceof Number n) {return n.intValue();}
+        if (value instanceof Number n) {
+            return n.intValue();
+        }
+
         return defaultValue;
     }
 

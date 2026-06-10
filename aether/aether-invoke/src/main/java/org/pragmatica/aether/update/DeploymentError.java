@@ -13,7 +13,8 @@ public sealed interface DeploymentError extends Cause {
             return new DeploymentNotFound(deploymentId);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Deployment not found: " + deploymentId;
         }
     }
@@ -23,7 +24,8 @@ public sealed interface DeploymentError extends Cause {
             return new DeploymentAlreadyExists(blueprintId);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Deployment already in progress for blueprint: " + blueprintId;
         }
     }
@@ -33,7 +35,8 @@ public sealed interface DeploymentError extends Cause {
             return new BlueprintNotFound(blueprintId);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Blueprint not found: " + blueprintId;
         }
     }
@@ -43,7 +46,8 @@ public sealed interface DeploymentError extends Cause {
             return new NoCurrentVersion(artifactBase);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "No current version for " + artifactBase + " (initial deployment — use blueprint deploy instead)";
         }
     }
@@ -53,8 +57,10 @@ public sealed interface DeploymentError extends Cause {
             return new SameVersionDeployment(version);
         }
 
-        @Override public String message() {
-            return "Cannot deploy version " + version + " — already active. Use /api/blueprints/deploy for redeployment.";
+        @Override
+        public String message() {
+            return "Cannot deploy version " + version
+                 + " — already active. Use /api/blueprints/deploy for redeployment.";
         }
     }
 
@@ -63,7 +69,8 @@ public sealed interface DeploymentError extends Cause {
             return new ConsensusFailure(cause);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Consensus apply failed: " + cause.message();
         }
     }
@@ -76,7 +83,8 @@ public sealed interface DeploymentError extends Cause {
         General(String msg) {
             this.msg = msg;
         }
-        @Override public String message() {
+        @Override
+        public String message() {
             return msg;
         }
     }

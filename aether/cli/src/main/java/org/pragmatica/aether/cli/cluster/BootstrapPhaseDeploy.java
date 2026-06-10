@@ -53,13 +53,14 @@ sealed interface BootstrapPhaseDeploy {
         ClusterBootstrapOrchestrator.logPhase(DEPLOY_RUNTIME,
                                               "Deploying runtime to %d node(s)",
                                               ctx.addresses().size());
-
         for (var entry : ctx.config().sources().entrySet()) {
             var sourceName = entry.getKey();
             var source = entry.getValue();
             var deployResult = deploySource(ctx, source, sourceName, healthCheck, sshExec, envLookup);
 
-            if (deployResult.isFailure()) {return deployResult.map(_ -> ctx);}
+            if (deployResult.isFailure()) {
+                return deployResult.map(_ -> ctx);
+            }
         }
 
         return verifyForgeReachable(ctx).map(_ -> ctx);
@@ -69,19 +70,23 @@ sealed interface BootstrapPhaseDeploy {
     private static Result<Unit> verifyForgeReachable(BootstrapContext ctx) {
         var hasForge = ctx.config().sources().values().stream().anyMatch(s -> s.type() == SourceType.FORGE);
 
-        if (!hasForge) {return Result.unitResult();}
+        if (!hasForge) {
+            return Result.unitResult();
+        }
 
         var mgmtPort = ctx.config().operations().ports().management();
         var url = "http://127.0.0.1:" + mgmtPort + "/health/live";
+
         System.out.printf("  Verifying forge is reachable at %s%n", url);
         var deadline = System.currentTimeMillis() + 10_000;
 
-        while (System.currentTimeMillis() <deadline) {
+        while (System.currentTimeMillis() < deadline) {
             if (ClusterBootstrapOrchestrator.httpGet(url).isSuccess()) {
                 System.out.println("  Forge is reachable");
 
                 return Result.unitResult();
             }
+
             ClusterBootstrapOrchestrator.sleepQuietly(1000);
         }
 
@@ -159,13 +164,16 @@ sealed interface BootstrapPhaseDeploy {
                                                        preflightTimeoutMs,
                                                        preflightPollMs);
 
-        if (restartResult.isFailure()) {return restartResult;}
+        if (restartResult.isFailure()) {
+            return restartResult;
+        }
 
         var mgmtPort = ctx.config().operations().ports().management();
         var scheme = ctx.config().operations().tls().autoGenerate()
                      ? "https"
                      : "http";
         var timeoutMs = ClusterBootstrapOrchestrator.parseDurationMs(ctx.config().operations().timeouts().healthCheck());
+
         System.out.printf("  [%s/cloud] Waiting for %d node(s) to become healthy (timeout: %ds)%n",
                           sourceName,
                           sourceNodes.size(),
@@ -185,7 +193,9 @@ sealed interface BootstrapPhaseDeploy {
                                                            long preflightPollMs) {
         var sshConfigResult = buildCloudSshConfig(source, envLookup);
 
-        if (sshConfigResult.isFailure()) {return sshConfigResult.map(_ -> Unit.unit());}
+        if (sshConfigResult.isFailure()) {
+            return sshConfigResult.map(_ -> Unit.unit());
+        }
 
         var sshConfig = sshConfigResult.unwrap();
         var preflight = waitForSshReachable(sourceNodes,
@@ -195,7 +205,9 @@ sealed interface BootstrapPhaseDeploy {
                                             preflightTimeoutMs,
                                             preflightPollMs);
 
-        if (preflight.isFailure()) {return preflight;}
+        if (preflight.isFailure()) {
+            return preflight;
+        }
 
         var peers = String.join(",", buildThreePartPeers(ctx));
         var clusterPort = ctx.config().operations().ports().cluster();
@@ -206,12 +218,12 @@ sealed interface BootstrapPhaseDeploy {
         var runtimeLabel = isJvm
                            ? "JVMs"
                            : "containers";
+
         System.out.printf("  [%s/cloud] Re-launching aether-node %s on %d host(s) with finalized PEERS=%s%n",
                           sourceName,
                           runtimeLabel,
                           sourceNodes.size(),
                           peers);
-
         for (var node : sourceNodes) {
             var command = isJvm
                           ? buildJvmRestartCommand(node.nodeId(), clusterPort, managementPort, peers, clusterSecret)
@@ -232,6 +244,7 @@ sealed interface BootstrapPhaseDeploy {
         var doneLabel = isJvm
                         ? "JVM(s)"
                         : "container(s)";
+
         System.out.printf("  [%s/cloud] All %d %s restarted with finalized PEERS%n",
                           sourceName,
                           sourceNodes.size(),
@@ -244,6 +257,7 @@ sealed interface BootstrapPhaseDeploy {
         var prefix = isJvm
                      ? "Failed to restart aether-node JVM with finalized PEERS: "
                      : "Failed to restart aether-node container with finalized PEERS: ";
+
         return prefix + result.fold(c -> c.message(), v -> v);
     }
 
@@ -275,7 +289,9 @@ sealed interface BootstrapPhaseDeploy {
                                             Fn3<Result<String>, String, String, SshConfig> sshExec,
                                             long timeoutMs,
                                             long pollIntervalMs) {
-        if (nodes.isEmpty()) {return Result.unitResult();}
+        if (nodes.isEmpty()) {
+            return Result.unitResult();
+        }
 
         System.out.printf("  [%s/cloud] Waiting up to %ds for SSH to become reachable on %d host(s)%n",
                           sourceName,
@@ -284,18 +300,21 @@ sealed interface BootstrapPhaseDeploy {
         var deadline = System.currentTimeMillis() + timeoutMs;
         var unreachable = new ArrayList<>(nodes);
 
-        while (System.currentTimeMillis() <deadline && !unreachable.isEmpty()) {
+        while (System.currentTimeMillis() < deadline && !unreachable.isEmpty()) {
             unreachable.removeIf(node -> sshExec.apply(node.publicIp(),
                                                        "cloud-init status --wait",
                                                        sshConfig)
                                                 .isSuccess());
-
-            if (unreachable.isEmpty()) {break;}
+            if (unreachable.isEmpty()) {
+                break;
+            }
 
             ClusterBootstrapOrchestrator.sleepQuietly(pollIntervalMs);
         }
+
         if (!unreachable.isEmpty()) {
             var ips = unreachable.stream().map(ProvisionedNode::publicIp).toList();
+
             return new BootstrapError.DeploymentFailed(sourceName,
                                                        "SSH preflight failed: " + unreachable.size()
                                                       + " host(s) unreachable after " + (timeoutMs / 1000)
@@ -387,7 +406,9 @@ sealed interface BootstrapPhaseDeploy {
         var port = source.sshPort().or(22);
         var keyFromSource = source.key().filter(s -> !s.isBlank());
 
-        if (keyFromSource.isPresent()) {return Result.success(SshConfig.sshConfig(user, keyFromSource.unwrap(), port));}
+        if (keyFromSource.isPresent()) {
+            return Result.success(SshConfig.sshConfig(user, keyFromSource.unwrap(), port));
+        }
 
         var envKey = envLookup.apply(SshKeyResolver.AETHER_SSH_KEY_ENV);
 
@@ -419,15 +440,18 @@ sealed interface BootstrapPhaseDeploy {
         var deadline = System.currentTimeMillis() + timeoutMs;
         var unreachable = new ArrayList<>(nodes);
 
-        while (System.currentTimeMillis() <deadline && !unreachable.isEmpty()) {
+        while (System.currentTimeMillis() < deadline && !unreachable.isEmpty()) {
             unreachable.removeIf(node -> isHealthy(node, mgmtPort, scheme, healthCheck));
-
-            if (unreachable.isEmpty()) {break;}
+            if (unreachable.isEmpty()) {
+                break;
+            }
 
             ClusterBootstrapOrchestrator.sleepQuietly(ClusterBootstrapOrchestrator.POLL_INTERVAL_MS);
         }
+
         if (!unreachable.isEmpty()) {
             var ips = unreachable.stream().map(ProvisionedNode::publicIp).toList();
+
             return new BootstrapError.DeploymentFailed(sourceName,
                                                        "Cloud-init did not finish on " + unreachable.size()
                                                       + " node(s). Unreachable IPs: " + String.join(", ", ips)
@@ -490,7 +514,9 @@ sealed interface BootstrapPhaseDeploy {
                                                                                                                                                     peersValue,
                                                                                                                                                     clusterSecret));
 
-            if (result.isFailure()) {return result;}
+            if (result.isFailure()) {
+                return result;
+            }
 
             nodeIndex++;
         }
@@ -542,7 +568,9 @@ sealed interface BootstrapPhaseDeploy {
                                                                     "Failed to write temp config: " + e.getMessage()),
                            () -> {
                                var tempFile = Files.createTempFile("aether-" + nodeId, ".toml");
+
                                Files.writeString(tempFile, content);
+
                                return tempFile;
                            });
     }

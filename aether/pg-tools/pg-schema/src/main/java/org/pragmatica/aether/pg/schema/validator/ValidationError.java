@@ -12,25 +12,29 @@ public sealed interface ValidationError {
     SourceSpan span();
 
     record TableNotFound(String tableName, SourceSpan span) implements ValidationError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Table not found: " + tableName;
         }
     }
 
     record ColumnNotFound(String columnName, String tableName, SourceSpan span) implements ValidationError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Column '" + columnName + "' not found in table '" + tableName + "'";
         }
     }
 
     record TableOrAliasNotFound(String name, SourceSpan span) implements ValidationError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Table or alias not found: " + name;
         }
     }
 
     record ColumnNotResolved(String columnName, SourceSpan span) implements ValidationError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Column '" + columnName + "' cannot be resolved";
         }
     }

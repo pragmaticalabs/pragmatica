@@ -13,8 +13,8 @@ public record MetricWindow(double[] valuesInternal, int head, int count, double 
 
     public static Result<MetricWindow> metricWindow(int windowSize) {
         return windowSize > 0
-              ? Result.success(new MetricWindow(new double[windowSize], 0, 0, 0.0, 0))
-              : Causes.cause("windowSize must be positive, got: " + windowSize).result();
+               ? Result.success(new MetricWindow(new double[windowSize], 0, 0, 0.0, 0))
+               : Causes.cause("windowSize must be positive, got: " + windowSize).result();
     }
 
     public double[] values() {
@@ -27,21 +27,26 @@ public record MetricWindow(double[] valuesInternal, int head, int count, double 
 
     public double average() {
         return count > 0
-              ? sum / count
-              : 0.0;
+               ? sum / count
+               : 0.0;
     }
 
     public double lastValue() {
-        if (count == 0) {return 0.0;}
+        if (count == 0) {
+            return 0.0;
+        }
+
         var lastIndex = (head - 1 + valuesInternal.length) % valuesInternal.length;
+
         return valuesInternal[lastIndex];
     }
 
     public double relativeChange(double current) {
         var avg = average();
+
         return avg > 0.0
-              ? current / avg
-              : 1.0;
+               ? current / avg
+               : 1.0;
     }
 
     public MetricWindow record(double value) {
@@ -49,17 +54,29 @@ public record MetricWindow(double[] valuesInternal, int head, int count, double 
         var windowSize = newValues.length;
         var newRecordCount = recordCount + 1;
         var newSum = sum + value;
-        if (count >= windowSize) {newSum -= newValues[head];}
+
+        if (count >= windowSize) {
+            newSum -= newValues[head];
+        }
+
         newValues[head] = value;
         var newHead = (head + 1) % windowSize;
         var newCount = Math.min(count + 1, windowSize);
-        if (newRecordCount % SUM_RECALCULATION_INTERVAL == 0) {newSum = recalculateSum(newValues, newCount);}
+
+        if (newRecordCount % SUM_RECALCULATION_INTERVAL == 0) {
+            newSum = recalculateSum(newValues, newCount);
+        }
+
         return new MetricWindow(newValues, newHead, newCount, newSum, newRecordCount);
     }
 
     private static double recalculateSum(double[] values, int count) {
         var sum = 0.0;
-        for (int i = 0;i <count;i++) {sum += values[i];}
+
+        for (int i = 0; i < count; i++) {
+            sum += values[i];
+        }
+
         return sum;
     }
 

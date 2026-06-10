@@ -18,19 +18,22 @@ public sealed interface StreamForwardError extends Cause {
         General(String message) {
             this.message = message;
         }
-        @Override public String message() {
+        @Override
+        public String message() {
             return message;
         }
     }
 
     record RemotePublishFailed(String detail) implements StreamForwardError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Remote publish failed: " + detail;
         }
     }
 
     record ReadForwardFailed(String detail) implements StreamForwardError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Remote read failed: " + detail;
         }
     }

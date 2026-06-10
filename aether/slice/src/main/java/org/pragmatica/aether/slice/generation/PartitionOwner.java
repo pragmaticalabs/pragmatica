@@ -8,11 +8,12 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public record PartitionOwner(String partitionId,
-                                    NodeId ownerNodeId,
-                                    String ownerCommunityId,
-                                    Epoch ownerEpoch,
-                                    long ownershipTerm) {
+@Codec
+public record PartitionOwner(String partitionId,
+                             NodeId ownerNodeId,
+                             String ownerCommunityId,
+                             Epoch ownerEpoch,
+                             long ownershipTerm) {
     public static PartitionOwner partitionOwner(String partitionId,
                                                 NodeId ownerNodeId,
                                                 String ownerCommunityId,

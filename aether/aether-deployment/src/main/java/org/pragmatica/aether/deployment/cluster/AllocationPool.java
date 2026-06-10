@@ -17,7 +17,9 @@ public record AllocationPool(List<NodeId> coreNodes,
                              List<NodeId> mainWorkers,
                              Map<String, List<NodeId>> workersByCommunity) {
     public AllocationPool {
-        if (workersByCommunity == null) {workersByCommunity = Map.of();}
+        if (workersByCommunity == null) {
+            workersByCommunity = Map.of();
+        }
     }
 
     public static AllocationPool allocationPool(List<NodeId> coreNodes, List<NodeId> mainWorkers) {
@@ -36,6 +38,7 @@ public record AllocationPool(List<NodeId> coreNodes,
 
     public List<NodeId> allNodes() {
         var all = new ArrayList<>(coreNodes);
+
         all.addAll(mainWorkers);
 
         return List.copyOf(all);

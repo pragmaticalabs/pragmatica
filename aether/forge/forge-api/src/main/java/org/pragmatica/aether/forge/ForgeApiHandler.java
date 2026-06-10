@@ -40,24 +40,19 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") public final class ForgeApiHandler {
+@SuppressWarnings("JBCT-RET-01")
+public final class ForgeApiHandler {
     private static final Logger log = LoggerFactory.getLogger(ForgeApiHandler.class);
-
     private static final int MAX_EVENTS = 100;
 
     private final RequestRouter router;
     private final JsonCodec jsonCodec;
     private final Deque<ForgeEvent> events;
     private final long startTime;
-
     private final AtomicLong requestCounter = new AtomicLong();
-
     private final Object modeLock = new Object();
-
     private volatile SimulatorConfig config = SimulatorConfig.simulatorConfig();
-
     private volatile SimulatorMode currentMode = SimulatorMode.DEVELOPMENT;
-
     private final ChaosController chaosController;
     private final InventoryState inventoryState;
 
@@ -91,6 +86,7 @@ import org.slf4j.LoggerFactory;
         var inventoryState = InventoryState.inventoryState();
         var events = new ConcurrentLinkedDeque<ForgeEvent>();
         var startTime = System.currentTimeMillis();
+
         return new ForgeApiHandler(cluster,
                                    metrics,
                                    configurableLoadRunner,
@@ -101,7 +97,7 @@ import org.slf4j.LoggerFactory;
     }
 
     private static void executeChaosEvent(EmberCluster cluster, ChaosEvent event) {
-        switch (event){
+        switch (event) {
             case ChaosEvent.NodeKill kill -> cluster.killNode(kill.nodeId(), false);
             case ChaosEvent.LatencySpike _ -> {}
             case ChaosEvent.SliceCrash _ -> {}
@@ -124,11 +120,15 @@ import org.slf4j.LoggerFactory;
 
     public void handle(RequestContext request, ResponseWriter response) {
         var path = request.path();
+
         log.debug("API request: {} {}", request.method(), path);
         try {
             var method = convertMethod(request.method());
-            router.findRoute(method, path).onEmpty(() -> sendNotFound(response, path))
-                            .onPresent(route -> handleRoute(request, response, route, path));
+
+            router.findRoute(method, path).onEmpty(() -> sendNotFound(response, path)).onPresent(route -> handleRoute(request,
+                                                                                                                      response,
+                                                                                                                      route,
+                                                                                                                      path));
         } catch (Exception e) {
             log.error("Error handling API request: {}", e.getMessage(), e);
             sendError(response, HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
@@ -139,15 +139,14 @@ import org.slf4j.LoggerFactory;
         var requestId = "forge-" + requestCounter.incrementAndGet();
         var nettyRequest = createNettyRequest(request, route.path());
         var context = RequestContextImpl.requestContext(nettyRequest, route, jsonCodec, requestId);
-        route.handler().handle(context)
-                     .onSuccess(result -> sendSuccessResponse(response, route, result))
-                     .onFailure(cause -> sendError(response,
-                                                   HttpStatus.BAD_REQUEST,
-                                                   cause.message()));
+
+        route.handler().handle(context).onSuccess(result -> sendSuccessResponse(response, route, result)).onFailure(cause -> sendError(response,
+                                                                                                                                       HttpStatus.BAD_REQUEST,
+                                                                                                                                       cause.message()));
     }
 
     private DefaultFullHttpRequest createNettyRequest(RequestContext request, String routePath) {
-        var method = switch (request.method()){
+        var method = switch (request.method()) {
             case GET -> HttpMethod.GET;
             case POST -> HttpMethod.POST;
             case PUT -> HttpMethod.PUT;
@@ -160,49 +159,66 @@ import org.slf4j.LoggerFactory;
         };
         var uri = request.path();
         var queryString = buildQueryString(request.queryParams().asMap());
-        if (!queryString.isEmpty()) {uri = uri + "?" + queryString;}
+
+        if (!queryString.isEmpty()) {
+            uri = uri + "?" + queryString;
+        }
+
         var nettyRequest = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1,
                                                       method,
                                                       uri,
                                                       Unpooled.wrappedBuffer(request.body()));
-        for (var entry : request.headers().asMap()
-                                        .entrySet()) {for (var value : entry.getValue()) {nettyRequest.headers()
-                                                                                                              .add(entry.getKey(),
-                                                                                                                   value);}}
+
+        for (var entry : request.headers().asMap().entrySet()) {
+            for (var value : entry.getValue()) {
+                nettyRequest.headers().add(entry.getKey(), value);
+            }
+        }
+
         return nettyRequest;
     }
 
     private String buildQueryString(java.util.Map<String, java.util.List<String>> params) {
-        if (params.isEmpty()) {return "";}
+        if (params.isEmpty()) {
+            return "";
+        }
+
         var sb = new StringBuilder();
-        for (var entry : params.entrySet()) {for (var value : entry.getValue()) {
-            if (!sb.isEmpty()) {sb.append("&");}
-            sb.append(entry.getKey()).append("=")
-                     .append(value);
-        }}
+
+        for (var entry : params.entrySet()) {
+            for (var value : entry.getValue()) {
+                if (!sb.isEmpty()) {
+                    sb.append("&");
+                }
+
+                sb.append(entry.getKey()).append("=").append(value);
+            }
+        }
+
         return sb.toString();
     }
 
     private void sendSuccessResponse(ResponseWriter response, Route<?> route, Object result) {
         var serverContentType = toServerContentType(route.contentType());
         var category = route.contentType().category();
+
         if ((category == ContentCategory.HTML || category == ContentCategory.PLAIN_TEXT) && result instanceof String text) {
             response.write(HttpStatus.OK, text.getBytes(StandardCharsets.UTF_8), serverContentType);
+
             return;
         }
+
         jsonCodec.serialize(result).onSuccess(byteBuf -> {
-                                                  var bytes = new byte[byteBuf.readableBytes()];
-                                                  byteBuf.readBytes(bytes);
-                                                  byteBuf.release();
-                                                  response.write(HttpStatus.OK, bytes, serverContentType);
-                                              })
-                           .onFailure(cause -> sendError(response,
-                                                         HttpStatus.INTERNAL_SERVER_ERROR,
-                                                         cause.message()));
+            var bytes = new byte[byteBuf.readableBytes()];
+
+            byteBuf.readBytes(bytes);
+            byteBuf.release();
+            response.write(HttpStatus.OK, bytes, serverContentType);
+        }).onFailure(cause -> sendError(response, HttpStatus.INTERNAL_SERVER_ERROR, cause.message()));
     }
 
     private org.pragmatica.http.ContentType toServerContentType(org.pragmatica.http.routing.ContentType routingContentType) {
-        return switch (routingContentType.category()){
+        return switch (routingContentType.category()) {
             case JSON -> CommonContentType.APPLICATION_JSON;
             case PLAIN_TEXT -> CommonContentType.TEXT_PLAIN;
             case HTML -> CommonContentType.TEXT_HTML;
@@ -212,7 +228,7 @@ import org.slf4j.LoggerFactory;
     }
 
     private org.pragmatica.http.routing.HttpMethod convertMethod(org.pragmatica.http.HttpMethod method) {
-        return switch (method){
+        return switch (method) {
             case GET -> org.pragmatica.http.routing.HttpMethod.GET;
             case POST -> org.pragmatica.http.routing.HttpMethod.POST;
             case PUT -> org.pragmatica.http.routing.HttpMethod.PUT;
@@ -232,6 +248,7 @@ import org.slf4j.LoggerFactory;
 
     private void sendError(ResponseWriter response, HttpStatus status, String message) {
         var json = "{\"success\":false,\"error\":\"" + escapeJson(message) + "\"}";
+
         response.write(status, json.getBytes(StandardCharsets.UTF_8), CommonContentType.APPLICATION_JSON);
     }
 
@@ -240,22 +257,31 @@ import org.slf4j.LoggerFactory;
                                    type,
                                    "INFO",
                                    message);
+
         events.addLast(event);
-        while (events.size() > MAX_EVENTS) {events.pollFirst();}
+        while (events.size() > MAX_EVENTS) {
+            events.pollFirst();
+        }
+
         log.info("[EVENT] {}: {}", type, message);
     }
 
     public void addNodeEvent(String timestamp, String type, String severity, String message) {
         var event = new ForgeEvent(timestamp, type, severity, message);
+
         events.addLast(event);
-        while (events.size() > MAX_EVENTS) {events.pollFirst();}
+        while (events.size() > MAX_EVENTS) {
+            events.pollFirst();
+        }
     }
 
     private String escapeJson(String str) {
-        return Option.option(str).map(s -> s.replace("\\", "\\\\").replace("\"", "\\\"")
-                                                    .replace("\n", "\\n")
-                                                    .replace("\r", "\\r")
-                                                    .replace("\t", "\\t"))
-                            .or("");
+        return Option.option(str)
+                     .map(s -> s.replace("\\", "\\\\")
+                                .replace("\"", "\\\"")
+                                .replace("\n", "\\n")
+                                .replace("\r", "\\r")
+                                .replace("\t", "\\t"))
+                     .or("");
     }
 }

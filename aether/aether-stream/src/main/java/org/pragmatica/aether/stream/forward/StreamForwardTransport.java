@@ -8,8 +8,10 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 
 
-@FunctionalInterface public interface StreamForwardTransport {
-    @Contract void send(NodeId target, StreamForwardMessage message);
+@FunctionalInterface
+public interface StreamForwardTransport {
+    @Contract
+    void send(NodeId target, StreamForwardMessage message);
 
     StreamForwardTransport NOOP = (_, _) -> {};
 }

@@ -20,9 +20,7 @@ public record NodeConfig(String heap,
                          TimeSpan reconciliation,
                          Option<ResourcesConfig> resources) {
     public static final String DEFAULT_GC = "zgc";
-
     public static final TimeSpan DEFAULT_METRICS_INTERVAL = timeSpan(1).seconds();
-
     public static final TimeSpan DEFAULT_RECONCILIATION = timeSpan(5).seconds();
 
     public static Result<NodeConfig> nodeConfig(String heap,
@@ -54,17 +52,18 @@ public record NodeConfig(String heap,
     }
 
     public String javaOpts() {
-        var gcOpt = switch (gc.toLowerCase()){
+        var gcOpt = switch (gc.toLowerCase()) {
             case "zgc" -> "-XX:+UseZGC";
             case "g1" -> "-XX:+UseG1GC";
             default -> "-XX:+UseZGC";
         };
+
         return "-Xmx" + heap + " " + gcOpt;
     }
 
     private static Option<ResourcesConfig> resourcesFor(Environment env) {
         return env == Environment.KUBERNETES
-              ? some(ResourcesConfig.resourcesConfig())
-              : none();
+               ? some(ResourcesConfig.resourcesConfig())
+               : none();
     }
 }

@@ -46,6 +46,7 @@ public interface BootstrapOverlayGenerator {
 
     private static Map<String, Map<String, Object>> toOrderedMap(List<Section> sections) {
         var ordered = new LinkedHashMap<String, Map<String, Object>>();
+
         sections.forEach(section -> ordered.put(section.name(), section.values()));
 
         return Map.copyOf(ordered);
@@ -53,6 +54,7 @@ public interface BootstrapOverlayGenerator {
 
     private static Section clusterSection(ClusterBootstrapConfig config) {
         var values = new LinkedHashMap<String, Object>();
+
         values.put("name",
                    config.cluster().name());
         values.put("tls",
@@ -64,6 +66,7 @@ public interface BootstrapOverlayGenerator {
     private static Section clusterPortsSection(ClusterBootstrapConfig config) {
         var ports = config.operations().ports();
         var values = new LinkedHashMap<String, Object>();
+
         values.put("management", ports.management());
         values.put("cluster", ports.cluster());
 
@@ -88,6 +91,7 @@ public interface BootstrapOverlayGenerator {
                                                 Option<String> dockerGid) {
         var ports = config.operations().ports();
         var values = new LinkedHashMap<String, Object>();
+
         values.put("management_port_base", ports.management());
         values.put("app_port_base", ports.appHttp());
         values.put("cluster_port", ports.cluster() + nodeIndex);
@@ -100,6 +104,7 @@ public interface BootstrapOverlayGenerator {
 
     private static Section cloudComputeSection(SourceProfile source) {
         var values = new LinkedHashMap<String, Object>();
+
         source.region().onPresent(region -> values.put("region", region));
         coreInstanceType(source).onPresent(serverType -> values.put("server_type", serverType));
 
@@ -107,7 +112,10 @@ public interface BootstrapOverlayGenerator {
     }
 
     private static Option<Section> cloudSection(SourceProfile source) {
-        if (source.type() != SourceType.CLOUD) {return Option.empty();}
+        if (source.type() != SourceType.CLOUD) {
+            return Option.empty();
+        }
+
         return source.provider()
                      .map(provider -> Section.section("cloud",
                                                       Map.of("provider",
@@ -115,7 +123,10 @@ public interface BootstrapOverlayGenerator {
     }
 
     private static Option<Section> cloudCredentialsSection(SourceProfile source) {
-        if (source.type() != SourceType.CLOUD) {return Option.empty();}
+        if (source.type() != SourceType.CLOUD) {
+            return Option.empty();
+        }
+
         return source.credentials()
                      .filter(token -> !token.isBlank())
                      .map(token -> Section.section("cloud.credentials",
@@ -123,7 +134,10 @@ public interface BootstrapOverlayGenerator {
     }
 
     private static Option<Section> cloudDiscoverySection(ClusterBootstrapConfig config, SourceProfile source) {
-        if (source.type() != SourceType.CLOUD) {return Option.empty();}
+        if (source.type() != SourceType.CLOUD) {
+            return Option.empty();
+        }
+
         return Option.some(Section.section("cloud.discovery",
                                            Map.of("cluster_name",
                                                   config.cluster().name())));
@@ -134,7 +148,10 @@ public interface BootstrapOverlayGenerator {
     }
 
     private static Option<Section> tlsSection(SourceProfile source, Option<String> clusterSecret) {
-        if (source.type() != SourceType.CLOUD) {return Option.empty();}
+        if (source.type() != SourceType.CLOUD) {
+            return Option.empty();
+        }
+
         return clusterSecret.map(secret -> Section.section("tls", Map.of("cluster_secret", secret)));
     }
 

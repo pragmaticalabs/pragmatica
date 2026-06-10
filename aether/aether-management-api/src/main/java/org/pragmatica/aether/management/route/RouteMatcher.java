@@ -30,14 +30,19 @@ public final class RouteMatcher {
 
     static Result<RouteMatcher> build(ManagementRoute[] routes) {
         var index = new HashMap<MatchKey, ManagementRoute>();
+
         for (var r : routes) {
             var key = new MatchKey(r.method(), r.prefix(), r.paramCount());
             var existing = index.put(key, r);
-            if (existing != null) {return ManagementRouteError.ambiguousRoutes(existing.name(),
-                                                                               r.name(),
-                                                                               key.toString())
-            .result();}
+
+            if (existing != null) {
+                return ManagementRouteError.ambiguousRoutes(existing.name(),
+                                                            r.name(),
+                                                            key.toString())
+                                           .result();
+            }
         }
+
         return Result.success(new RouteMatcher(Map.copyOf(index)));
     }
 
@@ -47,40 +52,61 @@ public final class RouteMatcher {
 
     public Result<MatchedRoute> match(HttpMethod method, String rawPath) {
         var segments = splitSegments(rawPath);
-        for (int prefixLen = segments.size();prefixLen >= 0;prefixLen--) {
+
+        for (int prefixLen = segments.size(); prefixLen >= 0; prefixLen--) {
             var prefix = buildPrefix(segments, prefixLen);
             var paramCount = segments.size() - prefixLen;
             var route = index.get(new MatchKey(method, prefix, paramCount));
+
             if (route != null) {
                 var values = decode(segments.subList(prefixLen, segments.size()));
+
                 return Result.success(MatchedRoute.matchedRoute(route, values));
             }
         }
+
         return ManagementRouteError.noMatch(method, rawPath).result();
     }
 
     private static List<String> splitSegments(String path) {
         var queryIdx = path.indexOf('?');
         var trimmed = queryIdx >= 0
-                     ? path.substring(0, queryIdx)
-                     : path;
+                      ? path.substring(0, queryIdx)
+                      : path;
         var segments = new ArrayList<String>();
-        for (var seg : trimmed.split("/")) {if (!seg.isEmpty()) {segments.add(seg);}}
+
+        for (var seg : trimmed.split("/")) {
+            if (!seg.isEmpty()) {
+                segments.add(seg);
+            }
+        }
+
         return segments;
     }
 
     private static String buildPrefix(List<String> segments, int count) {
-        if (count == 0) {return "";}
+        if (count == 0) {
+            return "";
+        }
+
         var sb = new StringBuilder();
-        for (int i = 0;i <count;i++) {sb.append('/').append(segments.get(i));}
+
+        for (int i = 0; i < count; i++) {
+            sb.append('/').append(segments.get(i));
+        }
+
         return sb.toString();
     }
 
     private static List<String> decode(List<String> segments) {
         var decoded = new ArrayList<String>(segments.size());
-        for (var seg : segments) {decoded.add(URLDecoder.decode(seg, StandardCharsets.UTF_8));}
+
+        for (var seg : segments) {
+            decoded.add(URLDecoder.decode(seg, StandardCharsets.UTF_8));
+        }
+
         return decoded;
     }
 
-    private record MatchKey(HttpMethod method, String prefix, int paramCount){}
+    private record MatchKey(HttpMethod method, String prefix, int paramCount) {}
 }

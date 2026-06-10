@@ -8,6 +8,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 
-@FunctionalInterface public interface Publisher<T> {
+@FunctionalInterface
+public interface Publisher<T> {
     Promise<Unit> publish(T message);
 }

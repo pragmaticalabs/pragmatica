@@ -5,7 +5,6 @@
 package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.aether.slice.resource.ResourceAddress;
-
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.lang.Result;
 
@@ -43,22 +42,27 @@ public final class SystemStreamBootstrap {
     /// idempotent no-ops, not errors. Short-circuits on the first registration failure.
     public Result<List<StreamRegistryEntry>> bootstrap() {
         var accumulated = new ArrayList<StreamRegistryEntry>(SystemStreams.ALL.size());
+
         for (var address : SystemStreams.ALL) {
             var next = ensureRegistered(address).onSuccess(accumulated::add);
+
             if (next.isFailure()) {
                 return next.fold(Result::failure, _ -> success(List.of()));
             }
         }
+
         return success(List.copyOf(accumulated));
     }
 
     private Result<StreamRegistryEntry> ensureRegistered(ResourceAddress address) {
         return registry.lookup(address)
-                       .fold(() -> registerFramework(address), Result::success);
+                       .fold(() -> registerFramework(address),
+                             Result::success);
     }
 
     private Result<StreamRegistryEntry> registerFramework(ResourceAddress address) {
         var entry = StreamRegistryEntry.framework(address, defaultRetention, clock.instant());
+
         return registry.register(entry);
     }
 }

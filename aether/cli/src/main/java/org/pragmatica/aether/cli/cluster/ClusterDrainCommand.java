@@ -59,11 +59,14 @@ class ClusterDrainCommand implements Callable<Integer> {
         var state = root.path("state").asText("UNKNOWN");
         var message = root.path("message").asText("");
 
-        if (!success) {return handleDrainRejection(state, message);}
+        if (!success) {
+            return handleDrainRejection(state, message);
+        }
 
         System.out.printf("Drain initiated for node %s (state: %s)%n", nodeId, state);
-
-        if (waitForCompletion) {return pollUntilDecommissioned();}
+        if (waitForCompletion) {
+            return pollUntilDecommissioned();
+        }
 
         return ExitCode.SUCCESS;
     }
@@ -85,7 +88,7 @@ class ClusterDrainCommand implements Callable<Integer> {
         System.out.printf("Waiting for node %s to reach DECOMMISSIONED (timeout: %ds)...%n", nodeId, timeoutSeconds);
         var deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
 
-        while (System.currentTimeMillis() <deadline) {
+        while (System.currentTimeMillis() < deadline) {
             var stateResult = queryNodeLifecycleState();
 
             if ("DECOMMISSIONED".equals(stateResult)) {

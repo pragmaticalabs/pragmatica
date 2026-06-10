@@ -31,13 +31,19 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 public interface InvocationHandler {
-    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onInvokeRequest(InvokeRequest request);
-    @SuppressWarnings("JBCT-RET-01") void registerSlice(Artifact artifact, SliceBridge bridge);
-    @SuppressWarnings("JBCT-RET-01") void unregisterSlice(Artifact artifact);
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    void onInvokeRequest(InvokeRequest request);
+
+    @SuppressWarnings("JBCT-RET-01")
+    void registerSlice(Artifact artifact, SliceBridge bridge);
+
+    @SuppressWarnings("JBCT-RET-01")
+    void unregisterSlice(Artifact artifact);
+
     Option<SliceBridge> localSlice(Artifact artifact);
     Option<SliceBridge> findBridgeByClassLoader(ClassLoader classLoader);
     Option<InvocationMetricsCollector> metricsCollector();
-
     TimeSpan DEFAULT_INVOCATION_TIMEOUT = timeSpan(15).seconds();
 
     static InvocationHandler invocationHandler(NodeId self, ClusterNetwork network) {
@@ -141,9 +147,7 @@ class InvocationHandlerImpl implements InvocationHandler {
     private final Option<Deserializer> deserializer;
     private final Option<HttpRoutePublisher> httpRoutePublisher;
     private final ObservabilityInterceptor observabilityInterceptor;
-
     private final Map<Artifact, SliceBridge> localSlices = new ConcurrentHashMap<>();
-
     private final Map<ClassLoader, SliceBridge> classLoaderBridges = new ConcurrentHashMap<>();
 
     InvocationHandlerImpl(NodeId self,
@@ -164,36 +168,52 @@ class InvocationHandlerImpl implements InvocationHandler {
         this.observabilityInterceptor = observabilityInterceptor;
     }
 
-    @Override@SuppressWarnings("JBCT-RET-01") public void registerSlice(Artifact artifact, SliceBridge bridge) {
+    @Override
+    @SuppressWarnings("JBCT-RET-01")
+    public void registerSlice(Artifact artifact, SliceBridge bridge) {
         localSlices.put(artifact, bridge);
         classLoaderBridges.put(bridge.classLoader(), bridge);
         log.debug("Registered slice for invocation: {}", artifact);
     }
 
-    @Override@SuppressWarnings("JBCT-RET-01") public void unregisterSlice(Artifact artifact) {
+    @Override
+    @SuppressWarnings("JBCT-RET-01")
+    public void unregisterSlice(Artifact artifact) {
         var bridge = localSlices.remove(artifact);
-        if (bridge != null) {classLoaderBridges.remove(bridge.classLoader());}
+
+        if (bridge != null) {
+            classLoaderBridges.remove(bridge.classLoader());
+        }
+
         log.debug("Unregistered slice from invocation: {}", artifact);
     }
 
-    @Override public Option<SliceBridge> localSlice(Artifact artifact) {
+    @Override
+    public Option<SliceBridge> localSlice(Artifact artifact) {
         return Option.option(localSlices.get(artifact));
     }
 
-    @Override public Option<SliceBridge> findBridgeByClassLoader(ClassLoader classLoader) {
+    @Override
+    public Option<SliceBridge> findBridgeByClassLoader(ClassLoader classLoader) {
         return Option.option(classLoaderBridges.get(classLoader));
     }
 
-    @Override public Option<InvocationMetricsCollector> metricsCollector() {
+    @Override
+    public Option<InvocationMetricsCollector> metricsCollector() {
         return metricsCollector;
     }
 
-    @Override@SuppressWarnings("JBCT-RET-01") public void onInvokeRequest(InvokeRequest request) {
-        if (log.isDebugEnabled()) {log.debug("[requestId={}] Received InvokeRequest [{}]: {}.{}",
-                                             request.requestId(),
-                                             request.correlationId(),
-                                             request.targetSlice(),
-                                             request.method());}
+    @Override
+    @SuppressWarnings("JBCT-RET-01")
+    public void onInvokeRequest(InvokeRequest request) {
+        if (log.isDebugEnabled()) {
+            log.debug("[requestId={}] Received InvokeRequest [{}]: {}.{}",
+                      request.requestId(),
+                      request.correlationId(),
+                      request.targetSlice(),
+                      request.method());
+        }
+
         InvocationContext.runWithContext(request.requestId(),
                                          null,
                                          null,
@@ -203,33 +223,34 @@ class InvocationHandlerImpl implements InvocationHandler {
     }
 
     private void processInvokeRequest(InvokeRequest request) {
-        Option.option(localSlices.get(request.targetSlice())).onEmpty(() -> handleSliceNotFound(request))
-                     .onPresent(bridge -> invokeSliceMethod(request, bridge));
+        Option.option(localSlices.get(request.targetSlice())).onEmpty(() -> handleSliceNotFound(request)).onPresent(bridge -> invokeSliceMethod(request,
+                                                                                                                                                bridge));
     }
 
     private void handleSliceNotFound(InvokeRequest request) {
         log.warn("[requestId={}] Slice not found for invocation: {}", request.requestId(), request.targetSlice());
-        if (request.expectResponse()) {sendErrorResponse(request, "Slice not found: " + request.targetSlice());}
+        if (request.expectResponse()) {
+            sendErrorResponse(request, "Slice not found: " + request.targetSlice());
+        }
     }
 
     private void invokeSliceMethod(InvokeRequest request, SliceBridge bridge) {
         var startTime = System.nanoTime();
         var requestBytes = request.payload().length;
+
         metricsCollector.onPresent(mc -> mc.recordStart(request.targetSlice(), request.method()));
         observabilityInterceptor.intercept(request.targetSlice(),
                                            request.method(),
                                            request.requestId(),
                                            request.depth(),
                                            true,
-                                           () -> invokeWithHttpRouting(request, bridge)).timeout(invocationTimeout)
-                                          .onSuccess(data -> handleInvocationSuccess(request,
-                                                                                     data,
-                                                                                     startTime,
-                                                                                     requestBytes))
-                                          .onFailure(cause -> handleInvocationFailure(request,
-                                                                                      cause,
-                                                                                      startTime,
-                                                                                      requestBytes));
+                                           () -> invokeWithHttpRouting(request, bridge)).timeout(invocationTimeout).onSuccess(data -> handleInvocationSuccess(request,
+                                                                                                                                                              data,
+                                                                                                                                                              startTime,
+                                                                                                                                                              requestBytes)).onFailure(cause -> handleInvocationFailure(request,
+                                                                                                                                                                                                                        cause,
+                                                                                                                                                                                                                        startTime,
+                                                                                                                                                                                                                        requestBytes));
     }
 
     private Promise<byte[]> invokeWithHttpRouting(InvokeRequest request, SliceBridge bridge) {
@@ -240,7 +261,11 @@ class InvocationHandlerImpl implements InvocationHandler {
     private void handleInvocationSuccess(InvokeRequest request, byte[] responseData, long startTime, int requestBytes) {
         var durationNs = System.nanoTime() - startTime;
         var responseBytes = responseData.length;
-        if (request.expectResponse()) {sendSuccessResponse(request, responseData);}
+
+        if (request.expectResponse()) {
+            sendSuccessResponse(request, responseData);
+        }
+
         log.debug("[requestId={}] Invocation completed in {}ms: {}.{}",
                   request.requestId(),
                   durationNs / 1_000_000,
@@ -261,11 +286,15 @@ class InvocationHandlerImpl implements InvocationHandler {
     private void handleInvocationFailure(InvokeRequest request, Cause cause, long startTime, int requestBytes) {
         var durationNs = System.nanoTime() - startTime;
         var errorType = cause.getClass().getSimpleName();
+
         log.error("[requestId={}] Failed to complete invocation [{}]: {}",
                   request.requestId(),
                   request.correlationId(),
                   cause.message());
-        if (request.expectResponse()) {sendErrorResponse(request, cause.message());}
+        if (request.expectResponse()) {
+            sendErrorResponse(request, cause.message());
+        }
+
         metricsCollector.onPresent(mc -> recordFailureMetrics(mc, request, durationNs, requestBytes, errorType));
     }
 
@@ -280,6 +309,7 @@ class InvocationHandlerImpl implements InvocationHandler {
 
     private void sendSuccessResponse(InvokeRequest request, byte[] payload) {
         var response = InvokeResponse.invokeResponse(self, request.correlationId(), request.requestId(), true, payload);
+
         network.send(request.sender(), response);
         log.debug("[requestId={}] Sent success response [{}]", request.requestId(), request.correlationId());
     }
@@ -290,6 +320,7 @@ class InvocationHandlerImpl implements InvocationHandler {
                                                      request.requestId(),
                                                      false,
                                                      errorMessage.getBytes(StandardCharsets.UTF_8));
+
         network.send(request.sender(), response);
         log.debug("[requestId={}] Sent error response [{}]: {}",
                   request.requestId(),

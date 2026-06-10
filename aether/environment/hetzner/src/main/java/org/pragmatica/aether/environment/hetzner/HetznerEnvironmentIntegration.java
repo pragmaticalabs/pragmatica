@@ -32,6 +32,7 @@ public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvid
                                             Option<FloatingIpProvider> floatingIpProvider) implements EnvironmentIntegration {
     public static Result<HetznerEnvironmentIntegration> hetznerEnvironmentIntegration(HetznerEnvironmentConfig config) {
         var client = HetznerClient.hetznerClient(config.hetznerConfig());
+
         return hetznerEnvironmentIntegration(client, config);
     }
 
@@ -42,13 +43,19 @@ public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvid
         var discovery = resolveDiscoveryProvider(client, config);
         var secrets = resolveSecretsProvider();
         var floatingIp = resolveFloatingIpProvider(client);
-        return Result.all(compute, lbProvider)
-                         .map((cp, lb) -> new HetznerEnvironmentIntegration(cp, lb, discovery, secrets, floatingIp));
+
+        return Result.all(compute, lbProvider).map((cp, lb) -> new HetznerEnvironmentIntegration(cp,
+                                                                                                 lb,
+                                                                                                 discovery,
+                                                                                                 secrets,
+                                                                                                 floatingIp));
     }
 
     private static Result<Option<LoadBalancerProvider>> resolveLbProvider(HetznerClient client,
                                                                           HetznerEnvironmentConfig config) {
-        return config.loadBalancer().fold(() -> success(Option.empty()), lbConfig -> toLbOption(client, lbConfig));
+        return config.loadBalancer()
+                     .fold(() -> success(Option.empty()),
+                           lbConfig -> toLbOption(client, lbConfig));
     }
 
     private static Result<Option<LoadBalancerProvider>> toLbOption(HetznerClient client,
@@ -62,7 +69,8 @@ public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvid
 
     private static Option<DiscoveryProvider> resolveDiscoveryProvider(HetznerClient client,
                                                                       HetznerEnvironmentConfig config) {
-        return config.clusterName().map(name -> hetznerDiscoveryProvider(client, config));
+        return config.clusterName()
+                     .map(name -> hetznerDiscoveryProvider(client, config));
     }
 
     private static Option<SecretsProvider> resolveSecretsProvider() {
@@ -70,23 +78,28 @@ public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvid
                                                                   TimeSpan.timeSpan(5).minutes()));
     }
 
-    @Override public Option<ComputeProvider> compute() {
+    @Override
+    public Option<ComputeProvider> compute() {
         return some(computeProvider);
     }
 
-    @Override public Option<SecretsProvider> secrets() {
+    @Override
+    public Option<SecretsProvider> secrets() {
         return secretsProvider;
     }
 
-    @Override public Option<LoadBalancerProvider> loadBalancer() {
+    @Override
+    public Option<LoadBalancerProvider> loadBalancer() {
         return loadBalancerProvider;
     }
 
-    @Override public Option<DiscoveryProvider> discovery() {
+    @Override
+    public Option<DiscoveryProvider> discovery() {
         return discoveryProvider;
     }
 
-    @Override public Option<FloatingIpProvider> floatingIp() {
+    @Override
+    public Option<FloatingIpProvider> floatingIp() {
         return floatingIpProvider;
     }
 

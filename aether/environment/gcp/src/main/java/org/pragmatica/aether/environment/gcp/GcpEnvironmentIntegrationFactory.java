@@ -20,11 +20,13 @@ import static org.pragmatica.aether.environment.gcp.GcpEnvironmentConfig.gcpEnvi
 
 
 public record GcpEnvironmentIntegrationFactory() implements EnvironmentIntegrationFactory {
-    @Override public String providerName() {
+    @Override
+    public String providerName() {
         return "gcp";
     }
 
-    @Override public Result<EnvironmentIntegration> create(CloudConfig config) {
+    @Override
+    public Result<EnvironmentIntegration> create(CloudConfig config) {
         return buildEnvironmentConfig(config).flatMap(GcpEnvironmentIntegration::gcpEnvironmentIntegration)
                                      .map(EnvironmentIntegration.class::cast);
     }
@@ -35,13 +37,27 @@ public record GcpEnvironmentIntegrationFactory() implements EnvironmentIntegrati
 
     private static Result<Map<String, String>> validateCredentials(Map<String, String> creds) {
         var missing = new ArrayList<String>();
-        if (blank(creds.get("project_id"))) {missing.add("GCP_PROJECT_ID");}
-        if (blank(creds.get("service_account_email"))) {missing.add("GCP_SERVICE_ACCOUNT_EMAIL");}
-        if (blank(creds.get("private_key_pem"))) {missing.add("GCP_PRIVATE_KEY_PEM");}
-        if (blank(creds.get("zone"))) {missing.add("GCP_ZONE");}
-        if (!missing.isEmpty()) {return Result.failure(EnvironmentError.CredentialsMissing.credentialsMissing("gcp",
-                                                                                                              missing)
-        .unwrap());}
+
+        if (blank(creds.get("project_id"))) {
+            missing.add("GCP_PROJECT_ID");
+        }
+
+        if (blank(creds.get("service_account_email"))) {
+            missing.add("GCP_SERVICE_ACCOUNT_EMAIL");
+        }
+
+        if (blank(creds.get("private_key_pem"))) {
+            missing.add("GCP_PRIVATE_KEY_PEM");
+        }
+
+        if (blank(creds.get("zone"))) {
+            missing.add("GCP_ZONE");
+        }
+
+        if (!missing.isEmpty()) {
+            return Result.failure(EnvironmentError.CredentialsMissing.credentialsMissing("gcp", missing).unwrap());
+        }
+
         return Result.success(creds);
     }
 
@@ -55,15 +71,15 @@ public record GcpEnvironmentIntegrationFactory() implements EnvironmentIntegrati
                                             creds.get("zone"),
                                             creds.get("service_account_email"),
                                             creds.get("private_key_pem"));
+
         return gcpEnvironmentConfig(gcpConfig,
                                     compute.getOrDefault("machine_type", ""),
                                     compute.getOrDefault("source_image", ""),
                                     compute.getOrDefault("network", ""),
                                     compute.getOrDefault("subnetwork", ""),
                                     compute.getOrDefault("user_data", "")).map(envConfig -> applyLoadBalancer(envConfig,
-                                                                                                              config.loadBalancer()))
-                                   .map(envConfig -> applyDiscovery(envConfig,
-                                                                    config.discovery()))
+                                                                                                              config.loadBalancer())).map(envConfig -> applyDiscovery(envConfig,
+                                                                                                                                                                      config.discovery()))
                                    .map(envConfig -> applyCertificatePrefix(envConfig,
                                                                             config.security()));
     }
@@ -71,10 +87,15 @@ public record GcpEnvironmentIntegrationFactory() implements EnvironmentIntegrati
     private static GcpEnvironmentConfig applyLoadBalancer(GcpEnvironmentConfig envConfig, Map<String, String> lbMap) {
         var negName = lbMap.getOrDefault("neg_name", "");
         var portStr = lbMap.getOrDefault("port", "");
-        if (negName.isEmpty() || portStr.isEmpty()) {return envConfig;}
-        return Result.lift(() -> Integer.parseInt(portStr)).flatMap(port -> gcpNegConfig(negName, port))
-                          .map(neg -> withNetworkEndpointGroup(envConfig, neg))
-                          .or(envConfig);
+
+        if (negName.isEmpty() || portStr.isEmpty()) {
+            return envConfig;
+        }
+
+        return Result.lift(() -> Integer.parseInt(portStr))
+                     .flatMap(port -> gcpNegConfig(negName, port))
+                     .map(neg -> withNetworkEndpointGroup(envConfig, neg))
+                     .or(envConfig);
     }
 
     private static GcpEnvironmentConfig applyDiscovery(GcpEnvironmentConfig envConfig,
@@ -82,20 +103,23 @@ public record GcpEnvironmentIntegrationFactory() implements EnvironmentIntegrati
         var clusterName = discoveryMap.getOrDefault("cluster_name", "");
         var pollInterval = discoveryMap.getOrDefault("poll_interval_ms", "");
         var result = clusterName.isEmpty()
-                    ? envConfig
-                    : envConfig.withDiscovery(clusterName);
+                     ? envConfig
+                     : envConfig.withDiscovery(clusterName);
+
         return pollInterval.isEmpty()
-              ? result
-              : Result.lift(() -> Long.parseLong(pollInterval)).map(result::withDiscoveryPollInterval)
-                           .or(result);
+               ? result
+               : Result.lift(() -> Long.parseLong(pollInterval))
+                       .map(result::withDiscoveryPollInterval)
+                       .or(result);
     }
 
     private static GcpEnvironmentConfig applyCertificatePrefix(GcpEnvironmentConfig envConfig,
                                                                Map<String, String> securityMap) {
         var prefix = securityMap.getOrDefault("certificate_secret_prefix", "");
+
         return prefix.isEmpty()
-              ? envConfig
-              : envConfig.withCertificateSecretPrefix(prefix);
+               ? envConfig
+               : envConfig.withCertificateSecretPrefix(prefix);
     }
 
     private static GcpEnvironmentConfig withNetworkEndpointGroup(GcpEnvironmentConfig envConfig,

@@ -23,39 +23,47 @@ public record GcpCloudProvider(ComputeProvider computeProvider) implements Cloud
         return new GcpCloudProvider(computeProvider);
     }
 
-    @Override public Promise<QuotaStatus> checkQuota(NodeGroupConfig group) {
+    @Override
+    public Promise<QuotaStatus> checkQuota(NodeGroupConfig group) {
         return Promise.success(QuotaStatus.unknown(group.count()));
     }
 
-    @Override public Promise<List<ProvisionedNode>> provision(NodeGroupConfig group) {
+    @Override
+    public Promise<List<ProvisionedNode>> provision(NodeGroupConfig group) {
         return CloudProviderSupport.provisionVia(computeProvider, group);
     }
 
-    @Override public Promise<List<ProvisionedNode>> provisionSpot(NodeGroupConfig group) {
+    @Override
+    public Promise<List<ProvisionedNode>> provisionSpot(NodeGroupConfig group) {
         return EnvironmentError.operationNotSupported("spot provisioning not implemented in v1 for GCP").promise();
     }
 
-    @Override public Promise<Unit> destroy(List<String> nodeIds) {
+    @Override
+    public Promise<Unit> destroy(List<String> nodeIds) {
         return CloudProviderSupport.destroyVia(computeProvider, nodeIds);
     }
 
-    @Override public Promise<List<NodeAddress>> addresses(List<String> nodeIds) {
+    @Override
+    public Promise<List<NodeAddress>> addresses(List<String> nodeIds) {
         return CloudProviderSupport.addressesVia(computeProvider, nodeIds);
     }
 
-    @Override public boolean supportsPreemptible() {
+    @Override
+    public boolean supportsPreemptible() {
         return true;
     }
 
-    @Override public Promise<Unit> openIngress(String sourceId,
-                                               int port,
-                                               String protocol,
-                                               String sourceCidr,
-                                               String description) {
+    @Override
+    public Promise<Unit> openIngress(String sourceId,
+                                     int port,
+                                     String protocol,
+                                     String sourceCidr,
+                                     String description) {
         return EnvironmentError.operationNotSupported("openIngress (GCP firewall API not yet wired)").promise();
     }
 
-    @Override public Promise<Unit> closeIngress(String sourceId, int port, String protocol, String sourceCidr) {
+    @Override
+    public Promise<Unit> closeIngress(String sourceId, int port, String protocol, String sourceCidr) {
         return EnvironmentError.operationNotSupported("closeIngress (GCP firewall API not yet wired)").promise();
     }
 }

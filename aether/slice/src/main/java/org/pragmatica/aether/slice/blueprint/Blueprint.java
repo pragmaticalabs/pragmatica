@@ -17,23 +17,23 @@ import static org.pragmatica.lang.Verify.Is;
 import static org.pragmatica.lang.Verify.ensure;
 
 
-@SuppressWarnings({"JBCT-NAM-01", "JBCT-UTIL-02", "JBCT-ZONE-02"}) public record Blueprint(BlueprintId id,
-                                                                                           List<SliceSpec> slices,
-                                                                                           Option<DeploymentConfig> deploymentConfig,
-                                                                                           SecurityOverrides securityOverrides) {
+@SuppressWarnings({"JBCT-NAM-01", "JBCT-UTIL-02", "JBCT-ZONE-02"})
+public record Blueprint(BlueprintId id,
+                        List<SliceSpec> slices,
+                        Option<DeploymentConfig> deploymentConfig,
+                        SecurityOverrides securityOverrides) {
     private static final Cause NULL_ID = Causes.cause("Blueprint ID cannot be null");
-
     private static final Cause NULL_SLICES = Causes.cause("Slices list cannot be null");
-
     private static final Cause EMPTY_SLICES = Causes.cause("Slices list cannot be empty");
 
     public static Result<Blueprint> blueprint(BlueprintId id,
                                               List<SliceSpec> slices,
                                               Option<DeploymentConfig> deploymentConfig,
                                               SecurityOverrides securityOverrides) {
-        return Result.all(ensure(id, Is::notNull, NULL_ID),
-                          ensure(slices, Is::notNull, NULL_SLICES))
-        .flatMap((validId, validSlices) -> validateNonEmpty(validId, validSlices, deploymentConfig, securityOverrides));
+        return Result.all(ensure(id, Is::notNull, NULL_ID), ensure(slices, Is::notNull, NULL_SLICES)).flatMap((validId, validSlices) -> validateNonEmpty(validId,
+                                                                                                                                                         validSlices,
+                                                                                                                                                         deploymentConfig,
+                                                                                                                                                         securityOverrides));
     }
 
     public static Result<Blueprint> blueprint(BlueprintId id,
@@ -50,7 +50,10 @@ import static org.pragmatica.lang.Verify.ensure;
                                                       List<SliceSpec> slices,
                                                       Option<DeploymentConfig> deploymentConfig,
                                                       SecurityOverrides securityOverrides) {
-        if (slices.isEmpty()) {return EMPTY_SLICES.result();}
+        if (slices.isEmpty()) {
+            return EMPTY_SLICES.result();
+        }
+
         return success(new Blueprint(id, List.copyOf(slices), deploymentConfig, securityOverrides));
     }
 }

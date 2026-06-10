@@ -61,6 +61,7 @@ class ClusterGenerationCommand implements Callable<Integer> {
 
     private static int renderSummary(JsonNode node) {
         var out = System.out;
+
         out.printf("Epoch:              %s%n", epochString(node));
         out.printf("Mode:               %s%n", textField(node, "mode"));
         out.printf("Quiescence:         %s%n", textField(node, "quiescence"));
@@ -87,6 +88,7 @@ class ClusterGenerationCommand implements Callable<Integer> {
         var value = root == null
                     ? null
                     : root.get(field);
+
         return value == null
                ? ""
                : value.asText();
@@ -96,6 +98,7 @@ class ClusterGenerationCommand implements Callable<Integer> {
         var value = root == null
                     ? null
                     : root.get(field);
+
         return value == null
                ? 0L
                : value.asLong();
@@ -105,6 +108,7 @@ class ClusterGenerationCommand implements Callable<Integer> {
         var value = root == null
                     ? null
                     : root.get(field);
+
         return value == null
                ? 0
                : value.asInt();

@@ -28,14 +28,11 @@ public record LoadTarget(Option<String> name,
                          Map<String, String> pathVars,
                          Option<String> body) {
     private static final Fn1<Cause, String> INVALID_TARGET = Causes.forOneValue("Invalid target: %s");
-
     private static final Fn1<Cause, String> INVALID_RATE = Causes.forOneValue("Invalid rate format: %s");
 
     public record Rate(int value, TimeUnit unit) {
         private static final Pattern RATE_PATTERN = Pattern.compile("^(\\d+)/(s|m|h)$");
-
         private static final Cause NON_POSITIVE_RATE = Causes.cause("Rate value must be positive");
-
         private static final Cause NULL_TIME_UNIT = Causes.cause("Rate time unit cannot be null");
 
         public enum TimeUnit {
@@ -49,7 +46,7 @@ public record LoadTarget(Option<String> name,
                 this.secondsMultiplier = secondsMultiplier;
             }
             public static Option<TimeUnit> fromSymbol(String symbol) {
-                return switch (symbol){
+                return switch (symbol) {
                     case "s" -> some(SECOND);
                     case "m" -> some(MINUTE);
                     case "h" -> some(HOUR);
@@ -57,7 +54,7 @@ public record LoadTarget(Option<String> name,
                 };
             }
             public int toRequestsPerSecond(int value) {
-                return switch (this){
+                return switch (this) {
                     case SECOND -> value;
                     case MINUTE -> value / 60;
                     case HOUR -> value / 3600;
@@ -67,17 +64,22 @@ public record LoadTarget(Option<String> name,
 
         public static Result<Rate> rate(String rateStr) {
             var matcher = RATE_PATTERN.matcher(rateStr.trim());
-            if (!matcher.matches()) {return INVALID_RATE.apply(rateStr).result();}
-            return Number.parseInt(matcher.group(1)).flatMap(Rate::ensurePositive)
-                                  .flatMap(val -> rate(val,
-                                                       matcher.group(2),
-                                                       rateStr));
+
+            if (!matcher.matches()) {
+                return INVALID_RATE.apply(rateStr).result();
+            }
+
+            return Number.parseInt(matcher.group(1))
+                         .flatMap(Rate::ensurePositive)
+                         .flatMap(val -> rate(val,
+                                              matcher.group(2),
+                                              rateStr));
         }
 
         private static Result<Integer> ensurePositive(int value) {
             return value <= 0
-                  ? NON_POSITIVE_RATE.result()
-                  : success(value);
+                   ? NON_POSITIVE_RATE.result()
+                   : success(value);
         }
 
         private static Result<Rate> rate(int value, TimeUnit unit) {
@@ -85,8 +87,9 @@ public record LoadTarget(Option<String> name,
         }
 
         private static Result<Rate> rate(int value, String unitSymbol, String rateStr) {
-            return TimeUnit.fromSymbol(unitSymbol).toResult(INVALID_RATE.apply(rateStr))
-                                      .flatMap(unit -> rate(value, unit));
+            return TimeUnit.fromSymbol(unitSymbol)
+                           .toResult(INVALID_RATE.apply(rateStr))
+                           .flatMap(unit -> rate(value, unit));
         }
 
         public int requestsPerSecond() {
@@ -105,8 +108,9 @@ public record LoadTarget(Option<String> name,
                                                 Map<String, String> pathVars,
                                                 Option<String> body) {
         var validTarget = option(target).filter(s -> !s.isBlank()).toResult(INVALID_TARGET.apply("target is required"));
+
         return validTarget.flatMap(_ -> Rate.rate(rateStr))
-                                  .flatMap(rate -> loadTarget(name, target, rate, duration, pathVars, body));
+                          .flatMap(rate -> loadTarget(name, target, rate, duration, pathVars, body));
     }
 
     private static Result<LoadTarget> loadTarget(Option<String> name,
@@ -117,6 +121,7 @@ public record LoadTarget(Option<String> name,
                                                  Option<String> body) {
         var resolvedName = some(name.or(deriveNameFromTarget(target)));
         var safePathVars = option(pathVars).map(Map::copyOf).or(Map.of());
+
         return success(new LoadTarget(resolvedName, target, rate, duration, safePathVars, body));
     }
 
@@ -128,9 +133,10 @@ public record LoadTarget(Option<String> name,
 
     public Option<String> httpMethod() {
         var matcher = HTTP_METHOD_PREFIX.matcher(target);
+
         return matcher.find()
-              ? some(matcher.group(1))
-              : none();
+               ? some(matcher.group(1))
+               : none();
     }
 
     public String httpPath() {
@@ -139,26 +145,31 @@ public record LoadTarget(Option<String> name,
 
     private static String deriveNameFromTarget(String target) {
         var path = HTTP_METHOD_PREFIX.matcher(target).replaceFirst("");
+
         return path.startsWith("/")
-              ? deriveFromHttpPath(path)
-              : path;
+               ? deriveFromHttpPath(path)
+               : path;
     }
 
     private static String deriveFromHttpPath(String path) {
         var bracketIdx = path.indexOf('{');
         var effectivePath = bracketIdx > 0
-                           ? path.substring(0, bracketIdx)
-                           : path;
+                            ? path.substring(0, bracketIdx)
+                            : path;
+
         effectivePath = effectivePath.replaceAll("^/|/$", "");
+
         return effectivePath.replace('/', '-');
     }
 
     public boolean isContinuous() {
-        return duration.map(Duration::isZero).or(true);
+        return duration.map(Duration::isZero)
+                       .or(true);
     }
 
     public LoadTarget withScaledRate(double multiplier) {
         var scaledValue = (int) Math.max(1, rate.requestsPerSecond() * multiplier);
+
         return loadTarget(name, target, scaledValue, duration, pathVars, body).unwrap();
     }
 
@@ -168,7 +179,11 @@ public record LoadTarget(Option<String> name,
                                                  Option<Duration> duration,
                                                  Map<String, String> pathVars,
                                                  Option<String> body) {
-        return Rate.rate(scaledValue, Rate.TimeUnit.SECOND)
-                        .flatMap(r -> success(new LoadTarget(name, target, r, duration, pathVars, body)));
+        return Rate.rate(scaledValue, Rate.TimeUnit.SECOND).flatMap(r -> success(new LoadTarget(name,
+                                                                                                target,
+                                                                                                r,
+                                                                                                duration,
+                                                                                                pathVars,
+                                                                                                body)));
     }
 }

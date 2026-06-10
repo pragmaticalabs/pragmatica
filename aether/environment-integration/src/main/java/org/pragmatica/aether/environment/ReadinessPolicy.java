@@ -25,13 +25,10 @@ public record ReadinessPolicy(TimeSpan timeout, TimeSpan pollInterval) {
     /// Docker: containers reach `running` almost immediately after `docker run -d`;
     /// a short window with tight polling catches an exited/dead boot fast.
     private static final TimeSpan DOCKER_TIMEOUT = timeSpan(30).seconds();
-
     private static final TimeSpan DOCKER_POLL_INTERVAL = timeSpan(500).millis();
-
     /// Cloud: VM boot is slow and flaky, so confirmation matters MORE here; allow a
     /// generous window with a relaxed poll cadence to avoid hammering the provider API.
     private static final TimeSpan CLOUD_TIMEOUT = timeSpan(5).minutes();
-
     private static final TimeSpan CLOUD_POLL_INTERVAL = timeSpan(5).seconds();
 
     public static Result<ReadinessPolicy> readinessPolicy(TimeSpan timeout, TimeSpan pollInterval) {
