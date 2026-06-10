@@ -129,6 +129,69 @@ class QuicClusterNetworkLivenessSweepTest {
             .contains(peerId);
     }
 
+    // --- FIX B: last-inbound TTL eviction for CONNECTED zombies (isActive()-lies-true) ---
+
+    @Test
+    void reconcileMissingPeersTick_connectedActiveButStaleInbound_isEvicted() {
+        // Flavor-2 zombie: the channel reports isActive()==true (QUIC idle timeout disabled, the
+        // partition-orphaned link never learned its peer died), but NO inbound frame has arrived on
+        // any lane for far longer than the liveness TTL (pingInterval * 8 = 8s). The TTL sweep must
+        // evict it for re-dial.
+        var network = createNetwork(NodeId.randomNodeId());
+        var peerId = new NodeId("silent-zombie");
+        network.seedPeerForTests(peerId, staleInboundPeerState(peerId, activeChannel()));
+
+        assertThat(network.connectedPeers())
+            .as("precondition: the silent-but-CONNECTED+active peer is initially counted as connected")
+            .contains(peerId);
+
+        network.reconcileMissingPeersTick();
+
+        assertThat(network.connectedPeers())
+            .as("the inbound-TTL sweep must evict a CONNECTED+active link gone silent past the TTL")
+            .doesNotContain(peerId);
+    }
+
+    @Test
+    void reconcileMissingPeersTick_connectedActiveAndRecentInbound_isNotEvicted() {
+        // A CONNECTED+active link that received an inbound frame within the TTL is healthy and must
+        // survive the sweep untouched — a quiet-but-probed SWIM link is never falsely evicted.
+        var network = createNetwork(NodeId.randomNodeId());
+        var peerId = new NodeId("healthy-recent-inbound");
+        var state = connectedPeerState(peerId, activeChannel());
+        state.markInbound(System.nanoTime());
+        network.seedPeerForTests(peerId, state);
+
+        network.reconcileMissingPeersTick();
+
+        assertThat(network.connectedPeers())
+            .as("a CONNECTED+active link with recent inbound must not be evicted by the TTL sweep")
+            .contains(peerId);
+    }
+
+    @Test
+    void onMessageReceived_whileBlackholed_doesNotRefreshInbound_soSweepStillTrips() {
+        // The chaos substrate (blackhole) keeps the QUIC channel CONNECTED+active but silently drops
+        // ALL inbound frames before they reach the liveness funnel. A blackholed inbound therefore
+        // must NOT refresh the liveness clock, so a stale-inbound CONNECTED+active peer is still
+        // evicted by the TTL sweep even though frames are notionally arriving off the wire.
+        var network = createNetwork(NodeId.randomNodeId());
+        var peerId = new NodeId("blackholed-zombie");
+        network.seedPeerForTests(peerId, staleInboundPeerState(peerId, activeChannel()));
+        network.blackhole(true);
+
+        // Simulate inbound traffic while blackholed — these must be dropped before markInbound.
+        network.onMessageReceivedForTests(peerId, "ignored-frame-1");
+        network.onMessageReceivedForTests(peerId, "ignored-frame-2");
+        network.blackhole(false);
+
+        network.reconcileMissingPeersTick();
+
+        assertThat(network.connectedPeers())
+            .as("blackholed inbound must not count as liveness — the TTL sweep still trips on the zombie")
+            .doesNotContain(peerId);
+    }
+
     // --- FIX C: event-driven close listener ---
 
     @Test
@@ -208,6 +271,20 @@ class QuicClusterNetworkLivenessSweepTest {
         var state = PeerState.peerState(peerId, past);
         state.beginConnecting(past);
         state.attach(connection, past);
+        // Refresh the inbound liveness clock to "now" so a live link is not falsely tripped by the
+        // inbound-TTL sweep; the inactive-channel zombie tests rely on isActive()==false instead.
+        state.markInbound(System.nanoTime());
+        return state;
+    }
+
+    /// CONNECTED PeerState backed by the supplied (active) channel whose inbound liveness clock is
+    /// stamped 1 minute in the past — far beyond the 8s liveness TTL — so the inbound-TTL sweep trips.
+    private static PeerState staleInboundPeerState(NodeId peerId, QuicChannel chan) {
+        var past = System.nanoTime() - Duration.ofMinutes(1).toNanos();
+        var state = PeerState.peerState(peerId, past);
+        state.beginConnecting(past);
+        state.attach(QuicPeerConnection.quicPeerConnection(peerId, chan), past);
+        // Deliberately do NOT call markInbound — leave lastInboundAtNanos at the past attach stamp.
         return state;
     }
 

@@ -154,6 +154,73 @@ class QuicClusterNetworkConnectingStalenessTest {
             .isEqualTo(0L);
     }
 
+    // --- STEP 1: deferred + retrying DNS resolution at dial time ---
+
+    @Test
+    void reconcileMissingPeersTick_unresolvableHost_peerNotPinnedInConnectingAndStaysDialEligible() {
+        // A configured peer whose hostname never resolves (RFC 6761 `.invalid` TLD). Deferred
+        // resolution must fail cleanly WITHOUT pinning the peer in CONNECTING and WITHOUT marking it
+        // REMOVED — the peer stays dial-eligible (EVICTED/ABSENT) so the next eligible tick re-attempts.
+        // Lower-id self ("aaa-self") dials the higher-id peer ("zzz-unresolvable").
+        var self = new NodeId("aaa-self");
+        var unresolvable = new NodeId("zzz-unresolvable");
+        var peerInfo = NodeInfo.nodeInfo(unresolvable, addressOf("no-such-host.invalid", 4242));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, unresolvable));
+        var clock = new AtomicLong(1_000_000L);
+        var network = createNetwork(self, stub);
+        network.overrideWallClockForTests(clock::get);
+
+        network.reconcileMissingPeersTick();
+        // Resolution is async on the Netty event loop — give the failure callback time to settle.
+        awaitNotConnecting(network, unresolvable);
+
+        var phase = network.peerPhaseForTests(unresolvable);
+        assertThat(phase.map(p -> p == PeerState.Phase.CONNECTING).or(false))
+            .as("an unresolvable peer must NOT be pinned in CONNECTING")
+            .isFalse();
+        assertThat(phase.map(p -> p == PeerState.Phase.REMOVED).or(false))
+            .as("an unresolvable peer must NOT be marked REMOVED")
+            .isFalse();
+        assertThat(network.connectedPeers())
+            .as("an unresolvable peer never connects")
+            .doesNotContain(unresolvable);
+    }
+
+    @Test
+    void reconcileMissingPeersTick_resolvableHost_reachesConnecting() {
+        // A resolvable host (loopback) must resolve and dispatch the dial (beginConnecting runs in the
+        // resolution-success continuation). The topology lookup proves the dial path was entered.
+        var self = new NodeId("aaa-self");
+        var resolvable = new NodeId("zzz-resolvable");
+        var peerInfo = NodeInfo.nodeInfo(resolvable, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, resolvable));
+        var clock = new AtomicLong(1_000_000L);
+        var network = createNetwork(self, stub);
+        network.overrideWallClockForTests(clock::get);
+
+        network.reconcileMissingPeersTick();
+        awaitLookup(stub, resolvable);
+
+        assertThat(stub.lookups.getOrDefault(resolvable, 0L))
+            .as("a resolvable peer must be dispatched for dial (topology lookup) at least once")
+            .isGreaterThanOrEqualTo(1L);
+    }
+
+    private static void awaitNotConnecting(QuicClusterNetwork network, NodeId peerId) {
+        var deadline = System.nanoTime() + Duration.ofSeconds(3).toNanos();
+        while (System.nanoTime() < deadline
+               && network.peerPhaseForTests(peerId).map(p -> p == PeerState.Phase.CONNECTING).or(false)) {
+            Thread.onSpinWait();
+        }
+    }
+
+    private static void awaitLookup(CountingTopology stub, NodeId peerId) {
+        var deadline = System.nanoTime() + Duration.ofSeconds(3).toNanos();
+        while (System.nanoTime() < deadline && stub.lookups.getOrDefault(peerId, 0L) == 0L) {
+            Thread.onSpinWait();
+        }
+    }
+
     private static NodeAddress addressOf(String host, int port) {
         return NodeAddress.nodeAddress(host, port).fold(_ -> fail("bad address"), a -> a);
     }

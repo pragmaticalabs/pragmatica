@@ -16,6 +16,7 @@
 
 package org.pragmatica.consensus.net.quic;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Map;
@@ -40,6 +41,8 @@ import io.netty.handler.codec.quic.QuicClientCodecBuilder;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.handler.codec.quic.QuicStreamType;
+import io.netty.resolver.DefaultNameResolver;
+import io.netty.resolver.NameResolver;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NodeRole;
@@ -71,6 +74,14 @@ public sealed interface QuicClusterClient {
     /// @param address the target peer's UDP address
     /// @return promise resolving to the established peer connection
     Promise<QuicPeerConnection> connect(NodeId peerId, InetSocketAddress address);
+
+    /// Resolve a hostname to an [InetAddress] **non-blocking**, on the client's Netty event loop
+    /// (via [io.netty.resolver.DefaultNameResolver]). Used by the dialer to defer DNS resolution to
+    /// dial time — a stale hostname that fails to resolve fails the returned promise cleanly instead
+    /// of producing an eagerly-constructed *unresolved* `InetSocketAddress` that
+    /// [#connect] would reject on every reconciler tick. The caller constructs the dial target from
+    /// the resolved address (`new InetSocketAddress(inetAddress, port)`, which never re-resolves).
+    Promise<InetAddress> resolve(String host);
 
     /// Shut down the client and release resources.
     Promise<Unit> close();
@@ -113,6 +124,11 @@ public sealed interface QuicClusterClient {
     record Unused() implements QuicClusterClient {
         @Override
         public Promise<QuicPeerConnection> connect(NodeId peerId, InetSocketAddress address) {
+            return UNEXPECTED_MESSAGE.promise();
+        }
+
+        @Override
+        public Promise<InetAddress> resolve(String host) {
             return UNEXPECTED_MESSAGE.promise();
         }
 
@@ -163,6 +179,11 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     private final EventLoopGroup eventLoopGroup;
     private final boolean ownsEventLoop;
     private final QuicClusterServer.MessageReceiver messageReceiver;
+    /// Non-blocking DNS resolver backed by the client's Netty event loop. Lazily built on first
+    /// [#resolve] so construction stays cheap and tests that never dial never allocate it. The
+    /// `DefaultNameResolver` performs the JDK lookup on the supplied [io.netty.util.concurrent.EventExecutor],
+    /// never on the reconciler thread that initiates the dial.
+    private volatile NameResolver<InetAddress> nameResolver;
     /// Per-peer ephemeral UDP socket. `bootstrap.bind(0)` is invoked on every
     /// `connect(peerId, ...)` call, so without per-peer tracking the previous channel
     /// reference would be dropped (and the kernel-level socket leaked) on every
@@ -194,6 +215,44 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     @Override
     public Promise<QuicPeerConnection> connect(NodeId peerId, InetSocketAddress address) {
         return Promise.promise(promise -> initiateConnection(peerId, address, promise));
+    }
+
+    @Override
+    public Promise<InetAddress> resolve(String host) {
+        return Promise.promise(promise -> resolveHost(host, promise));
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") // Netty resolver future callback
+    private void resolveHost(String host, Promise<InetAddress> promise) {
+        nameResolver().resolve(host)
+                      .addListener(future -> completeResolve(host, promise, future));
+    }
+
+    private void completeResolve(String host,
+                                 Promise<InetAddress> promise,
+                                 io.netty.util.concurrent.Future<? super InetAddress> future) {
+        if (future.isSuccess()) {
+            promise.succeed((InetAddress) future.getNow());
+        } else {
+            promise.fail(new QuicTransportError.UnresolvedAddress(host));
+        }
+    }
+
+    /// Lazily build the event-loop-backed name resolver. Double-checked under the instance monitor
+    /// so concurrent first-dials share one resolver bound to one event executor.
+    private NameResolver<InetAddress> nameResolver() {
+        var existing = nameResolver;
+        if (existing != null) {
+            return existing;
+        }
+        return buildNameResolver();
+    }
+
+    private synchronized NameResolver<InetAddress> buildNameResolver() {
+        if (nameResolver == null) {
+            nameResolver = new DefaultNameResolver(eventLoopGroup.next());
+        }
+        return nameResolver;
     }
 
     @Override
@@ -372,6 +431,10 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     }
 
     private void shutdownEventLoop(Promise<Unit> promise) {
+        var resolver = nameResolver;
+        if (resolver != null) {
+            resolver.close();
+        }
         if (!ownsEventLoop) {
             promise.succeed(unit());
             return;

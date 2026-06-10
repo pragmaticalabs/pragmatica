@@ -755,8 +755,18 @@ public final class MembershipFsm {
 
         /// Last-wins upsert of the network descriptor from a NodeInfo observation. Orthogonal to the
         /// lifecycle FSM — never touches the FSM state.
+        ///
+        /// Address-downgrade guard: a descriptor update that would replace a KNOWN non-empty address
+        /// with an empty/absent one is IGNORED for the address field — the previously-known address is
+        /// retained while the rest of the descriptor (role / source) is taken from `next`. A
+        /// degraded-but-present hostname is handled by dial-time re-resolution (transport Step 1); the
+        /// only hazard this guard closes is a null/empty ERASE that would silently drop the member out
+        /// of `desiredConnections` (which skips address-unknown members), wedging it in a never-dialed
+        /// state. Role/source still follow last-wins so a worker re-label still takes effect.
         synchronized void updateDescriptor(MemberDescriptor next) {
-            descriptor = next;
+            descriptor = next.address().isEmpty() && descriptor.address().isPresent()
+                         ? new MemberDescriptor(descriptor.address(), next.role(), next.source())
+                         : next;
         }
 
         /// The stored last-wins descriptor (address + role + source). Retained across DEAD so a dead

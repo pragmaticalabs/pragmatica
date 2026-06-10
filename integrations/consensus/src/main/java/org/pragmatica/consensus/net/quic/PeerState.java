@@ -129,6 +129,15 @@ public final class PeerState {
     private boolean passive;
     private final Deque<Message.Wired> offlineBuffer = new ArrayDeque<>();
 
+    /// Wall-clock-free (`System.nanoTime`) instant of the most recent inbound frame observed on
+    /// this peer's link, across ALL lanes (SWIM probes, ClusterSync pongs, consensus). Reset to the
+    /// attach timestamp on every ACCEPTED/RECONNECTED (a reconnect restarts the liveness clock) and
+    /// refreshed by [#markInbound] on each inbound frame. Read by the CONNECTED-zombie liveness TTL
+    /// sweep in `QuicClusterNetwork.sweepPeer`: a CONNECTED link whose `isActive()` lies true but
+    /// that has gone silent past the TTL is evicted for re-dial. Blackholed inbound is intentionally
+    /// NOT counted (the chaos substrate keeps the link CONNECTED yet silent), so the sweep still trips.
+    private long lastInboundAtNanos;
+
     /// Wall-clock instant (ms) at which the missing-peer reconciler is next allowed to
     /// attempt a re-dial of this peer. Zero means no reconciler attempt has been made yet
     /// (any reconciler tick may dispatch immediately). Used by `QuicClusterNetwork`'s
@@ -179,6 +188,21 @@ public final class PeerState {
         return nowNanos - phaseChangedAtNanos;
     }
 
+    /// Record that an inbound frame was just observed on this peer's link (any lane). Refreshes the
+    /// liveness clock read by the CONNECTED-zombie TTL sweep. Called from the single inbound funnel
+    /// (`QuicClusterNetwork.onMessageReceived`) AFTER the blackhole early-return, so a blackholed
+    /// (silently-dropping) link is never refreshed and the sweep can trip.
+    public synchronized void markInbound(long nowNanos) {
+        this.lastInboundAtNanos = nowNanos;
+    }
+
+    /// Nanoseconds since the most recent inbound frame (= now − lastInboundAtNanos). Used by the
+    /// liveness TTL sweep to detect a CONNECTED zombie whose `isActive()` lies true but whose link
+    /// has gone silent past the SWIM-cadence TTL.
+    public synchronized long inboundAgeNanos(long nowNanos) {
+        return nowNanos - lastInboundAtNanos;
+    }
+
     /// Transitions INIT or EVICTED → CONNECTING. Idempotent from CONNECTING/CONNECTED.
     /// Returns true when the caller should initiate the actual dial.
     public synchronized boolean beginConnecting(long nowNanos) {
@@ -203,12 +227,14 @@ public final class PeerState {
             case EVICTED -> {
                 // Reconnect after eviction — peer never left topology, suppress duplicate ADD.
                 this.connection = newConnection;
+                this.lastInboundAtNanos = nowNanos;
                 changePhase(Phase.CONNECTED, nowNanos);
                 yield new AttachOutcome(AttachResult.RECONNECTED, Option.empty());
             }
             case INIT, CONNECTING -> {
                 // First-time accept (no prior CONNECTED link).
                 this.connection = newConnection;
+                this.lastInboundAtNanos = nowNanos;
                 changePhase(Phase.CONNECTED, nowNanos);
                 yield new AttachOutcome(AttachResult.ACCEPTED, Option.empty());
             }
@@ -232,11 +258,13 @@ public final class PeerState {
             }
             var superseded = connection;
             this.connection = newConnection;
+            this.lastInboundAtNanos = nowNanos;
             this.phaseChangedAtNanos = nowNanos;
             return new AttachOutcome(AttachResult.RECONNECTED, option(superseded));
         }
         // Stale CONNECTED link replaced — peer is already known upstream.
         this.connection = newConnection;
+        this.lastInboundAtNanos = nowNanos;
         this.phaseChangedAtNanos = nowNanos;
         return new AttachOutcome(AttachResult.RECONNECTED, Option.empty());
     }

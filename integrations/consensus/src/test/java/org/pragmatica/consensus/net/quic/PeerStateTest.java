@@ -375,6 +375,53 @@ class PeerStateTest {
     }
 
     @Test
+    void attach_ACCEPTED_sets_lastInboundAtNanos_to_attachTimestamp() {
+        // A fresh accept stamps the liveness clock at attach time — inboundAge at that instant is 0.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        s.attach(liveConnection(), T0 + 2);
+        assertThat(s.inboundAgeNanos(T0 + 2)).as("inbound age is zero at attach").isEqualTo(0L);
+        assertThat(s.inboundAgeNanos(T0 + 2 + 500)).isEqualTo(500L);
+    }
+
+    @Test
+    void attach_RECONNECTED_fromEVICTED_resets_lastInboundAtNanos() {
+        // A reconnect restarts the liveness clock: a stale inbound age accumulated before eviction
+        // must NOT survive the re-attach.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        s.attach(liveConnection(), T0 + 2);
+        s.evict(T0 + 3);
+        // Re-attach much later — the liveness clock is reset to the new attach timestamp.
+        var reattachAt = T0 + 1_000_000L;
+        s.attach(liveConnection(), reattachAt);
+        assertThat(s.inboundAgeNanos(reattachAt)).as("reconnect resets the liveness clock").isEqualTo(0L);
+    }
+
+    @Test
+    void markInbound_refreshes_inboundAgeNanos() {
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        s.attach(liveConnection(), T0 + 2);
+        // Age accrues since attach.
+        assertThat(s.inboundAgeNanos(T0 + 2 + 5_000)).isEqualTo(5_000L);
+        // A fresh inbound frame resets the age to zero at that instant.
+        s.markInbound(T0 + 2 + 5_000);
+        assertThat(s.inboundAgeNanos(T0 + 2 + 5_000)).isEqualTo(0L);
+        assertThat(s.inboundAgeNanos(T0 + 2 + 5_000 + 250)).isEqualTo(250L);
+    }
+
+    @Test
+    void inboundAgeNanos_usesSuppliedClock() {
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        s.attach(liveConnection(), T0 + 2);
+        s.markInbound(T0 + 100);
+        assertThat(s.inboundAgeNanos(T0 + 100)).isEqualTo(0L);
+        assertThat(s.inboundAgeNanos(T0 + 100 + 42)).isEqualTo(42L);
+    }
+
+    @Test
     void evictStaleConnecting_fromCONNECTING_transitions_to_EVICTED_returnsTrue() {
         // A hung dial: beginConnecting moved the peer to CONNECTING but neither attach nor a
         // connect-failure ever resolved it. evictStaleConnecting must break the wedge so the

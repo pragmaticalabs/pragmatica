@@ -663,10 +663,60 @@ class MembershipFsmTest {
             assertThat(manager.desiredConnections())
                     .containsExactly(new PeerTarget(A, address("10.0.0.9", 7100)));
         }
+
+        @Test
+        void onMemberDescriptor_emptyAddressUpdate_doesNotDowngradeKnownAddress() {
+            // Step 3 guard: a descriptor update that would ERASE a known non-empty address to none must
+            // be ignored for the address field — otherwise the member silently drops out of
+            // desiredConnections (which skips address-unknown members) and is never dialed again.
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
+            // A degraded observation with NO resolved address arrives.
+            manager.onMemberDescriptor(addresslessInfo(A));
+
+            assertThat(manager.desiredConnections())
+                    .as("a known address must NOT be downgraded to none by an empty-address update")
+                    .containsExactly(new PeerTarget(A, address("10.0.0.1", 7000)));
+        }
+
+        @Test
+        void onMemberDescriptor_emptyAddressUpdate_stillAppliesRoleLastWins() {
+            // The guard retains only the ADDRESS; role/source still follow last-wins so a worker
+            // re-label (which excludes the member from the core dial-set) still takes effect even
+            // when the re-label observation carries no address.
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
+            manager.onMemberDescriptor(addresslessWorkerInfo(A));
+
+            assertThat(manager.desiredConnections())
+                    .as("an address-less worker re-label still excludes the member from the core dial-set")
+                    .isEmpty();
+        }
     }
 
     @Nested
     class DesiredConnections {
+        @Test
+        void desiredConnections_keepsSuspectCore_soTransportStillReconcilesIt() {
+            // Step 3 verify (no behavior change expected): a SWIM-SUSPECT core member counts toward
+            // effective and MUST stay in the transport's desired dial-set, so the reconciler keeps a
+            // momentarily-suspected peer's link converging rather than tearing it down.
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
+            manager.onSwimSuspect(A, 5L);
+            assertThat(manager.memberStates()).containsEntry(A, "Suspect");
+
+            assertThat(manager.desiredConnections())
+                    .as("a SWIM-SUSPECT core member stays in the desired dial-set")
+                    .containsExactly(new PeerTarget(A, address("10.0.0.1", 7000)));
+        }
+
         @Test
         void desiredConnections_includesMemberAndSuspect_withKnownAddress() {
             var manager = activeManager();
@@ -992,6 +1042,19 @@ class MembershipFsmTest {
 
     private static NodeInfo labeledInfo(NodeId id, String host, int port, Map<String, String> labels) {
         return NodeInfo.nodeInfo(id, address(host, port), NodeRole.ACTIVE, labels);
+    }
+
+    /// A NodeInfo whose dial-preferred (resolved) address is ABSENT (null) — its derived
+    /// MemberDescriptor has an empty address. Used to exercise the address-downgrade guard.
+    private static NodeInfo addresslessInfo(NodeId id) {
+        return NodeInfo.nodeInfo(id, address("0.0.0.0", 1), NodeRole.ACTIVE,
+                                 Map.of(NodeInfo.LABEL_ROLE, "core"), null);
+    }
+
+    /// Address-less observation that ALSO re-labels the member as a worker (role last-wins).
+    private static NodeInfo addresslessWorkerInfo(NodeId id) {
+        return NodeInfo.nodeInfo(id, address("0.0.0.0", 1), NodeRole.ACTIVE,
+                                 Map.of(NodeInfo.LABEL_ROLE, "worker"), null);
     }
 
     private static void promoteToMember(MembershipFsm manager, NodeId id) {

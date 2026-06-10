@@ -16,6 +16,7 @@
 
 package org.pragmatica.consensus.net.quic;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -173,6 +174,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// that a legitimately-slow handshake under load is NOT aborted, tight enough that a hung dial
     /// clears within a few reconciler ticks.
     private static final long CONNECTING_STALENESS_HELLO_TIMEOUT_FACTOR = 3L;
+    /// Multiple of the SWIM ping interval after which a CONNECTED peer that has received NO inbound
+    /// frame on ANY lane is treated as a silent zombie and evicted for re-dial. Sized generously
+    /// (`pingInterval * 8`): SWIM guarantees cross-link probe traffic at `pingInterval`, so a
+    /// healthy-but-quiet link always refreshes the liveness clock well within the window and is never
+    /// falsely evicted; a genuine silent-death zombie (the `isActive()`-lies-true / blackholed
+    /// substrate) clears within a couple of sweep ticks. This sweep's correctness DEPENDS on the SWIM
+    /// probe cadence: if SWIM probing were disabled, an idle follower<->follower link could exceed the
+    /// TTL without being dead.
+    private static final long LIVENESS_TTL_PING_INTERVAL_FACTOR = 8L;
     private final CancellableTask reconcilerTask = CancellableTask.cancellableTask();
 
     private volatile QuicDisconnectListener disconnectListener;
@@ -757,6 +767,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
             // nor replies to ClusterSync pings nor participates in consensus.
             return;
         }
+        // Liveness clock refresh: this is the SINGLE inbound funnel for ALL lanes (SWIM probes,
+        // ClusterSync pongs, consensus). Refreshing here (AFTER the blackhole early-return so a
+        // silently-dropping link is never refreshed) feeds the CONNECTED-zombie TTL sweep without
+        // adding a new stream/lane.
+        var peer = peers.get(sender);
+        if (peer != null) {
+            peer.markInbound(System.nanoTime());
+        }
         quicMetrics.onMessageReceived();
         if (message instanceof Message.Wired wired) {
             router.route(wired);
@@ -773,6 +791,19 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     // --- Internal: peer connection lifecycle ---
 
+    /// Dial a peer. DNS resolution is deferred to dial time and performed **non-blocking** on the
+    /// client's Netty event loop (NOT an inline blocking lookup on the reconciler thread): a stale
+    /// hostname that yields an *unresolved* `InetSocketAddress` would otherwise be rejected by
+    /// `QuicClusterClient.initiateConnection` on every reconciler tick, wedging the peer in a
+    /// never-reconnect loop. `beginConnecting` is deferred into the resolution-SUCCESS continuation
+    /// so the CONNECTING phase always means "a real dial is in flight" — a resolution stall is bounded
+    /// only by the existing per-peer reconcile backoff (the next tick re-attempts) and never pins the
+    /// peer in CONNECTING.
+    ///
+    /// Gate note: re-resolution applies only to peers already approved by
+    /// `considerPeerForReconcile` / `considerDesiredPeerForReconcile` (or the explicit `connect`
+    /// paths). A DEAD peer is excluded from the desired set upstream (FSM / SWIM membership) and never
+    /// reaches `connectPeer`, so deferred resolution cannot revive a confirmed-dead NodeId.
     @SuppressWarnings("JBCT-PAT-01") // Netty future callback chain
     private void connectPeer(NodeInfo peer) {
         var peerId = peer.id();
@@ -785,15 +816,33 @@ public class QuicClusterNetwork implements ClusterNetwork {
             log.debug("Skipping connection to {}: higher NodeId does not initiate (waits for inbound)", peerId);
             return;
         }
+        // Dial the resolved (SWIM-observed IP : advertised QUIC port) address when available;
+        // it defaults to peer.address() for non-SWIM-discovered peers, so behavior is unchanged
+        // there. peer.address() remains the identity/reporting address everywhere below.
+        var dialAddress = peer.resolvedAddress();
+        // Resolve the hostname FRESH at dial time, non-blocking, on the Netty resolver. On success
+        // we begin CONNECTING and dial the resolved InetAddress (the (InetAddress, port) constructor
+        // never re-resolves). On failure we leave the peer untouched (no phase change) — the next
+        // reconciler tick re-attempts under the existing backoff.
+        client.resolve(dialAddress.host())
+              .onSuccess(inetAddress -> dialResolved(peer, inetAddress, dialAddress.port()))
+              .onFailure(cause -> log.debug("Skipping dial to {}: address {} did not resolve: {}",
+                                            peerId, dialAddress.asString(), cause.message()));
+    }
+
+    /// Resolution-success continuation: now that a real IP is in hand, begin CONNECTING (so the
+    /// phase reflects an in-flight dial) and dial the resolved address. Construct the dial target
+    /// from the resolved `InetAddress` — `new InetSocketAddress(InetAddress, port)` never re-resolves,
+    /// unlike the eager two-arg `(String host, port)` constructor.
+    @SuppressWarnings("JBCT-PAT-01") // Netty future callback chain
+    private void dialResolved(NodeInfo peer, InetAddress inetAddress, int port) {
+        var peerId = peer.id();
         var state = getOrCreatePeer(peerId);
         if (!state.beginConnecting(System.nanoTime())) {
             // Already CONNECTING, CONNECTED, or REMOVED — nothing to do.
             return;
         }
-        // Dial the resolved (SWIM-observed IP : advertised QUIC port) address when available;
-        // it defaults to peer.address() for non-SWIM-discovered peers, so behavior is unchanged
-        // there. peer.address() remains the identity/reporting address everywhere below.
-        var address = new InetSocketAddress(peer.resolvedAddress().host(), peer.resolvedAddress().port());
+        var address = new InetSocketAddress(inetAddress, port);
         // Per-dial timeout escape hatch (root cause): a `client.connect(...)` that hangs with no
         // success/failure callback would otherwise pin the peer in CONNECTING forever. Arm a
         // timeout sized at `helloTimeout * CONNECTING_STALENESS_HELLO_TIMEOUT_FACTOR` so a hung
@@ -1334,6 +1383,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// the reconciler below re-dials it the SAME tick (the sweep runs before `connectedPeers()`
     /// is computed). Complements the adopt-newer handshake path, which handles the
     /// `isActive()`-lies-true orphan from the acceptor side.
+    ///
+    /// SECOND eviction trigger (Flavor-2 zombie): a CONNECTED peer whose `isActive()` LIES true but
+    /// whose link has received NO inbound frame on ANY lane for longer than the liveness TTL
+    /// (`pingInterval * LIVENESS_TTL_PING_INTERVAL_FACTOR`). This catches the partition-orphaned /
+    /// blackholed link where the channel never learns its peer died (QUIC MAX_IDLE_TIMEOUT disabled).
+    /// The TTL relies on the SWIM probe cadence — SWIM guarantees cross-link probe traffic at
+    /// `pingInterval`, so a quiet-but-healthy link refreshes its inbound clock long before the TTL.
     @SuppressWarnings("JBCT-PAT-01") // Liveness sweep: iterate peers, evict inactive CONNECTED links
     private void sweepStaleConnectedLinks() {
         peers.forEach(this::sweepPeer);
@@ -1341,12 +1397,24 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private void sweepPeer(NodeId peerId, PeerState state) {
         state.activeConnection()
-             .filter(conn -> !conn.isActive())
+             .filter(conn -> isZombieLink(state, conn))
              .onPresent(conn -> evictInactiveLink(peerId, conn));
     }
 
+    /// A CONNECTED link is a zombie when its channel is no longer active OR it has been silent
+    /// (no inbound frame on any lane) past the liveness TTL despite `isActive()` reporting true.
+    private boolean isZombieLink(PeerState state, QuicPeerConnection conn) {
+        return !conn.isActive() || state.inboundAgeNanos(System.nanoTime()) > livenessTtlNanos();
+    }
+
+    /// Liveness TTL in nanos: `pingInterval * LIVENESS_TTL_PING_INTERVAL_FACTOR`. See the field doc
+    /// for the SWIM-cadence dependency.
+    private long livenessTtlNanos() {
+        return topologyManager.pingInterval().nanos() * LIVENESS_TTL_PING_INTERVAL_FACTOR;
+    }
+
     private void evictInactiveLink(NodeId peerId, QuicPeerConnection conn) {
-        log.warn("Liveness sweep: peer {} CONNECTED but link inactive — evicting for re-dial", peerId);
+        log.warn("Liveness sweep: peer {} CONNECTED but link is a zombie (inactive or silent past TTL) — evicting for re-dial", peerId);
         evictStaleConnection(peerId, conn);
     }
 
@@ -1591,6 +1659,21 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// without sleeping. Defaults to `System::currentTimeMillis`.
     @Contract void overrideWallClockForTests(LongSupplier clock) {
         this.wallClockMs = clock == null ? System::currentTimeMillis : clock;
+    }
+
+    /// Package-private test seam — the current `PeerState.Phase` for a peer, or empty when no
+    /// PeerState exists yet (ABSENT). Lets deferred-resolution tests assert a peer is neither pinned
+    /// in CONNECTING nor marked REMOVED after an unresolvable dial.
+    Option<PeerState.Phase> peerPhaseForTests(NodeId peerId) {
+        return Option.option(peers.get(peerId)).map(PeerState::phase);
+    }
+
+    /// Package-private test seam — drives the inbound funnel `onMessageReceived` directly so tests
+    /// can assert the blackhole-suppresses-liveness-refresh path (a blackholed inbound must NOT
+    /// refresh the per-peer liveness clock) without standing up a live QUIC handshake.
+    @Contract
+    void onMessageReceivedForTests(NodeId sender, Object message) {
+        onMessageReceived(sender, message);
     }
 
     /// Seeds a pre-built `PeerState` directly into the connection table, bypassing the QUIC
