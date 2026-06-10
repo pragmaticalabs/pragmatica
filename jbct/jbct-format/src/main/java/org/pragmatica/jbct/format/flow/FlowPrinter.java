@@ -210,6 +210,39 @@ final class FlowPrinter {
         }
     }
 
+    /// Emit `node`'s own-line leading comments (if any) at the current indent level, then its
+    /// content via the trivia-free `printNodeContent` path. The CALLER MUST be at column 0 (have
+    /// just emitted a `newline()`) and MUST NOT pre-indent: when the node carries leading comments
+    /// `emitLeadingComments` owns the indentation of both the comment lines and the following
+    /// content — pre-indenting would leave a stripped spaces-only line (a spurious blank) ahead of
+    /// the comment; when it does not, we indent here. Custom printers that place a child on its own
+    /// line (enum-body members/constants, switch rules) route through this so a comment claimed as
+    /// the child's leading trivia is not silently deleted — `printNodeContent` skips trivia by
+    /// contract (bug report S1–S4). Output is byte-identical for comment-free nodes.
+    private void printOwnLineChildContent(Cursor node) {
+        if (!measuringMode && hasUnEmittedLeadingComment(node)) {
+            emitLeadingComments(node);
+        } else {
+            printIndent();
+        }
+        printNodeContent(node);
+    }
+
+    /// As `printOwnLineChildContent`, but indents to an explicit column via `printAlignedTo` rather
+    /// than the indent level — for aligned list layouts (broken record components). Caller must be
+    /// at column 0.
+    private void printOwnLineChildContentAligned(Cursor node, int col) {
+        if (!measuringMode && hasUnEmittedLeadingComment(node)) {
+            int savedForcedIndentCol = forcedIndentCol;
+            forcedIndentCol = col;
+            emitLeadingComments(node);
+            forcedIndentCol = savedForcedIndentCol;
+        } else {
+            printAlignedTo(col);
+        }
+        printNodeContent(node);
+    }
+
     /// Emit a Leaf node's tokens by walking the TokenArray range (skipping trivia).
     /// Using `leaf.text()` instead would return the source slice covering trailing trivia,
     /// causing whitespace bleed into the output.
@@ -232,13 +265,19 @@ final class FlowPrinter {
                 continue;
             }
             int kind = tokens.kindAt(t);
-            if (measuringMode || (kind != 1 && kind != 3) || t >= lastBrace || emittedTriviaTokens.contains(t)) {
+            boolean isLine = kind == 1 || kind == 3;   // LINE_COMMENT / DOC_LINE_COMMENT
+            boolean isBlock = kind == 2 || kind == 4;  // BLOCK_COMMENT / DOC_BLOCK_COMMENT
+            if (measuringMode || (!isLine && !isBlock) || t >= lastBrace || emittedTriviaTokens.contains(t)) {
                 continue;
             }
-            // Orphan line comment enclosed before a `}` in this bare-leaf body — emit so it is not
-            // silently deleted (bug B2).
+            // Orphan comment enclosed before a `}` in this bare-leaf body — emit so it is not
+            // silently deleted (bug B2 / report mechanism C). A single-line block comment stays
+            // inline (`{ /* note */ }`); line comments and multi-line block comments go own-line.
             var text = tokens.textAt(t).toString().stripTrailing();
-            if (precedingContentOnSameLine(tokens.startAt(t)) && currentColumn > 0) {
+            boolean sameLine = precedingContentOnSameLine(tokens.startAt(t)) && currentColumn > 0;
+            if (isBlock && sameLine && text.indexOf('\n') < 0) {
+                emit(" " + text + " ");
+            } else if (isLine && sameLine) {
                 emit("  " + text);
             } else {
                 if (currentColumn > 0) {
@@ -316,7 +355,22 @@ final class FlowPrinter {
                 printNode(kid);
                 t = kid.lastTokenIdx() + 1;
                 kidIdx++;
+                // Rescue self-closing block comments inside the child's span (safe: cannot swallow).
+                flushInSpanBlockComments(kid);
                 if (breakAfterAnnotation && kid.kindIs(RuleKind.ANNOTATION)) {
+                    // Flush a same-line trailing comment after the annotation (e.g. `@Ann // note`)
+                    // BEFORE the break newline — safe here precisely because a newline immediately
+                    // follows, so the comment cannot swallow trailing tokens (bug report mechanism
+                    // B, annotation-trailing). The parser may attach it INSIDE the annotation span
+                    // (flushInSpanTrailingComment) or as a gap token after it (the while-scan).
+                    flushInSpanTrailingComment(kid);
+                    while (t <= end && tokens.isTrivia(t)) {
+                        int kind = tokens.kindAt(t);
+                        if (kind >= 1 && kind <= 4 && !emitTrailingOrphanComment(tokens, t)) {
+                            break;
+                        }
+                        t++;
+                    }
                     newline();
                     printIndent();
                 } else if (spaceAfterAnnotation && kid.kindIs(RuleKind.ANNOTATION)) {
@@ -325,6 +379,8 @@ final class FlowPrinter {
             } else {
                 if (!tokens.isTrivia(t)) {
                     emitToken(tokens.textAt(t).toString());
+                } else {
+                    emitInlineBlockComment(tokens, t);
                 }
                 t++;
             }
@@ -373,9 +429,13 @@ final class FlowPrinter {
                 walker.onChild(kid);
                 t = kid.lastTokenIdx() + 1;
                 kidIdx++;
+                // Rescue self-closing block comments inside the child's span (safe: cannot swallow).
+                flushInSpanBlockComments(kid);
             } else {
                 if (!tokens.isTrivia(t)) {
                     walker.onToken(tokens.kindAt(t), tokens.textAt(t).toString());
+                } else {
+                    emitInlineBlockComment(tokens, t);
                 }
                 t++;
             }
@@ -577,6 +637,9 @@ final class FlowPrinter {
                 first = false;
                 prevMember = Option.some(member);
             }
+            // Own-line comments dangling after the last member, before the body's `}` (mechanism
+            // E3). Deduped against comments already emitted as members' leading trivia.
+            emitTrailingBodyComments(parent, members.get(members.size() - 1));
             indentLevel--;
             printIndent();
         }
@@ -670,8 +733,7 @@ final class FlowPrinter {
 
         for (var member : classMembers) {
             newline();
-            printIndent();
-            printNodeContent(member);
+            printOwnLineChildContent(member);
         }
 
         indentLevel--;
@@ -681,7 +743,8 @@ final class FlowPrinter {
     }
 
     private void printEnumConstsWithIndent(Cursor consts) {
-        printIndent();
+        // No pre-indent: printOwnLineChildContent (called per constant) owns the indentation so a
+        // constant carrying a leading doc comment isn't preceded by a spurious blank line.
         printEnumConsts(consts);
     }
 
@@ -691,9 +754,8 @@ final class FlowPrinter {
             if (i > 0) {
                 emit(",");
                 newline();
-                printIndent();
             }
-            printNodeContent(constNodes.get(i));
+            printOwnLineChildContent(constNodes.get(i));
         }
     }
 
@@ -778,32 +840,46 @@ final class FlowPrinter {
         var tokens = block.cst().tokens();
         int open = block.firstTokenIdx();
         int close = block.lastTokenIdx();
-        boolean any = false;
+        var comments = new ArrayList<Integer>();
+        boolean needsOwnLines = false; // a line comment or a multi-line block comment forces expansion
         for (int t = open + 1; t < close; t++) {
             if (!tokens.isTrivia(t)) {
                 continue;
             }
             int kind = tokens.kindAt(t);
-            if (kind != 1 && kind != 3) { // LINE_COMMENT or DOC_LINE_COMMENT only
+            boolean isLine = kind == 1 || kind == 3;   // LINE_COMMENT / DOC_LINE_COMMENT
+            boolean isBlock = kind == 2 || kind == 4;  // BLOCK_COMMENT / DOC_BLOCK_COMMENT
+            if ((!isLine && !isBlock) || emittedTriviaTokens.contains(t)) {
                 continue;
             }
-            if (emittedTriviaTokens.contains(t)) {
-                continue;
+            comments.add(t);
+            if (isLine || tokens.textAt(t).toString().indexOf('\n') >= 0) {
+                needsOwnLines = true;
             }
-            if (!any) {
-                indentLevel++;
+        }
+        if (comments.isEmpty()) {
+            return;
+        }
+        if (!needsOwnLines) {
+            // Only single-line block comments: keep them inline so `{ /* note */ }` stays one line.
+            for (int t : comments) {
+                emit(" " + tokens.textAt(t).toString().stripTrailing());
+                emittedTriviaTokens.add(t);
             }
+            emit(" ");
+            return;
+        }
+        // A line comment (or multi-line block comment) can't share the `}` line — expand the body.
+        indentLevel++;
+        for (int t : comments) {
             newline();
             printIndent();
             emit(tokens.textAt(t).toString().stripTrailing());
             emittedTriviaTokens.add(t);
-            any = true;
         }
-        if (any) {
-            indentLevel--;
-            newline();
-            printIndent();
-        }
+        indentLevel--;
+        newline();
+        printIndent();
     }
 
     /// Emit trailing line comments that sit in the last stmt's trailing trivia region
@@ -875,6 +951,171 @@ final class FlowPrinter {
 
     private boolean hasLeadingComment(Cursor node) {
         return node.leadingTrivia().anyMatch(t -> t.isLineComment() || t.isBlockComment());
+    }
+
+    /// Emit token `t` as a trailing comment when it is an unclaimed comment sitting at the END of a
+    /// source line (non-whitespace precedes it on the same source line) — e.g. `// note` after an
+    /// annotation, or after the last argument before `)`. Such comments are claimed by no node, so
+    /// the trivia-skipping token walk would otherwise delete them (bug report mechanism B). Returns
+    /// true when it emitted a comment. Own-line comments return false and are left for the
+    /// leading-comment machinery. No-op in measuring mode, for non-comments, for already-emitted
+    /// tokens, and for multi-line block comments (which cannot be inlined as a trailing comment).
+    private boolean emitTrailingOrphanComment(TokenArray tokens, int t) {
+        if (measuringMode || emittedTriviaTokens.contains(t)) {
+            return false;
+        }
+        int kind = tokens.kindAt(t);
+        boolean isLine = kind == 1 || kind == 3;
+        boolean isBlock = kind == 2 || kind == 4;
+        if (!isLine && !isBlock) {
+            return false;
+        }
+        if (currentColumn == 0 || !precedingContentOnSameLine(tokens.startAt(t))) {
+            return false;
+        }
+        var text = tokens.textAt(t).toString().stripTrailing();
+        if (isBlock && text.indexOf('\n') >= 0) {
+            return false;
+        }
+        emit("  " + text);
+        emittedTriviaTokens.add(t);
+        return true;
+    }
+
+    /// Emit token `t` as an inline block comment (`/* note */`) when it is an unclaimed,
+    /// single-line block comment in mid-line position. Block comments are self-closing, so —
+    /// unlike line comments — emitting one inline cannot swallow the tokens that follow it on the
+    /// same line; this is the safe way to preserve `x /* note */ y` comments that the trivia-
+    /// skipping walk would otherwise delete (bug report mechanism E1). No-op for line comments,
+    /// multi-line block comments, start-of-line positions, measuring mode, and already-emitted
+    /// tokens.
+    private void emitInlineBlockComment(TokenArray tokens, int t) {
+        if (measuringMode || emittedTriviaTokens.contains(t) || currentColumn == 0) {
+            return;
+        }
+        int kind = tokens.kindAt(t);
+        if (kind != 2 && kind != 4) {
+            return;
+        }
+        // Only inline a block comment that was a same-line trailing comment in the source. An
+        // own-line standalone block comment (`\n/* note */\n`) belongs to the leading-comment
+        // machinery and must NOT be pulled up onto the previous token's line.
+        if (!precedingContentOnSameLine(tokens.startAt(t))) {
+            return;
+        }
+        var text = tokens.textAt(t).toString().stripTrailing();
+        if (text.indexOf('\n') >= 0) {
+            return;
+        }
+        emit(" " + text);
+        emittedTriviaTokens.add(t);
+    }
+
+    /// Emit any unclaimed single-line block comments living INSIDE `node`'s token span, inline at
+    /// the current position (after the node has rendered). Block comments are self-closing, so this
+    /// cannot corrupt following tokens; it rescues `x /* note */ y` comments that the parser places
+    /// inside a child expression span where the trivia-skipping walk never visits them (bug report
+    /// mechanism E1). No-op for comment-free spans and for comments already emitted by their own
+    /// node's leading-trivia handling (deduped via emittedTriviaTokens).
+    private void flushInSpanBlockComments(Cursor node) {
+        if (measuringMode) {
+            return;
+        }
+        var tokens = node.cst().tokens();
+        for (int t = node.firstTokenIdx(); t <= node.lastTokenIdx(); t++) {
+            if (tokens.isTrivia(t)) {
+                emitInlineBlockComment(tokens, t);
+            }
+        }
+    }
+
+    /// Emit same-line trailing comments that live INSIDE `node`'s own token span (e.g. the comment
+    /// in `arg // note` trailing the last argument before `)`, which the parser places inside the
+    /// argument expression rather than after it). Returns true if a LINE comment was emitted — the
+    /// caller must then break the following delimiter (`,`/`)`) onto a new line so the line comment
+    /// does not swallow it. No-op for comment-free spans.
+    private boolean flushInSpanTrailingComment(Cursor node) {
+        var tokens = node.cst().tokens();
+        boolean lineEmitted = false;
+        for (int t = node.firstTokenIdx(); t <= node.lastTokenIdx(); t++) {
+            if (!tokens.isTrivia(t)) {
+                continue;
+            }
+            int kind = tokens.kindAt(t);
+            boolean wasLine = kind == 1 || kind == 3;
+            if (emitTrailingOrphanComment(tokens, t) && wasLine) {
+                lineEmitted = true;
+            }
+        }
+        return lineEmitted;
+    }
+
+    /// Emit unclaimed own-line comments dangling between the last member and the body's closing
+    /// `}` — i.e. comments that trail the final member of a class/interface/annotation body (bug
+    /// report mechanism E3). Boundaries are computed from the actual tokens, NOT `lastTokenIdx()`,
+    /// which includes trailing trivia attributed PAST the brace (e.g. the next sibling's leading
+    /// comment) and would otherwise both over-reach (pulling a sibling's comment inside this body)
+    /// and under-reach (skipping genuine tail comments absorbed into the member's trailing span).
+    private void emitTrailingBodyComments(Cursor.Branch parent, Cursor lastMember) {
+        if (measuringMode) {
+            return;
+        }
+        var tokens = parent.cst().tokens();
+        // First token after the last member's last NON-trivia token.
+        int afterToken = lastMember.lastTokenIdx();
+        while (afterToken >= lastMember.firstTokenIdx() && tokens.isTrivia(afterToken)) {
+            afterToken--;
+        }
+        afterToken++;
+        // The body's own closing `}` (last non-trivia `}` within the parent span).
+        int close = parent.lastTokenIdx();
+        while (close >= afterToken && (tokens.isTrivia(close) || !"}".contentEquals(tokens.textAt(close)))) {
+            close--;
+        }
+        for (int t = afterToken; t < close; t++) {
+            if (!tokens.isTrivia(t)) {
+                continue;
+            }
+            int kind = tokens.kindAt(t);
+            if (kind < 1 || kind > 4 || emittedTriviaTokens.contains(t)) {
+                continue;
+            }
+            if (currentColumn > 0) {
+                newline();
+            }
+            printIndent();
+            emit(tokens.textAt(t).toString().stripTrailing());
+            newline();
+            emittedTriviaTokens.add(t);
+        }
+    }
+
+    /// Emit unclaimed OWN-LINE comments dangling inside an argument list before its `)` (e.g.
+    /// `f(a,\n // note\n)`), each on its own line aligned to `alignCol`. Returns true if any was
+    /// emitted, so the caller can break the closing `)` onto a new line (bug report mechanism E2).
+    /// Same-line comments are handled by `flushInSpanTrailingComment` / `emitInlineBlockComment`.
+    private boolean emitDanglingOwnLineArgComments(Cursor args, int alignCol) {
+        if (measuringMode) {
+            return false;
+        }
+        var tokens = args.cst().tokens();
+        boolean any = false;
+        for (int t = args.firstTokenIdx(); t <= args.lastTokenIdx(); t++) {
+            if (!tokens.isTrivia(t)) {
+                continue;
+            }
+            int kind = tokens.kindAt(t);
+            if (kind < 1 || kind > 4 || emittedTriviaTokens.contains(t)
+                || precedingContentOnSameLine(tokens.startAt(t))) {
+                continue;
+            }
+            newline();
+            printAlignedTo(alignCol);
+            emit(tokens.textAt(t).toString().stripTrailing());
+            any = true;
+            emittedTriviaTokens.add(t);
+        }
+        return any;
     }
 
     /// True if `node` has any line/block comment in its leading trivia that has NOT yet
@@ -975,12 +1216,14 @@ final class FlowPrinter {
         if (!rules.isEmpty()) {
             newline();
             for (var rule : rules) {
-                printIndent();
                 // Switch case bodies render inline regardless of width — wrap in an
                 // inline-expression scope so chain/additive/etc. break logic stays inline.
                 try (var inlineScope = alignment.enterInlineExpression()) {
-                    printNodeContent(rule);
+                    printOwnLineChildContent(rule);
                 }
+                // Rescue a same-line trailing comment after the arm (e.g. `default -> null; // x`)
+                // before the newline — safe because a newline follows (bug report mechanism E4).
+                flushInSpanTrailingComment(rule);
                 newline();
             }
         }
@@ -1218,7 +1461,23 @@ final class FlowPrinter {
             for (int pi = 0; pi < postOps.size(); pi++) {
                 var postOp = postOps.get(pi);
                 boolean isMethodCall = methodCallSet.contains(postOp);
-                if (isMethodCall && !firstMethodCallPending) {
+                // A leading comment on this post-op forces it onto its own line at the chain
+                // column. Handle positioning here (a single newline to column 0, then let
+                // emitLeadingComments own the indent) and SKIP the normal pre-align below, which
+                // would otherwise stack a spurious blank line ahead of the comment (bug report S5).
+                boolean hasLead = !measuringMode && hasUnEmittedLeadingComment(postOp);
+                if (hasLead) {
+                    if (currentColumn > 0) {
+                        newline();
+                    }
+                    if (isMethodCall && !firstMethodCallPending && scope.lastPostOpWasBrokenArgs()) {
+                        scope.clearBrokenArgsAnchor();
+                    }
+                    int savedForcedIndentCol = forcedIndentCol;
+                    forcedIndentCol = alignColumn;
+                    emitLeadingComments(postOp);
+                    forcedIndentCol = savedForcedIndentCol;
+                } else if (isMethodCall && !firstMethodCallPending) {
                     if (scope.lastPostOpWasBrokenArgs()
                         && countMethodCallsFromIndex(postOps, methodCallSet, pi) >= 2) {
                         // 2+ follow-ups remain after a broken-args invocation: the first
@@ -1419,7 +1678,26 @@ final class FlowPrinter {
         }
     }
 
+    /// True if the node's token range contains a line (`//`) or doc-line (`///`) comment token.
+    /// Token-based (not text-based), so `//` inside a string literal does not trigger it.
+    private boolean hasLineCommentToken(Cursor node) {
+        var tokens = node.cst().tokens();
+        for (int t = node.firstTokenIdx(); t <= node.lastTokenIdx(); t++) {
+            int kind = tokens.kindAt(t);
+            if (kind == 1 || kind == 3) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private boolean hasComplexArguments(Cursor args) {
+        // A line comment anywhere in the argument list cannot be rendered inline (`f(a, b // c)`
+        // would swallow `)` into the comment), so force broken layout — the broken walk then emits
+        // the trailing comment on its argument's line (bug report mechanism B, last-arg trailing).
+        if (hasLineCommentToken(args)) {
+            return true;
+        }
         // Block lambda args that contain line comments are underestimated by measureWidth()
         // (comments are emitted to output, not measureBuffer). Force broken layout when
         // a block lambda body has leading comments — the `//` check is a reliable proxy.
@@ -1505,6 +1783,7 @@ final class FlowPrinter {
     }
 
     private void printBrokenArgsBody(Cursor.Branch args, int alignCol) {
+        boolean[] pendingLineBreak = {false};
         walkTokensWith(args, new TokenWalker() {
             @Override
             public void onChild(Cursor child) {
@@ -1521,6 +1800,11 @@ final class FlowPrinter {
                     } else {
                         printNodeContent(child);
                     }
+                    // Rescue a comment trailing this argument (inside its span) before the next
+                    // delimiter; a line comment forces that delimiter onto a new line.
+                    if (flushInSpanTrailingComment(child)) {
+                        pendingLineBreak[0] = true;
+                    }
                 } else {
                     printNode(child);
                 }
@@ -1529,6 +1813,11 @@ final class FlowPrinter {
             @Override
             public void onToken(int kind, String text) {
                 if (",".equals(text)) {
+                    if (pendingLineBreak[0]) {
+                        newline();
+                        printAlignedTo(alignCol);
+                        pendingLineBreak[0] = false;
+                    }
                     emit(",");
                     newline();
                     printAlignedTo(alignCol);
@@ -1537,6 +1826,14 @@ final class FlowPrinter {
                 }
             }
         });
+        // Last argument carried a trailing line comment, OR own-line comments dangle before `)`:
+        // break so the enclosing `)` (emitted by the post-op after this returns) lands on its own
+        // line instead of being swallowed (bug report mechanisms B last-arg / E2).
+        boolean danglingOwnLine = emitDanglingOwnLineArgComments(args, alignCol);
+        if (pendingLineBreak[0] || danglingOwnLine) {
+            newline();
+            printAlignedTo(Math.max(0, alignCol - 1));
+        }
     }
 
     // ===== Lambda =====
@@ -1688,7 +1985,9 @@ final class FlowPrinter {
         }
 
         int width = measureWidth(components);
-        if (currentColumn + width + 3 <= config.maxLineLength()) {
+        // A line comment between components cannot be inlined — force broken layout so each
+        // component (and its leading comment) lands on its own line (bug report mechanism A).
+        if (!hasLineCommentToken(components) && currentColumn + width + 3 <= config.maxLineLength()) {
             walkTokensWith(components, new TokenWalker() {
                 @Override public void onChild(Cursor c) { printNodeContent(c); }
                 @Override public void onToken(int kind, String text) { emitToken(text); }
@@ -1704,7 +2003,7 @@ final class FlowPrinter {
             @Override
             public void onChild(Cursor child) {
                 if (child.kindIs(RuleKind.RECORD_COMP)) {
-                    printNodeContent(child);
+                    printOwnLineChildContentAligned(child, alignCol);
                 } else {
                     printNode(child);
                 }
@@ -1715,7 +2014,6 @@ final class FlowPrinter {
                 if (",".equals(text)) {
                     emit(",");
                     newline();
-                    printAlignedTo(alignCol);
                 } else {
                     emitToken(text);
                 }
