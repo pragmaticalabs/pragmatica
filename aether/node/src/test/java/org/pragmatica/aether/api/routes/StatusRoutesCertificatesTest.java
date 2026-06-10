@@ -34,8 +34,8 @@ class StatusRoutesCertificatesTest {
 
             assertThat(response.tlsEnabled()).isFalse();
             assertThat(response.renewalStatus()).isEqualTo("NOT_CONFIGURED");
-            assertThat(response.expiresAt()).isEqualTo("N/A");
-            assertThat(response.lastRenewalAt()).isEqualTo("N/A");
+            assertThat(response.expiresAt()).isEqualTo("");
+            assertThat(response.lastRenewalAt()).isEqualTo("");
             assertThat(response.secondsUntilExpiry()).isZero();
         }
 
@@ -54,8 +54,8 @@ class StatusRoutesCertificatesTest {
 
             assertThat(response.tlsEnabled()).isFalse();
             assertThat(response.renewalStatus()).isEqualTo("NOT_CONFIGURED");
-            assertThat(response.expiresAt()).isEqualTo("N/A");
-            assertThat(response.lastRenewalAt()).isEqualTo("N/A");
+            assertThat(response.expiresAt()).isEqualTo("");
+            assertThat(response.lastRenewalAt()).isEqualTo("");
             assertThat(response.secondsUntilExpiry()).isZero();
         }
     }
@@ -70,7 +70,7 @@ class StatusRoutesCertificatesTest {
 
             assertThat(response.tlsEnabled()).isTrue();
             assertThat(response.renewalStatus()).isEqualTo("NOT_CONFIGURED");
-            assertThat(response.expiresAt()).isEqualTo("N/A");
+            assertThat(response.expiresAt()).isEqualTo("");
         }
 
         @Test
