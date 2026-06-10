@@ -54,8 +54,10 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 import org.slf4j.Logger;
@@ -150,6 +152,17 @@ public class RabiaEngine<C extends Command> {
     /// replay of the same config. `none` until the first explicit reconfigure (or the
     /// first quorum activation observed against a known TopologyManager.topology()).
     private final AtomicReference<Option<ClusterConfig>> currentConfig = new AtomicReference<>(Option.none());
+
+    /// Wave-1 §6.4 detect-only boot future-history check (cluster-topology-overhaul spec):
+    /// one-shot gate so the persisted-vs-cluster phase comparison runs exactly once per process,
+    /// at the FIRST sync restore (the moment the node first learns the cluster's reported state).
+    private final AtomicBoolean bootFutureHistoryChecked = new AtomicBoolean(false);
+    /// Listener invoked (persistedPhaseValue, clusterReportedPhaseValue) when the §6.4
+    /// future-history hazard is detected — this node's persisted Rabia phase EXCEEDS what the
+    /// joined cluster reports (mixed-wipe / `down -v` hazard). Detect-only: the engine logs WARN
+    /// and notifies; recovery design is explicitly deferred (RC2). Default no-op; AetherNode
+    /// wires the per-node transition journal.
+    private volatile BiConsumer<Long, Long> onBootFutureHistory = (persisted, cluster) -> {};
 
     //--------------------------------- Node State End
     /// Creates a new Rabia consensus engine without metrics or activation gating.
@@ -880,6 +893,7 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void restoreState(SavedState<C> state) {
+        detectBootFutureHistory(state);
         syncResponses.clear();
         // Always carry forward the source's lastCommittedPhase + pendingBatches even when
         // the state-machine snapshot is empty. V0 decisions advance phase without touching
@@ -894,6 +908,47 @@ public class RabiaEngine<C extends Command> {
                     .onSuccess(_ -> applyRestoredState(state))
                     .onSuccessRun(this::activate)
                     .onFailure(cause -> log.error("Node {} failed to restore state: {}", self, cause));
+    }
+
+    /// Wave-1 §6.4 boot-time future-history sanity check (DETECT-ONLY, ratified D9). Runs ONCE
+    /// per process, at the first sync restore — the moment this node first learns the cluster's
+    /// reported Rabia phase (`candidate.lastCommittedPhase()`, the max among the quorum of sync
+    /// responses). Compares it against this node's OWN persisted phase (`persistence.load()`).
+    /// Persisted phase EXCEEDING the cluster-reported phase means "I have a future this cluster
+    /// never saw" — the mixed-wipe / `down -v` hazard. Emits WARN + notifies the
+    /// [#onBootFutureHistory] listener (journal feed); changes NO control flow — restore
+    /// proceeds exactly as before. Rabia is leaderless: the phase counter is the log index and
+    /// there is no separate persisted term, so the phase pair is precisely what is comparable.
+    /// With the in-memory persistence (no snapshot survives restart) `load()` is empty and the
+    /// check is trivially silent.
+    @Contract
+    private void detectBootFutureHistory(SavedState<C> candidate) {
+        if (!bootFutureHistoryChecked.compareAndSet(false, true)) {
+            return;
+        }
+        persistence.load()
+                   .map(SavedState::lastCommittedPhase)
+                   .filter(persisted -> persisted.compareTo(candidate.lastCommittedPhase()) > 0)
+                   .onPresent(persisted -> warnBootFutureHistory(persisted, candidate.lastCommittedPhase()));
+    }
+
+    @Contract
+    private void warnBootFutureHistory(Phase persisted, Phase clusterReported) {
+        log.warn("Node {} BOOT FUTURE-HISTORY detected (§6.4, detect-only): persisted Rabia phase {} exceeds "
+                 + "cluster-reported sync phase {} — this node carries history the joined cluster never saw "
+                 + "(mixed-wipe / down -v hazard). Recovery is NOT attempted (RC2).",
+                 self, persisted, clusterReported);
+        onBootFutureHistory.accept(persisted.value(), clusterReported.value());
+    }
+
+    /// Install the Wave-1 §6.4 boot future-history listener (invoked with
+    /// `(persistedPhaseValue, clusterReportedPhaseValue)` when [#detectBootFutureHistory] trips).
+    /// Diagnostic-only; default no-op. A `null` argument resets to the no-op.
+    @Contract
+    public void onBootFutureHistory(BiConsumer<Long, Long> listener) {
+        this.onBootFutureHistory = listener == null
+                                   ? (persisted, cluster) -> {}
+                                   : listener;
     }
 
     private void applyRestoredState(SavedState<C> state) {

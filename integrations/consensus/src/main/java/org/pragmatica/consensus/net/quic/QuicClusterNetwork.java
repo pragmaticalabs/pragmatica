@@ -28,6 +28,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -203,6 +204,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// bookkeeping aligned with the transport's view. Defaults to no-op so consensus-
     /// only fixtures and unit tests do not need to wire this.
     private volatile QuicPeerStateListener peerStateListener = QuicPeerStateListener.noop();
+    /// Wave-1 transition journal feed (Enrichment A). Forwarded into every [PeerState] this
+    /// network creates (via a volatile-reading indirection, so late wiring reaches peers created
+    /// earlier) and fed directly with the dialer expected-vs-actual Hello diagnostic
+    /// ([#journalDialerHello]). Diagnostic-only; defaults to a no-op.
+    private volatile Consumer<PeerTransitionRecord> peerTransitionListener = ignored -> {};
 
     /// Leader-gate supplier. When `false`, REMOVE view-changes report a
     /// connectivity observation upstream via `PeerConnectivityReporter`
@@ -418,6 +424,18 @@ public class QuicClusterNetwork implements ClusterNetwork {
         this.peerStateListener = listener == null
                                 ? QuicPeerStateListener.noop()
                                 : listener;
+    }
+
+    /// Wave-1 transition journal feed (Enrichment A): attach the per-peer transition listener
+    /// post-construction (same late-wiring shape as [#setPeerStateListener]). Receives one
+    /// [PeerTransitionRecord] per [PeerState] phase mutation and per dialer expected-vs-actual
+    /// Hello completion. Diagnostic-only — installing or invoking it changes no control flow.
+    /// A `null` argument resets the listener to the no-op.
+    @Override
+    @Contract public void setPeerTransitionListener(Consumer<PeerTransitionRecord> listener) {
+        this.peerTransitionListener = listener == null
+                                     ? ignored -> {}
+                                     : listener;
     }
 
     @Override
@@ -786,7 +804,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     // --- Internal: peer state lookup ---
 
     private PeerState getOrCreatePeer(NodeId peerId) {
-        return peers.computeIfAbsent(peerId, id -> PeerState.peerState(id, System.nanoTime()));
+        // The transition listener is read through the volatile field at EACH invocation, so
+        // wiring installed after a PeerState was created still observes its transitions.
+        return peers.computeIfAbsent(peerId, id -> PeerState.peerState(id,
+                                                                       System.nanoTime(),
+                                                                       record -> peerTransitionListener.accept(record)));
     }
 
     // --- Internal: peer connection lifecycle ---
@@ -850,8 +872,38 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // CONNECTING → EVICTED), instead of relying solely on the reconciler staleness sweep.
         client.connect(peerId, address)
               .timeout(connectTimeout())
-              .onSuccess(conn -> onPeerConnected(conn, peer.role(), peer.address(), peer.labels()))
+              .onSuccess(conn -> onDialCompleted(peer, conn))
               .onFailure(cause -> onConnectFailed(peer, cause));
+    }
+
+    /// Dial-success continuation. Journals the Wave-1 §6.1 dialer expected-vs-actual identity
+    /// diagnostic (the connection is keyed by the Hello sender's claimed identity, which may
+    /// differ from the dialed NodeId after a DNS re-resolution lands on whatever answers), then
+    /// delegates to the unchanged attach path. Log/journal-only — a mismatch is NOT rejected
+    /// here (the identity check itself is Wave 3).
+    private void onDialCompleted(NodeInfo dialed, QuicPeerConnection connection) {
+        journalDialerHello(dialed, connection);
+        onPeerConnected(connection, dialed.role(), dialed.address(), dialed.labels());
+    }
+
+    /// Feed the PEER transition journal with the completed outbound handshake identity
+    /// observation (`cause = dialer-hello …`, `from == to` — no phase mutation here). A
+    /// mismatched claimed identity is additionally logged at WARN (log-only, Wave-1 diagnostic).
+    @Contract
+    private void journalDialerHello(NodeInfo dialed, QuicPeerConnection connection) {
+        var actual = connection.peerId();
+        if (!dialed.id().equals(actual)) {
+            log.warn("QUIC dialer identity mismatch (Wave-1 §6.1 diagnostic, log-only): dialed={} helloSender={} dialAddress={}",
+                     dialed.id(), actual, dialed.resolvedAddress().asString());
+        }
+        var phase = getOrCreatePeer(dialed.id()).phase();
+        peerTransitionListener.accept(new PeerTransitionRecord(dialed.id(),
+                                                               phase,
+                                                               phase,
+                                                               "dialer-hello expected=" + dialed.id().id()
+                                                               + " actual=" + actual.id()
+                                                               + " addr=" + dialed.resolvedAddress().asString(),
+                                                               System.currentTimeMillis()));
     }
 
     /// Per-dial connect timeout: a safe multiple of the QUIC hello/handshake timeout (same factor

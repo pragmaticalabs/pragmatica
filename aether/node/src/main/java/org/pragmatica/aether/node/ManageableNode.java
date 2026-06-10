@@ -12,6 +12,7 @@ import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.node.journal.TransitionJournal;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.lang.Functions.Fn1;
@@ -72,6 +73,13 @@ public interface ManageableNode {
     /// routes can read live membership (members/health/quiescence) directly, replacing reads
     /// of the generation snapshot. Additive accessor; snapshot accessors remain until a later wave.
     MembershipFsm membershipFsm();
+    /// Wave-1 Enrichment A (cluster-topology-overhaul spec) — exposes the per-node transition
+    /// journal (every `MembershipFsm` + `PeerState` transition, bounded ring buffer per layer)
+    /// so `GET /api/cluster/journal` can dump it. Diagnostic-only. Default inert journal keeps
+    /// test proxies compiling; the production node record supplies the live instance.
+    default TransitionJournal transitionJournal() {
+        return TransitionJournal.inert();
+    }
     /// #114 — the node's CURRENT generation epoch. On the leader this is the locally-minted
     /// epoch (`leaderTerm`:`generationCounter`); on followers it is the observed ping epoch.
     /// The leader never receives its own pings, so its `metricsCollector().observedEpoch()`

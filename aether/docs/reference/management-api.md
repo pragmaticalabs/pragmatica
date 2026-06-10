@@ -1958,6 +1958,8 @@ Get live cluster topology with per-node details. Returns core/passive/worker cou
 
 When a cluster generation snapshot is available the `coreCount` field is derived from the snapshot's `ON_DUTY`+`HEALTHY` core members, and the response additionally carries the current `epoch` string (`"rabiaTerm:localCounter"`). When no snapshot is available yet, `coreCount` falls back to `topologyManager.healthyActiveNodeCount()` and the `epoch` field is omitted.
 
+The `fsmMembers` array (Wave-1 diagnostic extension, cluster-topology-overhaul spec item 6) exposes the queried node's authoritative per-member `MembershipFsm` truth: lifecycle state (`Observed` / `Member` / `Suspect` / `Departing` / `Dead`), the SWIM incarnation high-water mark, and the last-known descriptor `role` / `source` labels. DEAD members are included (retained for incarnation-fenced rejoin), so a remote run reads membership truth without `docker logs`.
+
 **Response:**
 ```json
 {
@@ -1986,9 +1988,69 @@ When a cluster generation snapshot is available the `coreCount` field is derived
       "address": "0.0.0.0:7000"
     }
   ],
-  "epoch": "7:142"
+  "epoch": "7:142",
+  "fsmMembers": [
+    {
+      "nodeId": "node-1",
+      "fsmState": "Member",
+      "incarnation": 3,
+      "role": "core",
+      "source": "docker"
+    },
+    {
+      "nodeId": "node-9",
+      "fsmState": "Dead",
+      "incarnation": 1,
+      "role": "core",
+      "source": "docker"
+    }
+  ]
 }
 ```
+
+### GET /api/cluster/journal
+
+Dump the queried node's transition journal (cluster-topology-overhaul spec, Wave 1 Enrichment A) — a bounded, in-memory, per-node ring buffer recording **every membership-FSM transition** (layer `FSM`) and **every transport peer-lifecycle transition** (layer `PEER`), plus the dialer expected-vs-actual Hello diagnostic (`cause` prefixed `dialer-hello`) and the boot future-history detection (`cause: boot-future-history`). Local route (each node serves its own journal); read-only; pure observability — not consensus, not KV, lost on restart. Capacity defaults to 4096 entries per layer (override with the `aether.journal.capacityPerLayer` system property).
+
+**Query parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `layer` | `fsm` or `peer`; omitted returns both layers merged in sequence order |
+| `limit` | Maximum entries per layer, newest kept (default `256`) |
+
+**Response:**
+```json
+{
+  "count": 2,
+  "entries": [
+    {
+      "seq": 17,
+      "wallClockMs": 1765432100123,
+      "layer": "FSM",
+      "nodeId": "node-3",
+      "from": "Suspect",
+      "to": "Dead",
+      "cause": "Stopped",
+      "incarnation": 2,
+      "role": "core"
+    },
+    {
+      "seq": 18,
+      "wallClockMs": 1765432100456,
+      "layer": "PEER",
+      "nodeId": "node-3",
+      "from": "CONNECTED",
+      "to": "REMOVED",
+      "cause": "authoritative-remove",
+      "incarnation": -1,
+      "role": ""
+    }
+  ]
+}
+```
+
+Errors: `layer` values other than `fsm` / `peer` are rejected.
 
 ### GET /api/cluster/generation
 

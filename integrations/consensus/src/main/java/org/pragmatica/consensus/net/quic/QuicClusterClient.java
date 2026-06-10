@@ -534,6 +534,11 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             return deserializer.decode(bytes);
         }
         private void completePeerConnection(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
+            // Wave-1 §6.1 dialer expected-vs-actual diagnostic (log-only — the identity check is
+            // Wave 3): record the dialed identity vs the Hello sender's claimed identity vs the
+            // address the dial actually resolved to, on EVERY completed outbound handshake.
+            log.info("QUIC dialer Hello identity: dialed={} helloSender={} resolvedAddress={}",
+                     peerId, hello.sender(), quicChannel.remoteSocketAddress());
             var peerConnection = quicPeerConnection(hello.sender(), quicChannel);
             // The handshake stream is the CONTROL lane.
             peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());

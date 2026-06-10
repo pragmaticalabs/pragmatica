@@ -110,6 +110,15 @@ public final class SwimProtocol implements SwimMessageHandler {
     private final Map<Long, PendingProbe> pendingProbes = new ConcurrentHashMap<>();
     private final Map<Long, RelayInfo> pendingRelays = new ConcurrentHashMap<>();
     private final Map<NodeId, Long> suspectTimestamps = new ConcurrentHashMap<>();
+    /// Wave-1 H8/§6.6 FAULTY-residency diagnostic (cluster-topology-overhaul spec): wall-clock
+    /// stamp (epoch ms) of each member's most recent FAULTY edge ([#transitionToFaulty]).
+    /// Read+removed by [#logFaultyResidency] when [#cleanupFaultyMembers] sweeps the member, so
+    /// the logged interval measures FAULTY-edge → sweep residency INDEPENDENTLY of
+    /// `suspectTimestamps` (whose entry [#expireSuspectIfOverdue] removes right after the FAULTY
+    /// transition — the suspected same-tick-sweep defeat this instrumentation exists to confirm
+    /// or refute). Diagnostic-only parallel map: never read by any protocol decision. Cleared in
+    /// [#clearDeathMemory] alongside the other per-peer death memory.
+    private final Map<NodeId, Long> faultyStampedAtMs = new ConcurrentHashMap<>();
     /// Per-member first-sighting timestamp (epoch millis), stamped `putIfAbsent` when a
     /// member is first introduced ([#addSeedMember] / [#applyNewMember]). Drives the
     /// NORMAL-phase JOIN-GRACE window ([#withinJoinGrace]): a never-HEALTHY member still
@@ -486,6 +495,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         while (iterator.hasNext()) {
             var entry = iterator.next();
             if (isFaultyAndExpired(entry, now, cleanupThreshold)) {
+                logFaultyResidency(entry.getKey(), now, cleanupThreshold);
                 iterator.remove();
                 tombstoneIfWasHealthy(entry.getKey(), entry.getValue().incarnation(), now);
                 clearDeathMemory(entry.getKey());
@@ -494,6 +504,25 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
 
         sweepExpiredTombstones(now);
+    }
+
+    /// Wave-1 H8/§6.6 FAULTY-residency diagnostic (log-only, cluster-topology-overhaul spec):
+    /// on each FAULTY-member sweep, log the measured interval between the member's last FAULTY
+    /// edge ([#transitionToFaulty] stamp in [#faultyStampedAtMs]) and this removal, alongside the
+    /// designed residency window (`suspectTimeout × 3`) and whether a `suspectTimestamps` entry
+    /// was still present at sweep time. A measured interval far below the designed window with
+    /// `suspectStampPresent=false` is the empirical confirmation of the H8 same-tick-sweep
+    /// defeat (`expireSuspectIfOverdue` removed the stamp `transitionToFaulty` just wrote, so
+    /// [#isFaultyAndExpired] falls into its "no timestamp → remove" branch). Decision whether
+    /// to change the behaviour is Wave 6 — this method only measures. MUST run BEFORE
+    /// [#clearDeathMemory] (which erases the `suspectTimestamps` entry this reads).
+    private void logFaultyResidency(NodeId peer, long now, long designedResidencyMs) {
+        var suspectStampPresent = suspectTimestamps.containsKey(peer);
+        option(faultyStampedAtMs.remove(peer))
+            .onPresent(stampedAt -> LOG.info(
+                "SWIM FAULTY-residency (Wave-1 H8/§6.6 diagnostic): member {} swept {} ms after its FAULTY edge "
+                + "(designed residency window {} ms, suspectTimestamps entry present at sweep: {})",
+                peer.id(), now - stampedAt, designedResidencyMs, suspectStampPresent));
     }
 
     /// Sweep-time tombstone backstop. The PRIMARY tombstone is set at the FAULTY edge
@@ -620,6 +649,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         suspectTimestamps.remove(peer);
         memberFirstSeenAt.remove(peer);
         lastProbedAt.remove(peer);
+        faultyStampedAtMs.remove(peer);
     }
 
     /// Whether `peer` is still within its per-member NORMAL-phase JOIN-GRACE window:
@@ -676,6 +706,10 @@ public final class SwimProtocol implements SwimMessageHandler {
         var faulty = member.withState(MemberState.FAULTY);
         members.put(member.nodeId(), faulty);
         suspectTimestamps.put(member.nodeId(), System.currentTimeMillis());
+        // Wave-1 H8/§6.6 diagnostic: stamp the FAULTY edge in the parallel residency map (the
+        // suspectTimestamps stamp above is removed by expireSuspectIfOverdue right after this
+        // method returns — exactly the suspected residency-window defeat under measurement).
+        faultyStampedAtMs.put(member.nodeId(), System.currentTimeMillis());
         tombstoneOnFaultyEdge(member.nodeId(), faulty.incarnation());
         listener.onMemberFaulty(faulty);
         addMemberUpdate(faulty);

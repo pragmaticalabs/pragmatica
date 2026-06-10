@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.function.LongUnaryOperator;
 
 import org.pragmatica.consensus.NodeId;
@@ -123,6 +124,13 @@ public final class PeerState {
     public record AttachOutcome(AttachResult result, Option<QuicPeerConnection> superseded) {}
 
     private final NodeId peerId;
+    /// Wave-1 transition journal feed (Enrichment A): invoked with a [PeerTransitionRecord] on
+    /// EVERY phase mutation (and on the CONNECTED→CONNECTED connection-replacement events in
+    /// [#attachOverConnected], where the phase value does not change but the link does). Pure
+    /// diagnostic — the default no-op makes journaling opt-in at wiring time and the invocation
+    /// has no control-flow effect. Called while holding the per-peer monitor; implementations
+    /// must be cheap and non-blocking (the journal ring-buffer append is).
+    private final Consumer<PeerTransitionRecord> transitionListener;
     private Phase phase = Phase.INIT;
     private QuicPeerConnection connection;
     private long phaseChangedAtNanos;
@@ -151,13 +159,22 @@ public final class PeerState {
     /// successful attach.
     private long reconcileCurrentDelayMs;
 
-    private PeerState(NodeId peerId, long nowNanos) {
+    private PeerState(NodeId peerId, long nowNanos, Consumer<PeerTransitionRecord> transitionListener) {
         this.peerId = peerId;
         this.phaseChangedAtNanos = nowNanos;
+        this.transitionListener = transitionListener;
     }
 
     public static PeerState peerState(NodeId peerId, long nowNanos) {
-        return new PeerState(peerId, nowNanos);
+        return new PeerState(peerId, nowNanos, ignored -> {});
+    }
+
+    /// Factory with a Wave-1 transition-journal listener. The listener receives a
+    /// [PeerTransitionRecord] on every phase mutation; it must be cheap and non-blocking
+    /// (invoked under the per-peer monitor). Diagnostic-only — no behavioural difference
+    /// from [#peerState(NodeId,long)] beyond the notification.
+    public static PeerState peerState(NodeId peerId, long nowNanos, Consumer<PeerTransitionRecord> transitionListener) {
+        return new PeerState(peerId, nowNanos, transitionListener);
     }
 
     public NodeId peerId() {
@@ -208,7 +225,7 @@ public final class PeerState {
     public synchronized boolean beginConnecting(long nowNanos) {
         return switch (phase) {
             case INIT, EVICTED -> {
-                changePhase(Phase.CONNECTING, nowNanos);
+                changePhase(Phase.CONNECTING, nowNanos, "begin-connecting");
                 yield true;
             }
             case CONNECTING, CONNECTED, REMOVED -> false;
@@ -228,14 +245,14 @@ public final class PeerState {
                 // Reconnect after eviction — peer never left topology, suppress duplicate ADD.
                 this.connection = newConnection;
                 this.lastInboundAtNanos = nowNanos;
-                changePhase(Phase.CONNECTED, nowNanos);
+                changePhase(Phase.CONNECTED, nowNanos, "attach-reconnected");
                 yield new AttachOutcome(AttachResult.RECONNECTED, Option.empty());
             }
             case INIT, CONNECTING -> {
                 // First-time accept (no prior CONNECTED link).
                 this.connection = newConnection;
                 this.lastInboundAtNanos = nowNanos;
-                changePhase(Phase.CONNECTED, nowNanos);
+                changePhase(Phase.CONNECTED, nowNanos, "attach-accepted");
                 yield new AttachOutcome(AttachResult.ACCEPTED, Option.empty());
             }
         };
@@ -260,12 +277,14 @@ public final class PeerState {
             this.connection = newConnection;
             this.lastInboundAtNanos = nowNanos;
             this.phaseChangedAtNanos = nowNanos;
+            notifyTransition(Phase.CONNECTED, Phase.CONNECTED, "attach-supersede");
             return new AttachOutcome(AttachResult.RECONNECTED, option(superseded));
         }
         // Stale CONNECTED link replaced — peer is already known upstream.
         this.connection = newConnection;
         this.lastInboundAtNanos = nowNanos;
         this.phaseChangedAtNanos = nowNanos;
+        notifyTransition(Phase.CONNECTED, Phase.CONNECTED, "attach-stale-replace");
         return new AttachOutcome(AttachResult.RECONNECTED, Option.empty());
     }
 
@@ -277,7 +296,7 @@ public final class PeerState {
         }
         var evicted = connection;
         this.connection = null;
-        changePhase(Phase.EVICTED, nowNanos);
+        changePhase(Phase.EVICTED, nowNanos, "evict");
         return option(evicted);
     }
 
@@ -294,7 +313,7 @@ public final class PeerState {
             return false;
         }
         this.connection = null;
-        changePhase(Phase.EVICTED, nowNanos);
+        changePhase(Phase.EVICTED, nowNanos, "evict-stale-connecting");
         return true;
     }
 
@@ -306,7 +325,7 @@ public final class PeerState {
         var dropped = connection;
         this.connection = null;
         offlineBuffer.clear();
-        changePhase(Phase.REMOVED, nowNanos);
+        changePhase(Phase.REMOVED, nowNanos, "authoritative-remove");
         return option(dropped);
     }
 
@@ -321,7 +340,7 @@ public final class PeerState {
         if (phase != Phase.REMOVED) {
             return false;
         }
-        changePhase(Phase.INIT, nowNanos);
+        changePhase(Phase.INIT, nowNanos, "readmit");
         return true;
     }
 
@@ -399,8 +418,16 @@ public final class PeerState {
         return reconcileCurrentDelayMs;
     }
 
-    private void changePhase(Phase next, long nowNanos) {
+    private void changePhase(Phase next, long nowNanos, String cause) {
+        var from = this.phase;
         this.phase = next;
         this.phaseChangedAtNanos = nowNanos;
+        notifyTransition(from, next, cause);
+    }
+
+    /// Wave-1 journal feed: emit one [PeerTransitionRecord] for this mutation. Invoked under
+    /// the per-peer monitor from every phase-mutation point (single emission per mutation).
+    private void notifyTransition(Phase from, Phase to, String cause) {
+        transitionListener.accept(new PeerTransitionRecord(peerId, from, to, cause, System.currentTimeMillis()));
     }
 }

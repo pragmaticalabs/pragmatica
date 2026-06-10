@@ -19,6 +19,7 @@ package org.pragmatica.consensus.net;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.net.quic.PeerTransitionRecord;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -28,6 +29,7 @@ import org.pragmatica.net.tcp.Server;
 import java.util.Map;
 import java.util.Set;
 import java.util.Collection;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -74,6 +76,14 @@ public interface ClusterNetwork {
     /// membership/health dial gates (the set already encodes them). Default no-op: transports
     /// without a reconciler keep the legacy topology-driven behaviour.
     default void setDesiredConnections(Supplier<Collection<NodeInfo>> supplier) {}
+
+    /// Wave-1 transition journal feed (cluster-topology-overhaul spec, Enrichment A): install a
+    /// listener invoked with one [org.pragmatica.consensus.net.quic.PeerTransitionRecord] per
+    /// peer-lifecycle phase mutation (and per dialer expected-vs-actual Hello diagnostic).
+    /// Diagnostic-only — emitting has no control-flow effect. Default no-op: transports without
+    /// per-peer phase machines (or without journal wiring) are unaffected. A `null` argument
+    /// resets to the no-op.
+    default void setPeerTransitionListener(Consumer<PeerTransitionRecord> listener) {}
 
     /// Register a callback fired once the transport is bound and ready to dial/accept
     /// connections — i.e. transport-ready, NOT consensus-quorum-ready. If the transport is

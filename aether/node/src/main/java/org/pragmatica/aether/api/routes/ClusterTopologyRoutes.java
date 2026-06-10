@@ -8,10 +8,13 @@ import org.pragmatica.aether.api.ManagementApiResponses.AutoHealStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.AutoHealToggleResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.CircuitBreakerResetResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.CircuitBreakerStatusResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.FsmMemberDetail;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.TopologyNodeDetail;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
@@ -35,6 +38,7 @@ import org.pragmatica.lang.Promise;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -164,7 +168,37 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                                  connectedPeers.size(),
                                                  nodeDetails,
                                                  epoch,
-                                                 topologyMode(topologyManager));
+                                                 topologyMode(topologyManager),
+                                                 buildFsmMembers(node.membershipFsm()));
+    }
+
+    /// Wave-1 item 6 (cluster-topology-overhaul spec): per-member FSM truth — lifecycle state,
+    /// incarnation high-water mark, descriptor role/source — read straight off the node's
+    /// authoritative `MembershipFsm` snapshots (`memberStates` / `memberIncarnations` /
+    /// `memberDescriptors`). Includes DEAD members (retained for incarnation-fenced rejoin),
+    /// so a remote run sees the full membership picture without `docker logs`.
+    private static List<FsmMemberDetail> buildFsmMembers(MembershipFsm membershipFsm) {
+        var incarnations = membershipFsm.memberIncarnations();
+        var descriptors = membershipFsm.memberDescriptors();
+
+        return membershipFsm.memberStates()
+                            .entrySet()
+                            .stream()
+                            .map(entry -> toFsmMemberDetail(entry.getKey(), entry.getValue(), incarnations, descriptors))
+                            .toList();
+    }
+
+    private static FsmMemberDetail toFsmMemberDetail(NodeId id,
+                                                     String fsmState,
+                                                     Map<NodeId, Long> incarnations,
+                                                     Map<NodeId, MemberDescriptor> descriptors) {
+        var descriptor = descriptors.getOrDefault(id, MemberDescriptor.UNKNOWN);
+
+        return new FsmMemberDetail(id.id(),
+                                   fsmState,
+                                   incarnations.getOrDefault(id, 0L),
+                                   descriptor.role(),
+                                   descriptor.source());
     }
 
     /// §6 D1 slot-derived headcount. Counts provisioning slots whose occupant is

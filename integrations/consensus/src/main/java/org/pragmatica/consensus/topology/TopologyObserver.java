@@ -135,6 +135,17 @@ public interface TopologyObserver extends TopologyManager {
         return () -> true;
     }
 
+    /// Wave-1 #245 baseline diagnostic (cluster-topology-overhaul spec, item 3): read-only
+    /// snapshot of the membership-delta baseline (`previousCoreMembers`) the observer diffs
+    /// against in `publishCoreMembershipDelta`. Diagnostic-only — exposes the set so the
+    /// periodic baseline trace can compare it with `MembershipFsm.coreMembers()` and
+    /// `PresenceSampler.currentMembers()` and prove the baseline gap empirically before
+    /// Wave 4 fixes it. Default empty for legacy / test-only stubs; the production observer
+    /// overrides with the live (immutable) set.
+    default Set<NodeId> previousCoreMembersSnapshot() {
+        return Set.of();
+    }
+
     /// Default predicate used when no KV-backed lifecycle reader is wired (tests and
     /// legacy call sites). Preserves pre-rc1 behaviour: nothing is treated as
     /// DECOMMISSIONED, so `initReconcile` reseeds every `config.coreNodes()` entry.
@@ -511,6 +522,14 @@ public interface TopologyObserver extends TopologyManager {
             @Override
             public TopologyMode topologyMode() {
                 return mode.get();
+            }
+
+            @Override
+            public Set<NodeId> previousCoreMembersSnapshot() {
+                // Wave-1 #245 baseline diagnostic: pure read — the AtomicReference always holds
+                // an immutable set (initialized Set.of(); replaced via Set.copyOf in the delta
+                // publisher), so it is returned as-is without copying.
+                return previousCoreMembers.get();
             }
 
             @Override

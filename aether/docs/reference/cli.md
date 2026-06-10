@@ -1725,6 +1725,36 @@ Show the per-slice governor assignment across the cluster — which node current
 aether cluster governors
 ```
 
+### `aether cluster journal`
+
+Dump the target node's transition journal (cluster-topology-overhaul spec, Wave 1) — a bounded per-node ring buffer recording every membership-FSM transition (layer `FSM`) and every transport peer-lifecycle transition (layer `PEER`), plus the dialer expected-vs-actual Hello diagnostic and the boot future-history detection. Wraps `GET /api/cluster/journal`.
+
+**Per-node scope:** the journal is local to the node serving the request — target a specific node (`-c <host>`) to read its view (e.g. the leader's view AND the victim's view during a chaos window).
+
+```bash
+# Both layers, most recent 256 entries per layer
+aether cluster journal
+
+# Only membership-FSM transitions
+aether cluster journal --layer fsm
+
+# Only transport peer-lifecycle transitions, last 50 entries
+aether cluster journal --layer peer --limit 50
+```
+
+| Option | Description |
+|--------|-------------|
+| `--layer` | Journal layer to dump: `fsm` or `peer` (default: both, merged in sequence order) |
+| `--limit` | Maximum number of entries per layer, newest kept (default: 256) |
+| `--format` | Output format: `table` (default), `json`, `value`, `csv` |
+
+Example output (table):
+```
+# SEQ      TIME(MS)       LAYER  NODE              FROM            TO              CAUSE                             INC    ROLE
+# 17       1765432100123  FSM    node-3            Suspect         Dead            Stopped                           2      core
+# 18       1765432100456  PEER   node-3            CONNECTED       REMOVED         authoritative-remove              -1
+```
+
 ### `aether cluster audit`
 
 **Phase 3 PR-C (lifecycle reconciler):** show recent `audit.lifecycle.commands` events seen by the target node. Backed by the per-node in-memory `RecentCommandsBuffer` populated via a tee on the lifecycle audit publisher.

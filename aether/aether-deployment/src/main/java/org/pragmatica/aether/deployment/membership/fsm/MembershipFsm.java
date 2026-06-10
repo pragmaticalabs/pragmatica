@@ -144,6 +144,14 @@ public final class MembershipFsm {
     /// time the link out. Reset to the no-op by passing `null` to [`#onConfirmedDeparture`].
     private volatile Consumer<NodeId> onConfirmedDeparture = ignored -> {};
 
+    /// Wave-1 transition journal feed (cluster-topology-overhaul spec, Enrichment A): invoked
+    /// with one [MembershipTransitionRecord] per ACTUAL per-member state change (dispatches that
+    /// leave the state unchanged emit nothing), from the SAME central chokepoint
+    /// ([`MemberTracking#dispatch`]) that detects the DEAD edge. Diagnostic-only — the default
+    /// no-op keeps journaling opt-in at wiring time and emission has no control-flow effect.
+    /// Reset to the no-op by passing `null` to [#onTransition].
+    private volatile Consumer<MembershipTransitionRecord> onTransition = ignored -> {};
+
     /// Terminal-eviction backstop window (#131 Model C). When BOTH death planes confirm
     /// (`swimFaulty ∧ livenessGone`) the member is NO LONGER marched straight to DEAD; instead a
     /// per-member backstop timer is armed for this window and the member stays SUSPECT (counted,
@@ -245,6 +253,25 @@ public final class MembershipFsm {
         this.onConfirmedDeparture = listener == null
                                     ? ignored -> {}
                                     : listener;
+    }
+
+    /// Register the Wave-1 transition-journal listener invoked once per ACTUAL per-member state
+    /// change, at the central dispatch chokepoint. The listener is called under the per-member
+    /// monitor — implementations must be cheap and non-blocking (the journal ring-buffer append
+    /// is). Diagnostic-only; a `null` argument resets it to the no-op.
+    @Contract
+    public void onTransition(Consumer<MembershipTransitionRecord> listener) {
+        this.onTransition = listener == null
+                            ? ignored -> {}
+                            : listener;
+    }
+
+    /// Forwarding sink handed to each [`MemberTracking`] — reads the volatile listener at EACH
+    /// invocation, so wiring installed after a member's tracking was created still observes its
+    /// transitions.
+    @Contract
+    private void emitTransition(MembershipTransitionRecord record) {
+        onTransition.accept(record);
     }
 
     // --- Boot seed ---
@@ -442,6 +469,18 @@ public final class MembershipFsm {
         return snapshot;
     }
 
+    /// Wave-1 diagnostic snapshot (cluster-topology-overhaul spec, item 6): each tracked
+    /// member's SWIM-incarnation high-water mark ([`MembershipContext#lastSeenIncarnation`]).
+    /// Insertion-ordered, matching [`#memberStates`] / [`#memberDescriptors`]; includes DEAD
+    /// members (their terminal incarnation stays queryable). Pure read.
+    public Map<NodeId, Long> memberIncarnations() {
+        var snapshot = new LinkedHashMap<NodeId, Long>();
+
+        members.forEach((id, tracking) -> snapshot.put(id, tracking.incarnation()));
+
+        return snapshot;
+    }
+
     // --- Projections (desired connection-set for the transport executor) ---
     /// The core membership set the transport executor should keep mesh-connected: counted members
     /// (MEMBER + SUSPECT) that are NOT explicitly role=worker. An unknown / absent role counts as
@@ -611,7 +650,7 @@ public final class MembershipFsm {
     private MemberTracking newTracking(NodeId id) {
         var fsm = Fsm.fsm(FSM_KIND, id.id(), initialStateFactory(id), observer);
 
-        return new MemberTracking(id, fsm, this::onEnteredDead);
+        return new MemberTracking(id, fsm, this::onEnteredDead, this::emitTransition);
     }
 
     /// Explicitly-typed initial-state factory so the [`Fsm#fsm`] constructor-driven overload is
@@ -630,6 +669,9 @@ public final class MembershipFsm {
         private final NodeId id;
         private final Fsm<MembershipState, MembershipEvent> fsm;
         private final Consumer<NodeId> onEnteredDead;
+        /// Wave-1 transition journal sink — receives one [`MembershipTransitionRecord`] per
+        /// ACTUAL state change from [`#dispatch`]. Diagnostic-only (default no-op upstream).
+        private final Consumer<MembershipTransitionRecord> transitionSink;
         private int healthyStreak = 0;
         private boolean swimFaultySeen = false;
         private boolean livenessGoneSeen = false;
@@ -642,20 +684,39 @@ public final class MembershipFsm {
         /// ([`#dispatch`]).
         private Option<ScheduledFuture<?>> evictionBackstopHandle = Option.none();
 
-        private MemberTracking(NodeId id, Fsm<MembershipState, MembershipEvent> fsm, Consumer<NodeId> onEnteredDead) {
+        private MemberTracking(NodeId id,
+                               Fsm<MembershipState, MembershipEvent> fsm,
+                               Consumer<NodeId> onEnteredDead,
+                               Consumer<MembershipTransitionRecord> transitionSink) {
             this.id = id;
             this.fsm = fsm;
             this.onEnteredDead = onEnteredDead;
+            this.transitionSink = transitionSink;
         }
 
         /// Dispatch `event` to the FSM and, on a FRESH edge into DEAD (was not Dead before, is Dead
         /// after), fire the eviction hook exactly once. Centralized here so ALL DEAD paths (co-confirmed
         /// death, graceful departure, join-grace expiry) are covered uniformly without per-ingress
-        /// scattering.
+        /// scattering. Wave-1 Enrichment A: this same single chokepoint feeds the transition journal —
+        /// when the dispatch produced an ACTUAL state change, one [`MembershipTransitionRecord`] is
+        /// emitted (with the event type as cause and the post-dispatch incarnation/role) BEFORE the
+        /// DEAD-edge side effects run, so the journal entry precedes the departure fan-out.
         synchronized void dispatch(MembershipEvent event) {
             var wasDead = isDead();
+            var from = stateName();
 
             fsm.dispatch(event);
+
+            var to = stateName();
+            if (!from.equals(to)) {
+                transitionSink.accept(new MembershipTransitionRecord(id,
+                                                                     from,
+                                                                     to,
+                                                                     event.getClass().getSimpleName(),
+                                                                     incarnation(),
+                                                                     descriptor.role(),
+                                                                     System.currentTimeMillis()));
+            }
             if (!wasDead && isDead()) {
                 cancelEvictionBackstop();
                 onEnteredDead.accept(id);
@@ -822,6 +883,15 @@ public final class MembershipFsm {
             return fsm.current()
                       .getClass()
                       .getSimpleName();
+        }
+
+        /// Wave-1 diagnostic read: this member's SWIM-incarnation high-water mark
+        /// ([`MembershipContext#lastSeenIncarnation`], reachable through the current state's
+        /// shared context). Pure read under the per-member monitor.
+        synchronized long incarnation() {
+            return fsm.current()
+                      .ctx()
+                      .lastSeenIncarnation();
         }
 
         /// FSM-state → quiescence health-hint projection. DEAD → FAULTY (unconditional); SUSPECT →

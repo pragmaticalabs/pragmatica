@@ -77,6 +77,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -109,6 +110,14 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
     /// Check if the consensus engine is in observer mode.
     boolean isObserving();
+
+    /// Wave-1 §6.4 detect-only boot future-history listener pass-through
+    /// (cluster-topology-overhaul spec): installs the listener on the wrapped
+    /// [RabiaEngine] (`RabiaEngine#onBootFutureHistory`), invoked with
+    /// `(persistedPhaseValue, clusterReportedPhaseValue)` when the node's persisted
+    /// Rabia phase exceeds what the joined cluster reports at first sync restore.
+    /// Diagnostic-only; default no-op for implementations without a Rabia engine.
+    default void onBootFutureHistory(BiConsumer<Long, Long> listener) {}
 
     /// Get the route entries for RabiaNode's internal components.
     /// These should be combined with other entries when building the final router.
@@ -465,6 +474,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public boolean isObserving() {
                 return consensus().isObserving();
+            }
+
+            @Override
+            public void onBootFutureHistory(BiConsumer<Long, Long> listener) {
+                consensus().onBootFutureHistory(listener);
             }
 
             @Override

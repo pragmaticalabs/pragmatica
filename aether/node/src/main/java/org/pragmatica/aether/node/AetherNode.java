@@ -35,6 +35,7 @@ import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipTransitionRecord;
 import org.pragmatica.aether.deployment.membership.fsm.PeerTarget;
 import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler;
@@ -156,6 +157,7 @@ import org.pragmatica.cluster.metrics.ConnectivityState;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.net.quic.PeerConnectivityReporter;
+import org.pragmatica.consensus.net.quic.PeerTransitionRecord;
 import org.pragmatica.cluster.node.ForwardingClusterNode;
 import org.pragmatica.cluster.node.SwitchableClusterNode;
 import org.pragmatica.cluster.node.forward.ForwardApplyRequest;
@@ -214,6 +216,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
+import org.pragmatica.aether.node.journal.TransitionJournal;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.Server;
 import org.pragmatica.net.tcp.security.CertificateBundle;
@@ -710,6 +713,7 @@ public interface AetherNode extends ManageableNode {
                           CoreSwimHealthDetector swimHealthDetector,
                           PresenceSampler presenceSampler,
                           MembershipFsm membershipFsm,
+                          TransitionJournal transitionJournal,
                           Runnable startSwimTrigger,
                           Option<ManagementServer> managementServer,
                           Option<DiscoveryProvider> discoveryProvider,
@@ -1795,6 +1799,15 @@ public interface AetherNode extends ManageableNode {
         // Publish the FSM into the deferred holder so the membership consumers wired earlier (DHT
         // livePeers, accessibility filter, quorum-count propagation) read the authoritative FSM set.
         membershipFsmRef.set(membershipFsm);
+        // Wave-1 Enrichment A (cluster-topology-overhaul spec): per-node TRANSITION JOURNAL —
+        // bounded per-layer ring buffer recording EVERY MembershipFsm transition and EVERY
+        // PeerState transition, dumpable via GET /api/cluster/journal. Diagnostic-only and
+        // permanent. The FSM listener is installed BEFORE the boot seed below so the seed's
+        // OBSERVED→MEMBER promotions are the journal's first entries. The PEER-layer listener
+        // and the §6.4 boot future-history feed are wired further down, once clusterNetworkRef
+        // is in scope.
+        var transitionJournal = TransitionJournal.transitionJournal();
+        membershipFsm.onTransition(record -> appendFsmTransition(transitionJournal, record));
         // One-time boot seed from the configured topology member set. The FSM's SWIM observation tap
         // (added below, before SWIM starts via the whenReady(startSwimTrigger) lifecycle) already
         // promotes members naturally on their first HealthyObserved edge, so this seed is
@@ -1951,6 +1964,25 @@ public interface AetherNode extends ManageableNode {
             delegateRouter.route(new NetworkServiceMessage.ReevaluateMembership(nodeId));
         });
         clusterNetworkRef.setDesiredConnections(() -> desiredDialTargets(membershipFsm));
+        // Wave-1 Enrichment A: PEER-layer transition journal feed — every PeerState phase
+        // mutation (plus the §6.1 dialer expected-vs-actual Hello diagnostic) lands in the
+        // per-node journal. Diagnostic-only; the listener default is a no-op until wired here.
+        clusterNetworkRef.setPeerTransitionListener(record -> appendPeerTransition(transitionJournal, record));
+        // Wave-1 §6.4 (detect-only, ratified D9): boot-time future-history check — RabiaEngine
+        // WARNs and notifies when this node's persisted Rabia phase exceeds the cluster-reported
+        // sync phase (mixed-wipe / down -v hazard); the journal keeps the structured record.
+        clusterNode.onBootFutureHistory((persisted, cluster) -> recordBootFutureHistory(transitionJournal,
+                                                                                        config.self(),
+                                                                                        persisted,
+                                                                                        cluster));
+        // Wave-1 item 3 (#245 baseline diagnostic): periodic DEBUG dump comparing the
+        // TopologyObserver delta baseline (previousCoreMembers) vs the FSM core-member set vs
+        // the presence-sampler view — proves the #245 baseline gap empirically before Wave 4
+        // fixes it. Diag-only cadence; log-level-gated (DEBUG), no control-flow effect.
+        SharedScheduler.scheduleAtFixedRate(() -> logMembershipBaselineTrace((TopologyObserver) clusterNode.topologyManager(),
+                                                                             membershipFsm,
+                                                                             presenceSampler),
+                                            MEMBERSHIP_BASELINE_TRACE_INTERVAL);
         var topologyForSwim = clusterNode.topologyManager();
         // P1 fix: prefer the transport-supplied `NodeInfo` (QUIC/Netty Hello handshake)
         // over the static-topology lookup. CTM-replaced or topology-forgotten peers are
@@ -2312,6 +2344,7 @@ public interface AetherNode extends ManageableNode {
                                   swimHealthDetector,
                                   presenceSampler,
                                   membershipFsm,
+                                  transitionJournal,
                                   startSwimTrigger,
                                   Option.empty(),
                                   discoveryProvider,
@@ -2416,6 +2449,7 @@ public interface AetherNode extends ManageableNode {
                                       swimHealthDetector,
                                       presenceSampler,
                                       membershipFsm,
+                                      transitionJournal,
                                       startSwimTrigger,
                                       Option.some(managementServer),
                                       discoveryProvider,
@@ -2436,6 +2470,59 @@ public interface AetherNode extends ManageableNode {
     }
 
     TimeSpan PHASE_WATCH_INTERVAL = TimeSpan.timeSpan(1).seconds();
+
+    /// Wave-1 item 3 (#245 baseline diagnostic) cadence for [#logMembershipBaselineTrace].
+    TimeSpan MEMBERSHIP_BASELINE_TRACE_INTERVAL = TimeSpan.timeSpan(30).seconds();
+
+    /// Wave-1 Enrichment A: map one FSM transition observation into the per-node journal.
+    @Contract
+    private static void appendFsmTransition(TransitionJournal journal, MembershipTransitionRecord record) {
+        journal.append(TransitionJournal.Layer.FSM,
+                       record.nodeId().id(),
+                       record.fromState(),
+                       record.toState(),
+                       record.cause(),
+                       record.incarnation(),
+                       record.role());
+    }
+
+    /// Wave-1 Enrichment A: map one PeerState transition observation into the per-node journal.
+    @Contract
+    private static void appendPeerTransition(TransitionJournal journal, PeerTransitionRecord record) {
+        journal.append(TransitionJournal.Layer.PEER,
+                       record.peerId().id(),
+                       record.from().name(),
+                       record.to().name(),
+                       record.cause(),
+                       -1L,
+                       "");
+    }
+
+    /// Wave-1 §6.4 (detect-only): journal the boot future-history detection as a structured
+    /// FSM-layer entry (`cause = boot-future-history`, from/to carry the two phase values).
+    @Contract
+    private static void recordBootFutureHistory(TransitionJournal journal, NodeId self, long persistedPhase, long clusterPhase) {
+        journal.append(TransitionJournal.Layer.FSM,
+                       self.id(),
+                       "persistedPhase:" + persistedPhase,
+                       "clusterPhase:" + clusterPhase,
+                       "boot-future-history",
+                       -1L,
+                       "");
+    }
+
+    /// Wave-1 item 3 (#245 baseline diagnostic): DEBUG dump of the three membership views whose
+    /// divergence is the #245 baseline gap — the TopologyObserver membership-delta baseline,
+    /// the authoritative FSM core-member set, and the presence-sampler view. Log-only.
+    @Contract
+    private static void logMembershipBaselineTrace(TopologyObserver observer,
+                                                   MembershipFsm membershipFsm,
+                                                   PresenceSampler presenceSampler) {
+        LOG.debug("Membership baseline trace (Wave-1 #245 diag): previousCoreMembers={} fsmCoreMembers={} presenceMembers={}",
+                  observer.previousCoreMembersSnapshot(),
+                  membershipFsm.coreMembers(),
+                  presenceSampler.currentMembers());
+    }
 
     /// Post-E.8 phase-change publisher. Polls `phaseSupplier` at `PHASE_WATCH_INTERVAL` and
     /// dispatches `ctm.onClusterPhaseChanged(newPhase)` on every observed transition.

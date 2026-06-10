@@ -41,6 +41,7 @@ public enum ManagementRoute {
     CLUSTER_GENERATION(GET, "/api/cluster/generation", List.of(), LEADER),
     CLUSTER_AWAIT_QUIESCED(POST, "/api/cluster/await-quiesced", List.of(), LEADER),
     CLUSTER_GOVERNORS(GET, "/api/cluster/governors", List.of(), LEADER),
+    CLUSTER_JOURNAL(GET, "/api/cluster/journal", List.of(), LOCAL),
     CLUSTER_CONFIG_GET(GET, "/api/cluster/config", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_STATUS(GET, "/api/cluster/status", List.of(), LEADER),
     CLUSTER_CONFIG_APPLY(POST, "/api/cluster/config", List.of(), taskGroup(DEPLOYMENT)),

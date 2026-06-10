@@ -460,9 +460,16 @@ public sealed interface ManagementApiResponses {
                                          int connectedPeerCount,
                                          List<TopologyNodeDetail> nodeDetails,
                                          Option<String> epoch,
-                                         String mode) {}
+                                         String mode,
+                                         List<FsmMemberDetail> fsmMembers) {}
 
     record TopologyNodeDetail(String nodeId, String role, String health, String hostname, String zone, String address) {}
+
+    /// Wave-1 item 6 (cluster-topology-overhaul spec): per-member `MembershipFsm` truth —
+    /// lifecycle state name (`Observed`/`Member`/`Suspect`/`Departing`/`Dead`), the SWIM
+    /// incarnation high-water mark, and the last-known descriptor role/source labels — so a
+    /// remote run reads membership truth from `GET /api/cluster/topology` without `docker logs`.
+    record FsmMemberDetail(String nodeId, String fsmState, long incarnation, String role, String source) {}
 
     record ClusterGenerationResponse(Option<EpochInfo> epoch,
                                      long rabiaTerm,
