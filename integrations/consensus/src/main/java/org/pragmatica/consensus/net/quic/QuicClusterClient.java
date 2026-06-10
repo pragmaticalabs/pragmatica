@@ -307,6 +307,9 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         // Stash by peerId so eviction / shutdown can close it deterministically. If a
         // concurrent connect for the same peer raced ahead, close the previous entry
         // (defence-in-depth — initiateConnection already removed any stale entry).
+        // The dialed peerId IS the verified registration identity: the Wave-3 Hello identity
+        // check rejects a mismatched sender before any attach, so the key here always matches
+        // the id the connection registers (and is later evicted) under.
         var racedOut = datagramChannels.put(peerId, newChannel);
         if (racedOut != null && racedOut != newChannel) {
             racedOut.close();
@@ -534,21 +537,38 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             return deserializer.decode(bytes);
         }
         private void completePeerConnection(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
-            // Wave-1 §6.1 dialer expected-vs-actual diagnostic (log-only — the identity check is
-            // Wave 3): record the dialed identity vs the Hello sender's claimed identity vs the
-            // address the dial actually resolved to, on EVERY completed outbound handshake.
+            // Wave-1 §6.1 dialer expected-vs-actual diagnostic: record the dialed identity vs the
+            // Hello sender's claimed identity vs the address the dial actually resolved to, on
+            // EVERY completed outbound handshake.
             log.info("QUIC dialer Hello identity: dialed={} helloSender={} resolvedAddress={}",
                      peerId, hello.sender(), quicChannel.remoteSocketAddress());
-            var peerConnection = quicPeerConnection(hello.sender(), quicChannel);
+            // Wave-3 dialer-side identity verification: a misdirected dial (e.g. a DNS
+            // re-resolution landing on whatever answers) must NOT attach under the wrong identity
+            // or supersede a healthy incumbent via adopt-newer. On mismatch: close the connection,
+            // do NOT attach, and fail the dial down the normal connect-failure path so the
+            // caller's backoff/eviction machinery engages exactly as for any failed dial.
+            if (!hello.sender().equals(peerId)) {
+                log.warn("QUIC dialer Hello identity mismatch — rejecting connection: dialed={} helloSender={} resolvedAddress={}",
+                         peerId, hello.sender(), quicChannel.remoteSocketAddress());
+                promise.fail(new QuicTransportError.IdentityMismatch(peerId, hello.sender(),
+                                                                     String.valueOf(quicChannel.remoteSocketAddress())));
+                quicChannel.close();
+                return;
+            }
+            // peerId == hello.sender() (verified above): the connection is registered under the
+            // VERIFIED identity, consistent with `datagramChannels` (keyed by the dialed peerId
+            // at bind time) — eviction closes the right channel, and no code path can register
+            // a connection under an unverified id.
+            var peerConnection = quicPeerConnection(peerId, quicChannel);
             // The handshake stream is the CONTROL lane.
             peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());
 
             // Swap the CONTROL stream's Hello handler for the shared data handler (CONTROL lane).
             ctx.pipeline().replace(this, "data-handler",
-                                   new QuicLaneDataHandler(hello.sender(), StreamType.CONTROL, deserializer, messageReceiver, log));
+                                   new QuicLaneDataHandler(peerId, StreamType.CONTROL, deserializer, messageReceiver, log));
 
-            log.info("QUIC Hello handshake complete with peer {} (role={}) — opening data lanes", hello.sender(), hello.role());
-            openDataLanes(peerConnection, hello.sender());
+            log.info("QUIC Hello handshake complete with peer {} (role={}) — opening data lanes", peerId, hello.role());
+            openDataLanes(peerConnection, peerId);
         }
 
         /// Open the 6 data-lane streams (CONSENSUS, KV, METRICS, INVOKE, FORWARD, DHT) and only

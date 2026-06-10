@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.BooleanSupplier;
 
 import io.netty.handler.codec.quic.QuicSslContext;
 import org.junit.jupiter.api.AfterEach;
@@ -390,6 +391,91 @@ class QuicClusterNetworkTest {
         }
     }
 
+    /// Wave-3 dialer-side Hello identity verification (cluster-topology-overhaul spec). The
+    /// dialer verifies `hello.sender() == dialedPeerId` inside
+    /// `QuicClusterClient.completePeerConnection`: a mismatch (e.g. a DNS re-resolution landing
+    /// on whatever answers) closes the connection un-attached and fails the dial down the
+    /// normal connect-failed path ([QuicClusterNetwork] `onConnectFailed`), which journals a
+    /// `dialer-hello-REJECTED` record. These tests stand up two REAL networks and dial under a
+    /// wrong/right expected identity.
+    @Nested
+    class DialerHelloIdentityEnforcement {
+
+        @Test
+        void dial_mismatchedHelloSender_rejectedJournaledAndFailedNotAttached() {
+            var actualPeer = createAndStartNetwork(new NodeId("bbb-actual"), List.of(), MessageRouter.mutable());
+            var actualPort = actualPeer.boundPort().fold(() -> fail("peer not bound"), port -> port);
+
+            var failures = new CopyOnWriteArrayList<NetworkServiceMessage.ConnectionFailed>();
+            var established = new CopyOnWriteArrayList<NetworkServiceMessage.ConnectionEstablished>();
+            var router = MessageRouter.mutable();
+            router.addRoute(NetworkServiceMessage.ConnectionFailed.class, failures::add);
+            router.addRoute(NetworkServiceMessage.ConnectionEstablished.class, established::add);
+            var dialer = createAndStartNetwork(new NodeId("aaa-self"), List.of(), router);
+            var journal = new CopyOnWriteArrayList<PeerTransitionRecord>();
+            dialer.setPeerTransitionListener(journal::add);
+
+            var expectedId = new NodeId("zzz-expected");
+            dialer.connect(dialTarget(expectedId, actualPort));
+
+            awaitTrue(() -> journal.stream().anyMatch(DialerHelloIdentityEnforcement::isRejectedRecord),
+                      "journal records the dialer-hello-REJECTED cause");
+            var rejected = journal.stream()
+                                  .filter(DialerHelloIdentityEnforcement::isRejectedRecord)
+                                  .findFirst()
+                                  .orElseThrow();
+            assertThat(rejected.peerId()).isEqualTo(expectedId);
+            assertThat(rejected.cause()).contains("expected=zzz-expected")
+                                        .contains("actual=bbb-actual")
+                                        .contains("addr=");
+            awaitTrue(() -> !failures.isEmpty(), "ConnectionFailed routed — normal connect-failed path engaged");
+            assertThat(failures.getFirst().nodeId()).isEqualTo(expectedId);
+            assertThat(established).as("a mismatched dial must never attach").isEmpty();
+            assertThat(dialer.connectedPeers()).as("peer must not be CONNECTED").isEmpty();
+            assertThat(dialer.connectedNodeCount()).isZero();
+        }
+
+        @Test
+        void dial_matchingHelloSender_attachesAsBefore() {
+            var peerId = new NodeId("zzz-actual");
+            var peer = createAndStartNetwork(peerId, List.of(), MessageRouter.mutable());
+            var peerPort = peer.boundPort().fold(() -> fail("peer not bound"), port -> port);
+
+            var established = new CopyOnWriteArrayList<NetworkServiceMessage.ConnectionEstablished>();
+            var router = MessageRouter.mutable();
+            router.addRoute(NetworkServiceMessage.ConnectionEstablished.class, established::add);
+            var dialer = createAndStartNetwork(new NodeId("aaa-self"), List.of(), router);
+            var journal = new CopyOnWriteArrayList<PeerTransitionRecord>();
+            dialer.setPeerTransitionListener(journal::add);
+
+            dialer.connect(dialTarget(peerId, peerPort));
+
+            awaitTrue(() -> dialer.connectedPeers().contains(peerId), "verified peer attaches: CONNECTED");
+            awaitTrue(() -> !established.isEmpty(), "ConnectionEstablished routes for the verified peer");
+            assertThat(established.getFirst().nodeId()).isEqualTo(peerId);
+            assertThat(journal.stream().anyMatch(DialerHelloIdentityEnforcement::isDialerHelloRecord))
+                .as("the Wave-1 dialer-hello journal observation stays on a verified attach")
+                .isTrue();
+            assertThat(journal.stream().noneMatch(DialerHelloIdentityEnforcement::isRejectedRecord))
+                .as("no REJECTED record for a verified identity")
+                .isTrue();
+        }
+
+        private static boolean isRejectedRecord(PeerTransitionRecord record) {
+            return record.cause().startsWith("dialer-hello-REJECTED");
+        }
+
+        private static boolean isDialerHelloRecord(PeerTransitionRecord record) {
+            return record.cause().startsWith("dialer-hello ");
+        }
+
+        private NodeInfo dialTarget(NodeId expectedId, int port) {
+            var address = NodeAddress.nodeAddress("127.0.0.1", port)
+                                     .fold(_ -> fail("Invalid address"), addr -> addr);
+            return NodeInfo.nodeInfo(expectedId, address, NodeRole.ACTIVE, Map.of());
+        }
+    }
+
     // --- Helper methods ---
 
     private QuicClusterNetwork createAndStartNetwork(NodeId nodeId, List<NodeInfo> peers, MessageRouter router) {
@@ -438,6 +524,26 @@ class QuicClusterNetworkTest {
 
     private static StubProtocolMessage stubProtocolMessage(NodeId sender) {
         return new StubProtocolMessage(sender);
+    }
+
+    /// Bounded poll for an async condition (no Awaitility in this module): the QUIC dial,
+    /// handshake, and failure continuations run on Netty event loops, so observable effects
+    /// (journal records, routed messages, attach) arrive asynchronously. Asserts the condition
+    /// holds within AWAIT_TIMEOUT.
+    private static void awaitTrue(BooleanSupplier condition, String description) {
+        var deadline = System.nanoTime() + AWAIT_TIMEOUT.nanos();
+        while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
+            sleepBriefly();
+        }
+        assertThat(condition.getAsBoolean()).as(description).isTrue();
+    }
+
+    private static void sleepBriefly() {
+        try {
+            Thread.sleep(25);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private record StubProtocolMessage(NodeId sender) implements org.pragmatica.consensus.ProtocolMessage {

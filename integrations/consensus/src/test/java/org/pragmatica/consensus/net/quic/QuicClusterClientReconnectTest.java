@@ -28,6 +28,7 @@ import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.consensus.net.NodeRole;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -126,6 +127,44 @@ class QuicClusterClientReconnectTest {
 
         // No datagram channel/UDP socket was allocated for the failed dial.
         assertThat(client.datagramChannelCount()).isEqualTo(0);
+    }
+
+    /// Wave-3 dialer-side Hello identity verification (cluster-topology-overhaul spec): dialing
+    /// a live server under a WRONG expected NodeId must fail the connect promise with
+    /// [QuicTransportError.IdentityMismatch] — the connection is closed un-attached, down the
+    /// same failure path as any failed dial (so the caller's backoff machinery engages).
+    @Test
+    void connect_helloSenderMismatch_failsWithIdentityMismatch() {
+        startServer();
+        var port = server.boundPort().fold(() -> fail("server not bound"), p -> p);
+        client = createClient();
+        var wrongExpectedId = NodeId.randomNodeId();
+
+        client.connect(wrongExpectedId, new InetSocketAddress("127.0.0.1", port))
+              .await(AWAIT_TIMEOUT)
+              .onSuccess(_ -> fail("connect under a mismatched expected identity must fail"))
+              .onFailure(cause -> assertIdentityMismatch(cause, wrongExpectedId));
+    }
+
+    /// Wave-3 counterpart: a matching Hello sender attaches exactly as before — the connect
+    /// promise succeeds and the connection is registered under the verified (dialed) identity.
+    @Test
+    void connect_helloSenderMatches_succeedsWithVerifiedIdentity() {
+        startServer();
+        var port = server.boundPort().fold(() -> fail("server not bound"), p -> p);
+        client = createClient();
+
+        client.connect(SERVER_NODE, new InetSocketAddress("127.0.0.1", port))
+              .await(AWAIT_TIMEOUT)
+              .onFailure(cause -> fail("connect with matching identity failed: " + cause.message()))
+              .onSuccess(connection -> assertThat(connection.peerId()).isEqualTo(SERVER_NODE));
+    }
+
+    private static void assertIdentityMismatch(Cause cause, NodeId expected) {
+        assertThat(cause).isInstanceOf(QuicTransportError.IdentityMismatch.class);
+        var mismatch = (QuicTransportError.IdentityMismatch) cause;
+        assertThat(mismatch.expected()).isEqualTo(expected);
+        assertThat(mismatch.actual()).isEqualTo(SERVER_NODE);
     }
 
     private void startServer() {

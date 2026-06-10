@@ -877,23 +877,24 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// Dial-success continuation. Journals the Wave-1 §6.1 dialer expected-vs-actual identity
-    /// diagnostic (the connection is keyed by the Hello sender's claimed identity, which may
-    /// differ from the dialed NodeId after a DNS re-resolution lands on whatever answers), then
-    /// delegates to the unchanged attach path. Log/journal-only — a mismatch is NOT rejected
-    /// here (the identity check itself is Wave 3).
+    /// observation, then delegates to the unchanged attach path. Wave-3 enforcement lives in
+    /// `QuicClusterClient.completePeerConnection`: a mismatched Hello sender is rejected there
+    /// (connection closed, dial failed down [#onConnectFailed]), so this continuation only ever
+    /// sees connections whose identity was verified against the dialed NodeId.
     private void onDialCompleted(NodeInfo dialed, QuicPeerConnection connection) {
         journalDialerHello(dialed, connection);
         onPeerConnected(connection, dialed.role(), dialed.address(), dialed.labels());
     }
 
     /// Feed the PEER transition journal with the completed outbound handshake identity
-    /// observation (`cause = dialer-hello …`, `from == to` — no phase mutation here). A
-    /// mismatched claimed identity is additionally logged at WARN (log-only, Wave-1 diagnostic).
+    /// observation (`cause = dialer-hello …`, `from == to` — no phase mutation here).
+    /// Wave-3: `expected == actual` always holds here (the client rejects mismatches before
+    /// dial success); the WARN below is a regression tripwire, not a live code path.
     @Contract
     private void journalDialerHello(NodeInfo dialed, QuicPeerConnection connection) {
         var actual = connection.peerId();
         if (!dialed.id().equals(actual)) {
-            log.warn("QUIC dialer identity mismatch (Wave-1 §6.1 diagnostic, log-only): dialed={} helloSender={} dialAddress={}",
+            log.warn("QUIC dialer identity mismatch reached the attach path — Wave-3 client-side enforcement should have rejected it: dialed={} helloSender={} dialAddress={}",
                      dialed.id(), actual, dialed.resolvedAddress().asString());
         }
         var phase = getOrCreatePeer(dialed.id()).phase();
@@ -906,6 +907,24 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                                System.currentTimeMillis()));
     }
 
+    /// Feed the PEER transition journal with a REJECTED dialer Hello identity mismatch
+    /// (Wave-3 enforcement, `QuicClusterClient.completePeerConnection`): the handshake
+    /// completed but the Hello sender's claimed identity did not match the dialed identity,
+    /// so the connection was closed un-attached. `from == to` — the rejection itself does not
+    /// mutate the phase; the normal connect-failed eviction (CONNECTING → EVICTED) follows in
+    /// [#onConnectFailed] and journals its transition separately via [PeerState].
+    @Contract
+    private void journalDialerHelloRejected(NodeInfo dialed, QuicTransportError.IdentityMismatch mismatch) {
+        var phase = getOrCreatePeer(dialed.id()).phase();
+        peerTransitionListener.accept(new PeerTransitionRecord(dialed.id(),
+                                                               phase,
+                                                               phase,
+                                                               "dialer-hello-REJECTED expected=" + mismatch.expected().id()
+                                                               + " actual=" + mismatch.actual().id()
+                                                               + " addr=" + mismatch.address(),
+                                                               System.currentTimeMillis()));
+    }
+
     /// Per-dial connect timeout: a safe multiple of the QUIC hello/handshake timeout (same factor
     /// as the reconciler CONNECTING-staleness window), so a legitimately-slow handshake under load
     /// is not aborted while a genuinely hung dial still resolves to failure deterministically.
@@ -915,6 +934,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private void onConnectFailed(NodeInfo peer, Cause cause) {
+        // Wave-3 dialer-side identity verification: a rejected Hello identity mismatch flows
+        // down this normal connect-failure path (so backoff/eviction engage as for any failed
+        // dial), but additionally feeds the PEER transition journal with the REJECTED record.
+        if (cause instanceof QuicTransportError.IdentityMismatch mismatch) {
+            journalDialerHelloRejected(peer, mismatch);
+        }
         quicMetrics.onHandshakeFailure();
         log.warn("Failed to connect from {} to {}: {}", self, peer, cause.message());
         // Reset phase to EVICTED so a subsequent retry (via topology reconciler) can re-enter

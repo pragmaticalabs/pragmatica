@@ -33,7 +33,8 @@ import org.pragmatica.consensus.NodeId;
 /// @param to          phase after the mutation (equal to `from` for connection-replacement
 ///                    events inside CONNECTED and for `dialer-hello` diagnostics)
 /// @param cause       short machine-readable reason (e.g. `begin-connecting`, `evict`,
-///                    `authoritative-remove`, `attach-supersede`, `dialer-hello …`)
+///                    `authoritative-remove`, `attach-supersede`, `dialer-hello …`,
+///                    `dialer-hello-REJECTED …` — Wave-3 dialer identity mismatch rejection)
 /// @param wallClockMs wall-clock timestamp (epoch ms) of the transition
 public record PeerTransitionRecord(NodeId peerId,
                                    PeerState.Phase from,
