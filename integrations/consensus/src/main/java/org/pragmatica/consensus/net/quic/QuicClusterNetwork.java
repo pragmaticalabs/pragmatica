@@ -868,6 +868,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // missing-peer reconciler backoff (handles the asymmetric-handshake recovery path).
         resetReconnectBackoff(peerId);
         state.resetReconcileBackoff();
+        // Event-driven eviction: a genuine channel close now evicts immediately, independent
+        // of any outbound traffic (an idle follower<->follower link never writes, so the
+        // write-path evictor would never notice). Registered EXACTLY ONCE per successful
+        // attach (ACCEPTED + RECONNECTED — DUPLICATE/REJECTED returned early above) on the
+        // just-bound `connection`.
+        registerCloseListener(peerId, connection);
         drainOfflineBufferInto(state, connection);
 
         if (isReconnect) {
@@ -1200,6 +1206,32 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
     }
 
+    /// Event-driven eviction: when the QUIC channel genuinely closes, evict the peer so the
+    /// reconciler re-dials — instead of waiting for the next outbound write to notice
+    /// `!isActive()` (which never comes on an idle follower<->follower link). Identity-guarded
+    /// in `onChannelClosed`: only evicts if the closed connection is STILL the bound one, so an
+    /// adopt-newer supersede (which binds a different object) does not evict the live replacement.
+    @Contract
+    private void registerCloseListener(NodeId peerId, QuicPeerConnection connection) {
+        connection.connection().closeFuture().addListener(_ -> onChannelClosed(peerId, connection));
+    }
+
+    private void onChannelClosed(NodeId peerId, QuicPeerConnection closed) {
+        var state = peers.get(peerId);
+        if (state == null) {
+            return;
+        }
+        // Reference equality on the wrapper: adopt-newer (`attachOverConnected`) binds a
+        // DIFFERENT QuicPeerConnection, so a superseded close yields `current != closed` →
+        // no evict. After evict/supersede/departurePermanent the peer is EVICTED/REMOVED or
+        // rebound → `activeConnection()` empty or `current != closed` → no-op. No eviction
+        // loop, no double-close (`evictStaleConnection` guards its own `.close()` on `isActive()`).
+        if (state.activeConnection().map(current -> current == closed).or(false)) {
+            log.info("QUIC channel to {} closed — evicting (event-driven) so the reconciler re-dials", peerId);
+            evictStaleConnection(peerId, closed);
+        }
+    }
+
     /// Per-peer reconnect backoff state. Mutable, guarded by the enclosing
     /// `ConcurrentHashMap.compute` callback.
     private static final class ReconnectBackoff {
@@ -1268,8 +1300,32 @@ public class QuicClusterNetwork implements ClusterNetwork {
               .onFailure(cause -> log.warn("Missing-peer reconciler tick failed: {}", cause.message()));
     }
 
+    /// Liveness sweep: a CONNECTED [PeerState] whose underlying connection reports
+    /// `!isActive()` is a zombie — nothing writes to a follower<->follower link periodically
+    /// (ping is leader-only, pongs go only to the leader, Rabia is round-driven), so the
+    /// write-path evictor (`writeToStream`) never fires for it. Demote it to EVICTED here so
+    /// the reconciler below re-dials it the SAME tick (the sweep runs before `connectedPeers()`
+    /// is computed). Complements the adopt-newer handshake path, which handles the
+    /// `isActive()`-lies-true orphan from the acceptor side.
+    @SuppressWarnings("JBCT-PAT-01") // Liveness sweep: iterate peers, evict inactive CONNECTED links
+    private void sweepStaleConnectedLinks() {
+        peers.forEach(this::sweepPeer);
+    }
+
+    private void sweepPeer(NodeId peerId, PeerState state) {
+        state.activeConnection()
+             .filter(conn -> !conn.isActive())
+             .onPresent(conn -> evictInactiveLink(peerId, conn));
+    }
+
+    private void evictInactiveLink(NodeId peerId, QuicPeerConnection conn) {
+        log.warn("Liveness sweep: peer {} CONNECTED but link inactive — evicting for re-dial", peerId);
+        evictStaleConnection(peerId, conn);
+    }
+
     @SuppressWarnings("JBCT-PAT-01") // Iterate, gate, dispatch
     private Unit reconcileMissingPeersUnsafe() {
+        sweepStaleConnectedLinks();
         var connected = connectedPeers();
         var nowMs = wallClockMs.getAsLong();
         // ADD-only Wave 2: when the FSM-published desired-connection set is wired, reconcile
@@ -1486,6 +1542,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
     PeerState seedPeerForTests(NodeId peerId, PeerState peerState) {
         peers.put(peerId, peerState);
         return peerState;
+    }
+
+    /// Package-private test seam — registers the event-driven QUIC close listener on a seeded
+    /// connection without driving a live handshake. Lets transport-level tests fire the
+    /// channel's `closeFuture` and assert the bound-vs-superseded eviction identity guard.
+    @Contract
+    void registerCloseListenerForTests(NodeId peerId, QuicPeerConnection connection) {
+        registerCloseListener(peerId, connection);
     }
 
     /// Test hook: the set of peer NodeIds a `broadcast(skipPassive)` would actually target,
