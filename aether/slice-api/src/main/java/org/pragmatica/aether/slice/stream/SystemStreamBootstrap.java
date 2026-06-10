@@ -44,11 +44,10 @@ public final class SystemStreamBootstrap {
     public Result<List<StreamRegistryEntry>> bootstrap() {
         var accumulated = new ArrayList<StreamRegistryEntry>(SystemStreams.ALL.size());
         for (var address : SystemStreams.ALL) {
-            var next = ensureRegistered(address);
+            var next = ensureRegistered(address).onSuccess(accumulated::add);
             if (next.isFailure()) {
                 return next.fold(Result::failure, _ -> success(List.of()));
             }
-            next.onSuccess(accumulated::add);
         }
         return success(List.copyOf(accumulated));
     }
