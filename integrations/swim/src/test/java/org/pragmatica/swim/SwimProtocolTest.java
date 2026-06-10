@@ -748,6 +748,141 @@ class SwimProtocolTest {
         }
     }
 
+    /// Least-recently-probed (LRP) probe scheduling (#94). The prior positional
+    /// `probeIndex` selection rebuilt `candidates` from `members.values()`
+    /// (a `ConcurrentHashMap`, hash-bucket order) every tick; when a peer flapped
+    /// (gossip removed+re-added it ~every few ticks) the values()-order/size shifted
+    /// under the single free-running index, so a genuinely-dead peer was skipped for
+    /// many ticks and never probed → never entered SUSPECT → never FAULTY. LRP keys
+    /// scheduling by `NodeId`, so a flapping peer can no longer starve the others.
+    @Nested
+    class LeastRecentlyProbedScheduling {
+        private static final NodeId FLAPPER = new NodeId("node-flapper");
+        private static final NodeId DEAD_PEER = new NodeId("node-dead");
+        private static final InetSocketAddress FLAPPER_ADDR = new InetSocketAddress("127.0.0.1", 9101);
+        private static final InetSocketAddress DEAD_ADDR = new InetSocketAddress("127.0.0.1", 9102);
+
+        @Test
+        void deadPeer_detectedWithinBudget_despiteAnotherPeerFlapping() throws InterruptedException {
+            // Tight config: period 30ms, probeTimeout 15ms, suspectTimeout 300ms, fast startup.
+            // joinGrace set tiny so the never-HEALTHY dead peer is not grace-deferred from FAULTY.
+            var config = swimConfig(
+                timeSpan(30).millis(),
+                timeSpan(15).millis(),
+                3,
+                timeSpan(300).millis(),
+                8,
+                timeSpan(30).millis(),
+                "",
+                0,
+                timeSpan(10).millis()
+            );
+            var localTransport = new RecordingTransport();
+            var localListener = new RecordingListener();
+            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
+                                            .fold(cause -> null, v -> v);
+
+            localProtocol.addSeedMember(FLAPPER, FLAPPER_ADDR);
+            localProtocol.addSeedMember(DEAD_PEER, DEAD_ADDR);
+
+            localProtocol.start();
+            try {
+                // Budget: well over period*N + suspectTimeout. With the old global-index code
+                // the flapper churn starves the dead peer and it never reaches FAULTY inside this
+                // window; with LRP the dead peer is probed within a couple of periods and decays.
+                var deadline = System.currentTimeMillis() + 5_000L;
+                var pingedSeq = 0;
+                while (localListener.faulty.stream().noneMatch(m -> m.nodeId().equals(DEAD_PEER))
+                       && System.currentTimeMillis() < deadline) {
+                    // Keep the flapper genuinely probable AND churning: ack any Ping sent to it
+                    // (so it stays ALIVE / refutes), and alternate ALIVE<->SUSPECT gossip about it
+                    // so its membership entry is constantly rewritten — the condition that
+                    // reshuffled values() order under the old index.
+                    ackPingsTo(localTransport, FLAPPER_ADDR, localProtocol);
+                    var state = (pingedSeq % 2 == 0) ? MemberState.ALIVE : MemberState.SUSPECT;
+                    var gossip = new MembershipUpdate(FLAPPER, state, 1L, FLAPPER_ADDR);
+                    localProtocol.onMessage(FLAPPER_ADDR, new Ping(FLAPPER, 5_000L + pingedSeq, List.of(gossip)));
+                    pingedSeq++;
+                    Thread.sleep(15L);
+                }
+
+                assertThat(pingsTo(localTransport, DEAD_ADDR))
+                    .as("dead peer must receive at least one direct Ping despite the flapper's churn (LRP fairness)")
+                    .isGreaterThanOrEqualTo(1);
+                assertThat(localListener.faulty)
+                    .as("dead peer must reach FAULTY within budget regardless of flapper churn count")
+                    .anyMatch(m -> m.nodeId().equals(DEAD_PEER));
+            } finally {
+                localProtocol.stop();
+            }
+        }
+
+        @Test
+        void selectNextProbeTarget_everyProbableMemberProbedWithinNPeriods_underMembershipChurn() {
+            var config = swimConfig(
+                timeSpan(30).millis(),
+                timeSpan(15).millis(),
+                3,
+                timeSpan(300).millis(),
+                8,
+                timeSpan(30).millis(),
+                "",
+                0,
+                timeSpan(10).millis()
+            );
+            var localTransport = new RecordingTransport();
+            var localListener = new RecordingListener();
+            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
+                                            .fold(cause -> null, v -> v);
+
+            // Three stable members + one id that churns in and out between selections.
+            localProtocol.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE);
+            localProtocol.putMemberForTest(NODE_B, ADDR_B, MemberState.ALIVE);
+            localProtocol.putMemberForTest(NODE_C, ADDR_C, MemberState.ALIVE);
+
+            // Drive many deterministic selection-and-probe cycles, mutating membership
+            // (add/remove the churning id) between selections.
+            for (var i = 0; i < 60; i++) {
+                if (i % 3 == 0) {
+                    localProtocol.putMemberForTest(FLAPPER, FLAPPER_ADDR, MemberState.ALIVE);
+                } else if (i % 3 == 1) {
+                    localProtocol.removeMemberForTest(FLAPPER);
+                }
+                localProtocol.probeOnceForTest();
+            }
+
+            var pingsA = pingsTo(localTransport, ADDR_A);
+            var pingsB = pingsTo(localTransport, ADDR_B);
+            var pingsC = pingsTo(localTransport, ADDR_C);
+
+            // Fairness guard: every stable member's Ping count stays within 1 of the others
+            // over the window. A position-based selection would let the churning id perturb
+            // this distribution; LRP keeps it balanced.
+            var max = Math.max(pingsA, Math.max(pingsB, pingsC));
+            var min = Math.min(pingsA, Math.min(pingsB, pingsC));
+            assertThat(max - min)
+                .as("stable members must be probed within 1 of each other under membership churn (a=%d b=%d c=%d)",
+                    pingsA, pingsB, pingsC)
+                .isLessThanOrEqualTo(1);
+            assertThat(min)
+                .as("every stable member must be probed at least once")
+                .isGreaterThanOrEqualTo(1);
+        }
+
+        private static void ackPingsTo(RecordingTransport transport, InetSocketAddress addr, SwimProtocol protocol) {
+            transport.sentMessages.stream()
+                                  .filter(m -> m.target().equals(addr) && m.message() instanceof Ping)
+                                  .map(m -> (Ping) m.message())
+                                  .forEach(ping -> protocol.onMessage(addr, Ack.ack(FLAPPER, ping.sequence(), List.of())));
+        }
+
+        private static int pingsTo(RecordingTransport transport, InetSocketAddress addr) {
+            return (int) transport.sentMessages.stream()
+                                               .filter(m -> m.target().equals(addr) && m.message() instanceof Ping)
+                                               .count();
+        }
+    }
+
     // -- Test infrastructure --
 
     record SentMessage(InetSocketAddress target, SwimMessage message) {}

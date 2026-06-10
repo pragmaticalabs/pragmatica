@@ -140,7 +140,27 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// self is never gossiped.
     private final AtomicLong selfIncarnation = new AtomicLong(0);
     private final AtomicReference<Option<ScheduledFuture<?>>> tickFuture = new AtomicReference<>(none());
-    private final AtomicInteger probeIndex = new AtomicInteger(0);
+    /// Per-member last-probe ORDINAL (a strictly-monotonic `probeOrdinal` value), keyed by
+    /// `NodeId` so probe scheduling is identity-stable under churn. Stamped in [#probeTarget]
+    /// the moment a probe is sent. [#selectNextProbeTarget] always picks the least-recently-
+    /// probed probable member (a member ABSENT from this map — never probed — sorts first),
+    /// which restores the "probe each member once per round" invariant that the prior
+    /// free-running positional index broke when `members.values()` reshuffled order/size as a
+    /// peer flapped (removed+re-added via gossip), starving a genuinely-dead peer of probes so
+    /// it never entered SUSPECT (#94).
+    ///
+    /// Ordering uses [#probeOrdinal] (a monotonic counter), NOT a wall-clock timestamp:
+    /// selections can occur many times within a single `System.currentTimeMillis()` tick
+    /// (millisecond granularity is far coarser than the selection cadence), which would
+    /// collapse the LRP order to the `NodeId` tie-break and re-introduce positional unfairness.
+    /// The ordinal makes every probe strictly distinct, so the schedule rotates fairly.
+    /// Cleared in [#clearDeathMemory] so a swept/rejoining id starts fresh (sorts first →
+    /// probed immediately on re-add).
+    private final Map<NodeId, Long> lastProbedAt = new ConcurrentHashMap<>();
+    /// Strictly-monotonic probe ordinal source. Each probe sent ([#probeTarget]) claims the
+    /// next value and stamps it into [#lastProbedAt], giving a granularity-free total order
+    /// for least-recently-probed selection. See [#lastProbedAt].
+    private final AtomicLong probeOrdinal = new AtomicLong(0);
     /// Single false->true latch set on the first inbound SWIM Ping (proof a peer
     /// has acknowledged this node). Read by [#runAnnounceAttempt] on the scheduler
     /// thread to cancel the join-announce loop once self is acknowledged — fixes a
@@ -471,6 +491,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback());
         var ping = Ping.ping(selfId, seq, piggyback);
 
+        lastProbedAt.put(target.nodeId(), probeOrdinal.incrementAndGet());
         pendingProbes.put(seq, PendingProbe.pendingProbe(target.nodeId(), System.currentTimeMillis(), false));
         transport.send(target.address(), ping);
 
@@ -630,6 +651,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         everSeenHealthy.remove(peer);
         suspectTimestamps.remove(peer);
         memberFirstSeenAt.remove(peer);
+        lastProbedAt.remove(peer);
     }
 
     /// Whether `peer` is still within its per-member NORMAL-phase JOIN-GRACE window:
@@ -693,22 +715,27 @@ public final class SwimProtocol implements SwimMessageHandler {
         LOG.warn("Member {} marked FAULTY", member.nodeId().id());
     }
 
-    /// Round-robin selection: each member probed exactly once per round.
+    /// Least-recently-probed (LRP) selection: pick the probable member with the
+    /// SMALLEST `lastProbedAt` value so every probable member is probed once per round
+    /// regardless of `members.values()` iteration order/size shifting under churn (#94).
+    /// A member ABSENT from `lastProbedAt` (never probed) is treated as `Long.MIN_VALUE`
+    /// so it sorts first and is probed immediately. Ties broken deterministically by
+    /// `NodeId` for stability (so a stable set rotates fairly rather than re-probing one
+    /// member). Identity-keyed, so a flapping peer can no longer perturb the schedule of
+    /// the others.
     private Option<SwimMember> selectNextProbeTarget() {
-        var candidates = members.values().stream()
-                                .filter(this::isProbable)
-                                .toList();
+        return members.values().stream()
+                      .filter(this::isProbable)
+                      .min(Comparator.comparingLong(this::lastProbedAtOf)
+                                     .thenComparing(member -> member.nodeId().id()))
+                      .map(Option::option)
+                      .orElseGet(Option::none);
+    }
 
-        if (candidates.isEmpty()) {
-            return none();
-        }
-
-        // Capture size locally so a concurrent membership change between modulo and get()
-        // cannot drive the index out of bounds. `Math.floorMod` keeps the index non-negative
-        // across the eventual `getAndIncrement` overflow at Integer.MIN_VALUE.
-        var size = candidates.size();
-        var index = Math.floorMod(probeIndex.getAndIncrement(), size);
-        return option(candidates.get(index));
+    /// Last-probe ordinal for `member`, or `Long.MIN_VALUE` if never probed (sorts
+    /// first in [#selectNextProbeTarget] so a fresh/swept-and-readmitted member wins).
+    private long lastProbedAtOf(SwimMember member) {
+        return option(lastProbedAt.get(member.nodeId())).or(Long.MIN_VALUE);
     }
 
     private boolean isProbable(SwimMember member) {
@@ -1417,5 +1444,31 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// `announceJoin` seeds it (pre-announce sentinel).
     public long selfIncarnation() {
         return selfIncarnation.get();
+    }
+
+    /// Test-only: run one least-recently-probed selection-and-probe cycle (the
+    /// `selectNextProbeTarget().onPresent(probeTarget)` half of [#tick], without the
+    /// refresh/expire/cleanup housekeeping). Used by the probe-fairness regression tests
+    /// to drive selection deterministically without scheduler timing. Returns the selected
+    /// target (if any) so a test can assert which member was chosen.
+    Option<SwimMember> probeOnceForTest() {
+        var selected = selectNextProbeTarget();
+        selected.onPresent(this::probeTarget);
+        return selected;
+    }
+
+    /// Test-only: introduce a member directly into the membership map in the given state,
+    /// bypassing the seed/gossip/announce admission gates. Used by the probe-fairness
+    /// regression tests to set up and churn a controlled membership set.
+    void putMemberForTest(NodeId nodeId, InetSocketAddress address, MemberState state) {
+        members.put(nodeId, SwimMember.swimMember(nodeId, state, 0, address));
+    }
+
+    /// Test-only: remove a member directly from the membership map (and its probe
+    /// schedule entry), simulating a gossip-driven removal. Used by the probe-fairness
+    /// regression tests to churn a flapping member between selections.
+    void removeMemberForTest(NodeId nodeId) {
+        members.remove(nodeId);
+        lastProbedAt.remove(nodeId);
     }
 }
