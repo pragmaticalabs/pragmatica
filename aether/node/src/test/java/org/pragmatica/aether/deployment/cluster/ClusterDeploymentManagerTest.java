@@ -727,15 +727,16 @@ class ClusterDeploymentManagerTest {
     }
 
     @Test
-    void handleAppBlueprintChange_registerOnlyTrue_firstPublish_writesSliceTargetValue() {
+    void handleAppBlueprintChange_registerOnlyTrue_firstPublish_suppressesSliceTargetValue() {
         becomeLeader();
         addTopology(self, node2, node3);
 
-        // First-ever publish: register-only cannot suppress fresh-slice bootstrap.
+        // Register-only suppression is unconditional (#124): even a first-ever publish must
+        // not activate — the operator activates explicitly. (Pre-#124 this bootstrapped.)
         var blueprint = createNamedBlueprint("app-register-first", "service-register-first");
         sendAppBlueprintPut(manager, blueprint, true);
 
-        assertThat(collectSliceTargetPuts()).hasSize(1);
+        assertThat(collectSliceTargetPuts()).isEmpty();
     }
 
     @Test
