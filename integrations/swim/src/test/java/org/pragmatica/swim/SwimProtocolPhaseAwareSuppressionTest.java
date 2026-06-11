@@ -73,11 +73,11 @@ class SwimProtocolPhaseAwareSuppressionTest {
                           timeSpan(50).millis()).withJoinGrace(timeSpan(0).millis());
     }
 
-    /// Like [#tightConfig] but with a NORMAL-phase JOIN-GRACE window LONGER than the whole
-    /// FAULTY-resident lifetime (suspect-window 150ms, sweep at suspectTimeout*3=450ms).
-    /// 600ms keeps a never-HEALTHY member continuously within grace from its first FAULTY
-    /// edge through sweep, so the within-grace suppression (UNKNOWN, no tombstone) is
-    /// observed without racing the sweep-time tombstone backstop.
+    /// Like [#tightConfig] but with a NORMAL-phase JOIN-GRACE window (600ms) LONGER than
+    /// the suspect-window (150ms): the SUSPECT->FAULTY expiry of a never-HEALTHY member
+    /// is DEFERRED for the remainder of grace (188e0b522) — the member stays SUSPECT and
+    /// probe-eligible with no emission and no tombstone — and the FAULTY edge then lands
+    /// after grace expiry (FaultyObserved + tombstone).
     private static SwimConfig graceConfig() {
         return swimConfig(timeSpan(50).millis(),
                           timeSpan(20).millis(),
@@ -380,11 +380,15 @@ class SwimProtocolPhaseAwareSuppressionTest {
     @Nested
     class JoinGracePhase {
         @Test
-        void normalPhase_neverHealthyMember_withinGrace_emitsUnknown_notFaulty_notTombstoned() {
+        void normalPhase_neverHealthyMember_withinGrace_suspectDeferred_thenFaultyAndTombstonedAfterGrace() throws InterruptedException {
             // A freshly-joined NORMAL-phase replacement that has not yet been confirmed
-            // HEALTHY by the leader: its FAULTY edge fires WHILE within the join-grace
-            // window, so it is suppressed to UnknownObserved and NOT tombstoned — the
-            // leader's probe cycle still has time to confirm it (the bug fix).
+            // HEALTHY by the leader: since 188e0b522 its SUSPECT->FAULTY transition is
+            // DEFERRED while within the join-grace window (expireSuspectIfOverdue) — the
+            // member stays SUSPECT and probe-eligible so the leader's probe cycle can
+            // confirm it (the bug fix). No FAULTY edge fires within grace, so nothing is
+            // emitted and nothing is tombstoned. Once grace expires, normal expiry
+            // resumes: the FAULTY edge lands PAST grace and therefore emits
+            // FaultyObserved and tombstones — grace only DEFERS, never skips.
             var transport = new RecordingTransport();
             var listener = new RecordingListener();
             var observations = new RecordingObservationSink();
@@ -403,19 +407,33 @@ class SwimProtocolPhaseAwareSuppressionTest {
 
             protocol.start();
             try {
-                // Within grace: a FAULTY edge produces UnknownObserved, never FaultyObserved.
-                await().atMost(Duration.ofSeconds(2))
-                       .until(() -> !observations.byType(SwimObservation.UnknownObserved.class).isEmpty());
-
+                // WITHIN grace (600ms): the suspect-window (150ms) has elapsed but the
+                // transition is deferred — still SUSPECT, no emission, no tombstone.
+                Thread.sleep(300L);
+                assertThat(protocol.members().get(NODE_A).state())
+                    .as("Within join-grace: never-HEALTHY member's SUSPECT->FAULTY must be deferred")
+                    .isEqualTo(MemberState.SUSPECT);
                 assertThat(observations.byType(SwimObservation.FaultyObserved.class))
-                    .as("Within join-grace: never-HEALTHY member must NOT emit FaultyObserved")
+                    .as("Within join-grace: no FAULTY edge, no FaultyObserved")
                     .isEmpty();
                 assertThat(observations.byType(SwimObservation.UnknownObserved.class))
-                    .as("Within join-grace: FAULTY edge is suppressed to UnknownObserved")
-                    .isNotEmpty();
+                    .as("Within join-grace: the deferred transition emits nothing at all")
+                    .isEmpty();
                 assertThat(protocol.tombstonedForTest(NODE_A))
                     .as("Within join-grace: a never-HEALTHY member must NOT be tombstoned")
                     .isFalse();
+
+                // AFTER grace expiry: the deferred expiry resumes; the FAULTY edge lands
+                // post-grace in NORMAL phase => FaultyObserved + tombstone.
+                await().atMost(Duration.ofSeconds(2))
+                       .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
+
+                assertThat(protocol.tombstonedForTest(NODE_A))
+                    .as("After grace expiry: the never-HEALTHY FAULTY member IS tombstoned (deferred, not skipped)")
+                    .isTrue();
+                assertThat(observations.byType(SwimObservation.UnknownObserved.class))
+                    .as("NORMAL phase, grace expired: no UNKNOWN suppression on the FAULTY edge")
+                    .isEmpty();
             } finally {
                 protocol.stop();
             }

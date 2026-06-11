@@ -45,6 +45,21 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///                        Once the window elapses, a still-never-HEALTHY FAULTY member IS tombstoned and
 ///                        emitted FAULTY exactly as today (the 06-02 anti-oscillation contract). A value of
 ///                        zero disables the window — behavior is then identical to the pre-grace logic.
+/// @param lhmMaxScore     Wave-6 Lifeguard Local Health Multiplier cap. The local self-awareness score
+///                        rises by 1 on local trouble (own probe cycle timed out with no ack, failed
+///                        probe send, a remote suspicion of self requiring refutation) and decays by 1
+///                        on each verified probe-ack, saturating in `[0, lhmMaxScore]`. The suspicion
+///                        window this node arms is `suspectTimeout × min(score + 1, lhmMaxScore)` —
+///                        i.e. the multiplier ALSO saturates at `×lhmMaxScore` (with the default 8 the
+///                        stretch caps at exactly ×8; score 7 and score 8 both yield ×8). Suspicion
+///                        window only — probe cadence is NOT stretched (the fixed-rate tick keeps
+///                        genuine-kill detection latency predictable).
+/// @param dogpileExpectedConfirmers Wave-6 Lifeguard dogpile parameter K: the number of independent
+///                        confirmers (distinct gossip senders re-asserting the same suspicion) at which
+///                        a suspicion window shrinks fully from its LHM-stretched max back to the base
+///                        `suspectTimeout`. Effective K is `max(1, min(this, trackedMembers - 1))`
+///                        (i.e. `min(K, clusterSize - 2)`). Shrink curve is logarithmic
+///                        (`max - (max-min) · log(C+1)/log(K+1)`, clamped at `min`), memberlist-style.
 @Codec
 @CodecFor({TimeSpan.class, java.net.InetSocketAddress.class})
 public record SwimConfig(TimeSpan period,
@@ -55,7 +70,9 @@ public record SwimConfig(TimeSpan period,
                          TimeSpan startupDelay,
                          String clusterName,
                          int swimPortOffset,
-                         TimeSpan joinGrace) {
+                         TimeSpan joinGrace,
+                         int lhmMaxScore,
+                         int dogpileExpectedConfirmers) {
 
     /// Default configuration — suitable for Docker and containerized environments.
     /// `suspectTimeout` is the dominant hop in the SWIM detection chain; lowered
@@ -71,6 +88,12 @@ public record SwimConfig(TimeSpan period,
     /// `joinGrace` later (its FAULTY is merely deferred by this window, never skipped).
     public static final TimeSpan DEFAULT_JOIN_GRACE = timeSpan(12).seconds();
 
+    /// Default Wave-6 Lifeguard LHM cap (memberlist-style awareness cap, ×8 max stretch).
+    public static final int DEFAULT_LHM_MAX_SCORE = 8;
+
+    /// Default Wave-6 Lifeguard dogpile expected-confirmer count K.
+    public static final int DEFAULT_DOGPILE_EXPECTED_CONFIRMERS = 3;
+
     public static final SwimConfig DEFAULT = swimConfig(
         timeSpan(1).seconds(),
         timeSpan(800).millis(),
@@ -84,6 +107,7 @@ public record SwimConfig(TimeSpan period,
     );
 
     /// Factory with all parameters including cluster name, swim port offset, and join grace.
+    /// Lifeguard tunables default (see [`#withLhmMaxScore(int)`] / [`#withDogpileExpectedConfirmers(int)`]).
     public static SwimConfig swimConfig(TimeSpan period,
                                         TimeSpan probeTimeout,
                                         int indirectProbes,
@@ -94,7 +118,8 @@ public record SwimConfig(TimeSpan period,
                                         int swimPortOffset,
                                         TimeSpan joinGrace) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, startupDelay, clusterName, swimPortOffset, joinGrace);
+                              maxPiggyback, startupDelay, clusterName, swimPortOffset, joinGrace,
+                              DEFAULT_LHM_MAX_SCORE, DEFAULT_DOGPILE_EXPECTED_CONFIRMERS);
     }
 
     /// Factory with all parameters including cluster name and swim port offset; join grace defaults.
@@ -107,7 +132,8 @@ public record SwimConfig(TimeSpan period,
                                         String clusterName,
                                         int swimPortOffset) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, startupDelay, clusterName, swimPortOffset, DEFAULT_JOIN_GRACE);
+                              maxPiggyback, startupDelay, clusterName, swimPortOffset, DEFAULT_JOIN_GRACE,
+                              DEFAULT_LHM_MAX_SCORE, DEFAULT_DOGPILE_EXPECTED_CONFIRMERS);
     }
 
     /// Factory with all parameters including cluster name; swimPortOffset defaults to 0.
@@ -119,7 +145,8 @@ public record SwimConfig(TimeSpan period,
                                         TimeSpan startupDelay,
                                         String clusterName) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, startupDelay, clusterName, 0, DEFAULT_JOIN_GRACE);
+                              maxPiggyback, startupDelay, clusterName, 0, DEFAULT_JOIN_GRACE,
+                              DEFAULT_LHM_MAX_SCORE, DEFAULT_DOGPILE_EXPECTED_CONFIRMERS);
     }
 
     /// Factory with all timing/probe parameters — clusterName defaults to empty (no gating).
@@ -130,7 +157,8 @@ public record SwimConfig(TimeSpan period,
                                         int maxPiggyback,
                                         TimeSpan startupDelay) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, startupDelay, "", 0, DEFAULT_JOIN_GRACE);
+                              maxPiggyback, startupDelay, "", 0, DEFAULT_JOIN_GRACE,
+                              DEFAULT_LHM_MAX_SCORE, DEFAULT_DOGPILE_EXPECTED_CONFIRMERS);
     }
 
     /// Factory with defaults for startupDelay.
@@ -140,7 +168,8 @@ public record SwimConfig(TimeSpan period,
                                         TimeSpan suspectTimeout,
                                         int maxPiggyback) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, timeSpan(10).seconds(), "", 0, DEFAULT_JOIN_GRACE);
+                              maxPiggyback, timeSpan(10).seconds(), "", 0, DEFAULT_JOIN_GRACE,
+                              DEFAULT_LHM_MAX_SCORE, DEFAULT_DOGPILE_EXPECTED_CONFIRMERS);
     }
 
     /// Factory with defaults.
@@ -166,13 +195,16 @@ public record SwimConfig(TimeSpan period,
                               DEFAULT.startupDelay(),
                               DEFAULT.clusterName(),
                               DEFAULT.swimPortOffset(),
-                              DEFAULT.joinGrace());
+                              DEFAULT.joinGrace(),
+                              DEFAULT.lhmMaxScore(),
+                              DEFAULT.dogpileExpectedConfirmers());
     }
 
     /// Derive a new config with the given cluster name.
     public SwimConfig withClusterName(String name) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, startupDelay, name, swimPortOffset, joinGrace);
+                              maxPiggyback, startupDelay, name, swimPortOffset, joinGrace,
+                              lhmMaxScore, dogpileExpectedConfirmers);
     }
 
     /// Derive a new config with the given SWIM port offset. The offset is added to
@@ -180,12 +212,29 @@ public record SwimConfig(TimeSpan period,
     /// [`#swimPortOffset()`].
     public SwimConfig withSwimPortOffset(int offset) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, startupDelay, clusterName, offset, joinGrace);
+                              maxPiggyback, startupDelay, clusterName, offset, joinGrace,
+                              lhmMaxScore, dogpileExpectedConfirmers);
     }
 
     /// Derive a new config with the given per-member join-grace window. See [`#joinGrace()`].
     public SwimConfig withJoinGrace(TimeSpan grace) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, startupDelay, clusterName, swimPortOffset, grace);
+                              maxPiggyback, startupDelay, clusterName, swimPortOffset, grace,
+                              lhmMaxScore, dogpileExpectedConfirmers);
+    }
+
+    /// Derive a new config with the given Lifeguard LHM cap. See [`#lhmMaxScore()`].
+    public SwimConfig withLhmMaxScore(int maxScore) {
+        return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
+                              maxPiggyback, startupDelay, clusterName, swimPortOffset, joinGrace,
+                              maxScore, dogpileExpectedConfirmers);
+    }
+
+    /// Derive a new config with the given dogpile expected-confirmer count K.
+    /// See [`#dogpileExpectedConfirmers()`].
+    public SwimConfig withDogpileExpectedConfirmers(int expectedConfirmers) {
+        return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
+                              maxPiggyback, startupDelay, clusterName, swimPortOffset, joinGrace,
+                              lhmMaxScore, expectedConfirmers);
     }
 }

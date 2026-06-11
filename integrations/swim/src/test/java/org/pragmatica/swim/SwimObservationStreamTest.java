@@ -67,12 +67,16 @@ class SwimObservationStreamTest {
         void setUp() {
             // Tight timings so the suspect-window expiry runs within the test budget.
             // startupDelay reduced to ~50ms so the first tick runs immediately.
+            // joinGrace shortened from the 12s default to 600ms: since 188e0b522 a
+            // never-HEALTHY peer's SUSPECT→FAULTY is DEFERRED while within join-grace
+            // (expireSuspectIfOverdue), so the cold-boot UNKNOWN emission only fires
+            // once grace has expired.
             var config = swimConfig(timeSpan(50).millis(),
                                     timeSpan(20).millis(),
                                     3,
                                     timeSpan(150).millis(),
                                     8,
-                                    timeSpan(50).millis());
+                                    timeSpan(50).millis()).withJoinGrace(timeSpan(600).millis());
             transport = new RecordingTransport();
             listener = new RecordingListener();
             observations = new RecordingObservationSink();
@@ -82,7 +86,7 @@ class SwimObservationStreamTest {
         }
 
         @Test
-        void coldBoot_neverSeenHealthy_doesNotEmitFaulty() {
+        void coldBoot_neverSeenHealthy_suspectDeferredWithinGrace_thenEmitsUnknownNotFaulty() throws InterruptedException {
             // Inject a SUSPECT for NODE_A via gossip — peer has never been HEALTHY.
             var suspectUpdate = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectUpdate)));
@@ -91,9 +95,25 @@ class SwimObservationStreamTest {
                 .as("Suspect must still be emitted on the SUSPECT edge")
                 .hasSize(1);
 
-            // Now drive the suspect-window expiry — SWIM would normally transition to FAULTY.
             protocol.start();
             try {
+                // WITHIN join-grace (600ms): the suspect-window expiry (150ms) is DEFERRED
+                // for a never-HEALTHY peer (188e0b522, expireSuspectIfOverdue) — the member
+                // stays SUSPECT (probe-eligible) and NO FAULTY edge fires, so neither
+                // UnknownObserved nor FaultyObserved is emitted.
+                Thread.sleep(300L);
+                assertThat(protocol.members().get(NODE_A).state())
+                    .as("Within join-grace: never-HEALTHY peer's SUSPECT->FAULTY must be deferred")
+                    .isEqualTo(MemberState.SUSPECT);
+                assertThat(observations.byType(SwimObservation.UnknownObserved.class))
+                    .as("Within join-grace: no FAULTY edge fires, so no UnknownObserved yet")
+                    .isEmpty();
+                assertThat(observations.byType(SwimObservation.FaultyObserved.class))
+                    .as("Within join-grace: no FAULTY edge fires at all")
+                    .isEmpty();
+
+                // AFTER grace expiry the deferred expiry resumes: the FAULTY edge fires and
+                // cold-boot suppression (never-HEALTHY in COLD_BOOT) emits UnknownObserved.
                 await().atMost(Duration.ofSeconds(3))
                        .until(() -> !observations.byType(SwimObservation.UnknownObserved.class).isEmpty()
                                     || !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
@@ -286,15 +306,19 @@ class SwimObservationStreamTest {
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 3L, List.of(faultyUpdate)));
 
             // MemberDiscovered is a join event (feeds the QUIC dial set), not a health
-            // edge — exclude it and assert exactly one observation per health-state edge.
+            // edge — exclude it. One observation per health-state edge, EXCEPT the
+            // FAULTY edge, which emits the pair FaultyObserved + DepartedObserved
+            // (FAULTY is confirmed death — the death broadcast fires at the edge, the
+            // residency sweep is map-hygiene only and emits nothing).
             assertThat(observations.all.stream()
                                        .filter(o -> !(o instanceof SwimObservation.MemberDiscovered))
                                        .toList())
-                .as("Edge-triggered emission: exactly one observation per state edge")
-                .hasSize(3);
+                .as("Edge-triggered emission: one observation per state edge + the FAULTY-edge Departed pair")
+                .hasSize(4);
             assertThat(observations.byType(SwimObservation.HealthyObserved.class)).hasSize(1);
             assertThat(observations.byType(SwimObservation.SuspectObserved.class)).hasSize(1);
             assertThat(observations.byType(SwimObservation.FaultyObserved.class)).hasSize(1);
+            assertThat(observations.byType(SwimObservation.DepartedObserved.class)).hasSize(1);
         }
     }
 

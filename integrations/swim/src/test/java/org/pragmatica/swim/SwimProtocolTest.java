@@ -657,9 +657,11 @@ class SwimProtocolTest {
         }
 
         @Test
-        void handleSelfUpdate_repeatedSuspicion_refutesWithStrictlyIncreasingDurableIncarnation() {
-            // Three suspicions of self at the same incarnation X=5. Each refutation must
-            // strictly advance the durably-stored self-incarnation past 5 (not re-send 6).
+        void handleSelfUpdate_repeatedStaleSuspicion_refutesOnceThenIgnoresReplays() {
+            // A suspicion of self at incarnation X=5 is refuted ONCE with an incarnation
+            // strictly greater than 5 (durable). Replays of the SAME stale suspicion
+            // (incarnation now below our refutation) are ignored entirely — no further
+            // incarnation bumps (pre-gate every replay re-bumped, feeding gossip churn).
             var selfSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, 5L, SELF_ADDR);
 
             protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(selfSuspect)));
@@ -669,15 +671,17 @@ class SwimProtocolTest {
                 .isGreaterThan(5L);
 
             protocol.onMessage(ADDR_A, new Ping(NODE_A, 2L, List.of(selfSuspect)));
-            var afterSecond = protocol.selfIncarnation();
-            assertThat(afterSecond)
-                .as("durable: each refutation strictly advances the stored incarnation")
-                .isGreaterThan(afterFirst);
-
             protocol.onMessage(ADDR_A, new Ping(NODE_A, 3L, List.of(selfSuspect)));
             assertThat(protocol.selfIncarnation())
-                .as("monotonic advance persists across repeated suspicions")
-                .isGreaterThan(afterSecond);
+                .as("stale replays of an already-refuted suspicion must NOT move the incarnation")
+                .isEqualTo(afterFirst);
+
+            // A GENUINELY NEW suspicion at our current incarnation still strictly advances.
+            var newSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, afterFirst, SELF_ADDR);
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 4L, List.of(newSuspect)));
+            assertThat(protocol.selfIncarnation())
+                .as("a new suspicion challenging the current liveness claim strictly advances the stored incarnation")
+                .isGreaterThan(afterFirst);
         }
 
         @Test
