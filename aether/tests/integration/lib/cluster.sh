@@ -27,10 +27,9 @@ cluster_member_count() {
     #                          committed scale request
     #
     # Primary signal is `members.length` (ground truth: what the cluster
-    # considers its membership). `desiredSize` is consulted as a tie-breaker
-    # only when the snapshot has not yet been published at all (cold boot)
-    # or when it lags desired during the brief admit window. Falls back to
-    # topology.coreCount only if the generation endpoint is unreachable / empty.
+    # considers its membership). `desiredSize` is consulted ONLY when the
+    # snapshot carries no members at all (cold boot, pre-publication). Falls
+    # back to topology.coreCount only if the generation endpoint is unreachable / empty.
     local gen
     gen=$(direct_api_get "/api/cluster/generation" 2>/dev/null)
     local desired members observed=0
@@ -47,7 +46,14 @@ cluster_member_count() {
             | head -1 | grep -o '[0-9]*$' || true)
         desired="${desired:-0}"
         observed="$members"
-        if [ "$desired" -gt "$observed" ] 2>/dev/null; then
+        # desiredSize is a CONFIG value, not an observation: it flips the instant
+        # the scale config write lands, long before any node is provisioned. Taking
+        # max(members, desired) here made scale tests "converge" on the config flip
+        # with zero real provisioning (2026-06-11 Wave-9 gate: scale 5→7→5 inside
+        # the 15s reconciler debounce never provisioned a node, yet the poll
+        # reported 7). Consult desired ONLY as a cold-boot fallback when the
+        # snapshot carries no members at all.
+        if [ "$observed" -eq 0 ] && [ "$desired" -gt 0 ] 2>/dev/null; then
             observed="$desired"
         fi
     fi
@@ -89,8 +95,8 @@ cluster_leader() {
 #
 # Use after a state-changing action (scale_cluster, kill_node, etc.) when the test
 # wants the FINAL count without polling. Without this, `cluster_member_count` may
-# return the pre-action snapshot — particularly for scale-down, where the
-# `max(members, desired)` heuristic biases toward the larger (stale) members count.
+# return the pre-action snapshot — the leader republishes the generation only
+# after the action's membership churn settles.
 #
 # Args: optional timeout in seconds (default 30).
 # Falls back to the plain `cluster_member_count` if the await endpoint is unreachable
@@ -159,7 +165,7 @@ ready_core_count() {
     n=$(printf '%s' "$payload" \
         | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
         | grep -c '"nodeId"' \
-        || echo 0)
+        || true)
     [ -z "$n" ] && n=0
     echo "$n"
 }
@@ -184,7 +190,7 @@ cluster_active_core_count() {
         | head -1 \
         | grep -oE '"[^"]+"' \
         | grep -cv '^"coreNodes"$' \
-        || echo 0)
+        || true)
     # Defensive: handle any non-numeric result (sed/grep failures on empty input).
     [ -z "$core_count" ] && core_count=0
     [ -z "$core_nodes_count" ] && core_nodes_count=0
@@ -363,6 +369,16 @@ pick_non_leader() {
                     [ -z "$candidate" ] && continue
                     if [ "$candidate" = "$leader" ]; then pass_diag="${pass_diag} ${candidate}=EXCL-leader"; continue; fi
                     if [ -n "$pinned" ] && [ "$candidate" = "$pinned" ]; then pass_diag="${pass_diag} ${candidate}=EXCL-pinned"; continue; fi
+                    # Caller-scoped exclusion: PICK_EXCLUDE holds whitespace-separated
+                    # NodeIds the caller needs to stay alive (e.g. the slice owner its
+                    # load is pinned to via retarget_app_endpoint_to_active_slice — the
+                    # harness has no LB, so killing the pinned owner measures the
+                    # missing LB, not the product).
+                    local _excl _excluded=""
+                    for _excl in ${PICK_EXCLUDE:-}; do
+                        if [ "$candidate" = "$_excl" ]; then _excluded=1; break; fi
+                    done
+                    if [ -n "$_excluded" ]; then pass_diag="${pass_diag} ${candidate}=EXCL-caller"; continue; fi
                     # Docker-mode liveness guard: lifecycle may still report a
                     # just-killed node as READY before membership evicts it.
                     # NodeId == container_name (post-migration); `docker ps` (no -a)
@@ -734,7 +750,10 @@ wait_for_node_count_fast() {
                 members=$(printf '%s' "$gen" | grep -o '"nodeId"' | wc -l | tr -d ' ')
                 members="${members:-0}"
                 observed="$members"
-                if [ "$desired" -gt "$observed" ] 2>/dev/null; then
+                # desiredSize is config, not observation (see cluster_member_count):
+                # max(members, desired) made scale waits return on the config write
+                # itself with zero real provisioning. Cold-boot fallback only.
+                if [ "$observed" -eq 0 ] && [ "$desired" -gt 0 ] 2>/dev/null; then
                     observed="$desired"
                 fi
             fi
@@ -1032,6 +1051,11 @@ first_seed_host_app_port() {
 # leaves APP_ENDPOINT at a usable value (original LB on docker, retargeted on cloud).
 retarget_app_endpoint_to_active_slice() {
     local coords="$1" port="${2:-8070}" probe_path="${3:-}" probe_timeout="${4:-30}"
+    # Exported observation (global, NOT local): the owner NodeId the app load is
+    # pinned to. The harness has no LB — callers that kill nodes while this load
+    # runs must pass it via PICK_EXCLUDE to pick_non_leader, or the test measures
+    # the missing LB instead of the product.
+    RETARGETED_SLICE_OWNER=""
     # Identify a node that currently hosts an ACTIVE instance of the artifact so
     # we can probe / PUT against that node directly rather than racing route-table
     # propagation across the cluster.
@@ -1050,6 +1074,7 @@ retarget_app_endpoint_to_active_slice() {
         log_warn "retarget: no ACTIVE owner found for ${coords}; APP_ENDPOINT unchanged. /api/slices: ${diag:-<empty>}"
         return 1
     fi
+    RETARGETED_SLICE_OWNER="$owner"
     if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
         # Cloud: each node has its own public IP at the same logical app port.
         local owner_ip

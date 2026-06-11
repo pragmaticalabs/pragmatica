@@ -36,6 +36,9 @@ start_load() {
                 success=$((success + 1))
             else
                 failure=$((failure + 1))
+                # Per-failure forensics: status 000 = transport/connect error
+                # (target node down), 4xx/5xx = node up but request rejected.
+                echo "$(date -u +%H:%M:%S) ${status}" >> "/tmp/load_failures_$$.txt"
             fi
             sleep "$interval"
         done
@@ -100,6 +103,19 @@ stop_load() {
 
     LOAD_PIDS=()
     log_info "Load results: success=${total_success}, failure=${total_failure}" >&2
+
+    # Failure forensics: status-code histogram + time window of the failures.
+    # Discriminates transport errors (000) from routed-but-rejected (4xx/5xx)
+    # and shows whether failures cluster in a cutover window or span the run.
+    local ff
+    for ff in /tmp/load_failures_*.txt; do
+        if [ -f "$ff" ]; then
+            log_info "Failure status histogram: $(awk '{print $2}' "$ff" | sort | uniq -c | awk '{printf "%sx%s ", $1, $2}')" >&2
+            log_info "Failure window: first=$(head -1 "$ff") last=$(tail -1 "$ff")" >&2
+            rm -f "$ff"
+        fi
+    done
+
     echo "${total_success}:${total_failure}"
 }
 

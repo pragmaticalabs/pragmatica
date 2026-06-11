@@ -54,6 +54,26 @@ topology_events_since() {
         for i in $(seq 0 $((count - 1))); do
             base_urls+=("http://${TARGET_HOST}:$((base_port + i))")
         done
+
+        # The fixed MGMT_PORT+i slots above cover only compose seeds. CTM-provisioned
+        # replacements publish mgmt 8080 on EPHEMERAL host ports (DockerComputeProvider
+        # `-p 8080`), so events buffered only on a replacement node were invisible to
+        # this union — e.g. a departure observed solely by the node provisioned to
+        # replace the victim (2026-06-11 Wave-9 gate, verdict V3). Discover them via
+        # one ssh roundtrip using the same `aether.cluster` label convention as
+        # _discover_endpoint_by_label (common.sh); dedupe against seeds whose 8080
+        # maps back to a fixed slot.
+        if [ -n "${CLUSTER_ID:-}" ] && command -v remote_exec >/dev/null 2>&1; then
+            local discovered hp u
+            discovered=$(remote_exec "docker ps --filter 'label=aether.cluster=${CLUSTER_ID}' --format '{{.Names}}' | while read -r n; do docker port \"\$n\" 8080/tcp 2>/dev/null | sed -n '1s/.*:\\([0-9][0-9]*\\)\$/\\1/p'; done" 2>/dev/null || true)
+            for hp in $discovered; do
+                u="http://${TARGET_HOST}:${hp}"
+                case " ${base_urls[*]-} " in
+                    *" $u "*) ;;
+                    *) base_urls+=("$u") ;;
+                esac
+            done
+        fi
     fi
 
     for base_url in "${base_urls[@]}"; do

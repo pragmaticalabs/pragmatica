@@ -60,7 +60,12 @@ test_kill_during_load() {
     local leader
     leader=$(cluster_leader)
     local victim
-    victim=$(pick_non_leader "$leader")
+    # Exclude the slice owner the load is pinned to (retarget above): the harness
+    # has no LB, so killing the pinned owner makes every in-flight request fail by
+    # construction — that measures the missing LB, not the product (2026-06-11
+    # Wave-9 gate, verdict V1: 100% "error rate" was the harness killing its own
+    # load target).
+    victim=$(PICK_EXCLUDE="${RETARGETED_SLICE_OWNER:-}" pick_non_leader "$leader")
     KILLED_VICTIM="$victim"
 
     # Capture topology baseline BEFORE the kill so the event-driven barrier

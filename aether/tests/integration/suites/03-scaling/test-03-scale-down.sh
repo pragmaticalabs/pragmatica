@@ -75,8 +75,10 @@ test_scale_up_to_7() {
     scale_cluster 7
     # Fast-poll variant (see lib/cluster.sh:wait_for_node_count_fast) — avoids
     # the CLI/double-curl per-iter cost that pushed scale-up past 300s on
-    # Hetzner remote even when the cluster was actually at 7.
-    wait_for_node_count_fast 7 180
+    # Hetzner remote even when the cluster was actually at 7. Budget 300s: the
+    # wait now blocks on REAL provisioning (15s reconciler debounce + CTM
+    # provision + join), not the config flip — matches test-02-scale-up.
+    wait_for_node_count_fast 7 300
     local count
     count=$(cluster_member_count)
     assert_eq "$count" "7" "Scaled to 7 nodes"

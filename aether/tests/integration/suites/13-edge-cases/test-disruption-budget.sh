@@ -40,10 +40,16 @@ test_cluster_ready() {
     # (subshell-per-test). Robust to the destructive chain, where the original seed names may
     # already be terminal-removed + replaced by ULID nodes. Mirrors the sibling
     # test-stale-route-cleanup.sh, which discovers its target the same way.
-    local leader
+    local leader drain_count
     leader=$(cluster_leader)
-    if ! pick_non_leader "$leader" 3 > "$DRAIN_NODES_FILE" \
-            || [ "$(grep -cve '^$' "$DRAIN_NODES_FILE" 2>/dev/null || echo 0)" -lt 3 ]; then
+    if ! pick_non_leader "$leader" 3 > "$DRAIN_NODES_FILE"; then
+        log_fail "Cluster ready: pick_non_leader failed — need 3 distinct live READY non-leader nodes for the drain sequence"
+        return 1
+    fi
+    # grep -c prints 0 AND exits 1 on zero matches — `|| echo 0` would emit a second
+    # line ("0\n0") and wedge the numeric test with rc=2 (silently falsy under ||).
+    drain_count=$(grep -cve '^$' "$DRAIN_NODES_FILE" 2>/dev/null || true)
+    if [ "${drain_count:-0}" -lt 3 ]; then
         log_fail "Cluster ready: need 3 distinct live READY non-leader nodes for the drain sequence; got [$(tr '\n' ' ' < "$DRAIN_NODES_FILE" 2>/dev/null)]"
         return 1
     fi
