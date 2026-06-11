@@ -135,9 +135,12 @@ class RankStaircaseTest {
 
         // First tick on rank=4 is scheduled at 850ms. A peer commits leader BEFORE then by
         // dispatching a synthetic LeaderCommitted (simulating push-side notification path).
-        // The Electing handler arm transitions to Led(NODE_1) — pending tick is cancelled in
-        // Electing.onExit, so no proposal ever fires.
+        // The peer's commit POSTDATES this node's election decision (entryBaseline=0), so its
+        // observed viewSequence (1) exceeds the baseline — model that (in production the LeaderKey
+        // ValuePut fires observeViewSequence before the FSM sees LeaderCommitted). The
+        // sequence-gated Electing arm then adopts and cancels the pending tick in Electing.onExit.
         Thread.sleep(100);
+        ((LeaderElectionState) h.state()).ctx().observeViewSequence(1L);
         h.dispatch(new LeaderCommitted(NODE_1));
 
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
@@ -186,7 +189,10 @@ class RankStaircaseTest {
 
         // rank of NODE_5 in the surviving topology is 3 (NODE_2 < NODE_3 < NODE_4 < NODE_5),
         // first-tick delay = 50ms + 3*200ms = 650ms. A peer commits a leader well before that.
+        // The re-election commit POSTDATES the ReElecting decision (entryBaseline=0), so model the
+        // observed post-death sequence (1) > baseline — the sequence-gated ReElecting arm adopts.
         Thread.sleep(100);
+        ((LeaderElectionState) h.state()).ctx().observeViewSequence(1L);
         h.dispatch(new LeaderCommitted(NODE_2));
 
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);

@@ -172,7 +172,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 case ClusterFsmEvent.NodeAdded na -> ctx.setCurrentTopology(na.topology());
                 case ClusterFsmEvent.NodeGone ng -> ctx.setCurrentTopology(ng.topology());
-                case LeaderCommitted lc -> adoptLeaderIfInTopology(ctx, lc, tx);
+                case LeaderCommitted lc -> adoptLeaderUnconditionally(ctx, lc, tx);
                 default -> tx.ignore();
             }
         }
@@ -241,7 +241,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
-                case LeaderCommitted lc -> adoptLeaderIfInTopology(ctx, lc, tx);
+                case LeaderCommitted lc -> adoptLeaderUnconditionally(ctx, lc, tx);
                 case KvSyncGraceTimeout _ -> graceTimeoutFallthrough(ctx, tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
@@ -292,16 +292,23 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// (`proposalTimeout`, default 10s) to fire `ProposalSettled.failure`.
     /// All three futures are cancelled in `onExit` / `onCasLost`.
     record Electing(LeaderElectionContext ctx,
+                    long entryBaseline,
                     AtomicReference<ScheduledFuture<?>> tickFuture,
                     AtomicReference<ScheduledFuture<?>> proposalTimeoutFuture,
                     AtomicReference<ScheduledFuture<?>> observationFuture) implements LeaderElectionState {
 
         public static Electing fresh(LeaderElectionContext ctx) {
+            // FIX-1 refinement: snapshot the highest COMMITTED viewSequence at the instant this
+            // node decides to elect. Adoption WITHIN this election requires a commit that POSTDATES
+            // the decision (seq > entryBaseline) — the stale pre-death commit (≤ baseline) is never
+            // adopted, so a killed leader's corpse in KV cannot resurrect and wedge re-election.
+            var entryBaseline = ctx.committedViewSequence();
             var tickFuture = scheduleStaircaseFirstTick(ctx, "Electing");
             var observationFuture = SharedScheduler.scheduleAtFixedRate(
                     () -> adoptLeaderFromKvIfPresent(ctx),
                     ctx.peerObservationInterval());
             return new Electing(ctx,
+                                entryBaseline,
                                 new AtomicReference<>(tickFuture),
                                 new AtomicReference<>(),
                                 new AtomicReference<>(observationFuture));
@@ -338,7 +345,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                     trySubmitProposal(ctx, this);
                 });
                 case ProposalSettled ps -> tx.handle(() -> handleProposalSettled(ctx, ps));
-                case LeaderCommitted lc -> adoptLeaderIfInTopology(ctx, lc, tx);
+                case LeaderCommitted lc -> adoptLeaderIfPostElectionCommit(ctx, lc, entryBaseline, "Electing", tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 case ClusterFsmEvent.NodeAdded na -> handleTopologyChange(ctx, na.topology());
@@ -387,14 +394,17 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // Idempotent replay — no transition.
             return;
         }
+        // FIX 1: a committed leader-SWAP is adopted unconditionally too — transport presence must
+        // not veto a consensus decision. WARN when the new leader is not yet in the transport view
+        // for diagnosability; SWIM/FSM death drives correction if it is genuinely gone.
         if (!ctx.currentTopology().contains(event.leader())) {
-            log.warn("Rejecting stale LeaderCommitted({}) in Led({}) — leader not in topology {}",
+            log.warn("Adopting leader-swap LeaderCommitted({}) in Led({}) — new leader NOT YET in "
+                     + "transport topology {} (consensus decision overrides observed state, FIX 1)",
                      event.leader(), currentLeader, ctx.currentTopology());
-            return;
         }
-        // Valid leader swap (different committed leader, in topology) — transition to a new Led
-        // instance. This covers local-mode topology-driven re-election and consensus re-elections
-        // that commit directly without passing through ReElecting.
+        // Valid leader swap (different committed leader) — transition to a new Led instance. This
+        // covers local-mode topology-driven re-election and consensus re-elections that commit
+        // directly without passing through ReElecting.
         tx.transitionTo(new Led(ctx, event.leader()));
     }
 
@@ -404,11 +414,16 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// applies here so a re-election proposal in flight cannot blind the FSM to a peer-committed
     /// leader). All three futures are cancelled in `onExit` / `onCasLost`.
     record ReElecting(LeaderElectionContext ctx,
+                      long entryBaseline,
                       AtomicReference<ScheduledFuture<?>> tickFuture,
                       AtomicReference<ScheduledFuture<?>> proposalTimeoutFuture,
                       AtomicReference<ScheduledFuture<?>> observationFuture) implements LeaderElectionState {
 
         public static ReElecting fresh(LeaderElectionContext ctx) {
+            // FIX-1 refinement (see Electing.fresh): snapshot the committed-viewSequence baseline at
+            // the decision-to-re-elect. The killed leader's stale commit (seq ≤ baseline) is fenced
+            // out of adoption; only a fresh post-death commit (> baseline) is adopted.
+            var entryBaseline = ctx.committedViewSequence();
             // R6: ReElecting uses the same rank-staircase first-tick delay as Electing. Without
             // this the prior path scheduled the first tick at `proposalRetryDelay` (~500ms) on
             // every node — i.e. classic thundering herd on leader loss, every surviving peer
@@ -422,7 +437,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             var observationFuture = SharedScheduler.scheduleAtFixedRate(
                     () -> adoptLeaderFromKvIfPresent(ctx),
                     ctx.peerObservationInterval());
-            return new ReElecting(ctx, holder, new AtomicReference<>(),
+            return new ReElecting(ctx, entryBaseline, holder, new AtomicReference<>(),
                                   new AtomicReference<>(observationFuture));
         }
 
@@ -457,7 +472,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                     trySubmitProposal(ctx, this);
                 });
                 case ProposalSettled ps -> tx.handle(() -> handleProposalSettled(ctx, ps));
-                case LeaderCommitted lc -> adoptLeaderIfInTopology(ctx, lc, tx);
+                case LeaderCommitted lc -> adoptLeaderIfPostElectionCommit(ctx, lc, entryBaseline, "ReElecting", tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 case ClusterFsmEvent.NodeAdded na -> handleTopologyChange(ctx, na.topology());
@@ -517,15 +532,50 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
     // --- Shared action helpers ---
 
-    private static void adoptLeaderIfInTopology(LeaderElectionContext ctx,
-                                                LeaderCommitted event,
-                                                TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
-        if (ctx.currentTopology().contains(event.leader())) {
-            tx.transitionTo(new Led(ctx, event.leader()));
-        } else {
-            log.warn("Rejecting stale LeaderCommitted({}) — leader not in topology {}",
+    /// Adopt a COMMITTED leader unconditionally (FIX 1, B5-facet-2 600s wedge). A committed
+    /// `LeaderKey` is a consensus-validated DECISION; the transport-fed `ctx.currentTopology()`
+    /// is OBSERVED state and must NOT veto it. Used by states that have NOT decided to elect
+    /// (`QuorumWaiting`, `AwaitingKvSync`, and the `Led` leader-swap) — there, a committed leader
+    /// is plain truth and is adopted as-is (this preserves the stuck-joiner fix: a joiner adopts
+    /// in `AwaitingKvSync` before ever reaching `Electing`). A transport-absent adoption logs WARN.
+    private static void adoptLeaderUnconditionally(LeaderElectionContext ctx,
+                                                   LeaderCommitted event,
+                                                   TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        if (!ctx.currentTopology().contains(event.leader())) {
+            log.warn("Adopting committed LeaderCommitted({}) NOT YET in transport topology {} — "
+                     + "consensus decision overrides observed transport state (FIX 1); SWIM/FSM "
+                     + "death will drive re-election if the leader is genuinely gone",
                      event.leader(), ctx.currentTopology());
         }
+        tx.transitionTo(new Led(ctx, event.leader()));
+    }
+
+    /// Adoption WITHIN an election (`Electing` / `ReElecting`), gated by SEQUENCE (FIX-1
+    /// refinement). A node that decided to elect must NOT adopt the commit it was already electing
+    /// AWAY from — the killed leader's stale `LeaderKey` (still at its old `viewSequence` N, ≤ the
+    /// `entryBaseline` snapshotted on entry) would otherwise resurrect the corpse and wedge
+    /// re-election. Only a commit that POSTDATES the decision to elect
+    /// (`committedViewSequence() > entryBaseline` — a fresh N+1 from this node's own proposal or a
+    /// peer's) is adopted; everyone electing off the same baseline adopts the same winner, so there
+    /// is no ping-pong. A stale adoption is skipped at INFO with both sequences. NOTE: gating is on
+    /// the OBSERVED committed sequence, not transport/membership — the dead leader stays a
+    /// legitimate proposal candidate concern of the live topology view (selection), never of
+    /// adoption here.
+    private static void adoptLeaderIfPostElectionCommit(LeaderElectionContext ctx,
+                                                        LeaderCommitted event,
+                                                        long entryBaseline,
+                                                        String stateLabel,
+                                                        TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        var committed = ctx.committedViewSequence();
+        if (committed <= entryBaseline) {
+            log.info("{}: skipping STALE LeaderCommitted({}) — committed viewSequence {} <= election "
+                     + "entryBaseline {} (pre-election commit; awaiting a fresh post-election commit)",
+                     stateLabel, event.leader(), committed, entryBaseline);
+            return;
+        }
+        log.info("{}: adopting post-election LeaderCommitted({}) — committed viewSequence {} > "
+                 + "entryBaseline {}", stateLabel, event.leader(), committed, entryBaseline);
+        tx.transitionTo(new Led(ctx, event.leader()));
     }
 
     /// Pull-side complement to the push-based `KVStoreNotification.ValuePut<LeaderKey>` listener.
@@ -539,13 +589,22 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// `Electing` while consensus has already named a leader visible to this node's local KV.
     private static void adoptLeaderFromKvIfPresent(LeaderElectionContext ctx) {
         ctx.currentLeaderFromKvSupplier().get().onPresent(leader -> {
-            if (!ctx.currentTopology().contains(leader)) {
-                return;
-            }
             if (ctx.currentLeader().filter(leader::equals).isPresent()) {
                 return;
             }
-            log.info("Adopting leader from KV-Store: {} (push-notification path missed)", leader);
+            // FIX 1: do NOT gate the KV-pull adoption on transport topology presence. The prior
+            // `if (!currentTopology().contains(leader)) return;` silently skipped FOREVER on every
+            // 500ms tick when the committed leader was absent from the transport view — the second
+            // root of the 600s wedge (one joiner self-healed only by luck, the other never did).
+            // The KV leader is a consensus-validated decision; adopt it. A transport-absent leader
+            // is logged WARN here; the `adoptLeaderUnconditionally` handler emits the adoption WARN.
+            if (!ctx.currentTopology().contains(leader)) {
+                log.warn("KV-pull: committed leader {} NOT in transport topology {} — adopting anyway "
+                         + "(consensus decision overrides observed state, FIX 1)",
+                         leader, ctx.currentTopology());
+            } else {
+                log.info("Adopting leader from KV-Store: {} (push-notification path missed)", leader);
+            }
             dispatchSelf(ctx, new LeaderCommitted(leader));
         });
     }

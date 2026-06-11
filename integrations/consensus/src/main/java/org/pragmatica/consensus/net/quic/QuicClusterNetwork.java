@@ -953,15 +953,37 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// reaches `connectPeer`, so deferred resolution cannot revive a confirmed-dead NodeId.
     @SuppressWarnings("JBCT-PAT-01") // Netty future callback chain
     private void connectPeer(NodeInfo peer) {
+        connectPeer(peer, false);
+    }
+
+    /// Dial overload with an explicit `forceInitiate` override. The missing-peer reconciler sets
+    /// it once the higher-id grace window has elapsed ([#higherIdGracePeriodElapsed]) so a
+    /// HIGHER-id node that has waited out a long partition CAN initiate — the grace bypass at the
+    /// reconciler was previously DEFEATED by the unconditional `shouldInitiate` guard here, which
+    /// silently `return`ed (debug-only) on every tick, pinning the peer in INIT forever (FIX 3
+    /// root). The explicit `connect(...)` paths and the lower-id reconcile path pass `false` and
+    /// keep the strict single-dialer ordering.
+    @SuppressWarnings("JBCT-PAT-01") // Netty future callback chain
+    private void connectPeer(NodeInfo peer, boolean forceInitiate) {
         var peerId = peer.id();
         // Strict ConnectionDirection: only the lower NodeId initiates. The higher NodeId
         // accepts the inbound connection. Bypassing this caused both sides to dial
         // concurrently at cold start — both Hellos completed, the second arrival closed
         // its own QuicChannel as duplicate, and that close cascaded a CONNECTION_CLOSE
         // to the OTHER side's peer link, silently killing reachability for cluster pairs.
-        if (!ConnectionDirection.shouldInitiate(self.id(), peerId)) {
-            log.debug("Skipping connection to {}: higher NodeId does not initiate (waits for inbound)", peerId);
+        // `forceInitiate` overrides this ONLY on the reconciler's grace-elapsed path, where the
+        // 60s window makes the cold-boot dual-Hello race irrelevant (both sides discovered each
+        // other in <1s on cold boot; reaching grace means a real partition was attempted-and-failed).
+        if (!forceInitiate && !ConnectionDirection.shouldInitiate(self.id(), peerId)) {
+            log.info("Missing-peer reconciler: NOT dialing {} — higher NodeId waits for inbound "
+                     + "(strict single-dialer); will force-dial once higher-id grace ({}ms) elapses",
+                     peerId, RECONCILE_BACKOFF_CAP_MS);
             return;
+        }
+        if (forceInitiate && !ConnectionDirection.shouldInitiate(self.id(), peerId)) {
+            log.warn("Missing-peer reconciler: force-dialing {} as HIGHER NodeId — lower-id side "
+                     + "has not initiated within higher-id grace ({}ms) (FIX 3 partition-recovery override)",
+                     peerId, RECONCILE_BACKOFF_CAP_MS);
         }
         // Dial the resolved (SWIM-observed IP : advertised QUIC port) address when available;
         // it defaults to peer.address() for non-SWIM-discovered peers, so behavior is unchanged
@@ -973,8 +995,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // reconciler tick re-attempts under the existing backoff.
         client.resolve(dialAddress.host())
               .onSuccess(inetAddress -> dialResolved(peer, inetAddress, dialAddress.port()))
-              .onFailure(cause -> log.debug("Skipping dial to {}: address {} did not resolve: {}",
-                                            peerId, dialAddress.asString(), cause.message()));
+              .onFailure(cause -> log.info("Missing-peer reconciler: dial to {} DEFERRED — address {} "
+                                           + "did not resolve ({}); next tick re-attempts under backoff",
+                                           peerId, dialAddress.asString(), cause.message()));
     }
 
     /// Resolution-success continuation: now that a real IP is in hand, begin CONNECTING (so the
@@ -1734,11 +1757,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
             // Defensive: the FSM desired-set already excludes workers; skip any PASSIVE that slips in.
             if (nodeInfo.role() == NodeRole.PASSIVE) {continue;}
             firstObservedMissingMs.putIfAbsent(peerId, nowMs);
-            if (!ConnectionDirection.shouldInitiate(self.id(), peerId)
-                && !higherIdGracePeriodElapsed(peerId, nowMs)) {
+            // Higher-id node normally waits for inbound. Once the grace window elapses, it MUST
+            // be allowed to force-dial (FIX 3) — otherwise an inc-0 / churned peer whose lower-id
+            // counterpart never initiates stays in INIT forever.
+            var shouldInitiate = ConnectionDirection.shouldInitiate(self.id(), peerId);
+            var graceElapsed = higherIdGracePeriodElapsed(peerId, nowMs);
+            if (!shouldInitiate && !graceElapsed) {
                 continue;
             }
-            considerDesiredPeerForReconcile(nodeInfo, nowMs);
+            considerDesiredPeerForReconcile(nodeInfo, nowMs, !shouldInitiate && graceElapsed);
         }
         return unit();
     }
@@ -1831,7 +1858,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// readmitted unconditionally (presence in the desired-set is the incarnation-fenced
     /// re-admit authority). Per-peer reconcile backoff and the CONNECTING-in-flight skip are
     /// retained. Dials via `reconcileDialPeer` with the FSM-carried `NodeInfo` (no topology lookup).
-    private void considerDesiredPeerForReconcile(NodeInfo nodeInfo, long nowMs) {
+    private void considerDesiredPeerForReconcile(NodeInfo nodeInfo, long nowMs, boolean forceInitiate) {
         var peerId = nodeInfo.id();
         var existing = peers.get(peerId);
         if (existing != null) {
@@ -1856,7 +1883,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
             log.trace("Missing-peer reconciler suppressed by per-peer backoff for {}", peerId);
             return;
         }
-        reconcileDialPeer(nodeInfo);
+        reconcileDialPeer(nodeInfo, forceInitiate);
     }
 
     /// Default jitter for the missing-peer reconciler. Light bands (0.8x–1.2x) — peers
@@ -1890,10 +1917,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @Contract private void reconcileDialPeer(NodeInfo peer) {
-        log.info("Missing-peer reconciler: re-dialing configured peer {} (phase={})",
+        reconcileDialPeer(peer, false);
+    }
+
+    @Contract private void reconcileDialPeer(NodeInfo peer, boolean forceInitiate) {
+        log.info("Missing-peer reconciler: re-dialing configured peer {} (phase={}, forceInitiate={})",
                  peer.id(),
-                 Option.option(peers.get(peer.id())).map(PeerState::phase).map(Object::toString).or("ABSENT"));
-        connectPeer(peer);
+                 Option.option(peers.get(peer.id())).map(PeerState::phase).map(Object::toString).or("ABSENT"),
+                 forceInitiate);
+        connectPeer(peer, forceInitiate);
     }
 
     /// Reset the per-peer reconnect backoff. Called on successful peer attach so a

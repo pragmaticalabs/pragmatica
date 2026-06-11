@@ -125,11 +125,12 @@ class QuorumWaitingKvPollTest {
         h.dispatch(new ClusterFsmEvent.Shutdown());
     }
 
-    /// Sanity: leader committed but NOT yet in topology — adoption is rejected (logged warn,
-    /// no transition). The FSM stays in QuorumWaiting until either topology catches up or
-    /// consensus-readiness fires.
+    /// FIX 1 (B5-facet-2): a committed KV leader NOT yet in the transport topology is adopted
+    /// UNCONDITIONALLY — the consensus decision overrides observed transport state (WARN logged).
+    /// This OVERTURNS the prior contract (which kept the FSM in QuorumWaiting until topology
+    /// caught up); that gate was the second root of the 600s never-READY wedge.
     @Test
-    void quorumWaiting_kvLeaderNotInTopology_staysInQuorumWaiting() {
+    void quorumWaiting_kvLeaderNotInTopology_adoptsUnconditionally() {
         var consensusReady = new AtomicBoolean(false);
         // KV reports PEER_A but topology is still empty (haven't received NodeAdded yet).
         var kvLeader = new AtomicReference<>(Option.some(PEER_A));
@@ -138,8 +139,9 @@ class QuorumWaitingKvPollTest {
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
 
         assertThat(h.state())
-                .as("KV-reported leader rejected because topology is empty — stays in QuorumWaiting")
-                .isInstanceOf(LeaderElectionState.QuorumWaiting.class);
+                .as("committed KV leader adopted despite empty topology — consensus overrides transport (FIX 1)")
+                .isInstanceOf(LeaderElectionState.Led.class);
+        assertThat(((LeaderElectionState.Led) h.state()).leader()).isEqualTo(PEER_A);
 
         h.dispatch(new ClusterFsmEvent.Shutdown());
     }

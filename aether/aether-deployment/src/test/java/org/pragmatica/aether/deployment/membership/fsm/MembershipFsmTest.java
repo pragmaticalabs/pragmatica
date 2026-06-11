@@ -1871,4 +1871,53 @@ class MembershipFsmTest {
         }
         return ids;
     }
+
+    /// FIX 2 (B5-facet-2): the leader-side dial-set MUST include EVERY FSM Member regardless of
+    /// incarnation provenance. A freshly-joined replacement reaches MEMBER at incarnation=0 (the
+    /// SWIM gossip-rebuilt incarnation, before any real-incarnation SwimHealthy lands); it is a
+    /// counted member and the transport must reconcile to it. These tests pin the invariant
+    /// against any future incarnation gate creeping into the dial-target computation.
+    @Nested
+    class DialSetIncarnationProvenance {
+        @Test
+        void desiredConnections_includesIncarnationZeroMember() {
+            var manager = activeManager();
+
+            manager.onMemberDescriptor(coreNodeInfo(A));
+            manager.onSwimHealthy(A, 0L);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Member");
+            assertThat(dialIds(manager))
+                    .as("an inc-0 FSM Member must appear in the dial set")
+                    .contains(A);
+        }
+
+        @Test
+        void desiredConnections_includesBothIncZeroAndRealIncarnationMembers() {
+            var manager = activeManager();
+
+            manager.onMemberDescriptor(coreNodeInfo(A));
+            manager.onSwimHealthy(A, 0L);
+            manager.onMemberDescriptor(coreNodeInfo(B));
+            manager.onSwimHealthy(B, 1_781_178_206_970L);
+
+            assertThat(dialIds(manager))
+                    .as("the inc-0 member is NOT excluded while its real-incarnation peer is dialed")
+                    .contains(A, B);
+        }
+    }
+
+    private static NodeInfo coreNodeInfo(NodeId id) {
+        return NodeInfo.nodeInfo(id,
+                                 new NodeAddress(id.id(), 6000),
+                                 org.pragmatica.consensus.net.NodeRole.ACTIVE,
+                                 java.util.Map.of(NodeInfo.LABEL_ROLE, "core"));
+    }
+
+    private static java.util.Set<NodeId> dialIds(MembershipFsm manager) {
+        return manager.desiredConnections()
+                      .stream()
+                      .map(org.pragmatica.aether.deployment.membership.fsm.PeerTarget::id)
+                      .collect(java.util.stream.Collectors.toSet());
+    }
 }

@@ -404,10 +404,12 @@ class LeaderManagerTest {
         }
 
         @Test
-        void onLeaderCommitted_rejectsStaleCommit_whenLeaderNotInTopology() throws InterruptedException {
-            // Regression: a committed leader that is NOT in the local topology must be dropped,
-            // not silently re-installed. Previously a stale consensus replay could re-install the
-            // dead leader and block re-election indefinitely.
+        void onLeaderCommitted_adoptsUnconditionally_whenLeaderNotInTopology() throws InterruptedException {
+            // FIX 1 (B5-facet-2): a committed leader NOT yet in the local transport topology is
+            // adopted UNCONDITIONALLY — a committed LeaderKey is a consensus-validated decision and
+            // transport presence must not veto it. This OVERTURNS the prior "drop stale commit"
+            // contract, which was the second root of the 600s never-READY wedge. If the leader is
+            // genuinely dead, SWIM/FSM death drives re-election via NodeGone — the correct channel.
             var minNode = nodes.getFirst();
             var localRouter = MessageRouter.mutable();
             var localWatcher = new Watcher<LeaderNotification>(new CopyOnWriteArrayList<>());
@@ -426,14 +428,15 @@ class LeaderManagerTest {
             localRouter.route(peerJoined(self, List.of(minNode, self), QUIC));
             localRouter.route(ClusterStateNotification.active());
 
-            // Stale commit: leader = node-c which is NOT in our topology
-            var stale = nodes.getLast();
-            localManager.onLeaderCommitted(stale);
+            // Committed leader = node-c which is NOT in our transport topology
+            var committed = nodes.getLast();
+            localManager.onLeaderCommitted(committed);
 
             Thread.sleep(100);
 
-            assertThat(localManager.leader()).isEqualTo(Option.none());
-            assertThat(localWatcher.collected()).isEmpty();
+            assertThat(localManager.leader())
+                    .as("committed leader adopted unconditionally despite absence from topology (FIX 1)")
+                    .isEqualTo(Option.some(committed));
         }
 
         @Test

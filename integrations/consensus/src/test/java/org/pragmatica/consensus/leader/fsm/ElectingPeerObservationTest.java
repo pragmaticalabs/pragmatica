@@ -134,9 +134,12 @@ class ElectingPeerObservationTest {
                 .as("proposal handler invoked exactly once on the tick")
                 .isEqualTo(1);
 
-        // Inject a peer-committed leader mid-flight. KV supplier now returns Some(PEER_A).
-        // The independent observation timer (50ms cadence) must observe this within a few
-        // ticks and dispatch a synthetic LeaderCommitted, transitioning the FSM to Led.
+        // Inject a peer-committed leader mid-flight. KV supplier now returns Some(PEER_A). The
+        // peer's commit POSTDATES this node's election decision, so its observed viewSequence
+        // exceeds the Electing entryBaseline (0) — model that observation (in production the
+        // LeaderKey ValuePut fires observeViewSequence before the FSM sees LeaderCommitted). The
+        // sequence-gated adoption (FIX-1 refinement) then adopts it.
+        ctx.observeViewSequence(1L);
         kvLeader.set(Option.some(PEER_A));
 
         // Poll for the transition. Allow up to 5s slack for CI scheduler jitter — we expect
