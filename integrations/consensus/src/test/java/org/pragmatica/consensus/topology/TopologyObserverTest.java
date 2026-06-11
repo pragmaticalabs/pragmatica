@@ -16,8 +16,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.hlc.HlcTimestamp;
-import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 
@@ -26,7 +24,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Supplier;
 import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -366,151 +363,58 @@ class TopologyObserverTest {
         }
     }
 
-    /// RC1 Step 2: `publishMembershipDeltas` is the sole emitter of `MembershipDecision`
-    /// and carries (logIndex, stampedAt) metadata. Verifies:
-    /// - lifecycle-projection walker emits one new variant per terminal transition
-    /// - logIndex source comes from `observedRabiaTerm()`
-    /// - stampedAt source comes from the injected hlcSupplier
-    /// - minority-side observers DO NOT emit (quorum gate from Step 5)
-    /// - 6 variants are covered
+    /// Wave-4 adaptation (cluster-topology-overhaul): `MembershipDecision` emission moved OUT
+    /// of this observer into the aether `MembershipDeltaProjector`, driven by the
+    /// `MembershipFsm` delta edge — the former `MembershipDecisionEmission` nested tests moved
+    /// with it (`MembershipDeltaProjectorTest` covers the same contract: logIndex/HLC stamping,
+    /// removal emission, minority-side suppression, exactly-once idempotence). What remains on
+    /// this observer is the projector-facing prune surface: `pruneDeparted` must drop the
+    /// departed peer via the existing `removeNode` path (dial-set + `DisconnectNode` routing +
+    /// the evaluator's pre-existing `removeNode` quorum re-eval trigger) and reject self-removal.
     @Nested
-    class MembershipDecisionEmission {
-        record StubView(Set<NodeId> coreMemberIds, Set<NodeId> onDutyMemberIds,
-                        int healthyOnDutyCount, int desiredCoreSize) implements MembershipView {}
-
-        static final class StatefulSnapshotSource implements GenerationSnapshotSource {
-            private final AtomicReference<Option<MembershipView>> viewRef = new AtomicReference<>(Option.none());
-            private final AtomicReference<Long> termRef = new AtomicReference<>(0L);
-
-            void set(MembershipView view, long term) {
-                viewRef.set(Option.some(view));
-                termRef.set(term);
-            }
-
-            @Override public Option<MembershipView> currentMembershipView() {
-                return viewRef.get();
-            }
-
-            @Override public long observedRabiaTerm() {
-                return termRef.get();
-            }
-        }
-
-        private static MessageRouter.MutableRouter routerCapturing(List<MembershipDecision> sink) {
+    class PruneDeparted {
+        private static MessageRouter.MutableRouter pruneRouter(List<NetworkServiceMessage.DisconnectNode> disconnects) {
             var router = MessageRouter.mutable();
             router.addRoute(NetworkServiceMessage.ListConnectedNodes.class, _ -> {});
-            router.addRoute(MembershipDecision.NodeJoined.class, sink::add);
-            router.addRoute(MembershipDecision.NodeRemoved.class, sink::add);
-            router.addRoute(MembershipDecision.NodeDecommissioned.class, sink::add);
-            router.addRoute(MembershipDecision.NodeJoining.class, sink::add);
-            router.addRoute(MembershipDecision.NodeDraining.class, sink::add);
-            router.addRoute(MembershipDecision.NodeFailedDrain.class, sink::add);
-            router.addRoute(MembershipDecision.NodeShuttingDown.class, sink::add);
+            router.addRoute(NetworkServiceMessage.ConnectNode.class, _ -> {});
+            router.addRoute(ClusterStateNotification.class, _ -> {});
+            router.addRoute(NetworkServiceMessage.DisconnectNode.class, disconnects::add);
             return router;
         }
 
-        private static StubView viewOf(Set<NodeId> members) {
-            return new StubView(members, members, members.size(), members.size());
-        }
+        @Test
+        void pruneDeparted_discoveredPeer_leavesDialSetAndRoutesDisconnect() {
+            var disconnects = new CopyOnWriteArrayList<NetworkServiceMessage.DisconnectNode>();
+            var observer = TopologyObserver.topologyObserver(baseConfig(), pruneRouter(disconnects), fullQuorumSnapshotSource())
+                                           .unwrap();
+            observer.start().await();
+            observer.handleDiscoveredNodes(new NetworkMessage.DiscoveredNodes(SELF, List.of(INFO_A)));
+            assertThat(observer.topology()).contains(PEER_A);
 
-        private static void assertJoinStamps(MembershipDecision.NodeJoined j, long expectedLogIndex, HlcTimestamp expectedHlc) {
-            assertThat(j.logIndex()).isEqualTo(expectedLogIndex);
-            assertThat(j.stampedAt()).isEqualTo(expectedHlc);
-        }
+            observer.pruneDeparted(PEER_A);
 
-        private static TopologyObserver observerWith(MessageRouter router,
-                                                     GenerationSnapshotSource snapshot,
-                                                     Supplier<HlcTimestamp> hlcSupplier) {
-            return TopologyObserver.topologyObserver(baseConfig(),
-                                                     router,
-                                                     TimeSource.system(),
-                                                     snapshot,
-                                                     TopologyObserver.NEVER_DECOMMISSIONED,
-                                                     hlcSupplier).unwrap();
+            assertThat(observer.topology())
+                .as("pruned peer must leave the dial set via removeNode")
+                .doesNotContain(PEER_A);
+            assertThat(disconnects)
+                .as("prune must route DisconnectNode exactly once for the departed peer")
+                .hasSize(1);
+            assertThat(disconnects.getFirst().nodeId()).isEqualTo(PEER_A);
         }
 
         @Test
-        void publishMembershipDeltas_stampsLogIndexAndHlc_onNodeJoined() {
-            var emissions = new CopyOnWriteArrayList<MembershipDecision>();
-            var snapshot = new StatefulSnapshotSource();
-            var hlc = new HlcTimestamp(HlcTimestamp.pack(12_345L, 0), new NodeId("node-self"));
-
-            // Seed snapshot before start() so initial publish observes the configured core.
-            snapshot.set(viewOf(Set.of(SELF, PEER_A, PEER_B)), 42L);
-
-            var observer = observerWith(routerCapturing(emissions), snapshot, () -> hlc);
+        void pruneDeparted_self_isRejected() {
+            var disconnects = new CopyOnWriteArrayList<NetworkServiceMessage.DisconnectNode>();
+            var observer = TopologyObserver.topologyObserver(baseConfig(), pruneRouter(disconnects), fullQuorumSnapshotSource())
+                                           .unwrap();
             observer.start().await();
 
-            // First publish: 3 NodeJoined emissions (initial core set is non-empty against the
-            // empty previousCoreMembers seed). Presence-derived membership emits no separate
-            // lifecycle decision.
-            var joins = emissions.stream()
-                                 .filter(MembershipDecision.NodeJoined.class::isInstance)
-                                 .map(MembershipDecision.NodeJoined.class::cast)
-                                 .toList();
-            assertThat(joins).hasSize(3);
-            assertThat(joins).allSatisfy(j -> assertJoinStamps(j, 42L, hlc));
-            assertThat(emissions).noneMatch(MembershipDecision.NodeJoining.class::isInstance);
-        }
+            observer.pruneDeparted(SELF);
 
-        @Test
-        void publishMembershipDeltas_emitsNodeRemoved_onMemberDeparture() {
-            var emissions = new CopyOnWriteArrayList<MembershipDecision>();
-            var snapshot = new StatefulSnapshotSource();
-            var hlc = new HlcTimestamp(HlcTimestamp.pack(100L, 0), new NodeId("node-self"));
-
-            snapshot.set(viewOf(Set.of(SELF, PEER_A, PEER_B)), 1L);
-
-            var observer = observerWith(routerCapturing(emissions), snapshot, () -> hlc);
-            observer.start().await();
-            emissions.clear();
-
-            // PEER_A departs (absent from the presence set).
-            snapshot.set(viewOf(Set.of(SELF, PEER_B)), 2L);
-            observer.handleSetClusterSize(new TopologyManagementMessage.SetClusterSize(3));
-
-            var removals = emissions.stream()
-                                    .filter(MembershipDecision.NodeRemoved.class::isInstance)
-                                    .map(MembershipDecision.NodeRemoved.class::cast)
-                                    .toList();
-            assertThat(removals).hasSize(1);
-            assertThat(removals.getFirst().nodeId()).isEqualTo(PEER_A);
-            assertThat(removals.getFirst().logIndex()).isEqualTo(2L);
-            assertThat(removals.getFirst().stampedAt()).isEqualTo(hlc);
-        }
-
-        @Test
-        void publishMembershipDeltas_minoritySide_doesNotEmit() {
-            // Drop snapshot to below-quorum count — quorum is 2 (3/2+1) and snapshot
-            // contains only 1 core member; quorumEstablished latch stays false.
-            var emissions = new CopyOnWriteArrayList<MembershipDecision>();
-            var snapshot = new StatefulSnapshotSource();
-            snapshot.set(viewOf(Set.of(SELF)), 1L);
-
-            var observer = observerWith(routerCapturing(emissions), snapshot, TopologyObserver.ZERO_HLC_SUPPLIER);
-            observer.start().await();
-
-            assertThat(emissions)
-                .as("non-quorate observer must not emit MembershipDecision events")
-                .isEmpty();
-        }
-
-        @Test
-        void publishMembershipDeltas_emitsOncePerTransition_idempotentOnReplay() {
-            var emissions = new CopyOnWriteArrayList<MembershipDecision>();
-            var snapshot = new StatefulSnapshotSource();
-            snapshot.set(viewOf(Set.of(SELF, PEER_A, PEER_B)), 1L);
-
-            var observer = observerWith(routerCapturing(emissions), snapshot, TopologyObserver.ZERO_HLC_SUPPLIER);
-            observer.start().await();
-            var initial = emissions.size();
-
-            // Trigger another publish with the same view — no new decisions should appear.
-            observer.handleSetClusterSize(new TopologyManagementMessage.SetClusterSize(3));
-
-            assertThat(emissions.size())
-                .as("repeated snapshot with no delta must not re-emit decisions")
-                .isEqualTo(initial);
+            assertThat(observer.topology())
+                .as("self-prune must be rejected (removeNode self-guard)")
+                .contains(SELF);
+            assertThat(disconnects).isEmpty();
         }
     }
 }

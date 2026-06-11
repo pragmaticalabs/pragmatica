@@ -402,6 +402,167 @@ class MembershipFsmTest {
         }
     }
 
+    /// Wave-4 membership-delta edge (cluster-topology-overhaul spec): the FSM emits one typed
+    /// [`MembershipDeltaEdge`] per counted-set lifecycle edge from the central dispatch
+    /// chokepoint — JOINED on the first OBSERVED→MEMBER promotion, REMOVED on a fresh DEAD
+    /// edge of a previously-JOINED member. `everJoined` semantics: an OBSERVED→DEAD member
+    /// that never reached MEMBER emits NOTHING (the spec's tangential consideration); a
+    /// fenced rejoin re-emits JOINED (the flag clears with the REMOVED emission).
+    @Nested
+    class DeltaEdge {
+        @Test
+        void onSwimHealthy_firstPromotion_emitsJoinedWithIncarnationAndRole() {
+            var manager = activeManager();
+            var edges = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(edges::add);
+
+            manager.onMemberDescriptor(labeledInfo(A, "host-a", 6001, Map.of(NodeInfo.LABEL_ROLE, "core")));
+            manager.onSwimHealthy(A, 7L);
+
+            assertThat(edges).hasSize(1);
+            assertThat(edges.getFirst().node()).isEqualTo(A);
+            assertThat(edges.getFirst().kind()).isEqualTo(MembershipDeltaEdge.Kind.JOINED);
+            assertThat(edges.getFirst().incarnation()).isEqualTo(7L);
+            assertThat(edges.getFirst().role()).isEqualTo("core");
+        }
+
+        /// The boot seed promotes through the SAME chokepoint as a SWIM-driven promotion, so
+        /// seeded members are baselined too — without this, an original core's later death
+        /// would emit no REMOVED (the #245 gap re-opened for boot-seeded members).
+        @Test
+        void seed_promotion_emitsJoinedEdge() {
+            var manager = activeManager();
+            var edges = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(edges::add);
+
+            manager.seed(Set.of(A));
+
+            assertThat(edges).hasSize(1);
+            assertThat(edges.getFirst().node()).isEqualTo(A);
+            assertThat(edges.getFirst().kind()).isEqualTo(MembershipDeltaEdge.Kind.JOINED);
+        }
+
+        /// A worker-labelled join still fires the (role-agnostic) FSM edge with the worker
+        /// role in the payload — the core-scoping filter lives in the projector.
+        @Test
+        void workerLabelledPromotion_emitsJoinedCarryingWorkerRole() {
+            var manager = activeManager();
+            var edges = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(edges::add);
+
+            manager.onMemberDescriptor(labeledInfo(A, "host-a", 6001, Map.of(NodeInfo.LABEL_ROLE, "worker")));
+            manager.onSwimHealthy(A, 3L);
+
+            assertThat(edges).hasSize(1);
+            assertThat(edges.getFirst().kind()).isEqualTo(MembershipDeltaEdge.Kind.JOINED);
+            assertThat(edges.getFirst().role()).isEqualTo("worker");
+        }
+
+        /// Death of a previously-JOINED member emits REMOVED exactly once (graceful path —
+        /// synchronous DEAD, no backstop timing).
+        @Test
+        void gracefulDeath_afterJoined_emitsJoinedThenRemoved() {
+            var manager = activeManager();
+            var edges = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(edges::add);
+
+            promoteToMember(manager, A);
+            manager.onSwimDeparted(A, 5L);
+
+            assertThat(edges).hasSize(2);
+            assertThat(edges.getFirst().kind()).isEqualTo(MembershipDeltaEdge.Kind.JOINED);
+            assertThat(edges.getLast().kind()).isEqualTo(MembershipDeltaEdge.Kind.REMOVED);
+            assertThat(edges.getLast().node()).isEqualTo(A);
+            assertThat(edges.getLast().incarnation()).isEqualTo(5L);
+        }
+
+        /// Co-confirmed death (the backstop path) also emits REMOVED — all DEAD paths flow
+        /// through the same chokepoint.
+        @Test
+        void coConfirmedDeath_afterJoined_emitsRemoved() {
+            var manager = activeManager();
+            var edges = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(edges::add);
+
+            promoteToMember(manager, A);
+            manager.onSwimFaulty(A, 4L);
+            manager.onLivenessGone(A);
+
+            awaitDead(manager, A);
+            assertThat(edges).hasSize(2);
+            assertThat(edges.getLast().kind()).isEqualTo(MembershipDeltaEdge.Kind.REMOVED);
+        }
+
+        /// `everJoined` semantics (the spec's tangential consideration): an OBSERVED member
+        /// that never reached MEMBER emits NOTHING on its OBSERVED→DEAD join-grace expiry —
+        /// it never counted, so its death is a no-op delta (while the confirmed-departure
+        /// listener still fires, covered in [`ConfirmedDeparture`]).
+        @Test
+        void joinGraceExpiry_neverMember_emitsNoDelta() {
+            var manager = activeManager();
+            var edges = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(edges::add);
+
+            manager.onPeerDisconnected(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Observed");
+            manager.onJoinGraceExpired(A);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+            assertThat(edges).isEmpty();
+        }
+
+        /// No duplicate JOINED without an intervening REMOVED: repeated healthy edges and a
+        /// SUSPECT→MEMBER recovery never re-fire the join.
+        @Test
+        void suspectRecovery_andRepeatedHealthy_emitNoDuplicateJoined() {
+            var manager = activeManager();
+            var edges = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(edges::add);
+
+            promoteToMember(manager, A);
+            manager.onSwimHealthy(A, 2L);
+            manager.onSwimSuspect(A, 3L);
+            manager.onSwimHealthy(A, 4L);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Member");
+            assertThat(edges).hasSize(1);
+            assertThat(edges.getFirst().kind()).isEqualTo(MembershipDeltaEdge.Kind.JOINED);
+        }
+
+        /// A fenced rejoin (higher incarnation after DEAD) re-fires JOINED — the REMOVED
+        /// emission cleared `everJoined`, so the sequence is JOINED / REMOVED / JOINED.
+        @Test
+        void rejoinAfterDeath_emitsFreshJoined() {
+            var manager = activeManager();
+            var edges = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(edges::add);
+
+            promoteToMember(manager, A);
+            manager.onSwimDeparted(A, 5L);
+            manager.onSwimHealthy(A, 6L);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Member");
+            assertThat(edges).hasSize(3);
+            assertThat(edges.get(0).kind()).isEqualTo(MembershipDeltaEdge.Kind.JOINED);
+            assertThat(edges.get(1).kind()).isEqualTo(MembershipDeltaEdge.Kind.REMOVED);
+            assertThat(edges.get(2).kind()).isEqualTo(MembershipDeltaEdge.Kind.JOINED);
+            assertThat(edges.get(2).incarnation()).isEqualTo(6L);
+        }
+
+        /// A `null` listener resets to the no-op (API symmetry with `onConfirmedDeparture`).
+        @Test
+        void onMembershipDelta_nullResetsToNoop() {
+            var manager = activeManager();
+            var edges = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(edges::add);
+            manager.onMembershipDelta(null);
+
+            promoteToMember(manager, A);
+
+            assertThat(edges).isEmpty();
+        }
+    }
+
     @Nested
     class Aggregate {
         @Test

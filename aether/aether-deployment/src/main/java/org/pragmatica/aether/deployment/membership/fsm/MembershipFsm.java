@@ -50,10 +50,13 @@ import org.slf4j.LoggerFactory;
 /// membership-death decision-maker). It is no longer a passive shadow: it drives one
 /// [`MembershipState`] FSM per [`NodeId`] from tapped SWIM / transport / liveness edges and, on
 /// every transition into [`MembershipState.Dead`], hard-evicts the dead identity from the
-/// [`PresenceSampler`] (`presenceSampler.evict(id)`). The presence-derived
-/// `TopologyObserver → MembershipDecision → ClusterEventAggregator` path then emits the
-/// `NODE_FAILED` / `NODE_LEFT` event from the resulting `stableMembers` delta — this FSM never
-/// emits an event directly; mutating presence sampler's presence view is the sole side effect.
+/// [`PresenceSampler`] (`presenceSampler.evict(id)`). Wave 4 (cluster-topology-overhaul spec):
+/// the FSM additionally emits a typed [`MembershipDeltaEdge`] on its own counted-set lifecycle
+/// edges (first OBSERVED→MEMBER promotion = JOINED; fresh edge into DEAD of a previously-JOINED
+/// member = REMOVED), consumed by the pure [`MembershipDeltaProjector`] projection — the sole
+/// emitter of `MembershipDecision`. The `ClusterEventAggregator` `NODE_FAILED` / `NODE_LEFT`
+/// events derive from that decision stream; this FSM's edge is a pure notification with no
+/// side effect beyond the presence-sampler eviction.
 ///
 /// **Always-on per-node, consensus-independent, SWIM/liveness-driven.** The FSM is armed from
 /// construction on EVERY node (not only the leader): each node drives its OWN per-member FSMs from its
@@ -151,6 +154,18 @@ public final class MembershipFsm {
     /// no-op keeps journaling opt-in at wiring time and emission has no control-flow effect.
     /// Reset to the no-op by passing `null` to [#onTransition].
     private volatile Consumer<MembershipTransitionRecord> onTransition = ignored -> {};
+
+    /// Wave-4 membership-delta listener (cluster-topology-overhaul spec): invoked with one
+    /// [`MembershipDeltaEdge`] per counted-set lifecycle edge — JOINED on the member's FIRST
+    /// entry into MEMBER, REMOVED on a fresh edge into DEAD of a previously-JOINED member —
+    /// from the SAME central chokepoint ([`MemberTracking#dispatch`]) as the journal feed and
+    /// the confirmed-departure hook. Fired under the per-member monitor with a cheap payload;
+    /// implementations must be cheap and non-blocking (the production
+    /// [`MembershipDeltaProjector`] enqueues and returns). Default no-op; reset to the no-op
+    /// by passing `null` to [#onMembershipDelta]. Per spec §3.1 (hard constraint) this edge is
+    /// fully decoupled from `TopologyObserver.evaluateQuorumState` — nothing on it may route
+    /// into the quorum evaluator.
+    private volatile Consumer<MembershipDeltaEdge> onMembershipDelta = ignored -> {};
 
     /// Terminal-eviction backstop window (#131 Model C). When BOTH death planes confirm
     /// (`swimFaulty ∧ livenessGone`) the member is NO LONGER marched straight to DEAD; instead a
@@ -272,6 +287,27 @@ public final class MembershipFsm {
     @Contract
     private void emitTransition(MembershipTransitionRecord record) {
         onTransition.accept(record);
+    }
+
+    /// Register the Wave-4 membership-delta listener invoked once per counted-set lifecycle
+    /// edge (JOINED / REMOVED, see [`MembershipDeltaEdge`]) at the central dispatch chokepoint.
+    /// The listener is called under the per-member monitor — implementations must be cheap and
+    /// non-blocking (the production [`MembershipDeltaProjector`] enqueues into its FIFO and
+    /// returns). A `null` argument resets it to the no-op.
+    @Contract
+    public void onMembershipDelta(Consumer<MembershipDeltaEdge> listener) {
+        this.onMembershipDelta = listener == null
+                                 ? ignored -> {}
+                                 : listener;
+    }
+
+    /// Forwarding sink handed to each [`MemberTracking`] — reads the volatile listener at EACH
+    /// invocation, so wiring installed after a member's tracking was created still observes its
+    /// delta edges (the AetherNode projector wiring is installed before the boot seed, but a
+    /// tap-created tracking may predate it).
+    @Contract
+    private void emitMembershipDelta(MembershipDeltaEdge edge) {
+        onMembershipDelta.accept(edge);
     }
 
     // --- Boot seed ---
@@ -702,7 +738,7 @@ public final class MembershipFsm {
     private MemberTracking newTracking(NodeId id) {
         var fsm = Fsm.fsm(FSM_KIND, id.id(), initialStateFactory(id), observer);
 
-        return new MemberTracking(id, fsm, this::onEnteredDead, this::emitTransition, wallClockMs.getAsLong());
+        return new MemberTracking(id, fsm, this::onEnteredDead, this::emitTransition, this::emitMembershipDelta, wallClockMs.getAsLong());
     }
 
     /// Explicitly-typed initial-state factory so the [`Fsm#fsm`] constructor-driven overload is
@@ -724,6 +760,11 @@ public final class MembershipFsm {
         /// Wave-1 transition journal sink — receives one [`MembershipTransitionRecord`] per
         /// ACTUAL state change from [`#dispatch`]. Diagnostic-only (default no-op upstream).
         private final Consumer<MembershipTransitionRecord> transitionSink;
+        /// Wave-4 membership-delta sink — receives one [`MembershipDeltaEdge`] per counted-set
+        /// lifecycle edge from [`#dispatch`] (JOINED on first entry into MEMBER, REMOVED on a
+        /// fresh DEAD edge of a previously-JOINED member). Cheap payload, fired under this
+        /// monitor; the upstream listener must be non-blocking.
+        private final Consumer<MembershipDeltaEdge> deltaSink;
         /// Wall-clock stamp (ms, the manager's injected clock) of this tracking's creation —
         /// the member's first observation. Immutable: retained across DEAD/rejoin (the tracking
         /// is never recreated), matching the descriptor-retention rationale documented on
@@ -732,6 +773,13 @@ public final class MembershipFsm {
         private int healthyStreak = 0;
         private boolean swimFaultySeen = false;
         private boolean livenessGoneSeen = false;
+        /// Wave-4 exactly-once JOINED/REMOVED pairing (the spec's tangential consideration):
+        /// set on the JOINED edge (first entry into MEMBER), cleared when the REMOVED edge is
+        /// emitted on death. A member whose `everJoined` is false emits NO delta on death (it
+        /// never counted — OBSERVED→DEAD via join-grace expiry / drain-before-promotion); a
+        /// fenced rejoin (DEAD→OBSERVED→MEMBER) re-fires JOINED because the flag was cleared.
+        /// Mutated only under this monitor, like the co-confirmation flags.
+        private boolean everJoined = false;
         private long lastDoubtAtMs = 0L;
         private MemberDescriptor descriptor = MemberDescriptor.UNKNOWN;
         /// Pending terminal-eviction backstop (#131 Model C). `Some(future)` while a co-confirmed-death
@@ -745,11 +793,13 @@ public final class MembershipFsm {
                                Fsm<MembershipState, MembershipEvent> fsm,
                                Consumer<NodeId> onEnteredDead,
                                Consumer<MembershipTransitionRecord> transitionSink,
+                               Consumer<MembershipDeltaEdge> deltaSink,
                                long firstTrackedAtMs) {
             this.id = id;
             this.fsm = fsm;
             this.onEnteredDead = onEnteredDead;
             this.transitionSink = transitionSink;
+            this.deltaSink = deltaSink;
             this.firstTrackedAtMs = firstTrackedAtMs;
         }
 
@@ -766,6 +816,18 @@ public final class MembershipFsm {
         /// when the dispatch produced an ACTUAL state change, one [`MembershipTransitionRecord`] is
         /// emitted (with the event type as cause and the post-dispatch incarnation/role) BEFORE the
         /// DEAD-edge side effects run, so the journal entry precedes the departure fan-out.
+        ///
+        /// Wave-4 membership-delta edges (cluster-topology-overhaul spec) fire from this same
+        /// chokepoint:
+        /// - JOINED on the member's FIRST entry into MEMBER (`!everJoined` + post-state MEMBER;
+        ///   by FSM construction this is exactly the OBSERVED→MEMBER promotion — `Observed`
+        ///   never moves to SUSPECT, and SUSPECT→MEMBER recovers an already-joined member, so
+        ///   `everJoined` makes the JOINED edge exactly-once between REMOVALs).
+        /// - REMOVED on the fresh DEAD edge, ONLY when `everJoined` (an OBSERVED→DEAD member
+        ///   that never counted emits nothing — the spec's tangential consideration); the flag
+        ///   is cleared so a fenced rejoin re-emits JOINED. Emitted AFTER `onEnteredDead`
+        ///   (presence-sampler eviction + transport `departurePermanent`), mirroring the
+        ///   pre-Wave-4 ordering where the link drop preceded the delta re-evaluation.
         synchronized void dispatch(MembershipEvent event) {
             var wasDead = isDead();
             var from = stateName();
@@ -782,9 +844,17 @@ public final class MembershipFsm {
                                                                      descriptor.role(),
                                                                      System.currentTimeMillis()));
             }
+            if (!everJoined && fsm.current() instanceof MembershipState.Member) {
+                everJoined = true;
+                deltaSink.accept(new MembershipDeltaEdge(id, MembershipDeltaEdge.Kind.JOINED, incarnation(), descriptor.role()));
+            }
             if (!wasDead && isDead()) {
                 cancelEvictionBackstop();
                 onEnteredDead.accept(id);
+                if (everJoined) {
+                    everJoined = false;
+                    deltaSink.accept(new MembershipDeltaEdge(id, MembershipDeltaEdge.Kind.REMOVED, incarnation(), descriptor.role()));
+                }
             }
         }
 
@@ -795,10 +865,15 @@ public final class MembershipFsm {
         /// Seed-promotion guard: dispatch [`UpHysteresisMet`] (OBSERVED→MEMBER) only when the FSM is
         /// still in OBSERVED. An id already past OBSERVED (MEMBER / SUSPECT / DEPARTING / DEAD) is left
         /// untouched, so the live-snapshot seed never resurrects a dead/suspect node. Guard + dispatch
-        /// are atomic under the per-member monitor.
+        /// are atomic under the per-member monitor. Routes through the central [`#dispatch`]
+        /// chokepoint (NOT the raw `fsm.dispatch`) so a seed promotion feeds the Wave-1 journal
+        /// and fires the Wave-4 JOINED delta edge exactly like a SWIM-driven promotion — without
+        /// this, boot-seeded members would never be baselined by the [`MembershipDeltaProjector`]
+        /// and their deaths would emit no `NodeRemoved` (the #245 gap, re-opened for original
+        /// cores). Reentrant-safe: both methods synchronize on this monitor.
         synchronized void promoteIfObserved() {
             if (fsm.current() instanceof MembershipState.Observed) {
-                fsm.dispatch(new UpHysteresisMet());
+                dispatch(new UpHysteresisMet());
             }
         }
 

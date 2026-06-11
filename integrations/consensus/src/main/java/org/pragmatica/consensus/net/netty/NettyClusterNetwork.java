@@ -397,15 +397,15 @@ public class NettyClusterNetwork implements ClusterNetwork {
     }
 
     /// Netty is pure transport — peer-link state, peerLinks table, hello handshakes,
-    /// message routing. Membership decisions are owned by `TopologyObserver` (canonical
-    /// publisher of `MembershipDecision`, fed by SWIM via `HealthReconciler`).
+    /// message routing. Membership decisions are owned by the aether `MembershipDeltaProjector`
+    /// (canonical publisher of `MembershipDecision`, fed by the `MembershipFsm` delta edge).
     /// Cluster-state notifications (`ClusterStateNotification`) are owned by
     /// `RabiaEngine`/`ConsensusBridge`.
     ///
     /// This method is the **canonical source of `TransportObservation` for the Netty
     /// transport** (`ObservationSource.NETTY`). Each emission is a *local* observation
     /// — fast, partial-view, may flap. Cluster-canonical decisions about membership
-    /// are emitted by `TopologyObserver.publishMembershipDeltas` as `MembershipDecision`.
+    /// are emitted by the `MembershipDeltaProjector` as `MembershipDecision`.
     ///
     /// R5 (spec §4.1): transport never mutates topology. Emissions are informational —
     /// Layer 3 (TopologyObserver) projects authoritative membership exclusively from

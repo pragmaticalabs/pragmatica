@@ -186,6 +186,9 @@ test_initial_state() {
     wait_for_phase "NORMAL" 180 || \
         log_warn "Cluster phase did not reach NORMAL within 180s — gate cold-start fallback may permit decommission and absorb the S05 assertion"
     wait_for_leader 60
+    # Restore floor is "4+ READY, then settle" — wait bounded for the settled 5 before
+    # the exact-count assert (same hardening as test-swim-detection.sh).
+    wait_for "5 healthy cores (settled baseline)" '[ "$(cluster_active_core_count)" = "5" ]' 120
     local count
     count=$(cluster_active_core_count)
     assert_eq "$count" "5" "Initial: 5 healthy cores"

@@ -42,6 +42,13 @@ public record MemberDescriptor(Option<NodeAddress> address, String role, String 
     /// axis (transport active/passive); classification deliberately uses the self-asserted label.
     /// Role-based isolation hardening (cryptographic role attestation) is tracked under #241.
     public boolean isCore() {
+        return isCoreRole(role);
+    }
+
+    /// Static form of [`#isCore`] for sites that carry the bare role label (the
+    /// [`MembershipDeltaEdge`] payload): core iff the label is NOT the explicit literal
+    /// `worker` — blank / unknown counts as core. Single source of the role-literal rule.
+    public static boolean isCoreRole(String role) {
         return ! ROLE_WORKER.equals(role);
     }
 }

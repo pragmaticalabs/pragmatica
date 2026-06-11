@@ -218,10 +218,11 @@ class ClusterDeploymentManagerTest {
     }
 
     /// Wave 2 / W3 (cluster-topology-overhaul spec): role assignment counts CORES only. The
-    /// `currentCoreCount` denominator is `activeNodes()`, which reads the CORE-SCOPED supplier
-    /// verbatim (workers excluded at the `MembershipFsm.coreCountedMembers()` seam) — so a
-    /// would-be core below `coreMax` is never mis-assigned WORKER because workers inflated the
-    /// count, and a join at `coreMax` cores is assigned WORKER.
+    /// `currentCoreCount` denominator is `activeNodes()` (the CORE-SCOPED supplier, workers
+    /// excluded at the `MembershipFsm.coreCountedMembers()` seam) minus the joiner itself (see
+    /// `ReplacementRoleAssignmentTests`) — so a would-be core below `coreMax` is never
+    /// mis-assigned WORKER because workers inflated the count, and a join at `coreMax` cores is
+    /// assigned WORKER.
     @Nested
     class RoleAssignmentTests {
         private static final NodeId NEW_NODE = new NodeId("node-new");
@@ -290,6 +291,108 @@ class ClusterDeploymentManagerTest {
             cdm.onMembershipDecision(MembershipDecision.nodeJoined(NEW_NODE, List.of(NODE_1, NODE_2, NEW_NODE)));
 
             assertThat(directivesFor(NEW_NODE)).containsExactly(AetherValue.ActivationDirectiveValue.core());
+        }
+
+        @SuppressWarnings("unchecked")
+        private List<AetherValue.ActivationDirectiveValue> directivesFor(NodeId node) {
+            var key = AetherKey.ActivationDirectiveKey.activationDirectiveKey(node);
+
+            return capturedCommands.stream()
+                                   .filter(KVCommand.Put.class::isInstance)
+                                   .map(cmd -> (KVCommand.Put<AetherKey, AetherValue>) cmd)
+                                   .filter(put -> put.key().equals(key))
+                                   .map(KVCommand.Put::value)
+                                   .filter(AetherValue.ActivationDirectiveValue.class::isInstance)
+                                   .map(AetherValue.ActivationDirectiveValue.class::cast)
+                                   .toList();
+        }
+    }
+
+    /// Regression for the replacement-demotion bug: `assignNodeRole`'s denominator,
+    /// `activeNodes()`, derives from `MembershipFsm.coreCountedMembers()`, which already
+    /// includes the joiner by the time the NodeJoined decision reaches role assignment (the FSM
+    /// stamps it Member first; deterministic ordering with Wave-4's edge-driven emission). A
+    /// self-inclusive count made every count-restoring replacement on a 5-target cluster see
+    /// "core count at max: 5" and demoted it to WORKER — observer-mode engine, stuck SYNCING,
+    /// voter-set decay. The joiner must be classified by the cluster's state WITHOUT it.
+    @Nested
+    class ReplacementRoleAssignmentTests {
+        private static final NodeId NODE_4 = new NodeId("node-4");
+        private static final NodeId NODE_5 = new NodeId("node-5");
+        private static final NodeId REPLACEMENT = new NodeId("node-replacement");
+        private static final int CORE_TARGET = 5;
+
+        private ClusterDeploymentManager cdm;
+        private final List<KVCommand<AetherKey>> capturedCommands = new ArrayList<>();
+        private final CopyOnWriteArrayList<HealthSignal> capturedSignals = new CopyOnWriteArrayList<>();
+        private final AtomicReference<java.util.Set<NodeId>> coreCountedRef = new AtomicReference<>(Set.of());
+
+        @BeforeEach
+        void setUp() {
+            capturedCommands.clear();
+            capturedSignals.clear();
+            coreCountedRef.set(Set.of());
+            var initialTopology = List.of(NODE_1, NODE_2, NODE_3);
+            var router = MessageRouter.mutable();
+            var kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
+            ClusterNode<KVCommand<AetherKey>> clusterNode = stubClusterNode(NODE_1, capturedCommands);
+            TopologyManager topologyManager = stubTopologyManager(NODE_1, initialTopology);
+
+            cdm = ClusterDeploymentManager.clusterDeploymentManager(NODE_1,
+                                                                     clusterNode,
+                                                                     kvStore,
+                                                                     router,
+                                                                     initialTopology,
+                                                                     topologyManager,
+                                                                     ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING,
+                                                                     CORE_TARGET,
+                                                                     timeSpan(300).seconds(),
+                                                                     NO_OP_SCHEMA_ORCHESTRATOR,
+                                                                     capturedSignals::add,
+                                                                     coreCountedRef::get,
+                                                                     Set::of,
+                                                                     Set::of);
+        }
+
+        /// The live bug shape: single kill on a 5-target cluster, replacement joins. The FSM
+        /// already counts the joiner — 4 survivors + joiner = 5 in the supplier set. The
+        /// self-inclusive count saw 5 ≥ max 5 → WORKER; with self-exclusion the cluster WITHOUT
+        /// the joiner has 4 cores → CORE.
+        @Test
+        void nodeJoined_joinerAlreadyCounted_countRestoringReplacementAssignedCore() {
+            cdm.activate().await();
+            coreCountedRef.set(Set.of(NODE_1, NODE_2, NODE_3, NODE_4, REPLACEMENT));
+
+            cdm.onMembershipDecision(MembershipDecision.nodeJoined(REPLACEMENT,
+                                                                   List.of(NODE_1, NODE_2, NODE_3, NODE_4, REPLACEMENT)));
+
+            assertThat(directivesFor(REPLACEMENT)).containsExactly(AetherValue.ActivationDirectiveValue.core());
+        }
+
+        /// Genuinely at capacity: 5 counted cores NOT including the joiner — a true 6th node.
+        /// Self-exclusion removes nothing; the joiner is correctly assigned WORKER.
+        @Test
+        void nodeJoined_clusterGenuinelyAtCapacity_sixthNodeAssignedWorker() {
+            cdm.activate().await();
+            coreCountedRef.set(Set.of(NODE_1, NODE_2, NODE_3, NODE_4, NODE_5));
+
+            cdm.onMembershipDecision(MembershipDecision.nodeJoined(REPLACEMENT,
+                                                                   List.of(NODE_1, NODE_2, NODE_3, NODE_4, NODE_5, REPLACEMENT)));
+
+            assertThat(directivesFor(REPLACEMENT)).containsExactly(AetherValue.ActivationDirectiveValue.worker());
+        }
+
+        /// Double-kill heal (the only shape that got a CORE promotion live, because the count
+        /// happened to be 4): 3 survivors + joiner already counted → 3 < 5 → CORE.
+        @Test
+        void nodeJoined_doubleKillHealJoinerAlreadyCounted_assignedCore() {
+            cdm.activate().await();
+            coreCountedRef.set(Set.of(NODE_1, NODE_2, NODE_3, REPLACEMENT));
+
+            cdm.onMembershipDecision(MembershipDecision.nodeJoined(REPLACEMENT,
+                                                                   List.of(NODE_1, NODE_2, NODE_3, REPLACEMENT)));
+
+            assertThat(directivesFor(REPLACEMENT)).containsExactly(AetherValue.ActivationDirectiveValue.core());
         }
 
         @SuppressWarnings("unchecked")

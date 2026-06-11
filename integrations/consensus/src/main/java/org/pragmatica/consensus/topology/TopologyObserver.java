@@ -43,14 +43,18 @@ import org.slf4j.LoggerFactory;
 /// SWIM events, and reconnection. This is the read-only topology tracking component;
 /// cluster size management is handled by ClusterTopologyManager in the deployment layer.
 ///
-/// **Canonical emitter of `MembershipDecision`**: `publishMembershipDeltas` is the
-/// single source of truth for cluster-wide membership decisions. Subscribers that
-/// need authoritative membership (workload reassignment, capacity planning, routing
-/// updates) consume `MembershipDecision`. Subscribers that need fast local reactions
-/// during cluster bootstrap consume `TransportObservation` (emitted by
-/// `QuicClusterNetwork` / `NettyClusterNetwork` / `SwimProtocol`). Conflating the
-/// two streams is a subtle dual-reaction bug class — see the javadoc on each type
-/// for the epistemic distinction.
+/// **Membership-delta emission moved out (cluster-topology-overhaul Wave 4):** the observer
+/// no longer emits `MembershipDecision` — the sole emitter is the aether
+/// `MembershipDeltaProjector`, a pure projection of the `MembershipFsm` delta edge
+/// (JOINED / REMOVED), quorum-gated through {@link #inQuorum()} and pruning departed peers
+/// through {@link #pruneDeparted(NodeId)}. This observer keeps ONLY quorum-presence
+/// evaluation (`evaluateQuorumState` → the `ClusterStateNotification` CAS edge to the
+/// dedicated quorum-presence channel) plus the dial-set bookkeeping. Subscribers that need
+/// fast local reactions during cluster bootstrap consume `TransportObservation` (emitted by
+/// `QuicClusterNetwork` / `NettyClusterNetwork` / `SwimProtocol`); cluster-canonical
+/// membership reactions consume `MembershipDecision` — conflating the two streams is a
+/// subtle dual-reaction bug class, see the javadoc on each type for the epistemic
+/// distinction.
 public interface TopologyObserver extends TopologyManager {
     /// Errors that can occur during topology observer creation.
     sealed interface TopologyError extends Cause {
@@ -103,18 +107,6 @@ public interface TopologyObserver extends TopologyManager {
     @MessageReceiver
     void handleSetClusterSize(TopologyManagementMessage.SetClusterSize message);
 
-    /// Edge-triggered membership re-evaluation. Routed once per confirmed FSM departure
-    /// (`AetherNode.onConfirmedDeparture`) so the core-membership delta recomputes and
-    /// emits `NodeRemoved` for a departed peer that has no following `addNode` to re-run
-    /// the diff (a CTM replacement dying at steady core size). Once-per-edge cadence —
-    /// per reconcile-tick re-evaluation regressed READY-convergence.
-    ///
-    /// Default no-op so legacy / test-only stubs need not implement it (mirrors the
-    /// `topologyMode()` / `effectiveMembership()` defaults); the production observer
-    /// overrides this with the real `evaluateQuorumState()` re-poke.
-    @MessageReceiver
-    default void handleReevaluateMembership(NetworkServiceMessage.ReevaluateMembership message) {}
-
     /// Which membership source (`SNAPSHOT` vs `LEGACY`) the observer would serve reads
     /// from right now, plus the resulting core-id set. Lets tests and diagnostics verify
     /// that the snapshot-backed path is actually engaged.
@@ -135,16 +127,16 @@ public interface TopologyObserver extends TopologyManager {
         return () -> true;
     }
 
-    /// Wave-1 #245 baseline diagnostic (cluster-topology-overhaul spec, item 3): read-only
-    /// snapshot of the membership-delta baseline (`previousCoreMembers`) the observer diffs
-    /// against in `publishCoreMembershipDelta`. Diagnostic-only — exposes the set so the
-    /// periodic baseline trace can compare it with `MembershipFsm.coreMembers()` and
-    /// `PresenceSampler.currentMembers()` and prove the baseline gap empirically before
-    /// Wave 4 fixes it. Default empty for legacy / test-only stubs; the production observer
-    /// overrides with the live (immutable) set.
-    default Set<NodeId> previousCoreMembersSnapshot() {
-        return Set.of();
-    }
+    /// Prune a cluster-canonically departed peer from the observer's bookkeeping
+    /// (cluster-topology-overhaul Wave 4). Sole production caller: the aether
+    /// `MembershipDeltaProjector`, on the FSM REMOVED delta edge, AFTER routing the
+    /// corresponding `MembershipDecision.NodeRemoved` — exactly where the deleted
+    /// `publishCoreMembershipDelta` removal arm called `removeNode` from. The production
+    /// override delegates to `removeNode` (drop from dial set + `coreNodeIds`, route
+    /// `DisconnectNode`, re-evaluate quorum presence via the evaluator's PRE-EXISTING
+    /// `removeNode` trigger — §3.1: no NEW path into `evaluateQuorumState`). Default no-op
+    /// for legacy / test-only stubs, mirroring the `topologyMode()` / `inQuorum()` defaults.
+    default void pruneDeparted(NodeId departed) {}
 
     /// Default predicate used when no KV-backed lifecycle reader is wired (tests and
     /// legacy call sites). Preserves pre-rc1 behaviour: nothing is treated as
@@ -281,7 +273,6 @@ public interface TopologyObserver extends TopologyManager {
                        AtomicBoolean started,
                        Object lifecycleLock,
                        AtomicReference<Option<ScheduledFuture<?>>> reconcileFuture,
-                       AtomicReference<Set<NodeId>> previousCoreMembers,
                        AtomicReference<TopologyMode> mode,
                        Supplier<HlcTimestamp> hlcSupplier) implements TopologyObserver {
             private static final Logger log = LoggerFactory.getLogger(TopologyObserver.class);
@@ -302,7 +293,6 @@ public interface TopologyObserver extends TopologyManager {
                     AtomicBoolean started,
                     Object lifecycleLock,
                     AtomicReference<Option<ScheduledFuture<?>>> reconcileFuture,
-                    AtomicReference<Set<NodeId>> previousCoreMembers,
                     AtomicReference<TopologyMode> mode,
                     Supplier<HlcTimestamp> hlcSupplier) {
                 this.config = config;
@@ -321,7 +311,6 @@ public interface TopologyObserver extends TopologyManager {
                 this.started = started;
                 this.lifecycleLock = lifecycleLock;
                 this.reconcileFuture = reconcileFuture;
-                this.previousCoreMembers = previousCoreMembers;
                 this.mode = mode;
                 this.hlcSupplier = hlcSupplier;
                 this.effectiveClusterSize.set(config.clusterSize());
@@ -389,15 +378,17 @@ public interface TopologyObserver extends TopologyManager {
                 snapshot.forEach(this::requestConnectionIfEligible);
             }
 
+            /// Wave-4 prune path: drop a cluster-canonically departed peer via the existing
+            /// `removeNode` machinery (dial-set + `coreNodeIds` removal, `DisconnectNode`,
+            /// quorum-presence re-evaluation through the evaluator's PRE-EXISTING `removeNode`
+            /// trigger). Called by the aether `MembershipDeltaProjector` on the FSM REMOVED
+            /// delta edge — the same call the deleted `publishCoreMembershipDelta` removal arm
+            /// made. Self-removal is rejected inside `removeNode`; pruning an already-absent
+            /// peer is a no-op.
             @Override
-            public void handleReevaluateMembership(NetworkServiceMessage.ReevaluateMembership message) {
-                // Confirmed-departure edge: re-run the quorum/delta evaluation so the dead peer
-                // (already dropped from the membership view) is diffed out and routed as
-                // NodeRemoved + pruned via removeNode. evaluateQuorumState is safe once-on-death
-                // (quorum notif is compareAndSet-gated, delta is previousCoreMembers.getAndSet-
-                // gated → idempotent); only PER-TICK frequency regresses convergence.
-                log.debug("Membership re-evaluation requested on departure of {}", message.departed());
-                evaluateQuorumState();
+            public void pruneDeparted(NodeId departed) {
+                log.debug("Pruning departed member {} (membership-delta REMOVED edge)", departed);
+                removeNode(departed);
             }
 
             private void requestConnectionIfEligible(NodeId id) {
@@ -525,14 +516,6 @@ public interface TopologyObserver extends TopologyManager {
             }
 
             @Override
-            public Set<NodeId> previousCoreMembersSnapshot() {
-                // Wave-1 #245 baseline diagnostic: pure read — the AtomicReference always holds
-                // an immutable set (initialized Set.of(); replaced via Set.copyOf in the delta
-                // publisher), so it is returned as-is without copying.
-                return previousCoreMembers.get();
-            }
-
-            @Override
             public int readyNodeCount() {
                 // BOOTING vs NORMAL semantics (audit Step 5, R1):
                 //   BOOTING — snapshot may be absent because quorum has never been
@@ -610,9 +593,19 @@ public interface TopologyObserver extends TopologyManager {
                                            .count();
             }
 
-            /// Updates the `quorumEstablished` atomic so that `inQuorum()` and the
-            /// `publishMembershipDeltas` gate read the latest local view, AND routes the
-            /// cold-start/resume `ClusterStateNotification` originator on each quorum edge.
+            /// Updates the `quorumEstablished` atomic so that `inQuorum()` reads the latest
+            /// local view, AND routes the cold-start/resume `ClusterStateNotification`
+            /// originator on each quorum edge.
+            ///
+            /// **NARROWED (cluster-topology-overhaul Wave 4, §3.1 hard constraint):** this
+            /// method now does quorum-presence ONLY — the `publishMembershipDeltas()` call and
+            /// the `previousCoreMembers` baseline diff are GONE; membership-delta emission
+            /// lives entirely in the aether `MembershipDeltaProjector`, driven by the
+            /// `MembershipFsm` delta edge. This evaluator is load-bearing and timing-sensitive
+            /// and is invoked ONLY by its pre-existing triggers (`addNode`, `removeNode`,
+            /// `handleSetClusterSize`, `start`) — never broaden it, and never route a new path
+            /// into it (the promotion-edge invocation variant caused the bisect-proven 600s
+            /// restore-READY flap).
             ///
             /// Bootstrap originator (restored after E2 Phase 2c.0): on the `false → true`
             /// quorum edge this routes `ClusterStateNotification.active()`; on `true → false`,
@@ -670,7 +663,6 @@ public interface TopologyObserver extends TopologyManager {
                         quorumPresenceRouter.route(ClusterStateNotification.passive());
                     }
                 }
-                publishMembershipDeltas();
             }
 
             /// Quorum decision sourced from the injected `MembershipView` (membership-unification
@@ -696,82 +688,6 @@ public interface TopologyObserver extends TopologyManager {
                 log.debug("Quorum evaluation (legacy fallback): healthyActivePeers+1={} threshold={}", peers + 1, quorum);
                 return (peers + 1) >= quorum;
             }
-
-            /// Diff the latest `MembershipView` against the previously observed core member
-            /// set and route one `MembershipDecision.NodeJoined` / `NodeRemoved` per edge.
-            /// This method is the **exclusive emitter of `MembershipDecision`** — single-
-            /// source-of-truth for cluster-canonical membership decisions. Downstream
-            /// subscribers drive off this canonical edge stream rather than the parallel
-            /// SWIM / QUIC / KV-lifecycle paths that previously amplified a single peer
-            /// departure into N+ redundant routings.
-            ///
-            /// Membership-v2 finale: the synthetic per-node lifecycle-projection walker was
-            /// removed. Membership is presence-derived (`coreMemberIds()` = `presenceSampler.currentMembers()`),
-            /// so only the core-membership delta (`NodeJoined` / `NodeRemoved`) is emitted here.
-            /// Every emission is
-            /// stamped with `(logIndex = snapshotSource.observedRabiaTerm(), stampedAt =
-            /// hlcSupplier.get())`. The `observedRabiaTerm()` is the closest committed-index
-            /// proxy available at this layer; subscribers that need a strict per-event
-            /// commit index should use the consensus log directly. When the observer cannot
-            /// reconstruct a committed term (early bootstrap / unwired tests) the term is
-            /// `0L`; subscribers dedup with the documented `-1L` sentinel guard.
-            ///
-            /// RC1 Step 5 quorum gate: minority-side observers MUST NOT emit
-            /// `MembershipDecision` — they cannot make cluster-canonical statements about
-            /// membership. The `inQuorum()` check suppresses emission in this window so a
-            /// non-quorate leader does not advertise membership decisions the majority has
-            /// not committed.
-            ///
-            /// No-op when the snapshot source is empty (legacy / cold-boot windows). The
-            /// `started` gate is enforced upstream by `evaluateQuorumState` so the router
-            /// is fully wired by the time this method is invoked.
-            private void publishMembershipDeltas() {
-                var view = snapshotSource.currentMembershipView();
-                if (view.isEmpty()) {
-                    return;
-                }
-                // RC1 Step 5: minority-side observers cannot make cluster-canonical
-                // statements. Suppress emission when non-quorate so a partitioned leader
-                // does not advertise decisions the majority has not committed.
-                if (!quorumEstablished.get()) {
-                    return;
-                }
-                // Hook the BOOTING -> NORMAL transition into the snapshot-arrival path so
-                // it is checked on every snapshot publish, not only when external readers
-                // happen to query a count.
-                maybeTransitionToNormal(view.unwrap());
-                var snapshot = view.unwrap();
-                var logIndex = snapshotSource.observedRabiaTerm();
-                var stampedAt = hlcSupplier.get();
-                publishCoreMembershipDelta(snapshot, logIndex, stampedAt);
-            }
-
-            private void publishCoreMembershipDelta(MembershipView snapshot, long logIndex, HlcTimestamp stampedAt) {
-                var current = snapshot.coreMemberIds();
-                var previous = previousCoreMembers.getAndSet(Set.copyOf(current));
-                var delta = MembershipDelta.diff(previous, current);
-                if (delta.isEmpty()) {
-                    return;
-                }
-                var topology = List.copyOf(current);
-                for (var added : delta.added()) {
-                    log.debug("Membership delta: NodeJoined {} (logIndex={}, stampedAt={})", added, logIndex, stampedAt);
-                    router.route(MembershipDecision.nodeJoined(added, topology, logIndex, stampedAt));
-                }
-                for (var removed : delta.removed()) {
-                    log.debug("Membership delta: NodeRemoved {} (logIndex={}, stampedAt={})", removed, logIndex, stampedAt);
-                    router.route(MembershipDecision.nodeRemoved(removed, topology, logIndex, stampedAt));
-                    // Prune the departed core node from nodeStatesById so topology()/clusterSize()
-                    // readers (StatusRoutes, CTM, dashboard, topology-route) stop reporting it. This
-                    // is the sole production caller of removeNode — without it departed nodes are
-                    // never pruned (over-provision: nodeCount stays 6 after a kill). Safe: the delta
-                    // fires only post-quorum-commit, so it cannot affect the pre-quorum BOOTING
-                    // fallback that also reads nodeStatesById; nodeStatesById is keyed per-node, so
-                    // pruning a removed node cannot drop a still-present one.
-                    removeNode(removed);
-                }
-            }
-
 
             /// Healthy active peers, excluding self. Used by the canonical quorum-state
             /// publisher: `+ 1` is added back to include self, matching the formula
@@ -813,13 +729,6 @@ public interface TopologyObserver extends TopologyManager {
                                            .filter(state -> state.health() == NodeHealth.HEALTHY)
                                            .filter(state -> coreMembers.contains(state.info().id()))
                                            .count();
-            }
-
-            /// Snapshot's `healthyOnDutyCount` may include self; subtract it deterministically
-            /// so the `+ 1` in `evaluateQuorumState` does not double-count.
-            private int peerHealthyOnDutyCount(MembershipView view) {
-                var selfHealthy = view.onDutyMemberIds().contains(config.self()) ? 1 : 0;
-                return Math.max(0, view.healthyOnDutyCount() - selfHealthy);
             }
 
             /// Pre-snapshot fallback — counts peers in `nodeStatesById` whose initial
@@ -972,7 +881,6 @@ public interface TopologyObserver extends TopologyManager {
                                           new AtomicBoolean(false),
                                           new Object(),
                                           new AtomicReference<>(Option.none()),
-                                          new AtomicReference<>(Set.<NodeId>of()),
                                           new AtomicReference<>(TopologyMode.BOOTING),
                                           hlcSupplier));
     }

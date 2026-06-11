@@ -616,8 +616,20 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             SharedScheduler.schedule(this::reconcile, timeSpan(5).seconds());
         }
 
+        /// The joining node MUST be excluded from its own denominator. `activeNodes()` derives
+        /// from `MembershipFsm.coreCountedMembers()`, which already includes the joiner by the
+        /// time the NodeJoined decision reaches this method (the FSM stamps it Member first;
+        /// Wave-4's edge-driven emission makes that ordering deterministic). A self-inclusive
+        /// count made every count-restoring replacement see "core count at max" (e.g. a 5-target
+        /// cluster healed back to exactly 5 → count 5 ≥ max 5) and demoted it to WORKER —
+        /// observer-mode engine, NodeReportedState stuck SYNCING, voter set decaying until
+        /// consensus died. The joiner is classified by the cluster's state WITHOUT it.
+        ///
+        /// Defense-in-depth alternative (deliberately NOT implemented here): honor CTM's
+        /// provision-time intended role instead of re-deriving the role from membership counts —
+        /// candidate for a later wave.
         private void assignNodeRole(NodeId addedNode) {
-            var currentCoreCount = activeNodes().size();
+            var currentCoreCount = (int) activeNodes().stream().filter(node -> !node.equals(addedNode)).count();
 
             if (shouldPromoteToCore(currentCoreCount)) {
                 log.info("Promoting node {} to core consensus participant (core count: {}/{})",

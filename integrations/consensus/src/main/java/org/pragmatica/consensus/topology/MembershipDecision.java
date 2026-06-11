@@ -22,8 +22,8 @@ import org.pragmatica.messaging.Message;
 
 import java.util.List;
 
-/// Cluster-canonical decisions about membership, projected from the consensus-committed
-/// {@code MembershipView} snapshot.
+/// Cluster-canonical decisions about membership, projected from the authoritative
+/// per-node membership FSM's delta edges (cluster-topology-overhaul Wave 4).
 ///
 /// Epistemically distinct from {@link TransportObservation}: a `MembershipDecision` is a *global*
 /// fact ("the cluster has agreed peer X has joined") whereas a `TransportObservation` is a *local*
@@ -38,11 +38,15 @@ import java.util.List;
 /// - **Eventually consistent.** Slower than transport observations because consensus must commit
 ///   before the projection updates. Subscribers that need fast local reactions during cluster
 ///   bootstrap (before consensus exists) should consume {@link TransportObservation} instead.
-/// - **Idempotent at projection.** The diff is computed from the prior committed state, so
-///   duplicate emissions for the same decision do not occur.
+/// - **Idempotent at projection.** The projector pairs every `NodeJoined` with at most one
+///   `NodeRemoved` (exactly-once per membership episode), so duplicate emissions for the same
+///   decision do not occur.
 ///
-/// Producer: `TopologyObserver.publishMembershipDeltas` is the *exclusive* emitter. Single-source-
-/// of-truth for membership decisions is part of this contract.
+/// Producer: the aether `MembershipDeltaProjector` (a pure projection of the `MembershipFsm`
+/// JOINED/REMOVED delta edge) is the *exclusive* emitter — quorum-gated (a non-quorate node
+/// emits nothing, per invariant A7 leader-canonical decisions) and decoupled from
+/// `TopologyObserver.evaluateQuorumState` (spec §3.1). Single-source-of-truth for membership
+/// decisions is part of this contract.
 ///
 /// Note on lifecycle: `NodeJoined` and `NodeRemoved` reflect membership *view* transitions
 /// (whether the peer is in the cluster's `coreMemberIds` presence set). `NodeDecommissioned`

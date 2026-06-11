@@ -15,8 +15,9 @@ import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
 
-/// Presence-derived `GenerationSnapshotSource` that feeds `TopologyObserver`'s membership
-/// (`publishMembershipDeltas`) and quorum evaluation from local presence sampler presence
+/// Presence-derived `GenerationSnapshotSource` that feeds `TopologyObserver`'s quorum
+/// evaluation (and the `MembershipDeltaProjector`'s `observedRabiaTerm` log-index stamp,
+/// Wave 4) from local presence sampler presence
 /// (`PresenceSampler.currentMembers()`) instead of the committed `GenerationSnapshot`.
 /// This decouples `NodeRemoved`/`NodeJoined` and quorum from consensus commits
 /// (`aether/docs/specs/membership-placement-split-spec.md` §4.1–4.2, step 2 of §8).

@@ -1788,14 +1788,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
     // --- Internal: view change ---
 
     /// QUIC is pure transport — peer-link state, peerLinks table, hello handshakes, message
-    /// routing. Membership decisions are owned by `TopologyObserver` (canonical publisher of
-    /// `MembershipDecision`, fed by SWIM via `HealthReconciler`). Cluster-state notifications
+    /// routing. Membership decisions are owned by the aether `MembershipDeltaProjector`
+    /// (canonical publisher of `MembershipDecision`, fed by the `MembershipFsm` delta edge). Cluster-state notifications
     /// (`ClusterStateNotification`) are owned by `RabiaEngine`/`ConsensusBridge`.
     ///
     /// This method is the **canonical source of `TransportObservation` for the QUIC
     /// transport** (`ObservationSource.QUIC`). Each emission is a *local* observation —
     /// fast, partial-view, may flap. Cluster-canonical decisions about membership are
-    /// emitted by `TopologyObserver.publishMembershipDeltas` as `MembershipDecision`.
+    /// emitted by the `MembershipDeltaProjector` as `MembershipDecision`.
     /// Subscribers must choose the appropriate stream:
     ///   - fast bootstrap-time reactions (e.g. `LeaderManager`) → `TransportObservation`
     ///   - canonical cluster-truth reactions (e.g. workload reassignment) → `MembershipDecision`
@@ -1831,7 +1831,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // `LeaderElectionContext.currentTopology` BEFORE the snapshot exists
                 // (snapshot is only published after Rabia commits, which require an
                 // elected leader, which requires currentTopology to be non-empty —
-                // chicken/egg). `TopologyObserver.publishMembershipDeltas` augments
+                // chicken/egg). The `MembershipDeltaProjector` augments
                 // this for runtime edges via `MembershipDecision`; cluster bootstrap
                 // relies on the synchronous transport emit.
                 peerStateListener.onPeerJoined(peerId);
@@ -1848,8 +1848,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 reportPeerRemoval(peerId);
                 // Synchronous `PeerDisconnected` is load-bearing for receivers that cannot
                 // wait on the membership-delta path during failure scenarios.
-                // `TopologyObserver.publishMembershipDeltas` still fires its own
-                // `MembershipDecision.NodeRemoved` once the snapshot re-projects; subscribers
+                // The `MembershipDeltaProjector` still fires its own
+                // `MembershipDecision.NodeRemoved` on the FSM's REMOVED delta edge; subscribers
                 // distinguish between the local (transport) and global (membership) facts.
                 peerStateListener.onPeerLeft(peerId);
                 yield TransportObservation.peerDisconnected(peerId, currentView(), ObservationSource.QUIC);

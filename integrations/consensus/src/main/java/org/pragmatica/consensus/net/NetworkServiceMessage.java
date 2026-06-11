@@ -35,15 +35,6 @@ public sealed interface NetworkServiceMessage extends Message.Local {
 
     record ConnectedNodesList(List<NodeId> connected) implements NetworkServiceMessage {}
 
-    /// Edge-triggered membership re-evaluation request. Routed once per confirmed FSM
-    /// departure (from `AetherNode`'s `onConfirmedDeparture` death edge) so the
-    /// `TopologyObserver` recomputes its core-membership delta — emitting `NodeRemoved`
-    /// and pruning the departed node. Without it a CTM replacement's death at steady
-    /// core size has no following `addNode` to re-run the diff, so `NodeRemoved` never
-    /// fires (missing `NODE_FAILED` event + `/api/nodes/status` over-provision). Fired
-    /// once per departure edge — NOT per reconcile tick, which regressed READY-convergence.
-    record ReevaluateMembership(NodeId departed) implements NetworkServiceMessage {}
-
     /// Notification that a connection attempt to a node has failed.
     record ConnectionFailed(NodeId nodeId, Cause cause) implements NetworkServiceMessage {}
 

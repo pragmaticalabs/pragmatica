@@ -24,6 +24,10 @@ test_cluster_ready() {
     # signal if the precondition really wasn't met.
     wait_for_phase "NORMAL" 180 || \
         log_warn "Cluster phase did not reach NORMAL within 180s — kill below may be silently absorbed by SWIM cold-boot suppression"
+    # The restore baseline floor is deliberately "4+ READY, then settle" — an instant
+    # ==5 assert races the trailing 5th core (bites harder now that restores converge
+    # fast). Wait bounded for the settled state instead.
+    wait_for "5 healthy cores (settled baseline)" '[ "$(cluster_active_core_count)" = "5" ]' 120
     local count
     count=$(cluster_active_core_count)
     assert_eq "$count" "5" "Initial: 5 healthy cores"

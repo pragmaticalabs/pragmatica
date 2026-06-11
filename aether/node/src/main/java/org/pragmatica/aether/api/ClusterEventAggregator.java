@@ -522,7 +522,9 @@ public final class ClusterEventAggregator {
                                                                                        Map.of("nodeId",
                                                                                               draining.nodeId().id())));
             // NODE_JOINED is NOT sourced from the membership delta: a JOINING replacement is not yet
-            // a counted core member, so publishCoreMembershipDelta emits no `added` edge for it. The
+            // a counted core member, so the MembershipDeltaProjector emits no `NodeJoined` for it
+            // until its OBSERVED→MEMBER promotion (Wave 4 — the FSM delta edge fires on first
+            // promotion, later than the handshake). The
             // authoritative join surface is the transport `PeerJoined` handshake (onPeerJoined), now
             // LEADER-gated (the leader dials every core member, so it observes the replacement's
             // handshake). Departures differ — the delta DOES fire on the dead node leaving the counted

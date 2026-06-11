@@ -34,6 +34,7 @@ import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipDeltaProjector;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipTransitionRecord;
 import org.pragmatica.aether.deployment.membership.fsm.PeerTarget;
@@ -401,9 +402,10 @@ public interface AetherNode extends ManageableNode {
                                                                                       LeaderValue.class)
                                                                             .map(LeaderValue::leader);
         var hlcClock = HlcClock.hlcClock(config.self());
-        // Membership/placement split (spec §4.1–4.2, step 2): TopologyObserver's membership
-        // (publishMembershipDeltas) and quorum eval now read LOCAL NTT presence, not the
-        // committed GenerationSnapshot — so NodeRemoved/NodeJoined fire decoupled from
+        // Membership/placement split (spec §4.1–4.2, step 2), Wave-4 update: membership-delta
+        // emission lives in the MembershipDeltaProjector (fed by the MembershipFsm delta edge,
+        // wired in assembleNode); TopologyObserver's quorum eval reads LOCAL NTT presence, not
+        // the committed GenerationSnapshot — so NodeRemoved/NodeJoined fire decoupled from
         // consensus commits. The NTT is built later in assembleNode; presenceSamplerRef is the empty
         // deferred holder (declared here, populated at NTT construction, threaded through).
         // memberSupplier returns Set.of() until NTT exists → PresenceGenerationSnapshotSource
@@ -1829,6 +1831,28 @@ public interface AetherNode extends ManageableNode {
         // is in scope.
         var transitionJournal = TransitionJournal.transitionJournal();
         membershipFsm.onTransition(record -> appendFsmTransition(transitionJournal, record));
+        // Wave-4 (cluster-topology-overhaul, #245): the MembershipDeltaProjector is the SOLE
+        // emitter of MembershipDecision, fed by the FSM's own JOINED/REMOVED delta edge —
+        // installed BEFORE the boot seed below so the seeded members' OBSERVED→MEMBER
+        // promotions baseline them (their later deaths must emit NodeRemoved; the #245 victim
+        // was exactly a member promoted outside the old evaluateQuorumState-coupled diff). The
+        // projector preserves the old emission contract exactly: quorum-gated via the
+        // observer's inQuorum() bit (suppressed while non-quorate; pendings flush on the
+        // shared-bus ClusterStateNotification ACTIVE echo routed below — the ConsensusBridge
+        // re-emission of the engine activation the quorum edge itself causes), stamped with
+        // (observedRabiaTerm, HLC now), routed on the shared bus, and pruning departed peers
+        // through the observer's pre-existing removeNode path. Fully decoupled from
+        // evaluateQuorumState per spec §3.1 — the FSM promotion edge never reaches it.
+        var topologyObserver = (TopologyObserver) clusterNode.topologyManager();
+        var membershipDeltaProjector = MembershipDeltaProjector.membershipDeltaProjector(topologyObserver.inQuorum(),
+                                                                                         snapshotSource::observedRabiaTerm,
+                                                                                         hlcClock::now,
+                                                                                         delegateRouter::route,
+                                                                                         topologyObserver::pruneDeparted);
+
+        membershipFsm.onMembershipDelta(membershipDeltaProjector::onDelta);
+        allEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class,
+                                                 membershipDeltaProjector::onClusterStateNotification));
         // One-time boot seed from the configured topology member set. The FSM's SWIM observation tap
         // (added below, before SWIM starts via the whenReady(startSwimTrigger) lifecycle) already
         // promotes members naturally on their first HealthyObserved edge, so this seed is
@@ -1920,13 +1944,13 @@ public interface AetherNode extends ManageableNode {
         swimHealthDetector.addTransportObservationEmitter(delegateRouter::route);
         // RC1-9 audit Step 4: ClusterEventAggregator no longer subscribes to SWIM
         // observations directly. NODE_FAILED / NODE_LEFT events are emitted via the
-        // canonical MembershipDecision route (TopologyObserver), keyed off presence-derived
-        // membership (SWIM/QUIC via NTT). The SWIM-witnessed duplicate emit was
+        // canonical MembershipDecision route (MembershipDeltaProjector, Wave 4), keyed off
+        // the authoritative MembershipFsm delta edge. The SWIM-witnessed duplicate emit was
         // amplifying the membership-tracker cascade audit identified.
         // RC1-9 audit Step 3: the SWIM-FAULTY-to-disconnect short-circuit lambda is
         // gone. QUIC eviction now flows from `MembershipDecision.NodeRemoved`
-        // (published by `TopologyObserver.publishMembershipDeltas` when a peer leaves the
-        // presence-derived membership view). There is no node-state KV write on this path.
+        // (routed by the `MembershipDeltaProjector` on the FSM's REMOVED delta edge).
+        // There is no node-state KV write on this path.
         // The membership-delta-driven path is a single canonical edge instead of N+1
         // fan-out across every survivor's local SWIM listener.
         var clusterNetworkRef = clusterNode.network();
@@ -1974,16 +1998,12 @@ public interface AetherNode extends ManageableNode {
         // DepartedObserved. ADDITIVE — the graceful paths (NodeDecommissioned, DepartedObserved above)
         // already fire departurePermanent; this adds the co-confirmed-death edge. departurePermanent is
         // idempotent on an already-removed peer, so the overlap is harmless.
-        // The confirmed-departure edge drops the dead peer's QUIC link AND edge-triggers a
-        // TopologyObserver membership re-evaluation. The re-eval is routed (not called directly)
-        // so it dispatches on the router thread, mirroring the SwimObservation->DiscoveredNodes
-        // pattern above. Without it, a CTM replacement dying at steady core size has no following
-        // addNode to re-run the membership diff, so NodeRemoved never fires (no NODE_FAILED event
-        // + /api/nodes/status over-provision). Once-per-edge — per-tick re-eval regressed convergence.
-        membershipFsm.onConfirmedDeparture(nodeId -> {
-            clusterNetworkRef.departurePermanent(nodeId);
-            delegateRouter.route(new NetworkServiceMessage.ReevaluateMembership(nodeId));
-        });
+        // Wave 4 (ratified D7): the 2026-06-09 ReevaluateMembership re-poke is DELETED — the
+        // confirmed-departure edge now only drops the QUIC link. The membership delta itself
+        // (NodeRemoved emission + observer prune) rides the FSM's REMOVED delta edge through
+        // the MembershipDeltaProjector wired above, structurally decoupled from
+        // evaluateQuorumState (spec §3.1).
+        membershipFsm.onConfirmedDeparture(clusterNetworkRef::departurePermanent);
         clusterNetworkRef.setDesiredConnections(() -> desiredDialTargets(membershipFsm));
         // Wave-1 Enrichment A: PEER-layer transition journal feed — every PeerState phase
         // mutation (plus the §6.1 dialer expected-vs-actual Hello diagnostic) lands in the
@@ -1996,11 +2016,12 @@ public interface AetherNode extends ManageableNode {
                                                                                         config.self(),
                                                                                         persisted,
                                                                                         cluster));
-        // Wave-1 item 3 (#245 baseline diagnostic): periodic DEBUG dump comparing the
-        // TopologyObserver delta baseline (previousCoreMembers) vs the FSM core-member set vs
-        // the presence-sampler view — proves the #245 baseline gap empirically before Wave 4
-        // fixes it. Diag-only cadence; log-level-gated (DEBUG), no control-flow effect.
-        SharedScheduler.scheduleAtFixedRate(() -> logMembershipBaselineTrace((TopologyObserver) clusterNode.topologyManager(),
+        // Wave-1 item 3 diagnostic, Wave-4 successor: periodic DEBUG dump comparing the
+        // projector's announced decision-stream baseline (the replacement of the deleted
+        // TopologyObserver previousCoreMembers diff baseline) vs the FSM core-member set vs
+        // the presence-sampler view. Diag-only cadence; log-level-gated (DEBUG), no
+        // control-flow effect.
+        SharedScheduler.scheduleAtFixedRate(() -> logMembershipBaselineTrace(membershipDeltaProjector,
                                                                              membershipFsm,
                                                                              presenceSampler),
                                             MEMBERSHIP_BASELINE_TRACE_INTERVAL);
@@ -2064,13 +2085,14 @@ public interface AetherNode extends ManageableNode {
                                                                                       bootstrapModule)));
         // RC1 Step 2: snapshot-then-tail wiring. BootstrapModule consumes the current KV snapshot
         // via its `kvSnapshotSupplier` at the time of `projectFromCommittedAtoms`. The route attached
-        // below provides the "tail" — every MembershipDecision variant routed by TopologyObserver
-        // (single canonical emitter) signals bootstrap retry. Membership is presence-derived
-        // (SWIM/QUIC via NTT); there is no node-state KV listener.
+        // below provides the "tail" — every MembershipDecision variant routed by the
+        // MembershipDeltaProjector (single canonical emitter, Wave 4) signals bootstrap retry.
+        // Membership derives from the authoritative MembershipFsm delta edge; there is no
+        // node-state KV listener.
         wireMembershipDecisionTail(allEntries, bootstrapModule::onMembershipDecision);
         var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.SpokesmanKey.class,
                                                                                                           _ -> bootstrapModule.retryIfNeeded()).onPut(AetherKey.ClusterConfigKey.class,
-                                                                                                                                                      (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue>_) -> clusterTopologyManager.onClusterConfigChanged()).build();
+                                                                                                                                                      (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue>_) -> onClusterConfigPut(clusterTopologyManager, leaderReconciler)).build();
 
         allEntries.addAll(healthKvRouter.asRouteEntries());
         var spokesmanPingLoop = org.pragmatica.aether.worker.metrics.SpokesmanPingLoop.spokesmanPingLoop(config.self(),
@@ -2545,17 +2567,32 @@ public interface AetherNode extends ManageableNode {
                        "");
     }
 
-    /// Wave-1 item 3 (#245 baseline diagnostic): DEBUG dump of the three membership views whose
-    /// divergence is the #245 baseline gap — the TopologyObserver membership-delta baseline,
-    /// the authoritative FSM core-member set, and the presence-sampler view. Log-only.
+    /// Wave-1 item 3 diagnostic, Wave-4 successor: DEBUG dump of the three membership views
+    /// whose divergence WAS the #245 baseline gap — the `MembershipDeltaProjector`'s announced
+    /// decision-stream baseline (which replaced the deleted TopologyObserver
+    /// `previousCoreMembers` diff baseline), the authoritative FSM core-member set, and the
+    /// presence-sampler view. Log-only.
     @Contract
-    private static void logMembershipBaselineTrace(TopologyObserver observer,
+    private static void logMembershipBaselineTrace(MembershipDeltaProjector projector,
                                                    MembershipFsm membershipFsm,
                                                    PresenceSampler presenceSampler) {
-        LOG.debug("Membership baseline trace (Wave-1 #245 diag): previousCoreMembers={} fsmCoreMembers={} presenceMembers={}",
-                  observer.previousCoreMembersSnapshot(),
+        LOG.debug("Membership baseline trace (Wave-4 #245 diag): announcedCoreMembers={} fsmCoreMembers={} presenceMembers={}",
+                  projector.announcedCoreMembers(),
                   membershipFsm.coreMembers(),
                   presenceSampler.currentMembers());
+    }
+
+    /// `ClusterConfigKey` KV-commit fan-out. CTM keeps its config-changed notification, AND —
+    /// H1 / #257 (cluster-topology-overhaul Wave 8 item 1, pulled forward) — the leader's
+    /// reconciler is triggered with `trigger=CONFIG_CHANGE`: a committed config-driven target
+    /// change (scale up/down, restore-to-N) must produce a reconcile pass within the debounce
+    /// window instead of waiting for unrelated SWIM churn (live-confirmed: a 2-core deficit
+    /// sat 10 minutes unhealed because no reconcile ever fired). `onConfigChange` is
+    /// leader-gated and rides the reconciler's standard CAS-debounce machinery.
+    @Contract
+    private static void onClusterConfigPut(ClusterTopologyManager clusterTopologyManager, LeaderReconciler leaderReconciler) {
+        clusterTopologyManager.onClusterConfigChanged();
+        leaderReconciler.onConfigChange();
     }
 
     /// Post-E.8 phase-change publisher. Polls `phaseSupplier` at `PHASE_WATCH_INTERVAL` and

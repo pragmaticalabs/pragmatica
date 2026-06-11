@@ -1918,6 +1918,157 @@ class LeaderReconcilerTest {
     }
 
     /// Controllable time source — advances only on explicit method calls.
+    /// H1 / #257 (cluster-topology-overhaul Wave 8 item 1, pulled forward): the
+    /// `ClusterConfigKey` KV-commit notification is wired to [`LeaderReconciler#onConfigChange`]
+    /// in `AetherNode` — a config-driven target change (scale up/down, restore-to-N) must
+    /// produce a reconcile pass within the debounce window on the leader, riding the standard
+    /// CAS-debounce machinery, with `trigger=CONFIG_CHANGE` carried into the intent (the
+    /// provisioning-decision log evidence). Deliberately self-contained — uses only
+    /// activate/onConfigChange/scheduler/listener, away from the seeding fixtures.
+    @Nested
+    class ConfigChangeTrigger {
+        @Test
+        void onConfigChange_leader_dispatchesReconcileWithinDebounce_withConfigChangeTrigger() {
+            configuredCoreCount.set(1);
+            reconciler.activate();
+
+            reconciler.onConfigChange();
+
+            var debounced = scheduler.tasksByDelay(DEBOUNCE_DELAY);
+
+            assertThat(debounced)
+                .as("a committed config change must schedule exactly one debounced reconcile")
+                .hasSize(1);
+
+            debounced.getFirst().runIfLive();
+
+            assertThat(listener.events()).hasSize(1);
+            assertThat(listener.events().getFirst().trigger())
+                .as("the reconcile pass must carry trigger=CONFIG_CHANGE")
+                .isEqualTo(ReconcileTrigger.CONFIG_CHANGE);
+        }
+
+        @Test
+        void onConfigChange_nonLeader_isIgnored() {
+            configuredCoreCount.set(1);
+
+            reconciler.onConfigChange();
+
+            assertThat(scheduler.tasksByDelay(DEBOUNCE_DELAY))
+                .as("a follower must not reconcile on config change (leader-gated)")
+                .isEmpty();
+            assertThat(listener.events()).isEmpty();
+        }
+    }
+
+    /// H1 / #257 completion (live-gate evidence): a deficit born of deaths during a post-churn
+    /// lull with an UNCHANGED configured size never re-poked the reconciler — the deficit sat
+    /// past the 600s window, then healed in 13s once poked. ANY pass that ends with an
+    /// UNRESOLVED confirmed-member deficit must arm the deduped, debounce-spaced
+    /// deficit-convergence follow-up ([`ReconcileTrigger#DEFICIT_FOLLOW_UP`]), self-rearming
+    /// until the deficit converges to zero; a converged pass arms nothing. Deficits are
+    /// created by UNDER-SEEDING (the proven-green `reElection...` pattern) — never via
+    /// `removePeers`, whose SUSPECT-still-counts behaviour is the #246 fixture breakage.
+    @Nested
+    class DeficitFollowUp {
+        /// Follow-up delay band for a fresh-anchor / anchor-unset pass: the full deficit-debounce
+        /// window plus the short scheduling margin.
+        private static final TimeSpan FOLLOW_UP_DELAY =
+            timeSpan(EXPECTED_DEBOUNCE_WINDOW.nanos() + DEBOUNCE_DELAY.nanos()).nanos();
+
+        /// A quorum-safe, latched pass suppressed by the debounce gate (deficit > 0, nothing
+        /// dispatched) arms exactly one follow-up.
+        @Test
+        void unresolvedDeficitPass_noDispatch_armsFollowUp() {
+            configuredCoreCount.set(5);
+            leaderTerm.set(2L);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+            assertThat(scheduler.tasksByDelay(FOLLOW_UP_DELAY))
+                .as("an unresolved-deficit pass must arm exactly one deficit follow-up")
+                .hasSize(1);
+        }
+
+        /// A quorum-UNSAFE deficit pass (previously armed nothing — the live-gate gap class)
+        /// also arms the follow-up.
+        @Test
+        void quorumUnsafeDeficitPass_armsFollowUp_noDispatch() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+            assertThat(listener.events().getLast().provisionCount()).isZero();
+            assertThat(scheduler.tasksByDelay(FOLLOW_UP_DELAY))
+                .as("a quorum-unsafe deficit pass must still arm the follow-up")
+                .hasSize(1);
+        }
+
+        /// The follow-up fires once the debounce window clears: it re-enters the reconcile path
+        /// with `trigger=DEFICIT_FOLLOW_UP` and dispatches the provision — no external membership
+        /// event needed. The dispatching pass then RE-ARMS (in-flight-masked raw deficit — the
+        /// replacement has not joined yet), proving the convergence loop keeps checking until join.
+        @Test
+        void followUp_firesAndDispatches_onceDebounceClears_thenRearmsAwaitingJoin() {
+            configuredCoreCount.set(5);
+            leaderTerm.set(2L);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(scheduler.tasksByDelay(FOLLOW_UP_DELAY)).hasSize(1);
+            listener.clear();
+
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            scheduler.tasksByDelay(FOLLOW_UP_DELAY).getFirst().runIfLive();
+            fireDebouncedReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+            assertThat(listener.events().getLast().trigger())
+                .as("the follow-up pass must carry trigger=DEFICIT_FOLLOW_UP into the decision log")
+                .isEqualTo(ReconcileTrigger.DEFICIT_FOLLOW_UP);
+            assertThat(listener.events().getLast().provisionCount()).isEqualTo(1);
+            assertThat(scheduler.tasksByDelay(FOLLOW_UP_DELAY))
+                .as("the dispatching pass re-arms while the raw member deficit awaits the join (in-flight-masked)")
+                .hasSize(2);
+        }
+
+        /// Converged pass (confirmed members at configured target) arms nothing — the loop
+        /// terminates the moment the deficit reaches zero.
+        @Test
+        void convergedPass_armsNothing() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(scheduler.tasksByDelay(FOLLOW_UP_DELAY))
+                .as("a converged pass must arm no follow-up")
+                .isEmpty();
+        }
+
+        /// Hot-loop guard: a second deficient pass while a follow-up is already pending does NOT
+        /// arm a second one (single-ref dedupe — at most one outstanding).
+        @Test
+        void secondDeficitPass_whileFollowUpPending_isDeduped() {
+            configuredCoreCount.set(5);
+            leaderTerm.set(2L);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(scheduler.tasksByDelay(FOLLOW_UP_DELAY)).hasSize(1);
+
+            triggerAndFireReconcile();
+
+            assertThat(scheduler.tasksByDelay(FOLLOW_UP_DELAY))
+                .as("a pending follow-up dedupes further arming")
+                .hasSize(1);
+        }
+    }
+
     private static final class TestTimeSource implements TimeSource {
         private volatile long nanos = 0L;
 

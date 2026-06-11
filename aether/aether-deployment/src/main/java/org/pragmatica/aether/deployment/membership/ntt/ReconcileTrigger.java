@@ -16,12 +16,22 @@ package org.pragmatica.aether.deployment.membership.ntt;
 /// - [`#QUORUM_LOSS`] — a [`QuorumLossIntent`] arrived from [`LocalQuorumWatcher`].
 /// - [`#MEMBER_APPEARED`] — a SWIM `HealthyObserved` was emitted (a peer became reachable);
 ///   catches the "surplus appeared" case symmetrically with NTT catching shortage.
-/// - [`#CONFIG_CHANGE`] — a KV-subscribed config change (e.g., `coreCount`) was observed.
-///   Phase 1.5 wires the entry point; Phase 2 hooks the actual subscription.
+/// - [`#CONFIG_CHANGE`] — a KV-subscribed config change (`ClusterConfigKey` commit — scale
+///   up/down, restore-to-N) was observed. Wired from `AetherNode`'s KV-notification router
+///   to [`LeaderReconciler#onConfigChange`] (H1 / #257), so a config-driven target change
+///   reconciles within the debounce window instead of waiting for unrelated SWIM churn.
+/// - [`#DEFICIT_FOLLOW_UP`] — the reconciler's own deficit-convergence follow-up (H1 / #257
+///   completion): a pass that ended with an UNRESOLVED confirmed-member deficit (whatever
+///   the suppression reason — `WITHIN_DEBOUNCE`, `NOT_QUORUM_SAFE`, the cold-start latches,
+///   or an in-flight-masked raw deficit) armed one deduped, debounce-spaced re-evaluation;
+///   this trigger is that follow-up firing. Self-rearming until the confirmed-member count
+///   converges to the configured target — a bounded convergence loop, NOT a periodic tick
+///   (it arms only while a deficit exists and stops the moment it converges).
 public enum ReconcileTrigger {
     LEADER_ACTIVATION,
     NTT_FIRE,
     QUORUM_LOSS,
     MEMBER_APPEARED,
-    CONFIG_CHANGE
+    CONFIG_CHANGE,
+    DEFICIT_FOLLOW_UP
 }

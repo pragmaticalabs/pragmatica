@@ -48,7 +48,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// only — cluster-topology-overhaul spec Wave 2 / W2; see the [`#membershipFsm`] field doc).
 /// The member set always includes `self`.
 ///
-/// **Five trigger paths.**
+/// **Five external trigger paths** (plus the internal deficit-convergence self-trigger
+/// [`ReconcileTrigger#DEFICIT_FOLLOW_UP`] — see the dedicated paragraph below).
 /// 1. [`#activate()`] on leader gain — schedules a single one-shot delayed
 ///    [`ReconcileTrigger#LEADER_ACTIVATION`] reconcile at
 ///    `nttDepartureTimeout × 1.5`. Reasoning: leader churn is invasive; let SWIM gossip
@@ -61,9 +62,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// 4. [`#onSwimMemberHealthy(NodeId, long)`] — wired from SWIM `HealthyObserved`. Catches
 ///    the "surplus appeared" case (a peer became reachable; the leader may need to
 ///    drain excess). Trigger: [`ReconcileTrigger#MEMBER_APPEARED`].
-/// 5. [`#onConfigChange()`] — placeholder entry point for KV-subscribed config changes
-///    (e.g., `coreCount`). Phase 2 hooks the actual subscription. Trigger:
-///    [`ReconcileTrigger#CONFIG_CHANGE`].
+/// 5. [`#onConfigChange()`] — wired from the `ClusterConfigKey` KV-change notification
+///    (`AetherNode`'s KV-notification router; H1 / #257). A committed config-driven target
+///    change (scale up/down, restore-to-N) triggers a reconcile within the debounce window
+///    instead of waiting for unrelated SWIM churn. Trigger:
+///    [`ReconcileTrigger#CONFIG_CHANGE`]. Leader-gated like the other ingress points.
 ///
 /// **CAS-debounce.** A burst of trigger events collapses to at most two reconcile
 /// passes via the standard "in-flight + reschedule-requested" pair of [`AtomicBoolean`]s.
@@ -108,12 +111,16 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// `true` on activation: this is not initial formation, so a sub-full count is a departure, not a
 /// slow join. The term is read from the injected `leaderTermSupplier`.
 ///
-/// **Suppressed-deficit re-evaluation tick (Fix 2).** A pass that computes a deficit but suppresses
-/// provisioning purely on the deficit-debounce TIME gate (`WITHIN_DEBOUNCE`) schedules a single
-/// follow-up reconcile after the remaining debounce window (+ a small margin), so the deficit is
-/// acted on when the gate clears instead of waiting for the next presence sampler membership-change event (which
-/// never arrives when membership is stable in deficit). At most one such follow-up is pending at a
-/// time (deduped via [`#debounceReEvalFutureRef`]); it does not busy-loop.
+/// **Deficit-convergence follow-up (H1 / #257 completion; generalizes Fix 2).** Any pass that
+/// ends with an UNRESOLVED confirmed-member deficit — whatever the suppression reason
+/// (`WITHIN_DEBOUNCE`, `NOT_QUORUM_SAFE`, the cold-start latches) and INCLUDING passes where
+/// in-flight placeholders mask the raw deficit — arms a single deduped follow-up reconcile
+/// ([`ReconcileTrigger#DEFICIT_FOLLOW_UP`]) after the remaining debounce window (full window
+/// once elapsed). The follow-up self-rearms from each still-deficient pass until the
+/// confirmed count converges to the configured target: a bounded convergence loop, not a
+/// periodic tick. At most one is pending at a time (deduped via
+/// [`#deficitFollowUpFutureRef`]); it does not busy-loop (delay floor = [`#DEBOUNCE_DELAY`],
+/// steady spacing = the deficit-debounce window).
 ///
 /// **Concurrency.** `isLeader`, `reconcileInFlight`, `rescheduleRequested` are
 /// [`AtomicBoolean`]s; `activationFutureRef` is an [`AtomicReference`];
@@ -197,17 +204,28 @@ public final class LeaderReconciler {
     private volatile long deficitSinceNanos = UNSET_NANOS;
     private final AtomicReference<ScheduledFuture<?>> activationFutureRef = new AtomicReference<>();
     private final AtomicReference<ScheduledFuture<?>> inFlightSweepFutureRef = new AtomicReference<>();
-    /// At most one pending suppressed-deficit re-evaluation follow-up (Fix 2). A `WITHIN_DEBOUNCE`
-    /// pass schedules one reconcile after the remaining debounce window; concurrent attempts to
-    /// schedule a second are deduped (a non-null ref short-circuits the schedule), and the ref is
-    /// nulled when the follow-up fires so the next debounce window can arm a fresh one.
-    private final AtomicReference<ScheduledFuture<?>> debounceReEvalFutureRef = new AtomicReference<>();
+    /// At most one pending deficit-convergence follow-up (H1 / #257 completion — generalizes
+    /// the former Fix-2 `WITHIN_DEBOUNCE`-only re-evaluation). ANY reconcile pass that ends
+    /// with an UNRESOLVED confirmed-member deficit (`coreCountedMembers().size() <
+    /// configuredCoreCount` after dispatch decisions — including passes suppressed as
+    /// `WITHIN_DEBOUNCE` / `NOT_QUORUM_SAFE` / `NOT_ARMED` / `COLD_START_NOT_FULL`, and
+    /// passes where in-flight placeholders mask the raw deficit) arms one follow-up reconcile
+    /// ([`ReconcileTrigger#DEFICIT_FOLLOW_UP`]), delayed by the remaining deficit-debounce
+    /// window (the FULL window once elapsed / when no anchor is set). Self-rearming from each
+    /// still-deficient pass until the confirmed count converges — a BOUNDED convergence loop,
+    /// not a periodic tick: it arms only while a deficit exists, stops the moment membership
+    /// converges, and is cancelled on deactivation. Live-gate motivation: a restore-after-kill
+    /// with UNCHANGED configured size produced deaths during a post-churn lull — no external
+    /// event ever re-poked the reconciler and the deficit sat past the 600s window. Deduped
+    /// (a non-null ref short-circuits the schedule, CAS-arm cancels a lost race) with a hard
+    /// delay floor of [`#DEBOUNCE_DELAY`], so the arm path can never loop hot.
+    private final AtomicReference<ScheduledFuture<?>> deficitFollowUpFutureRef = new AtomicReference<>();
     /// At most one pending drain-grace re-evaluation follow-up (drain-safety grace, Wave 2). A
     /// pass that DEFERS part of a surplus drain because every remaining candidate is younger than
     /// [`#drainSafetyGraceWindow`] schedules one follow-up reconcile after the oldest young
     /// candidate matures — surplus is stable-state (no SWIM edge re-fires the reconciler while
     /// membership sits unchanged in surplus), so without this the deferred drain would silently
-    /// never re-evaluate. Same dedupe/CAS-arm discipline as [`#debounceReEvalFutureRef`].
+    /// never re-evaluate. Same dedupe/CAS-arm discipline as [`#deficitFollowUpFutureRef`].
     private final AtomicReference<ScheduledFuture<?>> drainGraceReEvalFutureRef = new AtomicReference<>();
 
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
@@ -374,7 +392,7 @@ public final class LeaderReconciler {
 
         cancelPendingActivation();
         cancelInFlightSweep();
-        cancelDebounceReEval();
+        cancelDeficitFollowUp();
         cancelDrainGraceReEval();
         inFlightProvisioning.clear();
         deficitSinceNanos = UNSET_NANOS;
@@ -416,9 +434,13 @@ public final class LeaderReconciler {
         triggerReconcile(ReconcileTrigger.MEMBER_APPEARED);
     }
 
-    /// Live-event ingress for KV-subscribed config changes (e.g., `coreCount`). Phase
-    /// 1.5 wires the entry point; Phase 2 hooks the actual subscription. Non-leader
-    /// nodes ignore.
+    /// Live-event ingress for KV-subscribed config changes (`ClusterConfigKey` commits —
+    /// scale up/down, restore-to-N). Wired from `AetherNode`'s KV-notification router (H1 /
+    /// #257): without this wire a config-driven target change produced NO reconcile until
+    /// unrelated SWIM churn — a 2-core deficit sat unhealed for minutes. Rides the standard
+    /// CAS-debounced [`#triggerReconcile`] entry (the same machinery as
+    /// [`ReconcileTrigger#NTT_FIRE`]), so a config commit yields a reconcile pass within the
+    /// debounce window. Non-leader nodes ignore.
     @Contract
     public void onConfigChange() {
         if (!isLeader.get()) {
@@ -669,12 +691,6 @@ public final class LeaderReconciler {
 
         dispatchProvisionActions(now, peersToProvision, currentMembers);
         dispatchDrainActions(peersToDrain);
-        // Fix 2 — suppressed-deficit re-evaluation tick. A pass that has a quorum-safe, armed,
-        // full-membership deficit suppressed ONLY by the deficit-debounce time gate schedules a
-        // single follow-up reconcile after the remaining debounce window so the deficit is acted on
-        // when the gate clears — instead of waiting for a presence sampler membership-change event that never
-        // arrives while membership is stable in deficit. Deduped + bounded; does not busy-loop.
-        scheduleDebounceReEvalIfNeeded(now, effective, configuredCoreCount, quorumSafe, provisioningPermitted);
         // Restart the debounce clock once we ACT on a deficit. The just-dispatched in-flight
         // placeholder makes `effective` meet target on the next pass (anchor would reset anyway),
         // but if the placeholder dies and the raw deficit re-opens with NO intervening at-target
@@ -684,6 +700,16 @@ public final class LeaderReconciler {
         if (!peersToProvision.isEmpty()) {
             deficitSinceNanos = UNSET_NANOS;
         }
+        // Deficit-convergence follow-up (H1 / #257 completion — generalizes Fix 2). Armed off the
+        // RAW confirmed-member deficit, deliberately ignoring in-flight placeholders: a pass that
+        // dispatched (or is masked by in-flight) is only PENDING-resolved, so the follow-up keeps
+        // re-checking until the replacement actually JOINS (or the in-flight TTL evicts it and the
+        // deficit re-provisions). This also covers WITHIN_DEBOUNCE / quorum-unsafe / cold-start
+        // suppressed passes — without it, deaths during a post-churn lull with an UNCHANGED
+        // configured size never re-poke the reconciler (live-gate: a deficit sat past the 600s
+        // window, then healed in 13s once poked). Runs AFTER the anchor reset above so a
+        // just-dispatched pass arms on the full-window branch.
+        armDeficitFollowUpIfNeeded(now, currentMembers.size(), configuredCoreCount);
 
         var intent = ReconcileIntent.reconcileIntent(now,
                                                      trigger,
@@ -736,7 +762,12 @@ public final class LeaderReconciler {
     }
 
     /// Operator-facing INFO trace (one line per reconcile pass that has a deficit OR a permitted
-    /// provision; healthy at-target no-op passes are NOT logged, bounding volume). Records the full
+    /// provision OR a `CONFIG_CHANGE` / `DEFICIT_FOLLOW_UP` trigger; healthy at-target no-op
+    /// passes are NOT logged, bounding volume — `CONFIG_CHANGE` passes are operator-rate and
+    /// `DEFICIT_FOLLOW_UP` passes are debounce-window-spaced and deficit-bounded, both always
+    /// logged so a config-driven scale and the deficit-convergence loop leave `trigger=` evidence
+    /// even when the pass resolves as a surplus drain, an in-flight-masked wait, or a no-op
+    /// (H1 / #257). Records the full
     /// provisioning-decision context so a Docker run can pin exactly why no replacement is
     /// provisioned after a kill: trigger, membership count + member ids, effective capacity,
     /// configured core count, the arm latch, the reached-full-membership latch, deficit age, quorum
@@ -751,8 +782,9 @@ public final class LeaderReconciler {
                                          boolean quorumSafe,
                                          boolean provisioningPermitted) {
         var hasDeficit = effective < configuredCoreCount;
+        var alwaysLoggedTrigger = trigger == ReconcileTrigger.CONFIG_CHANGE || trigger == ReconcileTrigger.DEFICIT_FOLLOW_UP;
 
-        if (!hasDeficit && !provisioningPermitted) {
+        if (!hasDeficit && !provisioningPermitted && !alwaysLoggedTrigger) {
             return;
         }
 
@@ -961,7 +993,7 @@ public final class LeaderReconciler {
 
     /// Arm a single drain-grace re-evaluation follow-up (deferred-surplus re-trigger). Deduped:
     /// a non-null [`#drainGraceReEvalFutureRef`] short-circuits (at most one pending), the
-    /// CAS-arm cancels a lost race — same discipline as [`#scheduleDebounceReEvalIfNeeded`] /
+    /// CAS-arm cancels a lost race — same discipline as [`#armDeficitFollowUpIfNeeded`] /
     /// [`#armInFlightSweep`]; no new timer machinery, the shared scheduler is reused.
     @Contract
     private void armDrainGraceReEval(Set<NodeId> currentMembers) {
@@ -1097,60 +1129,73 @@ public final class LeaderReconciler {
         }
     }
 
-    /// Fix 2 — schedule a single suppressed-deficit re-evaluation follow-up when this pass had a
-    /// quorum-safe, armed, full-membership deficit suppressed ONLY by the deficit-debounce time gate
-    /// (the `WITHIN_DEBOUNCE` reason). The follow-up fires after the remaining debounce window plus a
-    /// small margin, re-entering the reconcile path so the now-aged deficit can provision — instead
-    /// of waiting for a presence sampler membership-change event that never arrives while membership is stable in
-    /// deficit. Deduped: a non-null [`#debounceReEvalFutureRef`] short-circuits (at most one pending),
-    /// the CAS-arm cancels a lost race, so it never busy-loops or unbounded-schedules.
+    /// Arm the deficit-convergence follow-up (H1 / #257 completion) when this pass ended with
+    /// an UNRESOLVED confirmed-member deficit (`confirmedCoreMembers < configuredCoreCount`),
+    /// regardless of WHY it went unresolved — debounce-suppressed, quorum-unsafe, cold-start
+    /// latched, or masked by in-flight placeholders. Converged passes
+    /// (`confirmedCoreMembers >= configuredCoreCount`) arm NOTHING, terminating the loop.
+    /// Hot-loop safety: deduped (a non-null [`#deficitFollowUpFutureRef`] short-circuits — at
+    /// most one pending; the CAS-arm cancels a lost race) and delay-floored (see
+    /// [`#deficitFollowUpDelay`]: never below [`#DEBOUNCE_DELAY`], full debounce window once
+    /// the anchor has elapsed or is unset) — the same dedupe/CAS-arm discipline as
+    /// [`#armDrainGraceReEval`] / [`#armInFlightSweep`]; no new timer machinery, the shared
+    /// scheduler is reused.
     @Contract
-    private void scheduleDebounceReEvalIfNeeded(long now,
-                                                int effective,
-                                                int configuredCoreCount,
-                                                boolean quorumSafe,
-                                                boolean provisioningPermitted) {
-        var suppressedByDebounceOnly = !provisioningPermitted && quorumSafe && armedForProvisioning.get() && reachedFullMembership.get() && effective < configuredCoreCount && deficitSinceNanos != UNSET_NANOS;
+    private void armDeficitFollowUpIfNeeded(long now, int confirmedCoreMembers, int configuredCoreCount) {
+        var unresolvedDeficit = configuredCoreCount - confirmedCoreMembers > 0;
 
-        if (!suppressedByDebounceOnly || debounceReEvalFutureRef.get() != null) {
+        if (!unresolvedDeficit || deficitFollowUpFutureRef.get() != null) {
             return;
         }
 
-        var future = scheduler.schedule(this::runDebounceReEval, debounceReEvalDelay(now));
+        var future = scheduler.schedule(this::runDeficitFollowUp, deficitFollowUpDelay(now));
 
-        if (!debounceReEvalFutureRef.compareAndSet(null, future)) {
+        if (!deficitFollowUpFutureRef.compareAndSet(null, future)) {
             future.cancel(false);
         }
     }
 
-    /// Remaining time until the deficit-debounce window elapses for the current deficit run, plus the
-    /// short debounce margin so the follow-up reconcile observes the gate already cleared. Clamped to
-    /// at least the margin so a near-elapsed deficit still defers by one short tick rather than firing
-    /// inline.
-    private TimeSpan debounceReEvalDelay(long now) {
-        var elapsed = now - deficitSinceNanos;
-        var remaining = deficitDebounceWindow.nanos() - elapsed;
-        var delayNanos = Math.max(remaining, 0L) + DEBOUNCE_DELAY.nanos();
+    /// Delay for the deficit-convergence follow-up. While the deficit-debounce anchor is set
+    /// and the window has NOT yet elapsed: the remaining window plus the short margin, so a
+    /// `WITHIN_DEBOUNCE` pass re-fires exactly when the gate clears (preserving the Fix-2
+    /// timing). Once the window HAS elapsed — or when no anchor is set (in-flight-masked
+    /// deficit, just-dispatched pass) — the FULL debounce window plus margin, so a deficit
+    /// that stays unresolved for non-time reasons (quorum-unsafe, cold-start latches,
+    /// awaiting a replacement's join) is re-checked at debounce-window spacing, never in a
+    /// hot loop. Absolute floor: [`#DEBOUNCE_DELAY`].
+    private TimeSpan deficitFollowUpDelay(long now) {
+        if (deficitSinceNanos == UNSET_NANOS) {
+            return timeSpan(deficitDebounceWindow.nanos() + DEBOUNCE_DELAY.nanos()).nanos();
+        }
 
-        return timeSpan(delayNanos).nanos();
+        var remaining = deficitDebounceWindow.nanos() - (now - deficitSinceNanos);
+
+        if (remaining <= 0) {
+            return timeSpan(deficitDebounceWindow.nanos() + DEBOUNCE_DELAY.nanos()).nanos();
+        }
+
+        return timeSpan(remaining + DEBOUNCE_DELAY.nanos()).nanos();
     }
 
-    /// Re-evaluation follow-up tick (Fix 2): clear the pending ref and re-trigger a reconcile so the
-    /// sustained deficit is re-evaluated now that the debounce window has elapsed. Non-leader nodes
-    /// no-op (a deposed leader's follow-up must not act).
+    /// Deficit-convergence follow-up tick: clear the pending ref and re-trigger a reconcile
+    /// ([`ReconcileTrigger#DEFICIT_FOLLOW_UP`] — carried into the provisioning-decision log)
+    /// so the unresolved deficit is re-evaluated. The pass it triggers re-arms via
+    /// [`#armDeficitFollowUpIfNeeded`] iff the deficit is STILL unresolved — the loop
+    /// terminates on convergence. Non-leader nodes no-op (a deposed leader's follow-up must
+    /// not act; [`#deactivate`] also cancels the pending future).
     @Contract
-    private void runDebounceReEval() {
-        debounceReEvalFutureRef.set(null);
+    private void runDeficitFollowUp() {
+        deficitFollowUpFutureRef.set(null);
         if (!isLeader.get()) {
             return;
         }
 
-        triggerReconcile(ReconcileTrigger.NTT_FIRE);
+        triggerReconcile(ReconcileTrigger.DEFICIT_FOLLOW_UP);
     }
 
     @Contract
-    private void cancelDebounceReEval() {
-        var prev = debounceReEvalFutureRef.getAndSet(null);
+    private void cancelDeficitFollowUp() {
+        var prev = deficitFollowUpFutureRef.getAndSet(null);
 
         if (prev != null) {
             prev.cancel(false);
