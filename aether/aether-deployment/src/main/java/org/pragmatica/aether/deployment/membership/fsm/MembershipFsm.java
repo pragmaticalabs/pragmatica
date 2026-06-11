@@ -29,6 +29,7 @@ import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmObserver;
 
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -120,30 +121,39 @@ public final class MembershipFsm {
     /// transition.
     public static final int UP_HYSTERESIS = 1;
 
+    /// M4 not-yet-wired sentinel (cluster-topology-overhaul Wave 9 item 5). The CDM
+    /// `coreCountedMembers` supplier returns THIS identity-distinguished set during the boot
+    /// window between CDM construction and `MembershipFsm` wiring (the holder is null). It is
+    /// distinct (by reference identity) from a genuinely-empty core set, so a stale-entry
+    /// cleanup that runs in that window can no-op instead of mass-classifying every
+    /// KV-known member as departed (the M4 mass-cleanup hazard). Consumers test it with
+    /// `set == MembershipFsm.MEMBERSHIP_NOT_WIRED` (reference identity), never `isEmpty()`.
+    public static final Set<NodeId> MEMBERSHIP_NOT_WIRED = Collections.unmodifiableSet(new HashSet<>());
+
     /// Default terminal-eviction backstop window (#131 Model C) for the legacy factory overloads that
-    /// predate the configured value: the membership-config `quorumLossDrainThreshold` (8s) — the SAME
+    /// predate the configured value: the membership-config `splitTimeout` (default 15s) — the SAME
     /// value the minority's quorum-loss self-drain uses, kept as a single source of truth. AetherNode
-    /// wires the live `MembershipConfig.quorumLossDrainThreshold()` through the dedicated overload.
-    private static final TimeSpan DEFAULT_EVICTION_BACKSTOP = MembershipConfig.membershipConfig().quorumLossDrainThreshold();
+    /// wires the live `MembershipConfig.splitTimeout()` through the dedicated overload.
+    private static final TimeSpan DEFAULT_EVICTION_BACKSTOP = MembershipConfig.membershipConfig().splitTimeout();
 
     /// Default DEPARTING timeout window (H2, cluster-topology-overhaul Wave 7): a member that
     /// entered DEPARTING (drain / down-hysteresis / graceful-leave intent) and then went SILENT
     /// still terminalizes to DEAD after this window. Sourced from
-    /// `MembershipConfig.nttDepartureTimeout` (15s) — THE membership departure-debounce constant
+    /// `MembershipConfig.splitTimeout` (default 15s) — THE membership departure-debounce constant
     /// (the same one presence sampler derives its down-hysteresis from), deliberately reused
     /// instead of introducing a new knob: "silent in DEPARTING for as long as a sustained absence
     /// needs to be confirmed" is the same epistemic budget. AetherNode wires the live configured
     /// value through the dedicated overload.
-    private static final TimeSpan DEFAULT_DEPARTURE_TIMEOUT = MembershipConfig.membershipConfig().nttDepartureTimeout();
+    private static final TimeSpan DEFAULT_DEPARTURE_TIMEOUT = MembershipConfig.membershipConfig().splitTimeout();
 
     /// Default join-grace window (M10, cluster-topology-overhaul Wave 7): a tracked member that
     /// NEVER reaches MEMBER within this window of its first observation is reaped OBSERVED→DEAD
     /// via [`JoinGraceExpiredNeverHealthy`] (never silently counted, never a permanent ghost in
-    /// `broadcastEligibleMembers`). Sourced from `MembershipConfig.nttDepartureTimeout` (15s) —
+    /// `broadcastEligibleMembers`). Sourced from `MembershipConfig.splitTimeout` (default 15s) —
     /// the single membership timing constant, comfortably above SWIM's own ~12s join grace so
     /// SWIM gets first say. Boot-seeded configured members are promoted to MEMBER immediately
     /// (the seed), so the reaper only ever fires for a discovered joiner that never went healthy.
-    private static final TimeSpan DEFAULT_JOIN_GRACE = MembershipConfig.membershipConfig().nttDepartureTimeout();
+    private static final TimeSpan DEFAULT_JOIN_GRACE = MembershipConfig.membershipConfig().splitTimeout();
 
     private final FsmObserver<MembershipState, MembershipEvent> observer;
     private final Map<NodeId, MemberTracking> members = new ConcurrentHashMap<>();
@@ -195,8 +205,8 @@ public final class MembershipFsm {
     /// confirmed-departure paths (graceful `SwimDeparted`, join-grace expiry). A network partition
     /// shorter than this window heals while the node is SUSPECT (a `SwimHealthy` recovery edge cancels
     /// the backstop via `clearConfirmedDeath`), so the node rejoins via SUSPECT→MEMBER and is never
-    /// fenced. Sourced from `MembershipConfig.quorumLossDrainThreshold` — the SAME value the minority's
-    /// quorum-loss self-drain uses (single source of truth); defaults to 8s for the legacy factories.
+    /// fenced. Sourced from `MembershipConfig.splitTimeout` — the SAME value the minority's
+    /// quorum-loss self-drain uses (single source of truth); defaults to 15s for the legacy factories.
     private final TimeSpan evictionBackstop;
 
     /// DEPARTING timeout window (H2, Wave 7) — see [`#DEFAULT_DEPARTURE_TIMEOUT`]. Armed centrally
@@ -259,8 +269,8 @@ public final class MembershipFsm {
     }
 
     /// Production factory (AetherNode): explicit SUSPECTED-hint decay TTL (ms), the terminal-eviction
-    /// backstop window (#131 Model C, from `MembershipConfig.quorumLossDrainThreshold`), and the
-    /// Wave-7 DEPARTING-timeout / join-grace windows (both from `MembershipConfig.nttDepartureTimeout`
+    /// backstop window (#131 Model C, from `MembershipConfig.splitTimeout`), and the
+    /// Wave-7 DEPARTING-timeout / join-grace windows (both from `MembershipConfig.splitTimeout`
     /// — the single membership timing constant, see [`#DEFAULT_DEPARTURE_TIMEOUT`] /
     /// [`#DEFAULT_JOIN_GRACE`]). System wall clock, no-op observer.
     public static MembershipFsm membershipFsm(long suspectHintTtlMs,
@@ -278,7 +288,7 @@ public final class MembershipFsm {
     /// Full factory: explicit observer, injectable wall clock (ms), and SUSPECTED-hint decay TTL
     /// (ms). The clock injection lets tests advance time deterministically to exercise the #68 hint
     /// decay; a TTL of `Long.MAX_VALUE` disables decay. The terminal-eviction backstop (#131) defaults
-    /// to `quorumLossDrainThreshold` (8s) — use [`#membershipFsm(FsmObserver,LongSupplier,long,TimeSpan)`]
+    /// to `splitTimeout` (default 15s) — use [`#membershipFsm(FsmObserver,LongSupplier,long,TimeSpan)`]
     /// to override it.
     public static MembershipFsm membershipFsm(FsmObserver<MembershipState, MembershipEvent> observer,
                                               LongSupplier wallClockMs,
@@ -451,6 +461,11 @@ public final class MembershipFsm {
     /// Composite liveness signal for `id` lost (no probe-ack within the liveness window). Moves toward
     /// SUSPECT, sets the liveness-gone co-confirmation flag, and confirms departure iff SWIM has also
     /// declared the peer FAULTY.
+    ///
+    /// **Doc-truth (cluster-topology-overhaul §6.3):** `onLivenessGone` is the composite-liveness
+    /// signal CO-CONFIRMED with SWIM-FAULTY before DEAD — it is NOT a bare QUIC-disconnect death.
+    /// Transport never promotes to ALIVE (death-ward A1); it may only bias toward death, and a
+    /// transport-only blip without SWIM-FAULTY co-confirmation never terminalizes a member here.
     @Contract
     public void onLivenessGone(NodeId id) {
         withMember(id, this::livenessGone);
@@ -647,7 +662,7 @@ public final class MembershipFsm {
     /// adopted by cluster-topology-overhaul Wave 2 / W1): members whose current state is exactly
     /// MEMBER (SUSPECT excluded — strict) AND whose descriptor role is core (unknown / absent
     /// role counts as core, same conservative rule as [`#coreCountedMembers`]). The detector's
-    /// `quorumLossDrainThreshold` window debounces a transient SUSPECT dip, so the strict
+    /// `splitTimeout` window debounces a transient SUSPECT dip, so the strict
     /// numerator does not cause premature self-drain on a single flap.
     public int strictCoreMemberCount() {
         return (int) members.values()

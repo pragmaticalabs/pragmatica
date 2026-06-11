@@ -51,12 +51,7 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
                                            Phase phase,
                                            StateValue stateValue,
                                            Batch<C> value)
-        implements Synchronous {
-            @Override
-            public boolean deliverToPassive() {
-                return true;
-            }
-        }
+        implements Synchronous {}
 
         /// State synchronization response. Travels on the dedicated SYNC lane (not CONSENSUS) so
         /// it is not head-of-line-blocked by consensus round traffic during a joiner's catch-up.

@@ -35,7 +35,6 @@ import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.NodeState;
@@ -206,7 +205,7 @@ class QuicClusterNetworkTest {
             var peerId = NodeId.randomNodeId();
             var address = NodeAddress.nodeAddress("10.0.0.5", 19500)
                                      .fold(_ -> fail("Invalid address"), addr -> addr);
-            var info = NodeInfo.nodeInfo(peerId, address, NodeRole.ACTIVE, Map.of());
+            var info = NodeInfo.nodeInfo(peerId, address, Map.of());
 
             network.finalizeReconnect(peerId, Option.some(info));
 
@@ -231,7 +230,7 @@ class QuicClusterNetworkTest {
             var peerId = NodeId.randomNodeId();
             var address = NodeAddress.nodeAddress("10.0.0.5", 19500)
                                      .fold(_ -> fail("Invalid address"), addr -> addr);
-            var info = NodeInfo.nodeInfo(peerId, address, NodeRole.ACTIVE, Map.of());
+            var info = NodeInfo.nodeInfo(peerId, address, Map.of());
 
             network.finalizeReconnect(peerId, Option.some(info));
 
@@ -282,7 +281,7 @@ class QuicClusterNetworkTest {
 
             var peerId = new NodeId("zzz-peer");
             var seeded = network.seedPeerForTests(peerId, initPeer(peerId));
-            network.setDesiredConnections(() -> List.of(desiredNodeInfo(peerId, NodeRole.ACTIVE)));
+            network.setDesiredConnections(() -> List.of(desiredNodeInfo(peerId)));
 
             network.reconcileMissingPeersTick();
 
@@ -308,7 +307,7 @@ class QuicClusterNetworkTest {
             var desiredPeer = new NodeId("zzz-desired");
             var topologySeed = network.seedPeerForTests(topologyPeer, initPeer(topologyPeer));
             var desiredSeed = network.seedPeerForTests(desiredPeer, initPeer(desiredPeer));
-            network.setDesiredConnections(() -> List.of(desiredNodeInfo(desiredPeer, NodeRole.ACTIVE)));
+            network.setDesiredConnections(() -> List.of(desiredNodeInfo(desiredPeer)));
 
             network.reconcileMissingPeersTick();
 
@@ -332,7 +331,7 @@ class QuicClusterNetworkTest {
             removed.authoritativeRemove(System.nanoTime());
             var seeded = network.seedPeerForTests(peerId, removed);
             // No SWIM membership gate wired — presence in the desired set is the re-admit authority.
-            network.setDesiredConnections(() -> List.of(desiredNodeInfo(peerId, NodeRole.ACTIVE)));
+            network.setDesiredConnections(() -> List.of(desiredNodeInfo(peerId)));
 
             network.reconcileMissingPeersTick();
 
@@ -352,7 +351,7 @@ class QuicClusterNetworkTest {
 
             var peerId = new NodeId("aaa-peer");
             var seeded = network.seedPeerForTests(peerId, initPeer(peerId));
-            network.setDesiredConnections(() -> List.of(desiredNodeInfo(peerId, NodeRole.ACTIVE)));
+            network.setDesiredConnections(() -> List.of(desiredNodeInfo(peerId)));
 
             network.reconcileMissingPeersTick();
 
@@ -390,16 +389,16 @@ class QuicClusterNetworkTest {
             return PeerState.peerState(peerId, System.nanoTime());
         }
 
-        private NodeInfo desiredNodeInfo(NodeId peerId, NodeRole role) {
+        private NodeInfo desiredNodeInfo(NodeId peerId) {
             var address = NodeAddress.nodeAddress("127.0.0.1", 1)
                                      .fold(_ -> fail("Invalid address"), addr -> addr);
-            return NodeInfo.nodeInfo(peerId, address, role, Map.of());
+            return NodeInfo.nodeInfo(peerId, address, Map.of());
         }
 
         private NodeInfo topologyNodeInfo(NodeId peerId) {
             var address = NodeAddress.nodeAddress("127.0.0.1", 1)
                                      .fold(_ -> fail("Invalid address"), addr -> addr);
-            return NodeInfo.nodeInfo(peerId, address, NodeRole.ACTIVE, Map.of());
+            return NodeInfo.nodeInfo(peerId, address, Map.of());
         }
     }
 
@@ -484,7 +483,7 @@ class QuicClusterNetworkTest {
         private NodeInfo dialTarget(NodeId expectedId, int port) {
             var address = NodeAddress.nodeAddress("127.0.0.1", port)
                                      .fold(_ -> fail("Invalid address"), addr -> addr);
-            return NodeInfo.nodeInfo(expectedId, address, NodeRole.ACTIVE, Map.of());
+            return NodeInfo.nodeInfo(expectedId, address, Map.of());
         }
     }
 

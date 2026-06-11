@@ -10,6 +10,7 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.PlacementPolicy;
 import org.pragmatica.aether.deployment.AuditLog;
 import org.pragmatica.aether.deployment.cluster.AllocationPool;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.ReconciliationAdjustment;
@@ -679,6 +680,16 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         public List<NodeId> activeNodes() {
             return List.copyOf(ctx.coreCountedMembersSupplier()
                                   .get());
+        }
+
+        /// M4 not-yet-wired guard (cluster-topology-overhaul Wave 9 item 5). True only once the
+        /// `MembershipFsm` core-membership supplier is wired; false during the boot window when it
+        /// still yields the identity-distinguished [`MembershipFsm#MEMBERSHIP_NOT_WIRED`] sentinel.
+        /// Stale-entry cleanups that diff KV state against `activeNodes()` MUST consult this so a
+        /// cleanup racing the wiring does not read an unresolved (sentinel) member set and
+        /// mass-classify every KV-known member as departed.
+        private boolean coreMembershipResolved() {
+            return ctx.coreCountedMembersSupplier().get() != MembershipFsm.MEMBERSHIP_NOT_WIRED;
         }
 
         public Set<NodeId> drainingNodes() {
@@ -1422,6 +1433,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         @Contract
         public void cleanupStaleNodeRoutes() {
+            if (!coreMembershipResolved()) {
+                return;
+            }
             var currentNodes = new HashSet<>(activeNodes());
             var commands = new ArrayList<KVCommand<AetherKey>>();
 
@@ -1445,6 +1459,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         @Contract
         public void cleanupStaleSliceEntries() {
+            if (!coreMembershipResolved()) {
+                return;
+            }
             var currentNodes = new HashSet<>(activeNodes());
             var staleKeys = sliceStates.keySet().stream().filter(key -> !currentNodes.contains(key.nodeId())).toList();
 
@@ -1462,6 +1479,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         @Contract
         public void cleanupStaleNodeArtifactEntries() {
+            if (!coreMembershipResolved()) {
+                return;
+            }
             var currentNodes = new HashSet<>(activeNodes());
             var staleKeys = new ArrayList<NodeArtifactKey>();
 

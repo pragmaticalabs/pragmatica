@@ -100,7 +100,7 @@ class QuorumLossDetectorTest {
             assertThat(detector.isBelowThreshold()).isTrue();
             assertThat(scheduler.pendingTasks()).hasSize(1);
             assertThat(scheduler.pendingTasks().getFirst().delay())
-                    .isEqualTo(membershipConfig().quorumLossDrainThreshold());
+                    .isEqualTo(membershipConfig().splitTimeout());
 
             timeSource.advanceTimeMillis(8_000);
             scheduler.fireAll();
@@ -187,7 +187,7 @@ class QuorumLossDetectorTest {
             var window2Task = scheduler.pendingTasks().get(1);
 
             assertThat(window2Task.cancelled()).isFalse();
-            assertThat(window2Task.delay()).isEqualTo(membershipConfig().quorumLossDrainThreshold());
+            assertThat(window2Task.delay()).isEqualTo(membershipConfig().splitTimeout());
 
             // Firing window 2's task emits an intent (it observes the current
             // belowThresholdSinceNanos == its captured windowStart at T=6s).
@@ -306,6 +306,56 @@ class QuorumLossDetectorTest {
             scheduler.fireAll();
 
             assertThat(listener.events()).hasSize(2);
+        }
+    }
+
+    /// Wave 9 Fix A — the `ClusterStateNotification` PASSIVE/ACTIVE quorum-presence edge is
+    /// debounced through the SAME split-timeout `T` window as the count path (no immediate
+    /// process-exit drain on PASSIVE). Quorum regained within `T` cancels; sustained loss past
+    /// `T` fires once. Arm is gated on the cold-start latch.
+    @Nested
+    class QuorumPresenceEdgeWindowed {
+        @Test
+        void passiveEdge_quorumRegainedWithinT_noDrain() {
+            members(5);
+            coreCount(5);
+            assertThat(detector.isArmed()).isTrue();
+
+            detector.onQuorumPresence(false);
+            assertThat(scheduler.pendingTasks()).hasSize(1);
+
+            timeSource.advanceTimeMillis(3_000);
+            detector.onQuorumPresence(true);
+            assertThat(scheduler.pendingTasks().getFirst().cancelled()).isTrue();
+
+            timeSource.advanceTimeMillis(8_000);
+            scheduler.fireAll();
+            assertThat(listener.events()).isEmpty();
+        }
+
+        @Test
+        void passiveEdge_sustainedLossPastT_drainFiresOnce() {
+            members(5);
+            coreCount(5);
+            assertThat(detector.isArmed()).isTrue();
+
+            detector.onQuorumPresence(false);
+            timeSource.advanceTimeMillis(8_000);
+            scheduler.fireAll();
+
+            assertThat(listener.events()).hasSize(1);
+        }
+
+        @Test
+        void passiveEdge_neverQuorate_noArm_noDrain() {
+            // Never reached quorum (cold-start guard): a PASSIVE edge must never self-drain.
+            detector.onQuorumPresence(false);
+
+            assertThat(detector.isArmed()).isFalse();
+            assertThat(scheduler.pendingTasks()).isEmpty();
+            timeSource.advanceTimeMillis(8_000);
+            scheduler.fireAll();
+            assertThat(listener.events()).isEmpty();
         }
     }
 

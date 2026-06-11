@@ -1,5 +1,7 @@
 # ClusterGeneration — End-to-End Membership Choreography
 
+> ✏️ **UPDATED — membership content SUPERSEDED by [`cluster-topology-overhaul-spec.md`](cluster-topology-overhaul-spec.md).** Placement / generation / epoch / quiescence content stays current; the membership content (`coreMembers` in the snapshot, `HealthReconciler` as membership writer, `NodeLifecycleKey`) is wrong on shipped mechanics — `HealthReconciler` does not exist; membership is FSM-derived.
+
 **Status:** Draft sketch for review · **Target:** v1.0.0-rc1 or v1.0.1 (scope TBD) · **Author:** design session 2026-04-18 evening
 
 ## 1. Goals

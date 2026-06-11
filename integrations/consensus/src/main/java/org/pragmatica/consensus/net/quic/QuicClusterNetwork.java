@@ -49,7 +49,6 @@ import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TransportObservation;
@@ -84,9 +83,10 @@ import static org.pragmatica.lang.Unit.unit;
 
 /// Manages network connections between nodes using QUIC transport.
 ///
-/// Replaces TCP-based [org.pragmatica.consensus.net.netty.NettyClusterNetwork] with QUIC,
-/// providing stream multiplexing, built-in TLS 1.3, and independent flow control per
-/// message type. Connection direction is deterministic: the lower NodeId always initiates.
+/// The sole cluster transport: QUIC, providing stream multiplexing, built-in TLS 1.3, and
+/// independent flow control per message type. Connection direction is deterministic: the
+/// lower NodeId always initiates. (The legacy TCP/Netty transport was retired in the
+/// cluster-topology-overhaul Wave 9 dead-code strip.)
 ///
 /// ## Per-peer state
 ///
@@ -476,7 +476,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     @Override
     public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {
-        broadcastPayload(broadcast.payload(), false);
+        broadcastPayload(broadcast.payload());
     }
 
     @Override
@@ -492,11 +492,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return Promise.unitPromise();
         }
         server = QuicClusterServer.quicClusterServer(
-            self.id(), self.role(), self.address(), self.labels(), serializer, deserializer,
+            self.id(), self.address(), self.labels(), serializer, deserializer,
             serverSslContext, Option.empty(), this::onPeerConnected, this::onMessageReceived
         );
         client = QuicClusterClient.quicClusterClient(
-            self.id(), self.role(), self.address(), self.labels(), serializer, deserializer,
+            self.id(), self.address(), self.labels(), serializer, deserializer,
             clientSslContext, Option.empty(), this::onMessageReceived
         );
         return server.start(port)
@@ -732,7 +732,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (blackholed) {
             return unit();
         }
-        broadcastPayload(message, !message.deliverToPassive());
+        broadcastPayload(message);
         return unit();
     }
 
@@ -773,7 +773,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // awaiting reconcile) so external counts do not flicker on momentary evictions.
         return peers.values()
                     .stream()
-                    .filter(p -> !p.isPassive())
                     .filter(p -> p.phase() == PeerState.Phase.CONNECTED
                                  || p.phase() == PeerState.Phase.EVICTED)
                     .map(PeerState::peerId)
@@ -825,11 +824,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private Promise<Unit> rebuildAndStart(int port, QuicSslContext newServerSsl, QuicSslContext newClientSsl) {
         server = QuicClusterServer.quicClusterServer(
-            self.id(), self.role(), self.address(), self.labels(), serializer, deserializer,
+            self.id(), self.address(), self.labels(), serializer, deserializer,
             newServerSsl, Option.empty(), this::onPeerConnected, this::onMessageReceived
         );
         client = QuicClusterClient.quicClusterClient(
-            self.id(), self.role(), self.address(), self.labels(), serializer, deserializer,
+            self.id(), self.address(), self.labels(), serializer, deserializer,
             newClientSsl, Option.empty(), this::onMessageReceived
         );
         return server.start(port)
@@ -930,8 +929,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
             case PeerState.CAUSE_ATTACH_RECONNECTED,
                  PeerState.CAUSE_ATTACH_SUPERSEDE,
                  PeerState.CAUSE_ATTACH_STALE_REPLACE -> processViewChange(RECONNECT, record.peerId());
-            case PeerState.CAUSE_EVICT,
-                 PeerState.CAUSE_AUTHORITATIVE_REMOVE -> processViewChange(REMOVE, record.peerId());
+            // CAUSE_EVICT is an ORGANIC REMOVE (transient soft-evict / peer-initiated channel
+            // close via the close-listener) → independent death evidence, feeds liveness-gone.
+            case PeerState.CAUSE_EVICT -> processViewChange(REMOVE, record.peerId(), false);
+            // CAUSE_AUTHORITATIVE_REMOVE is a DEATH-PATH REMOVE (departurePermanent fired off a
+            // SWIM-FAULTY / gossip verdict) → must NOT co-confirm the death it caused (Wave 9 Fix B).
+            case PeerState.CAUSE_AUTHORITATIVE_REMOVE -> processViewChange(REMOVE, record.peerId(), true);
             default -> { /* journal-only transition */ }
         }
     }
@@ -1064,7 +1067,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// sees connections whose identity was verified against the dialed NodeId.
     private void onDialCompleted(NodeInfo dialed, QuicPeerConnection connection) {
         journalDialerHello(dialed, connection);
-        onPeerConnected(connection, dialed.role(), dialed.address(), dialed.labels());
+        onPeerConnected(connection, dialed.address(), dialed.labels());
     }
 
     /// Feed the PEER transition journal with the completed outbound handshake identity
@@ -1136,7 +1139,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Multi-step peer registration with attach outcome dispatch
-    private void onPeerConnected(QuicPeerConnection connection, NodeRole peerRole, NodeAddress peerAddress, Map<String, String> peerLabels) {
+    private void onPeerConnected(QuicPeerConnection connection, NodeAddress peerAddress, Map<String, String> peerLabels) {
         var peerId = connection.peerId();
 
         // Never register self as a peer — self-connections cause removal cascades
@@ -1147,15 +1150,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return;
         }
 
-        // Check for unknown node — build NodeInfo from Hello data (NodeId, role, address, labels)
+        // Check for unknown node — build NodeInfo from Hello data (NodeId, address, labels)
         Option<NodeInfo> unknownNodeInfo = topologyManager.get(peerId).isEmpty()
-            ? buildUnknownNodeInfo(peerId, peerRole, peerAddress, peerLabels)
+            ? buildUnknownNodeInfo(peerId, peerAddress, peerLabels)
             : Option.empty();
 
         var state = getOrCreatePeer(peerId);
-        if (peerRole == NodeRole.PASSIVE) {
-            state.markPassive();
-        }
 
         if (state.phase() == PeerState.Phase.REMOVED && swimMembershipAllows(peerId)) {
             // Inbound connection from a peer SWIM has re-admitted to the authoritative membership
@@ -1235,9 +1235,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         log.debug("Node {} connected via QUIC Hello handshake", peerId);
     }
 
-    private Option<NodeInfo> buildUnknownNodeInfo(NodeId peerId, NodeRole peerRole, NodeAddress peerAddress, Map<String, String> peerLabels) {
+    private Option<NodeInfo> buildUnknownNodeInfo(NodeId peerId, NodeAddress peerAddress, Map<String, String> peerLabels) {
         log.info("Unknown node {} connected via QUIC Hello with address {}", peerId, peerAddress.asString());
-        return Option.some(NodeInfo.nodeInfo(peerId, peerAddress, peerRole, peerLabels));
+        return Option.some(NodeInfo.nodeInfo(peerId, peerAddress, peerLabels));
     }
 
     /// Finalize a RECONNECTED attach. The RECONNECT view-change (duplicate-ADD suppression)
@@ -1305,9 +1305,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return dispatchToPeer(state, message);
     }
 
-    /// Broadcast a typed message to all known peers. When `skipPassive` is true, peers whose
-    /// role is PASSIVE are filtered (used by `broadcast(ProtocolMessage)` when the message
-    /// opts out of passive delivery via `deliverToPassive() == false`).
+    /// Broadcast a typed message to all known peers.
     ///
     /// Serialization happens at the single write site, and only for peers that are actually
     /// CONNECTED (SendNow) — so `broadcast` stays a true no-op when `peers` is empty or all
@@ -1321,24 +1319,21 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// so `Retry N/200 @25ms` against it cannot start. The filter is mandatory; there is no
     /// unfiltered path (see [#broadcastMembership]).
     @SuppressWarnings("JBCT-PAT-01") // Iterate eligible peers, dispatch
-    private void broadcastPayload(Message.Wired message, boolean skipPassive) {
+    private void broadcastPayload(Message.Wired message) {
         var membershipView = broadcastMembership.get();
         for (var state : peers.values()) {
-            if (!isBroadcastEligible(state, membershipView, skipPassive)) {
+            if (!isBroadcastEligible(state, membershipView)) {
                 continue;
             }
             var _ = dispatchToPeer(state, message);
         }
     }
 
-    /// Broadcast-eligibility decision for a single peer. A peer is eligible unless it is a
-    /// skipped passive peer or it is absent from the membership view. The view is the
-    /// membership AUTHORITY: an evicted-but-still-CONNECTED peer (present in the `peers`
-    /// cache, absent from the view) is NOT eligible — the #68 storm fix.
-    private static boolean isBroadcastEligible(PeerState state, Set<NodeId> membershipView, boolean skipPassive) {
-        if (skipPassive && state.isPassive()) {
-            return false;
-        }
+    /// Broadcast-eligibility decision for a single peer. A peer is eligible unless it is
+    /// absent from the membership view. The view is the membership AUTHORITY: an
+    /// evicted-but-still-CONNECTED peer (present in the `peers` cache, absent from the view)
+    /// is NOT eligible — the #68 storm fix.
+    private static boolean isBroadcastEligible(PeerState state, Set<NodeId> membershipView) {
         return membershipView.contains(state.peerId());
     }
 
@@ -1716,7 +1711,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 firstObservedMissingMs.remove(peerId);
                 continue;
             }
-            if (topologyManager.isPassive(peerId)) {continue;}
             // Track when this peer was first observed missing. Subsequent ticks (re-runs
             // of this method while the peer is still missing) preserve the original
             // timestamp via putIfAbsent semantics — the grace window is anchored to the
@@ -1754,8 +1748,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 firstObservedMissingMs.remove(peerId);
                 continue;
             }
-            // Defensive: the FSM desired-set already excludes workers; skip any PASSIVE that slips in.
-            if (nodeInfo.role() == NodeRole.PASSIVE) {continue;}
             firstObservedMissingMs.putIfAbsent(peerId, nowMs);
             // Higher-id node normally waits for inbound. Once the grace window elapses, it MUST
             // be allowed to force-dial (FIX 3) — otherwise an inc-0 / churned peer whose lower-id
@@ -1957,7 +1949,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
     void onMessageReceivedForTests(NodeId sender, Object message) {
         onMessageReceived(sender, message);
     }
-
     /// Seeds a pre-built `PeerState` directly into the connection table, bypassing the QUIC
     /// handshake. Used only by transport-level tests that need a CONNECTED/EVICTED peer to
     /// exercise the REMOVE-emission idempotency paths in `disconnect`/`departurePermanent`
@@ -1987,16 +1978,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
         registerCloseListener(peerId, connection);
     }
 
-    /// Test hook: the set of peer NodeIds a `broadcast(skipPassive)` would actually target,
-    /// after applying the same passive-skip + mandatory membership-view filter as
-    /// `broadcastPayload`. Lets transport-level tests assert the #68 fix (an evicted-but-cached
-    /// peer absent from the membership view is never targeted) without standing up live QUIC
-    /// datagram channels.
-    Set<NodeId> broadcastTargetsForTests(boolean skipPassive) {
+    /// Test hook: the set of peer NodeIds a `broadcast` would actually target,
+    /// after applying the mandatory membership-view filter as `broadcastPayload`. Lets
+    /// transport-level tests assert the #68 fix (an evicted-but-cached peer absent from the
+    /// membership view is never targeted) without standing up live QUIC datagram channels.
+    Set<NodeId> broadcastTargetsForTests() {
         var membershipView = broadcastMembership.get();
         return peers.values()
                     .stream()
-                    .filter(state -> isBroadcastEligible(state, membershipView, skipPassive))
+                    .filter(state -> isBroadcastEligible(state, membershipView))
                     .map(PeerState::peerId)
                     .collect(Collectors.toSet());
     }
@@ -2029,6 +2019,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
     ///                 disconnect-driven cleanup if appropriate)
     @SuppressWarnings("JBCT-PAT-01") // Switch expression with side effects
     private void processViewChange(ViewChangeOperation operation, NodeId peerId) {
+        processViewChange(operation, peerId, false);
+    }
+
+    /// `deathPathInitiated` (Wave 9 Fix B) flags a REMOVE this node issued *because of* a death
+    /// verdict (`departurePermanent` / authoritative-remove). Threaded into `reportPeerRemoval`
+    /// so the liveness-gone co-confirmation tap can skip it — a verdict must not co-confirm the
+    /// death it caused. Organic closes (transient evict, peer-initiated channel close) pass
+    /// `false` and remain independent death evidence. Default `false` for ADD/RECONNECT/SHUTDOWN
+    /// and the 2-arg overload above.
+    private void processViewChange(ViewChangeOperation operation, NodeId peerId, boolean deathPathInitiated) {
         // Self should never appear in view changes — guard against cascading self-removal
         if (peerId.equals(self.id())) {
             log.warn("Ignoring view change {} for self node {}", operation, peerId);
@@ -2061,7 +2061,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // `HealthReconciler`; on a follower the observation is buffered into the next
                 // outbound `ClusterSyncPong` so the leader folds it through PeerObservationReducer
                 // (ClusterSync refactor commit 2 — followers are sensor-only).
-                reportPeerRemoval(peerId);
+                reportPeerRemoval(peerId, deathPathInitiated);
                 // Synchronous `PeerDisconnected` is load-bearing for receivers that cannot
                 // wait on the membership-delta path during failure scenarios.
                 // The `MembershipDeltaProjector` still fires its own
@@ -2114,13 +2114,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // empty and the narrow match fails.
         return (int) peers.values()
                           .stream()
-                          .filter(p -> !p.isPassive())
                           .filter(p -> p.phase() == PeerState.Phase.CONNECTED
                                        || p.phase() == PeerState.Phase.EVICTED)
                           .count();
     }
 
-    private void reportPeerRemoval(NodeId peerId) {
+    private void reportPeerRemoval(NodeId peerId, boolean deathPathInitiated) {
         // Leader path: route to the local disconnect listener (HealthReconciler fast path)
         // for liveness bookkeeping. Symmetric to follower-side reporting, ALSO emit a
         // connectivity transition via the reporter so the leader's local adapter can fold
@@ -2129,11 +2128,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // QUIC drops). Followers skip the disconnectListener (leader-only consumer) and
         // only emit through the reporter, which buffers the observation for the next
         // outbound ClusterSyncPong → leader.
+        //
+        // The leader `disconnectListener` (HealthReconciler) is fired unconditionally — its
+        // liveness bookkeeping is independent of the FSM co-confirmation. `deathPathInitiated`
+        // (Wave 9 Fix B) is forwarded to the connectivity reporter, whose aether-side adapter
+        // gates the FSM liveness-gone tap on it (organic close = death evidence; death-path
+        // close = the verdict's own side effect, must not self-co-confirm).
         if (isLeaderSupplier.getAsBoolean()) {
             disconnectListener.onDisconnect(peerId);
         }
         var epoch = observedEpochSupplier;
-        connectivityReporter.onPeerDisconnected(peerId, epoch.term(), epoch.counter());
+        connectivityReporter.onPeerDisconnected(peerId, epoch.term(), epoch.counter(), deathPathInitiated);
     }
 
     private void reportPeerConnection(NodeId peerId) {
@@ -2155,7 +2160,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 Stream.of(self.id()),
                 peers.values()
                      .stream()
-                     .filter(p -> p.phase() == PeerState.Phase.CONNECTED && !p.isPassive())
+                     .filter(p -> p.phase() == PeerState.Phase.CONNECTED)
                      .map(PeerState::peerId))
             .sorted()
             .toList();

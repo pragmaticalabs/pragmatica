@@ -23,7 +23,6 @@ import org.pragmatica.lang.Unit;
 
 import java.util.List;
 import java.util.Set;
-import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -98,10 +97,7 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// Idempotent — no-op when state already matches target.
     Promise<Unit> reconcile();
 
-    /// Test/legacy factory overload. `inQuorum` defaults to a permanently-true supplier so
-    /// existing call sites that do not gate on quorum remain quorate-by-assumption. Production
-    /// (`AetherNode`) MUST use the `BooleanSupplier`-taking overload below wired to
-    /// `TopologyObserver.inQuorum()` so a minority partition stops provisioning.
+    /// Test/legacy factory overload.
     static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
                                                          NodeLifecycleManager lifecycleManager,
                                                          AutoHealConfig config,
@@ -110,29 +106,6 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          Supplier<Option<ClusterConfigValue>> clusterConfigReader,
                                                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                          Supplier<ClusterPhase> phaseSupplier) {
-        return clusterTopologyManager(observer,
-                                      lifecycleManager,
-                                      config,
-                                      deploymentMap,
-                                      snapshotSource,
-                                      clusterConfigReader,
-                                      commandApplier,
-                                      phaseSupplier,
-                                      () -> true);
-    }
-
-    /// Production factory. `inQuorum` is the committed-healthy quorum bit (wire
-    /// `TopologyObserver.inQuorum()`). When it reports `false` the CTM stops provisioning
-    /// replacements and defers to `SelfDrainCoordinator` to dissolve the minority partition.
-    static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
-                                                         NodeLifecycleManager lifecycleManager,
-                                                         AutoHealConfig config,
-                                                         DeploymentMap deploymentMap,
-                                                         GenerationSnapshotSource snapshotSource,
-                                                         Supplier<Option<ClusterConfigValue>> clusterConfigReader,
-                                                         Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                         Supplier<ClusterPhase> phaseSupplier,
-                                                         BooleanSupplier inQuorum) {
         return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
                                                                          lifecycleManager,
                                                                          config,
@@ -141,7 +114,6 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          clusterConfigReader,
                                                                          commandApplier,
                                                                          phaseSupplier,
-                                                                         inQuorum,
                                                                          System::currentTimeMillis);
     }
 
@@ -159,7 +131,6 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          Supplier<Option<ClusterConfigValue>> clusterConfigReader,
                                                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                          Supplier<ClusterPhase> phaseSupplier,
-                                                         BooleanSupplier inQuorum,
                                                          Consumer<NodeId> drainCommandSink,
                                                          Consumer<NodeId> drainCommandClear) {
         return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
@@ -170,7 +141,6 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          clusterConfigReader,
                                                                          commandApplier,
                                                                          phaseSupplier,
-                                                                         inQuorum,
                                                                          System::currentTimeMillis,
                                                                          drainCommandSink,
                                                                          drainCommandClear);

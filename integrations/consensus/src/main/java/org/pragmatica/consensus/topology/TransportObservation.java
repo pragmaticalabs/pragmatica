@@ -42,7 +42,6 @@ import java.util.List;
 ///
 /// Producers:
 /// - `QuicClusterNetwork.processViewChange` — QUIC handshake / eviction / reconnect events
-/// - `NettyClusterNetwork.processViewChange` — Netty equivalents
 /// - `SwimProtocol.emitFaultyOrUnknown` — SWIM-protocol FAULTY observations
 ///
 /// Consumers: code paths that need fast local reactions and accept partial-view semantics —
@@ -67,11 +66,11 @@ public sealed interface TransportObservation extends Message.Local {
     /// Local transport observed a peer disconnecting: channel evicted or connection lost.
     /// May be transient — the peer may reconnect, or the cluster may not yet have decided
     /// to remove this peer from canonical membership.
-    /// Fires from QUIC REMOVE / Netty REMOVE / SWIM-FAULTY.
+    /// Fires from QUIC REMOVE / SWIM-FAULTY.
     record PeerDisconnected(NodeId nodeId, List<NodeId> topology, ObservationSource source) implements TransportObservation {}
 
     /// Local transport observed a peer reconnecting after a previous disconnect.
-    /// Fires from QUIC RECONNECT (Netty has no equivalent path).
+    /// Fires from QUIC RECONNECT.
     /// Subscribers may use this to invalidate disconnect-driven cleanup if appropriate.
     record PeerReconnected(NodeId nodeId, List<NodeId> topology, ObservationSource source) implements TransportObservation {}
 
@@ -90,8 +89,6 @@ public sealed interface TransportObservation extends Message.Local {
     enum ObservationSource {
         /// QUIC transport (`QuicClusterNetwork`).
         QUIC,
-        /// Netty transport (`NettyClusterNetwork`).
-        NETTY,
         /// SWIM protocol layer (`SwimProtocol`).
         SWIM
     }

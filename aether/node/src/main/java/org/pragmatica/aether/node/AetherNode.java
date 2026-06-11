@@ -175,11 +175,11 @@ import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyConfig;
+import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.aether.metrics.NodeReportedStateHolder;
 import org.pragmatica.aether.metrics.NodeReportedState;
@@ -1164,9 +1164,13 @@ public interface AetherNode extends ManageableNode {
         // cores only (W3 — a would-be core below coreMax is never mis-assigned WORKER because
         // workers inflated the count) and keeps workers out of activeNodes()/allocatableNodes()/
         // AllocationPool.coreNodes, so CORE_ONLY placement can never land on a worker (W6).
+        // Wave 9 item 5 (M4 sentinel): before the FSM holder is populated (boot window), the
+        // supplier yields the identity-distinguished `MEMBERSHIP_NOT_WIRED` sentinel (NOT an
+        // empty set) so a stale-entry cleanup that races the wiring no-ops instead of
+        // mass-classifying every KV-known member as departed.
         Supplier<Set<NodeId>> cdmCoreCountedMembersSupplier = () -> Option.option(membershipFsmRef.get())
                                                                           .map(MembershipFsm::coreCountedMembers)
-                                                                          .or(Set.of());
+                                                                          .or(MembershipFsm.MEMBERSHIP_NOT_WIRED);
         // B4 (membership v2 §7.5): the CDM allocatable-gate reads the leader readiness view (READY
         // peers + self) instead of a KV lifecycle atom. Late-bound — the pong fan + self-state holder are
         // constructed further below; this ref mirrors the late-bound supplier pattern.
@@ -1373,12 +1377,6 @@ public interface AetherNode extends ManageableNode {
                                                                                    clusterConfigReader,
                                                                                    clusterCommandApplier,
                                                                                    effectivePhaseSupplier,
-
-        // Quorum gate: TopologyObserver.inQuorum() is the committed-healthy
-        // quorum bit. Below quorum the CTM stops provisioning replacements
-        // (anti-flood) and defers to the §8.2 drain to dissolve the
-        // minority partition.
-        ((TopologyObserver) clusterNode.topologyManager()).inQuorum(),
                                                                                    target -> requestDrainThroughFsm(drainCommandRegistry, membershipFsmRef, target),
                                                                                    drainCommandRegistry::clearDrain);
         // E2 Phase 2b (2026-05-28): OrphanSelfDrainChecker deleted; NTT (§6) drives departure
@@ -1583,6 +1581,10 @@ public interface AetherNode extends ManageableNode {
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
         var consumerGroupCoordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode);
         var managementServerRef = new AtomicReference<Option<ManagementServer>>(Option.empty());
+        // Hoisted before collectRouteEntries (Wave 9 Fix A): the PASSIVE→process-exit-drain bridge
+        // routes through this detector's windowed path, so the route-collection needs the ref
+        // (the detector itself is constructed below and `set` into the ref before routing starts).
+        var quorumLossDetectorRef = new AtomicReference<QuorumLossDetector>();
         var aetherEntries = collectRouteEntries(kvStore,
                                                 nodeDeploymentManager,
                                                 clusterDeploymentManager,
@@ -1618,7 +1620,7 @@ public interface AetherNode extends ManageableNode {
                                                 clusterTopologyManager,
                                                 consumerGroupCoordinator,
                                                 consumerGroupRegistry,
-                                                drainProcedure,
+                                                quorumLossDetectorRef,
                                                 managementServerRef,
                                                 config.self());
 
@@ -1808,7 +1810,6 @@ public interface AetherNode extends ManageableNode {
                                                                                            .coreNodes()
                                                                                            .size());
         var leaderReconcilerRef = new AtomicReference<LeaderReconciler>();
-        var quorumLossDetectorRef = new AtomicReference<QuorumLossDetector>();
         Runnable nttReconcileTrigger = () -> onNttReconcile(quorumLossDetectorRef,
                                                             membershipFsmRef,
                                                             leaderReconcilerRef);
@@ -1850,9 +1851,9 @@ public interface AetherNode extends ManageableNode {
         // configured nttDepartureTimeout — the single membership departure-debounce constant (the
         // same one the sampler derives its down-hysteresis from).
         var membershipFsm = MembershipFsm.membershipFsm(config.autoHeal().swimHintsTtl().millis(),
-                                                        membershipConfig.quorumLossDrainThreshold(),
-                                                        membershipConfig.nttDepartureTimeout(),
-                                                        membershipConfig.nttDepartureTimeout());
+                                                        membershipConfig.splitTimeout(),
+                                                        membershipConfig.splitTimeout(),
+                                                        membershipConfig.splitTimeout());
         // Publish the FSM into the deferred holder so the membership consumers wired earlier (DHT
         // livePeers, accessibility filter, quorum-count propagation) read the authoritative FSM set.
         membershipFsmRef.set(membershipFsm);
@@ -2135,7 +2136,7 @@ public interface AetherNode extends ManageableNode {
         wireMembershipDecisionTail(allEntries, bootstrapModule::onMembershipDecision);
         var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.SpokesmanKey.class,
                                                                                                           _ -> bootstrapModule.retryIfNeeded()).onPut(AetherKey.ClusterConfigKey.class,
-                                                                                                                                                      (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue>_) -> onClusterConfigPut(clusterTopologyManager, leaderReconciler)).build();
+                                                                                                                                                      (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> onClusterConfigPut(put, clusterTopologyManager, leaderReconciler)).build();
 
         allEntries.addAll(healthKvRouter.asRouteEntries());
         var spokesmanPingLoop = org.pragmatica.aether.worker.metrics.SpokesmanPingLoop.spokesmanPingLoop(config.self(),
@@ -2632,8 +2633,25 @@ public interface AetherNode extends ManageableNode {
     /// window instead of waiting for unrelated SWIM churn (live-confirmed: a 2-core deficit
     /// sat 10 minutes unhealed because no reconcile ever fired). `onConfigChange` is
     /// leader-gated and rides the reconciler's standard CAS-debounce machinery.
+    ///
+    /// **One quorum denominator (cluster-topology-overhaul Wave 9 item 1).** `ClusterConfigKey`
+    /// is the single SOURCE of the cluster's core-count denominator. The consensus-side
+    /// `TopologyObserver.effectiveClusterSize` atomic is a DERIVED cell: this aether-side
+    /// `ClusterConfigKey` subscription pushes the committed `coreCount` into it via the
+    /// observer's pre-existing `handleSetClusterSize` trigger (§3.1: that trigger is preserved,
+    /// only its denominator-write origin changes — it is now driven by the KV commit, not a
+    /// separately-routed operator `SetClusterSize`). The observer cannot read aether KV
+    /// directly (module boundary), so this is the single bridge from KV → the atomic.
+    /// Boot ordering: the atomic is initialized from `TopologyConfig.clusterSize()` at
+    /// construction and stays at that seed until the FIRST `ClusterConfigKey` value arrives
+    /// (bootstrap seeds it on leader gain); both sources agree on the configured core count, so
+    /// the seed is correct until the KV value supersedes it.
     @Contract
-    private static void onClusterConfigPut(ClusterTopologyManager clusterTopologyManager, LeaderReconciler leaderReconciler) {
+    private static void onClusterConfigPut(ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put,
+                                           ClusterTopologyManager clusterTopologyManager,
+                                           LeaderReconciler leaderReconciler) {
+        clusterTopologyManager.observer()
+                              .handleSetClusterSize(new TopologyManagementMessage.SetClusterSize(put.cause().value().coreCount()));
         clusterTopologyManager.onClusterConfigChanged();
         leaderReconciler.onConfigChange();
     }
@@ -2720,19 +2738,23 @@ public interface AetherNode extends ManageableNode {
         holder.onDrainStarted();
     }
 
-    /// E2 Phase 2b (2026-05-28): bridge `ClusterStateNotification.DISAPPEARED` into the §8.2
-    /// `DrainProcedure`. Replaces the Phase 1 routing through
-    /// `SelfDrainCoordinator.onQuorumDisappeared` + `.onRabiaPaused` (Rabia's `Paused` fires
-    /// on the same DISAPPEARED signal — both legacy entry points collapsed into the single
-    /// `initiate(QUORUM_LOSS)` call by the CAS guard).
+    /// E2 Phase 2b (2026-05-28): bridge the consensus-derived `ClusterStateNotification`
+    /// quorum-presence edge into the §8.2 process-exit drain. **Wave 9 Fix A
+    /// (cluster-topology-overhaul):** the PASSIVE edge no longer triggers an IMMEDIATE
+    /// `initiate(QUORUM_LOSS)` — that instant drain bypassed both the `QuorumLossDetector` window
+    /// and the split-timeout `T`, and was the post-partition-heal self-destruct (a transient
+    /// false-FAULTY storm dropped counted-members below quorum → PASSIVE → all nodes Exited(2)
+    /// before the storm cleared). Instead the edge is debounced through the detector's windowed
+    /// path (arm at `T` from THIS node's local PASSIVE observation, cancel on ACTIVE-regain,
+    /// drain once iff still lost after `T`) — completing the ratified Wave-9 item-2 design
+    /// (the minority measures `T` from its own local-quorum-loss observation). The read-path
+    /// quiesce (`AppHttpServer::onQuorumStateChange`) stays IMMEDIATE on PASSIVE — read-path
+    /// protection is cheap to undo on regain; only the process-exit drain gets the window.
     @Contract
     private static void routeQuorumDisappearedToDrain(ClusterStateNotification notification,
-                                                      DrainProcedure drainProcedure) {
-        if (notification.state() != ClusterStateNotification.State.PASSIVE) {
-            return;
-        }
-
-        drainProcedure.initiate(DrainReason.QUORUM_LOSS);
+                                                      AtomicReference<QuorumLossDetector> quorumLossDetectorRef) {
+        Option.option(quorumLossDetectorRef.get())
+              .onPresent(detector -> detector.onQuorumPresence(notification.state() != ClusterStateNotification.State.PASSIVE));
     }
 
     private static NodeAddress findSelfAddress(AetherNodeConfig config) {
@@ -2877,7 +2899,7 @@ public interface AetherNode extends ManageableNode {
 
         PeerConnectivityReporter reporter = new PeerConnectivityReporter() {
             @Override
-            public void onPeerDisconnected(NodeId peerId, long term, long counter) {
+            public void onPeerDisconnected(NodeId peerId, long term, long counter, boolean deathPathInitiated) {
                 var now = System.currentTimeMillis();
 
                 buffer.pushConnectivity(new PeerConnectivityObservation(peerId,
@@ -2885,7 +2907,14 @@ public interface AetherNode extends ManageableNode {
                                                                         term,
                                                                         counter,
                                                                         now));
-                onNttDisconnect.accept(peerId);
+                // Wave 9 Fix B: only an ORGANIC close feeds the FSM liveness-gone co-confirmation
+                // input. A death-path-initiated REMOVE (our own departurePermanent reacting to a
+                // SWIM-FAULTY/gossip verdict) must NOT co-confirm the death it caused — that
+                // circular co-confirmation is the post-partition-heal self-destruct. The
+                // connectivity observation above is still buffered (transport coherence).
+                if (!deathPathInitiated) {
+                    onNttDisconnect.accept(peerId);
+                }
             }
 
             @Override
@@ -3374,7 +3403,7 @@ public interface AetherNode extends ManageableNode {
     private static NodeInfo dialNodeInfo(PeerTarget target, Option<MemberDescriptor> descriptor) {
         var labels = descriptor.map(d -> Map.of(NodeInfo.LABEL_ROLE, d.role(), NodeInfo.LABEL_SOURCE, d.source())).or(Map.of());
 
-        return NodeInfo.nodeInfo(target.id(), target.address(), NodeRole.ACTIVE, labels);
+        return NodeInfo.nodeInfo(target.id(), target.address(), labels);
     }
 
     private static void rotateQuicNetwork(RabiaNode<KVCommand<AetherKey>> clusterNode,
@@ -3514,7 +3543,7 @@ public interface AetherNode extends ManageableNode {
                                                                     ClusterTopologyManager clusterTopologyManager,
                                                                     ConsumerGroupCoordinator consumerGroupCoordinator,
                                                                     ConsumerGroupRegistry consumerGroupRegistry,
-                                                                    DrainProcedure drainProcedure,
+                                                                    AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
                                                                     AtomicReference<Option<ManagementServer>> managementServerRef,
                                                                     NodeId self) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
@@ -3589,7 +3618,7 @@ public interface AetherNode extends ManageableNode {
         // `onRabiaPaused` entry points collapse into the single `initiate(QUORUM_LOSS)` call
         // (single-shot CAS makes the duplicate harmless).
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class,
-                                              notification -> routeQuorumDisappearedToDrain(notification, drainProcedure)));
+                                              notification -> routeQuorumDisappearedToDrain(notification, quorumLossDetectorRef)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               consumerGroupCoordinator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,

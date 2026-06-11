@@ -10,7 +10,6 @@ import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -1548,26 +1547,26 @@ class MembershipFsmTest {
     }
 
     private static NodeInfo labeledInfo(NodeId id, String host, int port, Map<String, String> labels) {
-        return NodeInfo.nodeInfo(id, address(host, port), NodeRole.ACTIVE, labels);
+        return NodeInfo.nodeInfo(id, address(host, port), labels);
     }
 
     /// A NodeInfo whose dial-preferred (resolved) address is ABSENT (null) — its derived
     /// MemberDescriptor has an empty address. Used to exercise the address-downgrade guard.
     private static NodeInfo addresslessInfo(NodeId id) {
-        return NodeInfo.nodeInfo(id, address("0.0.0.0", 1), NodeRole.ACTIVE,
+        return NodeInfo.nodeInfo(id, address("0.0.0.0", 1),
                                  Map.of(NodeInfo.LABEL_ROLE, "core"), null);
     }
 
     /// Address-less observation that ALSO re-labels the member as a worker (non-blank role wins).
     private static NodeInfo addresslessWorkerInfo(NodeId id) {
-        return NodeInfo.nodeInfo(id, address("0.0.0.0", 1), NodeRole.ACTIVE,
+        return NodeInfo.nodeInfo(id, address("0.0.0.0", 1),
                                  Map.of(NodeInfo.LABEL_ROLE, "worker"), null);
     }
 
     /// An observation with NO resolved address and NO labels — the degenerate gossip-rebuilt
     /// NodeInfo. Exercises the combined per-field downgrade guard (Wave 2 / audit M9).
     private static NodeInfo addresslessUnlabeledInfo(NodeId id) {
-        return NodeInfo.nodeInfo(id, address("0.0.0.0", 1), NodeRole.ACTIVE, Map.of(), null);
+        return NodeInfo.nodeInfo(id, address("0.0.0.0", 1), Map.of(), null);
     }
 
     private static void promoteToMember(MembershipFsm manager, NodeId id) {
@@ -1910,7 +1909,6 @@ class MembershipFsmTest {
     private static NodeInfo coreNodeInfo(NodeId id) {
         return NodeInfo.nodeInfo(id,
                                  new NodeAddress(id.id(), 6000),
-                                 org.pragmatica.consensus.net.NodeRole.ACTIVE,
                                  java.util.Map.of(NodeInfo.LABEL_ROLE, "core"));
     }
 

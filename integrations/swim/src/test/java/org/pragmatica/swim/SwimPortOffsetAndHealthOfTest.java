@@ -24,7 +24,6 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -49,7 +48,7 @@ class SwimPortOffsetAndHealthOfTest {
 
     private static final NodeId NODE_A = new NodeId("node-a");
     private static final NodeAddress NODE_A_ADDR = NodeAddress.nodeAddress("10.0.0.5", QUIC_PORT).unwrap();
-    private static final NodeInfo NODE_A_INFO = nodeInfo(NODE_A, NODE_A_ADDR, NodeRole.ACTIVE, Map.of());
+    private static final NodeInfo NODE_A_INFO = nodeInfo(NODE_A, NODE_A_ADDR, Map.of());
 
     @Nested
     class HandleAnnouncePortOffset {
@@ -111,7 +110,7 @@ class SwimPortOffsetAndHealthOfTest {
         // Advertised (gossiped) host differs from the datagram's source IP — the
         // asymmetry FIX B resolves. Source IP must win.
         private static final NodeAddress NODE_B_ADV = NodeAddress.nodeAddress("advertised-host.invalid", QUIC_PORT).unwrap();
-        private static final NodeInfo NODE_B_INFO = nodeInfo(NODE_B, NODE_B_ADV, NodeRole.ACTIVE, Map.of());
+        private static final NodeInfo NODE_B_INFO = nodeInfo(NODE_B, NODE_B_ADV, Map.of());
 
         private SwimProtocol protocol;
 

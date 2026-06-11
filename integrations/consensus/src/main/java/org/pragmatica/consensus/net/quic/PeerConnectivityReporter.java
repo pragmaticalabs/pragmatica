@@ -30,7 +30,16 @@ import org.pragmatica.lang.Contract;
 /// See `aether/docs/specs/clustersync-refactor-spec.md` commit 2.
 @Contract public interface PeerConnectivityReporter {
     /// Follower observed the peer as DISCONNECTED at the given epoch.
-    void onPeerDisconnected(NodeId peerId, long observedTerm, long observedCounter);
+    ///
+    /// `deathPathInitiated` (cluster-topology-overhaul Wave 9 Fix B) marks a REMOVE that THIS
+    /// node initiated *because of* a death verdict (`departurePermanent` / authoritative-remove,
+    /// fired off a SWIM-FAULTY / gossip verdict) rather than an ORGANIC close (peer-initiated
+    /// channel close, connection error, transient evict). A death-path-initiated disconnect must
+    /// NOT feed the `MembershipFsm` liveness-gone co-confirmation input — doing so lets a verdict
+    /// "co-confirm" the very death it caused (the circular self-destruct). The connectivity
+    /// observation itself is still reported (transport coherence); only the liveness-gone tap is
+    /// gated. Organic closes (`deathPathInitiated == false`) remain independent death evidence.
+    void onPeerDisconnected(NodeId peerId, long observedTerm, long observedCounter, boolean deathPathInitiated);
 
     /// Follower observed the peer as CONNECTED at the given epoch. Fired on
     /// transitions into `PeerState.Phase.CONNECTED` (initial handshake completion
@@ -41,7 +50,7 @@ import org.pragmatica.lang.Contract;
 
     static PeerConnectivityReporter noop() {
         return new PeerConnectivityReporter() {
-            @Contract @Override public void onPeerDisconnected(NodeId peerId, long observedTerm, long observedCounter) {}
+            @Contract @Override public void onPeerDisconnected(NodeId peerId, long observedTerm, long observedCounter, boolean deathPathInitiated) {}
             @Contract @Override public void onPeerConnected(NodeId peerId, long observedTerm, long observedCounter) {}
         };
     }

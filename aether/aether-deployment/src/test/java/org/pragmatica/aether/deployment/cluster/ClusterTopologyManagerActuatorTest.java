@@ -102,7 +102,6 @@ class ClusterTopologyManagerActuatorTest {
                                                             clusterStore::current,
                                                             clusterStore::apply,
                                                             () -> ClusterPhase.NORMAL,
-                                                            () -> true,
                                                             drainCommandSinkCalls::add,
                                                             _ -> {});
     }

@@ -15,24 +15,20 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// record lives in `aether-deployment`, which depends on `aether-config`. The root TOML
 /// binder ([`AetherConfig`]) lives in `aether-config` and therefore cannot import the
 /// deployment-side record without inverting the module dependency direction. This binding
-/// captures the raw scalar values; [`org.pragmatica.aether.Main#run`] (which sits above
+/// captures the raw scalar value; [`org.pragmatica.aether.Main#run`] (which sits above
 /// both modules in the dependency graph) lifts a present binding into the deployment-side
 /// record before it is threaded into [`org.pragmatica.aether.node.AetherNodeConfig`].
 ///
-/// **Field semantics** mirror the deployment-side record one-for-one:
-/// - `nttDepartureTimeout` — NTT timer duration from SWIM `DepartedObserved` until
-///   `TopologyUnhealthy`. Default: 15s.
-/// - `quorumLossDrainThreshold` — duration `localQuorumCount` must stay below
-///   `coreCount/2+1` before a [`org.pragmatica.aether.deployment.membership.ntt.QuorumLossIntent`]
-///   is emitted. Default: 8s.
-///
-/// E2 Phase 2a (2026-05-28): the `nttObservation` migration-ramp feature flag is removed.
-/// NTT/LocalQuorumWatcher/LeaderReconciler now wire unconditionally.
-public record MembershipConfigBinding(TimeSpan nttDepartureTimeout, TimeSpan quorumLossDrainThreshold) {
-    public static final TimeSpan DEFAULT_NTT_DEPARTURE_TIMEOUT = timeSpan(15).seconds();
-    public static final TimeSpan DEFAULT_QUORUM_LOSS_DRAIN_THRESHOLD = timeSpan(8).seconds();
+/// **One split timeout `T` (cluster-topology-overhaul Wave 9, item 2 — CONFIG-BREAKING).**
+/// The former `ntt_departure_timeout` and `quorum_loss_drain_threshold` TOML keys are collapsed
+/// into a single `split_timeout` key. `splitTimeout` governs BOTH the minority quorum-loss
+/// self-drain AND the majority departure-verdict / re-provision; the no-double-active ordering
+/// is preserved by the natural detection-lag between the two observation points (see
+/// `MembershipConfig`), not by a second knob. Default: 15s.
+public record MembershipConfigBinding(TimeSpan splitTimeout) {
+    public static final TimeSpan DEFAULT_SPLIT_TIMEOUT = timeSpan(15).seconds();
 
     public static MembershipConfigBinding membershipConfigBinding() {
-        return new MembershipConfigBinding(DEFAULT_NTT_DEPARTURE_TIMEOUT, DEFAULT_QUORUM_LOSS_DRAIN_THRESHOLD);
+        return new MembershipConfigBinding(DEFAULT_SPLIT_TIMEOUT);
     }
 }

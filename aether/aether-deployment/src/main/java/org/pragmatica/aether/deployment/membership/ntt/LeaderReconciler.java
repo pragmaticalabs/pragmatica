@@ -257,7 +257,7 @@ public final class LeaderReconciler {
                              TimeSource timeSource,
                              NttTimerScheduler scheduler) {
         this.membershipConfig = membershipConfig;
-        this.leaderActivationDelay = computeQuiesceDelay(membershipConfig.nttDepartureTimeout());
+        this.leaderActivationDelay = computeQuiesceDelay(membershipConfig.splitTimeout());
         // Cold-start grace = nttDepartureTimeout × 1.5 (== leaderActivationDelay): the class doc
         // (arm-after-first-quorum latch) names this exact window as the bound by which formation
         // has completed. Reuse the already-computed quiesce delay so the two stay identical.
@@ -268,11 +268,11 @@ public final class LeaderReconciler {
         // reconnect is seconds, far below the 15s default), so the transient deficit is debounced
         // away. Reusing nttDepartureTimeout keeps the debounce consistent with the single
         // membership-timing constant rather than introducing a new literal.
-        this.deficitDebounceWindow = membershipConfig.nttDepartureTimeout();
+        this.deficitDebounceWindow = membershipConfig.splitTimeout();
         // Drain-safety grace = nttDepartureTimeout × 2 — see the field doc for the full rationale
         // (role-propagation race window; ≥ deficit debounce; single timing constant).
-        this.drainSafetyGraceWindow = computeDrainSafetyGrace(membershipConfig.nttDepartureTimeout());
-        this.inFlightExpiry = computeInFlightExpiry(membershipConfig.nttDepartureTimeout());
+        this.drainSafetyGraceWindow = computeDrainSafetyGrace(membershipConfig.splitTimeout());
+        this.inFlightExpiry = computeInFlightExpiry(membershipConfig.splitTimeout());
         this.presenceSampler = presenceSampler;
         this.membershipFsm = membershipFsm;
         this.configuredCoreCountSupplier = configuredCoreCountSupplier;
@@ -1224,8 +1224,8 @@ public final class LeaderReconciler {
         }
     }
 
-    private static TimeSpan computeQuiesceDelay(TimeSpan nttDepartureTimeout) {
-        return timeSpan(nttDepartureTimeout.nanos() * 3 / 2).nanos();
+    private static TimeSpan computeQuiesceDelay(TimeSpan splitTimeout) {
+        return timeSpan(splitTimeout.nanos() * 3 / 2).nanos();
     }
 
     /// In-flight provisioning entries expire at `nttDepartureTimeout × 3`. This window is
@@ -1235,15 +1235,15 @@ public final class LeaderReconciler {
     /// run to tens of seconds. If the entry expired first, the reconciler would forget the
     /// node it is still waiting on, re-observe the same deficit, and re-provision a phantom
     /// replacement — the auto-heal provisioning storm this expiry exists to prevent.
-    private static TimeSpan computeInFlightExpiry(TimeSpan nttDepartureTimeout) {
-        return timeSpan(nttDepartureTimeout.nanos() * 3).nanos();
+    private static TimeSpan computeInFlightExpiry(TimeSpan splitTimeout) {
+        return timeSpan(splitTimeout.nanos() * 3).nanos();
     }
 
     /// Drain-safety grace = `nttDepartureTimeout × 2` — see the [`#drainSafetyGraceWindow`]
     /// field doc for the sizing rationale (role-propagation race window; ≥ the ×1 deficit
     /// debounce; single membership timing constant).
-    private static TimeSpan computeDrainSafetyGrace(TimeSpan nttDepartureTimeout) {
-        return timeSpan(nttDepartureTimeout.nanos() * 2).nanos();
+    private static TimeSpan computeDrainSafetyGrace(TimeSpan splitTimeout) {
+        return timeSpan(splitTimeout.nanos() * 2).nanos();
     }
 
     /// Observability — the [`MembershipConfig`] this reconciler was constructed with.

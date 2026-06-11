@@ -17,11 +17,6 @@ public sealed interface DHTNotification extends ProtocolMessage {
         return StreamType.DHT;
     }
 
-    @Override
-    default boolean deliverToPassive() {
-        return true;
-    }
-
     record Put(NodeId sender, byte[] key, byte[] value) implements DHTNotification {
         public Put {
             key = key.clone();

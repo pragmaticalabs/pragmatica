@@ -68,16 +68,16 @@ class LeaderReconcilerTest {
     private static final NodeId PEER_C = NodeId.randomNodeId();
     private static final NodeId PEER_D = NodeId.randomNodeId();
     private static final TimeSpan EXPECTED_ACTIVATION_DELAY =
-        timeSpan(membershipConfig().nttDepartureTimeout().nanos() * 3 / 2).nanos();
+        timeSpan(membershipConfig().splitTimeout().nanos() * 3 / 2).nanos();
     private static final TimeSpan EXPECTED_INFLIGHT_EXPIRY =
-        timeSpan(membershipConfig().nttDepartureTimeout().nanos() * 3).nanos();
+        timeSpan(membershipConfig().splitTimeout().nanos() * 3).nanos();
     private static final TimeSpan EXPECTED_GRACE_WINDOW =
-        timeSpan(membershipConfig().nttDepartureTimeout().nanos() * 3 / 2).nanos();
-    private static final TimeSpan EXPECTED_DEBOUNCE_WINDOW = membershipConfig().nttDepartureTimeout();
+        timeSpan(membershipConfig().splitTimeout().nanos() * 3 / 2).nanos();
+    private static final TimeSpan EXPECTED_DEBOUNCE_WINDOW = membershipConfig().splitTimeout();
     /// Drain-safety grace window (Wave 2 defense in depth) = nttDepartureTimeout × 2 — a
     /// surplus-drain victim younger than this is never selected.
     private static final TimeSpan EXPECTED_DRAIN_GRACE =
-        timeSpan(membershipConfig().nttDepartureTimeout().nanos() * 2).nanos();
+        timeSpan(membershipConfig().splitTimeout().nanos() * 2).nanos();
     private static final TimeSpan DEBOUNCE_DELAY = timeSpan(100L).millis();
     /// Short terminal-eviction backstop (#131 Model C) for the fixture FSM: a co-confirmed kill
     /// holds the member in SUSPECT (still counted — the churn cure) for this REAL-TIME window,
@@ -220,15 +220,13 @@ class LeaderReconcilerTest {
         fsmWallClockMs.addAndGet(EXPECTED_DRAIN_GRACE.millis() + 1);
     }
 
-    /// A NodeInfo carrying the explicit `role=worker` label. The transport-role slot is filled
-    /// from the default factory's value (it is vestigial — never PASSIVE in production — and
-    /// reusing it avoids importing the transport `NodeRole`, which would clash with the config
-    /// `NodeRole` this test already imports).
+    /// A NodeInfo carrying the explicit `role=worker` label. The transport ACTIVE/PASSIVE
+    /// `NodeRole` was retired in the cluster-topology-overhaul Wave 9; the worker classification
+    /// now lives solely in the `role` label (the config CORE/WORKER/SPOT vocabulary).
     private static NodeInfo workerInfo(NodeId id) {
         var address = NodeAddress.nodeAddress("worker-host", 6000).unwrap();
-        var transportRole = NodeInfo.nodeInfo(id, address).role();
 
-        return NodeInfo.nodeInfo(id, address, transportRole, Map.of(NodeInfo.LABEL_ROLE, "worker"));
+        return NodeInfo.nodeInfo(id, address, Map.of(NodeInfo.LABEL_ROLE, "worker"));
     }
 
     /// Drive the post-activation reconcile path: fire the queued debounced reconcile that

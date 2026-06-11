@@ -193,7 +193,7 @@ public final class PresenceSampler {
                                    healthSupplier,
                                    SAMPLE_INTERVAL_DEFAULT,
                                    K_UP_DEFAULT,
-                                   downHysteresisFor(config.nttDepartureTimeout(), SAMPLE_INTERVAL_DEFAULT),
+                                   downHysteresisFor(config.splitTimeout(), SAMPLE_INTERVAL_DEFAULT),
                                    System::nanoTime,
                                    onReconcileNeeded,
                                    onDownHysteresisCrossing);
@@ -418,7 +418,7 @@ public final class PresenceSampler {
     /// DOWN-hysteresis crossing edge: remove the node from the stable set (presence-sensor
     /// removal, unchanged) and route the crossing to the FSM callback. The callback fires
     /// ONLY on the genuine member→removed transition (gated on `stableMembers.remove`
-    /// returning true, mirroring `evictLocked`'s `wasStableMember`), so it does not re-fire
+    /// returning true), so it does not re-fire
     /// on every subsequent absent sample once the streak stays past the threshold.
     private void crossDownHysteresis(NodeId node) {
         if (stableMembers.remove(node)) {
@@ -465,45 +465,6 @@ public final class PresenceSampler {
         result.removeAll(remove);
 
         return result;
-    }
-
-    /// Hard-evict a confirmed-dead node from the stable member set immediately, bypassing
-    /// the slow `downHysteresis` debounce. Removes `node` from `stableMembers`, clears its
-    /// per-node `streaks` and `biases` entries (so a re-joined node starts from a clean
-    /// streak and is not instantly re-evicted by a stale bias), and fires the reconcile
-    /// trigger exactly once — the SAME callback hysteresis removal fires via [`#emitIfChanged`].
-    ///
-    /// Wave 7 (cluster-topology-overhaul): the sole production caller (the FSM's death-edge
-    /// eviction) is REMOVED — the FSM is the membership authority and nothing flows back into
-    /// this sensor; the prompt heal nudge now rides the FSM's own `onConfirmedDeparture` edge.
-    /// Retained (with its tests) for the Wave-9 dead-code strip, which owns the deletion.
-    /// `self` is ignored (self can never leave). Idempotent: a no-op (no trigger fired) if
-    /// `node` is already absent from the stable set. Runs under `sampleLock` for consistency
-    /// with the periodic member-set mutations.
-    @Contract
-    public void evict(NodeId node) {
-        if (node.equals(self)) {
-            return;
-        }
-
-        synchronized (sampleLock) {
-            evictLocked(node);
-        }
-    }
-
-    private void evictLocked(NodeId node) {
-        streaks.remove(node);
-        biases.remove(node);
-        var wasStableMember = stableMembers.remove(node);
-
-        log.info("PresenceSampler evict({}): wasStableMember={}", node, wasStableMember);
-        if (!wasStableMember) {
-            return;
-        }
-
-        lastEmitted.set(Set.copyOf(stableMembers));
-        log.debug("Hard evict @{}ns: node={} members={}", nowNanos.getAsLong(), node, stableMembers);
-        onReconcileNeeded.run();
     }
 
     /// Count of currently-tracked cluster members (includes self). SENSOR READING ONLY (Wave 7):

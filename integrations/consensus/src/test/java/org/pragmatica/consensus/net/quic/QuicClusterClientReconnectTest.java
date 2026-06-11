@@ -27,7 +27,6 @@ import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetCodecs;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -171,8 +170,8 @@ class QuicClusterClientReconnectTest {
         var serverSsl = QuicTlsProvider.serverContext(TlsConfig.selfSignedServer())
                                        .fold(_ -> fail("server SSL failed"), ssl -> ssl);
         server = QuicClusterServer.quicClusterServer(
-            SERVER_NODE, NodeRole.ACTIVE, SERVER_ADDRESS, Map.of(), codec, codec, serverSsl, Option.empty(),
-            (_, _, _, _) -> {}, (_, _) -> {}
+            SERVER_NODE, SERVER_ADDRESS, Map.of(), codec, codec, serverSsl, Option.empty(),
+            (_, _, _) -> {}, (_, _) -> {}
         );
         server.start(0).await(AWAIT_TIMEOUT)
               .onFailure(cause -> fail("server start failed: " + cause.message()));
@@ -182,7 +181,7 @@ class QuicClusterClientReconnectTest {
         var clientSsl = QuicTlsProvider.clientContext(TlsConfig.insecureClient())
                                        .fold(_ -> fail("client SSL failed"), ssl -> ssl);
         return QuicClusterClient.quicClusterClient(
-            CLIENT_NODE, NodeRole.ACTIVE, CLIENT_ADDRESS, Map.of(), codec, codec, clientSsl, Option.empty(),
+            CLIENT_NODE, CLIENT_ADDRESS, Map.of(), codec, codec, clientSsl, Option.empty(),
             (_, _) -> {}
         );
     }

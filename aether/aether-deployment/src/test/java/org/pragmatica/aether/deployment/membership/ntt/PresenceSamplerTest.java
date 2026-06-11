@@ -395,14 +395,5 @@ class PresenceSamplerTest {
             // Peak is a one-way high-water mark — it holds at the formation maximum.
             assertThat(sampler.peakMembershipCount()).isEqualTo(4);
         }
-
-        @Test
-        void peakSurvivesHardEvict() {
-            var sampler = formedTracker(); // peak 4
-            sampler.evict(C);
-
-            assertThat(sampler.currentMemberCount()).isEqualTo(3);
-            assertThat(sampler.peakMembershipCount()).isEqualTo(4);
-        }
     }
 }

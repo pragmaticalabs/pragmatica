@@ -18,7 +18,6 @@ package org.pragmatica.consensus.topology;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -87,10 +86,14 @@ public interface TopologyManager {
     /// Returns the list of all node IDs in the topology.
     List<NodeId> topology();
 
-    /// Check if a node has the PASSIVE role (load balancer, observer).
+    /// Whether a node has the transport PASSIVE role. The transport ACTIVE/PASSIVE `NodeRole`
+    /// vocabulary was retired in the cluster-topology-overhaul Wave 9 (it was never produced),
+    /// so this is now structurally `false` — the worker classification lives in the config
+    /// CORE/WORKER/SPOT vocabulary carried in the aether `MemberDescriptor`. Retained as a
+    /// default so the `activeNode*`/`coreNodes` projections and external callers compile
+    /// unchanged; they now (correctly) count every node.
     default boolean isPassive(NodeId nodeId) {
-        return get(nodeId).filter(info -> info.role() == NodeRole.PASSIVE)
-                          .isPresent();
+        return false;
     }
 
     /// Returns the count of active (non-passive) nodes in the topology.

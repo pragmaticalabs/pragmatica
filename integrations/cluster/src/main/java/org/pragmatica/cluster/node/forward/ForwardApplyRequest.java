@@ -17,9 +17,4 @@ public record ForwardApplyRequest<C extends Command>(
     public StreamType streamType() {
         return StreamType.CONSENSUS;
     }
-
-    @Override
-    public boolean deliverToPassive() {
-        return true;
-    }
 }

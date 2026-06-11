@@ -271,7 +271,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
     private static TopologyNodeDetail buildNodeDetail(TopologyManager tm, NodeId nodeId, boolean connected) {
         var info = tm.get(nodeId);
         var state = tm.getState(nodeId);
-        var role = info.map(NodeInfo::role).map(Enum::name).or("UNKNOWN");
+        var role = info.flatMap(i -> Option.option(i.labels().get(NodeInfo.LABEL_ROLE))).or("UNKNOWN");
         var health = state.map(NodeState::health).map(Enum::name).or(connected
                                                                      ? "CONNECTED"
                                                                      : "UNKNOWN");

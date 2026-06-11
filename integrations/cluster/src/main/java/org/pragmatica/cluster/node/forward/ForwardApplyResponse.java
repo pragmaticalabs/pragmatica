@@ -18,9 +18,4 @@ public record ForwardApplyResponse<R>(
     public StreamType streamType() {
         return StreamType.CONSENSUS;
     }
-
-    @Override
-    public boolean deliverToPassive() {
-        return true;
-    }
 }

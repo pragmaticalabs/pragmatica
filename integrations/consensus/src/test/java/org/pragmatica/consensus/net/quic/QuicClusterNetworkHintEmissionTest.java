@@ -114,7 +114,7 @@ class QuicClusterNetworkHintEmissionTest {
         QuicDisconnectListener listener = listenerInvocations::add;
         var reported = new CopyOnWriteArrayList<ReportedDisconnect>();
         PeerConnectivityReporter reporter = new PeerConnectivityReporter() {
-            @Override public void onPeerDisconnected(NodeId peerId, long term, long counter) {
+            @Override public void onPeerDisconnected(NodeId peerId, long term, long counter, boolean deathPathInitiated) {
                 reported.add(new ReportedDisconnect(peerId, term, counter));
             }
             @Override public void onPeerConnected(NodeId peerId, long term, long counter) {
@@ -148,7 +148,7 @@ class QuicClusterNetworkHintEmissionTest {
         QuicDisconnectListener listener = listenerInvocations::add;
         var reported = new CopyOnWriteArrayList<ReportedDisconnect>();
         PeerConnectivityReporter reporter = new PeerConnectivityReporter() {
-            @Override public void onPeerDisconnected(NodeId peerId, long term, long counter) {
+            @Override public void onPeerDisconnected(NodeId peerId, long term, long counter, boolean deathPathInitiated) {
                 reported.add(new ReportedDisconnect(peerId, term, counter));
             }
             @Override public void onPeerConnected(NodeId peerId, long term, long counter) {

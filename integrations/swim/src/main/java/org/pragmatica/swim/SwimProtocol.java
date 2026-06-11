@@ -39,7 +39,6 @@ import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -1117,6 +1116,13 @@ public final class SwimProtocol implements SwimMessageHandler {
             // is available (cold-boot static seeds / NAT). `JoinAnnounced` (below) still
             // fires, so the QUIC reachability probe proceeds — formation is unaffected.
             introduceAnnouncedAlive(announce, swimProbeAddressFor(sender, announce.nodeInfo()));
+        } else {
+            // Wave 9 Fix C — KNOWN member re-ANNOUNCE: adopt the fresh source-derived probe
+            // address if it changed (Docker IP reshuffle on partition-heal). The new-member
+            // branch above already adopts it on introduction; this is the symmetric refresh for
+            // an already-resident member so SWIM stops probing the stale pre-partition IP (the
+            // root of the post-heal false-FAULTY storm).
+            refreshProbeAddressIfChanged(announce.nodeInfo().id(), swimProbeAddressFor(sender, announce.nodeInfo()));
         }
 
         // Attach the dial-preferred QUIC address: the IP the ANNOUNCE datagram physically
@@ -1187,6 +1193,23 @@ public final class SwimProtocol implements SwimMessageHandler {
         recordHealthyAndEmit(member.nodeId(), member.incarnation());
     }
 
+    /// Wave 9 Fix C — refresh a resident member's SWIM probe address when a re-ANNOUNCE carries a
+    /// new source-derived address (the member's IP changed, e.g. Docker reshuffle on
+    /// partition-heal). Idempotent: a no-op when the address is unchanged or the member is gone.
+    /// Stops the stale-IP probe storm at the root — the next probe targets the proven-reachable
+    /// source IP the ANNOUNCE physically arrived from instead of the dead pre-partition IP.
+    private void refreshProbeAddressIfChanged(NodeId nodeId, InetSocketAddress freshProbeAddress) {
+        Option.option(members.get(nodeId))
+              .filter(member -> !member.address().equals(freshProbeAddress))
+              .onPresent(member -> adoptFreshProbeAddress(member, freshProbeAddress));
+    }
+
+    private void adoptFreshProbeAddress(SwimMember member, InetSocketAddress freshProbeAddress) {
+        LOG.info("SWIM probe address for {} updated {} -> {} (re-ANNOUNCE source IP changed; partition-heal/IP-reshuffle)",
+                 member.nodeId().id(), member.address(), freshProbeAddress);
+        members.put(member.nodeId(), member.withAddress(freshProbeAddress));
+    }
+
     /// Notify membership-join to BOTH the membership listener and the observation channel.
     /// The `MemberDiscovered` observation feeds the QUIC dial set so every SWIM-known peer
     /// (gossip-learned included), not only directly-announced ones, gets dialed into the mesh.
@@ -1207,7 +1230,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         var host = Option.option(swimAddr.getAddress())
                          .map(InetAddress::getHostAddress)
                          .or(swimAddr.getHostString());
-        return NodeInfo.nodeInfo(member.nodeId(), new NodeAddress(host, quicPort), NodeRole.ACTIVE, member.labels());
+        return NodeInfo.nodeInfo(member.nodeId(), new NodeAddress(host, quicPort), member.labels());
     }
 
     /// Send ANNOUNCE to all seeds every 500ms until this node is acknowledged by a peer or 60 attempts are exhausted.

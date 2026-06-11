@@ -402,6 +402,59 @@ class QuicClusterNetworkLivenessSweepTest {
             .contains(peerId);
     }
 
+    // --- Wave 9 Fix B: death-path provenance on the connectivity reporter ---
+
+    @Test
+    void departurePermanent_reportsDeathPathInitiatedTrue_soLivenessGoneTapIsSkipped() {
+        // A death-path REMOVE (departurePermanent, fired off a SWIM-FAULTY/gossip verdict) must
+        // report deathPathInitiated=true so the aether adapter skips the FSM liveness-gone
+        // co-confirmation tap — a verdict must not co-confirm the death it caused.
+        var reported = new CopyOnWriteArrayList<Boolean>();
+        var network = createNetwork(NodeId.randomNodeId());
+        network.setFollowerObservationWiring(() -> false, recordingReporter(reported), zeroEpoch());
+        var peerId = new NodeId("verdict-victim");
+        network.seedPeerForTests(peerId, connectedPeerState(peerId, activeChannel()));
+
+        network.departurePermanent(peerId);
+
+        assertThat(reported)
+            .as("death-path REMOVE must report deathPathInitiated=true (skips liveness-gone co-confirmation)")
+            .containsExactly(true);
+    }
+
+    @Test
+    void organicEvict_reportsDeathPathInitiatedFalse_soLivenessGoneTapFires() {
+        // An ORGANIC close (transient soft-evict / peer-initiated channel close) is independent
+        // death evidence and must report deathPathInitiated=false so the liveness-gone tap fires.
+        var reported = new CopyOnWriteArrayList<Boolean>();
+        var network = createNetwork(NodeId.randomNodeId());
+        network.setFollowerObservationWiring(() -> false, recordingReporter(reported), zeroEpoch());
+        var peerId = new NodeId("organic-drop");
+        network.seedPeerForTests(peerId, connectedPeerState(peerId, activeChannel()));
+
+        network.disconnect(new NetworkServiceMessage.DisconnectNode(peerId));
+
+        assertThat(reported)
+            .as("organic evict must report deathPathInitiated=false (independent death evidence)")
+            .containsExactly(false);
+    }
+
+    private static PeerConnectivityReporter recordingReporter(List<Boolean> reported) {
+        return new PeerConnectivityReporter() {
+            @Override public void onPeerDisconnected(NodeId peerId, long term, long counter, boolean deathPathInitiated) {
+                reported.add(deathPathInitiated);
+            }
+            @Override public void onPeerConnected(NodeId peerId, long term, long counter) {}
+        };
+    }
+
+    private static QuicClusterNetwork.ObservedEpochSupplier zeroEpoch() {
+        return new QuicClusterNetwork.ObservedEpochSupplier() {
+            @Override public long term() {return 0L;}
+            @Override public long counter() {return 0L;}
+        };
+    }
+
     // --- helpers ---
 
     private static QuicChannel activeChannel() {

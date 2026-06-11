@@ -5,6 +5,8 @@ Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 
 # Membership Architecture v2 — Derive-from-Reality
 
+> SUPERSEDED by cluster-topology-overhaul-spec.md (D1). The delete-the-MembershipFsm direction was reversed — the FSM is the live per-node authority. KEEP the drain procedure (section 8), terminal-removal invariant (section 12.7), two-counts naming (section 4) as referenced sub-sections.
+
 **Status:** Foundation spec complete (8 scenarios settled). Implementation pending — see §13 migration plan.
 **Branch:** `experimental/membership-redesign` (from `release-1.0.0-rc1` HEAD `b96619ea2`).
 **Supersedes (when implemented):** the topology-management layer of the v1 membership-architecture spec (removed; see git history) — specifically the membership FSM, the slot-occupancy classifier, the reachability gates, the leader-pinned membership timers, and the drain coordinator's FSM integration. The **simple scheme at its base — SWIM, QUIC, Rabia, LeaderManager — is preserved unchanged**, and its reliability is the foundation this design builds on.

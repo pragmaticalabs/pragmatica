@@ -1,5 +1,7 @@
 # Membership-FSM Unification Spec (per-node authority + transport executor)
 
+> ✅ **ADOPTED and EXTENDED by [`cluster-topology-overhaul-spec.md`](cluster-topology-overhaul-spec.md)** (Waves 5/7 complete the executor cutover and the broadcast-set fix; Wave 2 implements the §6 `QuorumLossDetector → role=core` direction; Wave 9 retires the vestigial transport ACTIVE/PASSIVE role). The LIVE Phase-2 executor-design rationale.
+
 **Status:** DRAFT for review · **Depends on:** `membership-convergence-fsm.md` (the FSM model), `membership-architecture-v2-spec.md` (derive-from-reality direction) · **Sibling:** GitHub #241 (community topology) · **Motivating bug:** the consensus dead-ULID retry-storm (#68 quiesce root)
 
 ## 1. Why

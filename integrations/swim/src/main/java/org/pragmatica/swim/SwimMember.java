@@ -74,4 +74,13 @@ public record SwimMember(NodeId nodeId, MemberState state, long incarnation, Ine
     public SwimMember withIncarnation(long newIncarnation) {
         return new SwimMember(nodeId, state, newIncarnation, address, labels);
     }
+
+    /// Return a copy with the given probe address, preserving identity/state/incarnation/labels
+    /// (cluster-topology-overhaul Wave 9 Fix C). Used when a re-ANNOUNCE / gossip update for an
+    /// ALREADY-KNOWN member carries a NEW source-derived address — e.g. a Docker IP reshuffle on
+    /// partition-heal. Without adopting it, SWIM keeps probing the stale pre-partition IP, acks
+    /// go silent, and the member is falsely declared FAULTY (the post-heal stale-IP probe storm).
+    public SwimMember withAddress(InetSocketAddress newAddress) {
+        return new SwimMember(nodeId, state, incarnation, newAddress, labels);
+    }
 }

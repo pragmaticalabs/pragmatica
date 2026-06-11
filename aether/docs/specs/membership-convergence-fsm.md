@@ -1,5 +1,7 @@
 # Membership-Convergence FSM — Phase-0 Specification (model only)
 
+> ✅ **ADOPTED** — the FSM model here is the spine of [`cluster-topology-overhaul-spec.md`](cluster-topology-overhaul-spec.md); see its §3.1 for the delta-emission decoupling constraint this Phase-0 model did not yet carry. Kept as the design rationale.
+
 **Status:** Draft / exploration. **Scope of Phase 0:** model the state space on paper. No code
 changes. The goal is to decide whether the NTT + CTM/LeaderReconciler machinery should become a
 single explicit finite state machine, and to surface — by enumeration — the unhandled `(state, event)`

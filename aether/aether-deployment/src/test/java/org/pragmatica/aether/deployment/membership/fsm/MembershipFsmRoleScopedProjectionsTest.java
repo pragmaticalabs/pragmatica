@@ -8,7 +8,6 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.statemachine.FsmObserver;
@@ -57,7 +56,7 @@ class MembershipFsmRoleScopedProjectionsTest {
     }
 
     private static NodeInfo labeledInfo(NodeId id, Map<String, String> labels) {
-        return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress("host-x", 6000).unwrap(), NodeRole.ACTIVE, labels);
+        return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress("host-x", 6000).unwrap(), labels);
     }
 
     private static void awaitDead(MembershipFsm manager, NodeId id) {

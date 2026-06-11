@@ -37,7 +37,6 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.net.tcp.TlsConfig;
-import org.pragmatica.lang.concurrent.CancellableTask;
 
 import java.net.SocketAddress;
 import java.time.Instant;
@@ -49,7 +48,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
@@ -72,15 +70,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                     Supplier<ClusterPhase> phaseSupplier,
-                                    BooleanSupplier inQuorum,
                                     AtomicReference<NodeReconcilerState> stateRef,
                                     AtomicBoolean active,
                                     ConcurrentHashMap<NodeId, Promise<?>> inFlightProvisions,
-                                    ConcurrentHashMap<Integer, Long> inFlightSlotIndices,
-                                    CancellableTask safetyNetTimer,
-                                    AtomicLong realActualStableSinceMs,
-                                    AtomicInteger lastObservedRealActual,
-                                    AtomicInteger lastObservedHealthyOnDutyCount,
                                     AtomicInteger consecutiveProvisioningFailures,
                                     AtomicLong nextProvisioningAllowedMs,
                                     AtomicLong lastProvisioningFailureMs,
@@ -91,8 +83,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     Consumer<NodeId> drainCommandClear) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
-    private static final int UNINITIALIZED_REAL_ACTUAL = -1;
-    private static final long BOOTSTRAP_GRACE_MS = 60_000L;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
 
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
@@ -103,7 +93,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                      Supplier<Option<ClusterConfigValue>> clusterConfigReader,
                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                                      Supplier<ClusterPhase> phaseSupplier,
-                                                                     BooleanSupplier inQuorum,
                                                                      LongSupplier clock) {
         return clusterTopologyManagerRecord(observer,
                                             lifecycleManager,
@@ -113,7 +102,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                             clusterConfigReader,
                                             commandApplier,
                                             phaseSupplier,
-                                            inQuorum,
                                             clock,
                                             _ -> {},
                                             _ -> {});
@@ -133,7 +121,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                      Supplier<Option<ClusterConfigValue>> clusterConfigReader,
                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                                      Supplier<ClusterPhase> phaseSupplier,
-                                                                     BooleanSupplier inQuorum,
                                                                      LongSupplier clock,
                                                                      Consumer<NodeId> drainCommandSink,
                                                                      Consumer<NodeId> drainCommandClear) {
@@ -145,15 +132,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 clusterConfigReader,
                                                 commandApplier,
                                                 phaseSupplier,
-                                                inQuorum,
                                                 new AtomicReference<>(new NodeReconcilerState.Inactive("not yet activated")),
                                                 new AtomicBoolean(false),
                                                 new ConcurrentHashMap<>(),
-                                                new ConcurrentHashMap<>(),
-                                                CancellableTask.cancellableTask(),
-                                                new AtomicLong(clock.getAsLong()),
-                                                new AtomicInteger(UNINITIALIZED_REAL_ACTUAL),
-                                                new AtomicInteger(UNINITIALIZED_REAL_ACTUAL),
                                                 new AtomicInteger(0),
                                                 new AtomicLong(0L),
                                                 new AtomicLong(0L),
@@ -242,14 +223,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                              .or(0);
     }
 
-    private int snapshotHealthyOnDutyCount() {
-        // Fall back to configured cluster size when no generation snapshot exists yet
-        // (cold start / leader just elected before first snapshot is published).
-        return snapshotSource.currentMembershipView()
-                             .map(MembershipView::healthyOnDutyCount)
-                             .or(observer.clusterSize());
-    }
-
     // ---------------------------------------------------------------------------------------
     // Slot-occupancy model retired (CTM v2): the internal slot-reconcile loop is OFF. CTM is now
     // a pure actuator driven by the LeaderReconciler (spec §7). The ProvisioningSlotKey/
@@ -268,11 +241,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        var nowMs = nowMs();
-        var windowMs = autoHealConfig.provisionStabilityWindow().millis();
-
-        realActualStableSinceMs.set(nowMs - windowMs);
-        log.debug("CTM: ClusterConfigKey changed, bypassing stability gate");
+        log.debug("CTM: ClusterConfigKey changed");
     }
 
     @Contract
@@ -298,7 +267,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         log.warn("CTM: Self-shutdown observed for {}", selfShutdown.nodeId());
-        maybeBumpAnchorOnHealthyOnDutyEdge("self-shutdown " + selfShutdown.nodeId());
     }
 
     @Contract
@@ -306,9 +274,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     public void onClusterPhaseChanged(ClusterPhase newPhase) {
         if (newPhase == ClusterPhase.NORMAL) {
             cancelInFlightProvisions("phase transition to NORMAL — restart stability window");
-            bumpRealActualStability("phase transition to NORMAL");
             resetProvisioningCircuit("phase transition to NORMAL");
-            log.info("CTM: cluster phase transitioned to NORMAL (stability window restarted from zero)");
+            log.info("CTM: cluster phase transitioned to NORMAL");
 
             return;
         }
@@ -320,54 +287,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void handleNodeJoined(NodeJoined joined) {
         log.info("CTM: Node {} joined", joined.nodeId());
-        maybeBumpAnchorOnHealthyOnDutyEdge("node-joined " + joined.nodeId());
     }
 
     @Contract
     private void handleNodeRemoved(NodeRemoved removed) {
         log.info("CTM: Node {} removed", removed.nodeId());
-        maybeBumpAnchorOnHealthyOnDutyEdge("node-removed " + removed.nodeId());
     }
 
     @Contract
     private void handleNodeDecommissioned(NodeDecommissioned decommissioned) {
         log.warn("CTM: Node {} decommissioned", decommissioned.nodeId());
-        maybeBumpAnchorOnHealthyOnDutyEdge("node-decommissioned " + decommissioned.nodeId());
-    }
-
-    @Contract
-    private void maybeBumpAnchorOnHealthyOnDutyEdge(String reason) {
-        var current = snapshotHealthyOnDutyCount();
-        var previous = lastObservedHealthyOnDutyCount.getAndSet(current);
-
-        if (previous == current) {
-            log.debug("CTM: stability anchor unchanged ({}); count still {}", reason, current);
-
-            return;
-        }
-
-        if (previous != UNINITIALIZED_REAL_ACTUAL && current < previous) {
-            log.debug("CTM: stability anchor preserved on downward edge ({}); healthyOnDuty {} -> {}",
-                      reason,
-                      previous,
-                      current);
-
-            return;
-        }
-
-        var displayPrev = previous == UNINITIALIZED_REAL_ACTUAL
-                          ? "<unset>"
-                          : Integer.toString(previous);
-
-        bumpRealActualStability(reason + " (healthyOnDuty " + displayPrev + " -> " + current + ")");
-    }
-
-    @Contract
-    private void bumpRealActualStability(String reason) {
-        var nowMs = nowMs();
-
-        realActualStableSinceMs.set(nowMs);
-        log.debug("CTM: stability anchor reset ({}), nowMs={}", reason, nowMs);
     }
 
     @Contract
@@ -554,7 +483,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        bumpRealActualStability("activate");
         resetProvisioningCircuit("activate (leader handoff)");
         formationAnchorMs.set(nowMs());
         // CTM v2: the internal slot-reconcile loop is OFF. The LeaderReconciler (spec §7) owns
@@ -582,23 +510,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         if (effectiveActual >= desired) {
             transitionTo(new NodeReconcilerState.Converged());
-            anchorBootstrapGrace();
-            log.info("CTM: Cluster at target size, skipping formation (bootstrap grace {}ms applied)",
-                     BOOTSTRAP_GRACE_MS);
+            log.info("CTM: Cluster at target size, skipping formation");
         } else if (clusterWasFormed && effectiveActual >= desired - 1) {
             activateWithLeaderFailover(effectiveActual, desired);
         } else {
             activateWithFormation();
         }
-    }
-
-    @Contract
-    private void anchorBootstrapGrace() {
-        var nowMs = nowMs();
-        var windowMs = autoHealConfig.provisionStabilityWindow().millis();
-
-        realActualStableSinceMs.set(nowMs + BOOTSTRAP_GRACE_MS - windowMs);
-        log.debug("CTM: bootstrap grace anchored — provisioning gate held closed for {}ms", BOOTSTRAP_GRACE_MS);
     }
 
     private int activationDesiredSize() {
@@ -632,7 +549,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        cancelSafetyNetPoll();
         transitionTo(new NodeReconcilerState.Inactive("deactivated (not leader)"));
         log.info("CTM: Deactivated");
     }
@@ -750,7 +666,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         log.info("CTM: cancelling {} in-flight provision(s) ({})", size, reason);
         inFlightProvisions.values().forEach(Promise::cancel);
         inFlightProvisions.clear();
-        inFlightSlotIndices.clear();
     }
 
     private ProvisionContext buildProvisionContext(NodeId newNodeId, NodeRole intendedRole) {
@@ -818,11 +733,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                        .map(info -> info.labels()
                                         .getOrDefault(LABEL_ZONE, ""))
                        .or("");
-    }
-
-    @Contract
-    private void cancelSafetyNetPoll() {
-        safetyNetTimer.cancel();
     }
 
     private static String stateName(NodeReconcilerState state) {

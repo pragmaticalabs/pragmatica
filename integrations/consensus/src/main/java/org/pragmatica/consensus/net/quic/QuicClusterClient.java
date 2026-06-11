@@ -45,7 +45,6 @@ import io.netty.resolver.DefaultNameResolver;
 import io.netty.resolver.NameResolver;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -100,7 +99,6 @@ public sealed interface QuicClusterClient {
     /// Create a new QUIC cluster client.
     ///
     /// @param selfId          this node's identity
-    /// @param selfRole        this node's role in the cluster
     /// @param selfAddress     this node's cluster address
     /// @param selfLabels      this node's metadata labels
     /// @param serializer      message serializer
@@ -109,7 +107,6 @@ public sealed interface QuicClusterClient {
     /// @param eventLoop       optional shared event loop group
     /// @param messageReceiver callback invoked for each message received after Hello
     static QuicClusterClient quicClusterClient(NodeId selfId,
-                                               NodeRole selfRole,
                                                NodeAddress selfAddress,
                                                Map<String, String> selfLabels,
                                                Serializer serializer,
@@ -117,7 +114,7 @@ public sealed interface QuicClusterClient {
                                                QuicSslContext sslContext,
                                                Option<EventLoopGroup> eventLoop,
                                                QuicClusterServer.MessageReceiver messageReceiver) {
-        return new QuicClusterClientInstance(selfId, selfRole, selfAddress, selfLabels, serializer, deserializer,
+        return new QuicClusterClientInstance(selfId, selfAddress, selfLabels, serializer, deserializer,
                                             sslContext, eventLoop, messageReceiver);
     }
 
@@ -170,7 +167,6 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     };
 
     private final NodeId selfId;
-    private final NodeRole selfRole;
     private final NodeAddress selfAddress;
     private final Map<String, String> selfLabels;
     private final Serializer serializer;
@@ -192,7 +188,6 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     private final Map<NodeId, Channel> datagramChannels = new ConcurrentHashMap<>();
 
     QuicClusterClientInstance(NodeId selfId,
-                              NodeRole selfRole,
                               NodeAddress selfAddress,
                               Map<String, String> selfLabels,
                               Serializer serializer,
@@ -201,7 +196,6 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                               Option<EventLoopGroup> eventLoop,
                               QuicClusterServer.MessageReceiver messageReceiver) {
         this.selfId = selfId;
-        this.selfRole = selfRole;
         this.selfAddress = selfAddress;
         this.selfLabels = Map.copyOf(selfLabels);
         this.serializer = serializer;
@@ -377,7 +371,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         // (its own framed message), then the Hello frame, so the acceptor attributes this
         // stream to CONTROL before reading the Hello.
         streamChannel.writeAndFlush(Unpooled.wrappedBuffer(new byte[]{(byte) StreamType.CONTROL.streamIndex()}));
-        var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfRole, selfAddress, selfLabels));
+        var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfAddress, selfLabels));
         streamChannel.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
         log.debug("Sent CONTROL preamble + Hello to peer {} on stream", peerId);
     }
@@ -567,7 +561,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             ctx.pipeline().replace(this, "data-handler",
                                    new QuicLaneDataHandler(peerId, StreamType.CONTROL, deserializer, messageReceiver, log));
 
-            log.info("QUIC Hello handshake complete with peer {} (role={}) — opening data lanes", peerId, hello.role());
+            log.info("QUIC Hello handshake complete with peer {} — opening data lanes", peerId);
             openDataLanes(peerConnection, peerId);
         }
 

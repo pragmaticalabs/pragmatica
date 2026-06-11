@@ -16,6 +16,7 @@ import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -217,6 +218,67 @@ class ClusterDeploymentStateActiveTest {
             assertThat(activeState().transitionalStateTimestamps())
                     .as("rebuild must re-derive transitional timestamps from KV atoms")
                     .containsEntry(sliceKey, persistedAt);
+        }
+    }
+
+    /// M4 not-yet-wired sentinel guard (cluster-topology-overhaul Wave 9 item 5). During the boot
+    /// window the CDM core-membership supplier yields `MembershipFsm.MEMBERSHIP_NOT_WIRED`; a
+    /// stale-entry cleanup that races the wiring must NO-OP rather than read the unresolved
+    /// (sentinel) member set and mass-remove every KV-known node entry. A genuinely-empty (wired)
+    /// member set, by contrast, MUST still drive cleanup.
+    @Nested
+    class M4SentinelCleanupGuard {
+        private ClusterDeploymentState.Active activeWith(java.util.function.Supplier<Set<NodeId>> coreMembers) {
+            var router = MessageRouter.mutable();
+            var localKv = new InMemoryKvStore(router);
+            var localCluster = new RecordingClusterNode(SELF);
+            var artifactBase = ArtifactBase.artifactBase("org.example:slice-a").unwrap();
+            localKv.put(SliceTargetKey.sliceTargetKey(artifactBase),
+                        SliceTargetValue.sliceTargetValue(Version.version("1.0.0").unwrap(), 1));
+            localKv.put(NodeArtifactKey.nodeArtifactKey(NODE_A, ARTIFACT),
+                        NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE, 0L));
+            Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
+                    fsm -> new ClusterDeploymentContext(fsm,
+                                                        SELF,
+                                                        localCluster,
+                                                        localKv,
+                                                        router,
+                                                        stubTopologyManager(SELF),
+                                                        stubSchemaOrchestrator(),
+                                                        HealthSignalSink.noop(),
+                                                        coreMembers,
+                                                        () -> Set.of(SELF),
+                                                        Set::of,
+                                                        Set.of(SELF),
+                                                        DeploymentAtomicity.ALL_OR_NOTHING,
+                                                        3,
+                                                        timeSpan(300).seconds(),
+                                                        injectedClock::get).dormant();
+            var localHarness = FsmTestHarness.harness("m4-sentinel-" + SELF.id() + "-" + System.nanoTime(), factory);
+            localHarness.dispatch(new Activate());
+            return (ClusterDeploymentState.Active) localHarness.state();
+        }
+
+        @Test
+        void cleanupStaleSliceEntries_notYetWiredSentinel_isNoOp() {
+            var active = activeWith(() -> MembershipFsm.MEMBERSHIP_NOT_WIRED);
+
+            active.cleanupStaleSliceEntries();
+
+            assertThat(active.sliceStates())
+                    .as("NOT_WIRED sentinel must NOT mass-classify a KV-known node's slice as stale")
+                    .containsKey(SliceNodeKey.sliceNodeKey(ARTIFACT, NODE_A));
+        }
+
+        @Test
+        void cleanupStaleSliceEntries_wiredEmptyMembers_removesStaleEntry() {
+            var active = activeWith(Set::of);
+
+            active.cleanupStaleSliceEntries();
+
+            assertThat(active.sliceStates())
+                    .as("a wired (resolved) member set that excludes NODE_A MUST drive its slice cleanup")
+                    .doesNotContainKey(SliceNodeKey.sliceNodeKey(ARTIFACT, NODE_A));
         }
     }
 

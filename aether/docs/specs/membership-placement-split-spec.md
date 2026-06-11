@@ -5,6 +5,8 @@ Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 
 # Membership / Placement Split — Design Specification
 
+> ✏️ **UPDATED — defers to [`cluster-topology-overhaul-spec.md`](cluster-topology-overhaul-spec.md) for the authority model.** Core decisions (membership out of the committed snapshot; presence-derived local membership; placement epoch fence) are CONSISTENT and partly live. NTT references now map to `PresenceSampler` / `MembershipFsm`; the M5 rejoin-convergence here aligns with the overhaul §5.9. Spec of record for the placement split.
+
 **Status:** Draft for review · **Branch:** `release-1.0.0-rc1` · **Date:** 2026-06-01
 **Supersedes the membership half of:** `cluster-generation-spec.md` (the `GenerationSnapshot` membership content)
 **Builds on:** `membership-architecture-v2-spec.md` (derive-from-reality), the uncommitted terminal-removal rework.

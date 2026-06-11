@@ -29,7 +29,6 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -45,7 +44,7 @@ class SwimNewVariantsTest {
 
     private static final NodeId NODE_ID = new NodeId("node-announce");
     private static final NodeAddress NODE_ADDR = NodeAddress.nodeAddress("127.0.0.1", 7100).unwrap();
-    private static final NodeInfo NODE_INFO = nodeInfo(NODE_ID, NODE_ADDR, NodeRole.ACTIVE, Map.of("zone", "us-east-1"));
+    private static final NodeInfo NODE_INFO = nodeInfo(NODE_ID, NODE_ADDR, Map.of("zone", "us-east-1"));
     private static final String CLUSTER = "test-cluster";
     private static final long INCARNATION = 42L;
 

@@ -40,7 +40,6 @@ import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.util.AttributeKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -77,7 +76,7 @@ public sealed interface QuicClusterServer {
     /// Callback for new peer connections after Hello handshake completes.
     @FunctionalInterface
     interface PeerConnectionHandler {
-        void onPeerConnected(QuicPeerConnection connection, NodeRole peerRole, NodeAddress peerAddress, Map<String, String> peerLabels);
+        void onPeerConnected(QuicPeerConnection connection, NodeAddress peerAddress, Map<String, String> peerLabels);
     }
 
     /// Callback for incoming messages after Hello handshake completes.
@@ -89,7 +88,6 @@ public sealed interface QuicClusterServer {
     /// Create a new QUIC cluster server.
     ///
     /// @param selfId            this node's identity
-    /// @param selfRole          this node's role in the cluster
     /// @param selfAddress       this node's cluster address
     /// @param selfLabels        this node's metadata labels
     /// @param serializer        message serializer
@@ -99,7 +97,6 @@ public sealed interface QuicClusterServer {
     /// @param connectionHandler callback invoked when a peer completes Hello handshake
     /// @param messageReceiver   callback invoked for each message received after Hello
     static QuicClusterServer quicClusterServer(NodeId selfId,
-                                               NodeRole selfRole,
                                                NodeAddress selfAddress,
                                                Map<String, String> selfLabels,
                                                Serializer serializer,
@@ -108,7 +105,7 @@ public sealed interface QuicClusterServer {
                                                Option<EventLoopGroup> sharedEventLoop,
                                                PeerConnectionHandler connectionHandler,
                                                MessageReceiver messageReceiver) {
-        return new QuicClusterServerInstance(selfId, selfRole, selfAddress, selfLabels, serializer, deserializer,
+        return new QuicClusterServerInstance(selfId, selfAddress, selfLabels, serializer, deserializer,
                                             sslContext, sharedEventLoop, connectionHandler,
                                             messageReceiver);
     }
@@ -145,7 +142,6 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     private static final int MAX_FRAME_LENGTH = 32 * 1024 * 1024;
 
     private final NodeId selfId;
-    private final NodeRole selfRole;
     private final NodeAddress selfAddress;
     private final Map<String, String> selfLabels;
     private final Serializer serializer;
@@ -160,7 +156,6 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     private volatile boolean ownsEventLoop;
 
     QuicClusterServerInstance(NodeId selfId,
-                              NodeRole selfRole,
                               NodeAddress selfAddress,
                               Map<String, String> selfLabels,
                               Serializer serializer,
@@ -170,7 +165,6 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                               PeerConnectionHandler connectionHandler,
                               MessageReceiver messageReceiver) {
         this.selfId = selfId;
-        this.selfRole = selfRole;
         this.selfAddress = selfAddress;
         this.selfLabels = Map.copyOf(selfLabels);
         this.serializer = serializer;
@@ -433,7 +427,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
         private void sendHelloResponse(ChannelHandlerContext ctx) {
             // Responses flowing back from the acceptor carry NO preamble.
-            var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfRole, selfAddress, selfLabels));
+            var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfAddress, selfLabels));
             ctx.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
         }
 
@@ -450,8 +444,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             ctx.pipeline().replace(this, "data-handler",
                                    new QuicLaneDataHandler(hello.sender(), StreamType.CONTROL, deserializer, messageReceiver, log));
 
-            log.info("QUIC Hello handshake complete with peer {} (role={}, address={})", hello.sender(), hello.role(), hello.address());
-            connectionHandler.onPeerConnected(peerConnection, hello.role(), hello.address(), hello.labels());
+            log.info("QUIC Hello handshake complete with peer {} (address={})", hello.sender(), hello.address());
+            connectionHandler.onPeerConnected(peerConnection, hello.address(), hello.labels());
         }
     }
 }

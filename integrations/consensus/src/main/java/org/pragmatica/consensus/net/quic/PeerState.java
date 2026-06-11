@@ -26,16 +26,14 @@ import java.util.function.LongUnaryOperator;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.Message;
 
 import static org.pragmatica.lang.Option.option;
-import static org.pragmatica.lang.Unit.unit;
 
 /// Per-peer connection lifecycle state machine for [QuicClusterNetwork].
 ///
-/// Collapses five previously-parallel structures — `peerLinks`, `connectingInProgress`,
-/// `passivePeers`, `connectionEstablishedAt`, and transient-reconnect buffering — into a
+/// Collapses previously-parallel structures — `peerLinks`, `connectingInProgress`,
+/// `connectionEstablishedAt`, and transient-reconnect buffering — into a
 /// single authoritative phase + context per peer. All transitions are per-peer synchronized.
 ///
 /// ## Phases
@@ -175,7 +173,6 @@ public final class PeerState {
     private Phase phase = Phase.INIT;
     private QuicPeerConnection connection;
     private long phaseChangedAtNanos;
-    private boolean passive;
     /// Wave-5 reconnect provenance: true once the peer has reached CONNECTED (upstream has been
     /// told about it via ADD/RECONNECT); reset by [#readmit] (upstream saw the REMOVE). Guarded by `this`.
     private boolean announcedUpstream;
@@ -238,15 +235,6 @@ public final class PeerState {
 
     public synchronized Phase phase() {
         return phase;
-    }
-
-    public synchronized boolean isPassive() {
-        return passive;
-    }
-
-    public synchronized Unit markPassive() {
-        this.passive = true;
-        return unit();
     }
 
     /// Returns the live connection if the peer is CONNECTED. Empty otherwise.

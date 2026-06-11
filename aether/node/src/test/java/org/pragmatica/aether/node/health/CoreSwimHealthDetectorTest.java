@@ -9,7 +9,6 @@ import org.pragmatica.aether.node.health.fsm.SwimHealthEvents;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;

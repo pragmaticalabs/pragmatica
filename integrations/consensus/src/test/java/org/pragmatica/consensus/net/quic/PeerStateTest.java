@@ -303,17 +303,6 @@ class PeerStateTest {
     }
 
     @Test
-    void passive_flag_is_independent_of_phase() {
-        var s = state();
-        assertThat(s.isPassive()).isFalse();
-        s.markPassive();
-        assertThat(s.isPassive()).isTrue();
-        s.beginConnecting(T0 + 1);
-        s.attach(liveConnection(), T0 + 2);
-        assertThat(s.isPassive()).isTrue();
-    }
-
-    @Test
     void readmit_fromREMOVED_returnsTrue_andTransitions_to_INIT() {
         // Incarnation-gated resurrection: SWIM re-admitted the NodeId (strictly-higher
         // incarnation superseded the tombstone). REMOVED -> INIT makes the peer dial-eligible.

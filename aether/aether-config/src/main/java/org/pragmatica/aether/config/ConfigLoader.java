@@ -106,6 +106,11 @@ public final class ConfigLoader {
     /// E2 Phase 2a (2026-05-28): the `ntt_observation` migration-ramp feature flag is
     /// removed from the binding shape; if present in TOML it is silently ignored. NTT
     /// instrumentation now wires unconditionally.
+    ///
+    /// cluster-topology-overhaul Wave 9 (item 2, CONFIG-BREAKING): the former
+    /// `ntt_departure_timeout` + `quorum_loss_drain_threshold` keys are collapsed into a single
+    /// `split_timeout` (`T`). The legacy keys are no longer accepted — only `split_timeout` is read,
+    /// defaulting per spec §14 when absent.
     private static void populateMembershipConfig(TomlDocument doc, AetherConfig.Builder builder) {
         var hasSection = doc.sectionNames().stream().anyMatch("membership"::equals);
 
@@ -113,16 +118,12 @@ public final class ConfigLoader {
             return;
         }
 
-        var nttTimeout = parseTimeSpan(doc,
-                                       "membership",
-                                       "ntt_departure_timeout",
-                                       MembershipConfigBinding.DEFAULT_NTT_DEPARTURE_TIMEOUT);
-        var quorumLossThreshold = parseTimeSpan(doc,
-                                                "membership",
-                                                "quorum_loss_drain_threshold",
-                                                MembershipConfigBinding.DEFAULT_QUORUM_LOSS_DRAIN_THRESHOLD);
+        var splitTimeout = parseTimeSpan(doc,
+                                         "membership",
+                                         "split_timeout",
+                                         MembershipConfigBinding.DEFAULT_SPLIT_TIMEOUT);
 
-        builder.membership(new MembershipConfigBinding(nttTimeout, quorumLossThreshold));
+        builder.membership(new MembershipConfigBinding(splitTimeout));
     }
 
     private static void populateStreamingConfig(TomlDocument doc, AetherConfig.Builder builder) {

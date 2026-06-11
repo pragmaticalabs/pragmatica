@@ -28,7 +28,6 @@ import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyObserver;
@@ -414,9 +413,6 @@ class QuicClusterNetworkReconcilerTest {
         }
         @Override public Set<NodeId> coreNodes() {
             return coreNodesOverride.or(() -> Set.copyOf(topology()));
-        }
-        @Override public boolean isPassive(NodeId nodeId) {
-            return peers.stream().anyMatch(p -> p.id().equals(nodeId) && p.role() == NodeRole.PASSIVE);
         }
         @Override public void reconcile(NetworkServiceMessage.ConnectedNodesList connectedNodesList) {}
         @Override public void handleDiscoverNodes(NetworkMessage.DiscoverNodes discoverNodes) {}

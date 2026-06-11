@@ -27,7 +27,6 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Option;
@@ -278,6 +277,45 @@ class SwimProtocolTest {
                 .isFalse();
         }
 
+        @Test
+        void handleAnnounce_knownMemberReAnnounceFromNewSourceIp_refreshesProbeAddress() {
+            // Wave 9 Fix C — the ROOT of the post-partition-heal self-destruct: a Docker IP
+            // reshuffle changes a KNOWN member's address. Without adopting the fresh ANNOUNCE
+            // source IP, SWIM keeps probing the stale pre-partition IP, acks go silent, and the
+            // healthy member is falsely declared FAULTY. The re-ANNOUNCE (higher incarnation on
+            // rejoin) for an already-resident member must refresh its probe address.
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+            var originalAddress = protocol.members().get(NODE_A).address();
+
+            // Same NODE_A re-ANNOUNCEs (rejoin, incarnation 1) but its datagram now arrives from a
+            // NEW source IP — the reshuffled container address.
+            var newSourceIp = new InetSocketAddress("127.0.0.2", ADDR_A.getPort());
+            protocol.onMessage(newSourceIp, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 1L));
+
+            assertThat(protocol.members().get(NODE_A).address().getAddress().getHostAddress())
+                .as("a re-ANNOUNCE from a new source IP must refresh the resident member's probe address")
+                .isEqualTo("127.0.0.2");
+            assertThat(protocol.members().get(NODE_A).address())
+                .as("the probe address actually changed from the stale pre-reshuffle address")
+                .isNotEqualTo(originalAddress);
+        }
+
+        @Test
+        void handleAnnounce_knownMemberReAnnounceFromNewSourceIp_nextProbeTargetsNewAddress() {
+            // The behavioural consequence of the refresh: the very next probe must target the new
+            // (reachable) source IP, not the stale one — killing the stale-IP probe storm at the root.
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+            var newSourceIp = new InetSocketAddress("127.0.0.2", ADDR_A.getPort());
+            protocol.onMessage(newSourceIp, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 1L));
+            transport.sentMessages.clear();
+
+            protocol.probeOnceForTest();
+
+            assertThat(transport.sentMessages.getFirst().target().getAddress().getHostAddress())
+                .as("the next probe must target the refreshed (new) source IP, not the stale pre-reshuffle one")
+                .isEqualTo("127.0.0.2");
+        }
+
         private static NodeInfo nodeInfoFor(NodeId id, InetSocketAddress addr) {
             return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress(addr.getHostString(), addr.getPort()).unwrap());
         }
@@ -340,7 +378,6 @@ class SwimProtocolTest {
         private static NodeInfo nodeInfoWithLabels(NodeId id, InetSocketAddress addr) {
             return NodeInfo.nodeInfo(id,
                                      NodeAddress.nodeAddress(addr.getHostString(), addr.getPort()).unwrap(),
-                                     NodeRole.ACTIVE,
                                      Map.of(NodeInfo.LABEL_ROLE, "active",
                                             NodeInfo.LABEL_SOURCE, "replacement"));
         }

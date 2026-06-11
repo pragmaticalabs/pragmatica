@@ -24,7 +24,6 @@ import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.node.labels.ContainerLabelInspector;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
@@ -260,7 +259,7 @@ public record Main(String[] args) {
     }
 
     private static MembershipConfig liftMembershipBinding(MembershipConfigBinding binding) {
-        return new MembershipConfig(binding.nttDepartureTimeout(), binding.quorumLossDrainThreshold());
+        return new MembershipConfig(binding.splitTimeout());
     }
 
     private ConfigurationProvider buildConfigProvider(Path configPath) {
@@ -434,7 +433,6 @@ public record Main(String[] args) {
         var selfHost = resolveHostname();
         var selfInfo = NodeInfo.nodeInfo(self,
                                          nodeAddress(selfHost, selfPort).expect("self host is a valid node address"),
-                                         NodeRole.ACTIVE,
                                          labels);
 
         return findArg("--peers=").map(peersStr -> parsePeersFromString(peersStr, self, selfInfo))

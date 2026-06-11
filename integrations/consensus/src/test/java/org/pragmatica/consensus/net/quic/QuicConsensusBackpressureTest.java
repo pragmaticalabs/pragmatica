@@ -365,7 +365,7 @@ class QuicConsensusBackpressureTest {
 
             network.setBroadcastMembership(() -> Set.of(IN_VIEW));
 
-            var targets = network.broadcastTargetsForTests(false);
+            var targets = network.broadcastTargetsForTests();
 
             assertThat(targets)
                 .as("only the membership-view member is a broadcast target")
@@ -385,7 +385,7 @@ class QuicConsensusBackpressureTest {
             network.seedPeerForTests(IN_VIEW, PeerState.peerState(IN_VIEW, System.nanoTime()));
             network.seedPeerForTests(EVICTED, PeerState.peerState(EVICTED, System.nanoTime()));
 
-            var targets = network.broadcastTargetsForTests(false);
+            var targets = network.broadcastTargetsForTests();
 
             assertThat(targets)
                 .as("unwired default filters to the authoritative membership (topology coreNodes)")
@@ -403,13 +403,13 @@ class QuicConsensusBackpressureTest {
             network.seedPeerForTests(IN_VIEW, PeerState.peerState(IN_VIEW, System.nanoTime()));
 
             network.setBroadcastMembership(() -> Set.of());
-            assertThat(network.broadcastTargetsForTests(false))
+            assertThat(network.broadcastTargetsForTests())
                 .as("an explicit empty membership view excludes every peer")
                 .isEmpty();
 
             network.setBroadcastMembership(null);
 
-            assertThat(network.broadcastTargetsForTests(false))
+            assertThat(network.broadcastTargetsForTests())
                 .as("null supplier restores the topology-backed mandatory default, not an unfiltered path")
                 .containsExactly(IN_VIEW);
         }

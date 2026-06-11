@@ -81,8 +81,10 @@ public final class QuorumLossDetector {
     private final NttTimerScheduler scheduler;
     private final AtomicLong belowThresholdSinceNanos = new AtomicLong(Long.MIN_VALUE);
     private final AtomicReference<ScheduledFuture<?>> pendingFuture = new AtomicReference<>();
+    private final AtomicReference<ScheduledFuture<?>> presenceFuture = new AtomicReference<>();
     private volatile int memberCount;
     private volatile boolean armed;
+    private volatile boolean quorumPresenceLost;
     private volatile Consumer<QuorumLossIntent> listener = QuorumLossDetector::ignoreIntent;
 
     private QuorumLossDetector(MembershipConfig config,
@@ -123,6 +125,31 @@ public final class QuorumLossDetector {
     public void onMemberCountChanged(int newMemberCount) {
         memberCount = newMemberCount;
         recompute();
+    }
+
+    /// Quorum-presence edge input (cluster-topology-overhaul Wave 9 Fix A). The
+    /// `ClusterStateNotification` PASSIVE/ACTIVE edge — consensus's own committed-quorum verdict —
+    /// is debounced through the SAME split-timeout `T` window as the count-driven path, instead
+    /// of triggering an IMMEDIATE process-exit drain (the post-partition-heal self-destruct: a
+    /// transient false-FAULTY storm dropped counted-members below quorum, PASSIVE fired, and the
+    /// old direct `initiate(QUORUM_LOSS)` exited all nodes before the storm could clear). On
+    /// `present == false` (PASSIVE) this arms a one-shot firing check at `T`, measuring `T` from
+    /// THIS node's local quorum-loss observation (the ratified Wave-9 item-2 design); on
+    /// `present == true` (ACTIVE, quorum regained) it cancels the pending check. The drain fires
+    /// only if quorum is STILL lost when the window elapses. Arm is gated on `armed` — a
+    /// never-quorate node never self-drains (cold-start guard, shared with the count path).
+    @Contract
+    public synchronized void onQuorumPresence(boolean present) {
+        if (present) {
+            quorumPresenceLost = false;
+            cancelPresenceFuture();
+            return;
+        }
+        if (!armed || quorumPresenceLost) {
+            return;
+        }
+        quorumPresenceLost = true;
+        schedulePresenceCheck(timeSource.nanoTime());
     }
 
     /// Register the consumer that will receive emitted [`QuorumLossIntent`]s. At E1 the
@@ -203,7 +230,7 @@ public final class QuorumLossDetector {
 
     private void scheduleFiringCheck(long windowStartNanos) {
         cancelPendingFuture();
-        var future = scheduler.schedule(() -> onFiringCheck(windowStartNanos), config.quorumLossDrainThreshold());
+        var future = scheduler.schedule(() -> onFiringCheck(windowStartNanos), config.splitTimeout());
 
         pendingFuture.set(future);
     }
@@ -214,6 +241,37 @@ public final class QuorumLossDetector {
         if (prev != null) {
             prev.cancel(false);
         }
+    }
+
+    private void schedulePresenceCheck(long armedAtNanos) {
+        cancelPresenceFuture();
+        var future = scheduler.schedule(() -> onPresenceCheck(armedAtNanos), config.splitTimeout());
+
+        presenceFuture.set(future);
+    }
+
+    private void cancelPresenceFuture() {
+        var prev = presenceFuture.getAndSet(null);
+
+        if (prev != null) {
+            prev.cancel(false);
+        }
+    }
+
+    /// Fires the quorum-loss drain intent iff quorum presence is STILL lost when the `T` window
+    /// elapses (a re-ACTIVE within the window cleared `quorumPresenceLost` and cancelled this
+    /// task). Mirrors the count-path firing check's arm + still-lost re-verification.
+    @Contract
+    private synchronized void onPresenceCheck(long armedAtNanos) {
+        if (!armed || !quorumPresenceLost) {
+            return;
+        }
+
+        presenceFuture.set(null);
+        var threshold = requiredThresholdFor(coreCountSupplier.getAsInt());
+        var intent = QuorumLossIntent.quorumLossIntent(armedAtNanos, currentMemberCount(), threshold);
+
+        listener.accept(intent);
     }
 
     private synchronized void onFiringCheck(long windowStartNanos) {

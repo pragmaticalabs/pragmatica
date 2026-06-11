@@ -4,7 +4,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -51,7 +50,7 @@ import org.slf4j.LoggerFactory;
 /// evaluation (`evaluateQuorumState` → the `ClusterStateNotification` CAS edge to the
 /// dedicated quorum-presence channel) plus the dial-set bookkeeping. Subscribers that need
 /// fast local reactions during cluster bootstrap consume `TransportObservation` (emitted by
-/// `QuicClusterNetwork` / `NettyClusterNetwork` / `SwimProtocol`); cluster-canonical
+/// `QuicClusterNetwork` / `SwimProtocol`); cluster-canonical
 /// membership reactions consume `MembershipDecision` — conflating the two streams is a
 /// subtle dual-reaction bug class, see the javadoc on each type for the epistemic
 /// distinction.
@@ -331,7 +330,6 @@ public interface TopologyObserver extends TopologyManager {
                 // the aether MembershipFsm, and quorum must bootstrap before the view exists).
                 config().coreNodes()
                       .stream()
-                      .filter(node -> node.role() != NodeRole.PASSIVE)
                       .map(NodeInfo::id)
                       .forEach(coreNodeIds::add);
                 // QUIC DIAL SET (v2-architecture §5.4): `nodeStatesById` is populated by SWIM
@@ -440,9 +438,7 @@ public interface TopologyObserver extends TopologyManager {
                       .onEmpty(() -> {
                                    nodeIdsByAddress().putIfAbsent(nodeInfo.address(),
                                                                   nodeInfo.id());
-                                   if (nodeInfo.role() != NodeRole.PASSIVE) {
-                                       coreNodeIds.add(nodeInfo.id());
-                                   }
+                                   coreNodeIds.add(nodeInfo.id());
                                    // Only request connection if topology observer is active (router is ready)
                 if (active().get()) {
                                        requestConnection(nodeInfo.id());
@@ -590,7 +586,6 @@ public interface TopologyObserver extends TopologyManager {
             private int legacyActiveNodeCount() {
                 return (int) nodeStatesById.values()
                                            .stream()
-                                           .filter(state -> state.info().role() != NodeRole.PASSIVE)
                                            .count();
             }
 
@@ -600,7 +595,6 @@ public interface TopologyObserver extends TopologyManager {
             private int legacyHealthyActiveNodeCount() {
                 return (int) nodeStatesById.values()
                                            .stream()
-                                           .filter(state -> state.info().role() != NodeRole.PASSIVE)
                                            .filter(state -> state.health() == NodeHealth.HEALTHY)
                                            .count();
             }
@@ -737,7 +731,6 @@ public interface TopologyObserver extends TopologyManager {
                 return (int) nodeStatesById.values()
                                            .stream()
                                            .filter(state -> !state.info().id().equals(config.self()))
-                                           .filter(state -> state.info().role() != NodeRole.PASSIVE)
                                            .filter(state -> state.health() == NodeHealth.HEALTHY)
                                            .filter(state -> coreMembers.contains(state.info().id()))
                                            .count();
@@ -752,11 +745,23 @@ public interface TopologyObserver extends TopologyManager {
                 return (int) nodeStatesById.values()
                                           .stream()
                                           .filter(state -> !state.info().id().equals(config.self()))
-                                          .filter(state -> state.info().role() != NodeRole.PASSIVE)
                                           .filter(state -> state.health() == NodeHealth.HEALTHY)
                                           .count();
             }
 
+            /// Updates the quorum denominator from a `SetClusterSize` message.
+            ///
+            /// **One quorum denominator (cluster-topology-overhaul Wave 9 item 1).**
+            /// `ClusterConfigKey.coreCount` is the single SOURCE of truth for the cluster's
+            /// core-count denominator; this `effectiveClusterSize` atomic is a DERIVED cell. In
+            /// production the aether-side `ClusterConfigKey` subscription (`AetherNode.onClusterConfigPut`)
+            /// drives THIS method with the committed `coreCount` on every config commit — the
+            /// observer is consensus-side and cannot read aether KV directly, so this is the
+            /// single bridge from KV → the atomic. §3.1: this remains exactly one of
+            /// `evaluateQuorumState`'s pre-existing triggers; only the origin of the value
+            /// changed (KV commit, not a separately-routed operator path). Boot ordering: the
+            /// atomic is seeded from `TopologyConfig.clusterSize()` at construction and holds that
+            /// (config-derived, equal) value until the first `ClusterConfigKey` commit supersedes it.
             @Override
             public void handleSetClusterSize(TopologyManagementMessage.SetClusterSize message) {
                 int newSize = message.clusterSize();

@@ -11,19 +11,31 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Configuration for the membership v2 stack (spec §14 — `membership-architecture-v2-spec.md`).
 ///
-/// `nttDepartureTimeout` — NTT timer duration from SWIM `DepartedObserved` until
-/// `TopologyUnhealthy` is emitted. Long enough to absorb SWIM convergence (~5s) and
-/// brief network glitches; short enough that auto-heal feels prompt. Default: 15s.
+/// **One split timeout `T` (cluster-topology-overhaul Wave 9, item 2).** The former separate
+/// `nttDepartureTimeout` (majority departure-verdict / re-provision debounce) and
+/// `quorumLossDrainThreshold` (minority quorum-loss self-drain) knobs are collapsed into a
+/// single shared knob `splitTimeout` (`T`). Both the minority's quorum-loss self-drain AND the
+/// majority's departure-verdict / re-provision are now governed by this one value.
 ///
-/// `quorumLossDrainThreshold` — `localQuorumCount` must stay below `N/2+1`
-/// continuously for at least this long before quorum-loss-triggered self-drain
-/// commits. Preserves the S19 chaos-suite row. Default: 8s.
+/// **No-double-active ordering requirement (preserved by wiring, not by a second knob).** The
+/// minority MUST stop before the majority re-provisions (stateful slices must never be doubly
+/// active). The ordering margin is the natural detection lag: each side measures `T` from its
+/// OWN observation point — the minority observes its quorum loss LOCALLY and immediately, while
+/// the majority only confirms the minority's departure AFTER SWIM convergence (~5s) + the
+/// co-confirmation gate. So `T_minority_self_drain` (timed from local-quorum-loss) elapses
+/// before `T_majority_reprovision` (timed from the departure-verdict) even with the SAME `T`.
+/// `QuorumLossDetector` is fed `splitTimeout()` and arms from local-quorum-loss; the
+/// `LeaderReconciler` deficit/quiesce/drain windows derive from `splitTimeout()` and arm from
+/// the departure-verdict. `MembershipConfigSplitTimeoutOrderingTest` asserts the minority deadline
+/// precedes the majority re-provision deadline for the same `T`.
 ///
-/// E2 Phase 2a (2026-05-28): the `nttObservation` migration-ramp feature flag is
-/// removed. NTT/LocalQuorumWatcher/LeaderReconciler now wire unconditionally — the
-/// observation-only ramp completed in Phase 1.6.
-public record MembershipConfig(TimeSpan nttDepartureTimeout, TimeSpan quorumLossDrainThreshold) {
+/// `splitTimeout` default: 15s — long enough to absorb SWIM convergence (~5s) and brief
+/// network glitches; short enough that auto-heal feels prompt. The #131 terminal-eviction
+/// backstop window is sourced from the same `T`.
+public record MembershipConfig(TimeSpan splitTimeout) {
+    public static final TimeSpan DEFAULT_SPLIT_TIMEOUT = timeSpan(15).seconds();
+
     public static MembershipConfig membershipConfig() {
-        return new MembershipConfig(timeSpan(15).seconds(), timeSpan(8).seconds());
+        return new MembershipConfig(DEFAULT_SPLIT_TIMEOUT);
     }
 }

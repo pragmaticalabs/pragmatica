@@ -8,7 +8,6 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.net.tcp.NodeAddress;
 
 import java.util.Map;
@@ -47,7 +46,6 @@ class PresenceMembershipViewCoreScopeTest {
     private static NodeInfo labeledInfo(NodeId id, String role) {
         return NodeInfo.nodeInfo(id,
                                  NodeAddress.nodeAddress("host-x", 6000).unwrap(),
-                                 NodeRole.ACTIVE,
                                  Map.of(NodeInfo.LABEL_ROLE, role));
     }
 
