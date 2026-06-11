@@ -96,8 +96,14 @@ import static org.pragmatica.lang.Unit.unit;
 ///   - `connect(ConnectNode)` / `connectPeer(NodeInfo)` → `beginConnecting`
 ///   - `onPeerConnected(...)` → `attach`, and drains the peer's offline buffer
 ///   - `sendToConnection(...)` discovers a dead channel → `evict`
-///   - `disconnect(DisconnectNode)` → `authoritativeRemove`
+///   - `disconnect(DisconnectNode)` → `evict` (soft; terminal removal is `departurePermanent`)
 ///   - `stop()` / `closePeerConnections()` → `authoritativeRemove` on all
+///
+/// Every transition flows through ONE chokepoint (`onPeerTransition`, Wave 5): the Wave-1
+/// journal record AND the typed transport emission (`emitPeerTransition` →
+/// `processViewChange`) are projections of [PeerState] transitions — no call site emits
+/// view-changes ad hoc (sole exception: `disconnect` of a peer with NO transport state,
+/// where there is no transition to project).
 ///
 /// The [PeerState] offline buffer is peer-level and survives transient evictions so
 /// consensus broadcasts delivered during a reconnect storm are not lost.
@@ -175,16 +181,22 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// that a legitimately-slow handshake under load is NOT aborted, tight enough that a hung dial
     /// clears within a few reconciler ticks.
     private static final long CONNECTING_STALENESS_HELLO_TIMEOUT_FACTOR = 3L;
-    /// Multiple of the SWIM ping interval after which a CONNECTED peer that has received NO inbound
-    /// frame on ANY lane is treated as a silent zombie and evicted for re-dial. Sized generously
-    /// (`pingInterval * 8`): SWIM guarantees cross-link probe traffic at `pingInterval`, so a
-    /// healthy-but-quiet link always refreshes the liveness clock well within the window and is never
-    /// falsely evicted; a genuine silent-death zombie (the `isActive()`-lies-true / blackholed
-    /// substrate) clears within a couple of sweep ticks. This sweep's correctness DEPENDS on the SWIM
-    /// probe cadence: if SWIM probing were disabled, an idle follower<->follower link could exceed the
-    /// TTL without being dead.
+    /// Multiple of the transport keepalive interval (= ClusterSync `pingInterval`) after which a
+    /// CONNECTED peer that has received NO inbound frame on ANY lane is treated as a silent zombie
+    /// and evicted for re-dial. Sized generously (`pingInterval * 8`): the transport sends a
+    /// CONTROL-lane [NetworkMessage.KeepAlive] to every CONNECTED peer each `pingInterval`
+    /// (see [#sendKeepalivesUnsafe]), so a healthy-but-quiet link always refreshes the receipt
+    /// clock well within the window and is never falsely evicted; a genuine silent-death zombie
+    /// (the `isActive()`-lies-true / blackholed substrate) clears within a couple of sweep ticks.
+    /// NOTE (Wave 5 pre-check finding): SWIM probes ride their OWN UDP socket
+    /// (`port + swimPortOffset`), NOT the QUIC lanes, and ClusterSync ping/pong covers only
+    /// leader<->follower links — the transport-owned keepalive is the ONLY guaranteed periodic
+    /// inbound on an idle follower<->follower link, so this sweep's correctness depends on it.
     private static final long LIVENESS_TTL_PING_INTERVAL_FACTOR = 8L;
     private final CancellableTask reconcilerTask = CancellableTask.cancellableTask();
+    /// Periodic CONTROL-lane keepalive sender (Wave 5 receipt-evidence TTL). Scheduled at
+    /// `pingInterval` alongside the reconciler; cancelled on [#stop].
+    private final CancellableTask keepaliveTask = CancellableTask.cancellableTask();
 
     private volatile QuicDisconnectListener disconnectListener;
 
@@ -228,17 +240,18 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// behaviour until AetherNode wires the gate post-construction.
     private volatile Option<Function<NodeId, Boolean>> swimHealthGate = Option.empty();
 
-    /// Membership-view supplier gating consensus broadcast targets. The transport `peers`
-    /// table is a connection CACHE, not the membership AUTHORITY: a peer absent from the
-    /// membership view (evicted / dead per the FSM) must never be a broadcast target, even
-    /// if a stale CONNECTED QUIC link to it lingers. Filtering `broadcastPayload` by this
-    /// view dissolves the dead-ULID CONSENSUS retry-storm (#68) at the source — without it,
-    /// consensus keeps broadcasting to an evicted node forever (`Retry N/200 @25ms`).
-    ///
-    /// Back-compat default: the default supplier yields `Option.none()`, meaning "no filter / all
-    /// peers" — existing consensus-only fixtures and unit tests broadcast to every connected
-    /// peer exactly as before until AetherNode wires the FSM-backed view post-construction.
-    private volatile Supplier<Option<Set<NodeId>>> broadcastMembership = Option::none;
+    /// Membership-view supplier gating consensus broadcast targets — MANDATORY (Wave 5,
+    /// #68-class retry-storm prevention). The transport `peers` table is a connection CACHE,
+    /// not the membership AUTHORITY: a peer absent from the membership view (evicted / dead per
+    /// the FSM) must never be a broadcast target, even if a stale CONNECTED QUIC link to it
+    /// lingers. There is NO unfiltered default path: from construction the view is
+    /// `topologyManager.coreNodes()` (the SWIM-fed authoritative membership, which falls back
+    /// to the configured seed set at cold start — the same gate the reconciler's
+    /// `swimMembershipAllows` uses, so formation broadcasts are unaffected). `AetherNode`
+    /// upgrades the view post-construction to `MembershipFsm.broadcastEligibleMembers()` via
+    /// [#setBroadcastMembership]. A DEAD-but-cached zombie is therefore never a broadcast
+    /// target in ANY wiring state — the dead-ULID CONSENSUS retry-storm (#68) cannot start.
+    private volatile Supplier<Set<NodeId>> broadcastMembership;
 
     /// FSM-published desired-connection set for the missing-peer reconciler. When present, the
     /// reconciler reconciles ACTUAL connections against THIS FSM core-member set instead of the
@@ -361,6 +374,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
         this.observedEpochSupplier = observedEpochSupplier == null ? ObservedEpochSupplier.zero() : observedEpochSupplier;
         this.tuning = tuning == null ? QuicTransportTuning.defaults() : tuning;
         this.consensusRetry = this.tuning.consensusRetry();
+        // Wave 5: the broadcast membership filter is mandatory from construction — the
+        // SWIM-fed authoritative membership (cold-start fallback: configured seeds) until
+        // AetherNode upgrades it to the FSM broadcast set. No unfiltered path exists.
+        this.broadcastMembership = topologyManager::coreNodes;
     }
 
     /// Late-bound leader gate + connectivity reporter. Follower REMOVE view-changes
@@ -387,12 +404,21 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// (FSM core members: MEMBER + SUSPECT, worker-excluded). `broadcastPayload` skips any
     /// connected peer absent from this set — a stale CONNECTED link to an evicted node is never
     /// a broadcast target, dissolving the #68 CONSENSUS retry-storm at the source.
-    /// A `null` argument (or a supplier returning `null`) restores the default "no filter /
-    /// all peers" behaviour.
+    /// The filter is MANDATORY (Wave 5): a `null` argument — or a wired supplier momentarily
+    /// returning `null` — falls back to the construction-time default
+    /// (`topologyManager.coreNodes()`, the SWIM-fed authoritative membership), NEVER to
+    /// "no filter / all peers".
     @Contract public void setBroadcastMembership(Supplier<Set<NodeId>> membershipView) {
         this.broadcastMembership = membershipView == null
-                                  ? Option::none
-                                  : () -> Option.option(membershipView.get());
+                                  ? topologyManager::coreNodes
+                                  : () -> membershipViewOrFallback(membershipView);
+    }
+
+    /// Resolve the wired membership view, falling back to the SWIM-fed authoritative membership
+    /// when the wired supplier yields `null` (defensive — the FSM adapter should never).
+    private Set<NodeId> membershipViewOrFallback(Supplier<Set<NodeId>> wired) {
+        var view = wired.get();
+        return view == null ? topologyManager.coreNodes() : view;
     }
 
     /// Attach the FSM-published desired-connection supplier. When present, the missing-peer
@@ -475,6 +501,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         );
         return server.start(port)
                      .onSuccess(_ -> startMissingPeerReconciler())
+                     .onSuccess(_ -> startKeepalive())
                      .onSuccess(_ -> fireReadyHooks())
                      .onFailure(this::onStartFailed)
                      .mapToUnit();
@@ -502,6 +529,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
         log.debug("Stopping QuicClusterNetwork: notifying view change");
         reconcilerTask.cancel();
+        keepaliveTask.cancel();
         processViewChange(SHUTDOWN, self.id());
         return closePeerConnections()
             .flatMap(this::stopServerAndClient);
@@ -515,6 +543,51 @@ public class QuicClusterNetwork implements ClusterNetwork {
         reconcilerTask.set(future);
         log.debug("Missing-peer reconciler scheduled (tick={}ms, backoff initial={}ms, cap={}ms)",
                   RECONCILE_TICK.millis(), RECONCILE_BACKOFF_INITIAL_MS, RECONCILE_BACKOFF_CAP_MS);
+    }
+
+    /// Schedule the periodic CONTROL-lane keepalive sender (Wave 5 receipt-evidence TTL).
+    /// Cadence = `pingInterval`, the same interval the liveness TTL is derived from
+    /// ([#livenessTtlNanos] = ×[LIVENESS_TTL_PING_INTERVAL_FACTOR]), so a healthy idle link
+    /// refreshes its receipt clock 8× per TTL window and is never falsely evicted.
+    @Contract private void startKeepalive() {
+        var interval = topologyManager.pingInterval();
+        keepaliveTask.set(SharedScheduler.scheduleAtFixedRate(this::keepaliveTick, interval, interval));
+        log.debug("Transport keepalive scheduled (interval={}ms, liveness TTL={}ms)",
+                  interval.millis(), interval.millis() * LIVENESS_TTL_PING_INTERVAL_FACTOR);
+    }
+
+    /// Periodic keepalive tick — exception-contained so a single failed send cannot kill the
+    /// fixed-rate schedule (mirrors [#reconcileMissingPeersTick]).
+    void keepaliveTick() {
+        if (!isRunning.get()) {
+            return;
+        }
+        Result.lift(this::sendKeepalivesUnsafe)
+              .onFailure(cause -> log.warn("Transport keepalive tick failed: {}", cause.message()));
+    }
+
+    /// Send one [NetworkMessage.KeepAlive] to every CONNECTED peer on the CONTROL lane. The
+    /// receiving transport refreshes its inbound receipt clock and swallows the frame (see
+    /// [#onMessageReceived]). Suppressed while blackholed: a silently-dead node must not keep
+    /// refreshing its peers' receipt clocks, so their TTL sweeps still detect it. Writes go
+    /// directly to the live connection (never the offline buffer), and a dead channel
+    /// discovered by the write engages the normal write-path eviction.
+    @SuppressWarnings("JBCT-PAT-01") // Iterate connected peers, write beacon
+    private Unit sendKeepalivesUnsafe() {
+        if (blackholed) {
+            return unit();
+        }
+        var keepalive = new NetworkMessage.KeepAlive(self.id());
+        for (var state : peers.values()) {
+            state.activeConnection()
+                 .onPresent(conn -> sendKeepaliveTo(state.peerId(), keepalive, conn));
+        }
+        return unit();
+    }
+
+    @Contract
+    private void sendKeepaliveTo(NodeId peerId, Message.Wired keepalive, QuicPeerConnection connection) {
+        var _ = writeToStream(peerId, keepalive, connection);
     }
 
     @Override
@@ -559,73 +632,69 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // Reasoning: EVICTED is the transient live-peer flap state. A peer whose QUIC link
         // momentarily drops (heartbeat-loop reconnect, brief partition) re-attaches via
         // `attach`, which returns RECONNECTED (EVICTED → CONNECTED), preserves the offline
-        // buffer, and routes ConnectionEstablished upstream → SWIM markAlive — without firing
-        // a spurious duplicate ADD. Terminal removal of a *confirmed-dead* peer is a separate
-        // concern handled by `departurePermanent` (the leader's co-confirmed-death verdict /
+        // buffer, and routes ConnectionEstablished upstream — without firing a spurious
+        // duplicate ADD. Terminal removal of a *confirmed-dead* peer is a separate concern
+        // handled by `departurePermanent` (the leader's co-confirmed-death verdict /
         // DECOMMISSIONED / SWIM DepartedObserved), which drives the peer to REMOVED. Because
         // restart is disabled cluster-wide, a same-NodeId never returns; the only paths from
         // EVICTED to REMOVED are `departurePermanent` and shutdown — `disconnect` itself never
         // makes the transition terminal.
         //
-        // REMOVE-emission idempotency: five independent producers (SWIM departure, health
-        // reconciler, topology pruning, etc.) can call `disconnect` for the same peer in a
-        // tight window. We must emit `processViewChange(REMOVE)` only when THIS call actually
-        // changed state, otherwise a single departure floods ReachabilityAggregator/SWIM with
-        // dozens of spurious PeerDisconnected observations. `evict()` returns Some only on a
-        // real CONNECTED → EVICTED transition (Empty = already EVICTED/REMOVED no-op). A null
-        // peer is treated as a first-time authoritative departure and still emits — SWIM may
+        // REMOVE-emission idempotency is STRUCTURAL (Wave 5): five independent producers
+        // (SWIM departure, health reconciler, topology pruning, etc.) can call `disconnect`
+        // for the same peer in a tight window, but the REMOVE emission rides the CONNECTED →
+        // EVICTED transition itself (PeerState chokepoint → `emitPeerTransition`), and only
+        // the FIRST call transitions — repeats are no-ops with no transition record, so a
+        // single departure cannot flood ReachabilityAggregator/SWIM with duplicate
+        // PeerDisconnected observations. A null peer is treated as a first-time authoritative
+        // departure and emits AT THE SITE (there is no PeerState to transition) — SWIM may
         // confirm a peer gone before we ever held a live QUIC link, and topology projection
         // must still prune it (see `disconnect_unknownPeer_propagatesListenerForTopologyRemoval`).
-        var emitRemove = peer == null;
-        if (peer != null) {
-            var evicted = peer.evict(System.nanoTime());
-            evicted.onPresent(this::closeDroppedConnection);
-            // Only a real transition fires the connection-closed metric.
-            evicted.onPresent(_ -> quicMetrics.onConnectionClosed());
-            emitRemove = evicted.isPresent();
+        if (peer == null) {
+            processViewChange(REMOVE, nodeId);
+            return;
         }
-        if (!emitRemove) {
+        var evicted = peer.evict(System.nanoTime());
+        if (evicted.isEmpty()) {
             log.debug("DisconnectNode for {} suppressed: peer already EVICTED/REMOVED (no transition)", nodeId);
             return;
         }
+        evicted.onPresent(this::closeDroppedConnection);
+        // Only a real transition fires the connection-closed metric.
+        quicMetrics.onConnectionClosed();
         // Drop the per-peer ephemeral UDP socket; client opens a fresh one on reconnect.
         var clientRef = client;
         if (clientRef != null) {
             clientRef.closeDatagramChannel(nodeId);
         }
         resetReconnectBackoff(nodeId);
-        processViewChange(REMOVE, nodeId);
     }
 
     @Override
-    @SuppressWarnings("JBCT-PAT-01") // Peer removal + channel close + view change
+    @SuppressWarnings("JBCT-PAT-01") // Peer removal + channel close
     public void departurePermanent(NodeId nodeId) {
         var peer = peers.get(nodeId);
         firstObservedMissingMs.remove(nodeId);
-        // `authoritativeRemove()` always transitions to REMOVED, so it cannot self-report
-        // whether the peer was already terminal. Read the phase before the call: emit REMOVE
-        // only when the peer existed AND was not already REMOVED. This makes repeated
-        // departurePermanent() calls for the same peer idempotent at the emission source,
-        // preventing the duplicate PeerDisconnected flood into ReachabilityAggregator/SWIM.
-        var emitRemove = peer != null && peer.phase() != PeerState.Phase.REMOVED;
-        if (peer != null) {
-            // Keep the REMOVED-phase PeerState RESIDENT in `peers` (no `peers.remove`): a
-            // reconciler tick with this id still present in `topologyManager.topology()` would
-            // otherwise `getOrCreatePeer` a fresh INIT state and re-dial the corpse. Resident
-            // REMOVED makes `considerPeerForReconcile`'s REMOVED-skip and `beginConnecting`→false
-            // fire, so no re-dial path can revive a confirmed-dead NodeId (restart disabled).
-            peer.authoritativeRemove(System.nanoTime())
-                .onPresent(this::closeDroppedConnection);
-        }
-        if (!emitRemove) {
-            log.debug("departurePermanent for {} suppressed: peer absent or already REMOVED (no transition)", nodeId);
+        if (peer == null) {
+            log.debug("departurePermanent for {} suppressed: peer absent (no transition)", nodeId);
             return;
         }
+        // Keep the REMOVED-phase PeerState RESIDENT in `peers` (no `peers.remove`): a
+        // reconciler tick with this id still present in `topologyManager.topology()` would
+        // otherwise `getOrCreatePeer` a fresh INIT state and re-dial the corpse. Resident
+        // REMOVED makes `considerPeerForReconcile`'s REMOVED-skip and `beginConnecting`→false
+        // fire, so no re-dial path can revive a confirmed-dead NodeId (restart disabled).
+        //
+        // Emission idempotency is STRUCTURAL (Wave 5): `authoritativeRemove` records a
+        // transition (→ the single REMOVE emission via the PeerState chokepoint) only on the
+        // first call; a repeated departurePermanent() finds the peer already REMOVED and
+        // records nothing — no duplicate PeerDisconnected flood, no REMOVED→REMOVED journal noise.
+        peer.authoritativeRemove(System.nanoTime())
+            .onPresent(this::closeDroppedConnection);
         var clientRef = client;
         if (clientRef != null) {
             clientRef.closeDatagramChannel(nodeId);
         }
-        processViewChange(REMOVE, nodeId);
     }
 
     private void closeDroppedConnection(QuicPeerConnection connection) {
@@ -785,13 +854,19 @@ public class QuicClusterNetwork implements ClusterNetwork {
             // nor replies to ClusterSync pings nor participates in consensus.
             return;
         }
-        // Liveness clock refresh: this is the SINGLE inbound funnel for ALL lanes (SWIM probes,
-        // ClusterSync pongs, consensus). Refreshing here (AFTER the blackhole early-return so a
-        // silently-dropping link is never refreshed) feeds the CONNECTED-zombie TTL sweep without
-        // adding a new stream/lane.
+        // Liveness clock refresh: this is the SINGLE inbound funnel for ALL lanes (transport
+        // keepalives, ClusterSync pongs, consensus) and the ONLY refresher of the per-peer
+        // receipt-evidence clock (Wave 5 — attach never refreshes it). Refreshing here (AFTER
+        // the blackhole early-return so a silently-dropping link is never refreshed) feeds the
+        // CONNECTED-zombie TTL sweep without adding a new stream/lane.
         var peer = peers.get(sender);
         if (peer != null) {
             peer.markInbound(System.nanoTime());
+        }
+        if (message instanceof NetworkMessage.KeepAlive) {
+            // Transport-internal liveness beacon: its entire purpose was the markInbound above.
+            // Never routed, never counted as an application message.
+            return;
         }
         quicMetrics.onMessageReceived();
         if (message instanceof Message.Wired wired) {
@@ -804,11 +879,61 @@ public class QuicClusterNetwork implements ClusterNetwork {
     // --- Internal: peer state lookup ---
 
     private PeerState getOrCreatePeer(NodeId peerId) {
-        // The transition listener is read through the volatile field at EACH invocation, so
-        // wiring installed after a PeerState was created still observes its transitions.
+        // Every PeerState transition flows through `onPeerTransition` — the single chokepoint
+        // feeding the Wave-1 journal AND the Wave-5 typed transport emission. The journal
+        // listener is read through the volatile field at EACH invocation, so wiring installed
+        // after a PeerState was created still observes its transitions.
         return peers.computeIfAbsent(peerId, id -> PeerState.peerState(id,
                                                                        System.nanoTime(),
-                                                                       record -> peerTransitionListener.accept(record)));
+                                                                       this::onPeerTransition));
+    }
+
+    /// THE single per-transition chokepoint (Wave 5, invariant A3): every [PeerState] phase
+    /// mutation delivers exactly one [PeerTransitionRecord] here — journal first, typed
+    /// emission second. Invoked OUTSIDE the per-peer monitor (PeerState flushes its queued
+    /// records after releasing it), so the emission may route messages without forming a
+    /// cross-peer lock chain.
+    @SuppressWarnings("JBCT-PAT-01") // Sequential journal feed + emission
+    private void onPeerTransition(PeerTransitionRecord record) {
+        peerTransitionListener.accept(record);
+        emitPeerTransition(record);
+    }
+
+    /// Map one [PeerState] transition onto exactly one typed transport emission (Wave 5 —
+    /// `processViewChange` becomes a pure projection of PeerState transitions; the six
+    /// scattered per-site emissions with per-site suppression flags collapse here):
+    ///
+    ///   - `attach-accepted`                 → ADD (fresh `PeerJoined`)
+    ///   - `attach-reconnected` / `attach-supersede` / `attach-stale-replace`
+    ///                                       → RECONNECT (`PeerReconnected`, no duplicate ADD)
+    ///   - `evict` (CONNECTED → EVICTED, from disconnect / write-path / close-listener / sweep)
+    ///                                       → REMOVE (`PeerDisconnected`) — previously the
+    ///                                         write-path/close-listener/sweep evictions were
+    ///                                         SILENT upstream (audit C2)
+    ///   - `authoritative-remove`            → REMOVE (idempotent: PeerState records no
+    ///                                         REMOVED→REMOVED transition, so no duplicate)
+    ///   - `begin-connecting` / `evict-stale-connecting` / `readmit`
+    ///                                       → journal-only (mechanical dial state; the
+    ///                                         dial-failure's typed event is the richer
+    ///                                         `ConnectionFailed` routed at the failure site)
+    ///
+    /// Suppressed while not running: `stop()` flips `isRunning` before tearing every peer down
+    /// via `authoritativeRemove`, and emits the single SHUTDOWN view-change itself — without
+    /// the gate, shutdown would flood N spurious REMOVEs. Records still reach the journal.
+    @SuppressWarnings("JBCT-PAT-01") // Transition → emission mapping
+    private void emitPeerTransition(PeerTransitionRecord record) {
+        if (!isRunning.get()) {
+            return;
+        }
+        switch (record.cause()) {
+            case PeerState.CAUSE_ATTACH_ACCEPTED -> processViewChange(ADD, record.peerId());
+            case PeerState.CAUSE_ATTACH_RECONNECTED,
+                 PeerState.CAUSE_ATTACH_SUPERSEDE,
+                 PeerState.CAUSE_ATTACH_STALE_REPLACE -> processViewChange(RECONNECT, record.peerId());
+            case PeerState.CAUSE_EVICT,
+                 PeerState.CAUSE_AUTHORITATIVE_REMOVE -> processViewChange(REMOVE, record.peerId());
+            default -> { /* journal-only transition */ }
+        }
     }
 
     // --- Internal: peer connection lifecycle ---
@@ -865,15 +990,48 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return;
         }
         var address = new InetSocketAddress(inetAddress, port);
-        // Per-dial timeout escape hatch (root cause): a `client.connect(...)` that hangs with no
-        // success/failure callback would otherwise pin the peer in CONNECTING forever. Arm a
-        // timeout sized at `helloTimeout * CONNECTING_STALENESS_HELLO_TIMEOUT_FACTOR` so a hung
-        // dial deterministically fails and routes to `onConnectFailed` (which flips
-        // CONNECTING → EVICTED), instead of relying solely on the reconciler staleness sweep.
+        // Per-ATTEMPT dial timeout (H10, Wave 5): the timeout must NOT fail the dial promise —
+        // `Promise.timeout` would race the Netty completion callbacks and DISCARD a late
+        // handshake success (the established connection was orphaned, never attached, never
+        // closed). Instead a side timer ([#armDialAttemptTimeout]) evicts a still-CONNECTING
+        // peer after the window so the reconciler re-dials, while the original promise stays
+        // pending: a LATE completion still runs `onDialCompleted` and attaches normally (the
+        // close-listener + zombie-TTL sweep own a genuinely dead late connection; a late attach
+        // never refreshes the receipt-evidence liveness clock — it only restarts the attach-grace
+        // phase age, see PeerState#markInbound).
         client.connect(peerId, address)
-              .timeout(connectTimeout())
               .onSuccess(conn -> onDialCompleted(peer, conn))
               .onFailure(cause -> onConnectFailed(peer, cause));
+        armDialAttemptTimeout(peer);
+    }
+
+    /// Arm the per-attempt dial timeout: a one-shot timer at 1.1× [#connectTimeout] (the margin
+    /// guarantees the CONNECTING phase age has exceeded the staleness window when the timer
+    /// fires, so [#evictStaleConnecting]'s window check passes for THIS attempt but never evicts
+    /// a NEWER in-flight dial). Fire-and-forget: the timer no-ops when the dial already
+    /// completed (phase left CONNECTING).
+    @Contract
+    private void armDialAttemptTimeout(NodeInfo peer) {
+        var deadline = TimeSpan.timeSpan(connectTimeout().nanos() * 11L / 10L).nanos();
+        var _ = SharedScheduler.schedule(() -> onDialAttemptTimeout(peer), deadline);
+    }
+
+    /// Per-attempt dial-timeout expiry: if the peer is STILL CONNECTING (the dial neither
+    /// completed nor failed within the window), force CONNECTING → EVICTED so the reconciler
+    /// re-dials, and route the typed dial-failure event — WITHOUT failing the dial promise,
+    /// so a late completion still attaches (H10).
+    @SuppressWarnings("JBCT-PAT-01") // Guard + evict + failure routing
+    private void onDialAttemptTimeout(NodeInfo peer) {
+        var state = peers.get(peer.id());
+        if (state == null || state.phase() != PeerState.Phase.CONNECTING) {
+            return;
+        }
+        if (!evictStaleConnecting(peer.id(), state)) {
+            return;
+        }
+        router.route(new NetworkServiceMessage.ConnectionFailed(
+            peer.id(), ConnectionError.networkError(peer.address().asString(),
+                                                    "per-attempt dial timeout (a late completion may still attach)")));
     }
 
     /// Dial-success continuation. Journals the Wave-1 §6.1 dialer expected-vs-actual identity
@@ -985,6 +1143,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
             }
         }
 
+        // The attach transition IS the emission (Wave 5): ACCEPTED routed processViewChange(ADD)
+        // and RECONNECTED routed processViewChange(RECONNECT) from the PeerState chokepoint
+        // before attach() returned. Only post-attach bookkeeping remains here.
         var outcome = state.attach(connection, System.nanoTime());
         // Adopt-newer: a still-active but aged incumbent was displaced by this fresh handshake.
         // Close the displaced OLD link through the same path evictStaleConnection uses.
@@ -1035,14 +1196,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
 
         // R5 (spec §4.1): transport never mutates the topology projection. The Hello
-        // handshake is reported upward via processViewChange → peerStateListener →
-        // SWIM `recordTransportHint` (PeerReachable). HealthReconciler (sole writer of
-        // NodeLifecycleKey) projects the resulting MembershipView for Layer 3.
+        // handshake was reported upward via the attach-transition emission
+        // (processViewChange(ADD) → peerStateListener → SWIM hint path) inside
+        // `state.attach(...)` above. HealthReconciler (sole writer of NodeLifecycleKey)
+        // projects the resulting MembershipView for Layer 3.
         // P1 fix: forward `unknownNodeInfo` so SWIM can learn the peer's full identity
         // (id + address) without falling back to a stale static-topology lookup. This
         // closes the QUIC eviction storm under topology-forgot-peer reconnects.
         router.route(new NetworkServiceMessage.ConnectionEstablished(peerId, unknownNodeInfo));
-        processViewChange(ADD, peerId);
 
         // Initiate topology discovery only for unknown nodes
         unknownNodeInfo.onPresent(_ -> router.route(new NetworkServiceMessage.Send(
@@ -1056,7 +1217,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return Option.some(NodeInfo.nodeInfo(peerId, peerAddress, peerRole, peerLabels));
     }
 
-    /// Finalize a RECONNECTED attach. Suppresses the duplicate ADD view-change.
+    /// Finalize a RECONNECTED attach. The RECONNECT view-change (duplicate-ADD suppression)
+    /// already rode the attach transition through the PeerState chokepoint (Wave 5); this
+    /// method only routes the `ConnectionEstablished` service message.
     /// R5 (spec §4.1): transport never mutates topology — the resilient peer-state
     /// machinery (`PeerState`) is the only memory of the peer at the QUIC layer; any
     /// recovered view of the peer is projected into Layer 3 via SWIM hints.
@@ -1071,7 +1234,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // so downstream SWIM (AetherNode handler) can learn the peer's full identity
         // even after topology forgot the peer (CTM scale-down/replace path).
         router.route(new NetworkServiceMessage.ConnectionEstablished(peerId, unknownNodeInfo));
-        processViewChange(RECONNECT, peerId);
         log.debug("Node {} reconnected via QUIC Hello handshake (suppressed duplicate ADD), unknownNodeInfo={}",
                   peerId, unknownNodeInfo);
     }
@@ -1130,11 +1292,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// types in isolation. Each connected peer encodes independently (the message rides a
     /// per-peer stream); the prior serialize-once-across-peers reuse is intentionally dropped
     /// in favour of one serialization site and a message-typed offline buffer.
-    /// A peer the FSM has evicted (absent from `broadcastMembership`) is
-    /// skipped even while a stale CONNECTED QUIC link to it lingers — this is the #68 storm fix:
-    /// consensus never re-targets a dead ULID, so `Retry N/200 @25ms` against it cannot start.
-    /// When the supplier yields `Option.none()` (default / unwired), no filtering is applied and
-    /// every connected peer is a target, preserving the prior behaviour for consensus-only fixtures.
+    /// A peer the membership view excludes (FSM-evicted, or absent from the SWIM-fed
+    /// authoritative membership pre-FSM-wiring) is skipped even while a stale CONNECTED QUIC
+    /// link to it lingers — this is the #68 storm fix: consensus never re-targets a dead ULID,
+    /// so `Retry N/200 @25ms` against it cannot start. The filter is mandatory; there is no
+    /// unfiltered path (see [#broadcastMembership]).
     @SuppressWarnings("JBCT-PAT-01") // Iterate eligible peers, dispatch
     private void broadcastPayload(Message.Wired message, boolean skipPassive) {
         var membershipView = broadcastMembership.get();
@@ -1147,16 +1309,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// Broadcast-eligibility decision for a single peer. A peer is eligible unless it is a
-    /// skipped passive peer, or — when a membership view is present — it is absent
-    /// from that view. The view is the membership AUTHORITY: an evicted-but-still-CONNECTED peer
-    /// (present in the `peers` cache, absent from the view) is NOT eligible, which is the #68
-    /// storm fix. An empty view (`Option.none()`, default / unwired supplier) means "no filter /
-    /// all peers".
-    private static boolean isBroadcastEligible(PeerState state, Option<Set<NodeId>> membershipView, boolean skipPassive) {
+    /// skipped passive peer or it is absent from the membership view. The view is the
+    /// membership AUTHORITY: an evicted-but-still-CONNECTED peer (present in the `peers`
+    /// cache, absent from the view) is NOT eligible — the #68 storm fix.
+    private static boolean isBroadcastEligible(PeerState state, Set<NodeId> membershipView, boolean skipPassive) {
         if (skipPassive && state.isPassive()) {
             return false;
         }
-        return membershipView.map(view -> view.contains(state.peerId())).or(true);
+        return membershipView.contains(state.peerId());
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Outcome dispatch with metrics + write
@@ -1465,8 +1625,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// whose link has received NO inbound frame on ANY lane for longer than the liveness TTL
     /// (`pingInterval * LIVENESS_TTL_PING_INTERVAL_FACTOR`). This catches the partition-orphaned /
     /// blackholed link where the channel never learns its peer died (QUIC MAX_IDLE_TIMEOUT disabled).
-    /// The TTL relies on the SWIM probe cadence — SWIM guarantees cross-link probe traffic at
-    /// `pingInterval`, so a quiet-but-healthy link refreshes its inbound clock long before the TTL.
+    /// The TTL relies on the transport's own CONTROL-lane keepalive cadence ([#sendKeepalivesUnsafe],
+    /// every `pingInterval`) — a quiet-but-healthy link refreshes its receipt clock long before the
+    /// TTL, so healthy idle links STAY CONNECTED (no background evict/re-dial cycle).
     @SuppressWarnings("JBCT-PAT-01") // Liveness sweep: iterate peers, evict inactive CONNECTED links
     private void sweepStaleConnectedLinks() {
         peers.forEach(this::sweepPeer);
@@ -1478,14 +1639,26 @@ public class QuicClusterNetwork implements ClusterNetwork {
              .onPresent(conn -> evictInactiveLink(peerId, conn));
     }
 
-    /// A CONNECTED link is a zombie when its channel is no longer active OR it has been silent
-    /// (no inbound frame on any lane) past the liveness TTL despite `isActive()` reporting true.
+    /// A CONNECTED link is a zombie when its channel is no longer active OR it is silent past
+    /// the liveness TTL despite `isActive()` reporting true. "Silent" is receipt-evidence-based
+    /// (Wave 5): the inbound clock is refreshed ONLY by actual inbound frames ([PeerState#markInbound]),
+    /// never by our own dial success — so the sweep measures time-since-receipt, not
+    /// time-since-attach. The phase age supplies the attach grace: a freshly-attached link
+    /// (including a LATE attach after the per-attempt dial timeout) gets exactly one TTL window
+    /// to produce its first inbound frame (the keepalive arrives within ~`pingInterval` on a
+    /// healthy link) before it can be evicted.
     private boolean isZombieLink(PeerState state, QuicPeerConnection conn) {
-        return !conn.isActive() || state.inboundAgeNanos(System.nanoTime()) > livenessTtlNanos();
+        return !conn.isActive() || isSilentPastTtl(state);
+    }
+
+    private boolean isSilentPastTtl(PeerState state) {
+        var now = System.nanoTime();
+        var ttl = livenessTtlNanos();
+        return state.inboundAgeNanos(now) > ttl && state.phaseAgeNanos(now) > ttl;
     }
 
     /// Liveness TTL in nanos: `pingInterval * LIVENESS_TTL_PING_INTERVAL_FACTOR`. See the field doc
-    /// for the SWIM-cadence dependency.
+    /// for the transport-keepalive-cadence dependency.
     private long livenessTtlNanos() {
         return topologyManager.pingInterval().nanos() * LIVENESS_TTL_PING_INTERVAL_FACTOR;
     }
@@ -1757,11 +1930,21 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// handshake. Used only by transport-level tests that need a CONNECTED/EVICTED peer to
     /// exercise the REMOVE-emission idempotency paths in `disconnect`/`departurePermanent`
     /// without standing up a live datagram channel. The caller drives the supplied state to
-    /// the desired phase (via `attach`/`evict`) before injection.
+    /// the desired phase (via `attach`/`evict`) BEFORE injection (setup transitions stay on
+    /// the no-op listener); seeding rewires the state onto the live journal+emission
+    /// chokepoint so subsequent transitions emit exactly like handshake-created peers.
     @Contract
     PeerState seedPeerForTests(NodeId peerId, PeerState peerState) {
+        peerState.replaceTransitionListener(this::onPeerTransition);
         peers.put(peerId, peerState);
         return peerState;
+    }
+
+    /// Package-private test seam — nanoseconds since the last inbound frame for a peer, or empty
+    /// when no PeerState exists. Lets keepalive tests assert the receipt clock is refreshed by
+    /// real end-to-end keepalive traffic.
+    Option<Long> peerInboundAgeForTests(NodeId peerId) {
+        return Option.option(peers.get(peerId)).map(state -> state.inboundAgeNanos(System.nanoTime()));
     }
 
     /// Package-private test seam — registers the event-driven QUIC close listener on a seeded
@@ -1773,9 +1956,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// Test hook: the set of peer NodeIds a `broadcast(skipPassive)` would actually target,
-    /// after applying the same passive-skip + membership-view filter as `broadcastPayload`.
-    /// Lets transport-level tests assert the #68 fix (an evicted-but-cached peer absent from the
-    /// membership view is never targeted) without standing up live QUIC datagram channels.
+    /// after applying the same passive-skip + mandatory membership-view filter as
+    /// `broadcastPayload`. Lets transport-level tests assert the #68 fix (an evicted-but-cached
+    /// peer absent from the membership view is never targeted) without standing up live QUIC
+    /// datagram channels.
     Set<NodeId> broadcastTargetsForTests(boolean skipPassive) {
         var membershipView = broadcastMembership.get();
         return peers.values()

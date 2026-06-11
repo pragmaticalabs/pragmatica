@@ -19,6 +19,7 @@ import org.pragmatica.consensus.net.quic.PeerState.Phase;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.StreamType;
 
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -375,27 +376,36 @@ class PeerStateTest {
     }
 
     @Test
-    void attach_ACCEPTED_sets_lastInboundAtNanos_to_attachTimestamp() {
-        // A fresh accept stamps the liveness clock at attach time — inboundAge at that instant is 0.
+    void attach_ACCEPTED_doesNotRefreshInboundClock() {
+        // Wave 5 receipt-evidence TTL: our OWN dial success is not evidence the peer is sending
+        // to us. attach must leave the inbound clock untouched — only markInbound refreshes it.
         var s = state();
         s.beginConnecting(T0 + 1);
-        s.attach(liveConnection(), T0 + 2);
-        assertThat(s.inboundAgeNanos(T0 + 2)).as("inbound age is zero at attach").isEqualTo(0L);
-        assertThat(s.inboundAgeNanos(T0 + 2 + 500)).isEqualTo(500L);
+        s.markInbound(T0 + 1);
+        s.attach(liveConnection(), T0 + 500);
+        assertThat(s.inboundAgeNanos(T0 + 600))
+            .as("inbound age is still measured from markInbound, not from attach")
+            .isEqualTo(599L);
     }
 
     @Test
-    void attach_RECONNECTED_fromEVICTED_resets_lastInboundAtNanos() {
-        // A reconnect restarts the liveness clock: a stale inbound age accumulated before eviction
-        // must NOT survive the re-attach.
+    void attach_RECONNECTED_fromEVICTED_doesNotRefreshInboundClock() {
+        // A late/re-dial attach (H10 interplay) must NOT refresh the receipt clock either:
+        // the stale inbound age accumulated before eviction survives the re-attach. The sweep's
+        // attach-grace comes from the restarted phase age, never from the receipt clock.
         var s = state();
         s.beginConnecting(T0 + 1);
         s.attach(liveConnection(), T0 + 2);
-        s.evict(T0 + 3);
-        // Re-attach much later — the liveness clock is reset to the new attach timestamp.
+        s.markInbound(T0 + 10);
+        s.evict(T0 + 20);
         var reattachAt = T0 + 1_000_000L;
         s.attach(liveConnection(), reattachAt);
-        assertThat(s.inboundAgeNanos(reattachAt)).as("reconnect resets the liveness clock").isEqualTo(0L);
+        assertThat(s.inboundAgeNanos(reattachAt))
+            .as("re-attach must not reset the receipt-evidence clock")
+            .isEqualTo(reattachAt - (T0 + 10));
+        assertThat(s.phaseAgeNanos(reattachAt))
+            .as("the attach-grace anchor (phase age) restarts at the re-attach")
+            .isEqualTo(0L);
     }
 
     @Test
@@ -403,8 +413,6 @@ class PeerStateTest {
         var s = state();
         s.beginConnecting(T0 + 1);
         s.attach(liveConnection(), T0 + 2);
-        // Age accrues since attach.
-        assertThat(s.inboundAgeNanos(T0 + 2 + 5_000)).isEqualTo(5_000L);
         // A fresh inbound frame resets the age to zero at that instant.
         s.markInbound(T0 + 2 + 5_000);
         assertThat(s.inboundAgeNanos(T0 + 2 + 5_000)).isEqualTo(0L);
@@ -473,5 +481,118 @@ class PeerStateTest {
         s.authoritativeRemove(T0 + 1);
         assertThat(s.evictStaleConnecting(T0 + 2)).isFalse();
         assertThat(s.phase()).isEqualTo(Phase.REMOVED);
+    }
+
+    // --- Wave 5: reconnect provenance (C3 — no duplicate ADD on the re-dial path) ---
+
+    @Test
+    void attach_fromCONNECTING_afterEvictedRedial_returns_RECONNECTED() {
+        // THE #245 in-code loop: CONNECTED → evict → beginConnecting (EVICTED → CONNECTING) →
+        // re-dial completes → attach. Pre-Wave-5 this returned ACCEPTED and re-emitted a
+        // duplicate PeerJoined every ~10s. Provenance (the peer was already announced upstream)
+        // must yield RECONNECTED.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        s.attach(liveConnection(), T0 + 2);
+        s.evict(T0 + 3);
+        s.beginConnecting(T0 + 4);
+        var result = s.attach(liveConnection(), T0 + 5);
+        assertThat(result.result())
+            .as("re-dial attach of an announced peer is a reconnect, not a fresh accept")
+            .isEqualTo(AttachResult.RECONNECTED);
+        assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
+    }
+
+    @Test
+    void attach_fromEVICTED_neverConnected_returns_ACCEPTED() {
+        // A dial that failed/timed out (CONNECTING → EVICTED) on a peer that NEVER reached
+        // CONNECTED: upstream never received an ADD, so the eventual (possibly late, H10)
+        // attach must be ACCEPTED — RECONNECTED would suppress the ADD forever.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        s.evictStaleConnecting(T0 + 2);
+        assertThat(s.phase()).isEqualTo(Phase.EVICTED);
+        var result = s.attach(liveConnection(), T0 + 3);
+        assertThat(result.result())
+            .as("late attach of a never-announced peer is a fresh accept")
+            .isEqualTo(AttachResult.ACCEPTED);
+        assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
+    }
+
+    @Test
+    void attach_afterReadmit_returns_ACCEPTED() {
+        // readmit resets provenance: upstream saw the REMOVE, so the next attach is a fresh ADD.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        s.attach(liveConnection(), T0 + 2);
+        s.authoritativeRemove(T0 + 3);
+        s.readmit(T0 + 4);
+        var result = s.attach(liveConnection(), T0 + 5);
+        assertThat(result.result())
+            .as("attach after readmit is a fresh accept — upstream was told about the REMOVE")
+            .isEqualTo(AttachResult.ACCEPTED);
+    }
+
+    // --- Wave 5: single emission source — exactly one transition record per phase mutation ---
+
+    @Test
+    void everyPhaseTransition_emitsExactlyOneRecord_inMutationOrder() {
+        var records = new CopyOnWriteArrayList<PeerTransitionRecord>();
+        var s = PeerState.peerState(PEER, T0, records::add);
+
+        s.beginConnecting(T0 + 1);                  // INIT -> CONNECTING
+        s.attach(liveConnection(), T0 + 2);         // CONNECTING -> CONNECTED (accepted)
+        s.evict(T0 + 3);                            // CONNECTED -> EVICTED
+        s.beginConnecting(T0 + 4);                  // EVICTED -> CONNECTING
+        s.attach(liveConnection(), T0 + 5);         // CONNECTING -> CONNECTED (reconnected)
+        s.authoritativeRemove(T0 + 6);              // CONNECTED -> REMOVED
+        s.readmit(T0 + 7);                          // REMOVED -> INIT
+
+        assertThat(records).hasSize(7);
+        assertThat(records.stream().map(PeerTransitionRecord::cause).toList())
+            .containsExactly("begin-connecting",
+                             "attach-accepted",
+                             "evict",
+                             "begin-connecting",
+                             "attach-reconnected",
+                             "authoritative-remove",
+                             "readmit");
+    }
+
+    @Test
+    void noopMutations_emitNoRecords() {
+        var records = new CopyOnWriteArrayList<PeerTransitionRecord>();
+        var s = PeerState.peerState(PEER, T0, records::add);
+
+        s.beginConnecting(T0 + 1);
+        records.clear();
+
+        // All of these are no-ops from CONNECTING and must record nothing.
+        s.beginConnecting(T0 + 2);
+        s.evict(T0 + 3);
+        s.readmit(T0 + 4);
+
+        assertThat(records).as("no-op mutations must not produce transition records").isEmpty();
+    }
+
+    @Test
+    void repeatedAuthoritativeRemove_recordsSingleTransition_noRemovedToRemovedDuplicate() {
+        // The Wave-1 journal caught duplicate `authoritative-remove` (REMOVED -> REMOVED)
+        // entries — the live specimen of the scattered-emission disease. The chokepoint must
+        // dedup: a repeated remove is a pure no-op with NO record.
+        var records = new CopyOnWriteArrayList<PeerTransitionRecord>();
+        var s = PeerState.peerState(PEER, T0, records::add);
+        s.beginConnecting(T0 + 1);
+        s.attach(liveConnection(), T0 + 2);
+        records.clear();
+
+        assertThat(s.authoritativeRemove(T0 + 3).isPresent()).isTrue();
+        assertThat(s.authoritativeRemove(T0 + 4).isEmpty()).isTrue();
+        assertThat(s.authoritativeRemove(T0 + 5).isEmpty()).isTrue();
+
+        assertThat(records).hasSize(1);
+        assertThat(records.getFirst().from()).isEqualTo(Phase.CONNECTED);
+        assertThat(records.getFirst().to()).isEqualTo(Phase.REMOVED);
+        assertThat(records.getFirst().cause()).isEqualTo("authoritative-remove");
     }
 }

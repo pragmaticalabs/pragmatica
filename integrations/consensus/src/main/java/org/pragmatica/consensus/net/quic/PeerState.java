@@ -55,11 +55,35 @@ import static org.pragmatica.lang.Unit.unit;
 ///     Returns false when in REMOVED (caller closes the new connection) or when a live CONNECTED
 ///     link already exists (duplicate — caller closes the new connection).
 ///   - `evict()` — CONNECTED → EVICTED. Offline buffer preserved for reconnect drain.
-///   - `authoritativeRemove()` — any → REMOVED. Clears buffer and connection unconditionally. Terminal:
-///     `attach` from REMOVED returns REJECTED and `beginConnecting` from REMOVED returns false, so a
-///     same-NodeId peer never re-enters the live phases. Driven by `departurePermanent` (the leader's
-///     co-confirmed-death verdict / DECOMMISSIONED / SWIM `DepartedObserved`) and shutdown. EVICTED is
-///     reached on REMOVED only through this path — there is no TTL-based EVICTED → REMOVED expiry.
+///   - `authoritativeRemove()` — any non-REMOVED → REMOVED. Clears buffer and connection unconditionally.
+///     Terminal AND idempotent at the transition level: a repeated call on an already-REMOVED peer is a
+///     pure no-op that records NO transition (Wave 5 — the duplicate `authoritative-remove`
+///     REMOVED→REMOVED journal entries are structurally impossible). `attach` from REMOVED returns
+///     REJECTED and `beginConnecting` from REMOVED returns false, so a same-NodeId peer never re-enters
+///     the live phases. Driven by `departurePermanent` (the leader's co-confirmed-death verdict /
+///     DECOMMISSIONED / SWIM `DepartedObserved`) and shutdown. EVICTED is reached on REMOVED only
+///     through this path — there is no TTL-based EVICTED → REMOVED expiry.
+///
+/// ## Single emission source (Wave 5)
+///
+/// Every phase mutation produces EXACTLY ONE [PeerTransitionRecord] delivered to the
+/// transition listener. The listener is the single chokepoint feeding BOTH the Wave-1
+/// transition journal AND the typed transport emissions (`QuicClusterNetwork.emitPeerTransition`
+/// maps connected-set transitions onto `processViewChange`). Records are queued under the
+/// per-peer monitor and **flushed outside it** (mutation order preserved by the queue), so a
+/// listener that routes messages — and may re-enter this or another peer's monitor — can never
+/// form a cross-peer lock chain.
+///
+/// ## Reconnect provenance (Wave 5, C3)
+///
+/// `announcedUpstream` tracks whether upstream consumers have ever been told about this peer
+/// (it reached CONNECTED at least once since creation or the last `readmit`). `attach` yields
+/// RECONNECTED — suppressing the duplicate `PeerJoined` — for ANY re-attach of an announced peer,
+/// including the previously-leaky EVICTED → `beginConnecting` → CONNECTING → attach re-dial path
+/// (which used to return ACCEPTED and re-emit ADD: the #245 in-code loop). Conversely, a peer
+/// that was evicted out of CONNECTING (dial failure / per-attempt timeout) without ever connecting
+/// yields ACCEPTED on its eventual attach, so upstream receives the ADD it never got. `readmit`
+/// resets the flag: upstream saw the REMOVE, so the next attach is a fresh ADD.
 ///
 /// ## Offline buffer
 ///
@@ -71,6 +95,19 @@ import static org.pragmatica.lang.Unit.unit;
 /// Drained by [drainOfflineBuffer] right after `attach` completes. Cleared by `authoritativeRemove`.
 public final class PeerState {
     public static final int OFFLINE_BUFFER_MAX = 10_000;
+
+    /// Transition-record cause constants. Stable machine-readable identifiers consumed by the
+    /// Wave-1 journal AND matched by `QuicClusterNetwork.emitPeerTransition` to map each
+    /// transition onto exactly one typed transport emission.
+    static final String CAUSE_BEGIN_CONNECTING = "begin-connecting";
+    static final String CAUSE_ATTACH_ACCEPTED = "attach-accepted";
+    static final String CAUSE_ATTACH_RECONNECTED = "attach-reconnected";
+    static final String CAUSE_ATTACH_SUPERSEDE = "attach-supersede";
+    static final String CAUSE_ATTACH_STALE_REPLACE = "attach-stale-replace";
+    static final String CAUSE_EVICT = "evict";
+    static final String CAUSE_EVICT_STALE_CONNECTING = "evict-stale-connecting";
+    static final String CAUSE_AUTHORITATIVE_REMOVE = "authoritative-remove";
+    static final String CAUSE_READMIT = "readmit";
 
     /// Minimum age of a still-`isActive()` CONNECTED incumbent before a fresh inbound handshake
     /// is allowed to supersede it (adopt-newer). 3s comfortably separates a sub-millisecond
@@ -99,14 +136,16 @@ public final class PeerState {
     }
 
     public enum AttachResult {
-        /// First-time connection accepted; peer transitioned INIT/CONNECTING → CONNECTED.
-        /// Caller should drain the offline buffer and emit a fresh `nodeAdded` view-change.
+        /// First-time connection accepted; the peer was never announced upstream (or was
+        /// readmitted after a REMOVE), so the caller's transition emission carries a fresh
+        /// `nodeAdded` view-change. Caller should drain the offline buffer.
         ACCEPTED,
-        /// Reconnection accepted; peer transitioned EVICTED → CONNECTED, OR replaced a stale
-        /// (already-dead) CONNECTED link with a fresh one, OR superseded a still-`isActive()` but
-        /// aged incumbent with a fresh handshake. The peer is already known to upstream
-        /// consumers — caller should drain the offline buffer but MUST NOT emit a duplicate
-        /// `nodeAdded` view-change. Closes the flap-loop where eviction-then-handshake fires
+        /// Reconnection accepted for a peer upstream already knows about (it was CONNECTED at
+        /// least once since creation / the last readmit): EVICTED → CONNECTED, the re-dial
+        /// CONNECTING → CONNECTED after an eviction, a stale (already-dead) CONNECTED link
+        /// replacement, or an adopt-newer supersede of an aged incumbent. The caller MUST NOT
+        /// emit a duplicate `nodeAdded` view-change — the transition emission maps this to
+        /// RECONNECT. Closes the flap-loop where eviction-then-handshake fires
         /// `processViewChange(ADD)` against a peer that never left the topology. When the result
         /// arrives via [AttachOutcome], its `superseded` may carry an OLD connection the caller
         /// must close.
@@ -124,26 +163,35 @@ public final class PeerState {
     public record AttachOutcome(AttachResult result, Option<QuicPeerConnection> superseded) {}
 
     private final NodeId peerId;
-    /// Wave-1 transition journal feed (Enrichment A): invoked with a [PeerTransitionRecord] on
-    /// EVERY phase mutation (and on the CONNECTED→CONNECTED connection-replacement events in
-    /// [#attachOverConnected], where the phase value does not change but the link does). Pure
-    /// diagnostic — the default no-op makes journaling opt-in at wiring time and the invocation
-    /// has no control-flow effect. Called while holding the per-peer monitor; implementations
-    /// must be cheap and non-blocking (the journal ring-buffer append is).
-    private final Consumer<PeerTransitionRecord> transitionListener;
+    /// Wave-1/Wave-5 transition chokepoint: invoked with one [PeerTransitionRecord] per phase
+    /// mutation (and per CONNECTED→CONNECTED connection-replacement in [#attachOverConnected]).
+    /// Invoked OUTSIDE the per-peer monitor (records queue under the monitor, flush after it is
+    /// released, in mutation order), so implementations may journal AND route typed transport
+    /// emissions without risking a cross-peer lock chain. Mutable (volatile) so
+    /// `QuicClusterNetwork.seedPeerForTests` can rewire test-built states onto the live chokepoint.
+    private volatile Consumer<PeerTransitionRecord> transitionListener;
+    /// Records produced under the monitor, awaiting the out-of-monitor flush. Guarded by `this`.
+    private final Deque<PeerTransitionRecord> pendingTransitions = new ArrayDeque<>();
     private Phase phase = Phase.INIT;
     private QuicPeerConnection connection;
     private long phaseChangedAtNanos;
     private boolean passive;
+    /// Wave-5 reconnect provenance: true once the peer has reached CONNECTED (upstream has been
+    /// told about it via ADD/RECONNECT); reset by [#readmit] (upstream saw the REMOVE). Guarded by `this`.
+    private boolean announcedUpstream;
     private final Deque<Message.Wired> offlineBuffer = new ArrayDeque<>();
 
     /// Wall-clock-free (`System.nanoTime`) instant of the most recent inbound frame observed on
-    /// this peer's link, across ALL lanes (SWIM probes, ClusterSync pongs, consensus). Reset to the
-    /// attach timestamp on every ACCEPTED/RECONNECTED (a reconnect restarts the liveness clock) and
-    /// refreshed by [#markInbound] on each inbound frame. Read by the CONNECTED-zombie liveness TTL
-    /// sweep in `QuicClusterNetwork.sweepPeer`: a CONNECTED link whose `isActive()` lies true but
-    /// that has gone silent past the TTL is evicted for re-dial. Blackholed inbound is intentionally
-    /// NOT counted (the chaos substrate keeps the link CONNECTED yet silent), so the sweep still trips.
+    /// this peer's link, across ALL lanes (transport keepalives, ClusterSync pongs, consensus).
+    /// RECEIPT EVIDENCE ONLY (Wave 5): refreshed EXCLUSIVELY by [#markInbound] — the single
+    /// inbound funnel (`QuicClusterNetwork.onMessageReceived`, post-blackhole-guard). A dial
+    /// success / attach (including a LATE attach after the per-attempt dial timeout) never
+    /// refreshes it: our OWN outbound handshake completing is not evidence the peer is sending
+    /// to us. The CONNECTED-zombie liveness TTL sweep (`QuicClusterNetwork.sweepPeer`) pairs this
+    /// receipt clock with the phase age: a link is silent-zombie only when BOTH exceed the TTL,
+    /// so a fresh attach gets exactly one TTL window of grace to produce its first inbound frame.
+    /// Blackholed inbound is intentionally NOT counted (the chaos substrate keeps the link
+    /// CONNECTED yet silent), so the sweep still trips.
     private long lastInboundAtNanos;
 
     /// Wall-clock instant (ms) at which the missing-peer reconciler is next allowed to
@@ -169,12 +217,19 @@ public final class PeerState {
         return new PeerState(peerId, nowNanos, ignored -> {});
     }
 
-    /// Factory with a Wave-1 transition-journal listener. The listener receives a
-    /// [PeerTransitionRecord] on every phase mutation; it must be cheap and non-blocking
-    /// (invoked under the per-peer monitor). Diagnostic-only — no behavioural difference
-    /// from [#peerState(NodeId,long)] beyond the notification.
+    /// Factory with the transition-chokepoint listener (Wave 1 journal + Wave 5 emission).
+    /// The listener receives one [PeerTransitionRecord] per phase mutation, invoked OUTSIDE
+    /// the per-peer monitor in mutation order.
     public static PeerState peerState(NodeId peerId, long nowNanos, Consumer<PeerTransitionRecord> transitionListener) {
         return new PeerState(peerId, nowNanos, transitionListener);
+    }
+
+    /// Rewire the transition listener. Used by `QuicClusterNetwork.seedPeerForTests` so states
+    /// built directly by tests (no-op listener) join the live journal+emission chokepoint once
+    /// seeded into the connection table. Subsequent transitions flow to the new listener;
+    /// transitions performed before the swap are not replayed.
+    void replaceTransitionListener(Consumer<PeerTransitionRecord> listener) {
+        this.transitionListener = listener;
     }
 
     public NodeId peerId() {
@@ -200,32 +255,42 @@ public final class PeerState {
     }
 
     /// Returns nanoseconds since the most recent phase transition.
-    /// Used by the protection window check in `handleDisconnect`.
+    /// Used by the protection window check in `handleDisconnect` and as the attach-grace
+    /// floor of the liveness TTL sweep (a fresh CONNECTED link gets one TTL window to
+    /// produce its first inbound frame before the receipt clock alone can evict it).
     public synchronized long phaseAgeNanos(long nowNanos) {
         return nowNanos - phaseChangedAtNanos;
     }
 
-    /// Record that an inbound frame was just observed on this peer's link (any lane). Refreshes the
-    /// liveness clock read by the CONNECTED-zombie TTL sweep. Called from the single inbound funnel
-    /// (`QuicClusterNetwork.onMessageReceived`) AFTER the blackhole early-return, so a blackholed
-    /// (silently-dropping) link is never refreshed and the sweep can trip.
+    /// Record that an inbound frame was just observed on this peer's link (any lane). The ONLY
+    /// refresher of the receipt-evidence liveness clock (Wave 5). Called from the single inbound
+    /// funnel (`QuicClusterNetwork.onMessageReceived`) AFTER the blackhole early-return, so a
+    /// blackholed (silently-dropping) link is never refreshed and the sweep can trip.
     public synchronized void markInbound(long nowNanos) {
         this.lastInboundAtNanos = nowNanos;
     }
 
     /// Nanoseconds since the most recent inbound frame (= now − lastInboundAtNanos). Used by the
     /// liveness TTL sweep to detect a CONNECTED zombie whose `isActive()` lies true but whose link
-    /// has gone silent past the SWIM-cadence TTL.
+    /// has gone silent past the keepalive-cadence TTL. Before the first [#markInbound] this is
+    /// "age since the nanoTime epoch" — effectively infinite — which is why the sweep pairs it
+    /// with [#phaseAgeNanos] as the attach-grace floor.
     public synchronized long inboundAgeNanos(long nowNanos) {
         return nowNanos - lastInboundAtNanos;
     }
 
     /// Transitions INIT or EVICTED → CONNECTING. Idempotent from CONNECTING/CONNECTED.
     /// Returns true when the caller should initiate the actual dial.
-    public synchronized boolean beginConnecting(long nowNanos) {
+    public boolean beginConnecting(long nowNanos) {
+        var initiate = beginConnectingInternal(nowNanos);
+        flushTransitions();
+        return initiate;
+    }
+
+    private synchronized boolean beginConnectingInternal(long nowNanos) {
         return switch (phase) {
             case INIT, EVICTED -> {
-                changePhase(Phase.CONNECTING, nowNanos, "begin-connecting");
+                changePhase(Phase.CONNECTING, nowNanos, CAUSE_BEGIN_CONNECTING);
                 yield true;
             }
             case CONNECTING, CONNECTED, REMOVED -> false;
@@ -233,29 +298,37 @@ public final class PeerState {
     }
 
     /// Transitions CONNECTING (or INIT/EVICTED — accepted inbound before explicit connect) → CONNECTED.
-    /// Returns ACCEPTED on first-time success, RECONNECTED when transitioning from EVICTED,
-    /// replacing a stale CONNECTED link, or superseding an aged-but-active incumbent (the
-    /// adopt-newer path, whose [AttachOutcome.superseded] carries the displaced OLD connection),
-    /// DUPLICATE if a live, too-young link already exists, REJECTED if REMOVED.
-    public synchronized AttachOutcome attach(QuicPeerConnection newConnection, long nowNanos) {
+    /// Returns ACCEPTED on a first-time success (peer never announced upstream), RECONNECTED when the
+    /// peer was previously CONNECTED (any re-attach path: EVICTED → CONNECTED, the re-dial
+    /// CONNECTING → CONNECTED after an eviction, replacing a stale CONNECTED link, or superseding an
+    /// aged-but-active incumbent — the adopt-newer path, whose [AttachOutcome.superseded] carries the
+    /// displaced OLD connection), DUPLICATE if a live, too-young link already exists, REJECTED if
+    /// REMOVED. Never refreshes the receipt-evidence liveness clock (see [#markInbound]).
+    public AttachOutcome attach(QuicPeerConnection newConnection, long nowNanos) {
+        var outcome = attachInternal(newConnection, nowNanos);
+        flushTransitions();
+        return outcome;
+    }
+
+    private synchronized AttachOutcome attachInternal(QuicPeerConnection newConnection, long nowNanos) {
         return switch (phase) {
             case REMOVED -> new AttachOutcome(AttachResult.REJECTED, Option.empty());
             case CONNECTED -> attachOverConnected(newConnection, nowNanos);
-            case EVICTED -> {
-                // Reconnect after eviction — peer never left topology, suppress duplicate ADD.
-                this.connection = newConnection;
-                this.lastInboundAtNanos = nowNanos;
-                changePhase(Phase.CONNECTED, nowNanos, "attach-reconnected");
-                yield new AttachOutcome(AttachResult.RECONNECTED, Option.empty());
-            }
-            case INIT, CONNECTING -> {
-                // First-time accept (no prior CONNECTED link).
-                this.connection = newConnection;
-                this.lastInboundAtNanos = nowNanos;
-                changePhase(Phase.CONNECTED, nowNanos, "attach-accepted");
-                yield new AttachOutcome(AttachResult.ACCEPTED, Option.empty());
-            }
+            case INIT, CONNECTING, EVICTED -> attachFresh(newConnection, nowNanos);
         };
+    }
+
+    /// Non-CONNECTED attach: bind the connection and decide ACCEPTED vs RECONNECTED by upstream
+    /// provenance, not by the phase the attach arrived in. An announced peer re-attaching from
+    /// EVICTED *or* from a re-dial CONNECTING yields RECONNECTED (no duplicate ADD); a peer that
+    /// was never announced (fresh, or dial-failed before ever connecting, or readmitted) yields
+    /// ACCEPTED so upstream receives its (first) ADD.
+    private AttachOutcome attachFresh(QuicPeerConnection newConnection, long nowNanos) {
+        var reconnect = announcedUpstream;
+        this.connection = newConnection;
+        this.announcedUpstream = true;
+        changePhase(Phase.CONNECTED, nowNanos, reconnect ? CAUSE_ATTACH_RECONNECTED : CAUSE_ATTACH_ACCEPTED);
+        return new AttachOutcome(reconnect ? AttachResult.RECONNECTED : AttachResult.ACCEPTED, Option.empty());
     }
 
     /// CONNECTED-branch of [attach]. An incumbent that is null or reports `!isActive()` is a
@@ -263,11 +336,13 @@ public final class PeerState {
     /// still reports `isActive()` is normally a duplicate — UNLESS it is older than
     /// [SUPERSEDE_MIN_AGE_NANOS], in which case the fresh handshake adopts-newer and the OLD
     /// connection is handed back for the caller to close. Rationale: a completed Hello handshake
-    /// is a current liveness proof, whereas `isActive()` can lie indefinitely on a
-    /// partition-orphaned link (QUIC idle timeout disabled). `ConnectionDirection.shouldInitiate`
-    /// guarantees exactly one dialer per pair, so a fresh inbound handshake means the designated
-    /// dialer detected death and re-dialed — defer to it. The age guard preserves the existing
-    /// protection against a sub-millisecond dual-dial race during formation.
+    /// proves the peer is dialable NOW, whereas `isActive()` can lie indefinitely on a
+    /// partition-orphaned link (QUIC idle timeout disabled) — but it is still OUR outbound
+    /// evidence, so the receipt clock is NOT refreshed; the restarted phase age supplies the
+    /// fresh link's TTL grace. `ConnectionDirection.shouldInitiate` guarantees exactly one
+    /// dialer per pair, so a fresh inbound handshake means the designated dialer detected death
+    /// and re-dialed — defer to it. The age guard preserves the existing protection against a
+    /// sub-millisecond dual-dial race during formation.
     private AttachOutcome attachOverConnected(QuicPeerConnection newConnection, long nowNanos) {
         if (connection != null && connection.isActive()) {
             if (phaseAgeNanos(nowNanos) <= SUPERSEDE_MIN_AGE_NANOS) {
@@ -275,28 +350,32 @@ public final class PeerState {
             }
             var superseded = connection;
             this.connection = newConnection;
-            this.lastInboundAtNanos = nowNanos;
             this.phaseChangedAtNanos = nowNanos;
-            notifyTransition(Phase.CONNECTED, Phase.CONNECTED, "attach-supersede");
+            notifyTransition(Phase.CONNECTED, Phase.CONNECTED, CAUSE_ATTACH_SUPERSEDE);
             return new AttachOutcome(AttachResult.RECONNECTED, option(superseded));
         }
         // Stale CONNECTED link replaced — peer is already known upstream.
         this.connection = newConnection;
-        this.lastInboundAtNanos = nowNanos;
         this.phaseChangedAtNanos = nowNanos;
-        notifyTransition(Phase.CONNECTED, Phase.CONNECTED, "attach-stale-replace");
+        notifyTransition(Phase.CONNECTED, Phase.CONNECTED, CAUSE_ATTACH_STALE_REPLACE);
         return new AttachOutcome(AttachResult.RECONNECTED, Option.empty());
     }
 
     /// Transitions CONNECTED → EVICTED. Preserves offline buffer for reconnect drain.
     /// Returns the evicted connection for the caller to close. Empty if no-op.
-    public synchronized Option<QuicPeerConnection> evict(long nowNanos) {
+    public Option<QuicPeerConnection> evict(long nowNanos) {
+        var evicted = evictInternal(nowNanos);
+        flushTransitions();
+        return evicted;
+    }
+
+    private synchronized Option<QuicPeerConnection> evictInternal(long nowNanos) {
         if (phase != Phase.CONNECTED) {
             return Option.empty();
         }
         var evicted = connection;
         this.connection = null;
-        changePhase(Phase.EVICTED, nowNanos, "evict");
+        changePhase(Phase.EVICTED, nowNanos, CAUSE_EVICT);
         return option(evicted);
     }
 
@@ -308,24 +387,43 @@ public final class PeerState {
     /// CONNECTING → EVICTED transition so the caller emits diagnostics / re-dials exactly once.
     /// No-op (returns `false`) from any other phase — distinct from [#evict], which only handles
     /// the CONNECTED → EVICTED stale-link path. EVICTED is dial-eligible via [#beginConnecting].
-    public synchronized boolean evictStaleConnecting(long nowNanos) {
+    /// A LATE dial completion after this eviction still attaches normally ([#attach] from
+    /// EVICTED) — provenance decides ACCEPTED vs RECONNECTED.
+    public boolean evictStaleConnecting(long nowNanos) {
+        var evicted = evictStaleConnectingInternal(nowNanos);
+        flushTransitions();
+        return evicted;
+    }
+
+    private synchronized boolean evictStaleConnectingInternal(long nowNanos) {
         if (phase != Phase.CONNECTING) {
             return false;
         }
         this.connection = null;
-        changePhase(Phase.EVICTED, nowNanos, "evict-stale-connecting");
+        changePhase(Phase.EVICTED, nowNanos, CAUSE_EVICT_STALE_CONNECTING);
         return true;
     }
 
-    /// Authoritative removal — any → REMOVED. Caller owns contract that this peer is truly gone
-    /// (`departurePermanent`: co-confirmed-death verdict / DECOMMISSIONED / SWIM DepartedObserved,
-    /// shutdown). Clears offline buffer and drops any held connection. Returns the dropped
-    /// connection for the caller to close.
-    public synchronized Option<QuicPeerConnection> authoritativeRemove(long nowNanos) {
+    /// Authoritative removal — any non-REMOVED → REMOVED. Caller owns contract that this peer is
+    /// truly gone (`departurePermanent`: co-confirmed-death verdict / DECOMMISSIONED / SWIM
+    /// DepartedObserved, shutdown). Clears offline buffer and drops any held connection. Returns
+    /// the dropped connection for the caller to close. Idempotent: a repeated call on an
+    /// already-REMOVED peer returns empty and records NO transition (no REMOVED→REMOVED
+    /// duplicate in the journal, no duplicate REMOVE emission).
+    public Option<QuicPeerConnection> authoritativeRemove(long nowNanos) {
+        var dropped = authoritativeRemoveInternal(nowNanos);
+        flushTransitions();
+        return dropped;
+    }
+
+    private synchronized Option<QuicPeerConnection> authoritativeRemoveInternal(long nowNanos) {
+        if (phase == Phase.REMOVED) {
+            return Option.empty();
+        }
         var dropped = connection;
         this.connection = null;
         offlineBuffer.clear();
-        changePhase(Phase.REMOVED, nowNanos, "authoritative-remove");
+        changePhase(Phase.REMOVED, nowNanos, CAUSE_AUTHORITATIVE_REMOVE);
         return option(dropped);
     }
 
@@ -335,12 +433,21 @@ public final class PeerState {
     /// Restores the peer to a dial-eligible / attach-eligible state so a transient-partition
     /// survivor reconnects; the SWIM probe-ack remains the sole ALIVE authority, so re-admission
     /// here is NOT resurrection-to-ALIVE (preserves the anti-resurrection guarantee). No-op (returns
-    /// false) when the peer is not REMOVED. Offline buffer stays cleared (authoritativeRemove cleared it).
-    public synchronized boolean readmit(long nowNanos) {
+    /// false) when the peer is not REMOVED. Offline buffer stays cleared (authoritativeRemove cleared
+    /// it). Resets the upstream-announce provenance: the REMOVE was emitted, so the next attach is a
+    /// fresh ACCEPTED/ADD, not a RECONNECT.
+    public boolean readmit(long nowNanos) {
+        var readmitted = readmitInternal(nowNanos);
+        flushTransitions();
+        return readmitted;
+    }
+
+    private synchronized boolean readmitInternal(long nowNanos) {
         if (phase != Phase.REMOVED) {
             return false;
         }
-        changePhase(Phase.INIT, nowNanos, "readmit");
+        this.announcedUpstream = false;
+        changePhase(Phase.INIT, nowNanos, CAUSE_READMIT);
         return true;
     }
 
@@ -425,9 +532,25 @@ public final class PeerState {
         notifyTransition(from, next, cause);
     }
 
-    /// Wave-1 journal feed: emit one [PeerTransitionRecord] for this mutation. Invoked under
-    /// the per-peer monitor from every phase-mutation point (single emission per mutation).
+    /// Queue one [PeerTransitionRecord] for this mutation (single record per mutation). Called
+    /// while holding the per-peer monitor; delivery happens in [#flushTransitions] after the
+    /// monitor is released.
     private void notifyTransition(Phase from, Phase to, String cause) {
-        transitionListener.accept(new PeerTransitionRecord(peerId, from, to, cause, System.currentTimeMillis()));
+        pendingTransitions.offerLast(new PeerTransitionRecord(peerId, from, to, cause, System.currentTimeMillis()));
+    }
+
+    /// Deliver queued transition records to the listener OUTSIDE the per-peer monitor.
+    /// The queue preserves mutation order even when a racing thread flushes records another
+    /// thread enqueued; each record is delivered exactly once.
+    private void flushTransitions() {
+        List<PeerTransitionRecord> toEmit;
+        synchronized (this) {
+            if (pendingTransitions.isEmpty()) {
+                return;
+            }
+            toEmit = List.copyOf(pendingTransitions);
+            pendingTransitions.clear();
+        }
+        toEmit.forEach(transitionListener::accept);
     }
 }

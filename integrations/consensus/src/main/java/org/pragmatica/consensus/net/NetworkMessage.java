@@ -43,6 +43,17 @@ public sealed interface NetworkMessage extends Message.Wired {
     /// Topology discovery request - asks recipient to share their known nodes
     record DiscoverNodes(NodeId self) implements NetworkMessage {}
 
+    /// Transport-internal liveness beacon (cluster-topology-overhaul spec, Wave 5). Sent by
+    /// the QUIC transport on the CONTROL lane to every CONNECTED peer at the ClusterSync ping
+    /// cadence, so an otherwise-idle healthy link carries periodic inbound traffic — the
+    /// receipt evidence the CONNECTED-zombie liveness-TTL sweep measures. SWIM probes ride
+    /// their own UDP socket (`port + swimPortOffset`), NOT the QUIC lanes, and ClusterSync
+    /// ping/pong covers only leader<->follower links, so without this beacon an idle healthy
+    /// follower<->follower link would be falsely evicted every TTL (the journaled ~10s
+    /// CONNECTED→EVICTED→re-dial background cycle). Swallowed by the receiving transport
+    /// right after it refreshes the per-peer inbound clock — never routed to consumers.
+    record KeepAlive(NodeId sender) implements NetworkMessage {}
+
     /// Topology discovery response - list of known nodes sent to target
     record DiscoveredNodes(NodeId target, java.util.List<NodeInfo> nodes) implements NetworkMessage {}
 

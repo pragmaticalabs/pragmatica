@@ -10,6 +10,7 @@ import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoverNodes;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes;
 import org.pragmatica.consensus.net.NetworkMessage.Hello;
+import org.pragmatica.consensus.net.NetworkMessage.KeepAlive;
 import org.pragmatica.consensus.net.NetworkMessage.KVSyncRequest;
 import org.pragmatica.consensus.net.NetworkMessage.KVSyncResponse;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
@@ -116,6 +117,11 @@ public interface PassiveNode<K extends StructuredKey, V> {
                                             .route(route(DiscoverNodes.class, topologyManager::handleDiscoverNodes),
                                                    route(DiscoveredNodes.class, topologyManager::handleDiscoveredNodes),
                                                    route(Hello.class, _ -> {}),
+                                                   // Transport-internal liveness beacon (Wave 5): swallowed by the
+                                                   // QuicClusterNetwork inbound funnel BEFORE routing (it only refreshes
+                                                   // the per-peer receipt clock). This route exists solely to satisfy
+                                                   // sealed-hierarchy startup completeness — it must never receive traffic.
+                                                   route(KeepAlive.class, _ -> {}),
                                                    route(KVSyncRequest.class, _ -> {}),
                                                    route(KVSyncResponse.class,
                                                          response -> handleKVSyncResponse(kvStore, response)));

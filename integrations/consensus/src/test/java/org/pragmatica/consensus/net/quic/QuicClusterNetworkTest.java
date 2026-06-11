@@ -266,11 +266,12 @@ class QuicClusterNetworkTest {
     /// missing-peer reconciler reconciles against the FSM desired core-member set instead of
     /// static topology, dropping the legacy SWIM membership/health gates. These tests drive
     /// `reconcileMissingPeersTick()` directly against seeded `PeerState`s on a started network
-    /// (live client) and assert via the dial seam: `connectPeer` calls `PeerState.beginConnecting`,
-    /// so a considered-for-dial peer transitions INIT → CONNECTING. The async `client.connect`
-    /// to an unroutable test address fails later and does not affect the seeded phase. Peers are
-    /// seeded in INIT (the fresh `PeerState` phase) so no live QUIC connection is needed to
-    /// reach the observable transition.
+    /// (live client) and assert via the dial seam: `connectPeer` resolves the address on the
+    /// Netty event loop (deferred resolution) and THEN calls `PeerState.beginConnecting`, so a
+    /// considered-for-dial peer leaves INIT asynchronously (awaited). The dial to the unroutable
+    /// test address then fails fast, evicting CONNECTING → EVICTED — both post-INIT phases prove
+    /// the dispatch. Peers are seeded in INIT (the fresh `PeerState` phase) so no live QUIC
+    /// connection is needed to reach the observable transition.
     @Nested
     class FsmWiredReconciler {
 
@@ -285,9 +286,14 @@ class QuicClusterNetworkTest {
 
             network.reconcileMissingPeersTick();
 
+            // The dial is dispatched on the deferred-resolution continuation (async): await the
+            // peer LEAVING INIT. The dial to the unroutable port then fails fast, so the settled
+            // phase is CONNECTING or (post connect-failure) EVICTED — both prove the dispatch.
+            awaitTrue(() -> seeded.phase() != PeerState.Phase.INIT,
+                      "Wired reconciler dials a missing (not-connected) desired peer: leaves INIT");
             assertThat(seeded.phase())
-                .as("Wired reconciler dials a missing (not-connected) desired peer: INIT -> CONNECTING")
-                .isEqualTo(PeerState.Phase.CONNECTING);
+                .as("dispatched dial lands in CONNECTING (in flight) or EVICTED (failed fast)")
+                .isIn(PeerState.Phase.CONNECTING, PeerState.Phase.EVICTED);
         }
 
         @Test
@@ -306,9 +312,11 @@ class QuicClusterNetworkTest {
 
             network.reconcileMissingPeersTick();
 
+            awaitTrue(() -> desiredSeed.phase() != PeerState.Phase.INIT,
+                      "Desired peer absent from topology IS considered for dial: leaves INIT");
             assertThat(desiredSeed.phase())
-                .as("Desired peer absent from topology IS considered for dial: INIT -> CONNECTING")
-                .isEqualTo(PeerState.Phase.CONNECTING);
+                .as("dispatched dial lands in CONNECTING (in flight) or EVICTED (failed fast)")
+                .isIn(PeerState.Phase.CONNECTING, PeerState.Phase.EVICTED);
             assertThat(topologySeed.phase())
                 .as("Topology peer absent from desired set is NOT considered: stays INIT")
                 .isEqualTo(PeerState.Phase.INIT);
@@ -328,9 +336,11 @@ class QuicClusterNetworkTest {
 
             network.reconcileMissingPeersTick();
 
-            assertThat(seeded.phase())
-                .as("REMOVED desired peer is readmitted then dialled: REMOVED -> INIT -> CONNECTING")
-                .isEqualTo(PeerState.Phase.CONNECTING);
+            // REMOVED -> INIT happens synchronously in the tick (readmit); the dial dispatch is
+            // async (deferred resolution), so await the post-INIT phase.
+            awaitTrue(() -> seeded.phase() == PeerState.Phase.CONNECTING
+                            || seeded.phase() == PeerState.Phase.EVICTED,
+                      "REMOVED desired peer is readmitted then dialled: REMOVED -> INIT -> CONNECTING");
         }
 
         @Test
@@ -367,9 +377,11 @@ class QuicClusterNetworkTest {
 
             network.reconcileMissingPeersTick();
 
+            awaitTrue(() -> seeded.phase() != PeerState.Phase.INIT,
+                      "Unwired default runs the legacy topology-driven reconciler: leaves INIT");
             assertThat(seeded.phase())
-                .as("Unwired default runs the legacy topology-driven reconciler: INIT -> CONNECTING")
-                .isEqualTo(PeerState.Phase.CONNECTING);
+                .as("dispatched dial lands in CONNECTING (in flight) or EVICTED (failed fast)")
+                .isIn(PeerState.Phase.CONNECTING, PeerState.Phase.EVICTED);
         }
 
         private PeerState initPeer(NodeId peerId) {

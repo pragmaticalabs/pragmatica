@@ -375,35 +375,42 @@ class QuicConsensusBackpressureTest {
                 .doesNotContain(EVICTED);
         }
 
-        /// The default (unwired) supplier returns `null` ⇒ NO filtering ⇒ every cached peer is a
-        /// broadcast target, preserving the prior behaviour for consensus-only fixtures and tests.
+        /// Wave 5: the membership filter is MANDATORY — there is no unfiltered default. From
+        /// construction the view is `topologyManager.coreNodes()` (the SWIM-fed authoritative
+        /// membership), so a cached peer ABSENT from the authoritative membership is never a
+        /// broadcast target even before the FSM view is wired.
         @Test
-        void broadcastTargets_defaultNullView_targetsAllCachedPeers() {
-            var network = network();
+        void broadcastTargets_unwiredDefault_filtersToAuthoritativeMembership() {
+            var network = network(IN_VIEW);
             network.seedPeerForTests(IN_VIEW, PeerState.peerState(IN_VIEW, System.nanoTime()));
             network.seedPeerForTests(EVICTED, PeerState.peerState(EVICTED, System.nanoTime()));
 
             var targets = network.broadcastTargetsForTests(false);
 
             assertThat(targets)
-                .as("default null membership view applies no filter — broadcast to all")
-                .containsExactlyInAnyOrder(IN_VIEW, EVICTED);
+                .as("unwired default filters to the authoritative membership (topology coreNodes)")
+                .containsExactly(IN_VIEW);
+            assertThat(targets)
+                .as("a cached peer outside the authoritative membership is never targeted — no unfiltered path")
+                .doesNotContain(EVICTED);
         }
 
-        /// A `null` supplier passed to `setBroadcastMembership` resets to the back-compat default
-        /// (no filter) rather than NPE-ing on broadcast.
+        /// A `null` supplier passed to `setBroadcastMembership` resets to the MANDATORY
+        /// construction-time default (`topologyManager.coreNodes()`) — never to "no filter".
         @Test
-        void broadcastTargets_nullSupplierResetsToNoFilter() {
-            var network = network();
+        void broadcastTargets_nullSupplierResetsToMandatoryTopologyDefault() {
+            var network = network(IN_VIEW);
             network.seedPeerForTests(IN_VIEW, PeerState.peerState(IN_VIEW, System.nanoTime()));
 
             network.setBroadcastMembership(() -> Set.of());
+            assertThat(network.broadcastTargetsForTests(false))
+                .as("an explicit empty membership view excludes every peer")
+                .isEmpty();
+
             network.setBroadcastMembership(null);
 
-            var targets = network.broadcastTargetsForTests(false);
-
-            assertThat(targets)
-                .as("null supplier restores all-peers default")
+            assertThat(network.broadcastTargetsForTests(false))
+                .as("null supplier restores the topology-backed mandatory default, not an unfiltered path")
                 .containsExactly(IN_VIEW);
         }
     }
@@ -436,14 +443,15 @@ class QuicConsensusBackpressureTest {
         java.util.concurrent.locks.LockSupport.parkNanos(TimeSpan.timeSpan(10).millis().nanos());
     }
 
-    private QuicClusterNetwork network() {
+    private QuicClusterNetwork network(NodeId... extraTopology) {
         var codec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of());
         var serverSsl = serverSsl();
         var clientSsl = clientSsl();
         var nodeAddress = NodeAddress.nodeAddress("127.0.0.1", 19997)
                                      .fold(_ -> fail("Invalid address"), addr -> addr);
         var selfInfo = NodeInfo.nodeInfo(new NodeId("self"), nodeAddress);
-        return new QuicClusterNetwork(stubTopology(selfInfo), codec, codec, MessageRouter.mutable(), serverSsl, clientSsl);
+        return new QuicClusterNetwork(stubTopology(selfInfo, List.of(extraTopology)), codec, codec,
+                                      MessageRouter.mutable(), serverSsl, clientSsl);
     }
 
     private static QuicSslContext serverSsl() {
@@ -456,7 +464,7 @@ class QuicConsensusBackpressureTest {
                               .fold(_ -> fail("Client SSL failed"), ssl -> ssl);
     }
 
-    private static TopologyObserver stubTopology(NodeInfo self) {
+    private static TopologyObserver stubTopology(NodeInfo self, List<NodeId> extraTopology) {
         return new TopologyObserver() {
             @Override public NodeInfo self() {return self;}
             @Override public Option<NodeInfo> get(NodeId id) {return id.equals(self.id()) ? Option.some(self) : Option.empty();}
@@ -468,7 +476,12 @@ class QuicConsensusBackpressureTest {
             @Override public TimeSpan helloTimeout() {return TimeSpan.timeSpan(5).seconds();}
             @Override public Option<TlsConfig> tls() {return Option.empty();}
             @Override public Option<NodeState> getState(NodeId id) {return Option.empty();}
-            @Override public List<NodeId> topology() {var r = new ArrayList<NodeId>(); r.add(self.id()); return r;}
+            @Override public List<NodeId> topology() {
+                var r = new ArrayList<NodeId>();
+                r.add(self.id());
+                r.addAll(extraTopology);
+                return r;
+            }
             @Override public void reconcile(NetworkServiceMessage.ConnectedNodesList connectedNodesList) {}
             @Override public void handleDiscoverNodes(NetworkMessage.DiscoverNodes discoverNodes) {}
             @Override public void handleDiscoveredNodes(NetworkMessage.DiscoveredNodes discoveredNodes) {}

@@ -34,6 +34,7 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -44,10 +45,15 @@ import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
+import java.net.DatagramSocket;
+import java.net.InetAddress;
 import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -192,6 +198,156 @@ class QuicClusterNetworkLivenessSweepTest {
             .doesNotContain(peerId);
     }
 
+    // --- Wave 5: receipt-evidence TTL (attach never refreshes), keepalive, per-attempt dial timeout ---
+
+    @Test
+    void reconcileMissingPeersTick_freshAttachWithoutInbound_withinGraceWindow_isNotEvicted() {
+        // attach no longer refreshes the receipt clock, so a just-attached link has no inbound
+        // evidence yet. The sweep's attach-grace (phase age < TTL) must keep it CONNECTED for
+        // one full TTL window — long enough for the first keepalive to arrive on a healthy link.
+        var network = createNetwork(NodeId.randomNodeId());
+        var peerId = new NodeId("fresh-attach");
+        var now = System.nanoTime();
+        var state = PeerState.peerState(peerId, now);
+        state.beginConnecting(now);
+        state.attach(QuicPeerConnection.quicPeerConnection(peerId, activeChannel()), now);
+        network.seedPeerForTests(peerId, state);
+
+        network.reconcileMissingPeersTick();
+
+        assertThat(network.connectedPeers())
+            .as("a freshly-attached link with no inbound yet is within the grace window — not evicted")
+            .contains(peerId);
+    }
+
+    @Test
+    void reconcileMissingPeersTick_reattachLongAgoWithoutInbound_isEvicted_attachDoesNotRefreshTtl() {
+        // The H10 interplay: a (late) RE-attach must not refresh the receipt clock. A link that
+        // re-attached past the TTL and produced no inbound since is evicted — proving the attach
+        // granted only its one-time grace window, never receipt evidence.
+        var network = createNetwork(NodeId.randomNodeId());
+        var peerId = new NodeId("reattached-silent");
+        var past = System.nanoTime() - Duration.ofMinutes(1).toNanos();
+        var state = PeerState.peerState(peerId, past);
+        state.beginConnecting(past);
+        state.attach(QuicPeerConnection.quicPeerConnection(peerId, activeChannel()), past + 1);
+        state.markInbound(past + 2);
+        state.evict(past + 3);
+        state.beginConnecting(past + 4);
+        // Late re-attach (still ~1 minute in the past — both receipt and grace clocks expired).
+        state.attach(QuicPeerConnection.quicPeerConnection(peerId, activeChannel()), past + 5);
+        network.seedPeerForTests(peerId, state);
+
+        network.reconcileMissingPeersTick();
+
+        assertThat(network.connectedPeers())
+            .as("a re-attach does not refresh the receipt clock — silent past TTL is still evicted")
+            .doesNotContain(peerId);
+    }
+
+    @Test
+    void reconcileMissingPeersTick_periodicInbound_staysConnectedAcrossRepeatedSweeps() {
+        // The healthy steady state: receipt evidence (keepalive-shaped markInbound) arriving
+        // each interval keeps the link CONNECTED across every sweep — no background
+        // CONNECTED -> EVICTED -> re-dial cycle.
+        var network = createNetwork(NodeId.randomNodeId());
+        var peerId = new NodeId("healthy-periodic");
+        var state = connectedPeerState(peerId, activeChannel());
+        network.seedPeerForTests(peerId, state);
+
+        for (var sweep = 0; sweep < 3; sweep++) {
+            state.markInbound(System.nanoTime());
+            network.reconcileMissingPeersTick();
+            assertThat(network.connectedPeers())
+                .as("sweep %d: a link with periodic inbound must stay CONNECTED", sweep)
+                .contains(peerId);
+        }
+    }
+
+    @Test
+    void sweepEviction_emitsExactlyOnePeerDisconnected_throughTransitionChokepoint() {
+        // Wave 5 single emission source: the sweep's CONNECTED -> EVICTED transition itself
+        // produces the typed PeerDisconnected (previously the sweep evicted SILENTLY — audit C2).
+        // A second sweep finds the peer already EVICTED: no transition, no duplicate emission.
+        var disconnected = new CopyOnWriteArrayList<NodeId>();
+        var router = MessageRouter.mutable();
+        router.addRoute(TransportObservation.PeerDisconnected.class, n -> disconnected.add(n.nodeId()));
+        var network = createNetwork(NodeId.randomNodeId(), HELLO_TIMEOUT, router);
+        var peerId = new NodeId("silent-zombie-emits");
+        network.seedPeerForTests(peerId, staleInboundPeerState(peerId, activeChannel()));
+
+        network.reconcileMissingPeersTick();
+
+        assertThat(network.connectedPeers()).doesNotContain(peerId);
+        assertThat(disconnected)
+            .as("the sweep eviction must surface upstream as exactly one PeerDisconnected")
+            .containsExactly(peerId);
+
+        network.reconcileMissingPeersTick();
+
+        assertThat(disconnected)
+            .as("an already-EVICTED peer produces no further transition — no duplicate emission")
+            .containsExactly(peerId);
+    }
+
+    @Test
+    void keepalive_idleHealthyLink_refreshesReceiptClock_andSweepKeepsItConnected() {
+        // End-to-end Wave 5 pre-check consequence: SWIM rides its own UDP socket and ClusterSync
+        // covers only leader<->follower links, so an idle QUIC link's ONLY periodic inbound is the
+        // transport keepalive. Two real networks, one idle link: the CONTROL-lane keepalive must
+        // refresh the receipt clock within ~pingInterval and the sweep must keep the link CONNECTED.
+        var peerBId = new NodeId("zzz-keepalive");
+        var nodeA = createNetwork(new NodeId("aaa-keepalive"));
+        var nodeB = createNetwork(peerBId);
+        var bPort = nodeB.boundPort().fold(() -> fail("B not bound"), port -> port);
+        var bAddress = NodeAddress.nodeAddress("127.0.0.1", bPort).fold(_ -> fail("bad address"), a -> a);
+
+        nodeA.connect(NodeInfo.nodeInfo(peerBId, bAddress));
+
+        awaitTrue(() -> nodeA.connectedPeers().contains(peerBId), AWAIT_TIMEOUT, "A connects to B");
+        awaitTrue(() -> nodeA.peerInboundAgeForTests(peerBId)
+                             .map(age -> age < TimeSpan.timeSpan(2).seconds().nanos())
+                             .or(false),
+                  AWAIT_TIMEOUT,
+                  "B's periodic keepalive refreshes A's receipt clock on an otherwise-idle link");
+
+        nodeA.reconcileMissingPeersTick();
+
+        assertThat(nodeA.connectedPeers())
+            .as("a healthy idle link with keepalive receipt evidence must STAY CONNECTED")
+            .contains(peerBId);
+    }
+
+    @Test
+    void perAttemptDialTimeout_unresponsiveEndpoint_evictsConnectingForRedial() throws Exception {
+        // H10: the per-attempt dial timeout must clear a hung dial (CONNECTING -> EVICTED) well
+        // before the 5s reconciler staleness sweep, WITHOUT failing the dial promise (a late
+        // completion would still attach — covered at the PeerState level). The blackhole endpoint
+        // is a bound-but-silent UDP socket: QUIC Initials are swallowed, no ICMP, the handshake
+        // hangs. helloTimeout=100ms -> per-attempt window 300ms, timer ~330ms.
+        var failures = new CopyOnWriteArrayList<NetworkServiceMessage.ConnectionFailed>();
+        var router = MessageRouter.mutable();
+        router.addRoute(NetworkServiceMessage.ConnectionFailed.class, failures::add);
+        var network = createNetwork(new NodeId("aaa-dialer"), TimeSpan.timeSpan(100).millis(), router);
+        try (var blackhole = new DatagramSocket(0, InetAddress.getLoopbackAddress())) {
+            var peerId = new NodeId("zzz-silent");
+            var address = NodeAddress.nodeAddress("127.0.0.1", blackhole.getLocalPort())
+                                     .fold(_ -> fail("bad address"), a -> a);
+
+            network.connect(NodeInfo.nodeInfo(peerId, address));
+
+            // 2s budget: far below the 5s reconciler tick, so only the per-attempt timer can clear it.
+            awaitTrue(() -> network.peerPhaseForTests(peerId)
+                                   .map(phase -> phase == PeerState.Phase.EVICTED)
+                                   .or(false),
+                      TimeSpan.timeSpan(2).seconds(),
+                      "per-attempt dial timeout evicts the hung CONNECTING dial for re-dial");
+            assertThat(failures)
+                .as("the per-attempt timeout routes the typed dial-failure event")
+                .isNotEmpty();
+        }
+    }
+
     // --- FIX C: event-driven close listener ---
 
     @Test
@@ -277,29 +433,47 @@ class QuicClusterNetworkLivenessSweepTest {
         return state;
     }
 
-    /// CONNECTED PeerState backed by the supplied (active) channel whose inbound liveness clock is
-    /// stamped 1 minute in the past — far beyond the 8s liveness TTL — so the inbound-TTL sweep trips.
+    /// CONNECTED PeerState backed by the supplied (active) channel, attached 1 minute in the past
+    /// with NO inbound frame ever observed (attach does not refresh the receipt clock — Wave 5),
+    /// so both the receipt clock and the attach-grace window are far beyond the 8s liveness TTL
+    /// and the inbound-TTL sweep trips.
     private static PeerState staleInboundPeerState(NodeId peerId, QuicChannel chan) {
         var past = System.nanoTime() - Duration.ofMinutes(1).toNanos();
         var state = PeerState.peerState(peerId, past);
         state.beginConnecting(past);
         state.attach(QuicPeerConnection.quicPeerConnection(peerId, chan), past);
-        // Deliberately do NOT call markInbound — leave lastInboundAtNanos at the past attach stamp.
+        // Deliberately no markInbound — no receipt evidence has ever arrived on this link.
         return state;
     }
 
+    /// Poll `condition` until it holds or `timeout` elapses; fail with `what` on timeout.
+    private static void awaitTrue(BooleanSupplier condition, TimeSpan timeout, String what) {
+        var deadline = System.nanoTime() + timeout.nanos();
+        while (System.nanoTime() < deadline) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            LockSupport.parkNanos(TimeSpan.timeSpan(50).millis().nanos());
+        }
+        fail("Timed out waiting for: " + what);
+    }
+
     private QuicClusterNetwork createNetwork(NodeId nodeId) {
+        return createNetwork(nodeId, HELLO_TIMEOUT, MessageRouter.mutable());
+    }
+
+    private QuicClusterNetwork createNetwork(NodeId nodeId, TimeSpan helloTimeout, MessageRouter router) {
         var address = NodeAddress.nodeAddress("127.0.0.1", 19999).fold(_ -> fail("bad address"), a -> a);
         var selfInfo = NodeInfo.nodeInfo(nodeId, address);
-        var topology = stubTopologyManager(selfInfo);
-        var network = new QuicClusterNetwork(topology, codec, codec, MessageRouter.mutable(), serverSsl, clientSsl,
+        var topology = stubTopologyManager(selfInfo, helloTimeout);
+        var network = new QuicClusterNetwork(topology, codec, codec, router, serverSsl, clientSsl,
                                               ClusterFormationConfig.defaults(), QuicDisconnectListener.noop());
         networks.add(network);
         network.startOnPort(0).await(AWAIT_TIMEOUT).onFailure(cause -> fail("start failed: " + cause.message()));
         return network;
     }
 
-    private TopologyObserver stubTopologyManager(NodeInfo self) {
+    private TopologyObserver stubTopologyManager(NodeInfo self, TimeSpan helloTimeout) {
         return new TopologyObserver() {
             @Override public NodeInfo self() {return self;}
             @Override public Option<NodeInfo> get(NodeId id) {
@@ -310,7 +484,7 @@ class QuicClusterNetworkLivenessSweepTest {
             @Override public Promise<Unit> start() {return Promise.unitPromise();}
             @Override public Promise<Unit> stop() {return Promise.unitPromise();}
             @Override public TimeSpan pingInterval() {return PING_INTERVAL;}
-            @Override public TimeSpan helloTimeout() {return HELLO_TIMEOUT;}
+            @Override public TimeSpan helloTimeout() {return helloTimeout;}
             @Override public Option<TlsConfig> tls() {return Option.empty();}
             @Override public Option<NodeState> getState(NodeId id) {return Option.empty();}
             @Override public List<NodeId> topology() {return List.of(self.id());}
