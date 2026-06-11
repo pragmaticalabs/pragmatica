@@ -45,6 +45,7 @@ import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentNavigableMap;
@@ -163,12 +164,14 @@ public class RabiaEngine<C extends Command> {
     /// and notifies; recovery design is explicitly deferred (RC2). Default no-op; AetherNode
     /// wires the per-node transition journal.
     private volatile BiConsumer<Long, Long> onBootFutureHistory = (persisted, cluster) -> {};
-    /// Listener invoked after EVERY successful sync restore, once the restored state has been
+    /// Listeners invoked after EVERY successful sync restore, once the restored state has been
     /// applied and the state machine content is queryable (and the engine re-activated).
     /// Late-joiner seam: state distributed via live notifications (e.g. KV `ValuePut`-derived
     /// state such as the cluster gossip-encryption key) is re-readable from the restored store
-    /// at this point. Default no-op; see [#onStateRestored(Runnable)].
-    private volatile Runnable onStateRestored = () -> {};
+    /// at this point. Widened from a single slot to a list (Wave 8.6 / M5) so the gossip-key
+    /// replay and the post-activation action-log drain can both register; invoked in
+    /// registration order. See [#onStateRestored(Runnable)].
+    private final List<Runnable> onStateRestored = new CopyOnWriteArrayList<>();
 
     //--------------------------------- Node State End
     /// Creates a new Rabia consensus engine without metrics or activation gating.
@@ -908,14 +911,29 @@ public class RabiaEngine<C extends Command> {
         if (state.snapshot().length == 0) {
             applyRestoredState(state);
             activate();
+            replayStateNotifications();
             notifyStateRestored();
             return;
         }
+        // sync → activate → replay (cluster-topology-overhaul §5.8, AMENDED 2026-06-11):
+        // restoreSnapshot installs the synced state SILENTLY (no notifications); activate() flips
+        // the engine ACTIVE; replayStateNotifications() then fires the synthetic notification burst
+        // as the FIRST work after activation, so a KV notification structurally implies ACTIVE.
         stateMachine.restoreSnapshot(state.snapshot())
                     .onSuccess(_ -> applyRestoredState(state))
                     .onSuccessRun(this::activate)
+                    .onSuccessRun(this::replayStateNotifications)
                     .onSuccessRun(this::notifyStateRestored)
                     .onFailure(cause -> log.error("Node {} failed to restore state: {}", self, cause));
+    }
+
+    /// Fire the state machine's deferred notification burst (cluster-topology-overhaul §5.8,
+    /// AMENDED 2026-06-11). Called AFTER [#activate()] on the apply thread, so the synthetic puts
+    /// land before any live apply queued behind this restore — consumers observe a totally-ordered
+    /// "world-as-of-N, then N+1 onward" stream. Mutation-free notification synthesis only.
+    @Contract
+    private void replayStateNotifications() {
+        stateMachine.replayNotifications();
     }
 
     /// Wave-1 §6.4 boot-time future-history sanity check (DETECT-ONLY, ratified D9). Runs ONCE
@@ -959,24 +977,32 @@ public class RabiaEngine<C extends Command> {
                                    : listener;
     }
 
-    /// Install the post-restore listener, invoked after EVERY successful sync restore once the
-    /// restored state has been applied and the state-machine content is queryable (and the
-    /// engine re-activated). Restore can run more than once per process (initial join sync,
-    /// later re-syncs), so listeners must be idempotent. Fires on the thread `restoreState`
-    /// completes on (the consensus apply executor); listeners must be cheap and thread-safe.
-    /// Default no-op; a `null` argument resets to the no-op. AetherNode wires the late-joiner
-    /// gossip-key-rotation replay here.
+    /// Register a post-restore listener, invoked after EVERY successful sync restore once the
+    /// restored state has been applied, the engine re-activated, AND the §5.8 notification replay
+    /// has fired. Restore can run more than once per process (initial join sync, later re-syncs),
+    /// so listeners must be idempotent. Fires on the thread `restoreState` completes on (the
+    /// consensus apply executor); listeners must be cheap and thread-safe. Listeners ACCUMULATE and
+    /// run in registration order. A `null` argument clears all registered listeners.
+    ///
+    /// SEAM RETAINED (Wave 8 M5 rework, 2026-06-11): the §5.8 amendment removed the production
+    /// listeners (gossip-key `replayFromStore` and the action-log drain) — KV-derived boot state
+    /// now arrives via the engine-level replay on the normal subscription, not via this hook. The
+    /// seam stays as a general post-restore lifecycle notification (exercised by `RabiaEngineTest`
+    /// and available for non-KV restore-completion needs); it is NOT narrowed because it is a
+    /// legitimate engine lifecycle event independent of the KV notification path.
     @Contract
     public void onStateRestored(Runnable listener) {
-        this.onStateRestored = listener == null
-                               ? () -> {}
-                               : listener;
+        if (listener == null) {
+            onStateRestored.clear();
+            return;
+        }
+        onStateRestored.add(listener);
     }
 
-    /// Invoke the post-restore listener. Runs on the consensus apply thread.
+    /// Invoke the post-restore listeners in registration order. Runs on the consensus apply thread.
     @Contract
     private void notifyStateRestored() {
-        onStateRestored.run();
+        onStateRestored.forEach(Runnable::run);
     }
 
     private void applyRestoredState(SavedState<C> state) {

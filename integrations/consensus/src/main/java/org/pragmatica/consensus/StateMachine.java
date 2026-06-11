@@ -60,8 +60,29 @@ public interface StateMachine<C extends Command> {
     /// Restore the machine's state from a snapshot.
     /// This should completely replace the current state with the state from the snapshot.
     ///
+    /// SILENT install (cluster-topology-overhaul §5.8, AMENDED 2026-06-11): restoring a snapshot
+    /// installs the synced state WITHOUT firing any notifications. Notification delivery is
+    /// deferred to [#replayNotifications()], which the engine calls AFTER it has become ACTIVE.
+    /// This buys the invariant "a KV notification implies the engine is ACTIVE" structurally —
+    /// no consumer ever checks activation status.
+    ///
     /// @return A Result indicating success or failure
     Result<Unit> restoreSnapshot(byte[] snapshot);
+
+    /// Replay the current state as a notification burst — the `sync → activate → replay` step
+    /// (cluster-topology-overhaul §5.8, AMENDED 2026-06-11). Called by the engine as the FIRST
+    /// work on the apply path once it is ACTIVE, with live applies queued strictly behind it, so
+    /// consumers observe a totally-ordered "world-as-of-N, then N+1 onward" stream.
+    ///
+    /// First replay after a SILENT install fires one synthetic put per key. A mid-life install on
+    /// an already-replayed machine does DIFF-replay (puts for new/changed keys, removes for
+    /// vanished ones) against the previously-replayed view. Replay is NOTIFICATION SYNTHESIS ONLY
+    /// — it MUST NOT re-apply commands or mutate storage (the H4 `LeaderKey` fence must never see
+    /// replay as a competing write). Default no-op for state machines that have no notification
+    /// surface.
+    default Unit replayNotifications() {
+        return Unit.unit();
+    }
 
     /// Reset state machine to its initial state.
     Unit reset();

@@ -189,14 +189,30 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void onNodeArtifactPut_recordsButNoAction_forActiveState() {
+    void onNodeArtifactPut_recordsButNoAction_forActiveState_whenSliceLoaded() {
         var artifact = createTestArtifact();
+
+        sliceStore.markAsLoadedWithSlice(artifact);
 
         manager.onQuorumStateChange(ClusterStateNotification.active());
         sendNodeArtifactPut(artifact, SliceState.ACTIVE);
 
         assertThat(sliceStore.loadCalls).isEmpty();
         assertThat(sliceStore.deactivateCalls).isEmpty();
+    }
+
+    /// M5 KV-convergence (cluster-topology-overhaul §5.9): a KV-claimed ACTIVE self-instance
+    /// without a locally loaded slice (wiped node / KV-local divergence) is redeployed through
+    /// the standard LOADING → LOADED → ACTIVATE chain instead of being recorded as a phantom.
+    @Test
+    void onNodeArtifactPut_redeploysSlice_forActiveStateWithoutLocalSlice() {
+        var artifact = createTestArtifact();
+
+        manager.onQuorumStateChange(ClusterStateNotification.active());
+        sendNodeArtifactPut(artifact, SliceState.ACTIVE);
+
+        assertThat(sliceStore.loadCalls).containsExactly(artifact);
+        assertThat(sliceStore.activateCalls).containsExactly(artifact);
     }
 
     @Test
@@ -368,7 +384,9 @@ class NodeDeploymentManagerTest {
                 failNextLoad = false;
                 return Promise.failure(org.pragmatica.lang.utils.Causes.cause("Load failed"));
             }
-            var loadedSlice = new TestLoadedSlice(artifact, null);
+            // M5 KV-convergence: the redeploy chain drives loaded slices through activation, so
+            // the loaded entry must carry a real Slice instance (a null slice NPEs the bridge).
+            var loadedSlice = new TestLoadedSlice(artifact, new MockSlice());
             loadedSlices.add(loadedSlice);
             return Promise.success(loadedSlice);
         }

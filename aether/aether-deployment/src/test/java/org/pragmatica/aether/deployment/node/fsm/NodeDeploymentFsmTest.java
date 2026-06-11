@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
+import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
@@ -44,6 +45,7 @@ import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -260,6 +262,126 @@ class NodeDeploymentFsmTest {
         void onEntry_withoutCallbackRegistered_doesNotThrow() {
             harness.dispatch(new QuorumEstablished());
             assertThat(harness.state()).isInstanceOf(NodeDeploymentState.Active.class);
+        }
+    }
+
+    /// M5 / §5.9 — boot/rejoin as convergence to the KV desired state: a KV-claimed ACTIVE
+    /// self-instance observed without a locally loaded slice (wiped node, KV/local divergence)
+    /// is redeployed through the standard LOADING → LOADED → ACTIVATE chain; non-self claims are
+    /// ignored; an already-deployed instance is a no-op (precondition re-check).
+    @Nested
+    class KvConvergenceRedeploy {
+        private static final NodeId OTHER = NodeId.nodeId("other").unwrap();
+
+        private RecordingSliceStore recordingStore;
+        private FsmTestHarness<NodeDeploymentState, ClusterFsmEvent> redeployHarness;
+
+        @BeforeEach
+        void setUpRedeploy() {
+            recordingStore = new RecordingSliceStore();
+            var router = MessageRouter.mutable();
+            var kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
+            ClusterNode<KVCommand<AetherKey>> cluster = stubClusterNode(SELF);
+            var ctxHolder = new AtomicReference<NodeDeploymentContext>();
+            Function<Fsm<NodeDeploymentState, ClusterFsmEvent>, NodeDeploymentState> factory =
+                    fsm -> buildContext(fsm, ctxHolder, router, kvStore, cluster, recordingStore);
+            redeployHarness = FsmTestHarness.harness("ndm-kv-convergence-test-" + SELF.id(), factory);
+        }
+
+        @Test
+        void kvClaimedActiveSelfInstance_redeploysAfterLocalWipe() {
+            redeployHarness.dispatch(new QuorumEstablished());
+
+            redeployHarness.dispatch(new NodeArtifactPutReceived(buildActivePutFor(SELF)));
+
+            assertThat(recordingStore.loadCalls)
+                    .as("KV claims ACTIVE, local store empty — the slice must be (re)loaded")
+                    .containsExactly(ARTIFACT);
+            assertThat(recordingStore.activateCalls)
+                    .as("the redeploy chain must drive the slice back to ACTIVE")
+                    .containsExactly(ARTIFACT);
+        }
+
+        @Test
+        void nonSelfActiveClaim_isIgnored() {
+            redeployHarness.dispatch(new QuorumEstablished());
+
+            redeployHarness.dispatch(new NodeArtifactPutReceived(buildActivePutFor(OTHER)));
+
+            assertThat(recordingStore.loadCalls).isEmpty();
+            assertThat(recordingStore.activateCalls).isEmpty();
+        }
+
+        @Test
+        void alreadyDeployedActiveInstance_isNoOp() {
+            recordingStore.preloadSlice(ARTIFACT);
+            redeployHarness.dispatch(new QuorumEstablished());
+
+            redeployHarness.dispatch(new NodeArtifactPutReceived(buildActivePutFor(SELF)));
+
+            assertThat(recordingStore.loadCalls)
+                    .as("precondition re-check: an already-deployed instance must not redeploy")
+                    .isEmpty();
+            assertThat(recordingStore.activateCalls).isEmpty();
+        }
+
+        private static ValuePut<NodeArtifactKey, NodeArtifactValue> buildActivePutFor(NodeId node) {
+            var key = NodeArtifactKey.nodeArtifactKey(node, ARTIFACT);
+            var value = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
+            return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
+        }
+    }
+
+    /// SliceStore stub that records load/activate calls and succeeds, so the M5 redeploy chain
+    /// can run end-to-end (load → activate) inside the FSM harness.
+    private static final class RecordingSliceStore implements SliceStore {
+        private final List<Artifact> loadCalls = new CopyOnWriteArrayList<>();
+        private final List<Artifact> activateCalls = new CopyOnWriteArrayList<>();
+        private final List<LoadedSlice> loadedSlices = new CopyOnWriteArrayList<>();
+
+        void preloadSlice(Artifact artifact) {
+            loadedSlices.add(loadedSlice(artifact));
+        }
+
+        private static LoadedSlice loadedSlice(Artifact artifact) {
+            Slice slice = List::of;
+            return new LoadedSlice() {
+                @Override public Artifact artifact() {
+                    return artifact;
+                }
+
+                @Override public Slice slice() {
+                    return slice;
+                }
+            };
+        }
+
+        @Override public List<LoadedSlice> loaded() {
+            return List.copyOf(loadedSlices);
+        }
+
+        @Override public Promise<LoadedSlice> loadSlice(Artifact artifact) {
+            loadCalls.add(artifact);
+            var slice = loadedSlice(artifact);
+            loadedSlices.add(slice);
+            return Promise.success(slice);
+        }
+
+        @Override public Promise<LoadedSlice> activateSlice(Artifact artifact) {
+            activateCalls.add(artifact);
+            return Promise.success(loadedSlice(artifact));
+        }
+
+        @Override public Promise<LoadedSlice> deactivateSlice(Artifact artifact) {
+            return Promise.success(loadedSlice(artifact));
+        }
+
+        @Override public Promise<Unit> unloadSlice(Artifact artifact) {
+            return Promise.unitPromise();
+        }
+
+        @Override public Option<org.pragmatica.config.ConfigurationProvider> sliceComposite(Artifact artifact) {
+            return Option.none();
         }
     }
 

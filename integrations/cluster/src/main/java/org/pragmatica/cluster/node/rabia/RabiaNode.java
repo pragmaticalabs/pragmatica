@@ -358,7 +358,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             // `KVStoreNotification.ValuePut<LeaderKey>` push notification didn't fire (e.g.
             // snapshot-restored state didn't include LeaderKey, or listener wired late).
             LeaderManager.LeaderProposalHandler proposalHandler =
-            (candidate, viewSequence) -> submitLeaderProposal(consensus, candidate, DEFAULT_PROPOSAL_TIMEOUT);
+            (candidate, viewSequence) -> submitLeaderProposal(consensus, candidate, viewSequence, DEFAULT_PROPOSAL_TIMEOUT);
             leaderManager = LeaderManager.leaderManager(config.topology()
                                                               .self(),
                                                         delegateRouter,
@@ -403,6 +403,15 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                        route(ConnectionEstablished.class, _ -> {}),
                                                        route(Send.class, network::handleSend),
                                                        route(Broadcast.class, network::handleBroadcast));
+        // Audit item 5 (cluster-topology-overhaul §Wave 8.5) — NAMED DEFERRAL: leader election
+        // stays fed from raw TransportObservation rather than the MembershipDecision delta
+        // stream. The MembershipDecision TYPE lives in the consensus module, but its only
+        // producer (aether-deployment's MembershipDeltaProjector) lives a layer above — rewiring
+        // here would make this module's election liveness depend on an upper-layer feed that
+        // does not exist for non-Aether users of integrations/cluster, and would couple
+        // election-after-leader-kill latency to membership-decision convergence. The
+        // minority-flap WRITE path that rewiring targeted is closed at the applier instead:
+        // H4 fences LeaderKey writes by viewSequence (KVStore.handlePut + LeaderValue).
         var transportObservationRoutes = SealedBuilder.from(TransportObservation.class)
                                                 .route(route(PeerJoined.class, leaderManager::peerJoined),
                                                        route(PeerDisconnected.class, leaderManager::peerDisconnected),
@@ -617,9 +626,14 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     @SuppressWarnings("unchecked")
     private static <C extends Command> Promise<Unit> submitLeaderProposal(RabiaEngine<C> consensus,
                                                                           NodeId candidate,
+                                                                          long viewSequence,
                                                                           TimeSpan proposalTimeout) {
-        log.info("Submitting leader proposal: candidate={}", candidate);
-        var command = new KVCommand.Put<>(LeaderKey.INSTANCE, LeaderValue.leaderValue(candidate));
+        log.info("Submitting leader proposal: candidate={}, viewSequence={}", candidate, viewSequence);
+        // H4 fence (cluster-topology-overhaul §Wave 8.2): the election FSM's viewSequence rides
+        // the committed value. The KV applier (KVStore.handlePut) applies the write only when
+        // this sequence is strictly greater than the stored one — a stale (minority-flapped)
+        // election cannot overwrite the legitimate leader via last-write-wins.
+        var command = new KVCommand.Put<>(LeaderKey.INSTANCE, LeaderValue.leaderValue(candidate, viewSequence));
         // Timeout for leader proposals - if consensus doesn't complete in this time, fail and retry.
         // This handles the case where other nodes are still syncing and ignoring proposals.
         return consensus.apply(List.of((C) command))

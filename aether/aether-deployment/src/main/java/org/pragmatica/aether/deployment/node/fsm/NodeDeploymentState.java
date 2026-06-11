@@ -480,8 +480,33 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private void handleActive(SliceNodeKey sliceKey) {
+            if (findLoadedSlice(sliceKey.artifact()).isEmpty()) {
+                redeployClaimedActiveSlice(sliceKey);
+
+                return;
+            }
+
             routingEpochAckTracker.clear(sliceKey);
             ctx.router().route(DeploymentCompleted.deploymentCompleted(sliceKey.artifact(), ctx.self(), ctx.nowMs()));
+        }
+
+        /// M5 boot/rejoin KV-convergence (cluster-topology-overhaul §5.9): the KV store claims
+        /// this self-instance ACTIVE but the slice is not loaded locally — a wiped node
+        /// (`down -v`) or local-vs-KV divergence. Converge to the KV desired state by re-running
+        /// the standard deploy chain: LOADING → load → LOADED → ACTIVATE (the ACTIVATE branch
+        /// drives the existing `performActivation` chain back to ACTIVE). Phantom-ACTIVE entries
+        /// are impossible by construction — the claim is healed, not detected. Reached via the
+        /// post-activation action-log replay of pre-activation `NodeArtifactKey` events (§5.8)
+        /// or any live ACTIVE put observed without a locally loaded slice; a load failure lands
+        /// in FAILED through the regular `handleLoadingFailure` path (CDM-visible).
+        private void redeployClaimedActiveSlice(SliceNodeKey sliceKey) {
+            log.info("Node {} KV claims ACTIVE for {} but the slice is not loaded locally — redeploying (KV convergence)",
+                     ctx.self().id(),
+                     sliceKey.artifact());
+            transitionTo(sliceKey, SliceState.LOADING).flatMap(this::loadSliceWithTimeout).flatMap(key -> transitionTo(key,
+                                                                                                                        SliceState.LOADED)).onSuccess(key -> processStateTransition(key,
+                                                                                                                                                                                    SliceState.ACTIVATE)).onFailure(cause -> handleLoadingFailure(sliceKey,
+                                                                                                                                                                                                                                                  cause));
         }
 
         private Promise<Unit> publishHttpRoutes(SliceNodeKey sliceKey) {

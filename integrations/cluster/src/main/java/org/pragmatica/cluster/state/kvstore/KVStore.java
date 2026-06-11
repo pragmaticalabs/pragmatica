@@ -30,8 +30,16 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final MessageRouter router;
-    /// Per-thread flag, true while this store is re-applying a restored/resync snapshot — see
-    /// [#isReplaying()]. Thread-scoped so a concurrent live apply on another thread reads false.
+    /// The view that was last DELIVERED to subscribers via [#replayNotifications()]. Used to
+    /// compute the DIFF-replay on a mid-life snapshot install (cluster-topology-overhaul §5.8,
+    /// AMENDED 2026-06-11): only keys that are new/changed/vanished relative to this view emit a
+    /// notification. Empty until the first replay (cold boot fires one put per restored key).
+    private final Map<K, V> lastReplayedView = new ConcurrentHashMap<>();
+    /// Per-thread flag, true only while [#replayNotifications()] is firing the synthetic
+    /// notification burst on THIS thread. Subscribers invoked synchronously during the burst can
+    /// query [#isReplaying()] to distinguish a replayed (historical-as-of-sync) notification from
+    /// a live apply — e.g. the cluster-event aggregator suppresses re-publishing historical events
+    /// during replay. Thread-scoped: a concurrent live apply on another thread reads false.
     private final ThreadLocal<Boolean> replaying = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
     public KVStore(MessageRouter router, Serializer serializer, Deserializer deserializer) {
@@ -65,9 +73,27 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     private Option<V> handlePut(Put<K, V> put) {
+        if (staleLeaderWrite(put)) {
+            return Option.option(storage.get(put.key()));
+        }
         var oldValue = Option.option(storage.put(put.key(), put.value()));
         router.route(new ValuePut<>(put, oldValue));
         return oldValue;
+    }
+
+    /// H4 leader fence (cluster-topology-overhaul §Wave 8.2): `LeaderKey` writes are
+    /// compare-and-put — applied only when the incoming [LeaderValue#viewSequence()] is strictly
+    /// greater than the stored one. The check is deterministic (it depends only on the replicated
+    /// storage content and the command itself), so every replica accepts or rejects identically
+    /// inside the consensus applier. A rejected write mutates nothing and emits NO `ValuePut`
+    /// notification — a stale leader must never be observed by the election FSMs. Snapshot
+    /// restore ([#restoreSnapshot]) intentionally bypasses this fence: a restored snapshot is the
+    /// authoritative committed state, not a competing write.
+    private boolean staleLeaderWrite(Put<K, V> put) {
+        return put.key() instanceof LeaderKey
+               && put.value() instanceof LeaderValue incoming
+               && storage.get(put.key()) instanceof LeaderValue stored
+               && incoming.viewSequence() <= stored.viewSequence();
     }
 
     private Option<V> handleRemove(Remove<K> remove) {
@@ -88,54 +114,91 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return serializer;
     }
 
+    /// SILENT snapshot install (cluster-topology-overhaul §5.8, AMENDED 2026-06-11): replaces
+    /// storage with the synced state and fires NO notifications. The deferred notification burst
+    /// is delivered by [#replayNotifications()] once the engine is ACTIVE, so consumers never see
+    /// a KV notification before the engine is operational.
     @SuppressWarnings("unchecked")
     @Override
     public Result<Unit> restoreSnapshot(byte[] snapshot) {
         return Result.lift(Causes::fromThrowable,
                            () -> deserializer.decode(snapshot))
                      .map(map -> (Map<K, V>) map)
-                     .onSuccess(this::replaceAllDuringReplay)
+                     .onSuccess(this::installSilently)
                      .mapToUnit();
     }
 
-    /// True while THIS thread is re-applying a restored/resync snapshot (the [#restoreSnapshot]
-    /// notify fan-out). Both fresh-node restore and already-ACTIVE catch-up resync funnel through
-    /// `restoreSnapshot`, so one flag here covers both. Router subscribers invoked synchronously
-    /// during the replay fan-out can query this to suppress side-effects (e.g. re-emitting historical
-    /// events) that must fire only on live application. Thread-scoped: a concurrent live apply on
-    /// another thread reads false.
+    /// Silent install: replace storage with the restored map, NO notifications. The
+    /// notification consequences are computed later by [#replayNotifications()] as a diff against
+    /// [#lastReplayedView].
+    private void installSilently(Map<K, V> restored) {
+        storage.clear();
+        storage.putAll(restored);
+    }
+
+    /// Notification replay — the `sync → activate → replay` step (cluster-topology-overhaul §5.8,
+    /// AMENDED 2026-06-11). Synthesises the notification burst for the current storage as a DIFF
+    /// against the last-replayed view: a synthetic `ValuePut` per new/changed key and a synthetic
+    /// `ValueRemove` per vanished key. The first replay after a cold boot diffs against an empty
+    /// view, so it fires one put per restored key (full replay); a mid-life install on an
+    /// already-ACTIVE lagging node fires only the delta. MUTATION-FREE: it reads `storage` and
+    /// routes notifications, never touching `storage` itself (the H4 `LeaderKey` fence in
+    /// [#handlePut] is never exercised — replay does not go through the apply path). The
+    /// last-replayed view is advanced to the current storage afterwards so the next install
+    /// diffs correctly.
+    @Override
+    public Unit replayNotifications() {
+        replaying.set(Boolean.TRUE);
+        try {
+            replayRemovedKeys();
+            replayPutKeys();
+        } finally {
+            replaying.set(Boolean.FALSE);
+        }
+        lastReplayedView.clear();
+        lastReplayedView.putAll(storage);
+        return Unit.unit();
+    }
+
+    /// True while THIS thread is firing the [#replayNotifications()] synthetic burst. Subscribers
+    /// invoked synchronously during the burst use this to suppress side-effects that must fire
+    /// only on a live apply (e.g. re-publishing historical cluster events). Thread-scoped: a
+    /// concurrent live apply on another thread reads false.
     public boolean isReplaying() {
         return replaying.get();
     }
 
-    /// Re-applies a restored snapshot with the replay flag raised so router subscribers can tell
-    /// replayed application from live. try/finally guarantees the flag is lowered even if a subscriber
-    /// throws (paired with the consensus apply-executor exception containment).
-    private void replaceAllDuringReplay(Map<K, V> restored) {
-        replaying.set(Boolean.TRUE);
-        try {
-            notifyRemoveAll();
-            storage.clear();
-            storage.putAll(restored);
-            notifyPutAll();
-        } finally {
-            replaying.set(Boolean.FALSE);
-        }
+    /// Fire a synthetic `ValueRemove` for every key present in the last-replayed view but absent
+    /// from current storage (vanished on a mid-life install).
+    private void replayRemovedKeys() {
+        lastReplayedView.forEach((key, value) -> {
+            if (!storage.containsKey(key)) {
+                router.route(new ValueRemove<>(new Remove<>(key), Option.some(value)));
+            }
+        });
     }
 
-    private void notifyRemoveAll() {
-        storage.forEach((key, value) -> router.route(new ValueRemove<>(new Remove<>(key), Option.some(value))));
-    }
-
-    private void notifyPutAll() {
-        storage.forEach((key, value) -> router.route(new ValuePut<>(new Put<>(key, value), Option.none())));
+    /// Fire a synthetic `ValuePut` for every key whose current value differs from (or is absent
+    /// in) the last-replayed view — new and changed keys. Unchanged keys are skipped so a mid-life
+    /// install delivers only the delta.
+    private void replayPutKeys() {
+        storage.forEach((key, value) -> {
+            if (!value.equals(lastReplayedView.get(key))) {
+                router.route(new ValuePut<>(new Put<>(key, value), Option.option(lastReplayedView.get(key))));
+            }
+        });
     }
 
     @Override
     public Unit reset() {
         notifyRemoveAll();
         storage.clear();
+        lastReplayedView.clear();
         return Unit.unit();
+    }
+
+    private void notifyRemoveAll() {
+        storage.forEach((key, value) -> router.route(new ValueRemove<>(new Remove<>(key), Option.some(value))));
     }
 
     public Map<K, V> snapshot() {

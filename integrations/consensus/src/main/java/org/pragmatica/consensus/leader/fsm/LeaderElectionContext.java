@@ -150,6 +150,9 @@ public final class LeaderElectionContext {
     private final AtomicBoolean proposalInFlight = new AtomicBoolean(false);
     private final AtomicInteger electionRetryCount = new AtomicInteger(0);
     private final AtomicInteger stuckElectionCount = new AtomicInteger(0);
+    /// Highest leader-election `viewSequence` this node has observed COMMITTED (via the
+    /// `LeaderKey` commit notification — push path or snapshot-replay re-fire). Baseline for
+    /// [#nextViewSequence()]; advanced only by [#observeViewSequence(long)] (max-merge).
     private final AtomicLong viewSequence = new AtomicLong(0);
     private final AtomicLong proposalEpoch = new AtomicLong(0);
     private final AtomicLong quorumSequence = new AtomicLong(0);
@@ -423,7 +426,30 @@ public final class LeaderElectionContext {
     public void resetStuckElectionCount() { stuckElectionCount.set(0); }
     public int stuckElectionCount() { return stuckElectionCount.get(); }
 
-    public long nextViewSequence() { return viewSequence.incrementAndGet(); }
+    /// The viewSequence to carry on the NEXT leader proposal: one above the highest COMMITTED
+    /// sequence this node has observed. Deliberately NOT a per-attempt counter (H4 fence,
+    /// cluster-topology-overhaul §Wave 8.2):
+    ///   - peers proposing off the same observed commit produce IDENTICAL `LeaderValue` commands
+    ///     (same BatchId → consensus dedup, the property the cold-boot parallel proposal relies on);
+    ///   - a minority-flapped node's election RETRIES cannot inflate the sequence past what the
+    ///     majority committed — after the partition heals, its stale write carries a sequence at
+    ///     or below the committed one and the KV applier rejects it.
+    /// Does not mutate state; the baseline advances only when a commit is observed
+    /// ([#observeViewSequence(long)]).
+    public long nextViewSequence() { return viewSequence.get() + 1; }
+
+    /// Record a leader `viewSequence` observed COMMITTED (from the `LeaderKey`
+    /// `ValuePut` notification or its snapshot-replay re-fire). Max-merge keeps the baseline
+    /// monotone, so an out-of-order or duplicate observation can never regress it.
+    public void observeViewSequence(long committed) { viewSequence.accumulateAndGet(committed, Math::max); }
+
+    /// The highest COMMITTED leader `viewSequence` this node has observed (the baseline
+    /// [#nextViewSequence] sits one above). Snapshotted on entry to `Electing` / `ReElecting` as
+    /// the adoption fence: WITHIN an election, only a commit whose sequence POSTDATES the decision
+    /// to elect (`committedViewSequence() > entryBaseline`) is adopted, so the stale pre-death
+    /// commit (≤ baseline) cannot resurrect the corpse and wedge re-election (FIX-1 refinement).
+    public long committedViewSequence() { return viewSequence.get(); }
+
     public long nextProposalEpoch() { return proposalEpoch.incrementAndGet(); }
 
     public AtomicLong quorumSequence() { return quorumSequence; }

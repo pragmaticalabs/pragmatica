@@ -1707,15 +1707,13 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                                                   sliceInvoker,
                                                                                                                                                                                                                                   growthLog)).onPut(AetherKey.GossipKeyRotationKey.class,
                                                                                                                                                                                                                                                     gossipKeyRotationHandler::onGossipKeyRotationPut).build();
-        // Late-joiner gossip-key replay (live-cluster proven): a node that joins AFTER the
-        // GossipKeyRotationKey PUT never receives the live ValuePut notification, so it stays
-        // on its boot-time per-node key and every SWIM datagram it sends is rejected by the
-        // cluster ("Unknown gossip key ID") — it can never join SWIM membership. Re-read the
-        // rotation directly from the synced KV store once consensus state restore completes.
-        // Fires on every restore (initial join sync + later re-syncs); the replay is
-        // idempotent. Wired at assembly time — clusterNode.start() (and thus the first sync
-        // restore) happens later, in startClusterAsync.
-        clusterNode.onStateRestored(() -> gossipKeyRotationHandler.replayFromStore(kvStore));
+        // Gossip-key delivery (§5.8 AMENDED): the GossipKeyRotationKey subscription above is the
+        // SOLE delivery path. A late joiner that synced AFTER the rotation PUT receives the
+        // current rotation as a replayed ValuePut on this normal subscription once the engine
+        // activates (sync → activate → replay) — no ad-hoc replayFromStore needed. The replay
+        // burst structurally precedes any live apply, so the joiner adopts the cluster key before
+        // it sends its first SWIM datagram. applyRotation is idempotent, so a later live rotation
+        // re-PUT is harmless.
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
 
         allEntries.addAll(aetherEntries);
@@ -3803,7 +3801,9 @@ public interface AetherNode extends ManageableNode {
         if (notification.cause().key() instanceof LeaderKey) {
             var value = (LeaderValue) notification.cause().value();
 
-            leaderManager.onLeaderCommitted(value.leader());
+            // H4 fence: carry the committed viewSequence so the election baseline advances —
+            // this node's next proposal is fenced strictly above the committed sequence.
+            leaderManager.onLeaderCommitted(value.leader(), value.viewSequence());
         }
     }
 

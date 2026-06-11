@@ -60,6 +60,15 @@ public interface LeaderManager {
     /// Called when leader election is committed through consensus.
     void onLeaderCommitted(NodeId leader);
 
+    /// Variant carrying the committed [`viewSequence`] (H4 fence, cluster-topology-overhaul
+    /// §Wave 8.2). Seeds the local election baseline (so this node's NEXT proposal is fenced
+    /// strictly above the committed sequence) before dispatching the commit. Default delegates
+    /// to the sequence-less variant for implementations (test stubs, legacy local mode) that do
+    /// not track the baseline.
+    default void onLeaderCommitted(NodeId leader, long viewSequence) {
+        onLeaderCommitted(leader);
+    }
+
     /// Signal that consensus has completed sync and the node is ready to elect.
     void triggerElection();
 
@@ -241,6 +250,12 @@ public interface LeaderManager {
         @Override
         public void onLeaderCommitted(NodeId leader) {
             fsm.dispatch(new LeaderElectionEvents.LeaderCommitted(leader));
+        }
+
+        @Override
+        public void onLeaderCommitted(NodeId leader, long viewSequence) {
+            context.observeViewSequence(viewSequence);
+            onLeaderCommitted(leader);
         }
 
         @Override
