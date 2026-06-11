@@ -6,22 +6,18 @@ package org.pragmatica.aether.deployment.membership.fsm;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.deployment.membership.ntt.PresenceSampler;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.statemachine.FsmObserver;
-import org.pragmatica.swim.HealthSnapshot;
 
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.aether.deployment.membership.ntt.PresenceSampler.presenceSampler;
 
 /// Wave 2 (cluster-topology-overhaul spec, invariant A8 — one core denominator): the
 /// ROLE-SCOPED counting projections. [`MembershipFsm#coreCountedMembers`] is the quorum / heal /
@@ -36,22 +32,14 @@ class MembershipFsmRoleScopedProjectionsTest {
     private static final NodeId WORKER_C = new NodeId("node-worker-c");
     private static final NodeId UNLABELED_D = new NodeId("node-unlabeled-d");
 
-    private static final NodeId SAMPLER_SELF = new NodeId("sampler-self");
-    private static final TimeSpan INTERVAL = TimeSpan.timeSpan(100).millis();
     private static final TimeSpan SHORT_BACKSTOP = TimeSpan.timeSpan(40).millis();
     private static final long NO_HINT_DECAY = Long.MAX_VALUE;
 
     private static MembershipFsm activeManager() {
-        return MembershipFsm.membershipFsm(emptySampler(),
-                                           FsmObserver.noop(),
+        return MembershipFsm.membershipFsm(FsmObserver.noop(),
                                            System::currentTimeMillis,
                                            NO_HINT_DECAY,
                                            SHORT_BACKSTOP);
-    }
-
-    private static PresenceSampler emptySampler() {
-        Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.of());
-        return presenceSampler(SAMPLER_SELF, health, INTERVAL, 2, 3, () -> 0L);
     }
 
     private static void promoteToMember(MembershipFsm manager, NodeId id) {

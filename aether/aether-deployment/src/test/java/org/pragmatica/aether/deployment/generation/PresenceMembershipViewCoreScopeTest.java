@@ -6,20 +6,15 @@ package org.pragmatica.aether.deployment.generation;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
-import org.pragmatica.aether.deployment.membership.ntt.PresenceSampler;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
-import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
-import org.pragmatica.swim.HealthSnapshot;
 
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.aether.deployment.membership.ntt.PresenceSampler.presenceSampler;
 
 /// Wave 2 / W1 (cluster-topology-overhaul spec): the quorum membership view is fed the
 /// CORE-SCOPED projection at the aether-side supplier seam (`AetherNode` wires
@@ -33,14 +28,11 @@ class PresenceMembershipViewCoreScopeTest {
     private static final NodeId WORKER_B = new NodeId("node-worker-b");
     private static final NodeId WORKER_C = new NodeId("node-worker-c");
 
-    private static final NodeId SAMPLER_SELF = new NodeId("sampler-self");
     private static final int CONFIGURED_CORE_COUNT = 3;
     private static final int QUORUM_OF_THREE = CONFIGURED_CORE_COUNT / 2 + 1;
 
     private static MembershipFsm fsmWithOneCoreTwoWorkers() {
-        Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.of());
-        var sampler = presenceSampler(SAMPLER_SELF, health, TimeSpan.timeSpan(100).millis(), 2, 3, () -> 0L);
-        var fsm = MembershipFsm.membershipFsm(sampler);
+        var fsm = MembershipFsm.membershipFsm();
 
         fsm.onSwimHealthy(CORE_A, 1L);
         fsm.onMemberDescriptor(labeledInfo(CORE_A, "core"));

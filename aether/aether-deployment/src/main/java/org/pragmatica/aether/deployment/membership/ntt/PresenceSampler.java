@@ -71,11 +71,15 @@ import static org.pragmatica.lang.Option.some;
 /// `self` is always present (self-seed) and can never leave.
 ///
 /// **Internal presence set is NOT a membership authority.** The `stableMembers` set is this
-/// sampler's OWN debounced presence state — it drives the reconcile trigger and the peak. It
-/// is no longer exposed as a count anyone treats as cluster membership. The one remaining
-/// presence-view read ([`#currentMembers`]) still backs the **generation-snapshot source**
-/// (`PresenceGenerationSnapshotSource` BOOTING→NORMAL latch); migrating that path off this
-/// presence view onto the FSM is a deliberately-deferred separate step.
+/// sampler's OWN debounced presence state — it drives the reconcile trigger and the peak. Wave 7
+/// (cluster-topology-overhaul, parallel-view collapse): NOTHING reads it as authority anymore —
+/// the generation-snapshot source reads `MembershipFsm.coreCountedMembers()`, the quorum-loss
+/// count reads `MembershipFsm.strictCoreMemberCount()`, and the FSM no longer evicts this
+/// sampler on death (the sensor only feeds debounce edges INTO the FSM). [`#currentMembers`] /
+/// [`#currentMemberCount`] remain as test-observable sensor surfaces and diagnostics;
+/// [`#peakMembershipCount`] remains the leader reconciler's cold-start latch (a genuinely-
+/// observed-presence high-water the FSM's blind boot seed cannot provide — see the Wave-7
+/// deferral note on `LeaderReconciler`).
 ///
 /// **Inputs.**
 /// - [`#onSwimObservation`] — biases the NEXT sample only: `HealthyObserved` PRESENT,
@@ -469,12 +473,13 @@ public final class PresenceSampler {
     /// streak and is not instantly re-evicted by a stale bias), and fires the reconcile
     /// trigger exactly once — the SAME callback hysteresis removal fires via [`#emitIfChanged`].
     ///
-    /// Caller contract: only invoke once a node is CO-CONFIRMED dead (SWIM-FAULTY ∧
-    /// liveness-gone) — this is the additional fast path layered over the soft
-    /// QUIC-disconnect/hysteresis path, not a replacement for it. `self` is ignored
-    /// (self can never leave). Idempotent: a no-op (no trigger fired) if `node` is already
-    /// absent from the stable set. Runs under `sampleLock` for consistency with the periodic
-    /// member-set mutations.
+    /// Wave 7 (cluster-topology-overhaul): the sole production caller (the FSM's death-edge
+    /// eviction) is REMOVED — the FSM is the membership authority and nothing flows back into
+    /// this sensor; the prompt heal nudge now rides the FSM's own `onConfirmedDeparture` edge.
+    /// Retained (with its tests) for the Wave-9 dead-code strip, which owns the deletion.
+    /// `self` is ignored (self can never leave). Idempotent: a no-op (no trigger fired) if
+    /// `node` is already absent from the stable set. Runs under `sampleLock` for consistency
+    /// with the periodic member-set mutations.
     @Contract
     public void evict(NodeId node) {
         if (node.equals(self)) {
@@ -501,9 +506,10 @@ public final class PresenceSampler {
         onReconcileNeeded.run();
     }
 
-    /// Count of currently-tracked cluster members (includes self). Boot-fallback-only presence-count
-    /// sensor: `propagateMemberCount` reads this until the authoritative MembershipFsm is published
-    /// (#110 migrated the steady-state member count + snapshot membership to the FSM).
+    /// Count of currently-tracked cluster members (includes self). SENSOR READING ONLY (Wave 7):
+    /// the last production consumer (the pre-FSM `propagateMemberCount` boot fallback) is gone —
+    /// the quorum-loss count reads `MembershipFsm.strictCoreMemberCount()`. Retained for the NTT
+    /// debounce-semantics tests and diagnostics.
     public int currentMemberCount() {
         return stableMembers.size();
     }

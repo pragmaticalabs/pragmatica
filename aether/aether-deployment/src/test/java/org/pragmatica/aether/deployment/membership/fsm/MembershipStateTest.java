@@ -206,13 +206,30 @@ class MembershipStateTest {
             assertThat(h.state()).isInstanceOf(MembershipState.Departing.class);
         }
 
+        /// Death-ward boundary rule (Wave 7): transport may report DEATH, never LIFE — a transport
+        /// connection must NOT revive a SWIM-suspected member. Recovery goes only through
+        /// `SwimHealthy` (SWIM probe-ack authority) or `UpHysteresisMet` (presence hysteresis).
         @Test
-        void suspect_peerConnected_recoversToMember() {
+        void suspect_peerConnected_staysSuspect() {
             var h = harnessInMember();
             h.dispatch(new PeerDisconnected());
             assertThat(h.state()).isInstanceOf(MembershipState.Suspect.class);
 
             h.dispatch(new PeerConnected());
+
+            assertThat(h.state())
+                    .as("transport may report death, never life — PeerConnected does not recover SUSPECT")
+                    .isInstanceOf(MembershipState.Suspect.class);
+            assertThat(h.state().countsTowardEffective()).isTrue();
+        }
+
+        @Test
+        void suspect_upHysteresisMet_recoversToMember() {
+            var h = harnessInMember();
+            h.dispatch(new PeerDisconnected());
+            assertThat(h.state()).isInstanceOf(MembershipState.Suspect.class);
+
+            h.dispatch(new UpHysteresisMet());
 
             assertThat(h.state()).isInstanceOf(MembershipState.Member.class);
         }
@@ -252,19 +269,55 @@ class MembershipStateTest {
             assertThat(suspect.state()).isInstanceOf(MembershipState.Suspect.class);
         }
 
+        /// H2 (Wave 7): DEPARTING absorbs everything except `Stopped` and a STRICTLY-NEWER-incarnation
+        /// `SwimHealthy`. A same-incarnation `SwimHealthy` (mere liveness while draining) and all
+        /// other signals are absorbed.
         @Test
-        void departing_absorbsNonStopSignals() {
+        void departing_absorbsNonStopSignals_atKnownIncarnation() {
             var h = harnessInMember();
+            h.dispatch(new SwimSuspect(50));   // raise the incarnation high-water mark to 50
+            h.dispatch(new SwimHealthy(50));   // recover at 50 (SUSPECT → MEMBER)
             h.dispatch(new DrainRequested());
+            assertThat(h.state()).isInstanceOf(MembershipState.Departing.class);
 
-            h.dispatch(new SwimHealthy(50));
+            h.dispatch(new SwimHealthy(50));   // same incarnation — mere liveness, no recovery
             h.dispatch(new SwimSuspect(50));
             h.dispatch(new PeerConnected());
             h.dispatch(new UpHysteresisMet());
 
             assertThat(h.state())
-                    .as("DEPARTING is decision-pending — absorbs everything but Stopped")
+                    .as("DEPARTING absorbs everything but Stopped and a NEWER-incarnation SwimHealthy")
                     .isInstanceOf(MembershipState.Departing.class);
+        }
+
+        /// H2 (Wave 7): a `SwimHealthy` carrying a STRICTLY HIGHER incarnation than the high-water
+        /// mark recovers a DEPARTING member back to MEMBER (recovered mid-drain — fresh evidence of
+        /// life, mirroring the DEAD rejoin fence).
+        @Test
+        void departing_swimHealthyNewerIncarnation_recoversToMember() {
+            var h = harnessInMember();
+            h.dispatch(new SwimSuspect(50));   // high-water mark = 50
+            h.dispatch(new SwimHealthy(50));
+            h.dispatch(new DrainRequested());
+            assertThat(h.state()).isInstanceOf(MembershipState.Departing.class);
+
+            h.dispatch(new SwimHealthy(51));   // strictly higher — recovered mid-drain
+
+            assertThat(h.state()).isInstanceOf(MembershipState.Member.class);
+            assertThat(h.state().countsTowardEffective()).isTrue();
+        }
+
+        /// H2 fence: a LOWER-incarnation `SwimHealthy` (stale gossip echo) never recovers DEPARTING.
+        @Test
+        void departing_swimHealthyLowerIncarnation_staysDeparting() {
+            var h = harnessInMember();
+            h.dispatch(new SwimSuspect(50));
+            h.dispatch(new SwimHealthy(50));
+            h.dispatch(new DrainRequested());
+
+            h.dispatch(new SwimHealthy(49));
+
+            assertThat(h.state()).isInstanceOf(MembershipState.Departing.class);
         }
     }
 

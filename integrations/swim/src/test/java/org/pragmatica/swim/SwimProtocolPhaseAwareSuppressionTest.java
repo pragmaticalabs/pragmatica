@@ -603,6 +603,125 @@ class SwimProtocolPhaseAwareSuppressionTest {
         }
     }
 
+    /// Transport-connectivity veto for the never-HEALTHY join-grace bypass (gate RCA fix,
+    /// 2026-06-11). FAULTY for a never-healthy NORMAL-phase peer past its join grace requires
+    /// co-confirmation: grace expired AND no live transport connection. While the
+    /// `transportConnected` predicate reports a live link, the verdict is deferred
+    /// (`UnknownObserved`) and RE-EVALUATED on every subsequent FAULTY edge — never latched.
+    /// The shallower factories default the predicate to `id -> false` (never veto), keeping
+    /// every pre-existing test green byte-identically.
+    @Nested
+    class TransportVeto {
+        @Test
+        void normalPhase_neverHealthyPastGrace_transportConnected_emitsUnknownNotFaulty() {
+            var transport = new RecordingTransport();
+            var listener = new RecordingListener();
+            var observations = new RecordingObservationSink();
+            var protocol = SwimProtocol.swimProtocol(tightConfig(), // joinGrace 0 — bypass reachable at once
+                                                     transport,
+                                                     listener,
+                                                     SELF_ID,
+                                                     SELF_ADDR,
+                                                     () -> false, // NORMAL
+                                                     peer -> true) // live transport — veto
+                                       .unwrap();
+            protocol.addObservationListener(observations);
+
+            var suspectUpdate = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectUpdate)));
+
+            protocol.start();
+            try {
+                await().atMost(Duration.ofSeconds(3))
+                       .until(() -> !observations.byType(SwimObservation.UnknownObserved.class).isEmpty());
+
+                assertThat(observations.byType(SwimObservation.FaultyObserved.class))
+                    .as("live transport vetoes the never-healthy FAULTY — UNKNOWN is emitted instead")
+                    .isEmpty();
+                assertThat(observations.byType(SwimObservation.DepartedObserved.class))
+                    .as("a vetoed verdict must not emit the departure pair")
+                    .isEmpty();
+            } finally {
+                protocol.stop();
+            }
+        }
+
+        @Test
+        void normalPhase_neverHealthyPastGrace_transportDisconnected_emitsFaultyAndDepartedPair() {
+            var transport = new RecordingTransport();
+            var listener = new RecordingListener();
+            var observations = new RecordingObservationSink();
+            var protocol = SwimProtocol.swimProtocol(tightConfig(), // joinGrace 0
+                                                     transport,
+                                                     listener,
+                                                     SELF_ID,
+                                                     SELF_ADDR,
+                                                     () -> false, // NORMAL
+                                                     peer -> false) // no live transport — co-confirmed ghost
+                                       .unwrap();
+            protocol.addObservationListener(observations);
+
+            var suspectUpdate = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectUpdate)));
+
+            protocol.start();
+            try {
+                await().atMost(Duration.ofSeconds(3))
+                       .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
+
+                assertThat(observations.byType(SwimObservation.FaultyObserved.class))
+                    .as("no live transport: the never-healthy ghost emits the FAULTY pair as today")
+                    .hasSize(1);
+                assertThat(observations.byType(SwimObservation.DepartedObserved.class)).hasSize(1);
+                assertThat(observations.byType(SwimObservation.UnknownObserved.class))
+                    .as("no veto, no suppression — no UNKNOWN")
+                    .isEmpty();
+            } finally {
+                protocol.stop();
+            }
+        }
+
+        @Test
+        void verdictFollowsPredicateBetweenEdges_noLatch() {
+            var connected = new AtomicBoolean(true);
+            var transport = new RecordingTransport();
+            var listener = new RecordingListener();
+            var observations = new RecordingObservationSink();
+            var protocol = SwimProtocol.swimProtocol(tightConfig(), // joinGrace 0
+                                                     transport,
+                                                     listener,
+                                                     SELF_ID,
+                                                     SELF_ADDR,
+                                                     () -> false, // NORMAL
+                                                     peer -> connected.get())
+                                       .unwrap();
+            protocol.addObservationListener(observations);
+
+            // Edge 1 (connected): vetoed — UNKNOWN, no FAULTY.
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A))));
+            protocol.start();
+            try {
+                await().atMost(Duration.ofSeconds(3))
+                       .until(() -> !observations.byType(SwimObservation.UnknownObserved.class).isEmpty());
+                assertThat(observations.byType(SwimObservation.FaultyObserved.class)).isEmpty();
+
+                // Transport drops between edges; a higher-incarnation SUSPECT re-arms the
+                // suspicion, whose expiry re-fires the FAULTY edge — the verdict is
+                // re-evaluated against the CURRENT predicate value, not latched.
+                connected.set(false);
+                protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(new MembershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A))));
+
+                await().atMost(Duration.ofSeconds(3))
+                       .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
+                assertThat(observations.byType(SwimObservation.FaultyObserved.class))
+                    .as("predicate flip between edges flips the verdict — no latch")
+                    .hasSize(1);
+            } finally {
+                protocol.stop();
+            }
+        }
+    }
+
     // -- Test infrastructure --
 
     static class RecordingTransport implements SwimTransport {

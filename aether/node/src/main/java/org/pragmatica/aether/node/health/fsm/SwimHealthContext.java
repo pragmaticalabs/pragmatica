@@ -25,6 +25,7 @@ import org.pragmatica.swim.SwimConfig;
 import java.net.InetSocketAddress;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 
@@ -50,6 +51,13 @@ public final class SwimHealthContext {
     /// for unit tests that don't wire a phase.
     private final BooleanSupplier isBootingSupplier;
     private final java.util.function.Consumer<NodeId> faultyLeaderEvictor;
+    /// Transport-connectivity veto for SWIM's never-HEALTHY join-grace bypass (gate RCA fix,
+    /// 2026-06-11): forwarded into `SwimProtocol` at protocol construction. While the predicate
+    /// reports a live transport connection for a never-healthy peer past its join grace, SWIM
+    /// defers the FAULTY verdict (emits `UnknownObserved`, re-checked on subsequent edges).
+    /// Production wiring sources this from the QUIC network's live `connectedPeers()` view;
+    /// default `id -> false` (never veto) preserves legacy behavior for tests.
+    private final Predicate<NodeId> transportConnected;
     private final SwimHealthState stopped;
     private final SwimHealthState starting;
 
@@ -142,6 +150,36 @@ public final class SwimHealthContext {
                              LongSupplier clock,
                              BooleanSupplier isBootingSupplier,
                              java.util.function.Consumer<NodeId> faultyLeaderEvictor) {
+        this(fsm,
+             router,
+             topologyConfig,
+             serializer,
+             deserializer,
+             signalSink,
+             epochSupplier,
+             isLeaderSupplier,
+             observationStore,
+             swimConfig,
+             clock,
+             isBootingSupplier,
+             faultyLeaderEvictor,
+             id -> false);
+    }
+
+    public SwimHealthContext(Fsm<SwimHealthState, SwimHealthEvents> fsm,
+                             MessageRouter router,
+                             TopologyConfig topologyConfig,
+                             Serializer serializer,
+                             Deserializer deserializer,
+                             HealthSignalSink signalSink,
+                             Supplier<Epoch> epochSupplier,
+                             BooleanSupplier isLeaderSupplier,
+                             PeerObservationStore observationStore,
+                             SwimConfig swimConfig,
+                             LongSupplier clock,
+                             BooleanSupplier isBootingSupplier,
+                             java.util.function.Consumer<NodeId> faultyLeaderEvictor,
+                             Predicate<NodeId> transportConnected) {
         this.fsm = fsm;
         this.router = router;
         this.topologyConfig = topologyConfig;
@@ -155,6 +193,7 @@ public final class SwimHealthContext {
         this.clock = clock;
         this.isBootingSupplier = isBootingSupplier;
         this.faultyLeaderEvictor = faultyLeaderEvictor;
+        this.transportConnected = transportConnected;
         this.stopped = new SwimHealthState.Stopped(this);
         this.starting = new SwimHealthState.Starting(this);
     }
@@ -202,6 +241,10 @@ public final class SwimHealthContext {
 
     public BooleanSupplier isBootingSupplier() {
         return isBootingSupplier;
+    }
+
+    public Predicate<NodeId> transportConnected() {
+        return transportConnected;
     }
 
     public SwimConfig swimConfig() {

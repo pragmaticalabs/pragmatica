@@ -84,6 +84,7 @@ import org.pragmatica.aether.deployment.generation.SwimHintsRegistry;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.ClusterSyncPongSignalFan;
 import org.pragmatica.aether.metrics.ClusterSyncScheduler;
+import org.pragmatica.aether.metrics.DrainCommandRegistry;
 import org.pragmatica.aether.metrics.MinuteAggregator;
 import org.pragmatica.aether.metrics.PeriodicObservationConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -404,16 +405,14 @@ public interface AetherNode extends ManageableNode {
         var hlcClock = HlcClock.hlcClock(config.self());
         // Membership/placement split (spec §4.1–4.2, step 2), Wave-4 update: membership-delta
         // emission lives in the MembershipDeltaProjector (fed by the MembershipFsm delta edge,
-        // wired in assembleNode); TopologyObserver's quorum eval reads LOCAL NTT presence, not
+        // wired in assembleNode); TopologyObserver's quorum eval reads the LOCAL FSM projection, not
         // the committed GenerationSnapshot — so NodeRemoved/NodeJoined fire decoupled from
-        // consensus commits. The NTT is built later in assembleNode; presenceSamplerRef is the empty
-        // deferred holder (declared here, populated at NTT construction, threaded through).
-        // memberSupplier returns Set.of() until NTT exists → PresenceGenerationSnapshotSource
+        // consensus commits.
+        // memberSupplier returns Set.of() until the FSM exists → PresenceGenerationSnapshotSource
         // yields none() → TopologyObserver falls back to its legacy BOOTING quorum path
         // (CRITICAL for cold-start formation). desiredCoreSize is supplied from
-        // ClusterConfigKey.CURRENT (fallback: topology core count) — NTT doesn't carry it.
+        // ClusterConfigKey.CURRENT (fallback: topology core count) — the FSM doesn't carry it.
         // ctmProvisioned + observedRabiaTerm delegate to the FSM-backed snapshotSource / leader term.
-        var presenceSamplerRef = new AtomicReference<PresenceSampler>();
         // Membership-FSM unification (Wave D): deferred holder for the authoritative MembershipFsm.
         // The FSM is constructed later in createNode (after NTT), but several membership CONSUMERS are
         // wired before that point (the DHT livePeers() adapter, the forward-routing accessibility
@@ -491,7 +490,6 @@ public interface AetherNode extends ManageableNode {
                                                              leaderTerm,
                                                              hlcClock,
                                                              snapshotSource,
-                                                             presenceSamplerRef,
                                                              membershipFsmRef,
                                                              syncHoldRegistry,
                                                              jvmExit));
@@ -523,18 +521,15 @@ public interface AetherNode extends ManageableNode {
                            () -> Base64.getDecoder().decode(encoded.trim()));
     }
 
-    /// NTT reconcile fan-out (membership v2). Fired exactly once per stable membership
-    /// transition (hysteresis flip OR hard-evict — both gated by `emitIfChanged`/`evictLocked`
-    /// so an already-absent re-evict is a no-op and never re-triggers). Propagates the new
-    /// member count to the quorum-loss detector and nudges the leader reconciler.
+    /// NTT reconcile fan-out (membership v2). Fired once per stable presence-sensor membership
+    /// transition AND (Wave 7) once per FSM death edge — both gated upstream so an already-handled
+    /// re-fire is a no-op. Propagates the FSM member count to the quorum-loss detector and nudges
+    /// the leader reconciler.
     @Contract
     private static void onNttReconcile(AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
-                                       AtomicReference<PresenceSampler> presenceSamplerRef,
                                        AtomicReference<MembershipFsm> membershipFsmRef,
                                        AtomicReference<LeaderReconciler> leaderReconcilerRef) {
-        Option.option(presenceSamplerRef.get()).onPresent(sampler -> propagateMemberCount(quorumLossDetectorRef,
-                                                                                          membershipFsmRef,
-                                                                                          sampler));
+        Option.option(membershipFsmRef.get()).onPresent(fsm -> propagateMemberCount(quorumLossDetectorRef, fsm));
         Option.option(leaderReconcilerRef.get()).onPresent(LeaderReconciler::onTopologyUnhealthy);
     }
 
@@ -546,17 +541,48 @@ public interface AetherNode extends ManageableNode {
     /// config — Rabia has no voter majority). The strict MEMBER-only numerator is safe against
     /// premature self-drain on a transient SUSPECT because the detector only fires after the
     /// `quorumLossDrainThreshold` window elapses below threshold — a flap that recovers within
-    /// the window cancels the pending intent. Before the FSM is published (early boot), it
-    /// degrades to NTT's role-blind `currentMemberCount`.
+    /// the window cancels the pending intent. Wave 7 (parallel-view collapse): the legacy
+    /// pre-FSM fallback to the sampler's role-blind `currentMemberCount` is GONE — the FSM is
+    /// published before the sampler's first 1s tick can fire this path, so the propagation is
+    /// simply skipped in the (unreachable in practice) pre-FSM window; the next reconcile
+    /// trigger after FSM publication propagates.
     @Contract
     private static void propagateMemberCount(AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
-                                             AtomicReference<MembershipFsm> membershipFsmRef,
-                                             PresenceSampler sampler) {
-        var memberCount = Option.option(membershipFsmRef.get())
-                                .map(MembershipFsm::strictCoreMemberCount)
-                                .or(sampler::currentMemberCount);
+                                             MembershipFsm membershipFsm) {
+        var memberCount = membershipFsm.strictCoreMemberCount();
 
         Option.option(quorumLossDetectorRef.get()).onPresent(detector -> detector.onMemberCountChanged(memberCount));
+    }
+
+    /// FSM death-edge fan-out (Wave 7, cluster-topology-overhaul): invoked once per fresh edge into
+    /// DEAD via [`MembershipFsm#onConfirmedDeparture`]. Drops the dead peer's QUIC link promptly
+    /// (`departurePermanent`, idempotent) and runs the same heal/quorum nudge the deleted
+    /// FSM→PresenceSampler eviction used to trigger through the sampler's reconcile callback —
+    /// behaviour parity with the sampler removed from the authority loop.
+    @Contract
+    private static void onMembershipDeath(NodeId departed,
+                                          Consumer<NodeId> dropDeadPeerLink,
+                                          AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
+                                          AtomicReference<MembershipFsm> membershipFsmRef,
+                                          AtomicReference<LeaderReconciler> leaderReconcilerRef) {
+        dropDeadPeerLink.accept(departed);
+        onNttReconcile(quorumLossDetectorRef, membershipFsmRef, leaderReconcilerRef);
+    }
+
+    /// Operator/controller drain sink (M10, cluster-topology-overhaul Wave 7): every drain command
+    /// is BOTH enqueued into the `DrainCommandRegistry` (the leader's cluster-sync ping carries it;
+    /// the target self-drains via its `DrainProcedure`, unchanged) AND routed through the
+    /// authoritative `MembershipFsm` as a `DrainRequested` event — the target transitions to
+    /// DEPARTING (stops counting toward effective, H2 timeout terminalizes it if it goes silent,
+    /// higher-incarnation `SwimHealthy` recovers it mid-drain) instead of the drain bypassing the
+    /// FSM entirely. The FSM holder is deref'd lazily: the registry-backed sinks are wired before
+    /// the FSM exists; pre-FSM the registry path alone applies (boot window only).
+    @Contract
+    private static void requestDrainThroughFsm(DrainCommandRegistry drainCommandRegistry,
+                                               AtomicReference<MembershipFsm> membershipFsmRef,
+                                               NodeId target) {
+        drainCommandRegistry.requestDrain(target);
+        Option.option(membershipFsmRef.get()).onPresent(fsm -> fsm.onDrainRequested(target));
     }
 
     long DEFAULT_STREAM_RETENTION_MS = 24 * 60 * 60 * 1000L;
@@ -600,7 +626,6 @@ public interface AetherNode extends ManageableNode {
                                                    AtomicLong leaderTerm,
                                                    HlcClock hlcClock,
                                                    GenerationSnapshotSource snapshotSource,
-                                                   AtomicReference<PresenceSampler> presenceSamplerRef,
                                                    AtomicReference<MembershipFsm> membershipFsmRef,
                                                    org.pragmatica.cluster.node.rabia.SyncHoldRegistry syncHoldRegistry,
                                                    Runnable jvmExit) {
@@ -1212,7 +1237,7 @@ public interface AetherNode extends ManageableNode {
         // Sampling the level each pong self-heals: the former edge-cached flag could stick SYNCING
         // when a PASSIVE edge was not followed by a fresh ACTIVE edge.
         var nodeReportedStateHolder = NodeReportedStateHolder.nodeReportedStateHolder(clusterNode::isActive);
-        var drainCommandRegistry = org.pragmatica.aether.metrics.DrainCommandRegistry.drainCommandRegistry();
+        var drainCommandRegistry = DrainCommandRegistry.drainCommandRegistry();
 
         metricsCollector.setNodeReportedStateSupplier(nodeReportedStateHolder::current);
         // Incarnation supplier is wired to the SWIM self-incarnation below, once
@@ -1354,7 +1379,7 @@ public interface AetherNode extends ManageableNode {
         // (anti-flood) and defers to the §8.2 drain to dissolve the
         // minority partition.
         ((TopologyObserver) clusterNode.topologyManager()).inQuorum(),
-                                                                                   drainCommandRegistry::requestDrain,
+                                                                                   target -> requestDrainThroughFsm(drainCommandRegistry, membershipFsmRef, target),
                                                                                    drainCommandRegistry::clearDrain);
         // E2 Phase 2b (2026-05-28): OrphanSelfDrainChecker deleted; NTT (§6) drives departure
         // detection and the §8 unified drain handles surplus dissolution. Membership v2 finale:
@@ -1717,6 +1742,14 @@ public interface AetherNode extends ManageableNode {
         // general FAULTY peers. See SwimHealthContext.faultyLeaderEvictor field doc.
         Consumer<NodeId> faultyLeaderEvictor = peer -> clusterNode.network()
                                                                   .disconnect(new NetworkServiceMessage.DisconnectNode(peer));
+        // Gate RCA fix (2026-06-11): SWIM transport-connectivity veto — a never-HEALTHY peer past
+        // its join grace is FAULTY'd ONLY if it ALSO has no live QUIC connection (co-confirmed
+        // ghost). Sourced from the network's live connectedPeers() view, deref'd per call (the
+        // network reference is live long before SWIM probing starts, so construction order is
+        // safe). One-way evidence: transport may VETO a death; it never reports life.
+        Predicate<NodeId> swimTransportConnected = peer -> clusterNode.network()
+                                                                      .connectedPeers()
+                                                                      .contains(peer);
         var swimHealthDetector = CoreSwimHealthDetector.coreSwimHealthDetector(delegateRouter,
                                                                                config.topology(),
                                                                                serializer,
@@ -1727,7 +1760,8 @@ public interface AetherNode extends ManageableNode {
                                                                                peerObservationStore,
                                                                                swimConfig,
                                                                                swimIsBootingSupplier,
-                                                                               faultyLeaderEvictor);
+                                                                               faultyLeaderEvictor,
+                                                                               swimTransportConnected);
         // Single `(NodeId, incarnation)` authority: the metrics readiness epoch is sourced from
         // the SWIM self-incarnation, floored at a captured boot value so it never reports below
         // boot-millis during the pre-announce window (before `announceJoin` seeds the SWIM counter).
@@ -1778,7 +1812,6 @@ public interface AetherNode extends ManageableNode {
         var leaderReconcilerRef = new AtomicReference<LeaderReconciler>();
         var quorumLossDetectorRef = new AtomicReference<QuorumLossDetector>();
         Runnable nttReconcileTrigger = () -> onNttReconcile(quorumLossDetectorRef,
-                                                            presenceSamplerRef,
                                                             membershipFsmRef,
                                                             leaderReconcilerRef);
         Supplier<HealthSnapshot> nttHealthSupplier = () -> swimHealthDetector.currentHealth()
@@ -1788,7 +1821,6 @@ public interface AetherNode extends ManageableNode {
                                                               nttHealthSupplier,
                                                               nttReconcileTrigger);
 
-        presenceSamplerRef.set(presenceSampler);
         presenceSampler.start();
         // P3 (membership unification): quorum-loss self-drain is sourced from NTT's stable
         // member count via the nttReconcileTrigger above; the grace window + the
@@ -1803,22 +1835,26 @@ public interface AetherNode extends ManageableNode {
                                                                         .or("");
         // Membership v2 Phase 2 LIVE — the per-member MembershipFsm is the authoritative membership-
         // death decision-maker. It is ALWAYS-ON per node (no leader gate): every node drives its own
-        // per-member FSMs from its tapped SWIM/liveness edges and hard-evicts the dead identity from its
-        // own NTT view (presenceSampler.evict) on every transition into DEAD. Only scaling (LeaderReconciler) stays
-        // leader-gated. The presence-derived TopologyObserver → MembershipDecision →
-        // ClusterEventAggregator path then emits NODE_FAILED / NODE_LEFT from the resulting stableMembers
-        // delta. The FSM emits no event directly. It is injected with the SAME `presenceSampler` instance and is
-        // constructed BEFORE the reconciler because the reconciler now COUNTS this FSM's countedMembers()
-        // (MEMBER + SUSPECT) as its base membership set (#68/#94 churn cutover).
+        // per-member FSMs from its tapped SWIM/liveness edges. Wave 7 (cluster-topology-overhaul):
+        // the FSM is the SOLE membership authority — the legacy FSM→PresenceSampler eviction is GONE
+        // (the sampler is a pure debounce sensor feeding Up/DownHysteresisMet edges INTO the FSM);
+        // the prompt heal/quorum nudge the eviction used to provide now rides the FSM's own death
+        // edge (onConfirmedDeparture chain below). Only scaling (LeaderReconciler) stays
+        // leader-gated. The FSM is constructed BEFORE the reconciler because the reconciler COUNTS
+        // this FSM's coreCountedMembers() as its base membership set (#68/#94 churn cutover).
         // #68 — restores the TTL the FSM migration dropped: the quiesce SUSPECTED health-hint now
         // ages out after the auto-heal SWIM-hints TTL (config.autoHeal().swimHintsTtl(), the SAME
         // value the legacy SwimHintsRegistry uses below; .millis() is milliseconds). A stale one-shot
         // SWIM-suspect on a still-present node (load/churn false positive, no SwimHealthy recovery
         // edge, present so no co-confirmed DEAD) decays out of the quiesce gate after the TTL instead
         // of sticking the cluster DEGRADED forever. Default System clock.
-        var membershipFsm = MembershipFsm.membershipFsm(presenceSampler,
-                                                        config.autoHeal().swimHintsTtl().millis(),
-                                                        membershipConfig.quorumLossDrainThreshold());
+        // Wave 7 (H2 + M10): the DEPARTING timeout and join-grace windows are both wired from the
+        // configured nttDepartureTimeout — the single membership departure-debounce constant (the
+        // same one the sampler derives its down-hysteresis from).
+        var membershipFsm = MembershipFsm.membershipFsm(config.autoHeal().swimHintsTtl().millis(),
+                                                        membershipConfig.quorumLossDrainThreshold(),
+                                                        membershipConfig.nttDepartureTimeout(),
+                                                        membershipConfig.nttDepartureTimeout());
         // Publish the FSM into the deferred holder so the membership consumers wired earlier (DHT
         // livePeers, accessibility filter, quorum-count propagation) read the authoritative FSM set.
         membershipFsmRef.set(membershipFsm);
@@ -1999,11 +2035,20 @@ public interface AetherNode extends ManageableNode {
         // already fire departurePermanent; this adds the co-confirmed-death edge. departurePermanent is
         // idempotent on an already-removed peer, so the overlap is harmless.
         // Wave 4 (ratified D7): the 2026-06-09 ReevaluateMembership re-poke is DELETED — the
-        // confirmed-departure edge now only drops the QUIC link. The membership delta itself
+        // confirmed-departure edge drops the QUIC link. The membership delta itself
         // (NodeRemoved emission + observer prune) rides the FSM's REMOVED delta edge through
         // the MembershipDeltaProjector wired above, structurally decoupled from
         // evaluateQuorumState (spec §3.1).
-        membershipFsm.onConfirmedDeparture(clusterNetworkRef::departurePermanent);
+        // Wave 7 (parallel-view collapse): the FSM no longer evicts the PresenceSampler on death,
+        // so the prompt heal/quorum nudge that eviction's onReconcileNeeded used to fire now rides
+        // this same death edge — behaviour parity, sampler out of the loop. Without it the nudge
+        // would wait for the sampler's natural ~nttDepartureTimeout down-hysteresis crossing.
+        Consumer<NodeId> dropDeadPeerLink = clusterNetworkRef::departurePermanent;
+        membershipFsm.onConfirmedDeparture(departed -> onMembershipDeath(departed,
+                                                                         dropDeadPeerLink,
+                                                                         quorumLossDetectorRef,
+                                                                         membershipFsmRef,
+                                                                         leaderReconcilerRef));
         clusterNetworkRef.setDesiredConnections(() -> desiredDialTargets(membershipFsm));
         // Wave-1 Enrichment A: PEER-layer transition journal feed — every PeerState phase
         // mutation (plus the §6.1 dialer expected-vs-actual Hello diagnostic) lands in the
@@ -2450,7 +2495,7 @@ public interface AetherNode extends ManageableNode {
                                                                          Option.some(clusterNode.network()),
                                                                          Option.some(serializer),
                                                                          Option.some(deserializer),
-                                                                         drainCommandRegistry::requestDrain,
+                                                                         target -> requestDrainThroughFsm(drainCommandRegistry, membershipFsmRef, target),
                                                                          drainCommandRegistry::drainTargets);
 
                 managementServerRef.set(Option.some(managementServer));

@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.generation;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.consensus.NodeId;
 
 import java.util.Set;
@@ -78,5 +79,37 @@ class PresenceGenerationSnapshotSourceTest {
         var source = PresenceGenerationSnapshotSource.presenceGenerationSnapshotSource(Set::of, () -> 0, Set::of, () -> 42L);
 
         assertThat(source.observedRabiaTerm()).isEqualTo(42L);
+    }
+
+    /// Wave 7 (parallel-view collapse): the snapshot source fed by the authoritative FSM projection
+    /// (production wiring: `MembershipFsm::coreCountedMembers`) agrees with `MembershipFsm.coreMembers()`
+    /// through a simulated boot — below quorum it stays `none()` (the legacy consensus-bootstrap
+    /// fallback governs), at quorum the view's `coreMemberIds` ARE the FSM's core members, and after
+    /// a death the view tracks the FSM in lockstep (latched — stays present, low count).
+    @Test
+    void currentMembershipView_fsmFedBoot_agreesWithFsmCoreMembers() {
+        var fsm = MembershipFsm.membershipFsm();
+        var source = PresenceGenerationSnapshotSource.presenceGenerationSnapshotSource(fsm::coreCountedMembers, () -> 5, Set::of, () -> 0L);
+
+        assertThat(source.currentMembershipView().isPresent())
+                .as("nothing promoted yet — bootstrap fallback governs")
+                .isFalse();
+
+        fsm.onSwimHealthy(N1, 1L);
+        fsm.onSwimHealthy(N2, 1L);
+        assertThat(source.currentMembershipView().isPresent())
+                .as("2 < quorum 3 — still bootstrapping")
+                .isFalse();
+
+        fsm.onSwimHealthy(N3, 1L);
+        source.currentMembershipView()
+              .onEmpty(() -> fail("expected present membership view at quorum"))
+              .onPresent(view -> assertThat(view.coreMemberIds()).isEqualTo(fsm.coreMembers()));
+
+        fsm.onSwimDeparted(N3, 2L);
+        source.currentMembershipView()
+              .onEmpty(() -> fail("expected present view after latch"))
+              .onPresent(view -> assertThat(view.coreMemberIds()).isEqualTo(fsm.coreMembers()))
+              .onPresent(view -> assertThat(view.coreMemberIds()).containsExactlyInAnyOrder(N1, N2));
     }
 }

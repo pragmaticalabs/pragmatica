@@ -17,25 +17,26 @@ import java.util.function.Supplier;
 
 /// Presence-derived `GenerationSnapshotSource` that feeds `TopologyObserver`'s quorum
 /// evaluation (and the `MembershipDeltaProjector`'s `observedRabiaTerm` log-index stamp,
-/// Wave 4) from local presence sampler presence
-/// (`PresenceSampler.currentMembers()`) instead of the committed `GenerationSnapshot`.
+/// Wave 4) from the authoritative membership FSM's core-scoped counting projection
+/// (`MembershipFsm.coreCountedMembers()`, wired as `memberSupplier` — Wave 7 of the
+/// cluster-topology-overhaul spec completed the cutover off `PresenceSampler.currentMembers()`)
+/// instead of the committed `GenerationSnapshot`.
 /// This decouples `NodeRemoved`/`NodeJoined` and quorum from consensus commits
 /// (`aether/docs/specs/membership-placement-split-spec.md` §4.1–4.2, step 2 of §8).
 ///
 /// Cold-start gating uses a **one-way quorum latch** mirroring `TopologyObserver`'s own
-/// BOOTING→NORMAL latch. `PresenceSampler.currentMembers()` is never empty — it is
-/// seeded with `{self}` at construction — so an "empty-members" check can never trigger
-/// the fallback. Instead, until presence sampler first converges to quorum-many members the cluster is
+/// BOOTING→NORMAL latch. Until the FSM projection first converges to quorum-many members the
+/// cluster is
 /// still cold-starting and `currentMembershipView()` returns `Option.none()`, letting
 /// `TopologyObserver` bootstrap quorum from its legacy in-memory `nodeStatesById`
-/// peer-count path (CRITICAL for cold-start formation — must not be removed). Once presence sampler
-/// has shown quorum the latch flips permanently: the presence view then governs membership
+/// peer-count path (CRITICAL for cold-start formation — must not be removed). Once the FSM view
+/// has shown quorum the latch flips permanently: the FSM view then governs membership
 /// deltas AND steady-state quorum forever, so a later sub-quorum drop is reported as a low
 /// member count (which drives the dissolve path), NOT a flip back to the legacy fallback.
 ///
-/// presence sampler carries neither `desiredCoreSize` nor the CTM-provisioned set, so those are
+/// The FSM carries neither `desiredCoreSize` nor the CTM-provisioned set, so those are
 /// supplied separately (`desiredCoreSize` from `ClusterConfigKey.CURRENT` / topology,
-/// `ctmProvisioned` delegated to the retained KV-backed source).
+/// `ctmProvisioned` from the FSM descriptor source labels).
 public final class PresenceGenerationSnapshotSource implements GenerationSnapshotSource {
     private final Supplier<Set<NodeId>> memberSupplier;
     private final IntSupplier desiredCoreSizeSupplier;

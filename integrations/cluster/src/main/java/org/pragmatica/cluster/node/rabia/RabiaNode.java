@@ -188,9 +188,10 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
     /// Production overload: accepts an `isDecommissioned` predicate that consults the
     /// local KV-Store for `NodeLifecycleValue` atoms in DECOMMISSIONED state. The
-    /// predicate is forwarded to [`TopologyObserver`] so static-config reseed in
-    /// `initReconcile` skips nodes the cluster has durably retired (the in-memory
-    /// `tombstonedNodes` set alone is insufficient — it does not survive process restart).
+    /// predicate is forwarded to [`TopologyObserver`] as the cross-restart persisted-tombstone
+    /// hook: it covers nodes the cluster has durably retired across a process restart, which
+    /// the in-memory membership state cannot (Wave 7 retired the observer's inert in-memory
+    /// tombstone set; same-session resurrect protection lives in the aether FSM incarnation fence).
     static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
                                                               DelegateRouter delegateRouter,
                                                               StateMachine<C> stateMachine,

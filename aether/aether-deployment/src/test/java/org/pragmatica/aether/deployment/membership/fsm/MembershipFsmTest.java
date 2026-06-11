@@ -6,7 +6,6 @@ package org.pragmatica.aether.deployment.membership.fsm;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.deployment.membership.ntt.PresenceSampler;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
@@ -16,26 +15,22 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.statemachine.FsmObserver;
-import org.pragmatica.swim.HealthSnapshot;
-import org.pragmatica.swim.SwimHealth;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.aether.deployment.membership.ntt.PresenceSampler.presenceSampler;
 
 /// Verifies the LIVE membership manager ([`MembershipFsm`]) drives the per-member FSM faithfully from
 /// tapped events, computes the cluster aggregate (spec §3.4 effective / would-provision / would-drain),
-/// AND — as the authoritative death decision-maker — hard-evicts a co-confirmed-dead member from the
-/// [`PresenceSampler`] on every transition into DEAD. Promotion is edge-driven (a single SWIM
+/// AND — as the authoritative death decision-maker (Wave 7: the SOLE membership authority; the
+/// legacy FSM→PresenceSampler eviction is gone) — fires the confirmed-departure listener on every
+/// fresh transition into DEAD. Promotion is edge-driven (a single SWIM
 /// HealthyObserved edge promotes OBSERVED→MEMBER, up-hysteresis = 1) with a one-time formation seed;
 /// confirmed eviction requires co-confirmation (SWIM-FAULTY ∧ liveness-gone) and is never undone by a
 /// later seed.
@@ -43,11 +38,6 @@ class MembershipFsmTest {
     private static final NodeId A = new NodeId("node-a");
     private static final NodeId B = new NodeId("node-b");
     private static final NodeId C = new NodeId("node-c");
-
-    private static final NodeId SAMPLER_SELF = new NodeId("sampler-self");
-    private static final TimeSpan INTERVAL = TimeSpan.timeSpan(100).millis();
-    private static final int K_UP = 2;
-    private static final int K_DOWN = 3;
 
     /// Short terminal-eviction backstop (#131 Model C) for the existing co-confirmation tests that
     /// assert the TERMINAL DEAD outcome: with a near-zero window the deferred backstop fires almost
@@ -60,16 +50,14 @@ class MembershipFsmTest {
     /// assertion.
     private static final long NO_HINT_DECAY = Long.MAX_VALUE;
 
-    private static MembershipFsm activeManager() {
-        return shortBackstopManager(emptySampler());
-    }
-
     /// Manager wired with the short Model C backstop so co-confirmed death reaches terminal DEAD
     /// promptly (polled via [`#awaitDead`]). Used by every legacy co-confirmation test; the deferral
     /// itself (the SUSPECT hold) is exercised separately by the [`ModelCBackstop`] nested tests with a
-    /// LONG window.
-    private static MembershipFsm shortBackstopManager(PresenceSampler sampler) {
-        return MembershipFsm.membershipFsm(sampler, FsmObserver.noop(), System::currentTimeMillis, NO_HINT_DECAY, SHORT_BACKSTOP);
+    /// LONG window. The Wave-7 DEPARTING-timeout / join-grace windows ride the production defaults
+    /// (15s) — far beyond any test's lifetime, so they never interfere; [`DepartingTimeoutH2`] /
+    /// [`JoinGraceReaper`] drive them explicitly with short windows.
+    private static MembershipFsm activeManager() {
+        return MembershipFsm.membershipFsm(FsmObserver.noop(), System::currentTimeMillis, NO_HINT_DECAY, SHORT_BACKSTOP);
     }
 
     /// Poll until `id` has reached terminal DEAD in `manager` (the Model C backstop has fired). Real
@@ -80,13 +68,6 @@ class MembershipFsmTest {
     private static void awaitDead(MembershipFsm manager, NodeId id) {
         await().atMost(2, TimeUnit.SECONDS)
                .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(id, "Dead"));
-    }
-
-    /// A real [`PresenceSampler`] with no live members — eviction of an absent id is a harmless
-    /// no-op, so the FSM's DEAD→evict hook never affects these behavioral assertions.
-    private static PresenceSampler emptySampler() {
-        Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.of());
-        return presenceSampler(SAMPLER_SELF, health, INTERVAL, K_UP, K_DOWN, () -> 0L);
     }
 
     @Nested
@@ -163,78 +144,296 @@ class MembershipFsmTest {
         }
     }
 
+    /// H2 (Wave 7) — DEPARTING is no longer an inescapable trap: a drainer that goes SILENT past the
+    /// departure-timeout window terminalizes to DEAD (the REMOVED delta fires exactly once), a
+    /// `SwimHealthy` carrying a STRICTLY HIGHER incarnation recovers it to MEMBER (cancelling the
+    /// timeout — the delayed `Stopped` must never kill the recovered member), and mere liveness at
+    /// an already-seen incarnation does NOT cancel a drain.
     @Nested
-    class SamplerEviction {
-        /// The cardinal Phase-2 contract: a co-confirmed-dead member (SWIM-FAULTY ∧ liveness-gone)
-        /// must be hard-evicted from the live [`PresenceSampler`] on the transition into DEAD.
-        /// Drive a real member into presence sampler's stable set via samples, promote + co-confirm it dead in the
-        /// FSM, and assert presence sampler's presence view no longer contains it (the observable effect that the
-        /// presence-derived TopologyObserver path then emits NODE_FAILED from).
+    class DepartingTimeoutH2 {
+        /// Short enough to fire promptly within the awaitility ceiling.
+        private static final TimeSpan FIRING_TIMEOUT = TimeSpan.timeSpan(80).millis();
+        /// Long enough that it CANNOT fire during a synchronous assertion.
+        private static final TimeSpan LONG_TIMEOUT = TimeSpan.timeSpan(30).seconds();
+
+        private static MembershipFsm departureTimeoutManager(TimeSpan departureTimeout) {
+            return MembershipFsm.membershipFsm(FsmObserver.noop(),
+                                               System::currentTimeMillis,
+                                               NO_HINT_DECAY,
+                                               SHORT_BACKSTOP,
+                                               departureTimeout,
+                                               LONG_TIMEOUT);
+        }
+
         @Test
-        void enteringDead_coConfirmed_evictsFromSampler() {
-            var liveness = new HashMap<NodeId, SwimHealth>();
-            var clock = new AtomicLong(0L);
-            Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.copyOf(liveness));
-            var presenceSampler = presenceSampler(SAMPLER_SELF, health, INTERVAL, K_UP, K_DOWN, clock::get);
+        void departingSilence_pastTimeout_terminalizesToDeadWithSingleRemovedDelta() {
+            var manager = departureTimeoutManager(FIRING_TIMEOUT);
+            var deltas = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(deltas::add);
 
-            liveness.put(A, SwimHealth.HEALTHY);
-            sampleTimes(presenceSampler, K_UP);
-            assertThat(presenceSampler.currentMembers()).contains(A);
-
-            var manager = shortBackstopManager(presenceSampler);
-            manager.seed(Set.of(A));
-            manager.onSwimFaulty(A, 4L);
-            manager.onLivenessGone(A);
+            promoteToMember(manager, A);
+            manager.onDrainRequested(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Departing");
 
             awaitDead(manager, A);
-            assertThat(manager.memberStates()).containsEntry(A, "Dead");
-            assertThat(presenceSampler.currentMembers()).doesNotContain(A);
+            var removed = deltas.stream()
+                                .filter(edge -> edge.kind() == MembershipDeltaEdge.Kind.REMOVED)
+                                .toList();
+            assertThat(removed).as("the DEPARTING-timeout death emits the REMOVED edge exactly once").hasSize(1);
+            assertThat(removed.getFirst().node()).isEqualTo(A);
         }
 
-        /// Graceful departure also reaches DEAD (no co-confirmation needed) and must evict from presence sampler.
         @Test
-        void enteringDead_graceful_evictsFromSampler() {
-            var liveness = new HashMap<NodeId, SwimHealth>();
-            var clock = new AtomicLong(0L);
-            Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.copyOf(liveness));
-            var presenceSampler = presenceSampler(SAMPLER_SELF, health, INTERVAL, K_UP, K_DOWN, clock::get);
+        void departingRecovery_newerIncarnation_returnsToMemberAndCancelsTimeout() {
+            var manager = departureTimeoutManager(FIRING_TIMEOUT);
 
-            liveness.put(A, SwimHealth.HEALTHY);
-            sampleTimes(presenceSampler, K_UP);
-            assertThat(presenceSampler.currentMembers()).contains(A);
+            promoteToMember(manager, A);
+            manager.onDrainRequested(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Departing");
 
-            var manager = MembershipFsm.membershipFsm(presenceSampler);
-            manager.seed(Set.of(A));
-            manager.onSwimDeparted(A, 5L);
+            manager.onSwimHealthy(A, 2L);
+            assertThat(manager.memberStates()).containsEntry(A, "Member");
 
-            assertThat(manager.memberStates()).containsEntry(A, "Dead");
-            assertThat(presenceSampler.currentMembers()).doesNotContain(A);
+            // Past the (cancelled) window the recovered member must still be MEMBER — the
+            // delayed Stopped must never fire on a recovered member.
+            await().pollDelay(FIRING_TIMEOUT.millis() * 3, TimeUnit.MILLISECONDS)
+                   .atMost(2, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
+            assertThat(manager.countedMembers()).contains(A);
         }
 
-        /// Single-plane death (bare SWIM-FAULTY) stays SUSPECT — it must NOT evict from presence sampler.
         @Test
-        void singlePlaneFaulty_doesNotEvictFromSampler() {
-            var liveness = new HashMap<NodeId, SwimHealth>();
-            var clock = new AtomicLong(0L);
-            Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.copyOf(liveness));
-            var presenceSampler = presenceSampler(SAMPLER_SELF, health, INTERVAL, K_UP, K_DOWN, clock::get);
+        void departingLiveness_sameIncarnation_staysDeparting() {
+            var manager = departureTimeoutManager(LONG_TIMEOUT);
 
-            liveness.put(A, SwimHealth.HEALTHY);
-            sampleTimes(presenceSampler, K_UP);
-            assertThat(presenceSampler.currentMembers()).contains(A);
+            promoteToMember(manager, A);
+            manager.onDrainRequested(A);
 
-            var manager = MembershipFsm.membershipFsm(presenceSampler);
-            manager.seed(Set.of(A));
-            manager.onSwimFaulty(A, 4L);
+            manager.onSwimHealthy(A, 1L);
+
+            assertThat(manager.memberStates())
+                    .as("mere liveness at the known incarnation does not cancel a drain")
+                    .containsEntry(A, "Departing");
+            assertThat(manager.countedMembers()).doesNotContain(A);
+        }
+    }
+
+    /// H3 (Wave 7) — symmetric death-flag clearing: ANY recovery to MEMBER clears the
+    /// co-confirmation flags, so the next death path needs FRESH two-plane evidence — a stale
+    /// single-plane flag from before the recovery can never pair with a later opposite-plane
+    /// signal.
+    @Nested
+    class DeathFlagClearingH3 {
+        @Test
+        void suspectRecovery_clearsSwimFaultyFlag_nextDeathNeedsFreshEvidence() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onSwimFaulty(A, 2L);
+            assertThat(manager.memberStates()).containsEntry(A, "Suspect");
+
+            manager.onSwimHealthy(A, 3L);
+            assertThat(manager.memberStates()).containsEntry(A, "Member");
+
+            manager.onLivenessGone(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Suspect");
+
+            // Past the (short) backstop window: had the stale swimFaulty flag survived the
+            // recovery, the pair would have armed the backstop and terminalized — it must not.
+            await().pollDelay(SHORT_BACKSTOP.millis() * 3, TimeUnit.MILLISECONDS)
+                   .atMost(2, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Suspect"));
+            assertThat(manager.countedMembers()).contains(A);
+        }
+
+        @Test
+        void departingRecovery_clearsFlags_nextDeathNeedsFreshEvidence() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onSwimFaulty(A, 2L);
+            manager.onDrainRequested(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Departing");
+
+            manager.onSwimHealthy(A, 3L);
+            assertThat(manager.memberStates()).containsEntry(A, "Member");
+
+            manager.onLivenessGone(A);
+
+            await().pollDelay(SHORT_BACKSTOP.millis() * 3, TimeUnit.MILLISECONDS)
+                   .atMost(2, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Suspect"));
+            assertThat(manager.countedMembers()).contains(A);
+        }
+    }
+
+    /// Death-ward boundary rule (Wave 7, ratified): transport may report DEATH, never LIFE — a
+    /// `PeerConnected` on a SWIM-suspected member must NOT revive it; recovery goes only through
+    /// the SWIM probe-ack authority (`SwimHealthy`) or presence hysteresis (`UpHysteresisMet`).
+    @Nested
+    class TransportDeathWard {
+        @Test
+        void onPeerConnected_suspectMember_staysSuspect() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onSwimSuspect(A, 2L);
+            assertThat(manager.memberStates()).containsEntry(A, "Suspect");
+
+            manager.onPeerConnected(A);
 
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
-            assertThat(presenceSampler.currentMembers()).contains(A);
+            assertThat(manager.countedMembers()).as("SUSPECT still counts — no count perturbation").contains(A);
         }
 
-        private static void sampleTimes(PresenceSampler presenceSampler, int times) {
-            for (var i = 0; i < times; i++) {
-                presenceSampler.sample();
-            }
+        @Test
+        void onPeerConnected_thenSwimHealthy_recoversViaSwimAuthority() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onLivenessGone(A);
+            manager.onPeerConnected(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Suspect");
+
+            manager.onSwimHealthy(A, 2L);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Member");
+        }
+    }
+
+    /// M10 (Wave 7) — operator/controller drain routed THROUGH the FSM: [`MembershipFsm#onDrainRequested`]
+    /// drives OBSERVED/MEMBER/SUSPECT → DEPARTING (out of the counted set); DEAD ignores it.
+    @Nested
+    class DrainRequestIngress {
+        @Test
+        void onDrainRequested_member_transitionsToDepartingAndStopsCounting() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            assertThat(manager.effective()).isEqualTo(1);
+
+            manager.onDrainRequested(A);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Departing");
+            assertThat(manager.countedMembers()).doesNotContain(A);
+            assertThat(manager.effective()).isZero();
+        }
+
+        @Test
+        void onDrainRequested_thenGracefulDeparted_reachesDeadOnce() {
+            var manager = activeManager();
+            var fired = new ArrayList<NodeId>();
+            manager.onConfirmedDeparture(fired::add);
+
+            promoteToMember(manager, A);
+            manager.onDrainRequested(A);
+            manager.onSwimDeparted(A, 2L);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+            assertThat(fired).containsExactly(A);
+        }
+
+        @Test
+        void onDrainRequested_deadMember_isIgnored() {
+            var manager = activeManager();
+
+            driveToDead(manager, A, 4L);
+            manager.onDrainRequested(A);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+        }
+    }
+
+    /// M10 (Wave 7) + gate RCA fix (2026-06-11) — the join-grace reaper: a tracked member that
+    /// never reaches MEMBER within the join-grace window is reaped OBSERVED→DEAD ONLY when it is
+    /// a co-confirmed ghost (never-SWIM-healthy AND no live transport connection); a live
+    /// transport connection VETOES the reap (the timer re-arms) until the link drops or the
+    /// member turns healthy. Promotion within the window cancels the reaper.
+    @Nested
+    class JoinGraceReaper {
+        private static final TimeSpan FIRING_GRACE = TimeSpan.timeSpan(80).millis();
+        private static final TimeSpan LONG_WINDOW = TimeSpan.timeSpan(30).seconds();
+
+        private static MembershipFsm joinGraceManager(TimeSpan joinGrace) {
+            return MembershipFsm.membershipFsm(FsmObserver.noop(),
+                                               System::currentTimeMillis,
+                                               NO_HINT_DECAY,
+                                               SHORT_BACKSTOP,
+                                               LONG_WINDOW,
+                                               joinGrace);
+        }
+
+        @Test
+        void neverHealthyObserved_pastGrace_isReapedToDeadWithoutDelta() {
+            var manager = joinGraceManager(FIRING_GRACE);
+            var deltas = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(deltas::add);
+            var fired = new ArrayList<NodeId>();
+            manager.onConfirmedDeparture(fired::add);
+
+            manager.onPeerDisconnected(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Observed");
+
+            awaitDead(manager, A);
+            assertThat(fired).as("the ghost reap fires the death hook exactly once").containsExactly(A);
+            assertThat(deltas).as("a never-joined member emits no delta (Wave-4 JOINED/REMOVED pairing)").isEmpty();
+        }
+
+        /// Gate RCA fix (2026-06-11): a CONNECTED-but-never-healthy joiner is NOT a ghost — the
+        /// reaper DEFERS (re-arms for the same window) while the transport connection is live,
+        /// and reaps at the next firing after a `PeerDisconnected` (true ghost = never-healthy
+        /// AND disconnected, the co-confirmation pattern).
+        @Test
+        void connectedNeverHealthy_pastGrace_deferred_thenReapedAfterDisconnect() {
+            var manager = joinGraceManager(FIRING_GRACE);
+            var fired = new ArrayList<NodeId>();
+            manager.onConfirmedDeparture(fired::add);
+
+            manager.onPeerConnected(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Observed");
+
+            // Past several grace windows the connected joiner must still be tracked OBSERVED —
+            // every firing defers (logged) and re-arms instead of reaping.
+            await().pollDelay(FIRING_GRACE.millis() * 3, TimeUnit.MILLISECONDS)
+                   .atMost(2, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Observed"));
+            assertThat(fired).as("transport veto: a live connection defers the reap").isEmpty();
+
+            manager.onPeerDisconnected(A);
+
+            awaitDead(manager, A);
+            assertThat(fired).containsExactly(A);
+        }
+
+        /// `SwimHealthy` before any (deferred) firing promotes the joiner and cancels the
+        /// reaper — it is never reaped afterwards.
+        @Test
+        void connectedNeverHealthy_swimHealthyBeforeFiring_cancelsReaper() {
+            var manager = joinGraceManager(FIRING_GRACE);
+            var fired = new ArrayList<NodeId>();
+            manager.onConfirmedDeparture(fired::add);
+
+            manager.onPeerConnected(A);
+            manager.onSwimHealthy(A, 1L);
+            assertThat(manager.memberStates()).containsEntry(A, "Member");
+
+            await().pollDelay(FIRING_GRACE.millis() * 3, TimeUnit.MILLISECONDS)
+                   .atMost(2, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
+            assertThat(fired).isEmpty();
+            assertThat(manager.countedMembers()).contains(A);
+        }
+
+        @Test
+        void promotedWithinGrace_isNeverReaped() {
+            var manager = joinGraceManager(FIRING_GRACE);
+
+            promoteToMember(manager, A);
+
+            await().pollDelay(FIRING_GRACE.millis() * 3, TimeUnit.MILLISECONDS)
+                   .atMost(2, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
+            assertThat(manager.countedMembers()).contains(A);
         }
     }
 
@@ -316,34 +515,6 @@ class MembershipFsmTest {
 
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
             assertThat(fired).isEmpty();
-        }
-
-        /// The confirmed-departure listener fires ALONGSIDE the presence-sampler eviction at the same
-        /// central DEAD chokepoint — both side effects occur on the one death edge.
-        @Test
-        void onConfirmedDeparture_firesAlongsideSamplerEviction() {
-            var liveness = new HashMap<NodeId, SwimHealth>();
-            var clock = new AtomicLong(0L);
-            Supplier<HealthSnapshot> health = () -> HealthSnapshot.healthSnapshot(Map.copyOf(liveness));
-            var presenceSampler = presenceSampler(SAMPLER_SELF, health, INTERVAL, K_UP, K_DOWN, clock::get);
-
-            liveness.put(A, SwimHealth.HEALTHY);
-            for (var i = 0; i < K_UP; i++) {
-                presenceSampler.sample();
-            }
-            assertThat(presenceSampler.currentMembers()).contains(A);
-
-            var manager = shortBackstopManager(presenceSampler);
-            var fired = new ArrayList<NodeId>();
-            manager.onConfirmedDeparture(fired::add);
-            manager.seed(Set.of(A));
-            manager.onSwimFaulty(A, 4L);
-            manager.onLivenessGone(A);
-
-            awaitDead(manager, A);
-            assertThat(manager.memberStates()).containsEntry(A, "Dead");
-            assertThat(presenceSampler.currentMembers()).doesNotContain(A);
-            assertThat(fired).containsExactly(A);
         }
 
         /// Passing `null` resets the listener to the no-op — a subsequent death does not throw and does
@@ -646,7 +817,7 @@ class MembershipFsmTest {
 
         @Test
         void onDownHysteresisMet_onObservedId_isIgnored() {
-            var manager = MembershipFsm.membershipFsm(emptySampler());
+            var manager = MembershipFsm.membershipFsm();
 
             manager.onDownHysteresisMet(A);
 
@@ -700,7 +871,7 @@ class MembershipFsmTest {
 
         @Test
         void seed_atConstruction_promotesInitialMembers() {
-            var manager = MembershipFsm.membershipFsm(emptySampler());
+            var manager = MembershipFsm.membershipFsm();
 
             manager.seed(Set.of(A, B));
 
@@ -735,7 +906,7 @@ class MembershipFsmTest {
         /// was never seeded still tracks and promotes a member on its first SWIM HealthyObserved edge.
         @Test
         void ingressFromConstruction_isTracked() {
-            var manager = MembershipFsm.membershipFsm(emptySampler());
+            var manager = MembershipFsm.membershipFsm();
 
             manager.onSwimHealthy(A, 1L);
 
@@ -1002,7 +1173,7 @@ class MembershipFsmTest {
         @Test
         void memberAgeMs_trackedMember_isClockDeltaFromFirstObservation() {
             var clock = new AtomicLong(1_000L);
-            var manager = MembershipFsm.membershipFsm(emptySampler(), FsmObserver.noop(), clock::get, NO_HINT_DECAY, SHORT_BACKSTOP);
+            var manager = MembershipFsm.membershipFsm(FsmObserver.noop(), clock::get, NO_HINT_DECAY, SHORT_BACKSTOP);
 
             promoteToMember(manager, A);
             clock.set(31_000L);
@@ -1020,7 +1191,7 @@ class MembershipFsmTest {
         @Test
         void memberAgeMs_retainedAcrossDeadRejoin_keepsOriginalStamp() {
             var clock = new AtomicLong(1_000L);
-            var manager = MembershipFsm.membershipFsm(emptySampler(), FsmObserver.noop(), clock::get, NO_HINT_DECAY, SHORT_BACKSTOP);
+            var manager = MembershipFsm.membershipFsm(FsmObserver.noop(), clock::get, NO_HINT_DECAY, SHORT_BACKSTOP);
 
             promoteToMember(manager, A);
             manager.onSwimDeparted(A, 2L);
@@ -1570,7 +1741,7 @@ class MembershipFsmTest {
         }
 
         private static MembershipFsm ttlManager(long[] clock) {
-            return MembershipFsm.membershipFsm(emptySampler(), FsmObserver.noop(), () -> clock[0], TTL_MS);
+            return MembershipFsm.membershipFsm(FsmObserver.noop(), () -> clock[0], TTL_MS);
         }
     }
 
@@ -1676,12 +1847,12 @@ class MembershipFsmTest {
         }
 
         private static MembershipFsm backstopManager(TimeSpan backstop) {
-            return MembershipFsm.membershipFsm(emptySampler(), FsmObserver.noop(), System::currentTimeMillis, NO_HINT_DECAY, backstop);
+            return MembershipFsm.membershipFsm(FsmObserver.noop(), System::currentTimeMillis, NO_HINT_DECAY, backstop);
         }
     }
 
     /// Drive `id` to terminal DEAD via co-confirmation (SWIM-FAULTY ∧ liveness-gone) and AWAIT the
-    /// Model C backstop firing. Callers built with [`#activeManager`] / [`#shortBackstopManager`] use
+    /// Model C backstop firing. Callers built with [`#activeManager`] use
     /// the 40ms [`#SHORT_BACKSTOP`], so DEAD lands within the [`#awaitDead`] ceiling. The deferral
     /// behaviour itself (the SUSPECT hold before the backstop) is covered by [`ModelCBackstop`].
     private static void driveToDead(MembershipFsm manager, NodeId id, long incarnation) {

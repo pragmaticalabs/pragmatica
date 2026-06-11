@@ -172,11 +172,16 @@ public interface TopologyObserver extends TopologyManager {
     }
 
     /// Production overload: accepts a `isDecommissioned` predicate driven by the local
-    /// KV-Store tombstone atoms. `initReconcile` consults it alongside the
-    /// in-memory `tombstonedNodes` set so a DECOMMISSIONED ghost peer that survived a
+    /// KV-Store tombstone atoms, so a DECOMMISSIONED ghost peer that survived a
     /// process restart (consensus log replay) is not silently re-added from
-    /// `config.coreNodes()`. The in-memory set still covers the just-removed-this-session
-    /// window; this predicate covers the persisted-across-restart window.
+    /// `config.coreNodes()`. RETAINED in Wave 7 (cluster-topology-overhaul): this is the
+    /// cross-restart persisted-tombstone hook the in-memory membership FSM cannot cover (the
+    /// FSM's incarnation fence does not survive a process restart). The former in-memory
+    /// `tombstonedNodes` set — which covered the just-removed-this-session window — is RETIRED:
+    /// nothing ever added to it since the Wave-4 delta-projector cutover (it was inert), and the
+    /// aether `MembershipFsm` incarnation fence now owns same-session resurrect protection (a
+    /// DEAD identity is retained and only a strictly higher incarnation reopens it; the
+    /// projector prunes via {@link #pruneDeparted}).
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
                                                      MessageRouter router,
                                                      Predicate<NodeId> isDecommissioned) {
@@ -266,7 +271,6 @@ public interface TopologyObserver extends TopologyManager {
                        AtomicBoolean active,
                        AtomicInteger effectiveClusterSize,
                        Set<NodeId> coreNodeIds,
-                       Set<NodeId> tombstonedNodes,
                        GenerationSnapshotSource snapshotSource,
                        Predicate<NodeId> isDecommissioned,
                        AtomicBoolean quorumEstablished,
@@ -286,7 +290,6 @@ public interface TopologyObserver extends TopologyManager {
                     AtomicBoolean active,
                     AtomicInteger effectiveClusterSize,
                     Set<NodeId> coreNodeIds,
-                    Set<NodeId> tombstonedNodes,
                     GenerationSnapshotSource snapshotSource,
                     Predicate<NodeId> isDecommissioned,
                     AtomicBoolean quorumEstablished,
@@ -304,7 +307,6 @@ public interface TopologyObserver extends TopologyManager {
                 this.active = active;
                 this.effectiveClusterSize = effectiveClusterSize;
                 this.coreNodeIds = coreNodeIds;
-                this.tombstonedNodes = tombstonedNodes;
                 this.snapshotSource = snapshotSource;
                 this.isDecommissioned = isDecommissioned;
                 this.quorumEstablished = quorumEstablished;
@@ -320,6 +322,13 @@ public interface TopologyObserver extends TopologyManager {
                 // `coreNodes()` / `effectiveMembership()` fall back to before a `MembershipView`
                 // snapshot exists. It is NOT the dial set — discovery (`addNode`) still adds
                 // freshly-discovered non-passive peers (e.g. CTM replacements) to it as well.
+                // Wave 7 disposition (cluster-topology-overhaul, parallel-view collapse): RETAINED
+                // as the minimal CONSENSUS-BOOTSTRAP fallback ONLY. The FSM-backed snapshot view
+                // (`snapshotSource.currentMembershipView()`, latched once quorum-many members are
+                // seen) is the authority for every post-bootstrap read; this set is consulted
+                // solely while that view is `none()` (cold-start formation, before the FSM latch
+                // flips — load-bearing, must not be removed: integrations/consensus cannot import
+                // the aether MembershipFsm, and quorum must bootstrap before the view exists).
                 config().coreNodes()
                       .stream()
                       .filter(node -> node.role() != NodeRole.PASSIVE)
@@ -410,11 +419,14 @@ public interface TopologyObserver extends TopologyManager {
 
             @Override
             public void handleDiscoveredNodes(NetworkMessage.DiscoveredNodes discoveredNodes) {
-                // Tombstone filter: don't resurrect a locally-removed peer just because a gossip
-                // partner still knows about it (their REMOVE may not have propagated yet).
+                // Resurrect protection (Wave 7, cluster-topology-overhaul): the in-memory
+                // tombstone filter that used to sit here is RETIRED — the set was inert (nothing
+                // added to it since the Wave-4 cutover) and the aether MembershipFsm incarnation
+                // fence owns same-session resurrect protection (a cluster-canonically departed
+                // peer is pruned via pruneDeparted and its DEAD identity reopens only on a
+                // strictly higher incarnation). Cross-restart protection stays with the
+                // `isDecommissioned` KV predicate at the factory seam.
                 discoveredNodes.nodes()
-                               .stream()
-                               .filter(info -> !tombstonedNodes.contains(info.id()))
                                .forEach(this::addNode);
             }
 
@@ -873,7 +885,6 @@ public interface TopologyObserver extends TopologyManager {
                                           timeSource,
                                           new AtomicBoolean(false),
                                           new AtomicInteger(config.clusterSize()),
-                                          ConcurrentHashMap.newKeySet(),
                                           ConcurrentHashMap.newKeySet(),
                                           snapshotSource,
                                           isDecommissioned,

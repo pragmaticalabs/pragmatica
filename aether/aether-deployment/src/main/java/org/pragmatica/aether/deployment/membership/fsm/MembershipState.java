@@ -119,7 +119,12 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
         public void handle(MembershipEvent event, TransitionRequest<MembershipState, MembershipEvent> tx) {
             switch (event) {
                 case SwimHealthy e -> recoverToMember(ctx, e.incarnation(), tx);
-                case PeerConnected _ -> tx.transitionTo(ctx.memberState());
+                // Death-ward boundary rule (Wave 7, ratified): transport may report DEATH, never
+                // LIFE. A transport connection must not revive a SWIM-suspected member — recovery
+                // goes ONLY through SwimHealthy (SWIM probe-ack authority) or UpHysteresisMet
+                // (presence hysteresis). Observed live: a falsely-suspected node was
+                // transport-revived seconds before SWIM killed it anyway.
+                case PeerConnected _ -> tx.ignore();
                 case UpHysteresisMet _ -> tx.transitionTo(ctx.memberState());
                 case SwimSuspect e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
                 case SwimFaulty e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
@@ -135,8 +140,13 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
         }
     }
 
-    /// Confirmed leaving — decision pending; absorbs all signals except the terminal `Stopped`
-    /// edge. Does not count toward the effective set.
+    /// Confirmed leaving — decision pending. Does not count toward the effective set. No longer an
+    /// inescapable trap (H2, cluster-topology-overhaul Wave 7): besides the terminal `Stopped`
+    /// edge, a `SwimHealthy` carrying a STRICTLY HIGHER incarnation than the high-water mark
+    /// recovers the member back to MEMBER (it refuted / restarted mid-drain — mere liveness at the
+    /// known incarnation does NOT cancel a drain), and the manager-armed DEPARTING timeout
+    /// ([`MembershipFsm`]) terminalizes a drainer that goes silent via a delayed `Stopped`. All
+    /// other signals are absorbed.
     record Departing(MembershipContext ctx) implements MembershipState {
         @Override
         public boolean countsTowardEffective() {
@@ -148,7 +158,8 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
             switch (event) {
                 case Stopped _ -> tx.transitionTo(ctx.dead());
                 case SwimDeparted e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
-                case SwimHealthy _, PeerConnected _, UpHysteresisMet _, SwimSuspect _, SwimFaulty _, PeerDisconnected _, LivenessGone _, DownHysteresisMet _, SwimUnknown _, DrainRequested _, JoinGraceExpiredNeverHealthy _ -> tx.ignore();
+                case SwimHealthy e -> recoverFromDepartingIfNewer(ctx, e.incarnation(), tx);
+                case PeerConnected _, UpHysteresisMet _, SwimSuspect _, SwimFaulty _, PeerDisconnected _, LivenessGone _, DownHysteresisMet _, SwimUnknown _, DrainRequested _, JoinGraceExpiredNeverHealthy _ -> tx.ignore();
             }
         }
     }
@@ -208,6 +219,22 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
                                       TransitionRequest<MembershipState, MembershipEvent> tx) {
         ctx.observeIncarnation(event.incarnation());
         tx.transitionTo(ctx.departing());
+    }
+
+    /// DEPARTING recovery (H2, cluster-topology-overhaul Wave 7): a `SwimHealthy(inc)` recovers a
+    /// drainer back to MEMBER ONLY when `inc` STRICTLY exceeds the incarnation high-water mark — the
+    /// node refuted a suspicion / restarted mid-drain, i.e. fresh evidence of life. Mere liveness at
+    /// an already-seen incarnation does NOT cancel a drain (an operator-drained node keeps gossiping
+    /// healthy at its current incarnation while it drains). Mirrors [`#rejoinIfNewer`]'s fencing.
+    private static void recoverFromDepartingIfNewer(MembershipContext ctx,
+                                                    long incarnation,
+                                                    TransitionRequest<MembershipState, MembershipEvent> tx) {
+        if (incarnation > ctx.lastSeenIncarnation()) {
+            ctx.observeIncarnation(incarnation);
+            tx.transitionTo(ctx.memberState());
+        } else {
+            tx.ignore();
+        }
     }
 
     /// Rejoin fencing in DEAD: a `SwimHealthy(inc)` reopens the identity only when `inc` exceeds the

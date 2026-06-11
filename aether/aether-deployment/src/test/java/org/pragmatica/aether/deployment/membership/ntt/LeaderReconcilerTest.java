@@ -48,6 +48,7 @@ import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.deployment.membership.MembershipConfig.membershipConfig;
 import static org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.membershipFsm;
 import static org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler.leaderReconciler;
@@ -78,6 +79,13 @@ class LeaderReconcilerTest {
     private static final TimeSpan EXPECTED_DRAIN_GRACE =
         timeSpan(membershipConfig().nttDepartureTimeout().nanos() * 2).nanos();
     private static final TimeSpan DEBOUNCE_DELAY = timeSpan(100L).millis();
+    /// Short terminal-eviction backstop (#131 Model C) for the fixture FSM: a co-confirmed kill
+    /// holds the member in SUSPECT (still counted — the churn cure) for this REAL-TIME window,
+    /// then the backstop terminalizes it to DEAD and the count drops. Short so [`#removePeers`]
+    /// can await the post-backstop terminal state promptly (the same SharedScheduler-plus-await
+    /// pattern as `MembershipFsmTest`); the mid-window SUSPECT hold itself is asserted with a
+    /// LONG window by [`ModelCKillSequence`].
+    private static final TimeSpan TEST_EVICTION_BACKSTOP = timeSpan(150).millis();
 
     private TestTimeSource timeSource;
     private ManualScheduler scheduler;
@@ -124,7 +132,10 @@ class LeaderReconcilerTest {
         // The FSM wall clock is injected (controllable) so the drain-safety grace member ages are
         // deterministic — see the [`#fsmWallClockMs`] field doc.
         fsmWallClockMs = new AtomicLong(0L);
-        membershipFsm = membershipFsm(sampler, FsmObserver.noop(), fsmWallClockMs::get, Long.MAX_VALUE);
+        // Explicit SHORT eviction backstop (#131 Model C): removePeers drives kills to the
+        // POST-BACKSTOP terminal DEAD state (awaited), so reconciler scenarios observe the
+        // settled count drop instead of asserting mid-window.
+        membershipFsm = membershipFsm(FsmObserver.noop(), fsmWallClockMs::get, Long.MAX_VALUE, TEST_EVICTION_BACKSTOP);
         membershipFsm.onSwimHealthy(SELF, fsmIncarnation.getAndIncrement());
         reconciler = leaderReconciler(membershipConfig(),
                                       sampler,
@@ -157,9 +168,12 @@ class LeaderReconcilerTest {
     }
 
     /// Mark peers absent in the presence sampler health snapshot (simulates a departure) and sample so the
-    /// next reconcile observes a deficit. Drive the FSM in lockstep: each peer is co-confirmed dead
-    /// (SWIM-FAULTY ∧ liveness-gone) so it drops out of [`MembershipFsm#countedMembers`] — matching
-    /// the test's intent that the peer departed.
+    /// next reconcile observes a deficit. Drive the FSM in lockstep through the FULL #131 Model C
+    /// kill sequence to its POST-BACKSTOP terminal state: each peer is co-confirmed dead
+    /// (SWIM-FAULTY ∧ liveness-gone), which holds it in SUSPECT (still counted) until the
+    /// fixture's short [`#TEST_EVICTION_BACKSTOP`] fires, then the helper AWAITS the DEAD edge —
+    /// so every caller asserts against the SETTLED count drop, matching the ratified Model C
+    /// observable sequence (the mid-window SUSPECT hold is asserted by [`ModelCKillSequence`]).
     @Contract
     private void removePeers(NodeId... peers) {
         for (var peer : peers) {
@@ -167,7 +181,20 @@ class LeaderReconcilerTest {
             membershipFsm.onSwimFaulty(peer, fsmIncarnation.getAndIncrement());
             membershipFsm.onLivenessGone(peer);
         }
+        for (var peer : peers) {
+            awaitDead(peer);
+        }
         sampler.sample();
+    }
+
+    /// Poll until `id` reaches terminal DEAD in the fixture FSM (the Model C backstop fired).
+    /// Real SharedScheduler time drives the backstop; the 2s ceiling is comfortably above the
+    /// 150ms [`#TEST_EVICTION_BACKSTOP`] — widen the ceiling (not the backstop) if real-time
+    /// scheduling ever makes it flaky.
+    @Contract
+    private void awaitDead(NodeId id) {
+        await().atMost(2, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(membershipFsm.memberStates()).containsEntry(id, "Dead"));
     }
 
     /// Wave 2 (cluster-topology-overhaul spec): feed N WORKER-labeled peers — healthy in the
@@ -863,6 +890,31 @@ class LeaderReconcilerTest {
             assertThat(reconciler.isArmedForProvisioning()).isTrue();
             assertThat(ctm.provisionReplacementCalls()).hasSize(2);
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
+        }
+    }
+
+    /// #131 Model C — the kill-sequence observable contract at the reconciler's counting level:
+    /// a co-confirmed death (SWIM-FAULTY ∧ liveness-gone) holds the member in SUSPECT — still
+    /// counted — for the eviction-backstop window (the churn cure: a blip that refutes within
+    /// the window never leaves the counted set); the count drops only when the backstop
+    /// terminalizes the member to DEAD. [`#removePeers`] awaits the settled half of this
+    /// sequence for every other scenario; the mid-window hold is asserted here.
+    @Nested
+    class ModelCKillSequence {
+        @Test
+        void coConfirmedKill_holdsSuspectCounted_thenDropsOnBackstopDeath() {
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+
+            health.markAbsent(PEER_A);
+            membershipFsm.onSwimFaulty(PEER_A, fsmIncarnation.getAndIncrement());
+            membershipFsm.onLivenessGone(PEER_A);
+
+            assertThat(membershipFsm.memberStates()).containsEntry(PEER_A, "Suspect");
+            assertThat(membershipFsm.countedMembers()).contains(PEER_A);
+
+            awaitDead(PEER_A);
+
+            assertThat(membershipFsm.countedMembers()).doesNotContain(PEER_A);
         }
     }
 

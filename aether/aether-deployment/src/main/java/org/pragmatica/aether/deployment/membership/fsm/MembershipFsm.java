@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.membership.fsm;
 
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DownHysteresisMet;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DrainRequested;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.JoinGraceExpiredNeverHealthy;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.LivenessGone;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.PeerConnected;
@@ -17,7 +18,6 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.SwimSuspe
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.SwimUnknown;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.UpHysteresisMet;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
-import org.pragmatica.aether.deployment.membership.ntt.PresenceSampler;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -48,20 +48,21 @@ import org.slf4j.LoggerFactory;
 
 /// Per-member membership FSM manager (membership v2, **Phase 2 LIVE** — the authoritative
 /// membership-death decision-maker). It is no longer a passive shadow: it drives one
-/// [`MembershipState`] FSM per [`NodeId`] from tapped SWIM / transport / liveness edges and, on
-/// every transition into [`MembershipState.Dead`], hard-evicts the dead identity from the
-/// [`PresenceSampler`] (`presenceSampler.evict(id)`). Wave 4 (cluster-topology-overhaul spec):
-/// the FSM additionally emits a typed [`MembershipDeltaEdge`] on its own counted-set lifecycle
+/// [`MembershipState`] FSM per [`NodeId`] from tapped SWIM / transport / liveness edges. Wave 7
+/// (cluster-topology-overhaul spec): the FSM is the SOLE membership authority — the legacy
+/// FSM→`PresenceSampler` eviction call is GONE (the sampler is a pure debounce sensor that only
+/// feeds `Up/DownHysteresisMet` edges INTO this FSM; nothing flows back out). Wave 4: the FSM
+/// emits a typed [`MembershipDeltaEdge`] on its own counted-set lifecycle
 /// edges (first OBSERVED→MEMBER promotion = JOINED; fresh edge into DEAD of a previously-JOINED
 /// member = REMOVED), consumed by the pure [`MembershipDeltaProjector`] projection — the sole
 /// emitter of `MembershipDecision`. The `ClusterEventAggregator` `NODE_FAILED` / `NODE_LEFT`
-/// events derive from that decision stream; this FSM's edge is a pure notification with no
-/// side effect beyond the presence-sampler eviction.
+/// events derive from that decision stream; this FSM's death edge is a pure notification whose
+/// only fan-out is the [`#onConfirmedDeparture`] listener.
 ///
 /// **Always-on per-node, consensus-independent, SWIM/liveness-driven.** The FSM is armed from
 /// construction on EVERY node (not only the leader): each node drives its OWN per-member FSMs from its
-/// tapped SWIM gossip + composite liveness and evicts from its OWN [`PresenceSampler`] view,
-/// independent of consensus health — so a dead member is removed even when the death decision must not
+/// tapped SWIM gossip + composite liveness, independent of consensus health — so a dead member is
+/// removed even when the death decision must not
 /// wait on a consensus round, and even on a follower. Only scaling (`LeaderReconciler`) stays
 /// leader-gated; membership tracking and eviction are unconditional.
 ///
@@ -91,12 +92,13 @@ import org.slf4j.LoggerFactory;
 /// [`DownHysteresisMet`] then [`Stopped`] (Suspect→Departing→Dead). A graceful `onSwimDeparted` and an
 /// `onJoinGraceExpired` reach DEAD directly without the co-confirmation gate.
 ///
-/// **DEAD → `presenceSampler.evict`.** Entry into DEAD is detected CENTRALLY in [`MemberTracking#dispatch`]:
+/// **DEAD edge fan-out.** Entry into DEAD is detected CENTRALLY in [`MemberTracking#dispatch`]:
 /// after every dispatch it compares the FSM's pre/post state and, on a fresh edge INTO `Dead` (was
-/// not Dead before, is Dead after), invokes the manager's eviction hook. This covers ALL three DEAD
-/// paths uniformly (co-confirmed death, graceful departure, join-grace expiry) without scattering the
-/// call across the ingress methods. The hook is idempotent — the fresh-edge guard fires once per
-/// death, and `presenceSampler.evict` is itself idempotent (a no-op for an id already absent from `stableMembers`).
+/// not Dead before, is Dead after), invokes the manager's death hook. This covers ALL DEAD
+/// paths uniformly (co-confirmed death, graceful departure, join-grace expiry, DEPARTING timeout)
+/// without scattering the call across the ingress methods. The hook is idempotent — the fresh-edge
+/// guard fires once per death. Wave 7: the legacy `presenceSampler.evict` side effect is REMOVED;
+/// the hook now only notifies the [`#onConfirmedDeparture`] listener.
 ///
 /// **DEAD retention + rejoin.** DEAD FSM entries are KEPT in the map (never removed on death) so a
 /// higher-incarnation [`SwimHealthy`] re-arms the same identity (DEAD→OBSERVED, fenced by the
@@ -124,8 +126,26 @@ public final class MembershipFsm {
     /// wires the live `MembershipConfig.quorumLossDrainThreshold()` through the dedicated overload.
     private static final TimeSpan DEFAULT_EVICTION_BACKSTOP = MembershipConfig.membershipConfig().quorumLossDrainThreshold();
 
+    /// Default DEPARTING timeout window (H2, cluster-topology-overhaul Wave 7): a member that
+    /// entered DEPARTING (drain / down-hysteresis / graceful-leave intent) and then went SILENT
+    /// still terminalizes to DEAD after this window. Sourced from
+    /// `MembershipConfig.nttDepartureTimeout` (15s) — THE membership departure-debounce constant
+    /// (the same one presence sampler derives its down-hysteresis from), deliberately reused
+    /// instead of introducing a new knob: "silent in DEPARTING for as long as a sustained absence
+    /// needs to be confirmed" is the same epistemic budget. AetherNode wires the live configured
+    /// value through the dedicated overload.
+    private static final TimeSpan DEFAULT_DEPARTURE_TIMEOUT = MembershipConfig.membershipConfig().nttDepartureTimeout();
+
+    /// Default join-grace window (M10, cluster-topology-overhaul Wave 7): a tracked member that
+    /// NEVER reaches MEMBER within this window of its first observation is reaped OBSERVED→DEAD
+    /// via [`JoinGraceExpiredNeverHealthy`] (never silently counted, never a permanent ghost in
+    /// `broadcastEligibleMembers`). Sourced from `MembershipConfig.nttDepartureTimeout` (15s) —
+    /// the single membership timing constant, comfortably above SWIM's own ~12s join grace so
+    /// SWIM gets first say. Boot-seeded configured members are promoted to MEMBER immediately
+    /// (the seed), so the reaper only ever fires for a discovered joiner that never went healthy.
+    private static final TimeSpan DEFAULT_JOIN_GRACE = MembershipConfig.membershipConfig().nttDepartureTimeout();
+
     private final FsmObserver<MembershipState, MembershipEvent> observer;
-    private final PresenceSampler presenceSampler;
     private final Map<NodeId, MemberTracking> members = new ConcurrentHashMap<>();
     /// Wall-clock source (ms) used to stamp every fresh SUSPECT-inducing doubt and to age the
     /// quiesce SUSPECTED health-hint out after [`#suspectHintTtlMs`]. Injectable so tests can drive a
@@ -139,12 +159,13 @@ public final class MembershipFsm {
     /// pre-#68 behaviour; AetherNode wires the real auto-heal SWIM-hints TTL.
     private final long suspectHintTtlMs;
 
-    /// Confirmed-departure listener invoked ONCE per fresh edge into DEAD — at the SAME central
-    /// chokepoint ([`MemberTracking#dispatch`]) as the presence-sampler eviction, for ALL three DEAD
-    /// paths (co-confirmed death, graceful departure, join-grace expiry). Default no-op
-    /// (production-inert): a later wave wires it to the transport executor's `departurePermanent` so the
+    /// Confirmed-departure listener invoked ONCE per fresh edge into DEAD — at the central
+    /// chokepoint ([`MemberTracking#dispatch`]), for ALL DEAD
+    /// paths (co-confirmed death, graceful departure, join-grace expiry, DEPARTING timeout). Default no-op
+    /// (production-inert): AetherNode wires it to the transport executor's `departurePermanent` so the
     /// dead peer's QUIC link is dropped promptly on the death edge instead of waiting ~14s for SWIM to
-    /// time the link out. Reset to the no-op by passing `null` to [`#onConfirmedDeparture`].
+    /// time the link out, and chains its heal/quorum nudge (Wave 7 — the prompt nudge the deleted
+    /// sampler eviction used to provide). Reset to the no-op by passing `null` to [`#onConfirmedDeparture`].
     private volatile Consumer<NodeId> onConfirmedDeparture = ignored -> {};
 
     /// Wave-1 transition journal feed (cluster-topology-overhaul spec, Enrichment A): invoked
@@ -178,89 +199,129 @@ public final class MembershipFsm {
     /// quorum-loss self-drain uses (single source of truth); defaults to 8s for the legacy factories.
     private final TimeSpan evictionBackstop;
 
-    private MembershipFsm(PresenceSampler presenceSampler,
-                          FsmObserver<MembershipState, MembershipEvent> observer,
+    /// DEPARTING timeout window (H2, Wave 7) — see [`#DEFAULT_DEPARTURE_TIMEOUT`]. Armed centrally
+    /// on every fresh edge INTO `Departing`, cancelled on every edge OUT of it; a firing timer
+    /// re-checks the state under the per-member monitor before terminalizing (the
+    /// `cancel(false)`-cannot-stop-a-running-task race, same discipline as the eviction backstop).
+    private final TimeSpan departureTimeout;
+
+    /// Join-grace window (M10, Wave 7) — see [`#DEFAULT_JOIN_GRACE`]. Armed on tracking creation
+    /// and re-armed on a fenced rejoin (DEAD→OBSERVED); cancelled on promotion to MEMBER and on
+    /// death. A firing timer dispatches [`JoinGraceExpiredNeverHealthy`], which the state table
+    /// makes a no-op in every state but OBSERVED — the reaper can never kill a promoted member.
+    /// Gate RCA fix (2026-06-11): the reap is additionally TRANSPORT-VETOED — a never-healthy
+    /// member whose transport connection is live is deferred (timer re-armed for the same
+    /// window), never reaped on FSM state alone. See [`MemberTracking#expireJoinGrace`].
+    private final TimeSpan joinGrace;
+
+    private MembershipFsm(FsmObserver<MembershipState, MembershipEvent> observer,
                           LongSupplier wallClockMs,
                           long suspectHintTtlMs,
-                          TimeSpan evictionBackstop) {
-        this.presenceSampler = presenceSampler;
+                          TimeSpan evictionBackstop,
+                          TimeSpan departureTimeout,
+                          TimeSpan joinGrace) {
         this.observer = observer;
         this.wallClockMs = wallClockMs;
         this.suspectHintTtlMs = suspectHintTtlMs;
         this.evictionBackstop = evictionBackstop;
+        this.departureTimeout = departureTimeout;
+        this.joinGrace = joinGrace;
     }
 
     /// Factory with the default no-op transition observer, the system wall clock, and NO hint decay
     /// (TTL = `Long.MAX_VALUE`) — byte-identical to the pre-#68 behaviour for every existing
     /// caller/fixture.
-    public static MembershipFsm membershipFsm(PresenceSampler presenceSampler) {
-        return membershipFsm(presenceSampler, FsmObserver.noop());
+    public static MembershipFsm membershipFsm() {
+        return membershipFsm(FsmObserver.noop());
     }
 
     /// Factory with an explicit transition observer (transition logging / metrics), the system wall
     /// clock, and NO hint decay (TTL = `Long.MAX_VALUE`).
-    public static MembershipFsm membershipFsm(PresenceSampler presenceSampler,
-                                              FsmObserver<MembershipState, MembershipEvent> observer) {
-        return new MembershipFsm(presenceSampler,
-                                 observer,
+    public static MembershipFsm membershipFsm(FsmObserver<MembershipState, MembershipEvent> observer) {
+        return new MembershipFsm(observer,
                                  System::currentTimeMillis,
                                  Long.MAX_VALUE,
-                                 DEFAULT_EVICTION_BACKSTOP);
+                                 DEFAULT_EVICTION_BACKSTOP,
+                                 DEFAULT_DEPARTURE_TIMEOUT,
+                                 DEFAULT_JOIN_GRACE);
     }
 
     /// Factory with an explicit SUSPECTED-hint decay TTL (ms) on the system wall clock and the
-    /// default no-op observer. AetherNode uses this overload to wire the auto-heal SWIM-hints TTL so
+    /// default no-op observer. Wires the auto-heal SWIM-hints TTL so
     /// a stale one-shot SWIM-suspect on a still-present node decays out of the quiesce gate (#68).
-    public static MembershipFsm membershipFsm(PresenceSampler presenceSampler, long suspectHintTtlMs) {
-        return new MembershipFsm(presenceSampler,
-                                 FsmObserver.noop(),
+    public static MembershipFsm membershipFsm(long suspectHintTtlMs) {
+        return new MembershipFsm(FsmObserver.noop(),
                                  System::currentTimeMillis,
                                  suspectHintTtlMs,
-                                 DEFAULT_EVICTION_BACKSTOP);
+                                 DEFAULT_EVICTION_BACKSTOP,
+                                 DEFAULT_DEPARTURE_TIMEOUT,
+                                 DEFAULT_JOIN_GRACE);
     }
 
-    /// Factory with an explicit SUSPECTED-hint decay TTL (ms) AND the terminal-eviction backstop
-    /// window (#131 Model C) on the system wall clock and the default no-op observer. AetherNode uses
-    /// this overload to wire BOTH the auto-heal SWIM-hints TTL (#68) and the configured
-    /// `MembershipConfig.quorumLossDrainThreshold` as the co-confirmed-death backstop (single source
-    /// of truth shared with the minority self-drain).
-    public static MembershipFsm membershipFsm(PresenceSampler presenceSampler,
-                                              long suspectHintTtlMs,
-                                              TimeSpan evictionBackstop) {
-        return new MembershipFsm(presenceSampler,
-                                 FsmObserver.noop(),
+    /// Production factory (AetherNode): explicit SUSPECTED-hint decay TTL (ms), the terminal-eviction
+    /// backstop window (#131 Model C, from `MembershipConfig.quorumLossDrainThreshold`), and the
+    /// Wave-7 DEPARTING-timeout / join-grace windows (both from `MembershipConfig.nttDepartureTimeout`
+    /// — the single membership timing constant, see [`#DEFAULT_DEPARTURE_TIMEOUT`] /
+    /// [`#DEFAULT_JOIN_GRACE`]). System wall clock, no-op observer.
+    public static MembershipFsm membershipFsm(long suspectHintTtlMs,
+                                              TimeSpan evictionBackstop,
+                                              TimeSpan departureTimeout,
+                                              TimeSpan joinGrace) {
+        return new MembershipFsm(FsmObserver.noop(),
                                  System::currentTimeMillis,
                                  suspectHintTtlMs,
-                                 evictionBackstop);
+                                 evictionBackstop,
+                                 departureTimeout,
+                                 joinGrace);
     }
 
     /// Full factory: explicit observer, injectable wall clock (ms), and SUSPECTED-hint decay TTL
     /// (ms). The clock injection lets tests advance time deterministically to exercise the #68 hint
     /// decay; a TTL of `Long.MAX_VALUE` disables decay. The terminal-eviction backstop (#131) defaults
-    /// to `quorumLossDrainThreshold` (8s) — use [`#membershipFsm(PresenceSampler,FsmObserver,LongSupplier,long,TimeSpan)`]
+    /// to `quorumLossDrainThreshold` (8s) — use [`#membershipFsm(FsmObserver,LongSupplier,long,TimeSpan)`]
     /// to override it.
-    public static MembershipFsm membershipFsm(PresenceSampler presenceSampler,
-                                              FsmObserver<MembershipState, MembershipEvent> observer,
+    public static MembershipFsm membershipFsm(FsmObserver<MembershipState, MembershipEvent> observer,
                                               LongSupplier wallClockMs,
                                               long suspectHintTtlMs) {
-        return new MembershipFsm(presenceSampler, observer, wallClockMs, suspectHintTtlMs, DEFAULT_EVICTION_BACKSTOP);
+        return new MembershipFsm(observer,
+                                 wallClockMs,
+                                 suspectHintTtlMs,
+                                 DEFAULT_EVICTION_BACKSTOP,
+                                 DEFAULT_DEPARTURE_TIMEOUT,
+                                 DEFAULT_JOIN_GRACE);
     }
 
     /// Full factory with an explicit terminal-eviction backstop window (#131 Model C): explicit
     /// observer, injectable wall clock (ms), SUSPECTED-hint decay TTL (ms), and the co-confirmed-death
     /// backstop window. Lets tests drive the backstop deterministically alongside the injected clock.
-    public static MembershipFsm membershipFsm(PresenceSampler presenceSampler,
-                                              FsmObserver<MembershipState, MembershipEvent> observer,
+    public static MembershipFsm membershipFsm(FsmObserver<MembershipState, MembershipEvent> observer,
                                               LongSupplier wallClockMs,
                                               long suspectHintTtlMs,
                                               TimeSpan evictionBackstop) {
-        return new MembershipFsm(presenceSampler, observer, wallClockMs, suspectHintTtlMs, evictionBackstop);
+        return new MembershipFsm(observer,
+                                 wallClockMs,
+                                 suspectHintTtlMs,
+                                 evictionBackstop,
+                                 DEFAULT_DEPARTURE_TIMEOUT,
+                                 DEFAULT_JOIN_GRACE);
     }
 
-    /// Register the confirmed-departure listener invoked ONCE per fresh edge into DEAD — at the SAME
-    /// central chokepoint as the presence-sampler eviction, for ALL three DEAD paths (co-confirmed
-    /// death, graceful departure, join-grace expiry). A later wave wires this to the transport
-    /// executor's `departurePermanent` so the dead peer's QUIC link is dropped promptly on the death
+    /// Deepest factory (Wave 7): everything explicit, including the DEPARTING-timeout and
+    /// join-grace windows — lets the deterministic FSM-simulation tests drive the H2/M10 timers
+    /// with near-zero windows.
+    public static MembershipFsm membershipFsm(FsmObserver<MembershipState, MembershipEvent> observer,
+                                              LongSupplier wallClockMs,
+                                              long suspectHintTtlMs,
+                                              TimeSpan evictionBackstop,
+                                              TimeSpan departureTimeout,
+                                              TimeSpan joinGrace) {
+        return new MembershipFsm(observer, wallClockMs, suspectHintTtlMs, evictionBackstop, departureTimeout, joinGrace);
+    }
+
+    /// Register the confirmed-departure listener invoked ONCE per fresh edge into DEAD — at the
+    /// central dispatch chokepoint, for ALL DEAD paths (co-confirmed
+    /// death, graceful departure, join-grace expiry, DEPARTING timeout). AetherNode wires this to the transport
+    /// executor's `departurePermanent` (plus the Wave-7 heal/quorum nudge) so the dead peer's QUIC link is dropped promptly on the death
     /// edge instead of waiting ~14s for SWIM to time the link out. A `null` argument resets it to the
     /// no-op.
     @Contract
@@ -396,10 +457,22 @@ public final class MembershipFsm {
     }
 
     /// The join-grace window expired for `id` without it ever reaching healthy. Drives OBSERVED→DEAD
-    /// (never silently counted); a no-op once the member has progressed past OBSERVED.
+    /// (never silently counted); a no-op once the member has progressed past OBSERVED. Production
+    /// caller (M10, Wave 7): the per-member join-grace timer armed on tracking creation; this public
+    /// ingress is retained for tests and external grace sources.
     @Contract
     public void onJoinGraceExpired(NodeId id) {
         withMember(id, tracking -> tracking.dispatch(new JoinGraceExpiredNeverHealthy()));
+    }
+
+    /// Operator / controller requested `id` drain gracefully (M10, cluster-topology-overhaul
+    /// Wave 7 — the drain command is routed THROUGH the FSM instead of bypassing it). Drives
+    /// OBSERVED/MEMBER/SUSPECT → DEPARTING: the target stops counting toward effective and the
+    /// DEPARTING timeout (H2) terminalizes it if it goes silent; a `SwimHealthy` at a strictly
+    /// higher incarnation recovers it mid-drain. Ignored in DEPARTING/DEAD.
+    @Contract
+    public void onDrainRequested(NodeId id) {
+        withMember(id, tracking -> tracking.dispatch(new DrainRequested()));
     }
 
     /// The presence sampler down-hysteresis threshold was crossed for `id` (sustained absence over the
@@ -708,16 +781,16 @@ public final class MembershipFsm {
         }
     }
 
-    /// Hard-evict hook invoked CENTRALLY on every fresh edge into DEAD (detected in
-    /// [`MemberTracking#dispatch`]). Idempotent — the fresh-edge guard fires once per death and
-    /// [`PresenceSampler#evict`] is itself idempotent. Mutating presence sampler's presence view is the sole side
-    /// effect; the presence-derived TopologyObserver path emits the resulting NODE_FAILED / NODE_LEFT
-    /// event. Alongside the eviction it notifies the [`#onConfirmedDeparture`] listener (default no-op)
-    /// at this same single chokepoint, so the transport executor can drop the dead peer's link promptly.
+    /// Death hook invoked CENTRALLY on every fresh edge into DEAD (detected in
+    /// [`MemberTracking#dispatch`]). Idempotent — the fresh-edge guard fires once per death. Wave 7
+    /// (cluster-topology-overhaul): the legacy `presenceSampler.evict` side effect is REMOVED — the
+    /// FSM is the sole membership authority and nothing flows back into the debounce sensor. The
+    /// hook notifies the [`#onConfirmedDeparture`] listener (default no-op) at this single
+    /// chokepoint, so the transport executor drops the dead peer's link promptly and the node
+    /// wiring can nudge heal/quorum consumers on the death edge.
     @Contract
     private void onEnteredDead(NodeId id) {
-        log.info("MembershipFsm evicting co-confirmed-dead member {} from presence sampler", id);
-        presenceSampler.evict(id);
+        log.info("MembershipFsm member {} reached terminal DEAD", id);
         onConfirmedDeparture.accept(id);
     }
 
@@ -737,8 +810,20 @@ public final class MembershipFsm {
 
     private MemberTracking newTracking(NodeId id) {
         var fsm = Fsm.fsm(FSM_KIND, id.id(), initialStateFactory(id), observer);
+        var tracking = new MemberTracking(id,
+                                          fsm,
+                                          this::onEnteredDead,
+                                          this::emitTransition,
+                                          this::emitMembershipDelta,
+                                          wallClockMs.getAsLong(),
+                                          departureTimeout,
+                                          joinGrace);
 
-        return new MemberTracking(id, fsm, this::onEnteredDead, this::emitTransition, this::emitMembershipDelta, wallClockMs.getAsLong());
+        // M10 (Wave 7): the join-grace reaper — armed on first observation; cancelled on promotion
+        // to MEMBER / on death; re-armed on a fenced rejoin (all inside the dispatch chokepoint).
+        tracking.armJoinGrace();
+
+        return tracking;
     }
 
     /// Explicitly-typed initial-state factory so the [`Fsm#fsm`] constructor-driven overload is
@@ -780,6 +865,16 @@ public final class MembershipFsm {
         /// fenced rejoin (DEAD→OBSERVED→MEMBER) re-fires JOINED because the flag was cleared.
         /// Mutated only under this monitor, like the co-confirmation flags.
         private boolean everJoined = false;
+        /// Transport-connectivity flag for the join-grace reaper gate (gate RCA fix,
+        /// 2026-06-11): flipped by the [`PeerConnected`] / [`PeerDisconnected`] events already
+        /// dispatched into this FSM (the flag is bookkeeping ONLY — the state table's handling
+        /// of those events is untouched; in particular the Suspect-state PeerConnected ignore,
+        /// the ratified death-ward, stays as-is). Consulted at reaper fire time: a
+        /// never-healthy member is reaped ONLY when this is `false` (true ghost = never
+        /// SWIM-healthy AND no live transport connection — the co-confirmation pattern, same
+        /// family as `swimFaultySeen ∧ livenessGoneSeen`). Transport may VETO a death; it
+        /// never promotes anyone toward MEMBER. Mutated only under this monitor.
+        private boolean transportConnected = false;
         private long lastDoubtAtMs = 0L;
         private MemberDescriptor descriptor = MemberDescriptor.UNKNOWN;
         /// Pending terminal-eviction backstop (#131 Model C). `Some(future)` while a co-confirmed-death
@@ -788,19 +883,40 @@ public final class MembershipFsm {
         /// class). Cancelled on recovery ([`#clearConfirmedDeath`]) and on any fresh edge into DEAD
         /// ([`#dispatch`]).
         private Option<ScheduledFuture<?>> evictionBackstopHandle = Option.none();
+        /// Pending DEPARTING timeout (H2, Wave 7). `Some(future)` while the member is in DEPARTING;
+        /// armed on the fresh edge INTO `Departing`, cancelled on any edge OUT of it (recovery or
+        /// death via another path). The firing task re-checks the state under this monitor
+        /// ([`#terminalizeIfStillDeparting`]) so a recovery racing the fired-but-not-yet-run task
+        /// can never be killed. Mutated only under the per-member monitor.
+        private Option<ScheduledFuture<?>> departureTimeoutHandle = Option.none();
+        /// Pending join-grace reaper (M10, Wave 7). Armed on tracking creation and on a fenced
+        /// rejoin (DEAD→OBSERVED edge); cancelled on promotion to MEMBER and on death. The firing
+        /// task dispatches [`JoinGraceExpiredNeverHealthy`], a state-table no-op everywhere but
+        /// OBSERVED. Mutated only under the per-member monitor.
+        private Option<ScheduledFuture<?>> joinGraceHandle = Option.none();
+        /// DEPARTING timeout window — the manager's [`MembershipFsm#departureTimeout`], captured at
+        /// construction. Final → monitor-free read.
+        private final TimeSpan departureTimeout;
+        /// Join-grace window — the manager's [`MembershipFsm#joinGrace`], captured at construction.
+        /// Final → monitor-free read.
+        private final TimeSpan joinGrace;
 
         private MemberTracking(NodeId id,
                                Fsm<MembershipState, MembershipEvent> fsm,
                                Consumer<NodeId> onEnteredDead,
                                Consumer<MembershipTransitionRecord> transitionSink,
                                Consumer<MembershipDeltaEdge> deltaSink,
-                               long firstTrackedAtMs) {
+                               long firstTrackedAtMs,
+                               TimeSpan departureTimeout,
+                               TimeSpan joinGrace) {
             this.id = id;
             this.fsm = fsm;
             this.onEnteredDead = onEnteredDead;
             this.transitionSink = transitionSink;
             this.deltaSink = deltaSink;
             this.firstTrackedAtMs = firstTrackedAtMs;
+            this.departureTimeout = departureTimeout;
+            this.joinGrace = joinGrace;
         }
 
         /// Creation stamp (ms) of this tracking — the member's first observation on the
@@ -826,10 +942,22 @@ public final class MembershipFsm {
         /// - REMOVED on the fresh DEAD edge, ONLY when `everJoined` (an OBSERVED→DEAD member
         ///   that never counted emits nothing — the spec's tangential consideration); the flag
         ///   is cleared so a fenced rejoin re-emits JOINED. Emitted AFTER `onEnteredDead`
-        ///   (presence-sampler eviction + transport `departurePermanent`), mirroring the
+        ///   (transport `departurePermanent` + node-wiring fan-out), mirroring the
         ///   pre-Wave-4 ordering where the link drop preceded the delta re-evaluation.
+        ///
+        /// Wave-7 edges fire from this same chokepoint:
+        /// - H3 symmetric death-flag clearing: EVERY fresh entry into MEMBER (SwimHealthy recovery,
+        ///   UpHysteresisMet recovery, H2 DEPARTING→MEMBER recovery) runs [`#clearConfirmedDeath`]
+        ///   — a recovered member's next death needs FRESH co-confirmation evidence, never stale
+        ///   `swimFaultySeen`/`livenessGoneSeen` flags — and cancels the join-grace reaper.
+        /// - H2 DEPARTING timeout: armed on the fresh edge INTO `Departing`, cancelled on any edge
+        ///   OUT of it.
+        /// - M10 join-grace re-arm: a fenced rejoin (was DEAD, now OBSERVED) re-arms the reaper for
+        ///   the new tenure; death cancels it.
         synchronized void dispatch(MembershipEvent event) {
+            trackTransportConnectivity(event);
             var wasDead = isDead();
+            var wasDeparting = isDeparting();
             var from = stateName();
 
             fsm.dispatch(event);
@@ -848,18 +976,67 @@ public final class MembershipFsm {
                 everJoined = true;
                 deltaSink.accept(new MembershipDeltaEdge(id, MembershipDeltaEdge.Kind.JOINED, incarnation(), descriptor.role()));
             }
+            if (!from.equals(to) && fsm.current() instanceof MembershipState.Member) {
+                enteredMember();
+            }
+            if (!wasDeparting && isDeparting()) {
+                armDepartureTimeout();
+            }
+            if (wasDeparting && !isDeparting()) {
+                cancelDepartureTimeout();
+            }
+            if (wasDead && fsm.current() instanceof MembershipState.Observed) {
+                armJoinGrace();
+            }
             if (!wasDead && isDead()) {
-                cancelEvictionBackstop();
-                onEnteredDead.accept(id);
-                if (everJoined) {
-                    everJoined = false;
-                    deltaSink.accept(new MembershipDeltaEdge(id, MembershipDeltaEdge.Kind.REMOVED, incarnation(), descriptor.role()));
-                }
+                enteredDead();
+            }
+        }
+
+        /// Track per-member transport connectivity off the transport events flowing through this
+        /// chokepoint (gate RCA fix, 2026-06-11). Pure bookkeeping for the join-grace reaper
+        /// gate — no FSM state is touched here; the state table handles the same events
+        /// independently (and unchanged). [`LivenessGone`] clears the flag too: production
+        /// (AetherNode `nttDisconnectTap`) routes the QUIC link-drop tap into the FSM as
+        /// `LivenessGone` (not `PeerDisconnected`), so without it a disconnected ghost would
+        /// hold a stale `true` and defer its reap forever.
+        private void trackTransportConnectivity(MembershipEvent event) {
+            switch (event) {
+                case PeerConnected _ -> transportConnected = true;
+                case PeerDisconnected _, LivenessGone _ -> transportConnected = false;
+                default -> {}
+            }
+        }
+
+        /// H3 (Wave 7) — symmetric death-flag clearing on EVERY fresh entry into MEMBER: clears
+        /// `swimFaultySeen`/`livenessGoneSeen`, cancels the #131 backstop, and cancels the
+        /// join-grace reaper (the member reached MEMBER — the reaper's premise is gone). Covers
+        /// all recovery paths uniformly (SwimHealthy, UpHysteresisMet, DEPARTING→MEMBER) so no
+        /// stale single-plane flag can co-confirm with a later fresh one.
+        private synchronized void enteredMember() {
+            clearConfirmedDeath();
+            cancelJoinGrace();
+        }
+
+        /// Fresh-edge-into-DEAD fan-out: cancel both pending timers, fire the manager's death hook
+        /// once, and emit the REMOVED delta for a previously-JOINED member (clearing `everJoined`
+        /// so a fenced rejoin re-emits JOINED).
+        private synchronized void enteredDead() {
+            cancelEvictionBackstop();
+            cancelJoinGrace();
+            onEnteredDead.accept(id);
+            if (everJoined) {
+                everJoined = false;
+                deltaSink.accept(new MembershipDeltaEdge(id, MembershipDeltaEdge.Kind.REMOVED, incarnation(), descriptor.role()));
             }
         }
 
         private synchronized boolean isDead() {
             return fsm.current() instanceof MembershipState.Dead;
+        }
+
+        private synchronized boolean isDeparting() {
+            return fsm.current() instanceof MembershipState.Departing;
         }
 
         /// Seed-promotion guard: dispatch [`UpHysteresisMet`] (OBSERVED→MEMBER) only when the FSM is
@@ -934,6 +1111,75 @@ public final class MembershipFsm {
         synchronized void cancelEvictionBackstop() {
             evictionBackstopHandle.onPresent(future -> future.cancel(false));
             evictionBackstopHandle = Option.none();
+        }
+
+        /// Arm the DEPARTING timeout (H2, Wave 7): after [`#departureTimeout`] of remaining in
+        /// DEPARTING the member terminalizes to DEAD via a delayed `Stopped` — a drainer that went
+        /// silent must not wedge in DEPARTING forever (the pre-Wave-7 inescapable trap). Replaces
+        /// any stale handle defensively; armed only from the fresh-edge-into-DEPARTING branch of
+        /// [`#dispatch`], so no double-arm occurs in practice.
+        private synchronized void armDepartureTimeout() {
+            cancelDepartureTimeout();
+            departureTimeoutHandle = Option.some(SharedScheduler.schedule(this::terminalizeIfStillDeparting, departureTimeout));
+        }
+
+        /// Cancel the pending DEPARTING timeout if armed, and clear the handle. Idempotent; called
+        /// on every edge OUT of DEPARTING (H2 recovery to MEMBER, or death via another path).
+        private synchronized void cancelDepartureTimeout() {
+            departureTimeoutHandle.onPresent(future -> future.cancel(false));
+            departureTimeoutHandle = Option.none();
+        }
+
+        /// DEPARTING timeout firing under the per-member monitor (H2): terminalize ONLY if the
+        /// member is STILL in DEPARTING. A recovery between timer-fire and monitor-acquire has
+        /// already moved the FSM to MEMBER (and cancelled the handle), so the re-check no-ops —
+        /// closing the `cancel(false)`-cannot-stop-a-running-task race; without it the delayed
+        /// `Stopped` would kill a recovered MEMBER. The `Stopped` dispatch routes through the
+        /// central chokepoint, so the resulting DEAD edge journals, fires the death hook, and
+        /// emits the REMOVED delta exactly like any other death.
+        private synchronized void terminalizeIfStillDeparting() {
+            if (fsm.current() instanceof MembershipState.Departing) {
+                dispatch(new Stopped());
+            }
+        }
+
+        /// Arm the join-grace reaper (M10, Wave 7): after [`#joinGrace`] the member is reaped
+        /// OBSERVED→DEAD via [`JoinGraceExpiredNeverHealthy`] unless it reached MEMBER first (the
+        /// dispatch is a state-table no-op everywhere but OBSERVED, and promotion/death cancel the
+        /// handle). Armed on tracking creation and re-armed on a fenced rejoin.
+        @Contract
+        synchronized void armJoinGrace() {
+            cancelJoinGrace();
+            joinGraceHandle = Option.some(SharedScheduler.schedule(this::expireJoinGrace, joinGrace));
+        }
+
+        /// Cancel the pending join-grace reaper if armed, and clear the handle. Idempotent; called
+        /// on every fresh entry into MEMBER and into DEAD.
+        private synchronized void cancelJoinGrace() {
+            joinGraceHandle.onPresent(future -> future.cancel(false));
+            joinGraceHandle = Option.none();
+        }
+
+        /// Join-grace firing under the per-member monitor (M10 + gate RCA fix, 2026-06-11):
+        /// reap ONLY if the member is never-healthy (still OBSERVED) AND `transportConnected ==
+        /// false` — a true ghost is co-confirmed by BOTH planes (never SWIM-healthy AND no live
+        /// transport connection). A still-OBSERVED member with a LIVE transport connection is a
+        /// busy-but-alive joiner (boot deploy-storm starving its first probe-ack): the reaper
+        /// DEFERS — logs the deferral and RE-ARMS the timer for the same window — so the joiner
+        /// either turns healthy (entry into MEMBER cancels the handle) or disconnects (the next
+        /// firing reaps). When it does reap, the dispatch routes through the central chokepoint
+        /// with the unchanged `JoinGraceExpiredNeverHealthy` journal cause; the state table
+        /// confines the transition to OBSERVED→DEAD, so a racing promotion can never be killed
+        /// by a fired-but-not-yet-run reaper.
+        private synchronized void expireJoinGrace() {
+            if (transportConnected && fsm.current() instanceof MembershipState.Observed) {
+                log.info("Join-grace reaper DEFERRED for {}: never-healthy but transport connection is LIVE — re-arming (window={})",
+                         id,
+                         joinGrace);
+                armJoinGrace();
+                return;
+            }
+            dispatch(new JoinGraceExpiredNeverHealthy());
         }
 
         /// Backstop firing under the per-member monitor (#131 Model C): terminal-evict ONLY if the

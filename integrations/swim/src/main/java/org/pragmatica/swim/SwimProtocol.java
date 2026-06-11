@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
@@ -106,6 +107,19 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// The default `() -> true` keeps the legacy cold-boot-suppression behavior for
     /// callers (notably unit tests) that don't wire a phase source.
     private final BooleanSupplier isBooting;
+    /// Transport-connectivity veto for the never-HEALTHY join-grace bypass (gate RCA fix,
+    /// 2026-06-11): consulted in [#emitFaultyOrUnknown] ONLY for a never-`everSeenHealthy`
+    /// peer past its join grace. While the predicate reports a LIVE transport connection for
+    /// the peer, the FAULTY verdict is DEFERRED (`UnknownObserved` keeps being emitted; the
+    /// verdict is re-evaluated on every subsequent FAULTY edge — never latched): a peer with
+    /// an open transport link is busy-but-alive (boot deploy-storm starves its first
+    /// probe-ack), not a ghost. FAULTY for a never-healthy peer therefore requires
+    /// co-confirmation: join-grace expired AND no live transport connection. This is one-way
+    /// evidence — transport may VETO a death, it never promotes anyone toward ALIVE.
+    /// Default `id -> false` (no transport view ⇒ never veto) preserves today's behavior
+    /// byte-identically for tests and standalone use; the aether node wires the QUIC
+    /// network's live `connectedPeers()` view.
+    private final Predicate<NodeId> transportConnected;
     private final Map<NodeId, SwimMember> members = new ConcurrentHashMap<>();
     private final Map<Long, PendingProbe> pendingProbes = new ConcurrentHashMap<>();
     private final Map<Long, RelayInfo> pendingRelays = new ConcurrentHashMap<>();
@@ -274,7 +288,8 @@ public final class SwimProtocol implements SwimMessageHandler {
                          SwimMembershipListener listener,
                          NodeId selfId,
                          InetSocketAddress selfAddress,
-                         BooleanSupplier isBooting) {
+                         BooleanSupplier isBooting,
+                         Predicate<NodeId> transportConnected) {
         this.config = config;
         this.transport = transport;
         this.listener = listener;
@@ -282,6 +297,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         this.selfAddress = selfAddress;
         this.piggybackBuffer = PiggybackBuffer.piggybackBuffer(config.maxPiggyback());
         this.isBooting = isBooting;
+        this.transportConnected = transportConnected;
     }
 
     /// Factory creating a SWIM protocol instance.
@@ -300,14 +316,33 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Phase-aware factory. `isBooting` is consulted in [#emitFaultyOrUnknown]: when
     /// the supplier returns `false` (cluster has reached NORMAL phase), the per-peer
     /// `everSeenHealthy` cold-boot gate is bypassed and `FaultyObserved` is emitted
-    /// regardless. See audit Step 6 (2026-05-07).
+    /// regardless. See audit Step 6 (2026-05-07). No transport-connectivity veto
+    /// (`id -> false` — never veto), byte-identical to the pre-veto behavior; use the
+    /// [#swimProtocol(SwimConfig,SwimTransport,SwimMembershipListener,NodeId,InetSocketAddress,BooleanSupplier,Predicate)]
+    /// overload to wire one.
     public static Result<SwimProtocol> swimProtocol(SwimConfig config,
                                                     SwimTransport transport,
                                                     SwimMembershipListener listener,
                                                     NodeId selfId,
                                                     InetSocketAddress selfAddress,
                                                     BooleanSupplier isBooting) {
-        return Result.success(new SwimProtocol(config, transport, listener, selfId, selfAddress, isBooting));
+        return swimProtocol(config, transport, listener, selfId, selfAddress, isBooting, id -> false);
+    }
+
+    /// Full factory (gate RCA fix, 2026-06-11): phase supplier AND the
+    /// transport-connectivity veto for the never-HEALTHY join-grace bypass (see the
+    /// [#transportConnected] field doc). Production wiring supplies the QUIC network's
+    /// live `connectedPeers()` view so a busy-but-alive joiner (open transport link,
+    /// first probe-ack starved by the boot deploy-storm) is deferred instead of
+    /// false-killed at grace expiry.
+    public static Result<SwimProtocol> swimProtocol(SwimConfig config,
+                                                    SwimTransport transport,
+                                                    SwimMembershipListener listener,
+                                                    NodeId selfId,
+                                                    InetSocketAddress selfAddress,
+                                                    BooleanSupplier isBooting,
+                                                    Predicate<NodeId> transportConnected) {
+        return Result.success(new SwimProtocol(config, transport, listener, selfId, selfAddress, isBooting, transportConnected));
     }
 
     /// Start the protocol: begin periodic probing via SharedScheduler.
@@ -1527,8 +1562,14 @@ public final class SwimProtocol implements SwimMessageHandler {
     ///   `everSeenHealthy` gate: a peer that has never been observed HEALTHY emits
     ///   `UnknownObserved` so noisy bootstrap-time SWIM transitions do not flood
     ///   `HealthReconciler` with unactionable FAULTY edges.
-    /// - In `NORMAL` and `RECOVERING` phases (`isBooting=false`), ALWAYS emit
-    ///   `FaultyObserved` regardless of `everSeenHealthy`. The `RECOVERING` branch
+    /// - In `NORMAL` and `RECOVERING` phases (`isBooting=false`), emit
+    ///   `FaultyObserved` regardless of `everSeenHealthy` — EXCEPT when the never-HEALTHY
+    ///   peer still has a LIVE transport connection (gate RCA fix, 2026-06-11): then the
+    ///   verdict is DEFERRED (`UnknownObserved`, re-evaluated on every subsequent FAULTY
+    ///   edge — never latched). FAULTY for a never-healthy peer requires co-confirmation:
+    ///   join-grace expired AND no live transport connection — a busy-but-alive joiner
+    ///   whose first probe-ack is starved by the boot deploy-storm must not be
+    ///   false-killed while its transport link is provably up. The `RECOVERING` branch
     ///   is the critical compose-restart fix: peers were visible-and-Healthy in the
     ///   prior `NORMAL` period (their `everSeenHealthy` flag is preserved across
     ///   protocol life), so a post-restart kill must produce a cluster-visible
@@ -1542,8 +1583,14 @@ public final class SwimProtocol implements SwimMessageHandler {
             emitObservationOnEdge(peer, SwimHealth.UNKNOWN, () -> new SwimObservation.UnknownObserved(peer, incarnation));
             return;
         }
+        if (!everSeenHealthy.contains(peer) && transportConnected.test(peer)) {
+            LOG.info("SWIM transport veto: never-HEALTHY peer {} past join-grace has a LIVE transport connection — deferring FAULTY (emitting UNKNOWN, re-checked on the next FAULTY edge)",
+                     peer.id());
+            emitObservationOnEdge(peer, SwimHealth.UNKNOWN, () -> new SwimObservation.UnknownObserved(peer, incarnation));
+            return;
+        }
         if (!booting && !everSeenHealthy.contains(peer)) {
-            LOG.warn("SWIM phase=NORMAL_OR_RECOVERING: emitting FaultyObserved for never-HEALTHY peer {} (join-grace expired, cold-boot suppression bypassed)",
+            LOG.warn("SWIM phase=NORMAL_OR_RECOVERING: emitting FaultyObserved for never-HEALTHY peer {} (join-grace expired, no live transport connection, cold-boot suppression bypassed)",
                      peer.id());
         }
         emitFaultyAndDeparted(peer, incarnation);

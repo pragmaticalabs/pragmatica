@@ -165,10 +165,14 @@ public final class LeaderReconciler {
     /// deficit that over-provisions; a genuinely-gone node drops from the count via co-confirmed
     /// death or the routed down-hysteresis crossing. presence sampler is retained for its
     /// monotonic [`PresenceSampler#peakMembershipCount`] cold-start latch and trigger wiring.
-    /// Known residual (Wave 7 scope): `peakMembershipCount` is role-blind, so workers present
-    /// during initial formation can latch [`#reachedFullMembership`] early — bounded by the
-    /// deficit-debounce + quorum-safety gates, and resolved when PresenceSampler is demoted to a
-    /// pure debounce sensor (overhaul spec Wave 7).
+    /// Wave 7 deferred: `peakMembershipCount` deliberately STAYS on the PresenceSampler sensor
+    /// (role-blind residual accepted, bounded by the deficit-debounce + quorum-safety gates). An
+    /// FSM-derived peak would be wrong here: the boot seed promotes the CONFIGURED topology
+    /// straight to MEMBER before any real health observation, so the FSM core count equals the
+    /// full configured count at boot and [`#reachedFullMembership`] would latch before genuine
+    /// formation — defeating the cold-start guard it exists for. The sampler peak requires
+    /// genuinely-observed SWIM-healthy presence (K_UP consecutive samples per member). Revisit
+    /// when the seed carries real health (#241 / Wave 9).
     private final MembershipFsm membershipFsm;
     private final IntSupplier configuredCoreCountSupplier;
     /// Leader-term supplier (monotonic, incremented once per election). A value `> 1` on

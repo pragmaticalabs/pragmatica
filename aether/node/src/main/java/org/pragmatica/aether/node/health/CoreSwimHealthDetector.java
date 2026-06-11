@@ -42,6 +42,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import io.netty.channel.EventLoopGroup;
@@ -189,6 +190,38 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                 SwimConfig swimConfig,
                                                                 BooleanSupplier isBootingSupplier,
                                                                 java.util.function.Consumer<NodeId> faultyLeaderEvictor) {
+        return coreSwimHealthDetector(router,
+                                      topologyConfig,
+                                      serializer,
+                                      deserializer,
+                                      signalSink,
+                                      epochSupplier,
+                                      isLeaderSupplier,
+                                      observationStore,
+                                      swimConfig,
+                                      isBootingSupplier,
+                                      faultyLeaderEvictor,
+                                      id -> false);
+    }
+
+    /// Deepest overload (gate RCA fix, 2026-06-11): additionally accepts the
+    /// `transportConnected` predicate forwarded into [`SwimProtocol`] — the transport-
+    /// connectivity veto for SWIM's never-HEALTHY join-grace bypass. Production wiring
+    /// (`AetherNode`) sources it from the QUIC network's live `connectedPeers()` view (deref'd
+    /// per call, so construction order is safe); the `id -> false` default of the shallower
+    /// overloads never vetoes, preserving legacy behavior for tests.
+    public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
+                                                                TopologyConfig topologyConfig,
+                                                                Serializer serializer,
+                                                                Deserializer deserializer,
+                                                                HealthSignalSink signalSink,
+                                                                Supplier<Epoch> epochSupplier,
+                                                                BooleanSupplier isLeaderSupplier,
+                                                                PeerObservationStore observationStore,
+                                                                SwimConfig swimConfig,
+                                                                BooleanSupplier isBootingSupplier,
+                                                                java.util.function.Consumer<NodeId> faultyLeaderEvictor,
+                                                                Predicate<NodeId> transportConnected) {
         var ctxHolder = new AtomicReference<SwimHealthContext>();
         Function<Fsm<SwimHealthState, SwimHealthEvents>, SwimHealthState> initialStateFactory = fsm -> buildContextAndStopped(fsm,
                                                                                                                               ctxHolder,
@@ -202,7 +235,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                                                                               observationStore,
                                                                                                                               swimConfig,
                                                                                                                               isBootingSupplier,
-                                                                                                                              faultyLeaderEvictor);
+                                                                                                                              faultyLeaderEvictor,
+                                                                                                                              transportConnected);
 
         Fsm.fsm("swim-health",
                 topologyConfig.self().id(),
@@ -223,7 +257,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                           PeerObservationStore observationStore,
                                                           SwimConfig swimConfig,
                                                           BooleanSupplier isBootingSupplier,
-                                                          java.util.function.Consumer<NodeId> faultyLeaderEvictor) {
+                                                          java.util.function.Consumer<NodeId> faultyLeaderEvictor,
+                                                          Predicate<NodeId> transportConnected) {
         var ctx = new SwimHealthContext(fsm,
                                         router,
                                         topologyConfig,
@@ -236,7 +271,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                         swimConfig,
                                         System::currentTimeMillis,
                                         isBootingSupplier,
-                                        faultyLeaderEvictor);
+                                        faultyLeaderEvictor,
+                                        transportConnected);
 
         ctxHolder.set(ctx);
 
@@ -414,7 +450,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                 this,
                                                                 context.topologyConfig().self(),
                                                                 selfAddress,
-                                                                context.isBootingSupplier()))
+                                                                context.isBootingSupplier(),
+                                                                context.transportConnected()))
                         .flatMap(SwimProtocol::start)
                         .map(protocol -> seedAndWrap(protocol, transport, encryptor));
     }
