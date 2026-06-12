@@ -14,6 +14,16 @@ import java.lang.annotation.*;
 ///
 /// Can be applied at method level or class level (covers all methods in the class).
 ///
+/// Legitimate terminal contexts: CLI entry points and command executors, server/runtime
+/// lifecycle (startup/shutdown), dedicated background threads. Test code never needs this
+/// annotation — `await()` is always allowed in tests.
+///
+/// Apply at WRITE time: writing `.await()` outside tests means either restructuring to stay
+/// in the monadic chain or annotating the method immediately — not waiting for lint.
+///
+/// Intent-annotation family: `@Contract` (signature dictated externally),
+/// `@TerminalOperation` (blocking is correct), `@NullReturn` (null return is the contract).
+///
 /// Example:
 /// ```java
 /// // CLI entry point — blocking is correct
@@ -32,6 +42,8 @@ import java.lang.annotation.*;
 ///
 /// @see org.pragmatica.lang.Promise
 /// @see org.pragmatica.lang.Result
+/// @see org.pragmatica.lang.Contract
+/// @see org.pragmatica.lang.NullReturn
 @Documented
 @Retention(RetentionPolicy.SOURCE)
 @Target({ElementType.METHOD, ElementType.TYPE})

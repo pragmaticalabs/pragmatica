@@ -15,6 +15,12 @@ import java.lang.annotation.*;
 ///
 /// Can be applied at method level or class level (covers all methods in the class).
 ///
+/// Apply at WRITE time: a `return null` in production code means either switching to
+/// `Option<T>` or annotating the method immediately — not waiting for lint.
+///
+/// Intent-annotation family: `@Contract` (signature dictated externally),
+/// `@TerminalOperation` (blocking is correct), `@NullReturn` (null return is the contract).
+///
 /// Example:
 /// ```java
 /// // Side-effect fold branch — value is discarded
@@ -28,6 +34,7 @@ import java.lang.annotation.*;
 ///
 /// @see org.pragmatica.lang.Option
 /// @see org.pragmatica.lang.Contract
+/// @see org.pragmatica.lang.TerminalOperation
 @Documented
 @Retention(RetentionPolicy.SOURCE)
 @Target({ElementType.METHOD, ElementType.TYPE})
