@@ -14,6 +14,7 @@ import picocli.CommandLine.Option;
  LintCommand.class,
  CheckCommand.class,
  ScoreCommand.class,
+ DocCommand.class,
  UpgradeCommand.class,
  InitCommand.class,
  AddSliceCommand.class,
