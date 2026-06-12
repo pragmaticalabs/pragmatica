@@ -87,6 +87,95 @@ public sealed interface Result<T> permits Success, Failure {
     }
 
     /// **[Pure Transform]**
+    /// Apply an effectful operation to the value, then combine the ORIGINAL value with the operation's result via a pure factory.
+    /// Operation failure short-circuits; the factory always receives the full original value.
+    ///
+    /// @param operation Effectful operation applied to the value
+    /// @param factory   Pure combiner receiving the original value and the operation's result
+    /// @param <U>       Type of the combined value
+    /// @param <B>       Type of the operation's result
+    ///
+    /// @return combined value (in case of success) or propagated failure
+    default <U, B> Result<U> mapWith(Fn1<Result<B>, ? super T> operation, Fn2<U, ? super T, ? super B> factory) {
+        return flatMap(t -> operation.apply(t)
+                                     .map(b -> factory.apply(t, b)));
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to the value, then combine the ORIGINAL value with the operation's result via a factory.
+    /// Operation failure short-circuits; the factory always receives the full original value and itself may fail, in which case its failure propagates.
+    ///
+    /// @param operation Effectful operation applied to the value
+    /// @param factory   Combiner receiving the original value and the operation's result, itself returning a [Result]
+    /// @param <U>       Type of the combined value
+    /// @param <B>       Type of the operation's result
+    ///
+    /// @return combined value (in case of success) or propagated failure
+    default <U, B> Result<U> flatMapWith(Fn1<Result<B>, ? super T> operation, Fn2<Result<U>, ? super T, ? super B> factory) {
+        return flatMap(t -> operation.apply(t)
+                                     .flatMap(b -> factory.apply(t, b)));
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to the value; when successful CONTINUE WITH THE ORIGINAL VALUE UNCHANGED — the operation's result is discarded; on
+    /// failure the failure propagates. Operation failure gates the chain (unlike [#onSuccess(Consumer)]).
+    ///
+    /// @param operation Effectful operation applied to the value
+    /// @param <B>       Type of the operation's (discarded) result
+    ///
+    /// @return the original value (in case of success) or propagated failure
+    default <B> Result<T> ensureWith(Fn1<Result<B>, ? super T> operation) {
+        return flatMap(t -> operation.apply(t)
+                                     .map(_ -> t));
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to a projection of the value, then combine the ORIGINAL value with the operation's result via a pure factory.
+    /// Operation failure short-circuits; the factory always receives the full original value.
+    ///
+    /// @param getter    Projection extracting the input for the operation
+    /// @param operation Effectful operation applied to the projection
+    /// @param factory   Pure combiner receiving the original value and the operation's result
+    /// @param <U>       Type of the combined value
+    /// @param <A>       Type of the projection
+    /// @param <B>       Type of the operation's result
+    ///
+    /// @return combined value (in case of success) or propagated failure
+    default <U, A, B> Result<U> mapWith(Fn1<A, ? super T> getter, Fn1<Result<B>, ? super A> operation, Fn2<U, ? super T, ? super B> factory) {
+        return mapWith(t -> operation.apply(getter.apply(t)), factory);
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to a projection of the value, then combine the ORIGINAL value with the operation's result via a factory.
+    /// Operation failure short-circuits; the factory always receives the full original value and itself may fail, in which case its failure propagates.
+    ///
+    /// @param getter    Projection extracting the input for the operation
+    /// @param operation Effectful operation applied to the projection
+    /// @param factory   Combiner receiving the original value and the operation's result, itself returning a [Result]
+    /// @param <U>       Type of the combined value
+    /// @param <A>       Type of the projection
+    /// @param <B>       Type of the operation's result
+    ///
+    /// @return combined value (in case of success) or propagated failure
+    default <U, A, B> Result<U> flatMapWith(Fn1<A, ? super T> getter, Fn1<Result<B>, ? super A> operation, Fn2<Result<U>, ? super T, ? super B> factory) {
+        return flatMapWith(t -> operation.apply(getter.apply(t)), factory);
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to a projection of the value; when successful CONTINUE WITH THE ORIGINAL VALUE UNCHANGED — the operation's result is
+    /// discarded; on failure the failure propagates. Operation failure gates the chain (unlike [#onSuccess(Consumer)]).
+    ///
+    /// @param getter    Projection extracting the input for the operation
+    /// @param operation Effectful operation applied to the projection
+    /// @param <A>       Type of the projection
+    /// @param <B>       Type of the operation's (discarded) result
+    ///
+    /// @return the original value (in case of success) or propagated failure
+    default <A, B> Result<T> ensureWith(Fn1<A, ? super T> getter, Fn1<Result<B>, ? super A> operation) {
+        return ensureWith(t -> operation.apply(getter.apply(t)));
+    }
+
+    /// **[Pure Transform]**
     /// Replace the current instance with the instance returned by provided [Supplier]. The replacement happens only if the current instance contains
     /// a successful result, otherwise the current instance remains unchanged.
     ///

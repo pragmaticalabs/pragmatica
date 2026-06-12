@@ -22,6 +22,7 @@ import org.pragmatica.lang.Option.None;
 import org.pragmatica.lang.Option.Some;
 import org.pragmatica.lang.utils.Causes;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -1055,5 +1056,178 @@ class OptionTest {
 
         assertTrue(result.isEmpty());
         assertFalse(functionCalled.get(), "Function should not be called when source is empty");
+    }
+
+    //------------------------------------------------------------------------------------------------------------------
+    // mapWith / flatMapWith / ensureWith combinators
+    //------------------------------------------------------------------------------------------------------------------
+    record ValidRequest(String userId) {}
+
+    record UserProfile<T>(T request, String profile) {}
+
+    record UserArticles<T>(T request, List<String> articles) {}
+
+    private Option<String> fetchProfile(String userId) {
+        return Option.present("profile-of-" + userId);
+    }
+
+    private Option<Boolean> checkEntitlement(String userId) {
+        return Option.present(Boolean.TRUE);
+    }
+
+    private Option<List<String>> fetchArticles(String profile) {
+        return Option.present(List.of("a-" + profile, "b-" + profile));
+    }
+
+    @Test
+    void mapWithCombinesOriginalValueWithOperationResult() {
+        Option.present("user")
+              .mapWith(v -> Option.present(v.length()), (v, len) -> v + ":" + len)
+              .onEmptyRun(Assertions::fail)
+              .onPresent(value -> assertEquals("user:4", value));
+    }
+
+    @Test
+    void mapWithShortCircuitsWhenOperationEmptyAndFactoryNotInvoked() {
+        var factoryCalled = new AtomicBoolean(false);
+
+        var result = Option.<String>present("user")
+                           .mapWith(_ -> Option.<Integer>empty(),
+                                    (v, len) -> {
+                                        factoryCalled.set(true);
+                                        return v + ":" + len;
+                                    });
+
+        assertTrue(result.isEmpty());
+        assertFalse(factoryCalled.get(), "Factory must not be invoked when operation is empty");
+    }
+
+    @Test
+    void mapWithIsEmptyWhenSourceIsEmpty() {
+        var operationCalled = new AtomicBoolean(false);
+
+        var result = Option.<String>empty()
+                           .mapWith(v -> {
+                                        operationCalled.set(true);
+                                        return Option.present(v.length());
+                                    },
+                                    (v, len) -> v + ":" + len);
+
+        assertTrue(result.isEmpty());
+        assertFalse(operationCalled.get(), "Operation must not be invoked when source is empty");
+    }
+
+    @Test
+    void mapWithFieldFormProjectsForOperationButPassesOriginalToFactory() {
+        Option.present(new ValidRequest("u1"))
+              .mapWith(ValidRequest::userId, this::fetchProfile, UserProfile::new)
+              .onEmptyRun(Assertions::fail)
+              .onPresent(profile -> {
+                  assertEquals(new ValidRequest("u1"), profile.request());
+                  assertEquals("profile-of-u1", profile.profile());
+              });
+    }
+
+    @Test
+    void flatMapWithPropagatesFactoryPresence() {
+        Option.present("user")
+              .flatMapWith(v -> Option.present(v.length()), (v, len) -> Option.present(v + ":" + len))
+              .onEmptyRun(Assertions::fail)
+              .onPresent(value -> assertEquals("user:4", value));
+    }
+
+    @Test
+    void flatMapWithEmptyFactoryYieldsEmpty() {
+        var result = Option.present("user")
+                           .flatMapWith(v -> Option.present(v.length()), (_, _) -> Option.<String>empty());
+
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    void flatMapWithShortCircuitsBeforeFactoryWhenOperationEmpty() {
+        var factoryCalled = new AtomicBoolean(false);
+
+        var result = Option.<String>present("user")
+                           .flatMapWith(_ -> Option.<Integer>empty(),
+                                        (v, len) -> {
+                                            factoryCalled.set(true);
+                                            return Option.present(v + ":" + len);
+                                        });
+
+        assertTrue(result.isEmpty());
+        assertFalse(factoryCalled.get(), "Factory must not be invoked when operation is empty");
+    }
+
+    @Test
+    void flatMapWithFieldFormProjectsForOperationButPassesOriginalToFactory() {
+        Option.present(new ValidRequest("u1"))
+              .flatMapWith(ValidRequest::userId, this::fetchProfile, (request, profile) -> Option.present(new UserProfile<>(request, profile)))
+              .onEmptyRun(Assertions::fail)
+              .onPresent(profile -> {
+                  assertEquals(new ValidRequest("u1"), profile.request());
+                  assertEquals("profile-of-u1", profile.profile());
+              });
+    }
+
+    @Test
+    void flatMapWithFieldFormEmptyFactoryYieldsEmpty() {
+        var result = Option.present(new ValidRequest("u1"))
+                           .flatMapWith(ValidRequest::userId,
+                                        this::fetchProfile,
+                                        (_, _) -> Option.<UserProfile<ValidRequest>>empty());
+
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    void ensureWithContinuesWithOriginalValueDiscardingOperationResult() {
+        var original = new ValidRequest("u1");
+
+        Option.present(original)
+              .ensureWith(_ -> Option.present("a different type"))
+              .onEmptyRun(Assertions::fail)
+              .onPresent(value -> assertSame(original, value));
+    }
+
+    @Test
+    void ensureWithEmptyOperationYieldsEmpty() {
+        var result = Option.present(new ValidRequest("u1"))
+                           .ensureWith(_ -> Option.empty());
+
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    void ensureWithFieldFormContinuesWithOriginalValueDiscardingOperationResult() {
+        var original = new ValidRequest("u1");
+
+        Option.present(original)
+              .ensureWith(ValidRequest::userId, _ -> Option.present(123L))
+              .onEmptyRun(Assertions::fail)
+              .onPresent(value -> assertSame(original, value));
+    }
+
+    @Test
+    void ensureWithFieldFormEmptyOperationYieldsEmpty() {
+        var result = Option.present(new ValidRequest("u1"))
+                           .ensureWith(ValidRequest::userId, _ -> Option.empty());
+
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    void combinatorsAccreteContextWithMethodReferencesAndImplicitLambdas() {
+        var result = Option.present(new ValidRequest("u1"))
+                           .mapWith(ValidRequest::userId, this::fetchProfile, UserProfile::new)
+                           .ensureWith(p -> checkEntitlement(p.request().userId()))
+                           .mapWith(UserProfile::profile, this::fetchArticles, UserArticles::new);
+
+        result.onEmptyRun(Assertions::fail)
+              .onPresent(articles -> {
+                  assertEquals(new ValidRequest("u1"), articles.request().request());
+                  assertEquals("profile-of-u1", articles.request().profile());
+                  assertEquals(List.of("a-profile-of-u1", "b-profile-of-u1"), articles.articles());
+              });
     }
 }
