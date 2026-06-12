@@ -137,6 +137,107 @@ public interface Promise<T> {
     }
 
     /// **[Pure Transform]**
+    /// Apply an effectful operation to the value, then combine the ORIGINAL value with the operation's result via a pure factory.
+    /// Operation failure short-circuits; the factory always receives the full original value.
+    ///
+    /// This method is a dependent action and executed in the order in which transformations are written in the code.
+    ///
+    /// @param operation Effectful operation applied to the value
+    /// @param factory   Pure combiner receiving the original value and the operation's result
+    /// @param <U>       Type of the combined value
+    /// @param <B>       Type of the operation's result
+    ///
+    /// @return New promise instance.
+    default <U, B> Promise<U> mapWith(Fn1<Promise<B>, ? super T> operation, Fn2<U, ? super T, ? super B> factory) {
+        return flatMap(t -> operation.apply(t)
+                                     .map(b -> factory.apply(t, b)));
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to the value, then combine the ORIGINAL value with the operation's result via a factory.
+    /// Operation failure short-circuits; the factory always receives the full original value and itself may fail, in which case its failure propagates.
+    ///
+    /// This method is a dependent action and executed in the order in which transformations are written in the code.
+    ///
+    /// @param operation Effectful operation applied to the value
+    /// @param factory   Combiner receiving the original value and the operation's result, itself returning a [Promise]
+    /// @param <U>       Type of the combined value
+    /// @param <B>       Type of the operation's result
+    ///
+    /// @return New promise instance.
+    default <U, B> Promise<U> flatMapWith(Fn1<Promise<B>, ? super T> operation, Fn2<Promise<U>, ? super T, ? super B> factory) {
+        return flatMap(t -> operation.apply(t)
+                                     .flatMap(b -> factory.apply(t, b)));
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to the value; on success CONTINUE WITH THE ORIGINAL VALUE UNCHANGED — the operation's result is discarded; on
+    /// failure (failed promise) the failure propagates. The chain waits for the operation (gating side effect, unlike [#onSuccess(Consumer)]).
+    ///
+    /// This method is a dependent action and executed in the order in which transformations are written in the code.
+    ///
+    /// @param operation Effectful operation applied to the value
+    /// @param <B>       Type of the operation's (discarded) result
+    ///
+    /// @return New promise instance.
+    default <B> Promise<T> ensureWith(Fn1<Promise<B>, ? super T> operation) {
+        return flatMap(t -> operation.apply(t)
+                                     .map(_ -> t));
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to a projection of the value, then combine the ORIGINAL value with the operation's result via a pure factory.
+    /// Operation failure short-circuits; the factory always receives the full original value.
+    ///
+    /// This method is a dependent action and executed in the order in which transformations are written in the code.
+    ///
+    /// @param getter    Projection extracting the input for the operation
+    /// @param operation Effectful operation applied to the projection
+    /// @param factory   Pure combiner receiving the original value and the operation's result
+    /// @param <U>       Type of the combined value
+    /// @param <A>       Type of the projection
+    /// @param <B>       Type of the operation's result
+    ///
+    /// @return New promise instance.
+    default <U, A, B> Promise<U> mapWith(Fn1<A, ? super T> getter, Fn1<Promise<B>, ? super A> operation, Fn2<U, ? super T, ? super B> factory) {
+        return mapWith(t -> operation.apply(getter.apply(t)), factory);
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to a projection of the value, then combine the ORIGINAL value with the operation's result via a factory.
+    /// Operation failure short-circuits; the factory always receives the full original value and itself may fail, in which case its failure propagates.
+    ///
+    /// This method is a dependent action and executed in the order in which transformations are written in the code.
+    ///
+    /// @param getter    Projection extracting the input for the operation
+    /// @param operation Effectful operation applied to the projection
+    /// @param factory   Combiner receiving the original value and the operation's result, itself returning a [Promise]
+    /// @param <U>       Type of the combined value
+    /// @param <A>       Type of the projection
+    /// @param <B>       Type of the operation's result
+    ///
+    /// @return New promise instance.
+    default <U, A, B> Promise<U> flatMapWith(Fn1<A, ? super T> getter, Fn1<Promise<B>, ? super A> operation, Fn2<Promise<U>, ? super T, ? super B> factory) {
+        return flatMapWith(t -> operation.apply(getter.apply(t)), factory);
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to a projection of the value; on success CONTINUE WITH THE ORIGINAL VALUE UNCHANGED — the operation's result is
+    /// discarded; on failure (failed promise) the failure propagates. The chain waits for the operation (gating side effect, unlike [#onSuccess(Consumer)]).
+    ///
+    /// This method is a dependent action and executed in the order in which transformations are written in the code.
+    ///
+    /// @param getter    Projection extracting the input for the operation
+    /// @param operation Effectful operation applied to the projection
+    /// @param <A>       Type of the projection
+    /// @param <B>       Type of the operation's (discarded) result
+    ///
+    /// @return New promise instance.
+    default <A, B> Promise<T> ensureWith(Fn1<A, ? super T> getter, Fn1<Promise<B>, ? super A> operation) {
+        return ensureWith(t -> operation.apply(getter.apply(t)));
+    }
+
+    /// **[Pure Transform]**
     /// Replace the success value of the promise once the promise is resolved with the promise obtained from the provided supplier.
     ///
     /// This method is a dependent action and executed in the order in which transformations are written in the code.
