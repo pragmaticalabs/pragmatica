@@ -64,6 +64,23 @@ import static org.pragmatica.lang.utils.ResultCollector.resultCollector;
 /// Resolution event broker has no such limitations. It starts actions as asynchronous tasks but does not wait for their completion.
 /// Such actions are called "independent actions". They are harder to reason about because their execution may take an arbitrary
 /// amount of time.
+///
+/// ## Combinator map
+///
+/// | Purpose | Combinators |
+/// |---------|-------------|
+/// | Construct | `success(value)`, `cause.promise()` (preferred over failure factories), `resolved(result)`, `promise(consumer)` (manual resolution), `lift(errorMapper, supplier)` (exception boundary) |
+/// | Transform (dependent) | `map(fn)`, `flatMap(fn)` (+ `Supplier` forms), `mapToUnit()` |
+/// | Context-preserving stages | `mapWith(op, factory)` / `flatMapWith(op, factory)` / `ensureWith(op)` + field-scoped getter forms — `ensureWith` AWAITS the operation and gates the chain on its success, unlike `onSuccess`. See `core/docs/knowledge-gathering-pipelines.md` |
+/// | Aggregate | static `all(p1..pN)` (fail-fast), `allOrCancel(...)` (cancels remaining on failure), `allOf(list)`, `allOfOrCancel(list)`, `any(...)` (first success); instance `all(fn1..fnN)` / `allOrCancel(...)` → `MapperN` (multi-projection) |
+/// | Side effects (independent) | `onSuccess`/`onFailure`/`onResult` families — started on resolution, NOT awaited, cannot gate the chain |
+/// | Time | `timeout(timeSpan)` and the async scheduling entry points |
+/// | Terminal | `await()` — blocking; allowed in tests, requires `@TerminalOperation` elsewhere |
+///
+/// Tuple-valued promises additionally provide arity overloads of `map`/`flatMap` (`Fn2`..`Fn15`).
+///
+/// Rule of thumb: `Promise<Result<T>>` is forbidden — `Promise` IS the asynchronous [Result];
+/// a `Result`-returning operation lifts into a chain via `result.async()`.
 /* Implementation notes: this version of the implementation is heavily inspired by the implementation of
 the CompletableFuture. There are several differences, though:
 - Method naming consistent with widely used Optional and Streams.

@@ -33,6 +33,29 @@ import static org.pragmatica.lang.Tuple.tuple;
 
 /// Implementation of the basic immutable container for value which may or may not be present.
 ///
+/// `Option` is the presence carrier among the three core monads: `Option` — presence,
+/// [Result] — synchronous fallibility, [Promise] — asynchronous fallibility (the JBCT
+/// four-return-kinds rule). Business logic never returns or checks `null` — nullable values
+/// from external APIs are wrapped at the boundary via `option(nullable)`.
+///
+/// ## Combinator map
+///
+/// | Purpose | Combinators |
+/// |---------|-------------|
+/// | Construct | `some(value)`, `none()`, `option(nullable)` (boundary adapter) |
+/// | Transform | `map(fn)`, `flatMap(fn)` |
+/// | Context-preserving stages | `mapWith(op, factory)` / `flatMapWith(op, factory)` / `ensureWith(op)` + field-scoped getter forms — empty propagates at every stage; `ensureWith` discards the operation result and continues with the original value when present |
+/// | Absence handling | `or(...)` / `orElse(...)` family, `filter(predicate)` |
+/// | Multi-projection | instance `all(fn1..fnN)` → `MapperN.map/flatMap` |
+/// | Convert | `toResult(cause)`, `async()` / `async(cause)` (→ [Promise]) |
+/// | Side effects | `onPresent(consumer)` family — observation only |
+///
+/// Tuple-valued options additionally provide arity overloads of `map`/`flatMap` (`Fn2`..`Fn15`).
+///
+/// Validation of optional values follows the `Result<Option<T>>` contract — see
+/// [Verify]`.ensureOption`: empty → `Success(None)`, present and valid → `Success(Some)`,
+/// present and invalid → `Failure(cause)`.
+///
 /// @param <T> Type of contained value
 @SuppressWarnings("unused")
 public sealed interface Option<T> permits Some, None {

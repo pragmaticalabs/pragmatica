@@ -33,7 +33,31 @@ import static org.pragmatica.lang.Tuple.*;
 import static org.pragmatica.lang.Unit.unit;
 
 /// Representation of the operation result. The result can be either success or failure. In case of success it holds value returned by the operation.
-/// In case of failure it holds a failure description.
+/// In case of failure it holds a failure description ([Cause]).
+///
+/// `Result` is the synchronous fallible carrier among the three core monads: [Option] —
+/// presence, `Result` — synchronous fallibility, [Promise] — asynchronous fallibility
+/// (the JBCT four-return-kinds rule).
+///
+/// ## Combinator map
+///
+/// | Purpose | Combinators |
+/// |---------|-------------|
+/// | Construct | `success(value)`, `unitResult()`, `cause.result()` (preferred over failure factories), `lift(...)` family (exception boundary → `Result`) |
+/// | Transform | `map(fn)`, `flatMap(fn)` (+ `Supplier` forms, `flatMap2(fn, param)`), `mapToUnit()` |
+/// | Context-preserving stages | `mapWith(op, factory)` / `flatMapWith(op, factory)` / `ensureWith(op)` + field-scoped getter forms — run an effectful operation, continue with the ORIGINAL value combined via the factory; `ensureWith` discards the operation result and gates the chain. See `core/docs/knowledge-gathering-pipelines.md` |
+/// | Failure handling | `mapError(fn)`, `recover(fn)`, `or(value/supplier)`, `orElse(result/supplier)` |
+/// | Validate | `filter(cause, predicate)`, `filter(causeMapper, predicate)` — and [Verify] for the full validation vocabulary |
+/// | Multi-projection | instance `all(fn1..fnN)` → `MapperN.map/flatMap` (decompose one value into several fallible projections); static `all(r1..rN)` (combine independent results, collects failures); `allOf(list)` |
+/// | Side effects (non-gating) | `onSuccess`/`onSuccessRun`, `onFailure`/`onFailureRun`, `onResult`/`onResultRun`, `apply(failureC, successC)` — observation only; a fallible gating effect is `ensureWith` |
+/// | Convert | `option()`, `stream()`, `async()` (→ [Promise]) |
+/// | Inspect | `isSuccess()`, `isFailure()` |
+///
+/// Tuple-valued results additionally provide arity overloads of `map`/`flatMap` (`Fn2`..`Fn15`).
+///
+/// Rules of thumb: `Promise<Result<T>>` is forbidden — [Promise] IS the async `Result`;
+/// `Result<Option<T>>` is the valid "optional with validation" shape; construct failures via
+/// `cause.result()`, not static failure factories.
 ///
 /// @param <T> Type of value in case of success.
 @SuppressWarnings("unused")
