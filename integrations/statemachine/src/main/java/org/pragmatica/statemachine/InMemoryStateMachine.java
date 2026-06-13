@@ -7,6 +7,7 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
@@ -68,9 +69,18 @@ final class InMemoryStateMachine<S, E, C> implements StateMachine<S, E, C> {
         if (!transition.isAllowed(context)) {
             return invalidTransitionError(transition);
         }
-        return transition.executeAction(context)
-                         .map(unit -> recordTransition(instance,
-                                                       transition.toState()));
+        var isSelfTransition = transition.fromState().equals(transition.toState());
+        Function<TransitionContext<S, E, C>, Promise<Unit>> noop = _ -> Promise.success(unit());
+        var exitAction = isSelfTransition
+                         ? noop
+                         : definition.exitAction(transition.fromState()).or(noop);
+        var entryAction = isSelfTransition
+                          ? noop
+                          : definition.entryAction(transition.toState()).or(noop);
+        return exitAction.apply(context)
+                         .flatMap(_ -> transition.executeAction(context))
+                         .flatMap(_ -> entryAction.apply(context))
+                         .map(_ -> recordTransition(instance, transition.toState()));
     }
 
     private Promise<StateInfo<S>> invalidTransitionError(Transition<S, E, C> transition) {

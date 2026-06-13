@@ -302,6 +302,7 @@ record AwsClientRecord(AwsConfig config,
                                  .append(AwsSigV4Signer.urlEncode(request.securityGroupIds().get(i))));
         request.subnetId().onPresent(s -> sb.append("&SubnetId=").append(AwsSigV4Signer.urlEncode(s)));
         request.userData().onPresent(u -> sb.append("&UserData=").append(AwsSigV4Signer.urlEncode(u)));
+        request.availabilityZone().onPresent(az -> sb.append("&Placement.AvailabilityZone=").append(AwsSigV4Signer.urlEncode(az)));
         return sb.toString();
     }
 

@@ -5,7 +5,7 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -114,7 +114,7 @@ public class LocalNetwork implements ClusterNetwork {
         nodes.remove(nodeId);
         if (nodes.size() == topologyManager.quorumSize() - 1) {
             routers.values()
-                   .forEach(router -> router.route(QuorumStateNotification.disappeared()));
+                   .forEach(router -> router.route(ClusterStateNotification.passive()));
         }
     }
 
@@ -139,12 +139,12 @@ public class LocalNetwork implements ClusterNetwork {
         if (nodes.size() == topologyManager.quorumSize()) {
             // First quorum reached - notify all nodes
             routers.values()
-                   .forEach(router -> router.route(QuorumStateNotification.established()));
+                   .forEach(router -> router.route(ClusterStateNotification.active()));
         } else if (nodes.size() > topologyManager.quorumSize()) {
             // Quorum already established - notify the newly added node
             var router = routers.get(nodeId);
             if (router != null) {
-                router.route(QuorumStateNotification.established());
+                router.route(ClusterStateNotification.active());
             }
         }
     }

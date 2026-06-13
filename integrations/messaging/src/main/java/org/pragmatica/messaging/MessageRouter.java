@@ -17,6 +17,7 @@
 package org.pragmatica.messaging;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -50,12 +51,14 @@ public sealed interface MessageRouter {
     ///
     /// @param message the message to route
     /// @param <T>     the message type
+    @Contract
     <T extends Message> void route(T message);
 
     /// Route a message asynchronously.
     ///
     /// @param messageSupplier supplier that creates the message
     /// @param <T>             the message type
+    @Contract
     default <T extends Message> void routeAsync(Supplier<T> messageSupplier) {
         Promise.async(() -> route(messageSupplier.get()));
     }
@@ -64,10 +67,12 @@ public sealed interface MessageRouter {
     /// need an instance of MessageRouter for construction. Instance of this class is passed to them.
     /// Actual delegate is set when the MessageRouter instance is constructed.
     sealed interface DelegateRouter extends MessageRouter {
+        @Contract
         void replaceDelegate(MessageRouter delegate);
 
         /// Stop message delivery. After this call, route() silently drops all messages.
         /// Thread-safe and idempotent. Can be restarted by calling replaceDelegate().
+        @Contract
         void quiesce();
 
         static DelegateRouter delegate() {
@@ -82,22 +87,26 @@ public sealed interface MessageRouter {
                 }
 
                 @Override
+                @Contract
                 public <T extends Message> void route(T message) {}
             };
 
             private volatile MessageRouter delegate;
 
             @Override
+            @Contract
             public void replaceDelegate(MessageRouter delegate) {
                 this.delegate = delegate;
             }
 
             @Override
+            @Contract
             public void quiesce() {
                 delegate = NO_OP;
             }
 
             @Override
+            @Contract
             public <T extends Message> void route(T message) {
                 delegate.route(message);
             }
@@ -121,15 +130,33 @@ public sealed interface MessageRouter {
 
         record SimpleMutableRouter<T extends Message>(ConcurrentMap<Class<T>, List<Consumer<T>>> routingTable) implements MutableRouter {
             private static final Logger log = LoggerFactory.getLogger(MessageRouter.class);
+            private static final long SLOW_HANDLER_THRESHOLD_NANOS = 5_000_000L;
 
             @Override
             @SuppressWarnings("unchecked")
+            @Contract
             public <R extends Message> void route(R message) {
                 Option.option(routingTable.get(message.getClass()))
-                      .onPresent(list -> list.forEach(fn -> fn.accept((T) message)))
+                      .onPresent(list -> list.forEach(fn -> dispatchOne(fn, (T) message)))
                       .onEmpty(() -> log.warn("No route for message type: {}",
                                               message.getClass()
                                                      .getSimpleName()));
+            }
+
+            private void dispatchOne(Consumer<T> handler, T message) {
+                var start = System.nanoTime();
+                try {
+                    handler.accept(message);
+                    var elapsed = System.nanoTime() - start;
+                    if (elapsed >= SLOW_HANDLER_THRESHOLD_NANOS) {
+                        log.warn("SLOW-HANDLER type={} ms={}", message.getClass().getSimpleName(), elapsed / 1_000_000);
+                    }
+                } catch (RuntimeException e) {
+                    log.error("Listener for {} threw {}; continuing dispatch chain",
+                              message.getClass().getSimpleName(),
+                              e.getClass().getSimpleName(),
+                              e);
+                }
             }
 
             @Override
@@ -146,13 +173,33 @@ public sealed interface MessageRouter {
 
     /// Immutable router with fixed routes.
     non-sealed interface ImmutableRouter<T extends Message> extends MessageRouter {
+        Logger LOG = LoggerFactory.getLogger(ImmutableRouter.class);
+        long SLOW_HANDLER_THRESHOLD_NANOS = 5_000_000L;
+
         Map<Class<T>, List<Consumer<T>>> routingTable();
 
         @Override
         @SuppressWarnings("unchecked")
+        @Contract
         default <R extends Message> void route(R message) {
-            routingTable().get(message.getClass())
-                        .forEach(fn -> fn.accept((T) message));
+            Option.option(routingTable().get(message.getClass()))
+                  .onPresent(list -> list.forEach(fn -> dispatchOne(fn, (T) message)));
+        }
+
+        private void dispatchOne(Consumer<T> handler, T message) {
+            var start = System.nanoTime();
+            try {
+                handler.accept(message);
+                var elapsed = System.nanoTime() - start;
+                if (elapsed >= SLOW_HANDLER_THRESHOLD_NANOS) {
+                    LOG.warn("SLOW-HANDLER type={} ms={}", message.getClass().getSimpleName(), elapsed / 1_000_000);
+                }
+            } catch (RuntimeException e) {
+                LOG.error("Listener for {} threw {}; continuing dispatch chain",
+                          message.getClass().getSimpleName(),
+                          e.getClass().getSimpleName(),
+                          e);
+            }
         }
     }
 

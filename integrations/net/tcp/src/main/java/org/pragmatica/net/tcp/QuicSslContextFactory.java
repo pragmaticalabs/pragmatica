@@ -60,11 +60,20 @@ public final class QuicSslContextFactory {
     /// @param config TLS configuration (must be Server or Mutual mode)
     /// @return QUIC SSL context or error
     public static Result<QuicSslContext> createServer(TlsConfig config) {
+        return createServer(config, new String[0]);
+    }
+
+    /// Create a QUIC server SSL context from TLS configuration with ALPN application protocols.
+    ///
+    /// @param config               TLS configuration (must be Server or Mutual mode)
+    /// @param applicationProtocols ALPN protocol identifiers advertised to clients
+    /// @return QUIC SSL context or error
+    public static Result<QuicSslContext> createServer(TlsConfig config, String... applicationProtocols) {
         return switch (config) {
             case TlsConfig.Server(var identity, var clientAuth) ->
-                buildServerContext(identity, clientAuth);
+                buildServerContext(identity, clientAuth, applicationProtocols);
             case TlsConfig.Mutual(var identity, var trust) ->
-                buildMutualServerContext(identity, trust);
+                buildMutualServerContext(identity, trust, applicationProtocols);
             case TlsConfig.Client _ ->
                 TlsError.wrongMode("Cannot create QUIC server context from Client config")
                         .result();
@@ -75,31 +84,38 @@ public final class QuicSslContextFactory {
     ///
     /// @return QUIC SSL context or error
     public static Result<QuicSslContext> createSelfSignedServer() {
-        return buildServerContext(new TlsConfig.Identity.SelfSigned(), Option.empty());
+        return buildServerContext(new TlsConfig.Identity.SelfSigned(), Option.empty(), new String[0]);
     }
 
     private static Result<QuicSslContext> buildServerContext(TlsConfig.Identity identity,
-                                                             Option<TlsConfig.Trust> clientAuth) {
-        return loadIdentityAndBuild(identity, clientAuth);
+                                                             Option<TlsConfig.Trust> clientAuth,
+                                                             String[] applicationProtocols) {
+        return loadIdentityAndBuild(identity, clientAuth, applicationProtocols);
     }
 
     private static Result<QuicSslContext> buildMutualServerContext(TlsConfig.Identity identity,
-                                                                   TlsConfig.Trust trust) {
-        return loadIdentityAndBuild(identity, Option.some(trust));
+                                                                   TlsConfig.Trust trust,
+                                                                   String[] applicationProtocols) {
+        return loadIdentityAndBuild(identity, Option.some(trust), applicationProtocols);
     }
 
     private static Result<QuicSslContext> loadIdentityAndBuild(TlsConfig.Identity identity,
-                                                               Option<TlsConfig.Trust> trust) {
+                                                               Option<TlsConfig.Trust> trust,
+                                                               String[] applicationProtocols) {
         return loadKeyMaterial(identity)
-            .flatMap(keyMaterial -> buildContext(keyMaterial, trust));
+            .flatMap(keyMaterial -> buildContext(keyMaterial, trust, applicationProtocols));
     }
 
     @SuppressWarnings("JBCT-UTIL-01")
     private static Result<QuicSslContext> buildContext(KeyMaterial keyMaterial,
-                                                       Option<TlsConfig.Trust> trust) {
+                                                       Option<TlsConfig.Trust> trust,
+                                                       String[] applicationProtocols) {
         try {
             var builder = configureIdentity(keyMaterial);
             trust.onPresent(t -> configureTrust(builder, t));
+            if (applicationProtocols.length > 0) {
+                builder.applicationProtocols(applicationProtocols);
+            }
             return Result.success(builder.build());
         } catch (Exception e) {
             return new TlsError.ContextBuildFailed(e).result();
@@ -146,9 +162,15 @@ public final class QuicSslContextFactory {
     /// @param bundle certificate bundle from a [CertificateProvider]
     /// @return QUIC SSL context or error
     public static Result<QuicSslContext> createServerFromBundle(org.pragmatica.net.tcp.security.CertificateBundle bundle) {
+        return createServerFromBundle(bundle, new String[0]);
+    }
+
+    /// Create a QUIC server SSL context from a [CertificateBundle] with ALPN application protocols.
+    public static Result<QuicSslContext> createServerFromBundle(org.pragmatica.net.tcp.security.CertificateBundle bundle,
+                                                                String... applicationProtocols) {
         var identity = new TlsConfig.Identity.FromProvider(bundle.certificatePem(), bundle.privateKeyPem());
         var trust = new TlsConfig.Trust.FromCaBytes(bundle.caCertificatePem());
-        return loadIdentityAndBuild(identity, Option.some(trust));
+        return loadIdentityAndBuild(identity, Option.some(trust), applicationProtocols);
     }
 
     /// Create a QUIC client SSL context from a [CertificateBundle].
@@ -157,7 +179,13 @@ public final class QuicSslContextFactory {
     /// @param bundle certificate bundle from a [CertificateProvider]
     /// @return QUIC SSL context or error
     public static Result<QuicSslContext> createClientFromBundle(org.pragmatica.net.tcp.security.CertificateBundle bundle) {
-        return buildClientContext(new TlsConfig.Trust.FromCaBytes(bundle.caCertificatePem()));
+        return createClientFromBundle(bundle, new String[0]);
+    }
+
+    /// Create a QUIC client SSL context from a [CertificateBundle] with ALPN application protocols.
+    public static Result<QuicSslContext> createClientFromBundle(org.pragmatica.net.tcp.security.CertificateBundle bundle,
+                                                                String... applicationProtocols) {
+        return buildClientContext(new TlsConfig.Trust.FromCaBytes(bundle.caCertificatePem()), applicationProtocols);
     }
 
     // ===== Client Context =====
@@ -166,11 +194,16 @@ public final class QuicSslContextFactory {
     ///
     /// @param config TLS configuration (must be Client or Mutual mode)
     /// @return QUIC SSL context or error
-    @SuppressWarnings("JBCT-PAT-01") // Switch over sealed TLS config variants
     public static Result<QuicSslContext> createClient(TlsConfig config) {
+        return createClient(config, new String[0]);
+    }
+
+    /// Create a QUIC client SSL context from TLS configuration with ALPN application protocols.
+    @SuppressWarnings("JBCT-PAT-01")
+    public static Result<QuicSslContext> createClient(TlsConfig config, String... applicationProtocols) {
         return switch (config) {
-            case TlsConfig.Client(var trust, _) -> buildClientContext(trust);
-            case TlsConfig.Mutual(_, var trust) -> buildClientContext(trust);
+            case TlsConfig.Client(var trust, _) -> buildClientContext(trust, applicationProtocols);
+            case TlsConfig.Mutual(_, var trust) -> buildClientContext(trust, applicationProtocols);
             case TlsConfig.Server _ ->
                 TlsError.wrongMode("Cannot create QUIC client context from Server config")
                         .result();
@@ -194,10 +227,13 @@ public final class QuicSslContextFactory {
     }
 
     @SuppressWarnings("JBCT-UTIL-01")
-    private static Result<QuicSslContext> buildClientContext(TlsConfig.Trust trust) {
+    private static Result<QuicSslContext> buildClientContext(TlsConfig.Trust trust, String[] applicationProtocols) {
         try {
             var builder = QuicSslContextBuilder.forClient();
             configureTrust(builder, trust);
+            if (applicationProtocols.length > 0) {
+                builder.applicationProtocols(applicationProtocols);
+            }
             return Result.success(builder.build());
         } catch (Exception e) {
             return new TlsError.ContextBuildFailed(e).result();

@@ -207,6 +207,15 @@ public interface Route<T> extends RouteSource {
         return new ParameterBuilderImpl<>(method, path);
     }
 
+    /// Like [#method(HttpMethod, String)] but pre-seeds the route with a default name.
+    /// The default name is used as the route's [#name()] unless the caller overrides it
+    /// later via [ContentTypeBuilder#named(String)]. Used by registry adapters that want
+    /// to tag every route with an identifier without requiring an explicit `.named(...)`
+    /// call at every site.
+    static <R> ParameterBuilder<R> method(HttpMethod method, String path, String defaultName) {
+        return new ParameterBuilderImpl<>(method, path, List.of(), defaultName);
+    }
+
     // ===================================================================================
     // Entry Point Builder
     // ===================================================================================
@@ -853,27 +862,31 @@ public interface Route<T> extends RouteSource {
         }
     }
 
-    record ParameterBuilderImpl<R>(HttpMethod method, String path, List<String> spacers) implements ParameterBuilder<R> {
+    record ParameterBuilderImpl<R>(HttpMethod method, String path, List<String> spacers, String defaultName) implements ParameterBuilder<R> {
         ParameterBuilderImpl(HttpMethod method, String path) {
-            this(method, path, List.of());
+            this(method, path, List.of(), "");
+        }
+
+        ParameterBuilderImpl(HttpMethod method, String path, List<String> spacers) {
+            this(method, path, spacers, "");
         }
 
         @Override
         public ContentTypeBuilder<R> to(Handler<R> handler) {
-            return new ContentTypeBuilderImpl<>(method, path, handler, spacers, "", new RouteSecurityPolicy() {});
+            return new ContentTypeBuilderImpl<>(method, path, handler, spacers, defaultName, new RouteSecurityPolicy() {});
         }
 
         // Path parameters - collect spacers from path parameter definitions
         @Override
         public <P1> PathBuilder1<R, P1> withPath(PathParameter<P1> p1) {
             var collected = collectSpacers(p1);
-            return new PathBuilder1Impl<>(new ParameterBuilderImpl<>(method, path, collected), p1);
+            return new PathBuilder1Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName), p1);
         }
 
         @Override
         public <P1, P2> PathBuilder2<R, P1, P2> withPath(PathParameter<P1> p1, PathParameter<P2> p2) {
             var collected = collectSpacers(p1, p2);
-            return new PathBuilder2Impl<>(new ParameterBuilderImpl<>(method, path, collected), p1, p2);
+            return new PathBuilder2Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName), p1, p2);
         }
 
         @Override
@@ -881,7 +894,7 @@ public interface Route<T> extends RouteSource {
                                                                  PathParameter<P2> p2,
                                                                  PathParameter<P3> p3) {
             var collected = collectSpacers(p1, p2, p3);
-            return new PathBuilder3Impl<>(new ParameterBuilderImpl<>(method, path, collected), p1, p2, p3);
+            return new PathBuilder3Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName), p1, p2, p3);
         }
 
         @Override
@@ -890,7 +903,7 @@ public interface Route<T> extends RouteSource {
                                                                          PathParameter<P3> p3,
                                                                          PathParameter<P4> p4) {
             var collected = collectSpacers(p1, p2, p3, p4);
-            return new PathBuilder4Impl<>(new ParameterBuilderImpl<>(method, path, collected), p1, p2, p3, p4);
+            return new PathBuilder4Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName), p1, p2, p3, p4);
         }
 
         @Override
@@ -900,7 +913,7 @@ public interface Route<T> extends RouteSource {
                                                                                  PathParameter<P4> p4,
                                                                                  PathParameter<P5> p5) {
             var collected = collectSpacers(p1, p2, p3, p4, p5);
-            return new PathBuilder5Impl<>(new ParameterBuilderImpl<>(method, path, collected), p1, p2, p3, p4, p5);
+            return new PathBuilder5Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName), p1, p2, p3, p4, p5);
         }
 
         // Helper to collect spacer text from path parameters

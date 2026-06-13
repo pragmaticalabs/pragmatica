@@ -30,7 +30,8 @@ public record RunInstancesRequest(
     Option<String> keyName,
     List<String> securityGroupIds,
     Option<String> subnetId,
-    Option<String> userData
+    Option<String> userData,
+    Option<String> availabilityZone
 ) {
     /// Factory method for creating a RunInstances request.
     public static RunInstancesRequest runInstancesRequest(String imageId,
@@ -42,6 +43,20 @@ public record RunInstancesRequest(
                                                           Option<String> subnetId,
                                                           Option<String> userData) {
         return new RunInstancesRequest(imageId, instanceType, minCount, maxCount,
-                                       keyName, securityGroupIds, subnetId, userData);
+                                       keyName, securityGroupIds, subnetId, userData, Option.empty());
+    }
+
+    /// Factory method for creating a RunInstances request with placement.
+    public static RunInstancesRequest runInstancesRequest(String imageId,
+                                                          String instanceType,
+                                                          int minCount,
+                                                          int maxCount,
+                                                          Option<String> keyName,
+                                                          List<String> securityGroupIds,
+                                                          Option<String> subnetId,
+                                                          Option<String> userData,
+                                                          Option<String> availabilityZone) {
+        return new RunInstancesRequest(imageId, instanceType, minCount, maxCount,
+                                       keyName, securityGroupIds, subnetId, userData, availabilityZone);
     }
 }

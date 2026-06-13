@@ -4,11 +4,13 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoverNodes;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes;
 import org.pragmatica.consensus.net.NetworkMessage.Hello;
+import org.pragmatica.consensus.net.NetworkMessage.KeepAlive;
 import org.pragmatica.consensus.net.NetworkMessage.KVSyncRequest;
 import org.pragmatica.consensus.net.NetworkMessage.KVSyncResponse;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
@@ -26,10 +28,9 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
-import org.pragmatica.consensus.topology.TopologyManagementMessage.AddNode;
-import org.pragmatica.consensus.topology.TopologyManagementMessage.RemoveNode;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.SetClusterSize;
 import org.pragmatica.lang.Option;
+import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -61,6 +62,8 @@ public interface PassiveNode<K extends StructuredKey, V> {
 
     KVStore<K, V> kvStore();
 
+    TopologyObserver topologyManager();
+
     List<Entry<?>> routeEntries();
 
     Promise<Unit> start();
@@ -73,15 +76,16 @@ public interface PassiveNode<K extends StructuredKey, V> {
     static <K extends StructuredKey, V> Result<PassiveNode<K, V>> passiveNode(
         TopologyConfig topologyConfig,
         Serializer serializer,
-        Deserializer deserializer) {
+        Deserializer deserializer,
+        TlsConfig tlsConfig) {
 
         var delegateRouter = DelegateRouter.delegate();
         var kvStore = new KVStore<K, V>(delegateRouter, serializer, deserializer);
 
         return Result.all(
             TopologyObserver.topologyObserver(topologyConfig, delegateRouter),
-            QuicTlsProvider.serverContext(Option.empty()),
-            QuicTlsProvider.clientContext(Option.empty())
+            QuicTlsProvider.serverContext(tlsConfig),
+            QuicTlsProvider.clientContext(tlsConfig)
         ).map((topologyManager, serverSsl, clientSsl) -> assembleNode(topologyConfig.self(),
                                                                        delegateRouter,
                                                                        topologyManager,
@@ -107,14 +111,17 @@ public interface PassiveNode<K extends StructuredKey, V> {
                                              delegateRouter, serverSsl, clientSsl);
 
         var topologyMgmtRoutes = SealedBuilder.from(TopologyManagementMessage.class)
-                                              .route(route(AddNode.class, topologyManager::handleAddNodeMessage),
-                                                     route(RemoveNode.class, topologyManager::handleRemoveNodeMessage),
-                                                     route(SetClusterSize.class, topologyManager::handleSetClusterSize));
+                                              .route(route(SetClusterSize.class, topologyManager::handleSetClusterSize));
 
         var networkMsgRoutes = SealedBuilder.from(NetworkMessage.class)
                                             .route(route(DiscoverNodes.class, topologyManager::handleDiscoverNodes),
                                                    route(DiscoveredNodes.class, topologyManager::handleDiscoveredNodes),
                                                    route(Hello.class, _ -> {}),
+                                                   // Transport-internal liveness beacon (Wave 5): swallowed by the
+                                                   // QuicClusterNetwork inbound funnel BEFORE routing (it only refreshes
+                                                   // the per-peer receipt clock). This route exists solely to satisfy
+                                                   // sealed-hierarchy startup completeness — it must never receive traffic.
+                                                   route(KeepAlive.class, _ -> {}),
                                                    route(KVSyncRequest.class, _ -> {}),
                                                    route(KVSyncResponse.class,
                                                          response -> handleKVSyncResponse(kvStore, response)));
@@ -126,10 +133,14 @@ public interface PassiveNode<K extends StructuredKey, V> {
                                                        route(ConnectNode.class, network::connect),
                                                        route(DisconnectNode.class, network::disconnect),
                                                        route(ListConnectedNodes.class, network::listNodes),
-                                                       route(ConnectionFailed.class, topologyManager::handleConnectionFailed),
+                                                       // R5: transport never mutates topology projection. ConnectionFailed is
+                                                       // forwarded to SWIM via QuicClusterNetwork's peer-state listener
+                                                       // (AetherNode.attachQuicPeerStateListener). The route is retained only
+                                                       // to satisfy sealed-hierarchy coverage.
+                                                       route(ConnectionFailed.class, _ -> {}),
                                                        route(ConnectionEstablished.class,
                                                              msg -> handleConnectionWithSnapshotRequest(
-                                                                 topologyManager, delegateRouter, selfId, snapshotRequested, msg)),
+                                                                 delegateRouter, selfId, snapshotRequested, msg)),
                                                        route(Send.class, network::handleSend),
                                                        route(Broadcast.class, network::handleBroadcast));
 
@@ -166,13 +177,13 @@ public interface PassiveNode<K extends StructuredKey, V> {
         return new passiveNode<>(delegateRouter, topologyManager, network, kvStore, List.copyOf(allEntries));
     }
 
-    private static void handleConnectionWithSnapshotRequest(TopologyObserver topologyManager,
-                                                               DelegateRouter delegateRouter,
+    /// R5: TopologyObserver no longer consumes ConnectionEstablished; transport hints
+    /// flow into SWIM via the QUIC peer-state listener wired by AetherNode. This handler
+    /// retains only the snapshot-request side effect on first connection.
+    private static void handleConnectionWithSnapshotRequest(DelegateRouter delegateRouter,
                                                                NodeId selfId,
                                                                AtomicBoolean snapshotRequested,
                                                                ConnectionEstablished msg) {
-        topologyManager.handleConnectionEstablished(msg);
-
         if (snapshotRequested.compareAndSet(false, true)) {
             log.info("Requesting KV-Store snapshot from {}", msg.nodeId());
             delegateRouter.route(new Send(msg.nodeId(), new KVSyncRequest(selfId)));
@@ -186,10 +197,9 @@ public interface PassiveNode<K extends StructuredKey, V> {
                .onFailure(cause -> log.error("Failed to restore KV snapshot: {}", cause));
     }
 
-    @SuppressWarnings({"rawtypes", "JBCT-RET-01"}) // void required by Consumer<Decision> contract
-    private static <K extends StructuredKey, V> void applyDecision(KVStore<K, V> kvStore, Decision<?> decision) {
-        for (var command : decision.value().commands()) {
-            kvStore.process((KVCommand) command);
-        }
+    @SuppressWarnings({"unchecked", "JBCT-RET-01"}) // void required by Consumer<Decision> contract
+    private static <K extends StructuredKey, V> void applyDecision(KVStore<K, V> kvStore,
+                                                                    Decision<?> decision) {
+        kvStore.process((Batch<KVCommand<K>>) (Batch<?>) decision.value());
     }
 }

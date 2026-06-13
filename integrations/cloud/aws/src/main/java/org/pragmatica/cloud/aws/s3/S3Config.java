@@ -79,4 +79,14 @@ public record S3Config(String endpoint,
         var slashIdx = withoutScheme.indexOf('/');
         return slashIdx >= 0 ? withoutScheme.substring(0, slashIdx) : withoutScheme;
     }
+
+    @Override
+    public String toString() {
+        return "S3Config[endpoint=" + endpoint
+               + ", bucket=" + bucket
+               + ", region=" + region
+               + ", accessKeyId=" + accessKeyId
+               + ", secretAccessKey=REDACTED"
+               + ", pathStyle=" + pathStyle + "]";
+    }
 }

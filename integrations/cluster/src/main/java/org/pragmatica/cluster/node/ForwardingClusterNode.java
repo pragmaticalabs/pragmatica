@@ -6,6 +6,7 @@ import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
@@ -50,12 +51,14 @@ public final class ForwardingClusterNode<C extends Command> implements ClusterNo
     }
 
     /// Update the set of core peers for forwarding.
+    @Contract
     public void updateCorePeers(Set<NodeId> newCorePeers) {
         peerArray = newCorePeers.toArray(new NodeId[0]);
     }
 
     /// Handle a response from a core node. Called by the message router.
     @SuppressWarnings("unchecked")
+    @Contract
     public void onForwardApplyResponse(ForwardApplyResponse<?> response) {
         var promise = pendingRequests.remove(response.correlationId());
 

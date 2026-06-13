@@ -63,7 +63,7 @@ class HetznerClientTest {
 
             client.createServer(CreateServerRequest.createServerRequest(
                     "my-server", "cx11", "ubuntu-22.04",
-                    List.of(1L), List.of(10L), List.of(5L), "fsn1", "", true))
+                    List.of(1L), List.of(10L), List.of(5L), "fsn1", "", true, Map.of()))
                   .await()
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(HetznerClientTest::assertCreatedServer);

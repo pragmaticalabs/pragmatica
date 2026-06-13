@@ -52,4 +52,15 @@ public record AzureConfig(String tenantId,
     public String resourcePrefix() {
         return "/subscriptions/" + subscriptionId + "/resourceGroups/" + resourceGroup + "/providers";
     }
+
+    @Override
+    public String toString() {
+        return "AzureConfig[tenantId=" + tenantId
+               + ", clientId=" + clientId
+               + ", clientSecret=REDACTED"
+               + ", subscriptionId=" + subscriptionId
+               + ", resourceGroup=" + resourceGroup
+               + ", location=" + location
+               + ", baseUrl=" + baseUrl + "]";
+    }
 }
