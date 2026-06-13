@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.simulator;
 
 import org.pragmatica.lang.Cause;
@@ -14,24 +18,22 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Chaos events that can be injected into the system for resilience testing.
 public sealed interface ChaosEvent {
     String type();
     String description();
     Option<Duration> duration();
-
     Cause NODE_ID_REQUIRED = Causes.cause("nodeId cannot be null or blank");
-
     Cause LEVEL_OUT_OF_RANGE = Causes.cause("level must be between 0 and 1");
-
     Cause FAILURE_RATE_OUT_OF_RANGE = Causes.cause("failureRate must be between 0 and 1");
 
     record NodeKill(String nodeId, Option<Duration> duration) implements ChaosEvent {
-        @Override public String type() {
+        @Override
+        public String type() {
             return "NODE_KILL";
         }
 
-        @Override public String description() {
+        @Override
+        public String description() {
             return "Kill node " + nodeId;
         }
 
@@ -50,24 +52,25 @@ public sealed interface ChaosEvent {
 
     record NetworkPartition(Set<String> group1, Set<String> group2, Option<Duration> duration) implements ChaosEvent {
         private static final Cause GROUP1_EMPTY = Causes.cause("group1 cannot be null or empty");
-
         private static final Cause GROUP2_EMPTY = Causes.cause("group2 cannot be null or empty");
 
         public NetworkPartition(Set<String> group1, Set<String> group2, Option<Duration> duration) {
             this.group1 = group1 == null
-                         ? Set.of()
-                         : Set.copyOf(group1);
+                          ? Set.of()
+                          : Set.copyOf(group1);
             this.group2 = group2 == null
-                         ? Set.of()
-                         : Set.copyOf(group2);
+                          ? Set.of()
+                          : Set.copyOf(group2);
             this.duration = duration;
         }
 
-        @Override public String type() {
+        @Override
+        public String type() {
             return "NETWORK_PARTITION";
         }
 
-        @Override public String description() {
+        @Override
+        public String description() {
             return "Network partition between " + group1 + " and " + group2;
         }
 
@@ -86,11 +89,13 @@ public sealed interface ChaosEvent {
     record LatencySpike(String nodeId, long latencyMs, Option<Duration> duration) implements ChaosEvent {
         private static final Cause LATENCY_NEGATIVE = Causes.cause("latencyMs must be >= 0");
 
-        @Override public String type() {
+        @Override
+        public String type() {
             return "LATENCY_SPIKE";
         }
 
-        @Override public String description() {
+        @Override
+        public String description() {
             return "Add " + latencyMs + "ms latency to node " + nodeId;
         }
 
@@ -105,12 +110,15 @@ public sealed interface ChaosEvent {
     record SliceCrash(String sliceArtifact, Option<String> nodeId, Option<Duration> duration) implements ChaosEvent {
         private static final Cause ARTIFACT_REQUIRED = Causes.cause("sliceArtifact cannot be null or blank");
 
-        @Override public String type() {
+        @Override
+        public String type() {
             return "SLICE_CRASH";
         }
 
-        @Override public String description() {
+        @Override
+        public String description() {
             var target = nodeId.map(n -> " on node " + n).or(" on all nodes");
+
             return "Crash slice " + sliceArtifact + target;
         }
 
@@ -124,11 +132,13 @@ public sealed interface ChaosEvent {
     }
 
     record MemoryPressure(String nodeId, double level, Option<Duration> duration) implements ChaosEvent {
-        @Override public String type() {
+        @Override
+        public String type() {
             return "MEMORY_PRESSURE";
         }
 
-        @Override public String description() {
+        @Override
+        public String description() {
             return formatPercentageMessage("memory pressure", level, nodeId);
         }
 
@@ -143,11 +153,13 @@ public sealed interface ChaosEvent {
     }
 
     record CpuSpike(String nodeId, double level, Option<Duration> duration) implements ChaosEvent {
-        @Override public String type() {
+        @Override
+        public String type() {
             return "CPU_SPIKE";
         }
 
-        @Override public String description() {
+        @Override
+        public String description() {
             return formatPercentageMessage("CPU usage", level, nodeId);
         }
 
@@ -162,20 +174,24 @@ public sealed interface ChaosEvent {
     }
 
     record InvocationFailure(Option<String> sliceArtifact, double failureRate, Option<Duration> duration) implements ChaosEvent {
-        @Override public String type() {
+        @Override
+        public String type() {
             return "INVOCATION_FAILURE";
         }
 
-        @Override public String description() {
+        @Override
+        public String description() {
             var target = sliceArtifact.or("all slices");
+
             return String.format("Inject %.0f%% failure rate for %s", failureRate * 100, target);
         }
 
         public static Result<InvocationFailure> invocationFailure(Option<String> artifact,
                                                                   double rate,
                                                                   Option<Duration> duration) {
-            return Verify.ensure(rate, Verify.Is::between, 0.0, 1.0, FAILURE_RATE_OUT_OF_RANGE)
-                                .map(_ -> new InvocationFailure(artifact, rate, duration));
+            return Verify.ensure(rate, Verify.Is::between, 0.0, 1.0, FAILURE_RATE_OUT_OF_RANGE).map(_ -> new InvocationFailure(artifact,
+                                                                                                                               rate,
+                                                                                                                               duration));
         }
 
         public static Result<InvocationFailure> invocationFailure(double rate, Option<Duration> duration) {
@@ -185,14 +201,15 @@ public sealed interface ChaosEvent {
 
     record CustomChaos(String name, Option<String> descriptionText, Runnable action, Option<Duration> duration) implements ChaosEvent {
         private static final Cause NAME_REQUIRED = Causes.cause("name cannot be null or blank");
-
         private static final Cause ACTION_REQUIRED = Causes.cause("action cannot be null");
 
-        @Override public String type() {
+        @Override
+        public String type() {
             return "CUSTOM";
         }
 
-        @Override public String description() {
+        @Override
+        public String description() {
             return descriptionText.or(name);
         }
 
@@ -216,15 +233,18 @@ public sealed interface ChaosEvent {
     }
 
     record unused() implements ChaosEvent {
-        @Override public String type() {
+        @Override
+        public String type() {
             return "";
         }
 
-        @Override public String description() {
+        @Override
+        public String description() {
             return "";
         }
 
-        @Override public Option<Duration> duration() {
+        @Override
+        public Option<Duration> duration() {
             return none();
         }
     }

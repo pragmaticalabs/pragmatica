@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.load;
 
 import org.pragmatica.lang.Cause;
@@ -8,14 +12,14 @@ import java.util.List;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Error types for load configuration parsing and validation.
 public sealed interface LoadConfigError extends Cause {
     record ParseFailed(String details) implements LoadConfigError {
         public static Result<ParseFailed> parseFailed(String details) {
             return success(new ParseFailed(details));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Failed to parse load config: " + details;
         }
     }
@@ -25,7 +29,8 @@ public sealed interface LoadConfigError extends Cause {
             return success(new ValidationFailed(errors));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Load config validation failed: " + String.join("; ", errors);
         }
     }
@@ -35,7 +40,8 @@ public sealed interface LoadConfigError extends Cause {
             return success(new FileReadFailed(path, cause));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Cannot read load config file: " + path + " - " + cause.getMessage();
         }
     }
@@ -45,13 +51,15 @@ public sealed interface LoadConfigError extends Cause {
             return success(new PatternInvalid(pattern, reason));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Invalid pattern '" + pattern + "': " + reason;
         }
     }
 
     record unused() implements LoadConfigError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "";
         }
     }

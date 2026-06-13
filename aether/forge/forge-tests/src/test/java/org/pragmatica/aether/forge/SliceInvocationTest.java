@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
@@ -73,7 +78,7 @@ class SliceInvocationTest {
     void cleanUp() {
         // Undeploy any slices left by previous tests
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
-        httpRequestDelete(leaderPort, "/api/blueprint/" + BLUEPRINT_ID);
+        httpRequestDelete(leaderPort, "/api/blueprints/" + BLUEPRINT_ID);
     }
 
     @AfterAll
@@ -251,7 +256,7 @@ class SliceInvocationTest {
     }
 
     private String getStatus(int port) {
-        return httpRequest("GET", port, "/api/status", null);
+        return httpRequest("GET", port, "/api/nodes/status", null);
     }
 
     private String deploy(String artifact, int instances) {
@@ -287,7 +292,7 @@ class SliceInvocationTest {
 
     private String httpRequestBlueprint(int port, String body) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/blueprint"))
+                                 .uri(URI.create("http://localhost:" + port + "/api/blueprints"))
                                  .header("Content-Type", "application/toml")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
@@ -318,7 +323,7 @@ class SliceInvocationTest {
 
     private void undeploy(String artifact) {
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
-        httpRequestDelete(leaderPort, "/api/blueprint/" + BLUEPRINT_ID);
+        httpRequestDelete(leaderPort, "/api/blueprints/" + BLUEPRINT_ID);
     }
 
     private String httpRequestDelete(int port, String path) {

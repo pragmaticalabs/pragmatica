@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.api;
 
 import org.pragmatica.aether.ember.EmberCluster;
@@ -14,8 +18,6 @@ import java.util.List;
 import static org.pragmatica.aether.forge.api.ForgeApiResponses.*;
 
 
-/// Status-related routes for the Forge API.
-/// Provides endpoints for cluster status, node metrics, events, and health checks.
 public final class StatusRoutes {
     private StatusRoutes() {}
 
@@ -35,24 +37,26 @@ public final class StatusRoutes {
                                                          ForgeMetrics metrics,
                                                          long startTime,
                                                          ConfigurableLoadRunner loadRunner) {
-        return Route.<FullStatusResponse>get("/api/status")
-                    .toJson(() -> buildFullStatus(cluster, metrics, startTime, loadRunner));
+        return Route.<FullStatusResponse> get("/api/nodes/status").toJson(() -> buildFullStatus(cluster,
+                                                                                                metrics,
+                                                                                                startTime,
+                                                                                                loadRunner));
     }
 
     private static Route<List<NodeMetricsResponse>> nodeMetricsRoute(EmberCluster cluster) {
-        return Route.<List<NodeMetricsResponse>>get("/api/node-metrics").toJson(() -> buildNodeMetrics(cluster));
+        return Route.<List<NodeMetricsResponse>> get("/api/nodes/metrics").toJson(() -> buildNodeMetrics(cluster));
     }
 
     private static Route<List<ForgeEvent>> eventsRoute(Deque<ForgeEvent> events) {
-        return Route.<List<ForgeEvent>>get("/api/events").toJson(() -> buildEventsList(events));
+        return Route.<List<ForgeEvent>> get("/api/events").toJson(() -> buildEventsList(events));
     }
 
     private static Route<HealthResponse> healthRoute() {
-        return Route.<HealthResponse>get("/health").toJson(StatusRoutes::buildHealthResponse);
+        return Route.<HealthResponse> get("/health").toJson(StatusRoutes::buildHealthResponse);
     }
 
     private static Route<ForgeStatusResponse> forgeStatusRoute() {
-        return Route.<ForgeStatusResponse>get("/api/forge/status").toJson(() -> new ForgeStatusResponse(true));
+        return Route.<ForgeStatusResponse> get("/api/forge/status").toJson(() -> new ForgeStatusResponse(true));
     }
 
     public static FullStatusResponse buildFullStatus(EmberCluster cluster,
@@ -73,6 +77,7 @@ public final class StatusRoutes {
         var slices = buildSliceStatusInfos(cluster);
         var loadTargets = buildLoadTargets(loadRunner);
         var invocations = buildInvocations(cluster);
+
         return new FullStatusResponse(clusterInfo,
                                       metricsInfo,
                                       aetherMetrics,
@@ -87,12 +92,13 @@ public final class StatusRoutes {
     }
 
     private static List<NodeInfo> buildNodeInfos(EmberCluster.ClusterStatus clusterStatus) {
-        return clusterStatus.nodes().stream()
-                                  .map(n -> new NodeInfo(n.id(),
-                                                         n.port(),
-                                                         n.state(),
-                                                         n.isLeader()))
-                                  .toList();
+        return clusterStatus.nodes()
+                            .stream()
+                            .map(n -> new NodeInfo(n.id(),
+                                                   n.port(),
+                                                   n.state(),
+                                                   n.isLeader()))
+                            .toList();
     }
 
     private static MetricsInfo buildMetricsInfo(MetricsSnapshot snapshot) {
@@ -105,6 +111,7 @@ public final class StatusRoutes {
 
     private static AetherAggregates buildAetherMetrics(EmberCluster cluster) {
         var agg = cluster.aetherAggregates();
+
         return new AetherAggregates(agg.rps(),
                                     agg.successRate(),
                                     agg.avgLatencyMs(),
@@ -116,15 +123,16 @@ public final class StatusRoutes {
     private static LoadInfo buildLoadInfo(ConfigurableLoadRunner loadRunner) {
         return new LoadInfo(loadRunner.state().name(),
                             loadRunner.config().totalRequestsPerSecond(),
-                            loadRunner.config().targets()
-                                             .size());
+                            loadRunner.config().targets().size());
     }
 
     private static int countSlices(EmberCluster cluster) {
-        return cluster.allNodes().stream()
-                               .mapToInt(node -> node.sliceStore().loaded()
-                                                                .size())
-                               .sum();
+        return cluster.allNodes()
+                      .stream()
+                      .mapToInt(node -> node.sliceStore()
+                                            .loaded()
+                                            .size())
+                      .sum();
     }
 
     private static long uptimeSeconds(long startTime) {
@@ -132,52 +140,57 @@ public final class StatusRoutes {
     }
 
     private static List<NodeMetricsResponse> buildNodeMetrics(EmberCluster cluster) {
-        return cluster.nodeMetrics().stream()
-                                  .map(m -> new NodeMetricsResponse(m.nodeId(),
-                                                                    m.isLeader(),
-                                                                    m.cpuUsage(),
-                                                                    m.heapUsedMb(),
-                                                                    m.heapMaxMb()))
-                                  .toList();
+        return cluster.nodeMetrics()
+                      .stream()
+                      .map(m -> new NodeMetricsResponse(m.nodeId(),
+                                                        m.isLeader(),
+                                                        m.cpuUsage(),
+                                                        m.heapUsedMb(),
+                                                        m.heapMaxMb()))
+                      .toList();
     }
 
     private static List<SliceStatusInfo> buildSliceStatusInfos(EmberCluster cluster) {
-        return cluster.slicesStatus().stream()
-                                   .map(s -> new SliceStatusInfo(s.artifact(),
-                                                                 s.state(),
-                                                                 s.instances().stream()
-                                                                            .map(i -> new SliceInstanceInfo(i.nodeId(),
-                                                                                                            i.state()))
-                                                                            .toList()))
-                                   .toList();
+        return cluster.slicesStatus()
+                      .stream()
+                      .map(s -> new SliceStatusInfo(s.artifact(),
+                                                    s.state(),
+                                                    s.instances()
+                                                     .stream()
+                                                     .map(i -> new SliceInstanceInfo(i.nodeId(),
+                                                                                     i.state()))
+                                                     .toList()))
+                      .toList();
     }
 
     private static List<LoadRunnerTargetInfo> buildLoadTargets(ConfigurableLoadRunner loadRunner) {
-        return loadRunner.allTargetMetrics().values()
-                                          .stream()
-                                          .map(t -> new LoadRunnerTargetInfo(t.name(),
-                                                                             t.targetRate(),
-                                                                             t.actualRate(),
-                                                                             t.totalRequests(),
-                                                                             t.successCount(),
-                                                                             t.failureCount(),
-                                                                             t.avgLatencyMs(),
-                                                                             t.successRate(),
-                                                                             t.remainingDuration()
-                                                                                                .map(ForgeApiResponses::formatDuration)))
-                                          .toList();
+        return loadRunner.allTargetMetrics()
+                         .values()
+                         .stream()
+                         .map(t -> new LoadRunnerTargetInfo(t.name(),
+                                                            t.targetRate(),
+                                                            t.actualRate(),
+                                                            t.totalRequests(),
+                                                            t.successCount(),
+                                                            t.failureCount(),
+                                                            t.avgLatencyMs(),
+                                                            t.successRate(),
+                                                            t.remainingDuration().map(ForgeApiResponses::formatDuration)))
+                         .toList();
     }
 
     private static List<InvocationInfo> buildInvocations(EmberCluster cluster) {
-        return cluster.invocationDetails().stream()
-                                        .map(StatusRoutes::toInvocationInfo)
-                                        .toList();
+        return cluster.invocationDetails()
+                      .stream()
+                      .map(StatusRoutes::toInvocationInfo)
+                      .toList();
     }
 
     private static InvocationInfo toInvocationInfo(EmberCluster.InvocationDetail detail) {
         var errorRate = detail.count() > 0
-                       ? 1.0 - ((double) detail.successCount() / detail.count())
-                       : 0.0;
+                        ? 1.0 - ((double) detail.successCount() / detail.count())
+                        : 0.0;
+
         return new InvocationInfo(detail.artifact(),
                                   detail.method(),
                                   detail.count(),
@@ -188,11 +201,12 @@ public final class StatusRoutes {
     }
 
     private static List<ForgeEvent> buildEventsList(Deque<ForgeEvent> events) {
-        return events.stream().map(e -> new ForgeEvent(e.timestamp(),
-                                                       e.type(),
-                                                       e.severity(),
-                                                       e.message()))
-                            .toList();
+        return events.stream()
+                     .map(e -> new ForgeEvent(e.timestamp(),
+                                              e.type(),
+                                              e.severity(),
+                                              e.message()))
+                     .toList();
     }
 
     private static HealthResponse buildHealthResponse() {

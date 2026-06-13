@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.simulator;
 
 import org.pragmatica.lang.Cause;
@@ -10,7 +14,6 @@ import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.parse.Text;
 import org.pragmatica.lang.utils.Causes;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
@@ -22,25 +25,21 @@ import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.io.FileOps.exists;
+import static org.pragmatica.lang.io.FileOps.readString;
+import static org.pragmatica.lang.io.FileOps.writeString;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 
-/// Configuration for the simulator.
-///
-/// Supports per-entry-point rate configuration and slice settings.
-/// Can be loaded from JSON file or constructed programmatically.
 public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
                               Map<String, SliceConfig> slices,
                               boolean loadGeneratorEnabled,
                               double globalRateMultiplier) {
     private static final Logger log = LoggerFactory.getLogger(SimulatorConfig.class);
-
     private static final Cause ENTRY_POINTS_NULL = cause("entryPoints cannot be null");
-
     private static final Cause SLICES_NULL = cause("slices cannot be null");
-
     private static final Cause INVALID_MULTIPLIER = cause("globalRateMultiplier must be >= 0 and finite");
 
     public record EntryPointConfig(int callsPerSecond,
@@ -69,12 +68,14 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
         }
 
         public List<String> effectiveProducts() {
-            return option(products).filter(list -> !list.isEmpty()).or(DEFAULT_PRODUCTS);
+            return option(products).filter(list -> !list.isEmpty())
+                         .or(DEFAULT_PRODUCTS);
         }
 
         public DataGenerator buildGenerator(String entryPointName) {
             var productGen = buildProductGenerator();
-            return switch (entryPointName){
+
+            return switch (entryPointName) {
                 case "placeOrder" -> buildOrderRequestGenerator(productGen);
                 case "getOrderStatus", "cancelOrder" -> DataGenerator.OrderIdGenerator.orderIdGenerator();
                 case "checkStock" -> buildStockCheckGenerator(productGen);
@@ -98,13 +99,14 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
         private DataGenerator buildOrderRequestGenerator(DataGenerator.ProductIdGenerator productGen) {
             var customerGen = DataGenerator.CustomerIdGenerator.customerIdGenerator();
             var quantityRange = DataGenerator.IntRange.intRange(minQuantity, maxQuantity).unwrap();
-            return DataGenerator.OrderRequestGenerator.orderRequestGenerator(productGen, customerGen, quantityRange)
-                                                                            .unwrap();
+
+            return DataGenerator.OrderRequestGenerator.orderRequestGenerator(productGen, customerGen, quantityRange).unwrap();
         }
 
         public String toJson() {
             var productsJson = toJsonList(products);
             var customerIdsJson = toJsonList(customerIds);
+
             return formatEntryPointJson(callsPerSecond, enabled, productsJson, customerIdsJson, minQuantity, maxQuantity);
         }
 
@@ -131,8 +133,7 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
 
         private static String nonEmptyListToJson(List<String> list) {
             return "[" + String.join(",",
-                                     list.stream().map(s -> "\"" + s + "\"")
-                                                .toList()) + "]";
+                                     list.stream().map(s -> "\"" + s + "\"").toList()) + "]";
         }
 
         public EntryPointConfig withRate(int rate) {
@@ -148,15 +149,10 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
                               double spikeChance,
                               int spikeLatencyMs) {
         private static final Cause INVALID_STOCK_MODE = cause("stockMode must be 'infinite' or 'realistic'");
-
         private static final Cause BASE_LATENCY_NEGATIVE = cause("baseLatencyMs must be >= 0");
-
         private static final Cause JITTER_NEGATIVE = cause("jitterMs must be >= 0");
-
         private static final Cause FAILURE_RATE_OUT_OF_RANGE = cause("failureRate must be between 0 and 1");
-
         private static final Cause SPIKE_CHANCE_OUT_OF_RANGE = cause("spikeChance must be between 0 and 1");
-
         private static final Cause SPIKE_LATENCY_NEGATIVE = cause("spikeLatencyMs must be >= 0");
 
         public static Result<SliceConfig> sliceConfig(String stockMode,
@@ -178,27 +174,22 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
         }
 
         private static Result<String> ensureStockMode(String stockMode) {
-            return Verify.ensure(stockMode, Verify.Is::notNull, INVALID_STOCK_MODE)
-                                .filter(INVALID_STOCK_MODE,
-                                        m -> m.equals("infinite") || m.equals("realistic"));
+            return Verify.ensure(stockMode, Verify.Is::notNull, INVALID_STOCK_MODE).filter(INVALID_STOCK_MODE,
+                                                                                           m -> m.equals("infinite") || m.equals("realistic"));
         }
 
         private static Result<Integer> validateLatencyParams(int baseLatencyMs, int jitterMs, int spikeLatencyMs) {
-            return Verify.ensure(baseLatencyMs, Verify.Is::nonNegative, BASE_LATENCY_NEGATIVE).flatMap(_ -> Verify.ensure(jitterMs,
-                                                                                                                          Verify.Is::nonNegative,
-                                                                                                                          JITTER_NEGATIVE))
-                                .flatMap(_ -> Verify.ensure(spikeLatencyMs,
-                                                            Verify.Is::nonNegative,
-                                                            SPIKE_LATENCY_NEGATIVE));
+            return Verify.ensure(baseLatencyMs, Verify.Is::nonNegative, BASE_LATENCY_NEGATIVE)
+                         .flatMap(_ -> Verify.ensure(jitterMs, Verify.Is::nonNegative, JITTER_NEGATIVE))
+                         .flatMap(_ -> Verify.ensure(spikeLatencyMs, Verify.Is::nonNegative, SPIKE_LATENCY_NEGATIVE));
         }
 
         private static Result<Double> validateRateParams(double failureRate, double spikeChance) {
-            return Verify.ensure(failureRate, Verify.Is::between, 0.0, 1.0, FAILURE_RATE_OUT_OF_RANGE)
-                                .flatMap(_ -> Verify.ensure(spikeChance,
-                                                            Verify.Is::between,
-                                                            0.0,
-                                                            1.0,
-                                                            SPIKE_CHANCE_OUT_OF_RANGE));
+            return Verify.ensure(failureRate, Verify.Is::between, 0.0, 1.0, FAILURE_RATE_OUT_OF_RANGE).flatMap(_ -> Verify.ensure(spikeChance,
+                                                                                                                                  Verify.Is::between,
+                                                                                                                                  0.0,
+                                                                                                                                  1.0,
+                                                                                                                                  SPIKE_CHANCE_OUT_OF_RANGE));
         }
 
         public static SliceConfig sliceConfig() {
@@ -208,22 +199,33 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
         public BackendSimulation buildSimulation() {
             var hasLatency = baseLatencyMs > 0 || jitterMs > 0;
             var hasFailure = failureRate > 0;
-            if (!hasLatency && !hasFailure) {return BackendSimulation.NoOp.noOp().unwrap();}
-            if (hasLatency && hasFailure) {return buildCompositeSimulation();}
-            if (hasLatency) {return BackendSimulation.LatencySimulation.latencySimulation(baseLatencyMs, jitterMs);}
+
+            if (!hasLatency && !hasFailure) {
+                return BackendSimulation.NoOp.noOp().unwrap();
+            }
+
+            if (hasLatency && hasFailure) {
+                return buildCompositeSimulation();
+            }
+
+            if (hasLatency) {
+                return BackendSimulation.LatencySimulation.latencySimulation(baseLatencyMs, jitterMs);
+            }
+
             return buildFailureSimulation();
         }
 
         private BackendSimulation buildCompositeSimulation() {
             var latency = BackendSimulation.LatencySimulation.latencySimulation(baseLatencyMs, jitterMs);
             var failure = buildFailureSimulation();
+
             return BackendSimulation.Composite.composite(latency, failure).unwrap();
         }
 
         private BackendSimulation buildFailureSimulation() {
-            var unavailable = BackendSimulation.SimulatedError.ServiceUnavailable.serviceUnavailable("backend")
-                                                                                                    .unwrap();
+            var unavailable = BackendSimulation.SimulatedError.ServiceUnavailable.serviceUnavailable("backend").unwrap();
             var timeout = BackendSimulation.SimulatedError.Timeout.timeout("operation", 5000).unwrap();
+
             return BackendSimulation.FailureInjection.failureInjection(failureRate, unavailable, timeout).unwrap();
         }
 
@@ -273,35 +275,41 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
 
     private static Result<Map<String, SliceConfig>> ensureMapsNotNull(Map<String, EntryPointConfig> entryPoints,
                                                                       Map<String, SliceConfig> slices) {
-        return Verify.ensure(entryPoints, Verify.Is::notNull, ENTRY_POINTS_NULL)
-                            .flatMap(_ -> Verify.ensure(slices, Verify.Is::notNull, SLICES_NULL));
+        return Verify.ensure(entryPoints, Verify.Is::notNull, ENTRY_POINTS_NULL).flatMap(_ -> Verify.ensure(slices,
+                                                                                                            Verify.Is::notNull,
+                                                                                                            SLICES_NULL));
     }
 
     private static Result<Double> ensureFiniteMultiplier(double globalRateMultiplier) {
-        return Verify.ensure(globalRateMultiplier, Verify.Is::nonNegative, INVALID_MULTIPLIER)
-                            .filter(INVALID_MULTIPLIER, Double::isFinite);
+        return Verify.ensure(globalRateMultiplier, Verify.Is::nonNegative, INVALID_MULTIPLIER).filter(INVALID_MULTIPLIER,
+                                                                                                      Double::isFinite);
     }
 
     public static SimulatorConfig simulatorConfig() {
         var entryPoints = buildDefaultEntryPoints();
         var slices = buildDefaultSlices();
+
         return simulatorConfig(entryPoints, slices, false, 1.0).unwrap();
     }
 
     private static HashMap<String, EntryPointConfig> buildDefaultEntryPoints() {
         var entryPoints = new HashMap<String, EntryPointConfig>();
+
         entryPoints.put("placeOrder", EntryPointConfig.entryPointConfig(0));
         entryPoints.put("getOrderStatus", EntryPointConfig.entryPointConfig(0));
         entryPoints.put("cancelOrder", EntryPointConfig.entryPointConfig(0));
         entryPoints.put("checkStock", EntryPointConfig.entryPointConfig(0));
         entryPoints.put("getPrice", EntryPointConfig.entryPointConfig(0));
+
         return entryPoints;
     }
 
     private static HashMap<String, SliceConfig> buildDefaultSlices() {
         var slices = new HashMap<String, SliceConfig>();
+
         slices.put("inventory-service", SliceConfig.sliceConfig());
         slices.put("pricing-service", SliceConfig.sliceConfig());
+
         return slices;
     }
 
@@ -315,14 +323,20 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
 
     public int effectiveRate(String entryPoint) {
         var config = entryPointConfig(entryPoint);
-        if (!config.enabled()) {return 0;}
+
+        if (!config.enabled()) {
+            return 0;
+        }
+
         return (int)(config.callsPerSecond() * globalRateMultiplier);
     }
 
     public SimulatorConfig withEntryPointRate(String entryPoint, int rate) {
         var newEntryPoints = new HashMap<>(entryPoints);
         var existing = entryPointConfig(entryPoint);
+
         newEntryPoints.put(entryPoint, existing.withRate(rate));
+
         return simulatorConfig(newEntryPoints, slices, loadGeneratorEnabled, globalRateMultiplier).unwrap();
     }
 
@@ -336,6 +350,7 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
 
     public String toJson() {
         var sb = new StringBuilder();
+
         sb.append("{\"entryPoints\":{");
         appendMapEntries(sb, entryPoints, EntryPointConfig::toJson);
         sb.append("},\"slices\":{");
@@ -343,15 +358,14 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
         sb.append("},\"loadGeneratorEnabled\":").append(loadGeneratorEnabled);
         sb.append(",\"globalRateMultiplier\":").append(globalRateMultiplier);
         sb.append("}");
+
         return sb.toString();
     }
 
-    @Contract private static <T> void appendMapEntries(StringBuilder sb,
-                                                       Map<String, T> map,
-                                                       Function<T, String> toJson) {
-        var json = map.entrySet().stream()
-                               .map(e -> entryJson(e, toJson))
-                               .toList();
+    @Contract
+    private static <T> void appendMapEntries(StringBuilder sb, Map<String, T> map, Function<T, String> toJson) {
+        var json = map.entrySet().stream().map(e -> entryJson(e, toJson)).toList();
+
         sb.append(String.join(",", json));
     }
 
@@ -360,15 +374,19 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
     }
 
     public static Result<SimulatorConfig> simulatorConfig(Path path, Cause errorCause) {
-        return Result.lift(errorCause, () -> simulatorConfig(Files.readString(path), true));
+        return readString(path).mapError(_ -> errorCause)
+                         .map(content -> simulatorConfig(content, true));
     }
 
     public static SimulatorConfig simulatorConfig(Path path) {
-        if (!Files.exists(path)) {
+        if (!exists(path)) {
             log.info("Config file not found at {}, using defaults", path);
+
             return simulatorConfig();
         }
+
         var cause = cause("Failed to load config from " + path);
+
         return simulatorConfig(path, cause).onFailure(c -> log.warn("Failed to load config: {}, using defaults",
                                                                     c.message()))
                               .or(simulatorConfig());
@@ -378,27 +396,33 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
         var config = simulatorConfig();
         var parsedEntryPoints = new HashMap<>(config.entryPoints());
         var parsedSlices = new HashMap<>(config.slices());
+
         parseEntryPointRates(json, parsedEntryPoints);
         var multiplier = parseDoubleField(json, "globalRateMultiplier", config.globalRateMultiplier());
         var enabled = parseBooleanField(json, "loadGeneratorEnabled", config.loadGeneratorEnabled());
+
         return simulatorConfig(parsedEntryPoints, parsedSlices, enabled, multiplier).unwrap();
     }
 
     private static final Pattern ENTRY_POINT_PATTERN = Pattern.compile("\"(\\w+)\"\\s*:\\s*\\{[^}]*\"callsPerSecond\"\\s*:\\s*(\\d+)");
 
-    @Contract private static void parseEntryPointRates(String json, Map<String, EntryPointConfig> entryPoints) {
-        ENTRY_POINT_PATTERN.matcher(json).results()
-                                   .forEach(match -> updateEntryPointRate(match, entryPoints));
+    @Contract
+    private static void parseEntryPointRates(String json, Map<String, EntryPointConfig> entryPoints) {
+        ENTRY_POINT_PATTERN.matcher(json).results().forEach(match -> updateEntryPointRate(match, entryPoints));
     }
 
-    @Contract private static void updateEntryPointRate(MatchResult match, Map<String, EntryPointConfig> entryPoints) {
+    @Contract
+    private static void updateEntryPointRate(MatchResult match, Map<String, EntryPointConfig> entryPoints) {
         var name = match.group(1);
+
         Number.parseInt(match.group(2)).onSuccess(rate -> rateUpdate(name, rate, entryPoints));
     }
 
-    @Contract private static void rateUpdate(String name, int rate, Map<String, EntryPointConfig> entryPoints) {
+    @Contract
+    private static void rateUpdate(String name, int rate, Map<String, EntryPointConfig> entryPoints) {
         if (entryPoints.containsKey(name)) {
             var existing = entryPoints.get(name);
+
             entryPoints.put(name, existing.withRate(rate));
         }
     }
@@ -406,21 +430,26 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
     private static double parseDoubleField(String json, String fieldName, double defaultValue) {
         var pattern = Text.compilePattern("\"" + fieldName + "\"\\s*:\\s*([\\d.]+)").unwrap();
         var matcher = pattern.matcher(json);
-        if (matcher.find()) {return Number.parseDouble(matcher.group(1)).or(defaultValue);}
+
+        if (matcher.find()) {
+            return Number.parseDouble(matcher.group(1)).or(defaultValue);
+        }
+
         return defaultValue;
     }
 
     private static boolean parseBooleanField(String json, String fieldName, boolean defaultValue) {
         var pattern = Text.compilePattern("\"" + fieldName + "\"\\s*:\\s*(true|false)").unwrap();
         var matcher = pattern.matcher(json);
-        if (matcher.find()) {return Boolean.parseBoolean(matcher.group(1));}
+
+        if (matcher.find()) {
+            return Boolean.parseBoolean(matcher.group(1));
+        }
+
         return defaultValue;
     }
 
     public Result<Unit> saveToFile(Path path) {
-        return Result.lift(Causes.forOneValue("Failed to save config to " + path),
-                           () -> Files.writeString(path,
-                                                   toJson()))
-        .mapToUnit();
+        return writeString(path, toJson()).mapError(_ -> Causes.cause("Failed to save config to " + path));
     }
 }

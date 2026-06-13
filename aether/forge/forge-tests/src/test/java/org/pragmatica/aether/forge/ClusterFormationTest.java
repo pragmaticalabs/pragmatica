@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
@@ -101,7 +106,7 @@ class ClusterFormationTest {
         // Collect status from all nodes
         var leaderNode = cluster.currentLeader().unwrap();
 
-        // All nodes should report the same leader via /api/status endpoint
+        // All nodes should report the same leader via /api/nodes/status endpoint
         for (var node : cluster.status().nodes()) {
             var status = getStatus(node.mgmtPort());
             assertThat(status).contains(leaderNode);
@@ -140,7 +145,7 @@ class ClusterFormationTest {
     }
 
     private String getStatus(int port) {
-        return httpGet(port, "/api/status");
+        return httpGet(port, "/api/nodes/status");
     }
 
     private String getMetrics(int port) {

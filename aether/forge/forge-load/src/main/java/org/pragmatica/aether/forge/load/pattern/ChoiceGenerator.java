@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.load.pattern;
 
 import org.pragmatica.lang.Cause;
@@ -13,11 +17,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Randomly selects from a list of choices.
-///
-/// Pattern: `${choice:A,B,C`} where A, B, C are comma-separated options.
-///
-/// Example: `${choice:NYC,LAX,CHI`} randomly picks one of the three values
 public record ChoiceGenerator(List<String> choices) implements PatternGenerator {
     public static final String TYPE = "choice";
 
@@ -34,23 +33,24 @@ public record ChoiceGenerator(List<String> choices) implements PatternGenerator 
     }
 
     private static Result<PatternGenerator> toChoices(String choiceSpec) {
-        var choices = Arrays.stream(choiceSpec.split(",")).map(String::trim)
-                                   .filter(s -> !s.isEmpty())
-                                   .toList();
+        var choices = Arrays.stream(choiceSpec.split(",")).map(String::trim).filter(s -> !s.isEmpty()).toList();
+
         return ensureNonEmpty(choices, choiceSpec);
     }
 
     private static Result<PatternGenerator> ensureNonEmpty(List<String> choices, String choiceSpec) {
         return choices.isEmpty()
-              ? INVALID_CHOICE.apply(choiceSpec).result()
-              : choiceGenerator(choices).map(gen -> gen);
+               ? INVALID_CHOICE.apply(choiceSpec).result()
+               : choiceGenerator(choices).map(gen -> gen);
     }
 
-    @Override public String generate() {
+    @Override
+    public String generate() {
         return choices.get(ThreadLocalRandom.current().nextInt(choices.size()));
     }
 
-    @Override public String pattern() {
+    @Override
+    public String pattern() {
         return "${choice:" + String.join(",", choices) + "}";
     }
 }

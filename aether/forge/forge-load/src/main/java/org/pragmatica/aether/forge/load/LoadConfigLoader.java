@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.load;
 
 import org.pragmatica.config.toml.TomlDocument;
@@ -19,21 +23,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.parse.Number.parseLong;
 
 
-/// Loads load generation configuration from TOML files.
-///
-/// Example configuration:
-/// ```
-/// [[load]]
-/// target = "InventoryService.checkStock"
-/// rate = "100/s"
-/// duration = "5m"
-///
-/// [load.path]
-/// sku = "${random:SKU-#####}"
-///
-/// [load.body]
-/// quantity = "${range:1-100}"
-/// ```
 public sealed interface LoadConfigLoader {
     static Result<LoadConfig> load(Path path) {
         return TomlParser.parseFile(path).flatMap(LoadConfigLoader::fromDocument);
@@ -44,21 +33,18 @@ public sealed interface LoadConfigLoader {
     }
 
     Cause NO_LOAD_SECTIONS = LoadConfigError.ParseFailed.parseFailed("No [[load]] sections found").unwrap();
-
     Cause TARGET_REQUIRED = LoadConfigError.ParseFailed.parseFailed("target is required").unwrap();
-
     Cause RATE_REQUIRED = LoadConfigError.ParseFailed.parseFailed("rate is required").unwrap();
 
     private static Result<LoadConfig> fromDocument(TomlDocument doc) {
-        return doc.getTableArray("load").toResult(NO_LOAD_SECTIONS)
-                                .flatMap(LoadConfigLoader::collectTargets);
+        return doc.getTableArray("load")
+                  .toResult(NO_LOAD_SECTIONS)
+                  .flatMap(LoadConfigLoader::collectTargets);
     }
 
     private static Result<LoadConfig> collectTargets(List<Map<String, Object>> tables) {
-        var indexedResults = IntStream.range(0,
-                                             tables.size()).mapToObj(i -> toTargetWithIndex(tables.get(i),
-                                                                                            i))
-                                            .toList();
+        var indexedResults = IntStream.range(0, tables.size()).mapToObj(i -> toTargetWithIndex(tables.get(i), i)).toList();
+
         return Result.allOf(indexedResults).flatMap(LoadConfigLoader::toLoadConfig);
     }
 
@@ -77,12 +63,13 @@ public sealed interface LoadConfigLoader {
     private static Result<LoadTarget> toLoadTarget(Map<String, Object> table, int index) {
         var targetResult = extractRequired(table, "target", TARGET_REQUIRED);
         var rateResult = extractRequired(table, "rate", RATE_REQUIRED);
-        return Result.all(targetResult, rateResult)
-                         .flatMap((target, rateStr) -> assembleTarget(table, target, rateStr));
+
+        return Result.all(targetResult, rateResult).flatMap((target, rateStr) -> assembleTarget(table, target, rateStr));
     }
 
     private static Result<String> extractRequired(Map<String, Object> table, String key, Cause cause) {
-        return option((String) table.get(key)).filter(s -> !s.isBlank()).toResult(cause);
+        return option((String) table.get(key)).filter(s -> !s.isBlank())
+                     .toResult(cause);
     }
 
     private static Result<LoadTarget> assembleTarget(Map<String, Object> table, String target, String rateStr) {
@@ -90,50 +77,72 @@ public sealed interface LoadConfigLoader {
         var duration = extractDuration(table);
         var pathVars = extractPathVars(table);
         var body = extractBody(table);
+
         return LoadTarget.loadTarget(name, target, rateStr, duration, pathVars, body);
     }
 
     private static Option<String> extractName(Map<String, Object> table) {
         return table.containsKey("name")
-              ? some((String) table.get("name"))
-              : none();
+               ? some((String) table.get("name"))
+               : none();
     }
 
     private static Option<Duration> extractDuration(Map<String, Object> table) {
         return table.containsKey("duration")
-              ? toDuration((String) table.get("duration"))
-              : none();
+               ? toDuration((String) table.get("duration"))
+               : none();
     }
 
-    @SuppressWarnings("unchecked") private static Map<String, String> extractPathVars(Map<String, Object> table) {
-        if (!table.containsKey("path")) {return Map.of();}
+    @SuppressWarnings("unchecked")
+    private static Map<String, String> extractPathVars(Map<String, Object> table) {
+        if (!table.containsKey("path")) {
+            return Map.of();
+        }
+
         var pathTable = (Map<String, Object>) table.get("path");
         var pathVars = new HashMap<String, String>();
+
         pathTable.forEach((key, value) -> pathVars.put(key, String.valueOf(value)));
+
         return pathVars;
     }
 
-    @SuppressWarnings("unchecked") private static Option<String> extractBody(Map<String, Object> table) {
-        if (!table.containsKey("body")) {return none();}
+    @SuppressWarnings("unchecked")
+    private static Option<String> extractBody(Map<String, Object> table) {
+        if (!table.containsKey("body")) {
+            return none();
+        }
+
         var bodyValue = table.get("body");
-        if (bodyValue instanceof String s) {return some(s);} else if (bodyValue instanceof Map) {return some(mapToJsonString((Map<String, Object>) bodyValue));}
+
+        if (bodyValue instanceof String s) {
+            return some(s);
+        } else if (bodyValue instanceof Map) {
+            return some(mapToJsonString((Map<String, Object>) bodyValue));
+        }
+
         return none();
     }
 
     private static Option<Duration> toDuration(String durationStr) {
         var trimmed = option(durationStr).map(String::trim).filter(s -> !s.isBlank() && !"0".equals(s));
-        return trimmed.map(String::toLowerCase).flatMap(LoadConfigLoader::toDurationValue);
+
+        return trimmed.map(String::toLowerCase)
+                      .flatMap(LoadConfigLoader::toDurationValue);
     }
 
     private static Option<Duration> toDurationValue(String str) {
-        if (str.endsWith("ms")) {return toDurationFromParts(stripSuffix(str, 2), "ms");} else if (str.endsWith("s")) {return toDurationFromParts(stripSuffix(str,
-                                                                                                                                                             1),
-                                                                                                                                                 "s");} else if (str.endsWith("m")) {return toDurationFromParts(stripSuffix(str,
-                                                                                                                                                                                                                            1),
-                                                                                                                                                                                                                "m");} else if (str.endsWith("h")) {return toDurationFromParts(stripSuffix(str,
-                                                                                                                                                                                                                                                                                           1),
-                                                                                                                                                                                                                                                                               "h");} else {return toDurationFromParts(str,
-                                                                                                                                                                                                                                                                                                                       "s");}
+        if (str.endsWith("ms")) {
+            return toDurationFromParts(stripSuffix(str, 2), "ms");
+        } else if (str.endsWith("s")) {
+            return toDurationFromParts(stripSuffix(str, 1), "s");
+        } else if (str.endsWith("m")) {
+            return toDurationFromParts(stripSuffix(str, 1), "m");
+        } else if (str.endsWith("h")) {
+            return toDurationFromParts(stripSuffix(str, 1), "h");
+        } else {
+            return toDurationFromParts(str, "s");
+        }
     }
 
     private static String stripSuffix(String str, int suffixLength) {
@@ -141,11 +150,12 @@ public sealed interface LoadConfigLoader {
     }
 
     private static Option<Duration> toDurationFromParts(String value, String unit) {
-        return parseLong(value).map(v -> toDurationWithUnit(v, unit)).option();
+        return parseLong(value).map(v -> toDurationWithUnit(v, unit))
+                        .option();
     }
 
     private static Duration toDurationWithUnit(long value, String unit) {
-        return switch (unit){
+        return switch (unit) {
             case "ms" -> Duration.ofMillis(value);
             case "s" -> Duration.ofSeconds(value);
             case "m" -> Duration.ofMinutes(value);
@@ -157,13 +167,17 @@ public sealed interface LoadConfigLoader {
     private static String mapToJsonString(Map<String, Object> map) {
         var sb = new StringBuilder("{");
         var first = true;
+
         for (var entry : map.entrySet()) {
             if (!first) sb.append(", ");
+
             first = false;
             appendJsonKey(sb, entry.getKey());
             appendJsonValue(sb, entry.getValue());
         }
+
         sb.append("}");
+
         return sb.toString();
     }
 
@@ -173,15 +187,31 @@ public sealed interface LoadConfigLoader {
         sb.append("\": ");
     }
 
-    @SuppressWarnings("unchecked") private static void appendJsonValue(StringBuilder sb, Object value) {
-        if (value == null) {sb.append("null");} else if (value instanceof String s) {if (isNumericPattern(s)) {sb.append(s);} else {appendQuoted(sb,
-                                                                                                                                                 escapeJson(s));}} else if (value instanceof Number || value instanceof Boolean) {sb.append(value);} else if (value instanceof Map) {sb.append(mapToJsonString((Map<String, Object>) value));} else if (value instanceof List<?> list) {appendJsonList(sb,
-                                                                                                                                                                                                                                                                                                                                                                                                       list);} else {appendQuoted(sb,
-                                                                                                                                                                                                                                                                                                                                                                                                                                  escapeJson(value.toString()));}
+    @SuppressWarnings("unchecked")
+    private static void appendJsonValue(StringBuilder sb, Object value) {
+        if (value == null) {
+            sb.append("null");
+        } else if (value instanceof String s) {
+            if (isNumericPattern(s)) {
+                sb.append(s);
+            } else {
+                appendQuoted(sb, escapeJson(s));
+            }
+        } else if (value instanceof Number || value instanceof Boolean) {
+            sb.append(value);
+        } else if (value instanceof Map) {
+            sb.append(mapToJsonString((Map<String, Object>) value));
+        } else if (value instanceof List<?> list) {
+            appendJsonList(sb, list);
+        } else {
+            appendQuoted(sb, escapeJson(value.toString()));
+        }
     }
 
     private static boolean isNumericPattern(String value) {
-        return value.startsWith("${range:") && value.endsWith("}") && value.indexOf('}') == value.length() - 1;
+        return value.startsWith("${range:")
+               && value.endsWith("}")
+               && value.indexOf('}') == value.length() - 1;
     }
 
     private static void appendQuoted(StringBuilder sb, String text) {
@@ -193,20 +223,24 @@ public sealed interface LoadConfigLoader {
     private static void appendJsonList(StringBuilder sb, List<?> list) {
         sb.append("[");
         var first = true;
+
         for (var item : list) {
             if (!first) sb.append(", ");
+
             first = false;
             appendJsonValue(sb, item);
         }
+
         sb.append("]");
     }
 
     private static String escapeJson(String s) {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"")
-                        .replace("\n", "\\n")
-                        .replace("\r", "\\r")
-                        .replace("\t", "\\t");
+        return s.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
     }
 
-    record unused() implements LoadConfigLoader{}
+    record unused() implements LoadConfigLoader {}
 }
