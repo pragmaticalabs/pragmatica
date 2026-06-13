@@ -106,39 +106,36 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Build Linux arm64 archives via QEMU emulation
+  # Build Linux arm64 archives on a native ARM runner
   build-linux-arm64-dist:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     needs: build-and-release
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up QEMU for arm64
-        uses: docker/setup-qemu-action@v3
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
         with:
-          platforms: arm64
+          java-version: '25'
+          distribution: 'zulu'
+          cache: 'maven'
 
       - name: Extract version from tag
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
-      - name: Build arm64 archives in container
+      - name: Bootstrap jbct-maven-plugin and slice-processor
+        run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor -am
+
+      - name: Build all packages
+        run: mvn package -B -DskipTests
+
+      - name: Build distribution archives (linux-arm64)
         run: |
-          docker run --rm --platform linux/arm64 \
-            -v "${{ github.workspace }}:/workspace" \
-            -w /workspace \
-            azul/zulu-openjdk:25 \
-            bash -c '
-              apt-get update -qq && apt-get install -y -qq zip binutils curl > /dev/null
-              curl -sL https://archive.apache.org/dist/maven/maven-3/3.9.12/binaries/apache-maven-3.9.12-bin.tar.gz | tar xz -C /opt
-              export PATH="/opt/apache-maven-3.9.12/bin:$PATH"
-              mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor -am
-              mvn package -B -DskipTests
-              chmod +x aether/dist/build-dist.sh
-              aether/dist/build-dist.sh --version ${{ steps.version.outputs.VERSION }}
-            '
+          chmod +x aether/dist/build-dist.sh
+          aether/dist/build-dist.sh --version ${{ steps.version.outputs.VERSION }}
 
       - name: Upload arm64 archives to release
         uses: softprops/action-gh-release@v1
