@@ -21,7 +21,9 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedDeque;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
+import org.pragmatica.swim.SwimMember.MemberState;
 
 /// Bounded buffer for membership updates piggybacked on protocol messages.
 /// Thread-safe: multiple protocol threads may add/peek updates concurrently.
@@ -53,6 +55,7 @@ public final class PiggybackBuffer {
     }
 
     /// Add an update to the buffer. If the buffer is full, the oldest entry is evicted.
+    @Contract
     public void addUpdate(MembershipUpdate update) {
         buffer.addLast(new TrackedUpdate(update, 0));
         trimToSize();
@@ -90,6 +93,26 @@ public final class PiggybackBuffer {
     /// Current number of buffered updates.
     public int size() {
         return buffer.size();
+    }
+
+    /// Current number of buffered FAULTY updates (P2 — used to assert isolation-era expiry).
+    public int faultyCount() {
+        return (int) buffer.stream()
+                           .filter(tracked -> tracked.update().state() == MemberState.FAULTY)
+                           .count();
+    }
+
+    /// Expire (drop) every buffered FAULTY dissemination (P2 isolation-era verdict expiry).
+    /// Called when a node that observed its OWN isolation rejoins the cluster: the FAULTY
+    /// verdicts it accumulated while cut off are epistemically "I was unreachable", NOT
+    /// "those peers died", so they must not be gossiped into the healed cluster (the S06
+    /// partition-heal collapse: a rejoining minority injected isolation-era FAULTY verdicts
+    /// that terminalized live majority nodes). Non-FAULTY updates (ALIVE/SUSPECT) are
+    /// retained — only the death verdicts are dropped. Returns the number of entries dropped.
+    public int expireFaultyUpdates() {
+        var before = buffer.size();
+        buffer.removeIf(tracked -> tracked.update().state() == MemberState.FAULTY);
+        return before - buffer.size();
     }
 
     private void trimToSize() {

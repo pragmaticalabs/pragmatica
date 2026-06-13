@@ -20,6 +20,7 @@ import java.net.InetSocketAddress;
 import java.util.List;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.swim.SwimMember.MemberState;
 
@@ -45,6 +46,15 @@ public sealed interface SwimMessage {
     record PingReq(NodeId from, NodeId target, long sequence) implements SwimMessage {
         public static PingReq pingReq(NodeId from, NodeId target, long sequence) {
             return new PingReq(from, target, sequence);
+        }
+    }
+
+    /// UDP datagram broadcast by a joining node so existing members can register it
+    /// without waiting for the next Ping/Ack cycle. Carries the full `NodeInfo`
+    /// (id, address, role, labels) and cluster name for membership gating.
+    record Announce(NodeInfo nodeInfo, String clusterName, long incarnation) implements SwimMessage {
+        public static Announce announce(NodeInfo nodeInfo, String clusterName, long incarnation) {
+            return new Announce(nodeInfo, clusterName, incarnation);
         }
     }
 

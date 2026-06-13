@@ -18,6 +18,7 @@ package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -25,10 +26,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Option;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.Ack;
+import org.pragmatica.swim.SwimMessage.Announce;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimMessage.PingReq;
@@ -63,11 +68,14 @@ class SwimProtocolTest {
         }
 
         @Test
-        void addSeedMember_newMember_addedAsAlive() {
+        void addSeedMember_newMember_addedAsSuspect() {
+            // Resurrection guard (#231): a channel re-seed is NOT proof of reachability,
+            // so a seeded member is introduced as SUSPECT (probe-on-arrival), not ALIVE.
+            // A real probe-ack or QUIC PeerConnected later promotes it to ALIVE.
             protocol.addSeedMember(NODE_A, ADDR_A);
 
             assertThat(protocol.members()).containsKey(NODE_A);
-            assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.ALIVE);
+            assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.SUSPECT);
             assertThat(listener.joined).hasSize(1);
             assertThat(listener.joined.getFirst().nodeId()).isEqualTo(NODE_A);
         }
@@ -188,6 +196,197 @@ class SwimProtocolTest {
         }
     }
 
+    /// Self-ANNOUNCE = direct liveness evidence (canonical SWIM). A node announcing
+    /// ITSELF is positive proof it is alive, so an unknown member learned from a
+    /// self-ANNOUNCE datagram is introduced as ALIVE (no suspect-timer armed at birth),
+    /// reaching HEALTHY immediately. Third-party gossip is UNCHANGED (still SUSPECT), and
+    /// a tombstoned (proven-dead) id is still refused (#231 anti-resurrection).
+    @Nested
+    class AnnounceDirectLiveness {
+        private RecordingTransport transport;
+        private RecordingListener listener;
+        private SwimProtocol protocol;
+        private RecordingObservationSink observations;
+
+        @BeforeEach
+        void setUp() {
+            transport = new RecordingTransport();
+            listener = new RecordingListener();
+            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+                                   .fold(cause -> null, v -> v);
+            observations = new RecordingObservationSink();
+            protocol.addObservationListener(observations);
+        }
+
+        @Test
+        void handleAnnounce_nonTombstonedSelfAnnounce_introducedAsAlive() {
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+
+            assertThat(protocol.members()).containsKey(NODE_A);
+            assertThat(protocol.members().get(NODE_A).state())
+                .as("self-ANNOUNCE is direct liveness evidence — introduce as ALIVE, not SUSPECT")
+                .isEqualTo(MemberState.ALIVE);
+        }
+
+        @Test
+        void handleAnnounce_nonTombstonedSelfAnnounce_setsEverSeenHealthyAndEmitsHealthy() {
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+
+            assertThat(protocol.everSeenHealthyForTest(NODE_A))
+                .as("direct liveness evidence marks the peer ever-healthy")
+                .isTrue();
+            assertThat(observations.byType(SwimObservation.HealthyObserved.class))
+                .as("ALIVE introduction must emit HealthyObserved")
+                .isNotEmpty();
+        }
+
+        @Test
+        void handleAnnounce_nonTombstonedSelfAnnounce_armsNoSuspectTimer() {
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+
+            assertThat(protocol.suspectTimestampForTest(NODE_A).isEmpty())
+                .as("ALIVE introduction must NOT arm a decay-to-FAULTY suspect timer at birth")
+                .isTrue();
+        }
+
+        @Test
+        void handleAnnounce_unknownMember_stillDeliversJoinAnnounced() {
+            // The legitimate reachability probe (clusterNetwork.connect) is driven by
+            // JoinAnnounced — formation must remain unaffected.
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+
+            assertThat(observations.byType(SwimObservation.JoinAnnounced.class))
+                .as("JoinAnnounced must still fire so the reachability probe proceeds")
+                .hasSize(1);
+        }
+
+        @Test
+        void handleAnnounce_thirdPartyGossipOfUnknownMember_stillIntroducedAsSuspect() {
+            // ONLY the self-ANNOUNCE datagram carries direct evidence. Third-party gossip
+            // (piggyback in a Ping) about an unknown member has NO direct evidence and is
+            // honored AS GOSSIPED (unchanged path): a SUSPECT gossip stays SUSPECT and is
+            // NOT promoted to ALIVE by the FIX A direct-evidence path.
+            var gossip = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            protocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(gossip)));
+
+            assertThat(protocol.members().get(NODE_A).state())
+                .as("third-party SUSPECT gossip of an unknown member must stay SUSPECT (no direct evidence)")
+                .isEqualTo(MemberState.SUSPECT);
+            assertThat(protocol.everSeenHealthyForTest(NODE_A))
+                .as("third-party gossip is not reachability proof")
+                .isFalse();
+        }
+
+        @Test
+        void handleAnnounce_knownMemberReAnnounceFromNewSourceIp_refreshesProbeAddress() {
+            // Wave 9 Fix C — the ROOT of the post-partition-heal self-destruct: a Docker IP
+            // reshuffle changes a KNOWN member's address. Without adopting the fresh ANNOUNCE
+            // source IP, SWIM keeps probing the stale pre-partition IP, acks go silent, and the
+            // healthy member is falsely declared FAULTY. The re-ANNOUNCE (higher incarnation on
+            // rejoin) for an already-resident member must refresh its probe address.
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+            var originalAddress = protocol.members().get(NODE_A).address();
+
+            // Same NODE_A re-ANNOUNCEs (rejoin, incarnation 1) but its datagram now arrives from a
+            // NEW source IP — the reshuffled container address.
+            var newSourceIp = new InetSocketAddress("127.0.0.2", ADDR_A.getPort());
+            protocol.onMessage(newSourceIp, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 1L));
+
+            assertThat(protocol.members().get(NODE_A).address().getAddress().getHostAddress())
+                .as("a re-ANNOUNCE from a new source IP must refresh the resident member's probe address")
+                .isEqualTo("127.0.0.2");
+            assertThat(protocol.members().get(NODE_A).address())
+                .as("the probe address actually changed from the stale pre-reshuffle address")
+                .isNotEqualTo(originalAddress);
+        }
+
+        @Test
+        void handleAnnounce_knownMemberReAnnounceFromNewSourceIp_nextProbeTargetsNewAddress() {
+            // The behavioural consequence of the refresh: the very next probe must target the new
+            // (reachable) source IP, not the stale one — killing the stale-IP probe storm at the root.
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+            var newSourceIp = new InetSocketAddress("127.0.0.2", ADDR_A.getPort());
+            protocol.onMessage(newSourceIp, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 1L));
+            transport.sentMessages.clear();
+
+            protocol.probeOnceForTest();
+
+            assertThat(transport.sentMessages.getFirst().target().getAddress().getHostAddress())
+                .as("the next probe must target the refreshed (new) source IP, not the stale pre-reshuffle one")
+                .isEqualTo("127.0.0.2");
+        }
+
+        private static NodeInfo nodeInfoFor(NodeId id, InetSocketAddress addr) {
+            return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress(addr.getHostString(), addr.getPort()).unwrap());
+        }
+    }
+
+    /// Announce-carried descriptor labels (#241 Wave A): a node self-describes its
+    /// role/source as `NodeInfo` labels; the ANNOUNCE carries them; the receiving node
+    /// stores them on the `SwimMember` and re-exposes them via `dialInfoFor`'s reconstructed
+    /// `NodeInfo`. An ANNOUNCE without labels (old node / piggyback-only) yields an
+    /// address-only `NodeInfo` with no labels and never fails. No `MembershipUpdate` wire change.
+    @Nested
+    class AnnounceCarriedLabels {
+        private RecordingTransport transport;
+        private RecordingListener listener;
+        private SwimProtocol protocol;
+        private RecordingObservationSink observations;
+
+        @BeforeEach
+        void setUp() {
+            transport = new RecordingTransport();
+            listener = new RecordingListener();
+            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+                                   .fold(cause -> null, v -> v);
+            observations = new RecordingObservationSink();
+            protocol.addObservationListener(observations);
+        }
+
+        @Test
+        void dialInfoFor_announceWithRoleAndSource_exposesLabels() {
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoWithLabels(NODE_A, ADDR_A), "", 0L));
+
+            var discovered = observations.byType(SwimObservation.MemberDiscovered.class);
+            assertThat(discovered).hasSize(1);
+
+            var labels = discovered.getFirst().nodeInfo().labels();
+            assertThat(labels).containsEntry(NodeInfo.LABEL_ROLE, "active");
+            assertThat(labels).containsEntry(NodeInfo.LABEL_SOURCE, "replacement");
+        }
+
+        @Test
+        void dialInfoFor_announceWithoutLabels_exposesAddressOnlyNodeInfo() {
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoNoLabels(NODE_A, ADDR_A), "", 0L));
+
+            var discovered = observations.byType(SwimObservation.MemberDiscovered.class);
+            assertThat(discovered).hasSize(1);
+            assertThat(discovered.getFirst().nodeInfo().labels())
+                .as("an ANNOUNCE without descriptor labels must yield an address-only NodeInfo, no failure")
+                .isEmpty();
+        }
+
+        @Test
+        void member_announceWithLabels_retainsLabelsOnSwimMember() {
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoWithLabels(NODE_A, ADDR_A), "", 0L));
+
+            assertThat(protocol.members().get(NODE_A).labels())
+                .containsEntry(NodeInfo.LABEL_ROLE, "active")
+                .containsEntry(NodeInfo.LABEL_SOURCE, "replacement");
+        }
+
+        private static NodeInfo nodeInfoWithLabels(NodeId id, InetSocketAddress addr) {
+            return NodeInfo.nodeInfo(id,
+                                     NodeAddress.nodeAddress(addr.getHostString(), addr.getPort()).unwrap(),
+                                     Map.of(NodeInfo.LABEL_ROLE, "active",
+                                            NodeInfo.LABEL_SOURCE, "replacement"));
+        }
+
+        private static NodeInfo nodeInfoNoLabels(NodeId id, InetSocketAddress addr) {
+            return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress(addr.getHostString(), addr.getPort()).unwrap());
+        }
+    }
+
     @Nested
     class PiggybackBufferTests {
 
@@ -272,6 +471,79 @@ class SwimProtocolTest {
             // The piggyback should contain updates about newly added members
             assertThat(ack.piggyback()).isNotEmpty();
         }
+
+        /// Regression: peers continuously rebroadcast (N, SUSPECT, k) for a peer
+        /// already viewed locally as (SUSPECT, k). Same-state same-incarnation gossip
+        /// must be a no-op so the suspect timer can elapse and N transitions to FAULTY.
+        @Test
+        void suspect_faulty_within_timeout_when_peers_continue_gossiping_suspect() throws InterruptedException {
+            // Tight config: suspectTimeout 500ms, period 50ms, fast startup.
+            var config = swimConfig(
+                timeSpan(50).millis(),
+                timeSpan(20).millis(),
+                3,
+                timeSpan(500).millis(),
+                8,
+                timeSpan(50).millis()
+            );
+            var localTransport = new RecordingTransport();
+            var localListener = new RecordingListener();
+            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
+                                            .fold(cause -> null, v -> v);
+
+            localProtocol.addSeedMember(NODE_A, ADDR_A);
+
+            // Seed introduces NODE_A as SUSPECT (probe-on-arrival). Drive it to ALIVE
+            // via positive gossip first so the subsequent SUSPECT gossip is a genuine
+            // ALIVE->SUSPECT edge (not a same-state no-op against the seeded SUSPECT).
+            var aliveGossip = new MembershipUpdate(NODE_A, MemberState.ALIVE, 1L, ADDR_A);
+            localProtocol.onMessage(ADDR_B, new Ping(NODE_B, 0L, List.of(aliveGossip)));
+            assertThat(localProtocol.members().get(NODE_A).state()).isEqualTo(MemberState.ALIVE);
+
+            // Drive ALIVE -> SUSPECT (incarnation=2) via a piggybacked update from a peer.
+            var initialSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 2L, ADDR_A);
+            localProtocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(initialSuspect)));
+
+            assertThat(localListener.suspected).hasSize(1);
+            assertThat(localListener.suspected.getFirst().nodeId()).isEqualTo(NODE_A);
+
+            // Snapshot the SwimMember reference: the no-op guard must NOT replace
+            // the entry on same-state same-incarnation rebroadcasts.
+            var memberRefBefore = localProtocol.members().get(NODE_A);
+            assertThat(memberRefBefore.state()).isEqualTo(MemberState.SUSPECT);
+
+            // Flood 14 rebroadcasts of (NODE_A, SUSPECT, incarnation=2). With the bug,
+            // each of these would replace members.get(NODE_A) and (in the original
+            // diagnosis) reset the suspect timer. With the fix they are no-ops.
+            for (var i = 0; i < 14; i++) {
+                var rebroadcast = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 2L, ADDR_A);
+                localProtocol.onMessage(ADDR_B, new Ping(NODE_B, 100L + i, List.of(rebroadcast)));
+            }
+
+            // Reference equality: same-state same-incarnation is observed as a no-op.
+            assertThat(localProtocol.members().get(NODE_A)).isSameAs(memberRefBefore);
+            // Listener saw exactly one onMemberSuspect — the initial transition only.
+            assertThat(localListener.suspected).hasSize(1);
+
+            // Start the protocol so tick() drives expireSuspectMembers().
+            localProtocol.start();
+            try {
+                // Wait suspectTimeout (500ms) plus margin for tick scheduling.
+                var deadline = System.currentTimeMillis() + 3_000L;
+                while (localListener.faulty.isEmpty() && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(50L);
+                }
+
+                assertThat(localListener.faulty)
+                    .as("NODE_A must transition to FAULTY despite continuous SUSPECT gossip rebroadcasts")
+                    .hasSize(1);
+                assertThat(localListener.faulty.getFirst().nodeId()).isEqualTo(NODE_A);
+                // Still exactly one suspect notification across the whole test.
+                assertThat(localListener.suspected).hasSize(1);
+            } finally {
+                localProtocol.stop();
+            }
+        }
     }
 
     @Nested
@@ -294,6 +566,75 @@ class SwimProtocolTest {
                                   .orElse(null);
 
             assertThat(governor).isEqualTo(NODE_A);
+        }
+    }
+
+    /// Join-announce loop must not self-suppress on an already-quorate cluster (#34).
+    /// A replacement joining a quorate cluster previously had its ANNOUNCE cancelled by a
+    /// quorum-reached check before it ever sent one, so the leader never saw the replacement.
+    /// The corrected design has NO quorum stop condition: a node keeps announcing until IT is
+    /// acknowledged by a peer (proven by an inbound SWIM Ping) or the 60-attempt cap is hit.
+    @Nested
+    class AnnounceSelfSuppression {
+        private RecordingTransport transport;
+        private RecordingListener listener;
+        private SwimProtocol protocol;
+
+        @BeforeEach
+        void setUp() {
+            transport = new RecordingTransport();
+            listener = new RecordingListener();
+            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+                                   .fold(cause -> null, v -> v);
+        }
+
+        @Test
+        void announceJoin_notYetAcknowledged_sendsAnnounce() throws InterruptedException {
+            // No quorum signal exists any more — the only stop conditions are inbound-probe and the cap.
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            // First scheduled attempt fires at 500ms; wait until at least one ANNOUNCE is sent.
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+
+            assertThat(announceCount(transport))
+                .as("ANNOUNCE must be sent until self is acknowledged by a peer — no quorum can suppress it")
+                .isGreaterThanOrEqualTo(1);
+        }
+
+        @Test
+        void announceJoin_inboundPingReceived_cancelsAnnounceLoop() throws InterruptedException {
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+            assertThat(announceCount(transport)).isGreaterThanOrEqualTo(1);
+
+            // Deliver an inbound Ping through the real receive path — sets inboundProbeReceived.
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of()));
+
+            // The loop must stop announcing on the next tick: count freezes after the latch is set.
+            var afterPing = announceCount(transport);
+            Thread.sleep(1_200L); // span at least two 500ms announce ticks
+            assertThat(announceCount(transport))
+                .as("announce loop must cancel on the tick following an inbound Ping (self acknowledged)")
+                .isEqualTo(afterPing);
+        }
+
+        private static int announceCount(RecordingTransport transport) {
+            return (int) transport.sentMessages.stream()
+                                               .filter(m -> m.message() instanceof Announce)
+                                               .count();
+        }
+
+        private static void waitUntil(java.util.function.BooleanSupplier condition, long timeoutMs)
+            throws InterruptedException {
+            var deadline = System.currentTimeMillis() + timeoutMs;
+            while (!condition.getAsBoolean() && System.currentTimeMillis() < deadline) {
+                Thread.sleep(25L);
+            }
+        }
+
+        private static NodeInfo nodeInfoFor(NodeId id, InetSocketAddress addr) {
+            return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress(addr.getHostString(), addr.getPort()).unwrap());
         }
     }
 
@@ -329,6 +670,257 @@ class SwimProtocolTest {
             var result = protocol.stop();
 
             assertThat(result.isSuccess()).isFalse();
+        }
+    }
+
+    /// Durable monotonic self-incarnation (cluster-churn root-cause fix). A live-but-
+    /// suspected node must refute with a STRICTLY ADVANCING, durably-stored incarnation,
+    /// and must proactively re-advertise its own ALIVE at that incarnation. The prior
+    /// reactive path re-sent the same value forever (`incoming + 1`, never stored), which
+    /// an equal-incarnation Suspect out-ordered (FAULTY>SUSPECT>ALIVE at equal incarnation),
+    /// so a live node could be driven SUSPECT->FAULTY->evicted under loss/churn.
+    @Nested
+    class SelfRefutation {
+        private RecordingTransport transport;
+        private RecordingListener listener;
+        private SwimProtocol protocol;
+
+        @BeforeEach
+        void setUp() {
+            transport = new RecordingTransport();
+            listener = new RecordingListener();
+            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+                                   .fold(cause -> null, v -> v);
+        }
+
+        @Test
+        void handleSelfUpdate_repeatedStaleSuspicion_refutesOnceThenIgnoresReplays() {
+            // A suspicion of self at incarnation X=5 is refuted ONCE with an incarnation
+            // strictly greater than 5 (durable). Replays of the SAME stale suspicion
+            // (incarnation now below our refutation) are ignored entirely — no further
+            // incarnation bumps (pre-gate every replay re-bumped, feeding gossip churn).
+            var selfSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, 5L, SELF_ADDR);
+
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(selfSuspect)));
+            var afterFirst = protocol.selfIncarnation();
+            assertThat(afterFirst)
+                .as("first refutation must strictly exceed the suspicion incarnation (5)")
+                .isGreaterThan(5L);
+
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 2L, List.of(selfSuspect)));
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 3L, List.of(selfSuspect)));
+            assertThat(protocol.selfIncarnation())
+                .as("stale replays of an already-refuted suspicion must NOT move the incarnation")
+                .isEqualTo(afterFirst);
+
+            // A GENUINELY NEW suspicion at our current incarnation still strictly advances.
+            var newSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, afterFirst, SELF_ADDR);
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 4L, List.of(newSuspect)));
+            assertThat(protocol.selfIncarnation())
+                .as("a new suspicion challenging the current liveness claim strictly advances the stored incarnation")
+                .isGreaterThan(afterFirst);
+        }
+
+        @Test
+        void handleSelfUpdate_higherSuspicionIncarnation_refutationOutpacesIt() {
+            // A suspicion raised at a high incarnation must still be strictly out-paced.
+            var highSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, 42L, SELF_ADDR);
+
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(highSuspect)));
+
+            assertThat(protocol.selfIncarnation())
+                .as("refutation must strictly exceed the (higher) suspicion incarnation 42")
+                .isGreaterThan(42L);
+        }
+
+        @Test
+        void refreshSelfAlive_afterRefutation_gossipsSelfAliveAtAdvancedIncarnation() throws InterruptedException {
+            // Establish a non-zero self-incarnation via announceJoin (boot incarnation 7),
+            // then refute a suspicion to advance it. The proactive self-ALIVE that rides
+            // each probe round must carry the ADVANCED incarnation.
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 7L, List.of(ADDR_A));
+
+            var selfSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, 7L, SELF_ADDR);
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(selfSuspect)));
+            var advanced = protocol.selfIncarnation();
+            assertThat(advanced).isGreaterThan(7L);
+
+            // Start the protocol so a tick fires refreshSelfAlive(), seeding the
+            // piggyback buffer with self-ALIVE at the advanced incarnation.
+            protocol.start();
+            try {
+                // Drive an inbound Ping each poll; the returned Ack piggyback carries the
+                // buffered self-ALIVE once a probe tick has refreshed it.
+                var deadline = System.currentTimeMillis() + 3_000L;
+                Option<MembershipUpdate> selfAlive = Option.none();
+                while (selfAlive.isEmpty() && System.currentTimeMillis() < deadline) {
+                    protocol.onMessage(ADDR_A, new Ping(NODE_A, 99L, List.of()));
+                    selfAlive = latestSelfAliveInLastAck();
+                    if (selfAlive.isEmpty()) {
+                        Thread.sleep(25L);
+                    }
+                }
+
+                assertThat(selfAlive.isPresent())
+                    .as("a proactive self-ALIVE must be disseminated on the probe round")
+                    .isTrue();
+                selfAlive.onPresent(update -> assertThat(update.incarnation())
+                    .as("proactively-gossiped self-ALIVE must carry the advanced incarnation")
+                    .isEqualTo(advanced));
+            } finally {
+                protocol.stop();
+            }
+        }
+
+        private Option<MembershipUpdate> latestSelfAliveInLastAck() {
+            return transport.sentMessages.stream()
+                                         .map(SentMessage::message)
+                                         .filter(m -> m instanceof Ack)
+                                         .map(m -> (Ack) m)
+                                         .flatMap(ack -> ack.piggyback().stream())
+                                         .filter(u -> u.nodeId().equals(SELF_ID) && u.state() == MemberState.ALIVE)
+                                         .reduce((a, b) -> b)
+                                         .map(Option::option)
+                                         .orElse(Option.none());
+        }
+
+        private static NodeInfo nodeInfoFor(NodeId id, InetSocketAddress addr) {
+            return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress(addr.getHostString(), addr.getPort()).unwrap());
+        }
+    }
+
+    /// Least-recently-probed (LRP) probe scheduling (#94). The prior positional
+    /// `probeIndex` selection rebuilt `candidates` from `members.values()`
+    /// (a `ConcurrentHashMap`, hash-bucket order) every tick; when a peer flapped
+    /// (gossip removed+re-added it ~every few ticks) the values()-order/size shifted
+    /// under the single free-running index, so a genuinely-dead peer was skipped for
+    /// many ticks and never probed → never entered SUSPECT → never FAULTY. LRP keys
+    /// scheduling by `NodeId`, so a flapping peer can no longer starve the others.
+    @Nested
+    class LeastRecentlyProbedScheduling {
+        private static final NodeId FLAPPER = new NodeId("node-flapper");
+        private static final NodeId DEAD_PEER = new NodeId("node-dead");
+        private static final InetSocketAddress FLAPPER_ADDR = new InetSocketAddress("127.0.0.1", 9101);
+        private static final InetSocketAddress DEAD_ADDR = new InetSocketAddress("127.0.0.1", 9102);
+
+        @Test
+        void deadPeer_detectedWithinBudget_despiteAnotherPeerFlapping() throws InterruptedException {
+            // Tight config: period 30ms, probeTimeout 15ms, suspectTimeout 300ms, fast startup.
+            // joinGrace set tiny so the never-HEALTHY dead peer is not grace-deferred from FAULTY.
+            var config = swimConfig(
+                timeSpan(30).millis(),
+                timeSpan(15).millis(),
+                3,
+                timeSpan(300).millis(),
+                8,
+                timeSpan(30).millis(),
+                "",
+                0,
+                timeSpan(10).millis()
+            );
+            var localTransport = new RecordingTransport();
+            var localListener = new RecordingListener();
+            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
+                                            .fold(cause -> null, v -> v);
+
+            localProtocol.addSeedMember(FLAPPER, FLAPPER_ADDR);
+            localProtocol.addSeedMember(DEAD_PEER, DEAD_ADDR);
+
+            localProtocol.start();
+            try {
+                // Budget: well over period*N + suspectTimeout. With the old global-index code
+                // the flapper churn starves the dead peer and it never reaches FAULTY inside this
+                // window; with LRP the dead peer is probed within a couple of periods and decays.
+                var deadline = System.currentTimeMillis() + 5_000L;
+                var pingedSeq = 0;
+                while (localListener.faulty.stream().noneMatch(m -> m.nodeId().equals(DEAD_PEER))
+                       && System.currentTimeMillis() < deadline) {
+                    // Keep the flapper genuinely probable AND churning: ack any Ping sent to it
+                    // (so it stays ALIVE / refutes), and alternate ALIVE<->SUSPECT gossip about it
+                    // so its membership entry is constantly rewritten — the condition that
+                    // reshuffled values() order under the old index.
+                    ackPingsTo(localTransport, FLAPPER_ADDR, localProtocol);
+                    var state = (pingedSeq % 2 == 0) ? MemberState.ALIVE : MemberState.SUSPECT;
+                    var gossip = new MembershipUpdate(FLAPPER, state, 1L, FLAPPER_ADDR);
+                    localProtocol.onMessage(FLAPPER_ADDR, new Ping(FLAPPER, 5_000L + pingedSeq, List.of(gossip)));
+                    pingedSeq++;
+                    Thread.sleep(15L);
+                }
+
+                assertThat(pingsTo(localTransport, DEAD_ADDR))
+                    .as("dead peer must receive at least one direct Ping despite the flapper's churn (LRP fairness)")
+                    .isGreaterThanOrEqualTo(1);
+                assertThat(localListener.faulty)
+                    .as("dead peer must reach FAULTY within budget regardless of flapper churn count")
+                    .anyMatch(m -> m.nodeId().equals(DEAD_PEER));
+            } finally {
+                localProtocol.stop();
+            }
+        }
+
+        @Test
+        void selectNextProbeTarget_everyProbableMemberProbedWithinNPeriods_underMembershipChurn() {
+            var config = swimConfig(
+                timeSpan(30).millis(),
+                timeSpan(15).millis(),
+                3,
+                timeSpan(300).millis(),
+                8,
+                timeSpan(30).millis(),
+                "",
+                0,
+                timeSpan(10).millis()
+            );
+            var localTransport = new RecordingTransport();
+            var localListener = new RecordingListener();
+            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
+                                            .fold(cause -> null, v -> v);
+
+            // Three stable members + one id that churns in and out between selections.
+            localProtocol.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE);
+            localProtocol.putMemberForTest(NODE_B, ADDR_B, MemberState.ALIVE);
+            localProtocol.putMemberForTest(NODE_C, ADDR_C, MemberState.ALIVE);
+
+            // Drive many deterministic selection-and-probe cycles, mutating membership
+            // (add/remove the churning id) between selections.
+            for (var i = 0; i < 60; i++) {
+                if (i % 3 == 0) {
+                    localProtocol.putMemberForTest(FLAPPER, FLAPPER_ADDR, MemberState.ALIVE);
+                } else if (i % 3 == 1) {
+                    localProtocol.removeMemberForTest(FLAPPER);
+                }
+                localProtocol.probeOnceForTest();
+            }
+
+            var pingsA = pingsTo(localTransport, ADDR_A);
+            var pingsB = pingsTo(localTransport, ADDR_B);
+            var pingsC = pingsTo(localTransport, ADDR_C);
+
+            // Fairness guard: every stable member's Ping count stays within 1 of the others
+            // over the window. A position-based selection would let the churning id perturb
+            // this distribution; LRP keeps it balanced.
+            var max = Math.max(pingsA, Math.max(pingsB, pingsC));
+            var min = Math.min(pingsA, Math.min(pingsB, pingsC));
+            assertThat(max - min)
+                .as("stable members must be probed within 1 of each other under membership churn (a=%d b=%d c=%d)",
+                    pingsA, pingsB, pingsC)
+                .isLessThanOrEqualTo(1);
+            assertThat(min)
+                .as("every stable member must be probed at least once")
+                .isGreaterThanOrEqualTo(1);
+        }
+
+        private static void ackPingsTo(RecordingTransport transport, InetSocketAddress addr, SwimProtocol protocol) {
+            transport.sentMessages.stream()
+                                  .filter(m -> m.target().equals(addr) && m.message() instanceof Ping)
+                                  .map(m -> (Ping) m.message())
+                                  .forEach(ping -> protocol.onMessage(addr, Ack.ack(FLAPPER, ping.sequence(), List.of())));
+        }
+
+        private static int pingsTo(RecordingTransport transport, InetSocketAddress addr) {
+            return (int) transport.sentMessages.stream()
+                                               .filter(m -> m.target().equals(addr) && m.message() instanceof Ping)
+                                               .count();
         }
     }
 
@@ -376,13 +968,29 @@ class SwimProtocolTest {
         }
 
         @Override
-        public void onMemberFaulty(SwimMember member) {
+        public void onMemberFaulty(SwimMember member, boolean firstHand) {
             faulty.add(member);
         }
 
         @Override
         public void onMemberLeft(NodeId nodeId) {
             left.add(nodeId);
+        }
+    }
+
+    static class RecordingObservationSink implements java.util.function.Consumer<SwimObservation> {
+        final CopyOnWriteArrayList<SwimObservation> all = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void accept(SwimObservation observation) {
+            all.add(observation);
+        }
+
+        <T extends SwimObservation> List<T> byType(Class<T> type) {
+            return all.stream()
+                      .filter(type::isInstance)
+                      .map(type::cast)
+                      .toList();
         }
     }
 }

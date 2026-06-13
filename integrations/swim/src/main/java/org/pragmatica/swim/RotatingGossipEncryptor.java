@@ -2,6 +2,7 @@ package org.pragmatica.swim;
 
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 
 /// Delegating gossip encryptor that supports hot-swap for key rotation.
@@ -25,6 +26,7 @@ public final class RotatingGossipEncryptor implements GossipEncryptor {
     /// Atomically replace the inner encryptor with a new one.
     /// During rotation the new encryptor should accept both old and new key IDs
     /// (use [AesGcmGossipEncryptor] dual-key factory).
+    @Contract
     public void rotate(GossipEncryptor newEncryptor) {
         delegate.set(newEncryptor);
     }

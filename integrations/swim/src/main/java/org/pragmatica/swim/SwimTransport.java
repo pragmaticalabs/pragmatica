@@ -18,6 +18,7 @@ package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -30,6 +31,12 @@ public interface SwimTransport {
     /// Start listening for incoming messages on the given port.
     Promise<Unit> start(int port, SwimMessageHandler handler);
 
+    /// Test-only: toggle silent-death fault injection on the SWIM UDP plane.
+    /// When enabled, outbound sends are dropped and inbound datagrams are discarded
+    /// before dispatch. Default no-op; overridden by transports that support it.
+    @Contract
+    default void blackhole(boolean enabled) {}
+
     /// Stop the transport and release resources.
     Promise<Unit> stop();
 
@@ -37,6 +44,7 @@ public interface SwimTransport {
     interface SwimMessageHandler {
 
         /// Called when a message is received from the given sender address.
+        @Contract
         void onMessage(InetSocketAddress sender, SwimMessage message);
     }
 }
