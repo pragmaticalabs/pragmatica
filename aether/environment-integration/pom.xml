@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>1.0.0-alpha</version>
+        <version>1.0.0-rc1</version>
     </parent>
 
     <artifactId>environment-integration</artifactId>
@@ -17,6 +17,14 @@
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>tcp</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>utility</artifactId>
         </dependency>
 
         <!-- Testing -->

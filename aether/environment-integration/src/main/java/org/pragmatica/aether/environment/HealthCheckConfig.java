@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
 import org.pragmatica.lang.Result;
@@ -7,7 +11,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Health check configuration for load balancer targets.
 public record HealthCheckConfig(String protocol,
                                 int port,
                                 String path,
@@ -15,13 +18,13 @@ public record HealthCheckConfig(String protocol,
                                 TimeSpan timeout,
                                 int healthyThreshold,
                                 int unhealthyThreshold) {
-    @SuppressWarnings("JBCT-VO-02") public static final HealthCheckConfig DEFAULT = new HealthCheckConfig("http",
-                                                                                                          8080,
-                                                                                                          "/health/ready",
-                                                                                                          timeSpan(10).seconds(),
-                                                                                                          timeSpan(5).seconds(),
-                                                                                                          3,
-                                                                                                          3);
+    public static final HealthCheckConfig DEFAULT = new HealthCheckConfig("http",
+                                                                          8080,
+                                                                          "/health/ready",
+                                                                          timeSpan(10).seconds(),
+                                                                          timeSpan(5).seconds(),
+                                                                          3,
+                                                                          3);
 
     public static Result<HealthCheckConfig> healthCheckConfig(String protocol,
                                                               int port,

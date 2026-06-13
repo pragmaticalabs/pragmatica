@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
 import org.pragmatica.lang.Cause;
@@ -6,14 +10,14 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Error types for environment integration failures.
 public sealed interface EnvironmentError extends Cause {
     record ProvisionFailed(Throwable cause) implements EnvironmentError {
         public static Result<ProvisionFailed> provisionFailed(Throwable cause) {
             return success(new ProvisionFailed(cause));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Node provisioning failed: " + cause.getMessage();
         }
     }
@@ -23,7 +27,8 @@ public sealed interface EnvironmentError extends Cause {
             return success(new TerminateFailed(instanceId, cause));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Instance termination failed for '" + instanceId.value() + "': " + cause.getMessage();
         }
     }
@@ -33,8 +38,31 @@ public sealed interface EnvironmentError extends Cause {
             return success(new InstanceNotFound(instanceId));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Instance not found: " + instanceId.value();
+        }
+    }
+
+    /// Raised when a freshly-created instance fails to reach [InstanceStatus#RUNNING]
+    /// within the provisioning-readiness window. The instance was created (or attempted)
+    /// but never confirmed live — surfacing this FAILURE (instead of a phantom success)
+    /// lets the caller (CTM) free the slot and avoids minting a node that poisons quorum.
+    /// `lastStatus` records the terminal status observed (e.g. `Provisioning` on timeout,
+    /// or `Terminated` when the container/VM exited during boot).
+    record ProvisionReadinessTimeout(InstanceId instanceId, InstanceStatus lastStatus, long timeoutMillis) implements EnvironmentError {
+        public static Result<ProvisionReadinessTimeout> provisionReadinessTimeout(InstanceId instanceId,
+                                                                                  InstanceStatus lastStatus,
+                                                                                  long timeoutMillis) {
+            return success(new ProvisionReadinessTimeout(instanceId, lastStatus, timeoutMillis));
+        }
+
+        @Override
+        public String message() {
+            return "Instance '" + instanceId.value()
+                 + "' did not reach RUNNING within " + timeoutMillis
+                 + "ms (last observed status: " + lastStatus
+                 + "); refusing to report a phantom provision success.";
         }
     }
 
@@ -43,7 +71,8 @@ public sealed interface EnvironmentError extends Cause {
             return success(new ListInstancesFailed(cause));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Failed to list instances: " + cause.getMessage();
         }
     }
@@ -53,7 +82,8 @@ public sealed interface EnvironmentError extends Cause {
             return success(new SecretResolutionFailed(path, cause));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Secret resolution failed for '" + path + "': " + cause.getMessage();
         }
     }
@@ -63,7 +93,8 @@ public sealed interface EnvironmentError extends Cause {
             return success(new DiscoveryFailed(detail, cause));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Discovery failed: " + detail + " — " + cause.getMessage();
         }
     }
@@ -73,8 +104,21 @@ public sealed interface EnvironmentError extends Cause {
             return success(new OperationNotSupported(operation));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Operation not supported: " + operation;
+        }
+    }
+
+    record CredentialsMissing(String provider, java.util.List<String> missingEnvVars) implements EnvironmentError {
+        public static Result<CredentialsMissing> credentialsMissing(String provider,
+                                                                    java.util.List<String> missingEnvVars) {
+            return success(new CredentialsMissing(provider, java.util.List.copyOf(missingEnvVars)));
+        }
+
+        @Override
+        public String message() {
+            return "Cloud credentials missing for provider '" + provider + "': set " + String.join(", ", missingEnvVars);
         }
     }
 
@@ -83,7 +127,8 @@ public sealed interface EnvironmentError extends Cause {
             return success(new unused());
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "";
         }
     }
@@ -98,6 +143,12 @@ public sealed interface EnvironmentError extends Cause {
 
     static EnvironmentError instanceNotFound(InstanceId instanceId) {
         return InstanceNotFound.instanceNotFound(instanceId).unwrap();
+    }
+
+    static EnvironmentError provisionReadinessTimeout(InstanceId instanceId,
+                                                      InstanceStatus lastStatus,
+                                                      long timeoutMillis) {
+        return ProvisionReadinessTimeout.provisionReadinessTimeout(instanceId, lastStatus, timeoutMillis).unwrap();
     }
 
     static EnvironmentError listInstancesFailed(Throwable cause) {

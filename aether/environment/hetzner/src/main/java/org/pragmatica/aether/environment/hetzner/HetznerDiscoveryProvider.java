@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.hetzner;
 
 import org.pragmatica.aether.environment.DiscoveryProvider;
@@ -26,21 +30,12 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Hetzner Cloud implementation of the DiscoveryProvider SPI.
-/// Discovers peers by querying servers with a specific `aether-cluster` label.
-/// Watches for peer changes by polling at a configurable interval.
-/// NOTE: deregisterSelf clears ALL labels on the server, not just aether-* labels.
 public final class HetznerDiscoveryProvider implements DiscoveryProvider {
     private static final Logger log = LoggerFactory.getLogger(HetznerDiscoveryProvider.class);
-
     private static final int DEFAULT_PORT = 9100;
-
     private static final String LABEL_CLUSTER = "aether-cluster";
-
     private static final String LABEL_PORT = "aether-port";
-
     private static final String LABEL_ROLE = "aether-role";
-
     private static final String DEFAULT_ROLE = "core";
 
     private static final EnvironmentError NO_SELF_SERVER_ID = EnvironmentError.operationNotSupported("registerSelf/deregisterSelf requires selfServerId");
@@ -49,7 +44,6 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
     private final String clusterName;
     private final Option<Long> selfServerId;
     private final long pollIntervalMs;
-
     private final StoppableThread watchThread = StoppableThread.stoppableThread();
 
     private HetznerDiscoveryProvider(HetznerClient client,
@@ -70,29 +64,39 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
                                             config.discoveryPollIntervalMs());
     }
 
-    @Override public Promise<List<PeerInfo>> discoverPeers() {
-        return client.listServers(clusterLabelSelector()).map(HetznerDiscoveryProvider::toPeerInfoList)
-                                 .mapError(HetznerDiscoveryProvider::toDiscoveryError);
+    @Override
+    public Promise<List<PeerInfo>> discoverPeers() {
+        return client.listServers(clusterLabelSelector())
+                     .map(HetznerDiscoveryProvider::toPeerInfoList)
+                     .mapError(HetznerDiscoveryProvider::toDiscoveryError);
     }
 
-    @Override public Promise<Unit> watchPeers(Consumer<List<PeerInfo>> onChange) {
-        var thread = Thread.ofVirtual().name("hetzner-discovery-watcher")
-                                     .start(() -> pollLoop(onChange));
+    @Override
+    public Promise<Unit> watchPeers(Consumer<List<PeerInfo>> onChange) {
+        var thread = Thread.ofVirtual().name("hetzner-discovery-watcher").start(() -> pollLoop(onChange));
+
         watchThread.set(thread);
+
         return Promise.success(unit());
     }
 
-    @Override public Promise<Unit> stopWatching() {
+    @Override
+    public Promise<Unit> stopWatching() {
         interruptWatchThread();
+
         return Promise.success(unit());
     }
 
-    @Override public Promise<Unit> registerSelf(PeerInfo self) {
-        return selfServerId.map(id -> applyRegistrationLabels(id, self)).or(NO_SELF_SERVER_ID.promise());
+    @Override
+    public Promise<Unit> registerSelf(PeerInfo self) {
+        return selfServerId.map(id -> applyRegistrationLabels(id, self))
+                           .or(NO_SELF_SERVER_ID.promise());
     }
 
-    @Override public Promise<Unit> deregisterSelf() {
-        return selfServerId.map(this::clearLabels).or(NO_SELF_SERVER_ID.promise());
+    @Override
+    public Promise<Unit> deregisterSelf() {
+        return selfServerId.map(this::clearLabels)
+                           .or(NO_SELF_SERVER_ID.promise());
     }
 
     private String clusterLabelSelector() {
@@ -117,8 +121,9 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
     }
 
     private static List<PeerInfo> toPeerInfoList(List<Server> servers) {
-        return servers.stream().map(HetznerDiscoveryProvider::serverToPeerInfo)
-                             .toList();
+        return servers.stream()
+                      .map(HetznerDiscoveryProvider::serverToPeerInfo)
+                      .toList();
     }
 
     private static PeerInfo serverToPeerInfo(Server server) {
@@ -130,15 +135,18 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
     }
 
     private static Option<String> firstPrivateIp(Server server) {
-        return option(server.privateNet()).filter(nets -> !nets.isEmpty()).map(HetznerDiscoveryProvider::firstIp);
+        return option(server.privateNet()).filter(nets -> !nets.isEmpty())
+                     .map(HetznerDiscoveryProvider::firstIp);
     }
 
     private static String firstIp(List<Server.PrivateNet> nets) {
-        return nets.getFirst().ip();
+        return nets.getFirst()
+                   .ip();
     }
 
     private static Option<String> publicIpv4(Server server) {
-        return option(server.publicNet()).flatMap(net -> option(net.ipv4())).map(Server.Ipv4::ip);
+        return option(server.publicNet()).flatMap(net -> option(net.ipv4()))
+                     .map(Server.Ipv4::ip);
     }
 
     private static int extractPort(Server server) {
@@ -157,6 +165,7 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
 
     private void pollLoop(Consumer<List<PeerInfo>> onChange) {
         var previousPeers = new AtomicReference<Set<String>>(Set.of());
+
         while (!Thread.currentThread().isInterrupted()) {
             pollOnce(onChange, previousPeers);
             sleepOrExit();
@@ -164,16 +173,16 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
     }
 
     private void pollOnce(Consumer<List<PeerInfo>> onChange, AtomicReference<Set<String>> previousPeers) {
-        discoverPeers().await()
-                     .onFailure(cause -> log.warn("Discovery poll failed: {}",
-                                                  cause.message()))
-                     .onSuccess(peers -> notifyIfChanged(peers, onChange, previousPeers));
+        discoverPeers().await().onFailure(cause -> log.warn("Discovery poll failed: {}", cause.message())).onSuccess(peers -> notifyIfChanged(peers,
+                                                                                                                                              onChange,
+                                                                                                                                              previousPeers));
     }
 
     private static void notifyIfChanged(List<PeerInfo> peers,
                                         Consumer<List<PeerInfo>> onChange,
                                         AtomicReference<Set<String>> previousPeers) {
         var currentKeys = toPeerKeys(peers);
+
         if (!currentKeys.equals(previousPeers.get())) {
             previousPeers.set(currentKeys);
             onChange.accept(peers);
@@ -181,8 +190,9 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
     }
 
     private static Set<String> toPeerKeys(List<PeerInfo> peers) {
-        return peers.stream().map(HetznerDiscoveryProvider::peerKey)
-                           .collect(Collectors.toSet());
+        return peers.stream()
+                    .map(HetznerDiscoveryProvider::peerKey)
+                    .collect(Collectors.toSet());
     }
 
     private static String peerKey(PeerInfo peer) {

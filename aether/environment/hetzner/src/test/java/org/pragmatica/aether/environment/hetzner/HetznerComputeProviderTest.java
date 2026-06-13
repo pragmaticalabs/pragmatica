@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.environment.hetzner;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -7,9 +12,12 @@ import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.ProvisionContext;
+import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.cloud.hetzner.HetznerError;
 import org.pragmatica.cloud.hetzner.api.Firewall;
+import org.pragmatica.cloud.hetzner.api.FloatingIp;
 import org.pragmatica.cloud.hetzner.api.LoadBalancer;
 import org.pragmatica.cloud.hetzner.api.Network;
 import org.pragmatica.cloud.hetzner.api.Server;
@@ -63,6 +71,41 @@ class HetznerComputeProviderTest {
                     .await()
                     .onSuccess(info -> assertThat(info).isNull())
                     .onFailure(HetznerComputeProviderTest::assertProvisionFailedError);
+        }
+
+        @Test
+        void provision_contextWithNodeId_setsAetherNodeIdLabelOnServer() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            var context = ProvisionContext.provisionContext("cluster-x",
+                                                              "core",
+                                                              "eu-1",
+                                                              ProvisionContext.PROVISIONED_BY_CTM)
+                                                       .withNodeId("aether-core-node-test123");
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
+
+            provider.provision(spec).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest).isNotNull();
+            assertThat(testClient.lastCreateServerRequest.labels())
+                    .containsEntry(HetznerComputeProvider.NODE_ID_LABEL, "aether-core-node-test123")
+                    .containsEntry("aether-cluster", "cluster-x")
+                    .containsEntry("aether-role", "core")
+                    .containsEntry("aether-source", "eu-1");
+        }
+
+        @Test
+        void listInstances_withDottedNodeIdTag_translatesToHetznerLabel() {
+            testClient.listServersResponse = Promise.success(List.of(
+                serverWithLabels(7, "matched", Map.of(HetznerComputeProvider.NODE_ID_LABEL, "aether-core-node-x"))));
+
+            provider.listInstances(Map.of(HetznerComputeProvider.UPPER_LAYER_NODE_ID_TAG, "aether-core-node-x"))
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull())
+                    .onSuccess(instances -> assertThat(instances).hasSize(1));
+
+            assertThat(testClient.lastLabelSelector)
+                    .as("upper-layer dotted aether.node-id translated to native hyphenated form")
+                    .isEqualTo("aether-node-id=aether-core-node-x");
         }
     }
 
@@ -422,9 +465,11 @@ class HetznerComputeProviderTest {
         long lastUpdateLabelsServerId;
         Map<String, String> lastUpdateLabels;
         String lastLabelSelector;
+        CreateServerRequest lastCreateServerRequest;
 
         @Override
         public Promise<Server> createServer(CreateServerRequest request) {
+            lastCreateServerRequest = request;
             return createServerResponse;
         }
 
@@ -543,6 +588,21 @@ class HetznerComputeProviderTest {
                                                     new LoadBalancer.LbType(1, "lb11", "LB11"),
                                                     new LoadBalancer.Algorithm("round_robin"),
                                                     List.of()));
+        }
+
+        @Override
+        public Promise<List<FloatingIp>> listFloatingIps() {
+            return Promise.success(List.of());
+        }
+
+        @Override
+        public Promise<FloatingIp> getFloatingIp(long floatingIpId) {
+            return Promise.success(new FloatingIp(floatingIpId, "1.2.3.4", "ipv4", null, new FloatingIp.Location("fsn1", "Falkenstein", "DE"), Map.of()));
+        }
+
+        @Override
+        public Promise<Unit> assignFloatingIp(long floatingIpId, long serverId) {
+            return Promise.success(Unit.unit());
         }
     }
 }
