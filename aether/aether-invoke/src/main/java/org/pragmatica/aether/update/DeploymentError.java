@@ -1,16 +1,20 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.update;
 
 import org.pragmatica.lang.Cause;
 
 
-/// Errors that can occur during deployment operations.
 public sealed interface DeploymentError extends Cause {
     record DeploymentNotFound(String deploymentId) implements DeploymentError {
         public static DeploymentNotFound deploymentNotFound(String deploymentId) {
             return new DeploymentNotFound(deploymentId);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Deployment not found: " + deploymentId;
         }
     }
@@ -20,7 +24,8 @@ public sealed interface DeploymentError extends Cause {
             return new DeploymentAlreadyExists(blueprintId);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Deployment already in progress for blueprint: " + blueprintId;
         }
     }
@@ -30,7 +35,8 @@ public sealed interface DeploymentError extends Cause {
             return new BlueprintNotFound(blueprintId);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Blueprint not found: " + blueprintId;
         }
     }
@@ -40,8 +46,21 @@ public sealed interface DeploymentError extends Cause {
             return new NoCurrentVersion(artifactBase);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "No current version for " + artifactBase + " (initial deployment — use blueprint deploy instead)";
+        }
+    }
+
+    record SameVersionDeployment(String version) implements DeploymentError {
+        public static SameVersionDeployment sameVersionDeployment(String version) {
+            return new SameVersionDeployment(version);
+        }
+
+        @Override
+        public String message() {
+            return "Cannot deploy version " + version
+                 + " — already active. Use /api/blueprints/deploy for redeployment.";
         }
     }
 
@@ -50,20 +69,22 @@ public sealed interface DeploymentError extends Cause {
             return new ConsensusFailure(cause);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Consensus apply failed: " + cause.message();
         }
     }
 
     enum General implements DeploymentError {
-        NOT_LEADER("Deployment operations can only be performed by the leader node"),
+        NOT_ASSIGNED("Operation requires the node currently assigned the STRATEGIES task group"),
         NOT_ACTIVE("Deployment is not in an active state"),
         INVALID_STRATEGY_CONFIG("Strategy config does not match deployment strategy");
         private final String msg;
         General(String msg) {
             this.msg = msg;
         }
-        @Override public String message() {
+        @Override
+        public String message() {
             return msg;
         }
     }

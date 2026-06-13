@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -10,17 +14,6 @@ import org.pragmatica.messaging.Message;
 import java.util.List;
 
 
-/// Events related to slice invocation failures.
-///
-///
-/// Used to notify the controller and alerting system about
-/// critical failure conditions requiring action.
-///
-///
-/// This is a sealed hierarchy validated at route-building time via SealedBuilder.
-/// These events are dispatched locally via MessageRouter.
-///
-/// @see org.pragmatica.messaging.MessageRouter.Entry.SealedBuilder
 public sealed interface SliceFailureEvent extends Message.Local {
     record AllInstancesFailed(String requestId,
                               Artifact artifact,

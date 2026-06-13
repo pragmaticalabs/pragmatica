@@ -1,35 +1,26 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
 
 
-/// Messages for inter-slice remote invocation.
-///
-///
-/// Supports two patterns:
-///
-///   - Fire-and-forget: expectResponse=false
-///   - Request-response: expectResponse=true
-///
-///
-///
-/// All invocations carry a requestId for distributed tracing.
-/// The requestId remains constant through the entire invocation chain
-/// (slice A → slice B → slice C), while correlationId is unique per request/response pair.
-///
-///
-/// Observability fields (RFC-0010):
-///
-///   - depth: invocation depth in the call chain (0 = entry point)
-///   - hops: number of network hops traversed
-///   - sampled: whether this request is sampled for detailed tracing
-///
-@Codec@CodecFor(MethodName.class) public sealed interface InvocationMessage extends ProtocolMessage {
+@Codec
+@CodecFor(MethodName.class)
+public sealed interface InvocationMessage extends ProtocolMessage {
+    @Override
+    default StreamType streamType() {
+        return StreamType.INVOKE;
+    }
+
     record InvokeRequest(NodeId sender,
                          String correlationId,
                          String requestId,

@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.invoke;
 
 import org.junit.jupiter.api.AfterEach;
@@ -13,8 +18,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderNotification;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -35,6 +41,7 @@ class ScheduledTaskManagerTest {
     private Artifact artifact;
     private MethodName method;
     private CopyOnWriteArrayList<KVCommand<AetherKey>> stateWrites;
+    private TestLeaderManager leaderManager;
 
     record InvocationRecord(Artifact artifact, MethodName method, Object message) {}
 
@@ -46,7 +53,8 @@ class ScheduledTaskManagerTest {
         artifact = Artifact.artifact("org.example:my-slice:1.0.0").unwrap();
         method = MethodName.methodName("cleanup").unwrap();
         stateWrites = new CopyOnWriteArrayList<>();
-        manager = ScheduledTaskManager.scheduledTaskManager(registry, stubInvoker, self, stateWrites::add);
+        leaderManager = new TestLeaderManager(self);
+        manager = ScheduledTaskManager.scheduledTaskManager(registry, stubInvoker, self, stateWrites::add, leaderManager);
     }
 
     @AfterEach
@@ -63,19 +71,21 @@ class ScheduledTaskManagerTest {
     }
 
     private void becomeLeader() {
+        leaderManager.setLeader(true);
         manager.onLeaderChange(LeaderNotification.leaderChange(Option.some(self), true));
     }
 
     private void loseLeadership() {
+        leaderManager.setLeader(false);
         manager.onLeaderChange(LeaderNotification.leaderChange(Option.none(), false));
     }
 
     private void establishQuorum() {
-        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(ClusterStateNotification.active());
     }
 
     private void loseQuorum() {
-        manager.onQuorumStateChange(QuorumStateNotification.disappeared());
+        manager.onQuorumStateChange(ClusterStateNotification.passive());
     }
 
     @Nested
@@ -316,11 +326,11 @@ class ScheduledTaskManagerTest {
     }
 
     /// Minimal stub implementing only the invoke methods used by ScheduledTaskManager.
-    private static final class StubSliceInvoker implements SliceInvoker {
+    static final class StubSliceInvoker implements SliceInvoker {
         private final CopyOnWriteArrayList<InvocationRecord> invocations;
         private final Option<Cause> failureCause;
 
-        StubSliceInvoker(CopyOnWriteArrayList<InvocationRecord> invocations, Option<Cause> failureCause) {
+        public StubSliceInvoker(CopyOnWriteArrayList<InvocationRecord> invocations, Option<Cause> failureCause) {
             this.invocations = invocations;
             this.failureCause = failureCause;
         }
@@ -361,10 +371,13 @@ class ScheduledTaskManagerTest {
         public void onInvokeResponse(org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse response) {}
 
         @Override
-        public void onNodeRemoved(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved event) {}
+        public void onNodeRemoved(org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved event) {}
 
         @Override
-        public void onNodeDown(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown event) {}
+        public void onNodeDecommissioned(org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned event) {}
+
+        @Override
+        public void onSelfShutdown(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown event) {}
 
         @Override
         public Promise<Unit> stop() {
@@ -391,5 +404,41 @@ class ScheduledTaskManagerTest {
         public Unit unregisterAffinityResolver(Artifact artifact, MethodName method) {
             return Unit.unit();
         }
+    }
+
+    /// Controllable LeaderManager stub for SSOT testing.
+    static final class TestLeaderManager implements LeaderManager {
+        private final NodeId self;
+        private volatile boolean leader = false;
+
+        TestLeaderManager(NodeId self) {
+            this.self = self;
+        }
+
+        void setLeader(boolean value) {
+            this.leader = value;
+        }
+
+        @Override public Option<NodeId> leader() {
+            return leader ? Option.some(self) : Option.none();
+        }
+
+        @Override public boolean isLeader() {
+            return leader;
+        }
+
+        @Override public Option<Long> currentLeaderEpoch() {
+            return Option.none();
+        }
+
+        @Override public void onLeaderCommitted(NodeId leader) {}
+        @Override public void triggerElection() {}
+        @Override public void stop() {}
+        @Override public void peerJoined(org.pragmatica.consensus.topology.TransportObservation.PeerJoined p) {}
+        @Override public void peerDisconnected(org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected p) {}
+        @Override public void peerObservedFaulty(org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty p) {}
+        @Override public void peerReconnected(org.pragmatica.consensus.topology.TransportObservation.PeerReconnected p) {}
+        @Override public void selfShutdown(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown s) {}
+        @Override public void watchClusterState(ClusterStateNotification q) {}
     }
 }

@@ -1,17 +1,12 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.update;
 
 import java.util.Set;
 
 
-/// Unified state machine for all deployment strategy lifecycles.
-///
-/// Covers the full lifecycle from initial request through completion or failure:
-///
-///   - **Deploy phase**: PENDING -> DEPLOYING -> DEPLOYED
-///   - **Route phase**: DEPLOYED -> ROUTING -> PROMOTING -> DRAINING -> COMPLETED
-///   - **Rollback**: Any non-terminal -> ROLLING_BACK -> ROLLED_BACK
-///   - **Failure**: Any non-terminal -> FAILED
-///
 public enum DeploymentState {
     PENDING,
     DEPLOYING,
@@ -24,7 +19,7 @@ public enum DeploymentState {
     ROLLED_BACK,
     FAILED;
     public Set<DeploymentState> validTransitions() {
-        return switch (this){
+        return switch (this) {
             case PENDING -> Set.of(DEPLOYING, FAILED);
             case DEPLOYING -> Set.of(DEPLOYED, ROLLING_BACK, FAILED);
             case DEPLOYED -> Set.of(ROUTING, PROMOTING, COMPLETED, ROLLING_BACK, FAILED);
