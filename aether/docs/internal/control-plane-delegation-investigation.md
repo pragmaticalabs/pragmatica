@@ -254,7 +254,6 @@ These abstractions make the components KV-Store-ready without coupling them to t
 
 ## References
 
-- [Passive Worker Pools Spec](../specs/passive-worker-pools-spec.md) — two-layer topology, governor architecture
 - [Architecture Overview](../architecture/00-overview.md) — cluster architecture
 - [Consensus Architecture](../architecture/01-consensus.md) — Rabia protocol, KV-Store
 - [Hierarchical Storage Spec](../specs/hierarchical-storage-spec.md) — AHSE, storage tiers, metadata store

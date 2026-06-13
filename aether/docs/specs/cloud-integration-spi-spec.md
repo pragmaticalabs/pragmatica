@@ -29,7 +29,7 @@
 
 ### 1.1 Purpose
 
-This specification defines four SPI contracts that cloud providers must implement to integrate with the Aether distributed runtime. The SPIs cover compute provisioning, load balancer management, peer discovery, and secret resolution. Together they enable Aether to manage its own infrastructure across multiple cloud providers.
+This specification defines four SPI contracts that cloud providers must implement to integrate with the Aether runtime. The SPIs cover compute provisioning, load balancer management, peer discovery, and secret resolution. Together they enable Aether to manage its own infrastructure across multiple cloud providers.
 
 ### 1.2 Goals
 
@@ -1392,7 +1392,7 @@ Examples:
 
 The Hetzner provider already has:
 - `HetznerComputeProviderTest` -- 14 tests covering provision, terminate, list, status, address collection, status mapping
-- `HetznerCloudIT` -- 7 integration tests (requires `HETZNER_API_TOKEN`)
+- `HetznerCloudIT` -- 7 integration tests (requires `HCLOUD_TOKEN`)
 - `LoadBalancerManagerTest` -- Tests for the LoadBalancerManager consumer
 
 These tests serve as the pattern for new provider test classes.

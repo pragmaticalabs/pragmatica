@@ -212,7 +212,7 @@ enabled = true
 retry_interval = "30s"
 ```
 
-Cloud credentials: `HETZNER_API_TOKEN` environment variable. Maps to existing `HetznerEnvironmentConfig` / `HetznerComputeProvider`.
+Cloud credentials: `HCLOUD_TOKEN` environment variable. Maps to existing `HetznerEnvironmentConfig` / `HetznerComputeProvider`.
 
 #### 2.4.2 AWS
 
@@ -709,6 +709,7 @@ Run without --dry-run to apply.
 aether cluster export                          # Print TOML to stdout
 aether cluster export > cluster-backup.toml    # Save to file
 aether cluster export --with-status            # Include runtime state as TOML comments
+aether cluster export --format json            # Emit the JSON envelope (tomlContent + metadata)
 ```
 
 ### 6.2 Behavior
@@ -730,6 +731,8 @@ type = "hetzner"
 ```
 
 REQ-EXPORT-03: The exported TOML is a valid `aether-cluster.toml` that can be used with `apply` or `bootstrap` (for a new cluster).
+
+REQ-EXPORT-04: With `--format json` (and `--field`, which implies JSON), emit the raw management-API envelope verbatim — the JSON object returned by `GET /api/cluster/config` (`tomlContent`, `clusterName`, `configVersion`, `coreCount`). The TOML body remains accessible as the `tomlContent` field for downstream tooling. `--with-status` is a TOML-format affordance and is ignored under JSON.
 
 ---
 
@@ -961,14 +964,14 @@ REQ-AUTH-01: Cloud provider credentials come exclusively from environment variab
 
 | Provider | Required Environment Variables |
 |----------|-------------------------------|
-| Hetzner | `HETZNER_API_TOKEN` |
+| Hetzner | `HCLOUD_TOKEN` |
 | AWS | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` |
 | GCP | `GOOGLE_APPLICATION_CREDENTIALS` or `GOOGLE_CLOUD_PROJECT` + default credentials |
 | Azure | `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` |
 
 REQ-AUTH-02: Missing cloud credentials produce a clear error before any provisioning:
 ```
-Error: HETZNER_API_TOKEN not set. Required for deployment type "hetzner".
+Error: HCLOUD_TOKEN not set. Required for deployment type "hetzner".
 ```
 
 ### 12.2 Cluster API Key

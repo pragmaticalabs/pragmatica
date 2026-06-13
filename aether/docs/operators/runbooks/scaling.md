@@ -43,6 +43,57 @@
    watch -n 5 'curl -s http://node1:8080/slices | jq "group_by(.nodeId) | map({node: .[0].nodeId, count: length})"'
    ```
 
+## Cloud Auto-Scaling
+
+For clusters bootstrapped against a cloud provider (`source.type = "cloud"`, e.g. Hetzner / AWS / GCP / Azure), scaling is driven by a single command — the consensus leader provisions or terminates VMs through the provider's API.
+
+### Scaling the cluster
+
+```bash
+aether cluster scale --target 7
+```
+
+This issues `POST /api/cluster/scale` against the leader. The Cluster Topology Manager (CTM) writes the new `coreCount` to KV-Store, which triggers a reconciliation pass. If the new size is greater than the current healthy node count, CTM calls `ComputeProvider.provision()` for each missing node; if smaller, it drains and terminates the surplus.
+
+Verify progress:
+```bash
+aether status --format json | jq '.cluster.coreCount, .cluster.nodes | length'
+```
+
+### Prerequisites for auto-scaling on cloud
+
+The leader must hold valid cloud credentials at runtime. This requires:
+
+1. **`[cloud]` section present in each node's `aether-config.toml`.** The `aether cluster bootstrap` workflow generates this automatically. If a node was deployed by other means, confirm the section exists — without it, `lifecycleManager.isCloudManaged()` is false on that node and any `/api/cluster/scale` request that elects it as leader will log `"no ComputeProvider, cannot auto-provision"` and silently no-op.
+
+2. **`[cloud.credentials]` populated with a valid API token.** See [`reference/cloud-integration.md`](../../reference/cloud-integration.md#credential-propagation-to-nodes) for the credential-propagation model. **The literal API token is written to `aether-config.toml` on every cluster node.** Any node compromise leaks the cloud-provider token. Use a dedicated cloud project per cluster, restrict file system permissions on `aether-config.toml`, and rotate tokens periodically.
+
+3. **Cloud-provider quota headroom for the scale-up target.** Before scaling, confirm the cloud account has capacity for the additional VMs. If quota is insufficient, the leader's provisioning loop will log repeated 403/422 responses from the provider API but will not fail the scale request — `aether status` will continue to report the deficit until the operator either raises quota or scales back down.
+
+### Recovery from a stuck scale operation
+
+If `aether cluster scale --target N` returns 200 but the node count never reaches `N`:
+
+```bash
+# 1. Identify the leader
+aether status --format json | jq '.cluster.leaderId'
+
+# 2. Inspect leader logs for provisioning errors
+ssh aether@<leader-host> 'journalctl -u aether-node --since "10 min ago" | grep -E "CTM|ComputeProvider|provision"'
+
+# 3. Common causes:
+#    - "no ComputeProvider, cannot auto-provision" → [cloud] missing from leader's aether-config.toml; see prerequisite 1
+#    - "401 unauthorized" / "403 forbidden"        → invalid or expired API token; rotate per prerequisite 2
+#    - "422 invalid_input" / "Cannot create"       → cloud quota exhausted; see prerequisite 3
+#    - "deficit ... but no top-up needed"          → CTM is already mid-flight; wait for current wave to complete
+```
+
+### Hetzner-specific notes
+
+- Tokens are project-scoped and grant **full read+write access** to every Hetzner resource in the project. The runbook for cloud auto-scaling assumes a dedicated Hetzner project per cluster.
+- Hetzner servers boot in 30-60 seconds; allow at least 90 seconds per node before declaring a scale operation stuck.
+- VMs are tagged with the label `aether-cluster=<cluster_name>` and identified by tag during termination. Manually-launched VMs without this label are never touched by CTM.
+
 ## Removing a Node
 
 ### Prerequisites

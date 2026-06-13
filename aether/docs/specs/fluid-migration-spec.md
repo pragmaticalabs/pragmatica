@@ -13,7 +13,7 @@
 2. [Migration Scenarios](#2-migration-scenarios)
 3. [Prerequisites](#3-prerequisites)
 4. [Fluid Migration Protocol](#4-fluid-migration-protocol)
-5. [NodeLifecycleValue Enhancement](#5-nodelifecyclevalue-enhancement)
+5. [Provider-Aware Node Tracking](#5-provider-aware-node-tracking)
 6. [DNS Provider SPI](#6-dns-provider-spi)
 7. [Configuration](#7-configuration)
 8. [CLI Commands](#8-cli-commands)
@@ -49,7 +49,7 @@ This is **fluid migration**: the cluster flows from one environment to another w
 - **G-1:** Zero-downtime migration between any two supported environments
 - **G-2:** Composable from existing primitives (`scale`, `drain`, `destroy`) or as a single `migrate` command
 - **G-3:** Rollback at any point during migration
-- **G-4:** Provider-aware node tracking via `NodeLifecycleValue.provider` field
+- **G-4:** Provider-aware node tracking (which environment each node runs in), carried with the node's presence/heartbeat signals — never in a KV-Store node-state record
 - **G-5:** DNS Provider SPI for automated DNS cutover
 - **G-6:** Observable migration progress via metrics and management API
 - **G-7:** JBCT compliance: sealed interfaces, records, `Promise<T>`, no business exceptions
@@ -65,7 +65,7 @@ This is **fluid migration**: the cluster flows from one environment to another w
 
 - REQ-DESIGN-01: Migration builds on existing primitives. No new consensus protocol changes.
 - REQ-DESIGN-02: The `[deployment]` section in `aether-cluster.toml` is per-provider. Migration uses two deployment sections.
-- REQ-DESIGN-03: All migration state is persisted in KV-Store for leader failover recovery.
+- REQ-DESIGN-03: Migration *orchestration* state (current phase, source/target deployment specs) is persisted in KV-Store for leader failover recovery. Node membership and readiness are NOT part of this: membership is presence-derived (SWIM/QUIC via NTT) and readiness/drain is heartbeat-reported and leader-cached, never stored in or committed to the KV-Store (see `aether/docs/specs/membership-architecture-v2-spec.md`).
 - REQ-DESIGN-04: Disruption budget is respected at every step. Never drain more nodes than the budget allows.
 - REQ-DESIGN-05: DNS cutover is a separate, optional phase. Migration works without DNS automation.
 
@@ -135,7 +135,7 @@ All three ports must be open between every source node and every target node bef
 
 | Provider | Credentials |
 |----------|-------------|
-| Hetzner | `HETZNER_API_TOKEN` |
+| Hetzner | `HCLOUD_TOKEN` |
 | AWS | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` |
 | GCP | `GOOGLE_APPLICATION_CREDENTIALS` or `gcloud` auth |
 | Azure | `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` |
@@ -222,7 +222,7 @@ Target nodes join the existing cluster via QUIC:
 
 - REQ-JOIN-01: Each target node connects to seed peers (source nodes) and participates in Rabia consensus.
 - REQ-JOIN-02: CTM (ClusterTopologyManager) detects new nodes via SWIM and updates topology.
-- REQ-JOIN-03: Wait until all target nodes report `ON_DUTY` in KV-Store `NodeLifecycleValue`.
+- REQ-JOIN-03: Wait until all target nodes are present in the cluster (SWIM/QUIC-derived membership) and report `READY` on the leader↔node heartbeat. Node readiness is heartbeat-reported and leader-cached, never read from the KV-Store.
 - REQ-JOIN-04: Timeout: `verify_timeout` (default 120s). If not all nodes join, abort and offer rollback.
 
 ```
@@ -286,9 +286,9 @@ All source nodes drained. Cluster size: 5 (0 AWS + 5 GCP)
 
 Terminate source cloud instances:
 
-- REQ-TERM-01: Terminate each decommissioned source instance via the source `ComputeProvider`.
+- REQ-TERM-01: Terminate each drained source instance via the source `ComputeProvider`.
 - REQ-TERM-02: Removal is idempotent. If instance already terminated, succeed silently.
-- REQ-TERM-03: Update KV-Store to remove source node lifecycle entries.
+- REQ-TERM-03: Source nodes leave the cluster by presence loss (SWIM/QUIC); there is no node-state KV entry to remove.
 
 #### Step 8: DNS_CUTOVER (Optional)
 
@@ -316,90 +316,19 @@ If DNS automation is configured:
 
 ---
 
-## 5. NodeLifecycleValue Enhancement
+## 5. Provider-Aware Node Tracking
 
-### 5.1 Current Definition
+Migration needs to know which environment (provider) each node runs in, so it can
+wait for target-environment nodes to be ready and drain source-environment nodes.
 
-```java
-record NodeLifecycleValue(NodeLifecycleState state,
-                          long updatedAt,
-                          String host,
-                          int port) implements AetherValue
-```
+This information is **not** stored in a KV-Store node-state record. Node membership is
+presence-derived (SWIM/QUIC via NTT); node readiness/drain is heartbeat-reported and
+leader-cached. This state is NEVER stored in or committed to the KV-Store. The provider
+identifier travels with the node's presence/heartbeat signals and is exposed through the
+management API (`GET /api/nodes?provider=…`) for migration tooling. See
+`aether/docs/specs/membership-architecture-v2-spec.md` for the authoritative model.
 
-### 5.2 Enhanced Definition
-
-```java
-/// @param state     the current lifecycle state
-/// @param updatedAt timestamp of last state transition
-/// @param host      the node's cluster address host
-/// @param port      the node's cluster address port
-/// @param provider  the environment provider identifier (e.g., "aws", "gcp", "hetzner", "on-premises")
-record NodeLifecycleValue(NodeLifecycleState state,
-                          long updatedAt,
-                          String host,
-                          int port,
-                          String provider) implements AetherValue {
-
-    /// Compact constructor: normalize nulls for backward compatibility.
-    public NodeLifecycleValue {
-        if (host == null) {
-            host = "";
-        }
-        if (provider == null) {
-            provider = "";
-        }
-    }
-
-    /// Creates a new lifecycle value with current timestamp and provider.
-    public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state,
-                                                         String host,
-                                                         int port,
-                                                         String provider) {
-        return new NodeLifecycleValue(state, System.currentTimeMillis(), host, port, provider);
-    }
-
-    /// Backward-compatible factory (no provider).
-    public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state) {
-        return new NodeLifecycleValue(state, System.currentTimeMillis(), "", 0, "");
-    }
-
-    /// Backward-compatible factory (no provider, with timestamp).
-    public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, long updatedAt) {
-        return new NodeLifecycleValue(state, updatedAt, "", 0, "");
-    }
-
-    /// Backward-compatible factory (no provider, with address).
-    public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state,
-                                                         String host,
-                                                         int port) {
-        return new NodeLifecycleValue(state, System.currentTimeMillis(), host, port, "");
-    }
-
-    /// Returns true if this value carries a valid cluster address.
-    public boolean hasAddress() {
-        return !host.isEmpty() && port > 0;
-    }
-
-    /// Returns true if this value carries a provider identifier.
-    public boolean hasProvider() {
-        return !provider.isEmpty();
-    }
-
-    /// Returns a new value with updated state, preserving address and provider.
-    public NodeLifecycleValue withState(NodeLifecycleState newState) {
-        return new NodeLifecycleValue(newState, System.currentTimeMillis(), host, port, provider);
-    }
-}
-```
-
-### 5.3 Serialization Compatibility
-
-- REQ-SER-01: The `provider` field defaults to `""` when deserialized from old format (Fory handles missing fields as defaults).
-- REQ-SER-02: Old nodes reading new format ignore the unknown `provider` field gracefully.
-- REQ-SER-03: Existing `KVStoreSerializer` tests must be updated to cover the new field.
-
-### 5.4 Provider Identifiers
+### 5.1 Provider Identifiers
 
 Canonical provider identifiers (matches `deployment.type` values):
 
@@ -758,7 +687,7 @@ aether cluster destroy --provider aws [--yes]
 aether cluster status --provider gcp
 ```
 
-**Implementation:** These commands use the `provider` field in `NodeLifecycleValue` to filter nodes. The `--provider` flag maps to a query parameter on the management API: `GET /api/nodes/lifecycle?provider=aws`.
+**Implementation:** These commands filter nodes by the provider identifier carried with each node's presence/heartbeat signals (never a KV-Store node-state record). The `--provider` flag maps to a query parameter on the management API: `GET /api/nodes?provider=aws`.
 
 ### 8.5 Management API Endpoints
 
@@ -769,7 +698,7 @@ aether cluster status --provider gcp
 | `POST` | `/api/cluster/migrate/rollback` | Initiate rollback |
 | `POST` | `/api/cluster/migrate/pause` | Pause migration (finish current step, hold) |
 | `POST` | `/api/cluster/migrate/resume` | Resume paused migration |
-| `GET` | `/api/nodes/lifecycle?provider={id}` | List nodes filtered by provider |
+| `GET` | `/api/nodes?provider={id}` | List nodes filtered by provider |
 
 ---
 
@@ -1241,24 +1170,18 @@ aether cluster migrate --config reverse-migration.toml
 
 ## 14. Implementation Layers
 
-### Layer 1: NodeLifecycleValue `provider` Field + CLI `--provider` Filter
+### Layer 1: Provider Identifier on Node Presence + CLI `--provider` Filter
 
 **Scope:**
-- Add `provider` field to `NodeLifecycleValue` record
-- Update all factory methods and `withState` to preserve `provider`
-- Update `KVStoreSerializer` for new field
-- Add `?provider=` query parameter to `GET /api/nodes/lifecycle`
+- Carry the `provider` identifier with each node's presence/heartbeat signals (never a KV-Store node-state record)
+- Add `?provider=` query parameter to `GET /api/nodes`
 - Add `--provider` flag to `ClusterDrainCommand`, `ClusterDestroyCommand`, `ClusterStatusCommand`
-- Update serialization tests
+- Update tests
 
 **Files modified:**
-- `aether/slice/src/main/java/org/pragmatica/aether/slice/kvstore/AetherValue.java`
-- `aether/slice/src/main/java/org/pragmatica/aether/slice/kvstore/KVStoreSerializer.java`
-- `aether/node/src/main/java/org/pragmatica/aether/api/routes/NodeLifecycleRoutes.java`
 - `aether/cli/src/main/java/org/pragmatica/aether/cli/cluster/ClusterDrainCommand.java`
 - `aether/cli/src/main/java/org/pragmatica/aether/cli/cluster/ClusterDestroyCommand.java`
 - `aether/cli/src/main/java/org/pragmatica/aether/cli/cluster/ClusterStatusCommand.java`
-- `aether/node/src/main/java/org/pragmatica/aether/node/AetherNode.java` (set provider on lifecycle write)
 
 **Effort:** ~2 days
 
@@ -1360,7 +1283,7 @@ aether cluster migrate --config reverse-migration.toml
 - `aether/environment-integration/src/main/java/org/pragmatica/aether/environment/LoadBalancerProvider.java` -- Load balancer SPI
 - `aether/environment-integration/src/main/java/org/pragmatica/aether/environment/DiscoveryProvider.java` -- Peer discovery SPI
 - `aether/environment-integration/src/main/java/org/pragmatica/aether/environment/EnvironmentError.java` -- Sealed error hierarchy
-- `aether/slice/src/main/java/org/pragmatica/aether/slice/kvstore/AetherValue.java` -- KV-Store types including NodeLifecycleValue
+- `aether/slice/src/main/java/org/pragmatica/aether/slice/kvstore/AetherValue.java` -- KV-Store value types (cluster config, deployment specs, slice/partition placements -- not node membership/readiness)
 - `aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/ClusterTopologyManager.java` -- Cluster topology reconciliation
 - `aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/NodeLifecycleManager.java` -- Cloud instance lifecycle operations
 - `aether/cli/src/main/java/org/pragmatica/aether/cli/cluster/ClusterDrainCommand.java` -- Existing drain CLI command

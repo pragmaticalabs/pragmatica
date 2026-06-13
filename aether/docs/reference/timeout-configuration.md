@@ -47,6 +47,8 @@ All configurable timeouts in a single table, grouped by TOML section.
 |----------|---------|-------------|
 | `retry_delay` | `200ms` | Delay between HTTP forwarding retries |
 | `max_retries` | `3` | Maximum number of forwarding retry attempts |
+| `app_timeout` | `5s` | Per-attempt timeout for application HTTP request forwarding to the target node |
+| `management_timeout` | `5s` | Per-attempt timeout for management API request forwarding (task-group / any-core targets) |
 
 ### `[timeouts.deployment]`
 
@@ -164,7 +166,6 @@ These timeouts live outside `[timeouts]` for historical reasons but use the same
 
 | Section | TOML Key | Default | Description |
 |---------|----------|---------|-------------|
-| `[app-http]` | `forward_timeout` | `5s` | HTTP forwarding timeout (also accepts legacy `forward_timeout_ms` in milliseconds) |
 | `[dht.replication]` | `cooldown_delay` | `10s` | Delay after node startup before upgrading to target RF (also accepts legacy `cooldown_delay_ms` in milliseconds) |
 
 ## Request Path Timeouts
@@ -175,18 +176,18 @@ When a client request arrives at an Aether node, it passes through a chain of ti
 Client Request
   |
   v
-[app-http] forward_timeout = 5s     <-- HTTP forwarding to target node
+[timeouts.forwarding] app_timeout = 5s   <-- HTTP forwarding to target node (per-attempt)
   |
   v
-[timeouts.invocation] timeout = 15s  <-- Slice method execution
+[timeouts.invocation] timeout = 15s      <-- Slice method execution
   |
   v
 [timeouts.invocation] invoker_timeout = 20s  <-- Outer wrapper (includes retry overhead)
 ```
 
-**Constraint:** `invoker_timeout` (20s) > `timeout` (15s) > `forward_timeout` (5s)
+**Constraint:** `invoker_timeout` (20s) > `timeout` (15s) > `forwarding.app_timeout` (5s)
 
-The 5-second gap between `invoker_timeout` and `timeout` accommodates retry delays and routing overhead. The `forward_timeout` is shorter because it covers only the network hop, not the execution.
+The 5-second gap between `invoker_timeout` and `timeout` accommodates retry delays and routing overhead. The forwarding timeout is shorter because it covers only the network hop, not the execution.
 
 **Retry behavior:** On invocation failure, the system retries up to `max_retries` (3) times with exponential backoff starting from `retry_base_delay` (100ms). Forwarding failures retry up to `forwarding.max_retries` (3) times with a fixed `retry_delay` (200ms). Retries on node departure are immediate (event-driven, no delay).
 
@@ -340,8 +341,8 @@ slice_cooldown = "5s"
 dashboard_broadcast = "500ms"
 event_loop_probe = "50ms"
 
-[app-http]
-forward_timeout = "3s"
+[timeouts.forwarding]
+app_timeout = "3s"
 ```
 
 ### High-Throughput Profile
@@ -444,7 +445,7 @@ Certain timeouts have ordering constraints. Violating these constraints may caus
 | Constraint | Reason |
 |------------|--------|
 | `invoker_timeout` > `invocation.timeout` | Invoker wraps invocation; must allow time for retries |
-| `invocation.timeout` > `app-http.forward_timeout` | Forwarding is one step within invocation |
+| `invocation.timeout` > `forwarding.app_timeout` | Forwarding is one step within invocation |
 | `worker.heartbeat_timeout` > `worker.heartbeat_interval` | Must allow at least one heartbeat cycle |
 | `swim.suspect_timeout` > 2 x `swim.period` | Node needs at least two probe rounds before being declared dead |
 | `swim.period` > `swim.probe_timeout` | Probe must complete within a single round |

@@ -1,6 +1,6 @@
 # Aether Feature Catalog
 
-Comprehensive inventory of all Aether distributed runtime capabilities.
+Comprehensive inventory of all Aether Unified Application Runtime capabilities.
 
 **Status legend:**
 - **Battle-tested** — Proven through multi-node E2E tests with failure injection (node kills, partitions, leader failovers)
@@ -18,7 +18,8 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 1 | Blueprint management | Battle-tested | Declarative TOML-based deployment specs with dependency ordering, validation, pub-sub orphan detection, and status tracking |
 | 2 | Slice lifecycle | Battle-tested | Full state machine: DOWNLOADING, LOADING, STARTING, ACTIVE, UNLOADING, UNLOADED, FAILED. Per-node tracking via KV-Store |
 | 3 | Unified deployment strategies | Battle-tested | Single `aether deploy` command and `/api/deploy` endpoint supporting immediate, canary (progressive traffic shift with auto-evaluation), blue-green (atomic switchover with instant rollback), and rolling (weighted traffic shifting with health thresholds) strategies. Includes promote, rollback, complete lifecycle, cleanup policies |
-| 4 | Auto-healing | Battle-tested | Bidirectional convergence: scale-up (provision replacements) and scale-down (terminate surplus). Node selection: empty-nodes-first, most-recent, never-self. CAS-based state transitions. Separate configured vs desired size for future blue-green support. Leader-only with failover |
+| 4 | Auto-healing | Battle-tested | Bidirectional convergence with metadata-aware scheduling: spot-first, host-spread, zone-balanced provisioning. PlacementHint-driven node placement. Node labels (hostname, zone, instance-type, pool) propagated via Hello handshake. CAS-based state transitions. Leader-only with failover. Cross-provider cluster-identity inheritance: replacement nodes receive the cluster-identity env allow-list (`AETHER_CLUSTER_NAME`, `AETHER_CLUSTER_SECRET`, `AETHER_PROVISIONED_BY`, `AETHER_API_KEY`; Docker also `AETHER_DOCKER_NETWORK`/`DOCKER_GID`) — Docker via `-e`, cloud via cloud-init userData (Azure now honors customData). Replacements reach READY in the leader's view; a replacement killed inside its joining window is re-provisioned. **Membership convergence is FSM-counted (#68/#94):** `LeaderReconciler` counts the per-member `MembershipFsm.countedMembers()` (MEMBER+SUSPECT), not NTT's presence set — a transient-SUSPECT replacement is never de-counted, eliminating the over-provisioning churn; NTT's debounced down-hysteresis crossing is routed into the FSM (`onDownHysteresisMet`) to bound SUSPECT (spec I4) so a sustained-absence node still departs once. **Membership-FSM unification (#68 storm root):** the FSM is now the single per-node membership authority every consumer reads (consensus broadcast targets `broadcastEligibleMembers()` not the transport peer cache — fixes the consensus dead-ULID retry-storm; quorum/forward-routing/DHT/quiesce-health all read the FSM); nodes self-describe `source`/`role` as SWIM labels; `NodeTopologyTracker` renamed `PresenceSampler` (debounce sensor). See [`membership-fsm-unification-spec.md`](../specs/membership-fsm-unification-spec.md) |
+| 4a | Terminal-removal lifecycle (restart-disabled invariant) | Complete | A dead NodeId NEVER returns under the same identity: departure terminally removes the NodeId and recovery is always a brand-new node with a new ULID NodeId minted by auto-heal. **Container/process auto-restart MUST be disabled** for aether-node (`--restart no` / `restart: "no"` / `restartPolicy: Never` / systemd `Restart=no`) — auto-restarting under the same identity resurrects a terminally-removed NodeId and corrupts membership. Enforced in cloud-init (`UserDataTemplate` → `docker run --restart no`), systemd unit (`SystemdUnitTemplate` → `Restart=no`), and all node compose files (`restart: "no"`). See `aether/docs/operator/deployment-recovery.md` |
 | 5 | Classloader isolation | Complete | Per-slice classloader prevents dependency conflicts between slices |
 | 6 | Manifest versioning | Complete | Envelope format versioning (v1-v6) for backward-compatible manifest evolution |
 | 66 | Compile-time serde | Complete | `@Codec` annotation processor generates `*Codec` classes for records, enums, and sealed interfaces with recursive nested type scanning. `SliceCodec` wire format with deterministic hash-based tags, VLQ encoding, zero runtime reflection. Replaces Fory/Kryo for slice boundary serialization |
@@ -51,6 +52,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 15 | Quorum state management | Battle-tested | Monotonic-sequenced quorum notifications, graceful degradation on quorum loss, automatic restoration |
 | 16 | Topology management | Battle-tested | Node discovery, addition/removal events, health tracking, grace period for departures |
 | 17 | Distributed KV-Store | Battle-tested | Consensus-replicated store with typed keys (SliceNode, SliceTarget, HttpRoute, AppBlueprint, VersionRouting, RollingUpdate, Threshold, LogLevel, Config, TopicSubscription, NodeArtifact, NodeRoutes) |
+| 175 | ClusterGeneration choreography | Complete | Epoch-fenced cluster-wide snapshot (`ClusterGenerationSnapshot`, `Epoch`, `Spokesman`, `ClusterQuiescence`). Leader projects membership/communities/DHT partition ownership at each commit; every node caches the latest snapshot via pings and serves it locally. `GET /api/cluster/generation` (always safe), `POST /api/cluster/await-quiesced?epoch=T:C&timeout=30s` (synchronous barrier for tests/operators). CLI: `aether cluster generation`, `aether cluster await-quiesced`. Replaces retry/sleep/self-heal compensation in the integration test harness with a deterministic quiesced-await. See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) |
 
 ## Networking & Routing
 
@@ -60,10 +62,13 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 19 | Endpoint registry | Complete | Artifact-to-node mapping for slice instance tracking and load balancing |
 | 20 | Service-to-service invocation | Battle-tested | SliceInvoker with HTTP routing, load balancer selection, timeout/retry, metrics |
 | 21 | Version routing | Battle-tested | Traffic splitting between old/new versions during deployments (configurable ratio) |
-| 67 | Passive load balancer | Complete | Cluster-aware LB node (NodeRole.PASSIVE) joins cluster network, receives route table via committed Decisions, forwards HTTP via binary protocol. Smart routing, automatic failover, live topology awareness. No HTTP re-serialization. Reusable `PassiveNode<K,V>` abstraction in `integrations/cluster` |
+| 67 | Passive load balancer | Complete | Cluster-aware LB node (NodeRole.PASSIVE) joins cluster network, receives route table via committed Decisions, forwards HTTP via binary protocol. Smart routing, automatic failover, live topology awareness. No HTTP re-serialization. Management API requests forwarded to core nodes via Pipeline.MANAGEMENT demuxing |
 | 68 | NodeRole cluster membership | Complete | ACTIVE/PASSIVE roles in NodeInfo. Passive nodes excluded from quorum/leader election, receive only Decision messages via deliverToPassive() filtering |
 | 69 | HttpForwarder (reusable) | Complete | Extracted HTTP forwarding with round-robin selection, retry with backoff, node departure failover. Used by both AppHttpServer and passive LB |
-| 137 | SharedScheduler consolidation | Complete | Unified shared scheduler (min 8 platform threads) replaces per-subsystem thread pools. 10 production schedulers migrated: SWIM, CircuitBreaker, Retry, canary evaluation, heartbeat, and others |
+| 161 | Compile-time route registry | Complete | 116-route `ManagementRoute` enum with `RouteMatcher`, `RouteAssembler`, `RouteTarget` (LOCAL/ANY/TaskGroupTarget). Enum-keyed dispatch in `ManagementRouter`. All path literals eliminated from server and CLI. Compile-time safety on route add/rename |
+| 162 | Task-group-aware forwarding | Complete | `TaskGroupAssignmentRegistry` maintains `TaskGroup→NodeId` via consensus. LB forwarder routes management requests to correct task-group owner. Encrypted cloud credentials in KV-Store for auto-heal |
+| 163 | Cloud testing infrastructure | Complete | Hetzner Cloud test scripts (deploy/run/teardown), `CLOUD_MODE` in test library (SSH bastion, timeout multiplier, LB-routed operations), `aether-cloud.toml` config, private network + managed LB architecture |
+| 204 | SharedScheduler consolidation | Complete | Unified shared scheduler (min 8 platform threads) replaces per-subsystem thread pools. 10 production schedulers migrated: SWIM, CircuitBreaker, Retry, canary evaluation, heartbeat, and others |
 | 154 | Server UDP support | Complete | `Server` supports optional UDP port binding alongside TCP via `ServerConfig.withUdpPort()`. UDP DatagramChannel shares workerGroup with TCP. Foundation for SWIM integration |
 | 155 | Shared EventLoopGroups | Complete | HTTP servers share Server's boss/worker EventLoopGroups instead of creating their own. Reduces per-node thread pools from 6+ to 2 |
 | 159 | QUIC transport | Complete | QUIC-based cluster transport alongside TCP. QuicClusterNetwork, QuicClusterServer, QuicClusterClient, QuicTlsProvider, QuicTransportMetrics. 7 classes, 5 tests |
@@ -94,14 +99,14 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 32 | Artifact repository | Battle-tested | Maven-compatible, chunked storage, checksum verification (MD5/SHA1), 64MB upload limit, metadata XML generation |
+| 32 | Artifact repository | Battle-tested | Maven-compatible, chunked storage, checksum verification (MD5/SHA1), 64MB upload limit, metadata XML generation. Cross-node resolve of multi-MB artifacts (≥1MB) works: bounded chunk fan-out keeps the DHT QUIC lane under its backpressure watermark, storage releases block claims on failed write-through so retried chunk writes re-write, and the DHT lane retries backpressure to live peers rather than fast-fail-dropping (5MB cross-node resolve completes in <1s) |
 | 33 | Distributed hash table | Battle-tested | Consistent hash ring (150 vnodes, 1024 partitions), quorum R/W, anti-entropy repair (CRC32 digest exchange, migration on mismatch), re-replication on node departure (DHTRebalancer), per-use-case config via `scoped()` |
 | 34 | Configuration service | Complete | TOML-based config with runtime overrides via KV-Store, environment variable interpolation, system property fallback |
 | 105 | Hybrid Logical Clock | Complete | `integrations/hlc/` module. HlcTimestamp (48-bit microseconds + 16-bit counter packed into long), HlcClock (thread-safe, ReentrantLock), drift detection, counter overflow protection. Foundation for causal ordering |
 | 106 | DHT versioned writes | Complete | HLC-stamped puts with atomic version comparison in storage. Rejects stale writes (version ≤ current). Synchronous notification delivery via `withSuccess()` preserves causal write ordering. Full replication (`DHTConfig.FULL`) for control plane maps |
 | 107 | Centralized timeout configuration | Complete | All operator-facing timeouts externalized to `TimeoutsConfig` with 13 subsystem groups. TOML `[timeouts.*]` sections with human-readable duration strings. Legacy `_ms` fields supported with automatic migration |
-| 139 | KV-Store durable backup | Complete | Cluster metadata serialized to TOML file in local git repo. Git provides versioning, history, diffs, optional remote push. BackupService with automatic periodic + on-change triggers. REST API, CLI |
-| 140 | Hierarchical Storage Engine | Complete | Content-addressed block storage (`integrations/storage` library). SHA-256 BlockId, Memory + LocalDisk tiers with CAS-bounded capacity, write-through + tier-waterfall reads, SingleFlightCache dedup, MetadataStore, SnapshotManager, StorageReadinessGate, per-instance TOML config, ArtifactStore migration, REST + CLI management. 93 tests |
+| 206 | KV-Store durable backup | Complete | Cluster metadata serialized to TOML file in local git repo. Git provides versioning, history, diffs, optional remote push. BackupService with automatic periodic + on-change triggers. REST API, CLI |
+| 207 | Hierarchical Storage Engine | Complete | Content-addressed block storage (`integrations/storage` library). SHA-256 BlockId, Memory + LocalDisk tiers with CAS-bounded capacity, write-through + tier-waterfall reads, SingleFlightCache dedup, MetadataStore, SnapshotManager, StorageReadinessGate, per-instance TOML config, ArtifactStore migration, REST + CLI management. 93 tests |
 
 ## Observability & Metrics
 
@@ -115,7 +120,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 40 | Dynamic thresholds | Complete | Runtime warning/critical threshold configuration per metric |
 | 41 | Prometheus export | Battle-tested | Micrometer integration with Prometheus scrape endpoint |
 | 42 | Unified invocation observability | Complete | Sampling-based tracing + depth-to-SLF4J bridge + adaptive per-node sampling. Replaces DynamicAspect system. CLI and REST API |
-| 43 | Cluster event aggregator | Complete | Ring buffer (1000 events) collecting 11 event types (topology, leader, quorum, deployment, slice failure, network). REST API, WebSocket feed, CLI |
+| 43 | Cluster event aggregator | Complete | Collects topology, leader, quorum, deployment, slice-failure and network events as a sealed `ClusterEvent` (`@Codec`). Events now flow through the replicated `system:cluster-events:1.0.0` partition stream (cross-node visible, owner-gated emit, RF=`max(3,N-2)`, production count/byte/age retention) — replacing the earlier node-local ring buffer + KV materialized view. REST API (`/api/events`), WebSocket feed, CLI. See #205 |
 
 ## Resource Provisioning
 
@@ -124,10 +129,11 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 44 | SPI resource factories | Complete | ServiceLoader discovery, config-driven provisioning, type-safe qualifiers |
 | 45 | Database resources | Complete | JDBC, R2DBC, jOOQ, jOOQ-R2DBC, jOOQ-async, JPA, postgres-async (native async + R2DBC adapter) with connection pooling, query pipelining, configurable IO threads, transaction management, and LISTEN/NOTIFY |
 | 45a | Aether Store — PostgreSQL persistence | Complete | `@PgSql` type-safe persistence with compile-time SQL validation against migration-derived schema. Validates parameter types, return field mappings, column existence, NOT NULL coverage. Generates CRUD from method names (Spring Data conventions). 41-rule migration linter, record/enum codegen, named parameter rewriting, query narrowing, record expansion (INSERT VALUES + UPDATE SET). `pg-maven-plugin` for schema → Java generation. CLI scaffolding via `jbct add persistence` |
+| 45b | jOOQ XML schema export | Complete | `JooqXmlExporter` generates jOOQ `XMLDatabase` input from pg-tools static analysis. Maven goals: `export-jooq-xml` + `check-jooq-xml`. 25+ PG type mappings, enums, domains, indexes, multi-schema. No jOOQ dependency — hand-written StAX emission |
 | 46 | HTTP client resource | Complete | Configurable outbound HTTP with timeouts, retries, SSL/TLS, Jackson integration |
 | 47 | Interceptor framework | Complete | Method-level interceptors: retry, circuit breaker, rate limit, logging, metrics. Runtime enable/disable |
 | 48 | Runtime extensions | Complete | `registerExtension()` for injecting runtime components into resource factories |
-| 161 | PgNotification subscriber | Complete | Slice-level PostgreSQL LISTEN/NOTIFY subscription. PgNotification, PgNotificationSubscriber, PgNotificationConfig in slice-api; NotificationListenerFactory in db-async |
+| 209 | PgNotification subscriber | Complete | Slice-level PostgreSQL LISTEN/NOTIFY subscription. PgNotification, PgNotificationSubscriber, PgNotificationConfig in slice-api; NotificationListenerFactory in db-async |
 
 ## Cloud Integration
 
@@ -158,13 +164,26 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 |---|---------|--------|-------------|
 | 49 | REST management API | Battle-tested | 60+ endpoints across 13 route classes: status, health, blueprints, slices, scaling, rolling updates, config, thresholds, alerts, aspects, logging, TTM, invocation metrics, controller config, node lifecycle |
 | 50 | Interactive CLI | Complete | Batch and REPL modes. Commands: status, nodes, slices, routes, metrics, health, scale, artifact, blueprint, deploy, invocation-metrics, controller, alerts, thresholds, aspects, traces, observability, config, logging, events, node lifecycle/drain/activate/shutdown |
+| 213 | Cluster init wizard | Complete | `aether cluster init` interactive wizard + batch-mode flags generating a ready-to-bootstrap `cluster-config.toml`. All 4 deployment targets (Docker / SSH / Cloud / Forge), topology auto-derive (refuses N<3, requires odd core), firewall presets (Standard / Restrictive / Open / Custom), TLS auto-generate vs env-var, optional database, offline IP auto-detect for restrictive admin CIDR. Shared `Prompt` utility consolidates 3 ad-hoc stdin readers. 67 tests across 6 classes. |
 | 51 | WebSocket streams | Complete | `/ws/dashboard` (metrics), `/ws/status` (cluster state), `/ws/events` (real-time cluster events with delta broadcasting) |
 | 52 | Dynamic log levels | Complete | Runtime log level adjustment per logger via KV-Store. CLI and API control |
 | 53 | E2E test framework | Battle-tested | Testcontainers-based cluster testing with 10 test classes on bridge networking. Container DNS for inter-node communication, network partition/disconnect/reconnect support |
 | 76 | Forge integration tests | Battle-tested | In-process EmberCluster tests: 16 test classes covering cluster formation, node failure, chaos, rolling updates, pub-sub delivery, invocation metrics, graceful shutdown, network partitions |
-| 136 | Docker scaling test infrastructure | Complete | 5-core + 7-worker Docker Compose setup with phase-based orchestrator, k6 load tests, Maven protocol artifact upload |
-| 146 | In-memory streaming | Complete | StreamPublisher/StreamSubscriber/StreamAccess API, OffHeapRingBuffer, StreamPartitionManager, ResourceFactory SPI, StreamConsumerAdapter, CDM stream creation + consumer wiring, consensus cursor checkpointing, annotation processor (envelope v7), consumer runtime with configurable retries, dead-letter handler, REST API, CLI |
-| 147 | Declarative cluster management | Complete (Phase 1) | TOML-based cluster config, 12-step bootstrap orchestrator, cluster registry, CLI commands, Management API |
+| 136 | Docker integration test infrastructure | Battle-tested | 5-node cluster + passive LB via Docker Compose. Chaos tests (19/19): kill, leader re-election, multi-kill quorum, kill-under-load with 0% error rate through LB, auto-heal provisioning. Scaling tests (16/16): quorum safety rejection, scale-up 5→7 (2s), scale-down 7→5 under load (34s). All management API traffic routed through LB via QUIC forwarding |
+| 146 | In-memory streaming | Complete | StreamPublisher/StreamSubscriber/StreamAccess API, OffHeapRingBuffer with EvictionPolicy (DROP_OLDEST/REJECT_WHEN_FULL), StreamPartitionManager, ResourceFactory SPI, StreamConsumerAdapter with zero-copy MemorySegment reads, CDM stream creation + consumer wiring, push notification (appendListeners), adaptive polling (1ms-50ms backoff), producer batching API, cursor persistence (push + pull), consumer timeout (60s auto-unsubscribe), REST API (create/list/get/publish/read/delete/consumers), CLI. Off-heap allocation is floor-reserve + lazy segmented growth (256 KiB segments, grow-to-cap), CAS budget accounting against a 128 MB per-node pool, loud STREAM_MEMORY_EXCEEDED + ClusterEvent on exhaustion (#96). |
+| 137 | Cross-node stream routing | Complete | Direct QUIC publish forwarding via `StreamForwardMessage` protocol. Producers on any node publish to any partition — no HTTP overhead, binary correlation with 5s timeout. Local path unchanged (~1-5us) |
+| 138 | Consumer group coordination | Complete | KV-Store-backed `ConsumerGroupCoordinator` (leader-side round-robin assignment) + `ConsumerGroupRegistry` (read-side mirror via KV notifications). Join/leave/status API endpoints. Automatic rebalance on topology change |
+| 139 | Sync replication ack | Complete | `replicateAndAwait(minSyncReplicas)` waits for N replica acks. Configurable via `StreamConfig.minSyncReplicas`. PendingAck correlation with timeout |
+| 140 | Batch replication | Complete | `ReplicationBatcher` accumulates events per partition (100 events or 1ms window), sends single `ReplicateEvents` message. 10-50x QUIC message reduction |
+| 141 | Consumer read-preference | Partial | `ReadPreference` enum (GOVERNOR/ANY_REPLICA/NEAREST) exposed on read endpoint and selected via `PartitionedStreamAccess.readWithPreference()`. **Remote replica reads not yet implemented** — `selectReplicaAndRead()` picks a caught-up replica but falls back to local read (Phase 2 scope; see `PartitionedStreamAccess.java:278`) |
+| 142 | Segment compression | Complete | LZ4 and ZSTD compression for sealed segments via `CompressionCodec` infrastructure. Per-stream `StreamConfig.compression`. Metadata in SegmentRef |
+| 143 | Segment encryption | Complete | AES-256-GCM encryption for sealed segments via `BlockEncryptor`. Per-stream `StreamConfig.encryptionKeyId`. IV prepended to ciphertext |
+| 144 | Transactional cursor commits | Complete | `PgTransactionalCursorCommit` wraps cursor UPSERT + business logic in single PostgreSQL transaction. Exactly-once semantics |
+| 145 | Compound retention | Complete | `RetentionMode.ALL`/`ANY` combinators for time + count + size policies. TOML-configurable via `retention-mode` |
+| 204 | Stream namespaces & addressing | Complete | Streams addressed by fully-qualified `(namespace, stream, version)` (`StreamAddress`, `MAJOR.MINOR.PATCH` `StreamVersion`). Consensus-replicated `StreamRegistryKey` (namespaced, refcount) + locally-hydrated `StreamConfigKey` (flat config/retention/partitions) registries — non-governor nodes serve metadata from replicated state (#215). Namespaced `/api/streams/*` + `/api/stream-namespaces/*` route surface; `aether stream` CLI group (list/show/tail/delete/group create+delete). `system:*` HTTP writes rejected with 405 regardless of role. Active replica-set controller maintains RF for all streams via HRW placement on membership change; catch-up backfill; app-stream replication + write-forwarding |
+| 205 | Replicated cluster-event stream | Complete | `system:cluster-events:1.0.0` moved from a node-local KV/ring-buffer materialized view to a **replicated partition stream** with cross-node visibility. Sealed `ClusterEvent` record (`@Codec`), owner-gated emit (HRW owner of partition 0 only), off-heap partition transport, RF=`max(3, N-2)`. Production retention by count + bytes + age (`CLUSTER_EVENTS_MAX_COUNT/BYTES/AGE_MS`, `CLUSTER_EVENTS_EVENT_SIZE_BYTES`). Stream lifecycle events (STREAM_REGISTERED/DELETED) deferred to RC2. Off-heap retention default lowered 64→16 MB so it no longer starves the app-stream budget (#96). |
+| 216 | Pub/sub topic namespaces & addressing | Complete | Pub/sub topics addressed by fully-qualified `(namespace, topic, version)` (`TopicAddress`, `MAJOR.MINOR.PATCH` `TopicVersion`) — the topic-flavored view of the shared `ResourceAddress` abstraction that also backs streams (#204), so both surfaces share one grammar, version model and `system`-namespace reservation. Namespace derived from the publishing slice's blueprint Maven coordinates (`groupId.artifactId`) with back-compat for bare/legacy names (lifted to `default:<topic>:1.0.0` pre-deploy); explicit `namespace:topic:version` declarations accepted verbatim in slice config. `TopicSubscriptionKey` is namespaced and round-trips; `PubSubValidator` rejects the reserved `system:*` namespace for app topics (mirrors `StreamResourceValidator`). Topology/observability (`/api/slices/topology`, dashboard) keys topic node identity and cross-slice pub/sub matching on the resolved canonical address. No dedicated topic HTTP route or CLI surface today (pub/sub is in-process, declaration-driven) — operator visibility is via the topology graph |
+| 147 | Declarative cluster management | Complete | TOML-based cluster config, 6-phase bootstrap orchestrator with state persistence/resume/cleanup, pre-flight validation with `--full-check`, dual KV-Store entries (TEMPLATE/CURRENT), parallel health checks, VM tagging, forge health gate, floating IP attachment, apply orchestrator with rolling restart, replace-before-retire, `--resume`/`--rollback`, terraform-style plan confirmation |
 | 58 | Web dashboard | Critical | Forge dashboard complete (cluster visualization, load generation, chaos injection, metrics, scaling events, deployment timing). **Node management dashboard requires significant work** — missing: observability depth UI, invocation trace viewer, log level management UI, storage management UI, streaming dashboard, worker pool visualization. **Requires major development effort.** |
 
 ## Developer Tooling
@@ -175,14 +194,14 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 55 | JBCT compliance | Complete | Format linting, return type validation, pattern checking, factory naming conventions. Maven plugin |
 | 56 | Envelope format versioning | Complete | `ENVELOPE_FORMAT_VERSION` in ManifestGenerator with runtime compatibility check |
 | 57 | Forge simulator | Battle-tested | Standalone cluster simulator with load generation (constant/ramp/spike), chaos injection, visual dashboard, REST API |
-| 77 | Topology graph | Complete | Compile-time topology extraction (envelope v6): HTTP routes, resources, pub-sub topics from `.manifest` files. REST `GET /api/topology`, WebSocket `INITIAL_STATE`. Swim-lane SVG layout with Manhattan routing, HSL color-coded topic groups, hover highlighting, search filtering |
+| 77 | Topology graph | Complete | Compile-time topology extraction (envelope v6): HTTP routes, resources, pub-sub topics from `.manifest` files. REST `GET /api/slices/topology`, WebSocket `INITIAL_STATE`. Swim-lane SVG layout with Manhattan routing, HSL color-coded topic groups, hover highlighting, search filtering |
 | 78 | `jbct add-slice` command | Complete | Scaffolds a new slice into an existing project: creates interface, test, routes.toml, config, and dependency manifest |
 | 79 | IDE plugins | Planned | Slice development plugins for IntelliJ IDEA (native), VS Code, Eclipse, NetBeans. Shared LSP backend for routes.toml support, JBCT diagnostics, TOML schema validation |
-| 138 | Core value objects | Complete | Reusable validated value objects in `org.pragmatica.lang.vo`: Email, Url, NonBlankString, Uuid, IsoDateTime |
-| 141 | GitHub Issues as worklog | Complete | GitHub Issues adopted as primary work tracking and project log |
+| 205 | Core value objects | Complete | Reusable validated value objects in `org.pragmatica.lang.vo`: Email, Url, NonBlankString, Uuid, IsoDateTime |
+| 208 | GitHub Issues as worklog | Complete | GitHub Issues adopted as primary work tracking and project log |
 | 158 | V1.0.0 roadmap | Complete | Evolutionary implementation protocol with phased milestones, feature prioritization, and release criteria for Aether 1.0 |
-| 162 | JBCT code formatter | Complete | CST-based Java code formatter (`jbct-format` module). Records, enums, switch expressions, text blocks, chain alignment, multiline parameters, ternary operators, lambdas, comments. 17 golden test files |
-| 163 | JBCT compliance scorer | Complete | Numeric JBCT compliance scoring (`jbct-core/score`). ScoreCalculator, ScoreResult, ScoreCategory, RuleCategoryMapping |
+| 210 | JBCT code formatter | Complete | CST-based Java code formatter (`jbct-format` module). Records, enums, switch expressions, text blocks, chain alignment, multiline parameters, ternary operators, lambdas, comments. 17 golden test files |
+| 211 | JBCT compliance scorer | Complete | Numeric JBCT compliance scoring (`jbct-core/score`). ScoreCalculator, ScoreResult, ScoreCategory, RuleCategoryMapping |
 | 164 | JBCT project scaffolding | Complete | Full project initialization (`jbct-init` module). ProjectInitializer, SliceProjectInitializer, PersistenceAdder, EventAdder, AiToolsInstaller, self-upgrade mechanism. 17 classes, 4 test classes |
 | 165 | Property-based testing | Complete | Property-based testing library (`testing` module). PropertyTest, Arbitrary, Shrinkable, Shrinkers, RandomSource. 7 classes, 3 tests |
 
@@ -219,14 +238,15 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 89 | SWIM gossip encryption | Complete | AES-256-GCM encryption for SWIM protocol messages with dual-key rotation support |
 | 90 | Certificate lifecycle | Complete | CertificateRenewalScheduler with automatic renewal at 50% validity, gossip key rotation via consensus KV store |
 | 91 | TLS default for containers | Complete | TLS enabled by default for DOCKER and KUBERNETES environments (LOCAL remains plain for development) |
-| 92 | RBAC — per-route security | Complete | Per-route security via routes.toml `[security]` section (public/authenticated/role:name), type-safe SecurityPolicy with `canAccess()`, route-level enforcement in AppHttpServer, Principal/SecurityContext injection in handlers, blueprint operator overrides with strengthen_only policy, security metadata in KV-Store, dashboard security badges, security denial metrics |
+| 92 | RBAC — per-route security | Complete | Per-route security via routes.toml `[security]` section (public/authenticated/role:name), type-safe SecurityPolicy with `canAccess()` and deny-by-default for unknown values, route-level enforcement in AppHttpServer, Principal/SecurityContext injection in handlers, blueprint operator overrides with strengthen_only policy, security metadata in KV-Store, dashboard security badges, security denial metrics |
+| 203 | Security hardening (RC1) | Complete | QUIC cluster transport mandates a real `TlsConfig` with deterministic CA derived from `AETHER_CLUSTER_SECRET` — no plaintext mode, no `AETHER_INSECURE_DEV_MODE` escape hatch, ALPN `"aether-cluster/1"` pinned. Dev-mode (`AETHER_INSECURE_DEV_MODE`) is refused at node startup when operator TLS certificates are configured (`TlsConfig.hasProvidedCertificates()`), and is propagated to replacements only when present (isolated, not in the cluster-identity allow-list). Node startup also aborts when cluster name is missing/empty. PostgreSQL `InsecureTrustManagerFactory` still gated behind an explicit system-property opt-in. Cloud config `toString()` redacts secrets. SQL injection prevention in PG LISTEN/UNLISTEN. SSH command injection prevention via image name validation. Bootstrap API key stored to file with 600 permissions instead of stdout. Docker Compose uses random fallback secret |
 
 ## Embeddable Runtime
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
 | 73 | Ember embeddable cluster | Complete | Headless cluster runtime extracted from Forge as `aether/ember/` module. Fluent builder API: `Ember.cluster(5).withH2().start()`. Programmatic lifecycle management via `EmberInstance` |
-| 74 | Remote Maven repositories | Complete | Resolve slices from Maven Central or private Nexus. SHA-1 verification, local `~/.m2/repository` cache, `settings.xml` auth |
+| 74 | Remote Maven repositories | Complete | Resolve slices from Maven Central or private Nexus. SHA-256 verification (SHA-1 fallback), mandatory checksums, XXE-hardened XML parsing, local `~/.m2/repository` cache, `settings.xml` auth |
 | 75 | Load Balancer | Complete | Standalone `aether/lb/` module. Round-robin routing, active health checking, automatic retry, X-Forwarded-* headers, hop-by-hop stripping |
 
 ## Worker Pools
@@ -269,15 +289,40 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 64 | Per-route rate limiting | Planned | Per-HTTP-route rate limiting via blueprint or management API. Token bucket or sliding window. Cluster-aware distributed counters |
-| 65 | Spot instance support | Planned | Elastic pool of spot/preemptible instances for cost-optimized scaling. Core (on-demand) + elastic (spot) pools |
-| 66 | Cluster expense tracking | Planned | Real-time cost visibility from cloud billing APIs. Per-node, per-slice, per-request cost derivation. Budget alerts |
+| 200 | Per-route rate limiting | Planned | Per-HTTP-route rate limiting via blueprint or management API. Token bucket or sliding window. Cluster-aware distributed counters |
+| 201 | Spot instance support | Planned | Elastic pool of spot/preemptible instances for cost-optimized scaling. Core (on-demand) + elastic (spot) pools |
+| 202 | Cluster expense tracking | Planned | Real-time cost visibility from cloud billing APIs. Per-node, per-slice, per-request cost derivation. Budget alerts |
 | 70 | Aether runtime rolling upgrade | Partial | Phase 1: `POST /api/cluster/upgrade` endpoint and CLI. Full rolling orchestration deferred to Phase 2 |
 | 71 | Email notification resource | Complete | `integrations/net/smtp` (async Netty SMTP client), `integrations/email-http` (HTTP sender with SendGrid/Mailgun/Postmark/Resend SPI), `aether/resource/notification` (ResourceFactory + @Notify qualifier). 57 tests |
-| 79 | IDE plugins | Planned | Slice development plugins for IntelliJ IDEA, VS Code, Eclipse, NetBeans. Shared LSP backend |
 | 157 | Per-blueprint artifact scoping (Tier 2) | Planned | Per-blueprint SliceTargetKey scoping for multi-tenant clusters. Prerequisite: Tier 1 (#102) |
 | 174 | DigitalOcean cloud integration | Planned | DigitalOcean compute, discovery, load balancer providers. Spec exists |
-| 175 | Fluid cross-environment migration | Planned | Cross-environment migration protocol. Spec exists |
+| 212 | Fluid cross-environment migration | Planned | Cross-environment migration protocol. Spec exists |
+| 176 | Application config provisioning | Complete | `@ResourceQualifier(type = ConfigurationSection.class)` pattern. Compile-time parser generation via `Result.all()`. Three-source merge (bundled + aether.toml + KV-Store). Runtime notification via single-threaded executor with record diff. ACTIVATE integration |
+| 177 | ContentStore resource | Complete | `@ContentStoreQualifier` annotation, `ContentStoreFactory` SPI. AHSE-backed content-addressable storage with chunking and compression |
+| 178 | Cloud certificate adapters | Complete | AWS (ACM/Secrets Manager), GCP (Certificate Manager), Azure (Key Vault) via `CertificateProvider` SPI. `CloudCertificateProvider` shared implementation |
+| 179 | Streaming retention enforcement | Complete | Scheduled `RetentionEnforcer` with compound retention policy evaluation (ALL/ANY mode), scans SegmentIndex, removes expired segments from AHSE |
+| 180 | Streaming failover recovery | Complete | `StreamingCoordinator.activate()` triggers `GovernorFailoverHandler` for all stream partitions. Watermark-based catchup from AHSE segments + replica watermarks |
+| 181 | Stream memory management | Complete | Configurable `STREAM_MAX_MEMORY_BYTES` (default 128MB), `aether.streams.memory.used.ratio` Micrometer gauge, STRONG streams require AHSE (EvictionListener != NOOP) |
+| 185 | Consumer cursor persistence | Complete | `CursorStore` persists consumer group cursors in AHSE via named references (`aether-stream/segment/CursorStore.java`) |
+| 186 | Node metadata labels | Complete | `NodeInfo.labels` (hostname, zone, instance-type, pool) propagated via Hello handshake. Bootstrap from environment |
+| 187 | PlacementHint provisioning | Complete | `ZoneHint`, `HostGroupHint`, `AffinityHint`, `AntiAffinityHint` in `ProvisionSpec`. Cloud providers respect zone placement |
+| 188 | Same-version deploy rejection | Complete | Strategy deploys rejected when oldVersion == newVersion. `/api/blueprints/publish` for register-without-deploy |
+| 189 | Disruption budget enforcement | Complete | Drain endpoint checks quorum-based minAvailable before allowing transition to DRAINING |
+| 190 | Tiered stream reader | Complete | `TieredStreamReader` reads across in-memory ring buffer and sealed storage tiers. Async prefetch of next segment when reading near tail. `aether-stream/segment/TieredStreamReader.java`, test `TieredStreamReaderTest.java` |
+| 191 | PostgreSQL stream backend | Complete | `PgStreamStore`, `PgSegmentSink`, `PgCursorStore` provide cold-tier storage and persistent cursor commits for streams. Phase 3 backend. `aether-stream/pg/`, tests `PgStreamStoreTest`, `PgSegmentSinkTest`, `PgCursorStoreTest` |
+| 192 | Stream consensus publish path | Complete | STRONG-consistency publish via Rabia consensus: `ConsensusPublishPath`, `ConsensusProposer`, `StreamConsensusCommand`. Test: `ConsensusPublishPathTest`. `aether-stream/consensus/` |
+| 193 | Stream dead-letter handling | Complete | `DeadLetterHandler` SPI with in-memory default for events exceeding retry limits or failing decode. Test: `DeadLetterHandlerTest`. `aether-stream/` |
+| 194 | API key rotation | Complete | `aether cluster rotate-key` generates new key, pushes to KV-Store, marks old REVOKED with grace period, updates local file. Multi-key auth via `KvStoreApiKeyValidator`. Zero-downtime rotation |
+| 195 | API key revocation | Complete | `aether cluster revoke-key <keyId> [--immediate]`. Grace period (default 5m) for in-flight requests. `aether cluster list-keys [--audit]` for status and history |
+| 196 | API key audit trail | Complete | All key operations (create, rotate, revoke, expire) logged as `ApiKeyAuditValue` entries in KV-Store. Periodic expiration sweep (60s) on leader |
+| 197 | Bootstrap resource tracking | Complete | `CreatedResource` sealed interface tracks VMs, firewall rules, floating IPs, containers, SSH configs. LIFO cleanup on failure. State persisted to `~/.aether/clusters/<name>/bootstrap-state.json` |
+| 198 | Pre-flight validation | Complete | Static validation (30+ checks from §12). Default cloud credential ping. `--full-check` for SSH reachability, Docker CLI, floating IP ownership |
+| 199 | Node config composition | Partial | 4-layer CLI-side TOML composition (global default + per-source-type default + operator override + CLI overlay), template inheritance for `node_config` subtrees, auto-detected `jdbc_url`/`async_url` per database, SSH path uses composed config. Follow-ups: #154 Docker bootstrap path, #155 cloud provisioning wiring, #156 Forge in-memory passing |
+| 200 | Cloud bootstrap end-to-end (container) | Complete | `aether cluster bootstrap` against `type=cloud` source provisions Hetzner VMs, runs cloud-init (SSH keys, Docker install, image pull), SSHes each VM after provisioning to inject finalized 3-part PEERS via `docker run`, polls `/health/live` per node, persists API key + raw TOML to KV-Store, registers cluster. Validated end-to-end on Hetzner via `aether/tests/integration/env/cloud-hetzner.toml`. `--keep-on-failure` preserves VMs for diagnosis; `--ssh-public-key` injects operator key |
+| 201 | Cloud bootstrap end-to-end (JVM) | Complete | Same as #200 but `type=jvm`: VMs install Temurin 25 from Adoptium, download `aether-node.jar` (default URL derived from `cluster.version`, optional `[runtime.jvm] jar_url` override), start via `nohup java -jar … --node-id= --port= --management-port= --peers= --config=`. SSH-back uses `pkill -f '^java -jar /opt/aether/aether-node.jar' && nohup java -jar …` to inject finalized PEERS. Validated end-to-end on Hetzner via `aether/tests/integration/env/cloud-hetzner-jvm.toml` |
+| 202 | Cloud SSH preflight | Complete | `BootstrapPhaseDeploy` polls each cloud VM with `ssh ... 'cloud-init status --wait'` (180s outer budget, 5s interval, removes successful hosts each iteration) before issuing runtime restart commands. Eliminates the "SSH up but Docker not installed yet" race on slow VMs |
+| 203 | Bootstrap resource ownership labels | Complete | All Hetzner VMs and SSH keys uploaded by `BootstrapPhaseProvision` / `BootstrapPhaseSshKey` are tagged `aether-cluster=<name>`, `aether-source=<sourceName>`, `aether-role=<role>`. `tools/cloud-reaper.sh --cluster <name>` filters by these labels for safe cluster-scoped cleanup independent of bootstrap state files |
+| 204 | Pre-pulled VM snapshot support | Partial | Idempotent cloud-init guards in `UserDataTemplate` (skip `docker pull` when image cached, skip JAR download when present). `tools/build-aether-vm-snapshot.sh` Hetzner snapshot builder with `build` / `list` / `latest` / `destroy` / `prune-old` subcommands. Snapshot id consumable via every cloud provider's existing `image` / `amiId` / `sourceImage` field — no schema change. Test runner env override (`AETHER_VM_SNAPSHOT_ID` / `AETHER_VM_SNAPSHOT_ID_JVM`). Operator doc: [`vm-snapshot.md`](../operator/vm-snapshot.md). **Partial:** builder script is Hetzner-only; AWS/GCP/Azure equivalents pending |
 
 ---
 
@@ -285,12 +330,12 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | Status | Count |
 |--------|-------|
-| Battle-tested | 24 |
-| Complete | 140 |
+| Battle-tested | 25 |
+| Complete | 169 |
 | Critical | 1 |
-| Partial | 2 |
-| Planned | 6 |
-| Total | 173 |
+| Partial | 4 |
+| Planned | 7 |
+| Total | 206 |
 
 **Critical features:**
 | Feature | Issue |
@@ -305,4 +350,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-03-31*
+*Last updated: 2026-05-01*

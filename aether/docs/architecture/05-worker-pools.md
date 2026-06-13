@@ -375,4 +375,3 @@ sequenceDiagram
 - [01-consensus.md](01-consensus.md) - Rabia protocol (core layer)
 - [04-networking.md](04-networking.md) - SWIM transport details
 - [10-security.md](10-security.md) - SWIM encryption (AES-256-GCM)
-- [Passive Worker Pools Spec](../specs/passive-worker-pools-spec.md) - Full specification

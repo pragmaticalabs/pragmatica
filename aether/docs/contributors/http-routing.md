@@ -150,8 +150,8 @@ When a forward request fails (timeout or error), the system retries with a diffe
 forwardRequestWithRetry(request, response, availableNodes, triedNodes, routeKey, requestId, retriesRemaining)
 ```
 
-**Configuration (`AppHttpConfig`):**
-- `forwardTimeoutMs` - Timeout per attempt (default: 5000ms)
+**Configuration (`TimeoutsConfig.ForwardingTimeouts`):**
+- `appTimeout` - Timeout per attempt (default: 5s)
 
 **Retry behavior:**
 1. Retry count is derived automatically from connected nodes: `connectedNodes.size() - 1` (try every available node exactly once)
@@ -214,12 +214,11 @@ private void cleanupStaleHttpRoutes() {
 ## Configuration
 
 ```java
-public record AppHttpConfig(
-    boolean enabled,
-    int port,
-    Map<String, ApiKeyEntry> apiKeys,
-    long forwardTimeoutMs    // Default: 5000ms
-) { }
+public record AppHttpConfig(boolean enabled, int port, Map<String, ApiKeyEntry> apiKeys, ...) { }
+public record TimeoutsConfig.ForwardingTimeouts(TimeSpan retryDelay,
+                                                int maxRetries,
+                                                TimeSpan appTimeout,        // default 5s
+                                                TimeSpan managementTimeout) // default 5s
 ```
 
 Retry count is derived automatically from the number of connected nodes for the route (`connectedNodes.size() - 1`), ensuring every available node is tried exactly once.

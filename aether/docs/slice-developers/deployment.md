@@ -114,6 +114,155 @@ mvn jbct:generate-blueprint -Djbct.blueprint.id="my-system:prod:2.0.0"
 mvn jbct:generate-blueprint -Djbct.blueprint.output=deploy/my-blueprint.toml
 ```
 
+## Blueprint Assembly from External Slices
+
+When teams publish slices independently (each team owns their slice as a separate Maven artifact), an ops team or platform team can assemble a deployment blueprint without writing any slice code.
+
+### Pure Assembly (Blueprint-Only Project)
+
+A project with no `src/main/java` — just a POM declaring external slice JARs as dependencies:
+
+```
+order-system-blueprint/
+├── pom.xml
+├── src/main/resources/
+│   ├── resources.toml        # resource bindings (database URLs, etc.)
+│   └── schema/
+│       └── V001__orders.sql  # schema migrations (if needed)
+```
+
+**pom.xml:**
+
+```xml
+<project>
+    <groupId>com.acme</groupId>
+    <artifactId>order-system-blueprint</artifactId>
+    <version>1.0.0</version>
+
+    <dependencies>
+        <!-- Team A's slice -->
+        <dependency>
+            <groupId>com.acme.slices</groupId>
+            <artifactId>order-processor</artifactId>
+            <version>2.1.0</version>
+        </dependency>
+        <!-- Team B's slice -->
+        <dependency>
+            <groupId>com.acme.slices</groupId>
+            <artifactId>inventory-manager</artifactId>
+            <version>1.5.0</version>
+        </dependency>
+        <!-- Team C's slice -->
+        <dependency>
+            <groupId>com.acme.slices</groupId>
+            <artifactId>notification-service</artifactId>
+            <version>3.0.0</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jbct-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals><goal>generate-blueprint</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+```
+
+**Build:**
+
+```bash
+mvn package
+```
+
+The plugin scans all dependency JARs for slice manifests (`META-INF/slice/*.manifest`), resolves inter-slice dependencies, sorts topologically, and generates the blueprint. The output blueprint JAR contains `blueprint.toml`, `resources.toml`, and schema files — no Java classes.
+
+**Deploy:**
+
+```bash
+aether blueprint deploy com.acme:order-system-blueprint:1.0.0
+```
+
+At deploy time, the Aether runtime resolves each slice artifact from Maven and loads them in dependency order.
+
+### Mixed Assembly (Local + External Slices)
+
+A project with some local `@Slice` interfaces that depend on external slices:
+
+```
+order-system/
+├── pom.xml
+├── src/main/java/com/acme/order/
+│   └── OrderProcessor.java          # local @Slice
+├── src/main/resources/
+│   ├── resources.toml
+│   └── schema/V001__orders.sql
+```
+
+```java
+@Slice
+public interface OrderProcessor {
+    Promise<OrderResult> processOrder(OrderRequest request);
+
+    static OrderProcessor orderProcessor(InventoryManager inventory,
+                                          @Sql SqlConnector db) {
+        return request -> inventory.checkStock(request.itemId())
+                                   .flatMap(stock -> persistOrder(db, request, stock));
+    }
+}
+```
+
+The `InventoryManager` parameter comes from an external slice JAR on the classpath. The annotation processor records the dependency in the manifest. At blueprint generation, the plugin discovers both:
+
+- **Local manifests** from `target/classes/META-INF/slice/` (annotation processor output)
+- **Dependency manifests** from JARs on the compile classpath
+
+Both participate in the dependency graph. The generated blueprint lists external slices before local ones that depend on them.
+
+### How It Works
+
+1. Each team publishes their slice JAR to Maven Central / Nexus (contains compiled classes + `META-INF/slice/*.manifest`)
+2. The assembly project declares slice JARs as compile dependencies
+3. `mvn jbct:generate-blueprint` discovers manifests from local build output AND dependency JARs
+4. Inter-slice dependencies are resolved and sorted topologically
+5. Blueprint JAR is packaged with `blueprint.toml` + `resources.toml` + `schema/`
+6. At deploy time, the runtime pulls individual slice JARs by their Maven coordinates
+
+### Build-Time Validation
+
+The blueprint generator performs two validations:
+
+1. **Resource config validation** — every `@ResourceQualifier(config = "X")` annotation must have a matching `[X]` section in `resources.toml`.
+
+2. **Schema migration validation** — if any slice declares a `@Sql` or `@PgSql` resource, the blueprint must include matching migration scripts:
+
+   | Annotation config | Expected migration path |
+   |-------------------|------------------------|
+   | `"database"` | `schema/V001__<name>.sql` |
+   | `"database.orders"` | `schema/orders/V001__<name>.sql` |
+
+   If the database schema is managed externally (DBA team, Liquibase, Terraform, etc.), add to `jbct.toml`:
+
+   ```toml
+   [blueprint]
+   schema = "external"
+   ```
+
+   Supported modes: `required` (default — fail build), `optional` (warn only), `external` (skip).
+
+### Notes
+
+- External slices always use default configuration. The publishing team controls slice config via their own `SliceName.toml`.
+- If a slice JAR is on the classpath, it appears in the blueprint. Dependency declaration = intent to deploy.
+- Version conflicts between transitive dependencies are resolved by Maven (standard dependency mediation).
+
 ## Deploy Scripts
 
 Generated by `jbct init --slice`:
