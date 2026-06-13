@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -5,7 +9,6 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.lang.Cause;
 
 
-/// Errors that can occur during slice invocation.
 public sealed interface SliceInvokerError extends Cause {
     record AllInstancesFailedError(Artifact artifact, MethodName method, String details) implements SliceInvokerError {
         public static AllInstancesFailedError allInstancesFailedError(Artifact artifact,
@@ -14,7 +17,8 @@ public sealed interface SliceInvokerError extends Cause {
             return new AllInstancesFailedError(artifact, method, details);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "All instances failed for " + artifact + ":" + method + " - " + details;
         }
     }
@@ -24,7 +28,8 @@ public sealed interface SliceInvokerError extends Cause {
             return new InvocationError(artifact, method, cause);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Invocation failed for " + artifact + ":" + method + ": " + cause.message();
         }
     }
@@ -34,7 +39,8 @@ public sealed interface SliceInvokerError extends Cause {
             return new NoEndpointsError(artifact, method);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "No endpoints available for " + artifact + ":" + method;
         }
     }
@@ -44,7 +50,8 @@ public sealed interface SliceInvokerError extends Cause {
             return new MethodHandleError(artifact, method, reason);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Failed to create method handle for " + artifact + ":" + method + " - " + reason;
         }
     }
@@ -54,7 +61,8 @@ public sealed interface SliceInvokerError extends Cause {
             return new SerializationError(details);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Serialization error: " + details;
         }
     }
@@ -64,7 +72,8 @@ public sealed interface SliceInvokerError extends Cause {
             return new TimeoutError(artifact, method, timeoutMs);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Timeout after " + timeoutMs + "ms waiting for " + artifact + ":" + method;
         }
     }
@@ -74,7 +83,8 @@ public sealed interface SliceInvokerError extends Cause {
             return new RemoteInvocationError(errorMessage);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Remote invocation failed: " + errorMessage;
         }
     }

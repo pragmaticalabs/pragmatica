@@ -4,7 +4,7 @@ Pragmatica Aether is a distributed application platform for Java. It takes your 
 
 Aether occupies the space between a monolith and microservices. You write code as if it's a monolith — simple interfaces, direct method calls, no network boilerplate. The runtime handles distribution, replication, routing, and failure recovery transparently. When a node goes down, requests are retried on healthy nodes. When load increases, new instances are spun up automatically. When you deploy a new version, traffic shifts gradually with health-based rollback.
 
-The platform is built on Pragmatica Lite, a functional Java core library that enforces predictable, testable code through the JBCT (Java Backend Coding Technology) methodology. Every slice method returns a `Promise<T>` — the runtime handles the rest.
+The platform is built on Pragmatica Core, a functional Java core library that enforces predictable, testable code through the JBCT (Java Backend Coding Technology) methodology. Every slice method returns a `Promise<T>` — the runtime handles the rest.
 
 ---
 
@@ -55,7 +55,7 @@ Dependencies are validated eagerly during activation — if a required slice isn
 
 ### ClassLoader Isolation
 
-Each slice runs in its own `SliceClassLoader` with child-first delegation. Two slices can use different versions of the same library without conflict. Shared dependencies (like Pragmatica Lite core) are loaded once in a parent classloader and shared across all slices.
+Each slice runs in its own `SliceClassLoader` with child-first delegation. Two slices can use different versions of the same library without conflict. Shared dependencies (like Pragmatica Core core) are loaded once in a parent classloader and shared across all slices.
 
 ### Local Development: Forge
 
@@ -96,7 +96,7 @@ instances = 5
 Apply with one command:
 
 ```bash
-aether blueprint apply commerce.toml
+aether blueprints apply commerce.toml
 ```
 
 The runtime resolves artifacts, loads slices, distributes instances across nodes, registers routes, and starts serving traffic. To update, change the blueprint and re-apply.
@@ -425,7 +425,7 @@ Open `http://localhost:8888` for the dashboard. Deploy the URL Shortener example
 java -jar aether-node.jar --peers node1:6000,node2:6000,node3:6000
 
 # Deploy your application
-aether blueprint apply my-app.toml
+aether blueprints apply my-app.toml
 
 # Monitor
 aether status

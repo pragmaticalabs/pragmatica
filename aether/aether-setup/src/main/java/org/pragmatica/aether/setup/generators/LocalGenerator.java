@@ -1,12 +1,14 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.setup.generators;
 
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.Environment;
 import org.pragmatica.lang.Result;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.IntStream;
@@ -14,56 +16,56 @@ import java.util.stream.IntStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.io.FileOps.createDirectories;
+import static org.pragmatica.lang.io.FileOps.setPosixPermissions;
+import static org.pragmatica.lang.io.FileOps.writeString;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Generates shell scripts for local (single-machine) Aether cluster.
-///
-///
-/// Generates:
-///
-///   - start.sh - Starts all nodes as background processes
-///   - stop.sh - Stops all running nodes
-///   - status.sh - Shows status of all nodes
-///   - logs/ - Directory for node logs
-///
 public final class LocalGenerator implements Generator {
     private static final Logger log = LoggerFactory.getLogger(LocalGenerator.class);
 
-    @Override public boolean supports(AetherConfig config) {
+    @Override
+    public boolean supports(AetherConfig config) {
         return config.environment() == Environment.LOCAL;
     }
 
-    @Override public Result<GeneratorOutput> generate(AetherConfig config, Path outputDir) {
+    @Override
+    public Result<GeneratorOutput> generate(AetherConfig config, Path outputDir) {
         return Result.lift(LocalGenerator::toIoError, () -> generateScripts(config, outputDir));
     }
 
-    @SuppressWarnings("JBCT-EX-01") private GeneratorOutput generateScripts(AetherConfig config, Path outputDir) throws Exception {
-        Files.createDirectories(outputDir);
-        Files.createDirectories(outputDir.resolve("logs"));
+    @SuppressWarnings("JBCT-EX-01")
+    private GeneratorOutput generateScripts(AetherConfig config, Path outputDir) throws Exception {
+        createDirectories(outputDir).expect("create local output directory");
+        createDirectories(outputDir.resolve("logs")).expect("create local logs directory");
         var generatedFiles = new ArrayList<Path>();
         var startPath = writeScript(outputDir, "start.sh", generateStartScript(config), generatedFiles);
         var stopPath = writeScript(outputDir, "stop.sh", generateStopScript(config), generatedFiles);
+
         writeScript(outputDir, "status.sh", generateStatusScript(config), generatedFiles);
         generatedFiles.add(Path.of("logs/"));
         var instructions = formatInstructions(config, outputDir);
+
         return GeneratorOutput.generatorOutput(outputDir, generatedFiles, startPath, stopPath, instructions);
     }
 
-    @SuppressWarnings("JBCT-EX-01") private Path writeScript(Path dir, String name, String content, List<Path> files) throws Exception {
+    @SuppressWarnings("JBCT-EX-01")
+    private Path writeScript(Path dir, String name, String content, List<Path> files) throws Exception {
         var path = dir.resolve(name);
-        Files.writeString(path, content);
+
+        writeString(path, content).expect("write local script: " + name);
         makeExecutable(path);
         files.add(Path.of(name));
+
         return path;
     }
 
     private String formatInstructions(AetherConfig config, Path outputDir) {
         var nodes = config.cluster().nodes();
-        var mgmtPort = config.cluster().ports()
-                                     .management();
-        var clusterPort = config.cluster().ports()
-                                        .cluster();
+        var mgmtPort = config.cluster().ports().management();
+        var clusterPort = config.cluster().ports().cluster();
+
         return formatInstructionsText(outputDir, nodes, mgmtPort, clusterPort);
     }
 
@@ -102,10 +104,10 @@ public final class LocalGenerator implements Generator {
 
     private String generateStartScript(AetherConfig config) {
         var nodes = config.cluster().nodes();
-        var clusterPort = config.cluster().ports()
-                                        .cluster();
+        var clusterPort = config.cluster().ports().cluster();
         var peerList = buildPeerList(nodes, clusterPort);
         var nodeStarts = buildNodeStarts(nodes, config, peerList);
+
         return String.format("""
             #!/bin/bash
             set -e
@@ -134,24 +136,25 @@ public final class LocalGenerator implements Generator {
     }
 
     private String buildPeerList(int nodes, int clusterPort) {
-        return IntStream.range(0, nodes).mapToObj(i -> "localhost:" + (clusterPort + i))
-                              .reduce((a, b) -> a + "," + b)
-                              .orElse("");
+        return IntStream.range(0, nodes)
+                        .mapToObj(i -> "localhost:" + (clusterPort + i))
+                        .reduce((a, b) -> a + "," + b)
+                        .orElse("");
     }
 
     private String buildNodeStarts(int nodes, AetherConfig config, String peerList) {
-        return IntStream.range(0, nodes).mapToObj(i -> nodeStartScript(i, config, peerList))
-                              .reduce((a, b) -> a + "\n" + b)
-                              .orElse("");
+        return IntStream.range(0, nodes)
+                        .mapToObj(i -> nodeStartScript(i, config, peerList))
+                        .reduce((a, b) -> a + "\n" + b)
+                        .orElse("");
     }
 
     private String nodeStartScript(int index, AetherConfig config, String peerList) {
-        var mgmtPort = config.cluster().ports()
-                                     .management() + index;
-        var clusterPort = config.cluster().ports()
-                                        .cluster() + index;
+        var mgmtPort = config.cluster().ports().management() + index;
+        var clusterPort = config.cluster().ports().cluster() + index;
         var heap = config.node().heap();
         var gc = gcFlag(config);
+
         return formatNodeStart(index, mgmtPort, clusterPort, heap, gc, peerList);
     }
 
@@ -181,15 +184,17 @@ public final class LocalGenerator implements Generator {
     }
 
     private String gcFlag(AetherConfig config) {
-        return config.node().gc()
-                          .toUpperCase()
-                          .equals("ZGC")
-              ? "ZGC"
-              : "G1GC";
+        return config.node()
+                     .gc()
+                     .toUpperCase()
+                     .equals("ZGC")
+               ? "ZGC"
+               : "G1GC";
     }
 
     private String generateStopScript(AetherConfig config) {
         var lastNode = config.cluster().nodes() - 1;
+
         return String.format("""
             #!/bin/bash
 
@@ -215,9 +220,9 @@ public final class LocalGenerator implements Generator {
     }
 
     private String generateStatusScript(AetherConfig config) {
-        var mgmtPort = config.cluster().ports()
-                                     .management();
+        var mgmtPort = config.cluster().ports().management();
         var lastNode = config.cluster().nodes() - 1;
+
         return String.format("""
             #!/bin/bash
 
@@ -249,14 +254,11 @@ public final class LocalGenerator implements Generator {
                              mgmtPort);
     }
 
-    @SuppressWarnings("JBCT-SEQ-01") private void makeExecutable(Path path) {
-        try {
-            Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rwxr-xr-x"));
-        } catch (UnsupportedOperationException e) {
-            log.debug("Cannot set POSIX permissions on {}: {}", path, e.getMessage());
-        } catch (Exception e) {
-            log.debug("Failed to set permissions on {}: {}", path, e.getMessage());
-        }
+    @SuppressWarnings("JBCT-SEQ-01")
+    private void makeExecutable(Path path) {
+        setPosixPermissions(path, "rwxr-xr-x").onFailure(cause -> log.debug("Failed to set permissions on {}: {}",
+                                                                            path,
+                                                                            cause.message()));
     }
 
     private static GeneratorError toIoError(Throwable throwable) {

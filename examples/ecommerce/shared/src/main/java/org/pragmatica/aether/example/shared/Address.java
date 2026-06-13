@@ -15,12 +15,14 @@ public record Address(String street, String city, String state, String postalCod
                           validateField(city, "city"),
                           validateField(state, "state"),
                           validateField(postalCode, "postalCode"),
-                          validateField(country, "country"))
-        .map(Address::new);
+                          validateField(country, "country")).map(Address::new);
     }
 
     private static Result<String> validateField(String value, String fieldName) {
-        return Verify.ensure(value, Verify.Is::notBlank, _ -> BLANK_FIELD.apply(fieldName)).map(String::trim);
+        return Verify.ensure(value,
+                             Verify.Is::notBlank,
+                             _ -> BLANK_FIELD.apply(fieldName))
+                     .map(String::trim);
     }
 
     public String formatted() {

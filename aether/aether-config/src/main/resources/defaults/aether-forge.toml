@@ -1,0 +1,11 @@
+# Aether node — Forge source-type defaults (Layer 2)
+#
+# Applied for source.type = "forge" (single-JVM, in-process cluster for development).
+# Layered on top of aether-default.toml.
+
+[cluster]
+tls = false
+
+[slice]
+# Forge runs locally; resolve from the developer's local Maven repository first.
+repositories = ["local", "builtin"]

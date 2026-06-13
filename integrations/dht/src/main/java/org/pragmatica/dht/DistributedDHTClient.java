@@ -17,11 +17,15 @@
 package org.pragmatica.dht;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.utility.KSUID;
+import org.pragmatica.utility.IdGenerator;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
@@ -63,14 +67,22 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     @Override
+    public DHTConfig config() {
+        return config;
+    }
+
+    @Override
     public Promise<Option<byte[]>> get(byte[] key) {
         var targets = targetNodes(key);
         if (targets.isEmpty()) {
             return DHTError.NO_AVAILABLE_NODES.promise();
         }
-        Promise<Option<byte[]>> promise = Promise.promise();
         var quorum = config.effectiveReadQuorum(node.ring()
                                                     .nodeCount());
+        if (quorumUnreachable(targets, quorum)) {
+            return DHTError.quorumNotReached(quorum, targets.size()).promise();
+        }
+        Promise<Option<byte[]>> promise = Promise.promise();
         var collector = QuorumCollector.<Option<byte[]>>quorumCollector(quorum, targets.size(), promise);
         for (var target : targets) {
             if (target.equals(node.nodeId())) {
@@ -88,10 +100,13 @@ public final class DistributedDHTClient implements DHTClient {
         if (targets.isEmpty()) {
             return DHTError.NO_AVAILABLE_NODES.promise();
         }
-        var version = node.hlcClock().now().packed();
-        Promise<Unit> promise = Promise.promise();
         var quorum = config.effectiveWriteQuorum(node.ring()
                                                      .nodeCount());
+        if (quorumUnreachable(targets, quorum)) {
+            return DHTError.quorumNotReached(quorum, targets.size()).promise();
+        }
+        var version = node.hlcClock().now().packed();
+        Promise<Unit> promise = Promise.promise();
         var collector = QuorumCollector.<Unit>quorumCollector(quorum, targets.size(), promise);
         for (var target : targets) {
             if (target.equals(node.nodeId())) {
@@ -109,9 +124,12 @@ public final class DistributedDHTClient implements DHTClient {
         if (targets.isEmpty()) {
             return DHTError.NO_AVAILABLE_NODES.promise();
         }
-        Promise<Boolean> promise = Promise.promise();
         var quorum = config.effectiveWriteQuorum(node.ring()
                                                      .nodeCount());
+        if (quorumUnreachable(targets, quorum)) {
+            return DHTError.quorumNotReached(quorum, targets.size()).promise();
+        }
+        Promise<Boolean> promise = Promise.promise();
         var collector = QuorumCollector.<Boolean>quorumCollector(quorum, targets.size(), promise);
         for (var target : targets) {
             if (target.equals(node.nodeId())) {
@@ -129,9 +147,12 @@ public final class DistributedDHTClient implements DHTClient {
         if (targets.isEmpty()) {
             return DHTError.NO_AVAILABLE_NODES.promise();
         }
-        Promise<Boolean> promise = Promise.promise();
         var quorum = config.effectiveReadQuorum(node.ring()
                                                     .nodeCount());
+        if (quorumUnreachable(targets, quorum)) {
+            return DHTError.quorumNotReached(quorum, targets.size()).promise();
+        }
+        Promise<Boolean> promise = Promise.promise();
         var collector = QuorumCollector.<Boolean>quorumCollector(quorum, targets.size(), promise);
         for (var target : targets) {
             if (target.equals(node.nodeId())) {
@@ -160,41 +181,78 @@ public final class DistributedDHTClient implements DHTClient {
 
     // --- Response handlers (called by message router) ---
     /// Handle a get response from a remote node.
+    @Contract
     public void onGetResponse(DHTMessage.GetResponse response) {
         removePending(response.requestId())
         .onPresent(op -> castCollector(op, Option.class).onSuccess(response.value()));
     }
 
     /// Handle a put response from a remote node.
+    @Contract
     public void onPutResponse(DHTMessage.PutResponse response) {
         removePending(response.requestId())
         .onPresent(op -> {
                        if (response.success()) {
                            castCollector(op, Unit.class).onSuccess(unit());
                        } else {
-                           castCollector(op, Unit.class).onFailure(DHTError.OPERATION_TIMEOUT);
+                           failCollector(castCollector(op, Unit.class), DHTError.OPERATION_TIMEOUT);
                        }
                    });
     }
 
     /// Handle a remove response from a remote node.
+    @Contract
     public void onRemoveResponse(DHTMessage.RemoveResponse response) {
         removePending(response.requestId())
         .onPresent(op -> castCollector(op, Boolean.class).onSuccess(response.found()));
     }
 
     /// Handle an exists response from a remote node.
+    @Contract
     public void onExistsResponse(DHTMessage.ExistsResponse response) {
         removePending(response.requestId())
         .onPresent(op -> castCollector(op, Boolean.class).onSuccess(response.exists()));
     }
 
     // --- Private helpers ---
+    /// Whether quorum is arithmetically unreachable for this op: after liveness filtering, fewer
+    /// live targets remain than the required `quorum`. The `quorum` is derived from the full ring
+    /// size ([`DHTConfig#effectiveWriteQuorum`] / [`DHTConfig#effectiveReadQuorum`] capped at the
+    /// replication factor), while `targets` is the liveness-filtered subset; when a scale-down /
+    /// drain shrinks the live subset below quorum, no combination of responses can satisfy it.
+    /// Failing fast here (with [`DHTError.QuorumNotReached`], the SAME cause the failure-accrual
+    /// path raises) lets the caller's transient-failure retry kick in immediately rather than
+    /// waiting the full per-op timeout — and after Fix 1 has pruned a drained node from the
+    /// routing view, the fast retry succeeds against the remaining live replicas.
+    private static boolean quorumUnreachable(List<NodeId> targets, int quorum) {
+        return targets.size() < quorum;
+    }
+
     private List<NodeId> targetNodes(byte[] key) {
-        return node.ring()
-                   .nodesFor(key,
-                             config.effectiveReplicationFactor(node.ring()
-                                                                   .nodeCount()));
+        var ringTargets = node.ring()
+                              .nodesFor(key,
+                                        config.effectiveReplicationFactor(node.ring()
+                                                                              .nodeCount()));
+        return filterByLiveness(ringTargets);
+    }
+
+    /// Filter the static consistent-hash target list to peers currently reachable from
+    /// this node. The ring describes ownership (which replicas are responsible for the
+    /// key); reachability is decided at runtime by the transport. Pre-filtering targets
+    /// avoids stalling the `QuorumCollector` on replicas that have no chance of
+    /// responding within the per-op timeout.
+    ///
+    /// When `network.livePeers()` returns the empty set (default impl, no
+    /// connectivity-introspection adapter), the ring targets are returned unchanged —
+    /// preserving the pre-RC1 behaviour for non-cluster paths (e.g. worker DHT).
+    ///
+    /// See `aether/docs/specs/dht-resilience-spec.md` Layer 2.
+    private List<NodeId> filterByLiveness(List<NodeId> ringTargets) {
+        var live = network.livePeers();
+        if (live.isEmpty()) {return ringTargets;}
+        return ringTargets.stream()
+                          .filter(live::contains)
+                          .toList();
     }
 
     private Option<PendingOperation<?>> removePending(String correlationId) {
@@ -206,59 +264,97 @@ public final class DistributedDHTClient implements DHTClient {
         return (QuorumCollector<T>) op.collector();
     }
 
+    /// Record a failed replica response on the collector. [`QuorumCollector#onFailure`] is a
+    /// `@Contract` void mutator (it has no monadic return), so nothing is actually discarded here;
+    /// the suppression silences the textual RET-07 chain-terminal heuristic, which cannot see the
+    /// void return type.
+    @SuppressWarnings("JBCT-RET-07")
+    private static <T> void failCollector(QuorumCollector<T> collector, Cause cause) {
+        collector.onFailure(cause);
+    }
+
+    /// Route the local get Promise into the quorum collector. The Promise's outcome is fully
+    /// observed by the success/failure callbacks below; the Promise handle itself is intentionally
+    /// not retained (the collector owns resolution of the outer per-op promise).
     private void handleLocalGet(byte[] key, QuorumCollector<Option<byte[]>> collector) {
-        node.getLocal(key)
-            .onSuccess(collector::onSuccess)
-            .onFailure(collector::onFailure);
+        var _ = node.getLocal(key)
+                    .onSuccess(collector::onSuccess)
+                    .onFailure(collector::onFailure);
     }
 
     private void handleLocalPut(byte[] key, byte[] value, long version, QuorumCollector<Unit> collector) {
-        node.storage().putVersioned(key, value, version)
-            .onSuccess(_ -> collector.onSuccess(unit()))
-            .onFailure(collector::onFailure);
+        var _ = node.storage().putVersioned(key, value, version)
+                    .onSuccess(_ -> collector.onSuccess(unit()))
+                    .onFailure(collector::onFailure);
     }
 
     private void handleLocalRemove(byte[] key, QuorumCollector<Boolean> collector) {
-        node.removeLocal(key)
-            .onSuccess(collector::onSuccess)
-            .onFailure(collector::onFailure);
+        var _ = node.removeLocal(key)
+                    .onSuccess(collector::onSuccess)
+                    .onFailure(collector::onFailure);
     }
 
     private void handleLocalExists(byte[] key, QuorumCollector<Boolean> collector) {
-        node.existsLocal(key)
-            .onSuccess(collector::onSuccess)
-            .onFailure(collector::onFailure);
+        var _ = node.existsLocal(key)
+                    .onSuccess(collector::onSuccess)
+                    .onFailure(collector::onFailure);
     }
 
     private void sendRemoteGet(NodeId target, byte[] key, QuorumCollector<Option<byte[]>> collector) {
-        var correlationId = KSUID.ksuid()
-                                 .toString();
+        var correlationId = IdGenerator.generate();
         pendingOps.put(correlationId, new PendingOperation<>(collector));
-        network.send(target,
-                     new DHTMessage.GetRequest(correlationId, node.nodeId(), key));
+        dispatchTracked(target, new DHTMessage.GetRequest(correlationId, node.nodeId(), key), correlationId, collector);
     }
 
     private void sendRemotePut(NodeId target, byte[] key, byte[] value, long version, QuorumCollector<Unit> collector) {
-        var correlationId = KSUID.ksuid()
-                                 .toString();
+        var correlationId = IdGenerator.generate();
         pendingOps.put(correlationId, new PendingOperation<>(collector));
-        network.send(target,
-                     new DHTMessage.PutRequest(correlationId, node.nodeId(), key, value, version));
+        dispatchTracked(target, new DHTMessage.PutRequest(correlationId, node.nodeId(), key, value, version), correlationId, collector);
     }
 
     private void sendRemoteRemove(NodeId target, byte[] key, QuorumCollector<Boolean> collector) {
-        var correlationId = KSUID.ksuid()
-                                 .toString();
+        var correlationId = IdGenerator.generate();
         pendingOps.put(correlationId, new PendingOperation<>(collector));
-        network.send(target,
-                     new DHTMessage.RemoveRequest(correlationId, node.nodeId(), key));
+        dispatchTracked(target, new DHTMessage.RemoveRequest(correlationId, node.nodeId(), key), correlationId, collector);
     }
 
     private void sendRemoteExists(NodeId target, byte[] key, QuorumCollector<Boolean> collector) {
-        var correlationId = KSUID.ksuid()
-                                 .toString();
+        var correlationId = IdGenerator.generate();
         pendingOps.put(correlationId, new PendingOperation<>(collector));
-        network.send(target,
-                     new DHTMessage.ExistsRequest(correlationId, node.nodeId(), key));
+        dispatchTracked(target, new DHTMessage.ExistsRequest(correlationId, node.nodeId(), key), correlationId, collector);
+    }
+
+    /// Fan a request to a remote target via `sendOutcome`, and short-circuit the per-op
+    /// quorum waiting when the transport refuses synchronously.
+    ///
+    /// On `Sent` outcome: nothing else to do — the response will arrive via the regular
+    /// message-routing path and resolve the collector through `handleRemote*Response`.
+    /// On any refusal outcome: remove the pending op and call `collector.onFailure` with
+    /// an appropriate `Cause` so the `QuorumCollector` fast-fail logic (`failures > total
+    /// - quorum` → `promise.fail`) fires immediately, rather than waiting the full
+    /// per-op `operationTimeout`. This is the architectural answer to the 1MB-push hang
+    /// and 08-resources/Deploy_SQL_app slowdown — see
+    /// `aether/docs/specs/dht-resilience-spec.md` Layer 3.
+    private <T> void dispatchTracked(NodeId target, ProtocolMessage message, String correlationId, QuorumCollector<T> collector) {
+        var _ = network.sendOutcome(target, message)
+                       .onSuccess(outcome -> {
+                           if (!outcome.isSent()) {
+                               pendingOps.remove(correlationId);
+                               failCollector(collector, toCause(outcome));
+                           }
+                       })
+                       .onFailure(cause -> {
+                           pendingOps.remove(correlationId);
+                           failCollector(collector, cause);
+                       });
+    }
+
+    private static Cause toCause(WriteOutcome outcome) {
+        return switch (outcome) {
+            case WriteOutcome.Sent ignored -> DHTError.OPERATION_TIMEOUT; // unreachable; defensive default
+            case WriteOutcome.BackpressureRefused refused -> DHTError.peerUnreachable(refused.peerId(), "backpressure");
+            case WriteOutcome.ConnectionDead dead -> DHTError.peerUnreachable(dead.peerId(), "connection dead");
+            case WriteOutcome.NoPeerState nope -> DHTError.peerUnreachable(nope.peerId(), "no peer state");
+        };
     }
 }

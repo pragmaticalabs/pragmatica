@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.repository.maven;
 
 import org.pragmatica.lang.Option;
@@ -12,11 +16,13 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.option;
 
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"}) public sealed interface MavenLocalRepoLocator {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"})
+public sealed interface MavenLocalRepoLocator {
     Logger log = LoggerFactory.getLogger(MavenLocalRepoLocator.class);
 
     static String findLocalRepository() {
         var userHome = System.getProperty("user.home");
+
         return checkSystemProperty().orElse(() -> checkUserLevelSettings(userHome))
                                   .orElse(() -> checkGlobalSettings(userHome))
                                   .or(() -> defaultRepository(userHome));
@@ -44,18 +50,31 @@ import static org.pragmatica.lang.Option.option;
 
     private static Option<String> getLocalRepoFromSettings(String settingsPath) {
         var file = new File(settingsPath);
-        if (!file.exists()) {return Option.empty();}
+
+        if (!file.exists()) {
+            return Option.empty();
+        }
+
         try {
             var dbf = DocumentBuilderFactory.newInstance();
+
             dbf.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
+            dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            dbf.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            dbf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            dbf.setXIncludeAware(false);
+            dbf.setExpandEntityReferences(false);
             var db = dbf.newDocumentBuilder();
             var doc = db.parse(file);
             var nodes = doc.getElementsByTagName("localRepository");
-            if (nodes.getLength() > 0) {return option(nodes.item(0).getTextContent()
-                                                                .trim()).filter(Verify.Is::notEmpty);}
+
+            if (nodes.getLength() > 0) {
+                return option(nodes.item(0).getTextContent().trim()).filter(Verify.Is::notEmpty);
+            }
         } catch (Exception e) {
             log.debug("Failed to read Maven settings from {}: {}", settingsPath, e.getMessage());
         }
+
         return Option.empty();
     }
 
@@ -72,10 +91,16 @@ import static org.pragmatica.lang.Option.option;
     }
 
     private static String expandPath(String path, String userHome) {
-        if (path.startsWith("~" + File.separator) || path.equals("~")) {path = userHome + path.substring(1);}
-        if (path.contains("${user.home}")) {path = path.replace("${user.home}", userHome);}
+        if (path.startsWith("~" + File.separator) || path.equals("~")) {
+            path = userHome + path.substring(1);
+        }
+
+        if (path.contains("${user.home}")) {
+            path = path.replace("${user.home}", userHome);
+        }
+
         return path;
     }
 
-    record unused() implements MavenLocalRepoLocator{}
+    record unused() implements MavenLocalRepoLocator {}
 }

@@ -1,17 +1,19 @@
 package org.pragmatica.lang.concurrent;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 
 final class AtomicHolderImpl<T> implements AtomicHolder<T> {
-    private static final VarHandle VALUE;
+    private static final VarHandle VALUE = lookupValueHandle();
 
-    static {
+    @Contract
+    private static VarHandle lookupValueHandle() {
         try {
-            VALUE = MethodHandles.lookup()
-                                 .findVarHandle(AtomicHolderImpl.class, "value", Object.class);
+            return MethodHandles.lookup()
+                                .findVarHandle(AtomicHolderImpl.class, "value", Object.class);
         } catch (ReflectiveOperationException e) {
             throw new ExceptionInInitializerError(e);
         }
@@ -31,11 +33,13 @@ final class AtomicHolderImpl<T> implements AtomicHolder<T> {
         return Option.option((T) VALUE.getVolatile(this));
     }
 
+    @Contract
     @Override
     public void set(T value) {
         VALUE.setVolatile(this, value);
     }
 
+    @Contract
     @Override
     public void clear() {
         VALUE.setVolatile(this, null);

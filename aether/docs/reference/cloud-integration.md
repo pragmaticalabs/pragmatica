@@ -31,7 +31,7 @@ Add the provider module to your classpath (it registers via ServiceLoader automa
 provider = "hetzner"
 
 [cloud.credentials]
-api_token = "${env:HETZNER_API_TOKEN}"
+api_token = "${env:HCLOUD_TOKEN}"
 
 [cloud.compute]
 server_type = "cx22"
@@ -137,8 +137,28 @@ Any value in `[cloud.credentials]` or `[cloud.compute]` that matches the pattern
 
 ```toml
 [cloud.credentials]
-api_token = "${env:HETZNER_API_TOKEN}"   # Resolved from HETZNER_API_TOKEN env var
+api_token = "${env:HCLOUD_TOKEN}"   # Resolved from HCLOUD_TOKEN env var
 ```
+
+### Credential Propagation to Nodes
+
+> **Important — read before configuring cloud credentials in production.**
+
+When `aether cluster bootstrap` runs against a cluster TOML containing `credentials = "${env:...}"` for a cloud source, the placeholder is resolved on the operator's machine **before** the per-node configuration is generated. The CLI then writes the resolved literal token into each node's local `aether-config.toml` under `[cloud.credentials]` and SSHs that file to the node.
+
+Consequence: **every cluster node holds a copy of the cloud API token on disk.**
+
+Why: any core node may become the consensus leader at any time. The leader is the only node that calls `ComputeProvider.provision()` to grow the cluster on a `/api/cluster/scale` request. If only the operator machine held the token, leader-failover would silently disable runtime auto-scaling. Distributing the token to every node keeps the scale path leader-failover safe.
+
+Trade-off: compromise of any single cluster node leaks the cloud API token. The blast radius depends on how the token is scoped (see provider sections below). Mitigations:
+- **Use a dedicated project/account for the cluster** so a leaked token is contained.
+- **Restrict the token's permissions** where the provider supports it (AWS IAM, GCP service-account roles, Azure RBAC).
+- **Rotate the token periodically.** Rotation requires re-running `aether cluster bootstrap` against the existing cluster (or re-pushing per-node TOML out-of-band) so every node receives the new value.
+- **Restrict file system access** to `/etc/aether/aether-config.toml` (mode `0600`, owned by the aether process user).
+
+For higher-security deployments, configure a `[cloud.secrets]` backend (e.g., Vault, AWS Secrets Manager) and reference the credential via `${secrets:hcloud/api_token}` instead of `${env:...}`. With a secrets backend, only nodes that can authenticate to the secrets backend resolve the actual token at runtime; the per-node TOML carries the placeholder only.
+
+> **RC1 limitation:** runtime credential resolution via `${secrets:...}` for cloud auto-scaling has not been validated end-to-end. The literal-token model described above is the supported path for v1.0.0-rc1.
 
 ## Provider Configuration
 
@@ -151,6 +171,8 @@ Provider name: `hetzner`
 | Key | Required | Description |
 |-----|----------|-------------|
 | `api_token` | Yes | Hetzner Cloud API token |
+
+> **Hetzner-specific security note.** Hetzner Cloud tokens are project-scoped and grant **full read+write access** to every resource in the project (servers, networks, firewalls, SSH keys, load balancers, billing-affecting actions). Hetzner does not currently expose finer-grained scopes (e.g., read-only or compute-only). Per the [Credential Propagation to Nodes](#credential-propagation-to-nodes) section, this token is written to each cluster node's local `aether-config.toml` so the consensus leader can auto-provision new nodes during scale-up. **Use a dedicated Hetzner project per Aether cluster** so a leaked node-side token cannot affect unrelated infrastructure. Token rotation is done in the Hetzner Console; after issuing a new token, re-run `aether cluster bootstrap` (or re-push per-node TOML) to propagate the new value.
 
 #### Compute
 
@@ -191,7 +213,7 @@ Hetzner uses environment variable-based secrets. Secrets are resolved from envir
 provider = "hetzner"
 
 [cloud.credentials]
-api_token = "${env:HETZNER_API_TOKEN}"
+api_token = "${env:HCLOUD_TOKEN}"
 
 [cloud.compute]
 server_type = "cx22"
@@ -447,6 +469,14 @@ poll_interval_ms = "15000"
 ### Auto-Heal
 
 The CDM (ClusterDeploymentManager) monitors cluster size and automatically provisions replacement nodes when a deficit is detected. The `ComputeProvider` facet handles instance creation with proper tagging, network configuration, and user data injection. The `NodeLifecycleManager` uses tag-based server lookup for instance termination.
+
+> **Terminal-removal invariant — disable runtime auto-restart.** A failed node's NodeId is
+> terminally removed and never re-admitted; auto-heal mints a brand-new replacement with a new
+> ULID NodeId on a fresh instance. Provider user-data/cloud-init therefore launches the node
+> with auto-restart **disabled** (`docker run --restart no`, systemd `Restart=no`). Do not
+> configure instance- or container-level auto-restart for aether-node — reviving a crashed node
+> under the same identity resurrects a terminally-removed NodeId and corrupts membership. See
+> [`../operator/deployment-recovery.md`](../operator/deployment-recovery.md).
 
 ### Peer Discovery
 

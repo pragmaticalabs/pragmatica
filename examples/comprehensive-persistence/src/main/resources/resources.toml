@@ -1,0 +1,37 @@
+[database]
+type = "POSTGRESQL"
+name = "comprehensive-primary"
+host = "localhost"
+port = 5432
+database = "forge"
+username = "forge"
+password = "forge"
+async_url = "postgresql://localhost:5432/forge"
+
+[database.pool_config]
+min_connections = 4
+max_connections = 20
+idle_timeout = "10m"
+connection_timeout = "5s"
+max_lifetime = "30m"
+leak_detection_timeout = "0s"
+io_threads = 0
+
+[database.analytics]
+type = "POSTGRESQL"
+name = "comprehensive-analytics"
+host = "localhost"
+port = 5432
+database = "forge_analytics"
+username = "forge"
+password = "forge"
+async_url = "postgresql://localhost:5432/forge_analytics"
+
+[database.analytics.pool_config]
+min_connections = 2
+max_connections = 10
+idle_timeout = "10m"
+connection_timeout = "5s"
+max_lifetime = "30m"
+leak_detection_timeout = "0s"
+io_threads = 0

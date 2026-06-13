@@ -62,27 +62,26 @@ public sealed interface ConsensusError extends Cause {
         }
     }
 
-    static ConsensusError commandBatchIsEmpty() {
-        return new CommandBatchIsEmpty();
+    /// Returned when [org.pragmatica.consensus.rabia.RabiaEngine#apply] is invoked while
+    /// the engine is in `Paused` state (quorum currently unavailable). The engine retains
+    /// all in-memory state and will resume automatically once quorum returns; callers may
+    /// retry the submission then.
+    record QuorumPaused(NodeId nodeId) implements ConsensusError {
+        @Override
+        public String message() {
+            return "Node " + nodeId.id() + " is paused: quorum unavailable";
+        }
     }
 
-    static ConsensusError nodeInactive(NodeId nodeId) {
-        return new NodeInactive(nodeId);
-    }
-
-    static ConsensusError nodeIsObserver(NodeId nodeId) {
-        return new NodeIsObserver(nodeId);
-    }
-
-    static ConsensusError snapshotFailed(String reason) {
-        return new SnapshotFailed(reason);
-    }
-
-    static ConsensusError restoreFailed(String reason) {
-        return new RestoreFailed(reason);
-    }
-
-    static ConsensusError backpressureExceeded(int pending, int limit) {
-        return new BackpressureExceeded(pending, limit);
+    /// Returned when [org.pragmatica.consensus.rabia.RabiaEngine#apply] does not receive a
+    /// consensus answer for its submitted batch within the configured
+    /// `ProtocolConfig.applyTimeout`. Replaces the generic `CoreError.Timeout` produced by
+    /// `Promise.timeout` with a domain-specific cause so callers (e.g. the deploy pipeline)
+    /// can distinguish a consensus stall from other timeouts.
+    record ApplyTimeout(long timeoutMillis) implements ConsensusError {
+        @Override
+        public String message() {
+            return "Consensus apply timed out after " + timeoutMillis + "ms";
+        }
     }
 }

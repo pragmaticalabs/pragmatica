@@ -1,32 +1,42 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.network;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 import java.util.Arrays;
 
 
-/// Relay envelope for cross-community DHT messages routed through governors.
-/// When a worker needs to send a DHT message to a node in another community,
-/// it wraps the serialized payload in this envelope and sends it to the target
-/// community's governor. The governor then forwards the relay to the actual
-/// target node via cluster network.
-@Codec public record DHTRelayMessage(NodeId actualTarget, byte[] serializedPayload) implements Message.Wired {
+@Codec
+public record DHTRelayMessage(NodeId actualTarget, byte[] serializedPayload) implements Message.Wired {
+    @Override
+    public StreamType streamType() {
+        return StreamType.DHT;
+    }
+
     public DHTRelayMessage {
         serializedPayload = serializedPayload.clone();
     }
 
-    @Override public byte[] serializedPayload() {
+    @Override
+    public byte[] serializedPayload() {
         return serializedPayload.clone();
     }
 
-    @Override public boolean equals(Object o) {
-        return o instanceof DHTRelayMessage other && actualTarget.equals(other.actualTarget) && Arrays.equals(serializedPayload,
-                                                                                                              other.serializedPayload);
+    @Override
+    public boolean equals(Object o) {
+        return o instanceof DHTRelayMessage other
+               && actualTarget.equals(other.actualTarget)
+               && Arrays.equals(serializedPayload, other.serializedPayload);
     }
 
-    @Override public int hashCode() {
+    @Override
+    public int hashCode() {
         return 31 * actualTarget.hashCode() + Arrays.hashCode(serializedPayload);
     }
 

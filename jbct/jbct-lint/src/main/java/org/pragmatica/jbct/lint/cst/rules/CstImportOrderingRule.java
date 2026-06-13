@@ -3,11 +3,10 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 
 import java.util.ArrayList;
-import java.util.List;
 import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
@@ -30,28 +29,25 @@ public class CstImportOrderingRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        var packageName = packageName(root);
         if (!ctx.shouldLint(packageName)) {
             return Stream.empty();
         }
         // Get project root package (first segment of package name)
         var projectPackage = getProjectPackage(packageName);
         // Collect all imports
-        var imports = findAll(root, RuleId.ImportDecl.class);
+        var imports = findAll(root, RuleKind.IMPORT_DECL);
         if (imports.isEmpty()) {
             return Stream.empty();
         }
         var diagnostics = new ArrayList<Diagnostic>();
         // Check import ordering
         int lastGroup = - 1;
-        CstNode lastImportInGroup = null;
+        Cursor lastImportInGroup = null;
         boolean inStaticSection = false;
         for (var importNode : imports) {
-            var importText = text(importNode, source).trim();
+            var importText = text(importNode).trim();
             var isStatic = importText.startsWith("import static ");
             var importPath = extractImportPath(importText);
             if (isStatic && !inStaticSection) {
@@ -63,7 +59,7 @@ public class CstImportOrderingRule implements CstLintRule {
             var currentGroup = getImportGroup(importPath, projectPackage);
             if (currentGroup < lastGroup) {
                 // Import is out of order
-                diagnostics.add(createDiagnostic(importNode, importPath, lastImportInGroup, source, ctx, inStaticSection));
+                diagnostics.add(createDiagnostic(importNode, importPath, lastImportInGroup, ctx, inStaticSection));
             }
             lastGroup = currentGroup;
             lastImportInGroup = importNode;
@@ -121,14 +117,13 @@ public class CstImportOrderingRule implements CstLintRule {
         return 3;
     }
 
-    private Diagnostic createDiagnostic(CstNode importNode,
+    private Diagnostic createDiagnostic(Cursor importNode,
                                         String importPath,
-                                        CstNode lastImport,
-                                        String source,
+                                        Cursor lastImport,
                                         LintContext ctx,
                                         boolean isStatic) {
         var lastPath = lastImport != null
-                       ? extractImportPath(text(lastImport, source))
+                       ? extractImportPath(text(lastImport))
                        : "(none)";
         var prefix = isStatic
                      ? "Static import"

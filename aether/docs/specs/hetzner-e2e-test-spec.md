@@ -33,7 +33,7 @@
 
 ### 1.1 Purpose
 
-This specification defines a fully automated, repeatable end-to-end test that validates the Aether distributed runtime on real Hetzner Cloud infrastructure. The test deploys a 5-node Aether cluster, runs the url-shortener example application via blueprint artifact, executes k6 benchmarks at production-level throughput, and exercises resilience scenarios (graceful drain, hard kill, auto-heal, leader kill) while monitoring latency and error rates.
+This specification defines a fully automated, repeatable end-to-end test that validates the Aether runtime on real Hetzner Cloud infrastructure. The test deploys a 5-node Aether cluster, runs the url-shortener example application via blueprint artifact, executes k6 benchmarks at production-level throughput, and exercises resilience scenarios (graceful drain, hard kill, auto-heal, leader kill) while monitoring latency and error rates.
 
 ### 1.2 Goals
 

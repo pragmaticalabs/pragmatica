@@ -17,8 +17,10 @@
 package org.pragmatica.swim;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
 
 /// Listener for SWIM membership change events.
+@Contract
 public interface SwimMembershipListener {
 
     /// Called when a new member joins or a previously faulty member recovers.
@@ -28,7 +30,16 @@ public interface SwimMembershipListener {
     void onMemberSuspect(SwimMember member);
 
     /// Called when a suspected member is confirmed faulty.
-    void onMemberFaulty(SwimMember member);
+    ///
+    /// `firstHand` distinguishes verdict provenance (P1 death-path co-confirmation):
+    /// `true`  — this node's OWN probe cycle timed out for the member
+    ///           ([`SwimProtocol#transitionToFaulty`]). Direct local evidence.
+    /// `false` — the FAULTY verdict was RECEIVED via gossip dissemination from another
+    ///           node and applied to local membership. Second-hand. A second-hand
+    ///           verdict reaches this callback ONLY when it was locally corroborated
+    ///           (transport-observed peer-down); an uncorroborated second-hand FAULTY is
+    ///           downgraded to SUSPECT inside the protocol and never surfaces here.
+    void onMemberFaulty(SwimMember member, boolean firstHand);
 
     /// Called when a member is removed from the membership list.
     void onMemberLeft(NodeId nodeId);

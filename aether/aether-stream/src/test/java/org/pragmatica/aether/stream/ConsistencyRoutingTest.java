@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.stream;
 
 import org.junit.jupiter.api.AfterEach;
@@ -18,7 +23,7 @@ import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
-import static org.pragmatica.aether.stream.StreamPublisherImpl.streamPublisher;
+import static org.pragmatica.aether.stream.DefaultStreamPublisher.streamPublisher;
 import static org.pragmatica.aether.stream.consensus.ConsensusPublishPath.consensusPublishPath;
 
 class ConsistencyRoutingTest {
@@ -73,7 +78,7 @@ class ConsistencyRoutingTest {
             };
             var consensusPath = consensusPublishPath(countingProposer);
 
-            var publisher = StreamPublisherImpl.streamPublisher(
+            var publisher = DefaultStreamPublisher.streamPublisher(
                 partitionManager, serializer, STREAM, PARTITION_COUNT,
                 Option.<Function<byte[], Object>>none(),
                 ConsistencyMode.STRONG, Option.some(consensusPath));

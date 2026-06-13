@@ -1,0 +1,16 @@
+# Aether node — Docker source-type defaults (Layer 2)
+#
+# Applied for source.type = "docker". Layered on top of aether-default.toml.
+
+[cluster]
+# Plain HTTP for management API in dev/integration environments.
+# Cloud sources flip this to true.
+tls = false
+
+[cloud]
+provider = "docker"
+
+[cloud.compute]
+# Shape only — actual values are provided by the CLI overlay (Layer 4):
+#   image_name, network_name, api_key, docker_gid,
+#   management_port_base, app_port_base, cluster_port, socket_path

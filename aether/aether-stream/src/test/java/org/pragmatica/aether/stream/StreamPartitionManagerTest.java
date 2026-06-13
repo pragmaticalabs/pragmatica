@@ -1,11 +1,28 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.stream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.cluster.node.ClusterNode;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
@@ -371,6 +388,74 @@ class StreamPartitionManagerTest {
     }
 
     @Nested
+    class ReapIdleStreams {
+
+        @Test
+        void reapIdleStreams_updatesLastActivity_onPublish() {
+            var retention = RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 60_000);
+            var config = StreamConfig.streamConfig("orders", 1, retention, "latest");
+            manager.createStream(config);
+
+            manager.publishLocal("orders", 0, "event".getBytes(), 1000L);
+
+            // Stream should still exist — lastActivity was just updated
+            assertThat(manager.reapIdleStreams()).isEqualTo(0);
+            assertThat(manager.streamInfo("orders").isPresent()).isTrue();
+        }
+
+        @Test
+        void reapIdleStreams_reapsExpiredEmptyIdleStream() {
+            // Use 1ms retention so the stream expires immediately
+            var retention = RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 1);
+            var config = StreamConfig.streamConfig("ephemeral", 1, retention, "latest");
+            manager.createStream(config);
+
+            // Small delay to ensure creation time + lastActivity are in the past
+            busyWait(5);
+
+            assertThat(manager.reapIdleStreams()).isEqualTo(1);
+            assertThat(manager.streamInfo("ephemeral").isEmpty()).isTrue();
+        }
+
+        @Test
+        void reapIdleStreams_preventsDestructionWhenPublishOccurred() {
+            // Use 1ms retention so the stream expires immediately
+            var retention = RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 1);
+            var config = StreamConfig.streamConfig("active", 1, retention, "latest");
+            manager.createStream(config);
+
+            // Wait for creation time to expire
+            busyWait(5);
+
+            // Publish updates lastActivity — prevents reaping even though createdAt is expired
+            manager.publishLocal("active", 0, "data".getBytes(), System.currentTimeMillis());
+
+            // Stream has data and recent activity — should not be reaped
+            assertThat(manager.reapIdleStreams()).isEqualTo(0);
+            assertThat(manager.streamInfo("active").isPresent()).isTrue();
+        }
+
+        @Test
+        void reapIdleStreams_skipsNonEmptyStreams() {
+            var retention = RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 1);
+            var config = StreamConfig.streamConfig("with-data", 1, retention, "latest");
+            manager.createStream(config);
+
+            manager.publishLocal("with-data", 0, "event".getBytes(), 1000L);
+
+            busyWait(5);
+
+            // Stream has events — should not be reaped regardless of age
+            assertThat(manager.reapIdleStreams()).isEqualTo(0);
+        }
+
+        private void busyWait(long millis) {
+            var deadline = System.currentTimeMillis() + millis;
+            while (System.currentTimeMillis() < deadline) {Thread.onSpinWait();}
+        }
+    }
+
+    @Nested
     class StreamInfoTests {
 
         @Test
@@ -388,6 +473,193 @@ class StreamPartitionManagerTest {
                        assertThat(si.partitions()).isEqualTo(4);
                        assertThat(si.totalBytes()).isGreaterThan(0L);
                    });
+        }
+    }
+
+    /// Fix #2 — publish-path create (`ensureStreamMaterialized`) must NOT block on the leader-pinned
+    /// consensus commit, while explicit `createStream` keeps awaiting it. A `ClusterNode` whose `apply`
+    /// returns an unresolved/slow Promise stands in for a still-catching-up replacement leader.
+    @Nested
+    class PublishPathMaterialization {
+
+        @Test
+        void ensureStreamMaterialized_returnsPromptly_whenCommitNeverResolves() {
+            var node = new StubClusterNode(StubApply.NEVER);
+            var withNode = streamPartitionManager(Long.MAX_VALUE, node);
+
+            withNode.ensureStreamMaterialized(StreamConfig.streamConfig("publish-stream"))
+                    .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected prompt success despite stalled commit"));
+
+            // Entry is materialized in `streams` even though the async commit has not (and never will) resolve.
+            assertThat(withNode.streamInfo("publish-stream").isPresent()).isTrue();
+
+            withNode.close();
+        }
+
+        @Test
+        void publishLocal_succeeds_afterMaterializeWithStalledCommit() {
+            var node = new StubClusterNode(StubApply.NEVER);
+            var withNode = streamPartitionManager(Long.MAX_VALUE, node);
+
+            withNode.ensureStreamMaterialized(StreamConfig.streamConfig("publish-stream"))
+                    .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected prompt success"));
+
+            withNode.publishLocal("publish-stream", 0, "event".getBytes(), 1000L)
+                    .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected publish to local ring to succeed"))
+                    .onSuccess(offset -> assertThat(offset).isEqualTo(0L));
+
+            withNode.close();
+        }
+
+        @Test
+        void ensureStreamMaterialized_firesAtMostOneCommit_whenAlreadyCommitted() {
+            var node = new StubClusterNode(StubApply.SUCCESS);
+            var withNode = streamPartitionManager(Long.MAX_VALUE, node);
+
+            withNode.ensureStreamMaterialized(StreamConfig.streamConfig("idempotent"))
+                    .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"));
+
+            // Second publish to the now-committed stream short-circuits: success with NO further consensus.
+            withNode.ensureStreamMaterialized(StreamConfig.streamConfig("idempotent"))
+                    .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success on already-committed stream"));
+
+            assertThat(node.applyCount()).isEqualTo(1);
+
+            withNode.close();
+        }
+
+        @Test
+        void ensureStreamMaterialized_failsLocalMaterialization_strongWithoutAhse() {
+            var node = new StubClusterNode(StubApply.SUCCESS);
+            // Default NOOP eviction listener => AHSE not present.
+            var withNode = streamPartitionManager(Long.MAX_VALUE, node);
+            var strong = StreamConfig.streamConfig("strong-stream",
+                                                   1,
+                                                   RetentionPolicy.retentionPolicy(100, 4096, 60_000),
+                                                   "latest",
+                                                   4096,
+                                                   ConsistencyMode.STRONG);
+
+            withNode.ensureStreamMaterialized(strong)
+                    .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected AHSE_REQUIRED_FOR_STRONG"))
+                    .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.AHSE_REQUIRED_FOR_STRONG));
+
+            // No consensus commit attempted for a rejected local materialization.
+            assertThat(node.applyCount()).isEqualTo(0);
+
+            withNode.close();
+        }
+
+        @Test
+        void ensureStreamMaterialized_failsLocalMaterialization_floorExhaustion() {
+            var node = new StubClusterNode(StubApply.SUCCESS);
+            // Tiny cap so even the floor reservation cannot be admitted.
+            var capped = StreamPartitionManager.streamPartitionManager(1024, node);
+
+            capped.ensureStreamMaterialized(StreamConfig.streamConfig("too-big"))
+                  .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected STREAM_MEMORY_EXCEEDED"))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.STREAM_MEMORY_EXCEEDED));
+
+            assertThat(node.applyCount()).isEqualTo(0);
+
+            capped.close();
+        }
+    }
+
+    /// Fix #2 — explicit STREAM_CREATE (`createStream`) keeps its synchronous, awaited-commit contract.
+    @Nested
+    class ExplicitCreateCommit {
+
+        @Test
+        void createStream_marksCommitted_whenCommitSucceeds() {
+            var node = new StubClusterNode(StubApply.SUCCESS);
+            var withNode = streamPartitionManager(Long.MAX_VALUE, node);
+
+            withNode.createStream(StreamConfig.streamConfig("explicit"))
+                    .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"));
+
+            // Committed => a duplicate explicit create short-circuits to STREAM_ALREADY_EXISTS, no re-commit.
+            withNode.createStream(StreamConfig.streamConfig("explicit"))
+                    .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected STREAM_ALREADY_EXISTS"))
+                    .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.STREAM_ALREADY_EXISTS));
+
+            assertThat(node.applyCount()).isEqualTo(1);
+
+            withNode.close();
+        }
+
+        @Test
+        void createStream_fails_whenCommitFails() {
+            var node = new StubClusterNode(StubApply.FAILURE);
+            var withNode = streamPartitionManager(Long.MAX_VALUE, node);
+
+            withNode.createStream(StreamConfig.streamConfig("explicit-fail"))
+                    .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected STREAM_CONFIG_COMMIT_FAILED"))
+                    .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.STREAM_CONFIG_COMMIT_FAILED));
+
+            withNode.close();
+        }
+    }
+
+    /// Behaviour of the stubbed `ClusterNode.apply`: never-resolving (stalled leader), resolving
+    /// successfully, or resolving with a failure.
+    enum StubApply {
+        NEVER,
+        SUCCESS,
+        FAILURE
+    }
+
+    /// Minimal `ClusterNode` stub for the consensus-commit decoupling tests. Only `apply` is exercised;
+    /// the other methods are unused by `StreamPartitionManager`'s publish path. Counts `apply` calls so
+    /// tests can assert how many consensus commits were attempted.
+    static final class StubClusterNode implements ClusterNode<KVCommand<AetherKey>> {
+        private final StubApply behavior;
+        private final AtomicInteger applyCount = new AtomicInteger(0);
+
+        StubClusterNode(StubApply behavior) {
+            this.behavior = behavior;
+        }
+
+        int applyCount() {
+            return applyCount.get();
+        }
+
+        @Override
+        public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+            applyCount.incrementAndGet();
+
+            return switch (behavior) {
+                case NEVER -> Promise.promise();
+                case SUCCESS -> Promise.success(List.of());
+                case FAILURE -> new StubCommitError().promise();
+            };
+        }
+
+        @Override
+        public NodeId self() {
+            return NodeId.randomNodeId("stub");
+        }
+
+        @Override
+        public TopologyManager topologyManager() {
+            return org.junit.jupiter.api.Assertions.fail("topologyManager not used by publish path");
+        }
+
+        @Override
+        public Promise<Unit> start() {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public Promise<Unit> stop() {
+            return Promise.success(Unit.unit());
+        }
+    }
+
+    record StubCommitError() implements Cause {
+        @Override
+        public String message() {
+            return "stub commit failure";
         }
     }
 }

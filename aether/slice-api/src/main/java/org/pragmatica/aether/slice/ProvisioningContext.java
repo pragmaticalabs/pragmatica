@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
 import org.pragmatica.lang.Cause;
@@ -17,20 +21,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-/// Context for resource provisioning, carrying additional type and key information.
-///
-/// Used to pass extra metadata to {@link ResourceProviderFacade#provide} when
-/// the resource factory needs type tokens (e.g., for generic types) or
-/// key extractors (e.g., for sharded resources).
-///
-/// Example usage:
-/// ```{@code
-/// var context = ProvisioningContext.provisioningContext()
-///     .withTypeToken(new TypeToken<List<Order>>() {})
-///     .withKeyExtractor(Order::customerId);
-///
-/// ctx.resources().provide(EventStore.class, "events.orders", context);
-/// }```
 public record ProvisioningContext(List<TypeToken<?>> typeTokens,
                                   Option<Fn1<?, ?>> keyExtractor,
                                   Map<Class<?>, Object> extensions) {
@@ -42,7 +32,9 @@ public record ProvisioningContext(List<TypeToken<?>> typeTokens,
 
     public ProvisioningContext withTypeToken(TypeToken<?> token) {
         var tokens = new ArrayList<>(typeTokens);
+
         tokens.add(token);
+
         return new ProvisioningContext(List.copyOf(tokens), keyExtractor, extensions);
     }
 
@@ -50,13 +42,16 @@ public record ProvisioningContext(List<TypeToken<?>> typeTokens,
         return new ProvisioningContext(typeTokens, some(extractor), extensions);
     }
 
-    @SuppressWarnings("unchecked") public <T> Result<T> extension(Class<T> type) {
+    @SuppressWarnings("unchecked")
+    public <T> Result<T> extension(Class<T> type) {
         return option((T) extensions.get(type)).toResult(MISSING_EXTENSION.apply(type.getSimpleName()));
     }
 
     public <T> ProvisioningContext withExtension(Class<T> type, T value) {
         var newExtensions = new HashMap<>(extensions);
+
         newExtensions.put(type, value);
+
         return new ProvisioningContext(typeTokens, keyExtractor, Map.copyOf(newExtensions));
     }
 }

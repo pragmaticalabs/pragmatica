@@ -62,6 +62,7 @@ public final class AesGcmGossipEncryptor implements GossipEncryptor {
             .flatMap(header -> resolveKey(header.keyId()).flatMap(key -> decryptPayload(key, header)));
     }
 
+    @SuppressWarnings("JBCT-EX-01") // Adapter boundary: JCE Cipher throwing supplier for Result.lift
     private byte[] doEncrypt(byte[] plaintext) throws Exception {
         var nonce = new byte[NONCE_SIZE];
         secureRandom.nextBytes(nonce);
@@ -97,6 +98,7 @@ public final class AesGcmGossipEncryptor implements GossipEncryptor {
         return Result.lift(GossipEncryptionError.DecryptionFailed::new, () -> doDecryptPayload(key, header));
     }
 
+    @SuppressWarnings("JBCT-EX-01") // Adapter boundary: JCE Cipher throwing supplier for Result.lift
     private static byte[] doDecryptPayload(SecretKeySpec key, ParsedHeader header) throws Exception {
         var cipher = Cipher.getInstance(ALGORITHM);
         cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_BITS, header.nonce()));

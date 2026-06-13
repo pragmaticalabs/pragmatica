@@ -51,6 +51,15 @@ public interface ConfigurationProvider extends ConfigSource {
     /// @return List of configuration sources
     List<ConfigSource> sources();
 
+    /// Short, operator-facing layer label used for attribution in composites.
+    ///
+    /// Default implementation returns [#name()] so existing providers remain valid. Wrap
+    /// a provider with [NamedConfigProvider] to override this with a canonical short
+    /// label (e.g. `"KV"`, `"node.toml"`, `"slice.toml"`).
+    default String displayName() {
+        return name();
+    }
+
     /// Create a new builder for ConfigurationProvider.
     ///
     /// @return Builder instance

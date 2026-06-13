@@ -9,4 +9,4 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 
-@ResourceQualifier(type = Publisher.class, config = "messaging.click-events") @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.PARAMETER) public@interface ClickEventPublisher {}
+@ResourceQualifier(type = Publisher.class, config = "click-events") @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.PARAMETER) public@interface ClickEventPublisher {}

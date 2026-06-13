@@ -1,39 +1,24 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.controller;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// Configuration for the cluster controller.
-///
-///
-/// Controls thresholds for automatic scaling decisions.
-///
-///
-/// **Note on evaluationIntervalMs:** Both ControllerConfig and ScalingConfig have
-/// an evaluationIntervalMs field. They serve different purposes:
-///
-///   - `ControllerConfig.evaluationIntervalMs` - Controls the scheduler interval for the control loop
-///   - `ScalingConfig.evaluationIntervalMs` - Used for window timing calculations (how long until window is full)
-///
-///
-/// @param cpuScaleUpThreshold CPU usage above which to scale up (0.0-1.0)
-/// @param cpuScaleDownThreshold CPU usage below which to scale down (0.0-1.0)
-/// @param callRateScaleUpThreshold call rate above which to scale up (must be positive)
-/// @param evaluationIntervalMs interval between controller evaluations in milliseconds (must be positive)
-/// @param warmUpPeriodMs time after ControlLoop activation during which scaling is blocked (must be non-negative)
-/// @param sliceCooldownMs time after slice reaches ACTIVE during which scaling is blocked (must be non-negative)
-/// @param scalingConfig configuration for the Lizard Brain relative change scaling algorithm
-@SuppressWarnings("JBCT-VO-02")
-// Record copy methods (with*) and DEFAULT constant use new internally — validated by factory
+
 public record ControllerConfig(double cpuScaleUpThreshold,
                                double cpuScaleDownThreshold,
                                double callRateScaleUpThreshold,
-                               long evaluationIntervalMs,
-                               long warmUpPeriodMs,
-                               long sliceCooldownMs,
+                               TimeSpan evaluationInterval,
+                               TimeSpan warmUpPeriod,
+                               TimeSpan sliceCooldown,
                                ScalingConfig scalingConfig) {
     private static final Fn1<Cause, String> INVALID_THRESHOLD = Causes.forOneValue("Invalid threshold: %s (must be between 0.0 and 1.0)");
 
@@ -46,9 +31,9 @@ public record ControllerConfig(double cpuScaleUpThreshold,
     public static final ControllerConfig DEFAULT = new ControllerConfig(0.8,
                                                                         0.2,
                                                                         2000,
-                                                                        1000,
-                                                                        30000,
-                                                                        10000,
+                                                                        timeSpan(1).seconds(),
+                                                                        timeSpan(30).seconds(),
+                                                                        timeSpan(10).seconds(),
                                                                         ScalingConfig.productionDefaults());
 
     public static Result<ControllerConfig> controllerConfig(double cpuScaleUpThreshold,
@@ -59,8 +44,8 @@ public record ControllerConfig(double cpuScaleUpThreshold,
                                 cpuScaleDownThreshold,
                                 callRateScaleUpThreshold,
                                 evaluationIntervalMs,
-                                DEFAULT.warmUpPeriodMs(),
-                                DEFAULT.sliceCooldownMs());
+                                DEFAULT.warmUpPeriod().millis(),
+                                DEFAULT.sliceCooldown().millis());
     }
 
     public static Result<ControllerConfig> controllerConfig(double cpuScaleUpThreshold,
@@ -95,49 +80,49 @@ public record ControllerConfig(double cpuScaleUpThreshold,
                                 .map(_ -> new ControllerConfig(cpuScaleUpThreshold,
                                                                cpuScaleDownThreshold,
                                                                callRateScaleUpThreshold,
-                                                               evaluationIntervalMs,
-                                                               warmUpPeriodMs,
-                                                               sliceCooldownMs,
+                                                               timeSpan(evaluationIntervalMs).millis(),
+                                                               timeSpan(warmUpPeriodMs).millis(),
+                                                               timeSpan(sliceCooldownMs).millis(),
                                                                scalingConfig));
     }
 
     private static Result<Double> validateThreshold(double value, String name) {
         return value >= 0.0 && value <= 1.0
-              ? Result.success(value)
-              : INVALID_THRESHOLD.apply(name + "=" + value).result();
+               ? Result.success(value)
+               : INVALID_THRESHOLD.apply(name + "=" + value).result();
     }
 
     private static Result<Double> validatePositive(double value, String name) {
         return value > 0
-              ? Result.success(value)
-              : INVALID_POSITIVE.apply(name + "=" + value).result();
+               ? Result.success(value)
+               : INVALID_POSITIVE.apply(name + "=" + value).result();
     }
 
     private static Result<Long> validatePositive(long value, String name) {
         return value > 0
-              ? Result.success(value)
-              : INVALID_POSITIVE.apply(name + "=" + value).result();
+               ? Result.success(value)
+               : INVALID_POSITIVE.apply(name + "=" + value).result();
     }
 
     private static Result<Long> validateNonNegative(long value, String name) {
         return value >= 0
-              ? Result.success(value)
-              : INVALID_NON_NEGATIVE.apply(name + "=" + value).result();
+               ? Result.success(value)
+               : INVALID_NON_NEGATIVE.apply(name + "=" + value).result();
     }
 
     private static Result<Double> validateThresholdOrder(double up, double down) {
         return up > down
-              ? Result.success(up)
-              : INVALID_THRESHOLD_ORDER.result();
+               ? Result.success(up)
+               : INVALID_THRESHOLD_ORDER.result();
     }
 
     public ControllerConfig withCpuScaleUpThreshold(double threshold) {
         return new ControllerConfig(threshold,
                                     cpuScaleDownThreshold,
                                     callRateScaleUpThreshold,
-                                    evaluationIntervalMs,
-                                    warmUpPeriodMs,
-                                    sliceCooldownMs,
+                                    evaluationInterval,
+                                    warmUpPeriod,
+                                    sliceCooldown,
                                     scalingConfig);
     }
 
@@ -145,49 +130,9 @@ public record ControllerConfig(double cpuScaleUpThreshold,
         return new ControllerConfig(cpuScaleUpThreshold,
                                     threshold,
                                     callRateScaleUpThreshold,
-                                    evaluationIntervalMs,
-                                    warmUpPeriodMs,
-                                    sliceCooldownMs,
-                                    scalingConfig);
-    }
-
-    public ControllerConfig withCallRateScaleUpThreshold(double threshold) {
-        return new ControllerConfig(cpuScaleUpThreshold,
-                                    cpuScaleDownThreshold,
-                                    threshold,
-                                    evaluationIntervalMs,
-                                    warmUpPeriodMs,
-                                    sliceCooldownMs,
-                                    scalingConfig);
-    }
-
-    public ControllerConfig withEvaluationIntervalMs(long intervalMs) {
-        return new ControllerConfig(cpuScaleUpThreshold,
-                                    cpuScaleDownThreshold,
-                                    callRateScaleUpThreshold,
-                                    intervalMs,
-                                    warmUpPeriodMs,
-                                    sliceCooldownMs,
-                                    scalingConfig);
-    }
-
-    public ControllerConfig withWarmUpPeriodMs(long warmUpMs) {
-        return new ControllerConfig(cpuScaleUpThreshold,
-                                    cpuScaleDownThreshold,
-                                    callRateScaleUpThreshold,
-                                    evaluationIntervalMs,
-                                    warmUpMs,
-                                    sliceCooldownMs,
-                                    scalingConfig);
-    }
-
-    public ControllerConfig withSliceCooldownMs(long cooldownMs) {
-        return new ControllerConfig(cpuScaleUpThreshold,
-                                    cpuScaleDownThreshold,
-                                    callRateScaleUpThreshold,
-                                    evaluationIntervalMs,
-                                    warmUpPeriodMs,
-                                    cooldownMs,
+                                    evaluationInterval,
+                                    warmUpPeriod,
+                                    sliceCooldown,
                                     scalingConfig);
     }
 
@@ -195,9 +140,9 @@ public record ControllerConfig(double cpuScaleUpThreshold,
         return new ControllerConfig(cpuScaleUpThreshold,
                                     cpuScaleDownThreshold,
                                     callRateScaleUpThreshold,
-                                    evaluationIntervalMs,
-                                    warmUpPeriodMs,
-                                    sliceCooldownMs,
+                                    evaluationInterval,
+                                    warmUpPeriod,
+                                    sliceCooldown,
                                     newScalingConfig);
     }
 
@@ -206,20 +151,38 @@ public record ControllerConfig(double cpuScaleUpThreshold,
     }
 
     public String toJson() {
-        return "{\"cpuScaleUpThreshold\":" + cpuScaleUpThreshold + ",\"cpuScaleDownThreshold\":" + cpuScaleDownThreshold + ",\"callRateScaleUpThreshold\":" + callRateScaleUpThreshold + ",\"evaluationIntervalMs\":" + evaluationIntervalMs + ",\"warmUpPeriodMs\":" + warmUpPeriodMs + ",\"sliceCooldownMs\":" + sliceCooldownMs + ",\"scalingConfig\":" + scalingConfigToJson() + "}";
+        return "{\"cpuScaleUpThreshold\":" + cpuScaleUpThreshold
+             + ",\"cpuScaleDownThreshold\":" + cpuScaleDownThreshold
+             + ",\"callRateScaleUpThreshold\":" + callRateScaleUpThreshold
+             + ",\"evaluationIntervalMs\":" + evaluationInterval.millis()
+             + ",\"warmUpPeriodMs\":" + warmUpPeriod.millis()
+             + ",\"sliceCooldownMs\":" + sliceCooldown.millis()
+             + ",\"scalingConfig\":" + scalingConfigToJson()
+             + "}";
     }
 
     private String scalingConfigToJson() {
         var weightsJson = new StringBuilder("{");
         var first = true;
+
         for (var entry : scalingConfig.weights().entrySet()) {
-            if (!first) {weightsJson.append(",");}
-            weightsJson.append("\"").append(entry.getKey().name())
-                              .append("\":")
-                              .append(entry.getValue());
+            if (!first) {
+                weightsJson.append(",");
+            }
+
+            weightsJson.append("\"").append(entry.getKey().name()).append("\":").append(entry.getValue());
             first = false;
         }
+
         weightsJson.append("}");
-        return "{\"windowSize\":" + scalingConfig.windowSize() + ",\"evaluationIntervalMs\":" + scalingConfig.evaluationIntervalMs() + ",\"scaleUpThreshold\":" + scalingConfig.scaleUpThreshold() + ",\"scaleDownThreshold\":" + scalingConfig.scaleDownThreshold() + ",\"errorRateBlockThreshold\":" + scalingConfig.errorRateBlockThreshold() + ",\"weights\":" + weightsJson + "}";
+
+        return "{\"windowSize\":" + scalingConfig.windowSize()
+             + ",\"evaluationIntervalMs\":" + scalingConfig.evaluationInterval()
+                                                           .millis()
+             + ",\"scaleUpThreshold\":" + scalingConfig.scaleUpThreshold()
+             + ",\"scaleDownThreshold\":" + scalingConfig.scaleDownThreshold()
+             + ",\"errorRateBlockThreshold\":" + scalingConfig.errorRateBlockThreshold()
+             + ",\"weights\":" + weightsJson
+             + "}";
     }
 }

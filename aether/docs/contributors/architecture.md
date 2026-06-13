@@ -1,6 +1,6 @@
 # Aether Architecture Overview
 
-This document provides a comprehensive technical overview of the Aether AI-driven distributed runtime architecture.
+This document provides a comprehensive technical overview of the Aether AI-driven Unified Application Runtime architecture.
 
 **See [vision-and-goals.md](../archive/vision-and-goals.md) for the complete vision and design principles.**
 

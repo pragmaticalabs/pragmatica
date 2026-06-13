@@ -1,19 +1,21 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics;
 
-public record DerivedMetrics(
-// Rates (per second)
-double requestRate,
-double errorRate,
-double gcRate,
-double latencyP50,
-double latencyP95,
-double latencyP99,
-double eventLoopSaturation,
-double heapSaturation,
-double backpressureRate,
-double cpuTrend,
-double latencyTrend,
-double errorTrend) {
+public record DerivedMetrics(double requestRate,
+                             double errorRate,
+                             double gcRate,
+                             double latencyP50,
+                             double latencyP95,
+                             double latencyP99,
+                             double eventLoopSaturation,
+                             double heapSaturation,
+                             double backpressureRate,
+                             double cpuTrend,
+                             double latencyTrend,
+                             double errorTrend) {
     public static final DerivedMetrics EMPTY = new DerivedMetrics(0.0,
                                                                   0.0,
                                                                   0.0,
@@ -32,6 +34,7 @@ double errorTrend) {
         double eventLoopScore = 1.0 - eventLoopSaturation;
         double heapScore = 1.0 - heapSaturation;
         double errorScore = Math.max(0, 1.0 - errorRate * 10);
+
         return (latencyScore * 0.3 + eventLoopScore * 0.3 + heapScore * 0.2 + errorScore * 0.2);
     }
 
@@ -40,7 +43,9 @@ double errorTrend) {
     }
 
     public boolean hasCapacity() {
-        return eventLoopSaturation <0.5 && heapSaturation <0.6 && errorRate <0.01;
+        return eventLoopSaturation < 0.5
+               && heapSaturation < 0.6
+               && errorRate < 0.01;
     }
 
     public boolean deteriorating() {
@@ -48,6 +53,8 @@ double errorTrend) {
     }
 
     public boolean improving() {
-        return cpuTrend <- 0.05 && latencyTrend <- 10.0 && errorTrend <0;
+        return cpuTrend < - 0.05
+               && latencyTrend < - 10.0
+               && errorTrend < 0;
     }
 }

@@ -21,13 +21,16 @@ import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import org.pragmatica.lang.Option;
 
 /// ARM request body for creating a Virtual Machine.
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record CreateVmRequest(String name,
                                String location,
                                Map<String, String> tags,
-                               VmRequestProperties properties) {
+                               VmRequestProperties properties,
+                               @JsonInclude(JsonInclude.Include.NON_EMPTY) List<String> zones) {
     /// VM creation properties.
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record VmRequestProperties(HardwareProfile hardwareProfile,
@@ -50,10 +53,12 @@ public record CreateVmRequest(String name,
     /// Managed disk parameters.
     public record ManagedDisk(String storageAccountType) {}
 
-    /// OS profile with admin credentials.
+    /// OS profile with admin credentials. `customData` carries the base64-encoded
+    /// cloud-init / userData script Azure injects at first boot (omitted when empty).
     public record OsProfile(String computerName,
-                             String adminUsername,
-                             LinuxConfiguration linuxConfiguration) {}
+                            String adminUsername,
+                            LinuxConfiguration linuxConfiguration,
+                            @JsonInclude(JsonInclude.Include.NON_EMPTY) String customData) {}
 
     /// Linux-specific configuration.
     public record LinuxConfiguration(boolean disablePasswordAuthentication, SshConfiguration ssh) {}
@@ -75,6 +80,15 @@ public record CreateVmRequest(String name,
                                                    String location,
                                                    Map<String, String> tags,
                                                    VmRequestProperties properties) {
-        return new CreateVmRequest(name, location, tags, properties);
+        return new CreateVmRequest(name, location, tags, properties, List.of());
+    }
+
+    /// Factory method for creating a VM request with availability zones.
+    public static CreateVmRequest createVmRequest(String name,
+                                                   String location,
+                                                   Map<String, String> tags,
+                                                   VmRequestProperties properties,
+                                                   List<String> zones) {
+        return new CreateVmRequest(name, location, tags, properties, zones);
     }
 }

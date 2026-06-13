@@ -1,18 +1,21 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
+import static org.pragmatica.lang.io.FileOps.exists;
+import static org.pragmatica.lang.io.FileOps.isReadable;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Startup configuration merged from CLI arguments and environment variables.
-/// Priority: environment variables > CLI arguments > defaults.
 public record StartupConfig(Option<Path> forgeConfig,
                             Option<String> blueprint,
                             Option<Path> loadConfig,
@@ -21,9 +24,7 @@ public record StartupConfig(Option<Path> forgeConfig,
                             int clusterSize,
                             int loadRate) {
     private static final int DEFAULT_PORT = 8888;
-
     private static final int DEFAULT_CLUSTER_SIZE = 5;
-
     private static final int DEFAULT_LOAD_RATE = 1000;
 
     public static Result<StartupConfig> startupConfig(String[] args) {
@@ -35,6 +36,7 @@ public record StartupConfig(Option<Path> forgeConfig,
         var port = envOrArgInt("FORGE_PORT", parsed, "port", DEFAULT_PORT);
         var clusterSize = envOrArgInt("CLUSTER_SIZE", parsed, "cluster-size", DEFAULT_CLUSTER_SIZE);
         var loadRate = envOrArgInt("LOAD_RATE", parsed, "load-rate", DEFAULT_LOAD_RATE);
+
         return validatePath(forgeConfigPath, "FORGE_CONFIG").flatMap(forgeConfig -> validatePath(loadConfigPath,
                                                                                                  "FORGE_LOAD_CONFIG").map(loadConfig -> new StartupConfig(forgeConfig,
                                                                                                                                                           blueprintCoords,
@@ -47,14 +49,21 @@ public record StartupConfig(Option<Path> forgeConfig,
 
     private static Map<String, String> parseArgs(String[] args) {
         var result = new HashMap<String, String>();
-        for (int i = 0;i <args.length;i++) {
+
+        for (int i = 0; i < args.length; i++) {
             var arg = args[i];
+
             if (arg.startsWith("--")) {
                 var key = arg.substring(2);
-                if (i + 1 <args.length && !args[i + 1].startsWith("--")) {result.put(key, args[++ i]);} else {result.put(key,
-                                                                                                                         "true");}
+
+                if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
+                    result.put(key, args[++i]);
+                } else {
+                    result.put(key, "true");
+                }
             }
         }
+
         return result;
     }
 
@@ -63,11 +72,13 @@ public record StartupConfig(Option<Path> forgeConfig,
     }
 
     private static boolean envOrArgBool(String envName, Map<String, String> args, String argName) {
-        return envOrArg(envName, args, argName).map(v -> v.equalsIgnoreCase("true") || v.equals("1")).or(false);
+        return envOrArg(envName, args, argName).map(v -> v.equalsIgnoreCase("true") || v.equals("1"))
+                       .or(false);
     }
 
     private static int envOrArgInt(String envName, Map<String, String> args, String argName, int defaultValue) {
-        return envOrArg(envName, args, argName).flatMap(StartupConfig::parseIntSafe).or(defaultValue);
+        return envOrArg(envName, args, argName).flatMap(StartupConfig::parseIntSafe)
+                       .or(defaultValue);
     }
 
     private static Option<Integer> parseIntSafe(String value) {
@@ -79,24 +90,34 @@ public record StartupConfig(Option<Path> forgeConfig,
     }
 
     private static Result<Option<Path>> validatePath(Option<String> pathStr, String name) {
-        return pathStr.map(s -> validateSinglePath(Path.of(s), name)).or(Result.success(Option.none()));
+        return pathStr.map(s -> validateSinglePath(Path.of(s),
+                                                   name))
+                      .or(Result.success(Option.none()));
     }
 
     private static Result<Option<Path>> validateSinglePath(Path path, String name) {
-        if (!Files.exists(path)) {return StartupError.fileNotFound(name, path).result();}
-        if (!Files.isReadable(path)) {return StartupError.fileNotReadable(name, path).result();}
+        if (!exists(path)) {
+            return StartupError.fileNotFound(name, path).result();
+        }
+
+        if (!isReadable(path)) {
+            return StartupError.fileNotReadable(name, path).result();
+        }
+
         return Result.success(Option.some(path));
     }
 
     public sealed interface StartupError extends org.pragmatica.lang.Cause {
         record FileNotFound(String configName, Path path) implements StartupError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return configName + " file not found: " + path;
             }
         }
 
         record FileNotReadable(String configName, Path path) implements StartupError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return configName + " file not readable: " + path;
             }
         }

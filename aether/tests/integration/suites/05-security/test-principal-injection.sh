@@ -1,5 +1,7 @@
 #!/bin/bash
-# test-principal-injection.sh — Verify caller identity is available in responses
+# test-principal-injection.sh — Verify caller identity is correctly resolved and
+# surfaced by the management API (whoami) and that auth-required routes enforce
+# 401-without-key / 200-with-admin-key strictly.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -7,59 +9,93 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     log_pass "Cluster ready"
 }
 
+# RC1-blocker #5: admin's whoami must resolve to a real api-key principal with
+# authenticated=true and authorizationRole=ADMIN. The previous shape asserted
+# only that the body was non-empty, which is satisfied even when auth silently
+# falls through to anonymous.
 test_admin_identity_in_response() {
-    # Make an authenticated request and check if the response acknowledges the caller
-    local response
-    response=$(curl -sf -H "X-API-Key: ${ADMIN_API_KEY}" "${CLUSTER_ENDPOINT}/api/status")
-    assert_ne "$response" "" "Status response with admin key"
+    local principal authenticated role
+    principal=$(API_KEY="${ADMIN_API_KEY}" aether_field whoami principal)
+    authenticated=$(API_KEY="${ADMIN_API_KEY}" aether_field whoami authenticated)
+    role=$(API_KEY="${ADMIN_API_KEY}" aether_field whoami authorizationRole)
+
+    assert_eq "$authenticated" "true" "Admin whoami: authenticated == true"
+    assert_eq "$role" "ADMIN" "Admin whoami: authorizationRole == ADMIN"
+
+    # principal must be non-empty, scoped to api-key:, and NOT anonymous.
+    if [ -z "$principal" ]; then
+        log_fail "Admin whoami: principal is empty"
+        return 1
+    fi
+    if [ "$principal" = "anonymous" ]; then
+        log_fail "Admin whoami: principal resolved to 'anonymous' (auth silently bypassed)"
+        return 1
+    fi
+    case "$principal" in
+        api-key:*) log_pass "Admin whoami: principal '${principal}' is scoped to api-key:" ;;
+        *) log_fail "Admin whoami: principal '${principal}' is not prefixed with 'api-key:'"; return 1 ;;
+    esac
 }
 
+# RC1-blocker #6: different API keys must resolve to DIFFERENT principals AND
+# their declared roles. The previous shape compared nothing — both calls could
+# return the same anonymous identity and the test would still pass.
 test_different_keys_different_identity() {
     if [ -z "$VIEWER_API_KEY" ]; then
         skip_test "Different keys" "AETHER_VIEWER_API_KEY not set"
         return 0
     fi
 
-    # Both keys should get valid responses but potentially different views
-    local admin_response viewer_response
-    admin_response=$(curl -sf -H "X-API-Key: ${ADMIN_API_KEY}" "${CLUSTER_ENDPOINT}/api/status")
-    viewer_response=$(curl -sf -H "X-API-Key: ${VIEWER_API_KEY}" "${CLUSTER_ENDPOINT}/api/status")
+    local admin_who admin_role viewer_who viewer_role
+    admin_who=$(API_KEY="${ADMIN_API_KEY}"  aether_field whoami principal)
+    admin_role=$(API_KEY="${ADMIN_API_KEY}" aether_field whoami authorizationRole)
+    viewer_who=$(API_KEY="${VIEWER_API_KEY}"  aether_field whoami principal)
+    viewer_role=$(API_KEY="${VIEWER_API_KEY}" aether_field whoami authorizationRole)
 
-    assert_ne "$admin_response" "" "Admin gets status response"
-    assert_ne "$viewer_response" "" "Viewer gets status response"
+    # Strict inequality — two distinct keys MUST surface as two distinct principals.
+    assert_ne "$admin_who" "$viewer_who" "Admin and Viewer keys resolve to distinct principals"
+    # Each side must also carry its declared role; otherwise principals could differ
+    # but roles could be uniformly anonymous/empty and the test would still pass.
+    assert_eq "$admin_role"  "ADMIN"  "Admin key resolves to authorizationRole ADMIN"
+    assert_eq "$viewer_role" "VIEWER" "Viewer key resolves to authorizationRole VIEWER"
 }
 
+# RC1-blocker #7: auth enforcement on /api/nodes/status — formerly accepted any
+# positive HTTP code on any endpoint as a pass; now strictly checks 401 without
+# key and 200 with admin key on the SAME auth-required path.
 test_app_endpoint_principal() {
-    # If app-http is enabled, verify it also enforces auth
-    local status_no_auth
-    status_no_auth=$(http_status "${APP_ENDPOINT}/api/health")
+    # No API key → must be rejected with 401 (auth required).
+    assert_http_status "${CLUSTER_ENDPOINT}/api/nodes/status" "401" \
+        "GET /api/nodes/status without API key returns 401"
 
-    # Health may be public, but other endpoints should require auth
-    local status_auth
-    status_auth=$(http_status "${APP_ENDPOINT}/" -H "X-API-Key: ${API_KEY}")
-
-    # Just verify the app is responding
-    if [ "$status_no_auth" -gt 0 ] 2>/dev/null || [ "$status_auth" -gt 0 ] 2>/dev/null; then
-        log_pass "App endpoint responds to requests"
-        return 0
-    fi
-    log_fail "App endpoint not responding"
-    return 1
+    # Admin API key → must be accepted with 200.
+    assert_http_status "${CLUSTER_ENDPOINT}/api/nodes/status" "200" \
+        "GET /api/nodes/status with admin API key returns 200" \
+        -H "X-API-Key: ${ADMIN_API_KEY}"
 }
 
+# RC1-blocker #8: an unauthenticated request must produce a strict 401 response
+# AND include a WWW-Authenticate header (RFC 7235). The previous shape emitted
+# log_warn then log_pass on header miss (demotion) and never asserted the status
+# code — it would have passed on 200, 500, or any other status.
 test_unauthenticated_response_format() {
-    # 401 response should include WWW-Authenticate header
+    # Strict status assertion — no API key → must be 401.
+    local status
+    status=$(curl -s -o /dev/null -w "%{http_code}" "${CLUSTER_ENDPOINT}/api/nodes/status")
+    assert_eq "$status" "401" "Unauthenticated GET /api/nodes/status returns 401"
+
+    # Strict header assertion — RFC 7235 mandates WWW-Authenticate on 401 responses.
     local headers
-    headers=$(curl -s -D - -o /dev/null "${CLUSTER_ENDPOINT}/api/status")
+    headers=$(curl -s -D - -o /dev/null "${CLUSTER_ENDPOINT}/api/nodes/status")
     if echo "$headers" | grep -qi "WWW-Authenticate"; then
-        log_pass "401 includes WWW-Authenticate header"
+        log_pass "401 response includes WWW-Authenticate header"
     else
-        log_warn "401 may not include WWW-Authenticate header (non-critical)"
-        log_pass "Authentication enforcement verified"
+        log_fail "401 response missing WWW-Authenticate header (RFC 7235 violation)"
+        return 1
     fi
 }
 

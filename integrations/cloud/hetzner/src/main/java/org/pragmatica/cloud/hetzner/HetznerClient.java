@@ -20,6 +20,10 @@ package org.pragmatica.cloud.hetzner;
 import org.pragmatica.cloud.hetzner.api.Firewall;
 import org.pragmatica.cloud.hetzner.api.Firewall.ApplyToResourcesRequest;
 import org.pragmatica.cloud.hetzner.api.Firewall.FirewallListResponse;
+import org.pragmatica.cloud.hetzner.api.FloatingIp;
+import org.pragmatica.cloud.hetzner.api.FloatingIp.AssignRequest;
+import org.pragmatica.cloud.hetzner.api.FloatingIp.FloatingIpListResponse;
+import org.pragmatica.cloud.hetzner.api.FloatingIp.FloatingIpResponse;
 import org.pragmatica.cloud.hetzner.api.LoadBalancer;
 import org.pragmatica.cloud.hetzner.api.LoadBalancer.CreateLoadBalancerRequest;
 import org.pragmatica.cloud.hetzner.api.LoadBalancer.LoadBalancerListResponse;
@@ -119,6 +123,15 @@ public interface HetznerClient {
 
     /// Gets a load balancer by ID.
     Promise<LoadBalancer> getLoadBalancer(long loadBalancerId);
+
+    /// Lists all floating IPs.
+    Promise<List<FloatingIp>> listFloatingIps();
+
+    /// Gets a floating IP by ID.
+    Promise<FloatingIp> getFloatingIp(long floatingIpId);
+
+    /// Assigns a floating IP to a server.
+    Promise<Unit> assignFloatingIp(long floatingIpId, long serverId);
 
     /// Creates a HetznerClient with default HTTP operations.
     static HetznerClient hetznerClient(HetznerConfig config) {
@@ -253,6 +266,22 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
     public Promise<LoadBalancer> getLoadBalancer(long loadBalancerId) {
         return getJson("/load_balancers/" + loadBalancerId, LoadBalancerResponse.class)
         .map(LoadBalancerResponse::loadBalancer);
+    }
+
+    @Override
+    public Promise<List<FloatingIp>> listFloatingIps() {
+        return getJson("/floating_ips", FloatingIpListResponse.class).map(FloatingIpListResponse::floatingIps);
+    }
+
+    @Override
+    public Promise<FloatingIp> getFloatingIp(long floatingIpId) {
+        return getJson("/floating_ips/" + floatingIpId, FloatingIpResponse.class).map(FloatingIpResponse::floatingIp);
+    }
+
+    @Override
+    public Promise<Unit> assignFloatingIp(long floatingIpId, long serverId) {
+        return postJsonDiscarding("/floating_ips/" + floatingIpId + "/actions/assign",
+                                  AssignRequest.assignRequest(serverId));
     }
 
     // --- Internal HTTP helpers ---

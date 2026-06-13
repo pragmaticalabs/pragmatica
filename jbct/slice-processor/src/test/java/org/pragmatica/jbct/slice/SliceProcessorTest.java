@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.jbct.slice;
 
 import com.google.testing.compile.Compilation;
@@ -112,7 +117,10 @@ class SliceProcessorTest {
 
             public record MethodName(String value) {
                 public static Wrapper methodName(String value) { return new Wrapper(new MethodName(value)); }
-                public record Wrapper(MethodName name) { public MethodName unwrap() { return name; } }
+                public record Wrapper(MethodName name) {
+                    public MethodName unwrap() { return name; }
+                    public MethodName expect(String reason) { return name; }
+                }
             }
             """);
 
@@ -212,6 +220,39 @@ class SliceProcessorTest {
             }
             """);
 
+    private static final JavaFileObject CONFIG_FACADE = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.ConfigFacade",
+            """
+            package org.pragmatica.aether.slice;
+
+            import org.pragmatica.lang.Option;
+            import org.pragmatica.lang.Result;
+
+            import java.util.List;
+
+            public interface ConfigFacade {
+                Result<String> requireString(String section, String key);
+                Result<Integer> requireInt(String section, String key);
+                Result<Long> requireLong(String section, String key);
+                Result<Double> requireDouble(String section, String key);
+                Result<Boolean> requireBoolean(String section, String key);
+                Result<List<String>> requireStringList(String section, String key);
+                Option<String> getString(String section, String key);
+                Option<Integer> getInt(String section, String key);
+                Option<Long> getLong(String section, String key);
+                Option<Double> getDouble(String section, String key);
+                Option<Boolean> getBoolean(String section, String key);
+            }
+            """);
+
+    private static final JavaFileObject CONFIGURATION_SECTION = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.annotation.ConfigurationSection",
+            """
+            package org.pragmatica.aether.slice.annotation;
+
+            public interface ConfigurationSection {}
+            """);
+
     private static final JavaFileObject SLICE_CREATION_CONTEXT = JavaFileObjects.forSourceString(
             "org.pragmatica.aether.slice.SliceCreationContext",
             """
@@ -220,6 +261,7 @@ class SliceProcessorTest {
             public interface SliceCreationContext {
                 SliceInvokerFacade invoker();
                 ResourceProviderFacade resources();
+                ConfigFacade config();
             }
             """);
 
@@ -255,8 +297,8 @@ class SliceProcessorTest {
                 SLICE_ANNOTATION,
                 ASPECT, SLICE_CODEC, SLICE, SLICE_METHOD, METHOD_NAME, METHOD_HANDLE, INVOKER_FACADE,
                 METHOD_INTERCEPTOR, PROVISIONING_CONTEXT,
-                RESOURCE_PROVIDER_FACADE, SLICE_CREATION_CONTEXT, RESOURCE_QUALIFIER,
-                KEY_ANNOTATION, UNIT
+                RESOURCE_PROVIDER_FACADE, CONFIG_FACADE, SLICE_CREATION_CONTEXT, RESOURCE_QUALIFIER,
+                CONFIGURATION_SECTION, KEY_ANNOTATION, UNIT
         ));
     }
 
@@ -2247,7 +2289,7 @@ class SliceProcessorTest {
     }
 
     @Test
-    void should_detect_envelope_version_7() {
+    void should_detect_envelope_version_8() {
         assertThat(org.pragmatica.jbct.slice.generator.ManifestGenerator.class).isNotNull();
         // Verify the constant was bumped — accessed via reflection since it's package-private
         // The manifest test below verifies it appears in output
@@ -2313,22 +2355,691 @@ class SliceProcessorTest {
         assertThat(manifestFile.isPresent()).isTrue();
         var manifestContent = manifestFile.get().getCharContent(false).toString();
 
-        // Verify envelope version was bumped to 7
-        assertThat(manifestContent).contains("envelope.version=7");
+        // Verify envelope version (frozen at 1000 until GA — no bumps during rc1).
+        assertThat(manifestContent).contains("envelope.version=1000");
 
         // Verify stream publisher metadata
         assertThat(manifestContent).contains("stream.publishers.count=1");
         assertThat(manifestContent).contains("stream.publisher.0.config=streams.order-events");
         assertThat(manifestContent).contains("stream.publisher.0.eventType=test.dto.OrderEvent");
 
-        // Verify stream subscription metadata
-        assertThat(manifestContent).contains("stream.subscriptions.count=1");
-        assertThat(manifestContent).contains("stream.subscription.0.config=streams.order-events");
-        assertThat(manifestContent).contains("stream.subscription.0.method=processOrder");
-        assertThat(manifestContent).contains("stream.subscription.0.eventType=test.dto.OrderEvent");
-        assertThat(manifestContent).contains("stream.subscription.0.batch=false");
+        // Verify stream subscription via reactive bindings
+        assertThat(manifestContent).contains("reactive.count=1");
+        assertThat(manifestContent).contains("reactive.0.category=stream");
+        assertThat(manifestContent).contains("reactive.0.config=streams.order-events");
+        assertThat(manifestContent).contains("reactive.0.method=processOrder");
+        assertThat(manifestContent).contains("reactive.0.eventType=test.dto.OrderEvent");
+        assertThat(manifestContent).contains("reactive.0.batch=false");
 
         // Verify stream event classes
         assertThat(manifestContent).contains("stream.event.classes=test.dto.OrderEvent");
+    }
+
+    // ========== ConfigurationSection Tests ==========
+
+    @Test
+    void should_generate_config_parsing_code_for_configuration_section() throws Exception {
+        var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.annotation.ConfigurationSection;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = ConfigurationSection.class, config = "app.orders")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface AppConfig {}
+            """);
+        var serviceConfig = JavaFileObjects.forSourceString("test.config.ServiceConfig",
+                                                             """
+            package test.config;
+            import org.pragmatica.lang.Result;
+            public record ServiceConfig(String host, int port, boolean enableTls) {
+                public static Result<ServiceConfig> serviceConfig(String host, int port, boolean enableTls) {
+                    return Result.success(new ServiceConfig(host, port, enableTls));
+                }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.AppConfig;
+            import test.config.ServiceConfig;
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+                static OrderService orderService(@AppConfig ServiceConfig config) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(appConfig);
+        sources.add(serviceConfig);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // Should NOT generate ctx.resources().provide() for config sections
+        assertThat(factoryContent).doesNotContain("ctx.resources().provide(ConfigurationSection.class");
+        // Should generate Result.all() with config facade calls
+        assertThat(factoryContent).contains("Result.all(");
+        assertThat(factoryContent).contains("ctx.config().requireString(\"app.orders\", \"host\")");
+        assertThat(factoryContent).contains("ctx.config().requireInt(\"app.orders\", \"port\")");
+        assertThat(factoryContent).contains("ctx.config().requireBoolean(\"app.orders\", \"enable_tls\")");
+        assertThat(factoryContent).contains("ServiceConfig::serviceConfig");
+        assertThat(factoryContent).contains(".async()");
+        // Should import ConfigFacade and Result
+        assertThat(factoryContent).contains("import org.pragmatica.aether.slice.ConfigFacade;");
+        assertThat(factoryContent).contains("import org.pragmatica.lang.Result;");
+    }
+
+    @Test
+    void should_handle_mixed_config_and_resource_dependencies() throws Exception {
+        var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.annotation.ConfigurationSection;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = ConfigurationSection.class, config = "app.orders")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface AppConfig {}
+            """);
+        var primaryDb = JavaFileObjects.forSourceString("test.annotation.PrimaryDb",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = test.infra.DatabaseConnector.class, config = "database.primary")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface PrimaryDb {}
+            """);
+        var databaseConnector = JavaFileObjects.forSourceString("test.infra.DatabaseConnector",
+                                                                """
+            package test.infra;
+            import org.pragmatica.lang.Promise;
+            public interface DatabaseConnector {
+                Promise<String> query(String sql);
+            }
+            """);
+        var serviceConfig = JavaFileObjects.forSourceString("test.config.ServiceConfig",
+                                                             """
+            package test.config;
+            import org.pragmatica.lang.Result;
+            public record ServiceConfig(String host, int port) {
+                public static Result<ServiceConfig> serviceConfig(String host, int port) {
+                    return Result.success(new ServiceConfig(host, port));
+                }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.AppConfig;
+            import test.annotation.PrimaryDb;
+            import test.config.ServiceConfig;
+            import test.infra.DatabaseConnector;
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+                static OrderService orderService(@AppConfig ServiceConfig config,
+                                                 @PrimaryDb DatabaseConnector db) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(appConfig);
+        sources.add(primaryDb);
+        sources.add(databaseConnector);
+        sources.add(serviceConfig);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // Config section: parsed via Result.all()
+        assertThat(factoryContent).contains("ctx.config().requireString(\"app.orders\", \"host\")");
+        assertThat(factoryContent).contains("ctx.config().requireInt(\"app.orders\", \"port\")");
+        // Resource: provisioned via ctx.resources().provide()
+        assertThat(factoryContent).contains("ctx.resources().provide(DatabaseConnector.class, \"database.primary\")");
+    }
+
+    @Test
+    void should_generate_config_parsing_for_long_and_double_fields() throws Exception {
+        var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.annotation.ConfigurationSection;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = ConfigurationSection.class, config = "app.cache")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface AppConfig {}
+            """);
+        var cacheConfig = JavaFileObjects.forSourceString("test.config.CacheConfig",
+                                                          """
+            package test.config;
+            import org.pragmatica.lang.Result;
+            public record CacheConfig(long maxSizeBytes, double evictionRate) {
+                public static Result<CacheConfig> cacheConfig(long maxSizeBytes, double evictionRate) {
+                    return Result.success(new CacheConfig(maxSizeBytes, evictionRate));
+                }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.CacheService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.AppConfig;
+            import test.config.CacheConfig;
+            @Slice
+            public interface CacheService {
+                Promise<String> get(String key);
+                static CacheService cacheService(@AppConfig CacheConfig config) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(appConfig);
+        sources.add(cacheConfig);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.CacheServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("ctx.config().requireLong(\"app.cache\", \"max_size_bytes\")");
+        assertThat(factoryContent).contains("ctx.config().requireDouble(\"app.cache\", \"eviction_rate\")");
+        assertThat(factoryContent).contains("CacheConfig::cacheConfig");
+    }
+
+    @Test
+    void should_generate_config_parsing_for_value_object_fields() throws Exception {
+        var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.annotation.ConfigurationSection;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = ConfigurationSection.class, config = "app.gateway")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface AppConfig {}
+            """);
+        var apiUrl = JavaFileObjects.forSourceString("test.config.ApiUrl",
+                                                      """
+            package test.config;
+            import org.pragmatica.lang.Result;
+            public record ApiUrl(String value) {
+                public static Result<ApiUrl> apiUrl(String raw) {
+                    return Result.success(new ApiUrl(raw));
+                }
+            }
+            """);
+        var gatewayConfig = JavaFileObjects.forSourceString("test.config.GatewayConfig",
+                                                             """
+            package test.config;
+            import org.pragmatica.lang.Result;
+            public record GatewayConfig(ApiUrl baseUrl, int maxRetries) {
+                public static Result<GatewayConfig> gatewayConfig(ApiUrl baseUrl, int maxRetries) {
+                    return Result.success(new GatewayConfig(baseUrl, maxRetries));
+                }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.GatewayService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.AppConfig;
+            import test.config.GatewayConfig;
+            @Slice
+            public interface GatewayService {
+                Promise<String> call(String request);
+                static GatewayService gatewayService(@AppConfig GatewayConfig config) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(appConfig);
+        sources.add(apiUrl);
+        sources.add(gatewayConfig);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.GatewayServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("ctx.config().requireString(\"app.gateway\", \"base_url\").flatMap(ApiUrl::apiUrl)");
+        assertThat(factoryContent).contains("ctx.config().requireInt(\"app.gateway\", \"max_retries\")");
+        assertThat(factoryContent).contains("GatewayConfig::gatewayConfig");
+    }
+
+    @Test
+    void should_generate_config_parsing_for_optional_primitive_fields() throws Exception {
+        var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.annotation.ConfigurationSection;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = ConfigurationSection.class, config = "app.server")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface AppConfig {}
+            """);
+        var serverConfig = JavaFileObjects.forSourceString("test.config.ServerConfig",
+                                                            """
+            package test.config;
+            import org.pragmatica.lang.Option;
+            import org.pragmatica.lang.Result;
+            public record ServerConfig(String host, Option<Integer> port, Option<Boolean> enableTls) {
+                public static Result<ServerConfig> serverConfig(String host, Option<Integer> port, Option<Boolean> enableTls) {
+                    return Result.success(new ServerConfig(host, port, enableTls));
+                }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.ServerService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.AppConfig;
+            import test.config.ServerConfig;
+            @Slice
+            public interface ServerService {
+                Promise<String> serve(String request);
+                static ServerService serverService(@AppConfig ServerConfig config) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(appConfig);
+        sources.add(serverConfig);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.ServerServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("ctx.config().requireString(\"app.server\", \"host\")");
+        assertThat(factoryContent).contains("Result.success(ctx.config().getInt(\"app.server\", \"port\"))");
+        assertThat(factoryContent).contains("Result.success(ctx.config().getBoolean(\"app.server\", \"enable_tls\"))");
+        assertThat(factoryContent).contains("ServerConfig::serverConfig");
+    }
+
+    @Test
+    void should_generate_config_parsing_for_string_list_field() throws Exception {
+        var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.annotation.ConfigurationSection;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = ConfigurationSection.class, config = "app.cors")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface AppConfig {}
+            """);
+        var corsConfig = JavaFileObjects.forSourceString("test.config.CorsConfig",
+                                                          """
+            package test.config;
+            import org.pragmatica.lang.Result;
+            import java.util.List;
+            public record CorsConfig(List<String> allowedOrigins, boolean allowCredentials) {
+                public static Result<CorsConfig> corsConfig(List<String> allowedOrigins, boolean allowCredentials) {
+                    return Result.success(new CorsConfig(allowedOrigins, allowCredentials));
+                }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.CorsService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.AppConfig;
+            import test.config.CorsConfig;
+            @Slice
+            public interface CorsService {
+                Promise<String> check(String origin);
+                static CorsService corsService(@AppConfig CorsConfig config) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(appConfig);
+        sources.add(corsConfig);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.CorsServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("ctx.config().requireStringList(\"app.cors\", \"allowed_origins\")");
+        assertThat(factoryContent).contains("ctx.config().requireBoolean(\"app.cors\", \"allow_credentials\")");
+        assertThat(factoryContent).contains("CorsConfig::corsConfig");
+    }
+
+    @Test
+    void should_generate_config_parsing_for_optional_value_object_field() throws Exception {
+        var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.annotation.ConfigurationSection;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = ConfigurationSection.class, config = "app.proxy")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface AppConfig {}
+            """);
+        var proxyUrl = JavaFileObjects.forSourceString("test.config.ProxyUrl",
+                                                        """
+            package test.config;
+            import org.pragmatica.lang.Result;
+            public record ProxyUrl(String value) {
+                public static Result<ProxyUrl> proxyUrl(String raw) {
+                    return Result.success(new ProxyUrl(raw));
+                }
+            }
+            """);
+        var proxyConfig = JavaFileObjects.forSourceString("test.config.ProxyConfig",
+                                                           """
+            package test.config;
+            import org.pragmatica.lang.Option;
+            import org.pragmatica.lang.Result;
+            public record ProxyConfig(String host, Option<ProxyUrl> fallbackUrl) {
+                public static Result<ProxyConfig> proxyConfig(String host, Option<ProxyUrl> fallbackUrl) {
+                    return Result.success(new ProxyConfig(host, fallbackUrl));
+                }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.ProxyService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.AppConfig;
+            import test.config.ProxyConfig;
+            @Slice
+            public interface ProxyService {
+                Promise<String> proxy(String request);
+                static ProxyService proxyService(@AppConfig ProxyConfig config) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(appConfig);
+        sources.add(proxyUrl);
+        sources.add(proxyConfig);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.ProxyServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("ctx.config().requireString(\"app.proxy\", \"host\")");
+        assertThat(factoryContent).contains("Result.success(ctx.config().getString(\"app.proxy\", \"fallback_url\").map(s -> ProxyUrl.proxyUrl(s).expect(\"optional ProxyUrl value validated at config load time\")))");
+        assertThat(factoryContent).contains("ProxyConfig::proxyConfig");
+    }
+
+    // ========== Transitive Method-Level Annotation Tests ==========
+
+    private static final JavaFileObject SUBSCRIBER = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.Subscriber",
+            """
+            package org.pragmatica.aether.slice;
+
+            public interface Subscriber {}
+            """);
+
+    private List<JavaFileObject> subscriberSources() {
+        var sources = commonSources();
+        sources.add(SUBSCRIBER);
+        return sources;
+    }
+
+    @Test
+    void should_detect_subscription_on_plain_interface_dependency() throws Exception {
+        var orderTopic = JavaFileObjects.forSourceString("test.annotation.OrderTopic",
+                                                         """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.Subscriber;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = Subscriber.class, config = "messaging.order-events")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface OrderTopic {}
+            """);
+        var orderEvent = JavaFileObjects.forSourceString("test.dto.OrderEvent",
+                                                         """
+            package test.dto;
+            public record OrderEvent(String orderId) {}
+            """);
+        // Step interface with a subscription annotation on its method
+        var orderListener = JavaFileObjects.forSourceString("test.steps.OrderListener",
+                                                             """
+            package test.steps;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.dto.OrderEvent;
+            public interface OrderListener {
+                @OrderTopic
+                Promise<Unit> onOrderPlaced(OrderEvent event);
+                static OrderListener orderListener() { return null; }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.steps.OrderListener;
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+                static OrderService orderService(OrderListener listener) { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(orderTopic);
+        sources.add(orderEvent);
+        sources.add(orderListener);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        // Verify manifest contains transitive subscription entry with qualified method name
+        var manifestFile = compilation.generatedFile(StandardLocation.CLASS_OUTPUT, "META-INF/slice/OrderService.manifest");
+        assertThat(manifestFile.isPresent()).isTrue();
+        var manifestContent = manifestFile.get().getCharContent(false).toString();
+        assertThat(manifestContent).contains("reactive.count=1");
+        assertThat(manifestContent).contains("reactive.0.category=subscription");
+        assertThat(manifestContent).contains("reactive.0.config=messaging.order-events");
+        assertThat(manifestContent).contains("reactive.0.method=listenerOnOrderPlaced");
+        assertThat(manifestContent).contains("reactive.0.messageType=test.dto.OrderEvent");
+    }
+
+    @Test
+    void should_include_transitive_methods_in_slice_adapter() throws Exception {
+        var orderTopic = JavaFileObjects.forSourceString("test.annotation.OrderTopic",
+                                                         """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.Subscriber;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = Subscriber.class, config = "messaging.order-events")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface OrderTopic {}
+            """);
+        var orderEvent = JavaFileObjects.forSourceString("test.dto.OrderEvent",
+                                                         """
+            package test.dto;
+            public record OrderEvent(String orderId) {}
+            """);
+        var orderListener = JavaFileObjects.forSourceString("test.steps.OrderListener",
+                                                             """
+            package test.steps;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.dto.OrderEvent;
+            public interface OrderListener {
+                @OrderTopic
+                Promise<Unit> onOrderPlaced(OrderEvent event);
+                static OrderListener orderListener() { return null; }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.steps.OrderListener;
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+                static OrderService orderService(OrderListener listener) { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(orderTopic);
+        sources.add(orderEvent);
+        sources.add(orderListener);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        // Verify adapter record includes step field
+        assertThat(factoryContent).contains("OrderListener listener");
+        // Verify methods() list includes transitive method with qualified name
+        assertThat(factoryContent).contains("listenerOnOrderPlaced");
+        // Verify handler delegates to step instance
+        assertThat(factoryContent).contains("listener::onOrderPlaced");
+    }
+
+    @Test
+    void should_combine_direct_and_transitive_subscriptions() throws Exception {
+        var orderTopic = JavaFileObjects.forSourceString("test.annotation.OrderTopic",
+                                                         """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.Subscriber;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = Subscriber.class, config = "messaging.order-events")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface OrderTopic {}
+            """);
+        var paymentTopic = JavaFileObjects.forSourceString("test.annotation.PaymentTopic",
+                                                            """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.Subscriber;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = Subscriber.class, config = "messaging.payment-events")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface PaymentTopic {}
+            """);
+        var orderEvent = JavaFileObjects.forSourceString("test.dto.OrderEvent",
+                                                         """
+            package test.dto;
+            public record OrderEvent(String orderId) {}
+            """);
+        var paymentEvent = JavaFileObjects.forSourceString("test.dto.PaymentEvent",
+                                                            """
+            package test.dto;
+            public record PaymentEvent(String paymentId) {}
+            """);
+        // Step interface with subscription
+        var orderListener = JavaFileObjects.forSourceString("test.steps.OrderListener",
+                                                             """
+            package test.steps;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderTopic;
+            import test.dto.OrderEvent;
+            public interface OrderListener {
+                @OrderTopic
+                Promise<Unit> onOrderPlaced(OrderEvent event);
+                static OrderListener orderListener() { return null; }
+            }
+            """);
+        // Slice with both direct subscription and step dependency with subscription
+        var source = JavaFileObjects.forSourceString("test.PaymentService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.PaymentTopic;
+            import test.dto.PaymentEvent;
+            import test.steps.OrderListener;
+            @Slice
+            public interface PaymentService {
+                Promise<String> processPayment(String paymentId);
+                @PaymentTopic
+                Promise<Unit> onPaymentReceived(PaymentEvent event);
+                static PaymentService paymentService(OrderListener listener) { return null; }
+            }
+            """);
+
+        var sources = subscriberSources();
+        sources.add(orderTopic);
+        sources.add(paymentTopic);
+        sources.add(orderEvent);
+        sources.add(paymentEvent);
+        sources.add(orderListener);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        // Verify manifest has BOTH subscription entries
+        var manifestFile = compilation.generatedFile(StandardLocation.CLASS_OUTPUT, "META-INF/slice/PaymentService.manifest");
+        assertThat(manifestFile.isPresent()).isTrue();
+        var manifestContent = manifestFile.get().getCharContent(false).toString();
+        assertThat(manifestContent).contains("reactive.count=2");
+        assertThat(manifestContent).contains("reactive.0.category=subscription");
+        assertThat(manifestContent).contains("reactive.0.method=onPaymentReceived");
+        assertThat(manifestContent).contains("reactive.0.config=messaging.payment-events");
+        assertThat(manifestContent).contains("reactive.1.category=subscription");
+        assertThat(manifestContent).contains("reactive.1.method=listenerOnOrderPlaced");
+        assertThat(manifestContent).contains("reactive.1.config=messaging.order-events");
+
+        // Verify methods() list has BOTH entries
+        var factoryContent = compilation.generatedSourceFile("test.PaymentServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("\"onPaymentReceived\"");
+        assertThat(factoryContent).contains("\"listenerOnOrderPlaced\"");
     }
 }

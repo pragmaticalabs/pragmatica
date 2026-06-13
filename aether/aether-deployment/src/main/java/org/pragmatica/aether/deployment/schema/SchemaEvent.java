@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.schema;
 
 import org.pragmatica.consensus.NodeId;
@@ -6,8 +10,6 @@ import org.pragmatica.messaging.Message;
 import java.util.List;
 
 
-/// Events emitted during schema migration lifecycle.
-/// The explanation field contains natural language description suitable for both human operators and LLM agents.
 public sealed interface SchemaEvent extends Message.Local {
     record MigrationStarted(String datasource, String artifactCoords, NodeId nodeId, long timestamp) implements SchemaEvent {
         public static MigrationStarted migrationStarted(String datasource, String artifactCoords, NodeId nodeId) {

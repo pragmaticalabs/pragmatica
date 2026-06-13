@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.deployment.cluster;
 
 import org.junit.jupiter.api.Nested;
@@ -12,8 +17,8 @@ import org.pragmatica.lang.Option;
 import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.ClusterDeploymentState.Active.InFlightBlueprint;
 import static org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import static org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState.Active.InFlightBlueprint;
 
 class BlueprintAtomicityTest {
     private static final Version V1 = Version.version("1.0.0").unwrap();

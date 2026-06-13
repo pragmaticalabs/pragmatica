@@ -10,7 +10,8 @@ STREAM_NAME="${STREAM_NAME:-repl-test-events}"
 REPLICATION_FACTOR=2
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
+    wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
     log_pass "Cluster ready"
 }
 
@@ -39,14 +40,34 @@ test_stream_visible_on_governor() {
 }
 
 test_read_events_from_partition() {
-    local result
-    result=$(api_get "/api/streams/${STREAM_NAME}/0/read?from=0&max=10")
-    if [ -n "$result" ]; then
-        assert_contains "$result" "events" "Events readable from partition 0"
-    else
-        log_warn "Read endpoint returned empty — stream may not have flushed yet"
-        return 0
+    # RC1-blocker fix (audit 2026-05-21 §2.2 #1): the prior implementation
+    # accepted `{"events":[]}` as success because `assert_contains "$result" "events"`
+    # matches the field name regardless of array contents. The publish→read
+    # invariant was unverified — a broken read path that always returned an
+    # empty events array would have passed.
+    #
+    # New behavior: drive the read through the `aether streams read` CLI
+    # (commit 04ebd4482) so we exercise the same surface operators use, and
+    # count event records server-side. The ReadEventsResponse shape is
+    # `{"events":[{"offset":N,"data":"...","timestamp":N}, ...]}` (see
+    # aether/node/.../StreamRoutes.java::EventRecord). Every event carries
+    # exactly one `"offset"` field, so a count of `"offset"` occurrences inside
+    # the events array equals the number of returned events.
+    local result event_count
+    result=$(aether_failover streams read "$STREAM_NAME" 0 --limit 50 --format json) || {
+        log_fail "aether streams read ${STREAM_NAME} 0 failed (exit non-zero)"
+        return 1
+    }
+    if [ -z "$result" ]; then
+        log_fail "aether streams read ${STREAM_NAME} 0 returned empty body"
+        return 1
     fi
+    event_count=$(printf '%s' "$result" | grep -oE '"offset"[[:space:]]*:' | wc -l | tr -d ' ')
+    event_count="${event_count:-0}"
+    # Publish phase issued 10 events; require at least 1 to land (strict-N
+    # would race replication ack timing, but >=1 is the publish→read invariant
+    # we set out to verify).
+    assert_ge "$event_count" "1" "streams read returned >=1 event after publish (got ${event_count}; first 300 chars: ${result:0:300})"
 }
 
 # Attempt to read stream data via a non-leader node.
@@ -68,22 +89,42 @@ test_read_from_non_governor_node() {
         return 0
     fi
 
-    # Determine the management port for the alternate node
-    local node_index
-    node_index=$(echo "$alt_node" | grep -o '[0-9]*$')
-    local alt_port=$((MGMT_PORT + node_index - 1))
-    local alt_endpoint="http://${TARGET_HOST}:${alt_port}"
-
-    local result
-    result=$(curl -sf -H "X-API-Key: ${API_KEY}" "${alt_endpoint}/api/streams/${STREAM_NAME}" 2>/dev/null) || true
-
-    if [ -n "$result" ]; then
-        assert_contains "$result" "$STREAM_NAME" "Stream metadata accessible from non-governor node"
+    # Compose the alt node's management endpoint. Cloud and docker-remote layouts
+    # differ: cloud has one VM per node with mgmt on a fixed port (CLOUD_MGMT_PORT,
+    # default 8080), so the alt host is the node's own public IP. Docker-remote
+    # collocates all 5 nodes on TARGET_HOST and host-maps a per-node port range
+    # (MGMT_PORT + index) — the standard docker-remote node→port derivation used
+    # throughout lib/cluster.sh.
+    local alt_endpoint
+    if [ "${ENV_TYPE:-}" = "cloud" ]; then
+        local alt_ip
+        if ! alt_ip=$(cloud_public_ip "$alt_node"); then
+            skip_test "Read from non-governor" "cloud_public_ip lookup failed for ${alt_node}"
+            return 0
+        fi
+        alt_endpoint="http://${alt_ip}:${CLOUD_MGMT_PORT:-8080}"
     else
-        log_warn "Stream not yet accessible from non-governor node (replication transport may not be wired)"
-        log_info "TODO: Once ReplicationTransport is connected in AetherNode, this test should assert event data"
-        return 0
+        local node_index
+        node_index=$(echo "$alt_node" | grep -o '[0-9]*$')
+        local alt_port=$((MGMT_PORT + node_index - 1))
+        alt_endpoint="http://${TARGET_HOST}:${alt_port}"
     fi
+
+    local result rc
+    # `_api_call`-style error capture so a connection-refused at the alt endpoint
+    # surfaces as a warn rather than silently collapsing to empty body (which the
+    # `assert_ne` below would conflate with "stream metadata absent").
+    result=$(curl -sf -H "X-API-Key: ${API_KEY}" --connect-timeout 5 \
+                  "${alt_endpoint}/api/streams/${STREAM_NAME}" 2>/dev/null) && rc=0 || rc=$?
+    if [ "$rc" -ne 0 ] && [ -z "$result" ]; then
+        log_warn "Read from non-governor: curl rc=${rc} from ${alt_endpoint}/api/streams/${STREAM_NAME} (empty body — treating as missing metadata for assertion)"
+    fi
+
+    # Empty IS the failure mode — replication is the feature under test. If the
+    # non-governor cannot serve stream metadata we have a real replication gap,
+    # not a "not yet wired" excuse to log_warn and pass.
+    assert_ne "$result" "" "Stream metadata reachable from non-governor ${alt_node}"
+    assert_contains "$result" "$STREAM_NAME" "Stream metadata accessible from non-governor node"
 }
 
 test_stream_in_list_after_replication() {

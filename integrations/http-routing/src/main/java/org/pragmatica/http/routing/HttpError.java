@@ -3,8 +3,13 @@ package org.pragmatica.http.routing;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
-public interface HttpError extends Cause {
+public interface HttpError extends Cause, HttpStatusAware {
     HttpStatus status();
+
+    @Override
+    default HttpStatus httpStatus() {
+        return status();
+    }
 
     static HttpError httpError(HttpStatus status, Cause source) {
         record httpError(HttpStatus status, Cause origin) implements HttpError {

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.security;
 
 import org.pragmatica.json.JsonMapper;
@@ -12,11 +16,8 @@ import java.util.Map;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Parses JWT tokens into header, payload, and signature components.
-///
-/// Uses JDK Base64url decoder and Jackson for JSON parsing.
-/// No external JWT library dependencies.
-@SuppressWarnings("JBCT-RET-03") final class JwtTokenParser {
+@SuppressWarnings("JBCT-RET-03")
+final class JwtTokenParser {
     private static final JsonMapper JSON = JsonMapper.defaultJsonMapper();
 
     private static final TypeToken<Map<String, Object>> MAP_TYPE = new TypeToken<>() {};
@@ -25,9 +26,9 @@ import static org.pragmatica.lang.Result.success;
 
     private JwtTokenParser() {}
 
-    record JwtHeader(String alg, String kid){}
+    record JwtHeader(String alg, String kid) {}
 
-    record ParsedJwt(JwtHeader header, Map<String, Object> payload, byte[] signature, String signedContent){}
+    record ParsedJwt(JwtHeader header, Map<String, Object> payload, byte[] signature, String signedContent) {}
 
     static Result<ParsedJwt> parseToken(String token) {
         return splitToken(token).flatMap(JwtTokenParser::decodeComponents);
@@ -35,16 +36,18 @@ import static org.pragmatica.lang.Result.success;
 
     private static Result<String[]> splitToken(String token) {
         var parts = token.split("\\.");
+
         return parts.length == 3
-              ? success(parts)
-              : SecurityError.MALFORMED_TOKEN.result();
+               ? success(parts)
+               : SecurityError.MALFORMED_TOKEN.result();
     }
 
     private static Result<ParsedJwt> decodeComponents(String[] parts) {
         return decodeHeader(parts[0]).flatMap(header -> decodePayload(parts[1]).flatMap(payload -> decodeSignature(parts[2]).map(sig -> new ParsedJwt(header,
                                                                                                                                                       payload,
                                                                                                                                                       sig,
-                                                                                                                                                      parts[0] + "." + parts[1]))));
+                                                                                                                                                      parts[0]
+                                                                                                                                                     + "." + parts[1]))));
     }
 
     private static Result<JwtHeader> decodeHeader(String headerB64) {
@@ -52,10 +55,9 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static Result<JwtHeader> extractHeader(Map<String, Object> headerMap) {
-        var alg = Option.option(headerMap.get("alg")).map(Object::toString)
-                               .or("RS256");
-        var kid = Option.option(headerMap.get("kid")).map(Object::toString)
-                               .or("");
+        var alg = Option.option(headerMap.get("alg")).map(Object::toString).or("RS256");
+        var kid = Option.option(headerMap.get("kid")).map(Object::toString).or("");
+
         return success(new JwtHeader(alg, kid));
     }
 
@@ -72,7 +74,8 @@ import static org.pragmatica.lang.Result.success;
                                 .flatMap(json -> JSON.readString(json, MAP_TYPE));
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Result<byte[]> decodeBase64Bytes(String base64) {
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<byte[]> decodeBase64Bytes(String base64) {
         return Result.lift(JwtTokenParser::decodeFailed, () -> BASE64URL.decode(base64));
     }
 

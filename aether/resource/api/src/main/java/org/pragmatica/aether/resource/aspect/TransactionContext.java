@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.aspect;
 
 import org.pragmatica.lang.Option;
@@ -13,14 +17,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Context representing an active transaction.
-/// Thread-safe and immutable.
-///
-/// @param id            Unique transaction identifier
-/// @param config        Transaction configuration
-/// @param status        Current transaction status
-/// @param startTime     When the transaction started
-/// @param parentContext Parent transaction context (for nested transactions)
 public record TransactionContext(String id,
                                  TransactionConfig config,
                                  TransactionStatus status,
@@ -41,8 +37,8 @@ public record TransactionContext(String id,
                                               none()));
     }
 
-    @SuppressWarnings({"JBCT-VO-02", "JBCT-NAM-01"}) public static TransactionContext nestedContext(TransactionConfig config,
-                                                                                                    TransactionContext parent) {
+    @SuppressWarnings("JBCT-NAM-01")
+    public static TransactionContext nestedContext(TransactionConfig config, TransactionContext parent) {
         return new TransactionContext(UUID.randomUUID().toString(),
                                       config,
                                       TransactionStatus.ACTIVE,
@@ -50,19 +46,19 @@ public record TransactionContext(String id,
                                       option(parent));
     }
 
-    @SuppressWarnings("JBCT-VO-02") public TransactionContext commit() {
+    public TransactionContext commit() {
         return new TransactionContext(id, config, TransactionStatus.COMMITTED, startTime, parentContext);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public TransactionContext rollback() {
+    public TransactionContext rollback() {
         return new TransactionContext(id, config, TransactionStatus.ROLLED_BACK, startTime, parentContext);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public TransactionContext suspend() {
+    public TransactionContext suspend() {
         return new TransactionContext(id, config, TransactionStatus.SUSPENDED, startTime, parentContext);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public TransactionContext resume() {
+    public TransactionContext resume() {
         return new TransactionContext(id, config, TransactionStatus.ACTIVE, startTime, parentContext);
     }
 
@@ -75,12 +71,14 @@ public record TransactionContext(String id,
     }
 
     public boolean isTimedOut() {
-        return config.timeout().filter(this::hasExceededTimeout)
-                             .isPresent();
+        return config.timeout()
+                     .filter(this::hasExceededTimeout)
+                     .isPresent();
     }
 
     private boolean hasExceededTimeout(TimeSpan timeout) {
         var elapsed = Duration.between(startTime, Instant.now());
+
         return elapsed.toMillis() > timeout.millis();
     }
 }

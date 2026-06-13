@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
 import org.pragmatica.lang.Option;
@@ -10,11 +14,6 @@ import java.util.List;
 import java.util.Map;
 
 
-/// SPI for resolving secrets from external backends (Vault, AWS Secrets Manager, etc.).
-/// Used internally by the resource provisioning pipeline to resolve `${secrets:...}` placeholders
-/// in configuration before passing to ResourceFactory implementations.
-///
-/// Application code never interacts with this interface directly.
 public interface SecretsProvider {
     Promise<String> resolveSecret(String secretPath);
 
@@ -23,8 +22,8 @@ public interface SecretsProvider {
     }
 
     default Promise<Map<String, String>> resolveSecrets(List<String> secretPaths) {
-        var futures = secretPaths.stream().map(path -> resolveSecret(path).map(value -> Map.entry(path, value)))
-                                        .toList();
+        var futures = secretPaths.stream().map(path -> resolveSecret(path).map(value -> Map.entry(path, value))).toList();
+
         return Promise.allOf(futures).map(SecretsProvider::collectEntries);
     }
 
@@ -34,7 +33,11 @@ public interface SecretsProvider {
 
     private static Map<String, String> collectEntries(List<Result<Map.Entry<String, String>>> results) {
         var map = new HashMap<String, String>();
-        for (var result : results) {result.onSuccess(entry -> map.put(entry.getKey(), entry.getValue()));}
+
+        for (var result : results) {
+            result.onSuccess(entry -> map.put(entry.getKey(), entry.getValue()));
+        }
+
         return Map.copyOf(map);
     }
 }

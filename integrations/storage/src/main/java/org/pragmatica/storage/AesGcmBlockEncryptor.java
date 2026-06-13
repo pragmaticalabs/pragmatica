@@ -1,12 +1,13 @@
 package org.pragmatica.storage;
 
-import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 
 import static org.pragmatica.storage.BlockEncryptor.EncryptedData.encryptedData;
@@ -44,10 +45,7 @@ final class AesGcmBlockEncryptor implements BlockEncryptor {
 
     @Override
     public Result<byte[]> decrypt(byte[] encryptedData, EncryptionParams params) {
-        return Result.lift(
-            EncryptionError.DecryptionFailed::new,
-            () -> doCipher(Cipher.DECRYPT_MODE, encryptedData, params.iv())
-        );
+        return doCipher(EncryptionError.DecryptionFailed::new, Cipher.DECRYPT_MODE, encryptedData, params.iv());
     }
 
     private Result<byte[]> generateIv() {
@@ -57,21 +55,24 @@ final class AesGcmBlockEncryptor implements BlockEncryptor {
     }
 
     private Result<EncryptedData> performEncryption(byte[] data, byte[] iv) {
-        return Result.lift(
-            EncryptionError.EncryptionFailed::new,
-            () -> doCipher(Cipher.ENCRYPT_MODE, data, iv)
-        ).map(ciphertext -> toEncryptedData(ciphertext, iv));
+        return doCipher(EncryptionError.EncryptionFailed::new, Cipher.ENCRYPT_MODE, data, iv)
+            .map(ciphertext -> toEncryptedData(ciphertext, iv));
     }
 
     private EncryptedData toEncryptedData(byte[] ciphertext, byte[] iv) {
         return encryptedData(ciphertext, encryptionParams(ALGORITHM, iv, keyId));
     }
 
-    private byte[] doCipher(int mode, byte[] input, byte[] iv) throws GeneralSecurityException {
-        var spec = new GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv);
-        var secretKey = new SecretKeySpec(key, "AES");
-        var cipher = Cipher.getInstance(ALGORITHM);
-        cipher.init(mode, secretKey, spec);
-        return cipher.doFinal(input);
+    /// Run the JCE cipher, capturing any [`GeneralSecurityException`] into a [`Result`] via the
+    /// supplied error factory so the crypto-failure path is surfaced as a [`Cause`] rather than a
+    /// checked exception propagated out of the encryptor.
+    private Result<byte[]> doCipher(Fn1<? extends Cause, ? super Throwable> errorMapper, int mode, byte[] input, byte[] iv) {
+        return Result.lift(errorMapper, () -> {
+            var spec = new GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv);
+            var secretKey = new SecretKeySpec(key, "AES");
+            var cipher = Cipher.getInstance(ALGORITHM);
+            cipher.init(mode, secretKey, spec);
+            return cipher.doFinal(input);
+        });
     }
 }

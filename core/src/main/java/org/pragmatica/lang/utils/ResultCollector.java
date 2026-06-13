@@ -17,6 +17,8 @@
 
 package org.pragmatica.lang.utils;
 
+import org.pragmatica.lang.Contract;
+
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
@@ -49,6 +51,7 @@ public record ResultCollector(Object[] results, AtomicInteger counter, Consumer<
 
     /// Register event and perform action if the threshold is reached.
     /// Once the threshold is reached, no further events will trigger action execution.
+    @Contract
     public void registerEvent(int index, Object value) {
         if (counter.get() <= 0) {
             return;

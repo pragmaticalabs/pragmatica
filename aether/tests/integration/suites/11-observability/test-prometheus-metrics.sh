@@ -7,7 +7,7 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     log_pass "Cluster ready"
 }
 
@@ -26,58 +26,79 @@ test_valid_prometheus_format() {
     local body
     body=$(api_get "/api/metrics/prometheus")
     assert_ne "$body" "" "Prometheus body is non-empty"
-    # Prometheus text format: lines are either comments (# ...) or metric lines (name value)
+    # Prometheus text format: lines are either comments (# ...) or metric lines (name value).
+    # Use a sentinel so a grep pipeline error is distinguishable from "0 matches".
     local has_metric_line
-    has_metric_line=$(echo "$body" | grep -cE '^[a-zA-Z_][a-zA-Z0-9_]' || echo "0")
+    has_metric_line=$(echo "$body" | grep -cE '^[a-zA-Z_][a-zA-Z0-9_]') || has_metric_line=-1
     assert_gt "$has_metric_line" "0" "Prometheus output contains metric lines"
 }
 
+# Strict: HTTP request metrics MUST be present. A Prometheus exposition without
+# request metrics indicates the Micrometer wiring is broken.
 test_http_request_metrics() {
     local body
     body=$(api_get "/api/metrics/prometheus")
-    # Look for HTTP request metrics (various naming conventions)
-    if echo "$body" | grep -qE 'http_request|aether_http_requests' 2>/dev/null; then
+    if echo "$body" | grep -qE 'http_request|aether_http_requests|http_server_requests'; then
         log_pass "HTTP request metrics present"
-    else
-        log_warn "HTTP request metrics not found — may use different metric names"
-        log_pass "Prometheus endpoint returns data"
+        return 0
     fi
+    log_fail "No http_request_* metric found in Prometheus output (sample: $(echo "$body" | head -c 300))"
+    return 1
 }
 
+# Strict: jvm_memory / jvm_threads / jvm_gc are emitted by the standard
+# Micrometer JVM binders that the runtime registers at startup. Their absence
+# means the JVM binders failed to register.
 test_jvm_metrics() {
     local body
     body=$(api_get "/api/metrics/prometheus")
-    if echo "$body" | grep -qE 'jvm_memory|jvm_threads|jvm_gc' 2>/dev/null; then
+    if echo "$body" | grep -qE 'jvm_memory|jvm_threads|jvm_gc'; then
         log_pass "JVM metrics present"
-    else
-        log_warn "JVM metrics not found — may not be exposed"
-        log_pass "Prometheus endpoint returns data"
+        return 0
     fi
+    log_fail "No jvm_* metric found in Prometheus output (sample: $(echo "$body" | head -c 300))"
+    return 1
 }
 
+# Strict: at least one aether_/cluster_/node_-prefixed metric must be present —
+# the runtime exposes cluster state via these prefixes.
 test_cluster_metrics() {
     local body
     body=$(api_get "/api/metrics/prometheus")
-    if echo "$body" | grep -qE 'aether_|cluster_|node_' 2>/dev/null; then
+    if echo "$body" | grep -qE 'aether_|cluster_|node_'; then
         log_pass "Cluster-specific metrics present"
-    else
-        log_warn "No aether_/cluster_/node_ prefixed metrics found"
-        log_pass "Prometheus endpoint returns data"
+        return 0
     fi
+    log_fail "No aether_/cluster_/node_ prefixed metric found (sample: $(echo "$body" | head -c 300))"
+    return 1
 }
 
+# Validate every non-comment, non-blank line is a parseable metric line.
+# Do NOT mask grep pipeline errors as "0" — distinguish "no bad lines" (grep rc=1)
+# from "grep crashed" by setting an explicit sentinel.
 test_no_empty_metric_values() {
     local body
     body=$(api_get "/api/metrics/prometheus")
-    # Check that metric lines have numeric values
     local bad_lines
-    bad_lines=$(echo "$body" | grep -cvE '^#|^$|[0-9]' || echo "0")
-    if [ "$bad_lines" -le 2 ] 2>/dev/null; then
-        log_pass "All metric lines have numeric values (${bad_lines} exceptions)"
+    if bad_lines=$(echo "$body" | grep -cvE '^#|^$|[0-9]'); then
+        :
     else
-        log_warn "${bad_lines} lines without numeric values"
-        log_pass "Prometheus format mostly valid"
+        rc=$?
+        if [ "$rc" -eq 1 ]; then
+            bad_lines=0  # grep rc=1: zero matches, healthy
+        else
+            log_fail "grep failed evaluating prometheus body (rc=${rc})"
+            return 1
+        fi
     fi
+    # A handful of header/help lines without digits is acceptable; more indicates
+    # malformed exposition.
+    if [ "$bad_lines" -le 2 ] 2>/dev/null; then
+        log_pass "All metric lines have numeric values (${bad_lines} non-numeric exceptions)"
+        return 0
+    fi
+    log_fail "${bad_lines} non-numeric metric lines (Prometheus exposition is malformed)"
+    return 1
 }
 
 run_test "Cluster ready" test_cluster_ready

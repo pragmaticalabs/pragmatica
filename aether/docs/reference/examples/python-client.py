@@ -49,7 +49,7 @@ class AetherClient:
     # Cluster Status
     def status(self) -> dict:
         """Get cluster status."""
-        return self._get("/api/status")
+        return self._get("/api/nodes/status")
 
     def health(self) -> dict:
         """Get health status."""
@@ -66,7 +66,7 @@ class AetherClient:
 
     def apply_blueprint(self, blueprint_content: str) -> dict:
         """Apply a blueprint (deploy slices)."""
-        url = f"{self.base_url}/api/blueprint"
+        url = f"{self.base_url}/api/blueprints"
         try:
             req = urllib.request.Request(
                 url,
@@ -83,7 +83,7 @@ class AetherClient:
 
     def delete_blueprint(self, blueprint_id: str) -> dict:
         """Delete a blueprint (undeploy slices)."""
-        url = f"{self.base_url}/api/blueprint/{blueprint_id}"
+        url = f"{self.base_url}/api/blueprints/{blueprint_id}"
         try:
             req = urllib.request.Request(url, method="DELETE")
             with urllib.request.urlopen(req) as response:
@@ -104,11 +104,11 @@ class AetherClient:
 
     def invocation_metrics(self) -> dict:
         """Get invocation metrics."""
-        return self._get("/api/invocation-metrics")
+        return self._get("/api/invocations/metrics")
 
     def slow_invocations(self) -> dict:
         """Get slow invocations."""
-        return self._get("/api/invocation-metrics/slow")
+        return self._get("/api/invocations/metrics/slow")
 
     # Controller
     def controller_config(self) -> dict:

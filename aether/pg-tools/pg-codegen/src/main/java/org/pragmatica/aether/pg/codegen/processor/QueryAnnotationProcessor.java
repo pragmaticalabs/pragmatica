@@ -1,19 +1,29 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.pg.codegen.processor;
 
 import org.pragmatica.aether.pg.codegen.NamingConvention;
 import org.pragmatica.aether.pg.codegen.TypeMapper;
 import org.pragmatica.aether.pg.codegen.annotation.Query;
 import org.pragmatica.aether.pg.codegen.annotation.Table;
+import org.pragmatica.aether.pg.parser.PostgresParser;
+import org.pragmatica.aether.pg.parser.PostgresParser.CstNode;
 import org.pragmatica.aether.pg.schema.model.BuiltinTypes;
 import org.pragmatica.aether.pg.schema.model.PgType;
 import org.pragmatica.aether.pg.schema.model.Schema;
+import org.pragmatica.aether.pg.schema.validator.QueryValidator;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.annotation.processing.RoundEnvironment;
 import javax.annotation.processing.SupportedAnnotationTypes;
+import javax.annotation.processing.SupportedOptions;
 import javax.annotation.processing.SupportedSourceVersion;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.Element;
@@ -27,9 +37,11 @@ import javax.tools.Diagnostic;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -45,24 +57,102 @@ import java.util.regex.Pattern;
 ///
 /// Triggered by the presence of `@Query` annotations on interface methods.
 @Contract
-@SupportedAnnotationTypes("org.pragmatica.aether.resource.db.PgSql")
+@SupportedAnnotationTypes("*")
+@SupportedOptions({"pg.lint.severity", "pg.lint.disabled"})
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class QueryAnnotationProcessor extends AbstractProcessor {
+    /// Fully-qualified name of the built-in `@PgSql` annotation.
+    private static final String PG_SQL_ANNOTATION = "org.pragmatica.aether.resource.db.PgSql";
+
+    /// Fully-qualified name of the `@ResourceQualifier` meta-annotation.
+    private static final String RESOURCE_QUALIFIER_ANNOTATION =
+        "org.pragmatica.aether.slice.annotation.ResourceQualifier";
+
+    /// Canonical name (source form) of `PgSqlConnector` — used to recognize qualifiers tied to
+    /// PostgreSQL data sources. Kept as a string so that the processor does not require
+    /// the resource-api classes to be on its own classpath at annotation-processor discovery
+    /// time.
+    private static final String PG_SQL_CONNECTOR_TYPE =
+        "org.pragmatica.aether.resource.db.PgSqlConnector";
     private SchemaLoader schemaLoader;
+    private LintRunner.LintOptions lintOptions;
+    private final Set<String> migrationsLinted = new java.util.HashSet<>();
+    private final PostgresParser sqlParser = PostgresParser.create();
+    private final Map<String, Result<CstNode>> sqlParseCache = new HashMap<>();
 
     @Override public synchronized void init(ProcessingEnvironment processingEnv) {
         super.init(processingEnv);
         this.schemaLoader = new SchemaLoader(processingEnv);
+        this.lintOptions = LintRunner.OptionsReader.from(processingEnv.getOptions());
     }
 
     @Override public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
         if ( roundEnv.processingOver()) {
         return false;}
-        for ( var annotation : annotations) {
-        for ( var element : roundEnv.getElementsAnnotatedWith(annotation)) {
-        if ( element.getKind() == ElementKind.INTERFACE) {
-        processInterface((TypeElement) element);}}}
-        return true;
+        var processed = new java.util.HashSet<String>();
+        for ( var element : roundEnv.getRootElements()) {
+            if ( element.getKind() != ElementKind.INTERFACE) {
+                continue;
+            }
+            var interfaceElement = (TypeElement) element;
+            if ( !shouldProcess(interfaceElement)) {
+                continue;
+            }
+            var fqn = interfaceElement.getQualifiedName().toString();
+            if ( processed.add(fqn)) {
+                processInterface(interfaceElement);
+            }
+        }
+        return false;
+    }
+
+    /// Returns true if the given interface should be picked up by the processor.
+    ///
+    /// An interface is eligible when it carries:
+    ///   - `@PgSql` directly, OR
+    ///   - a user-defined annotation whose own type is meta-annotated with
+    ///     `@ResourceQualifier(type = PgSqlConnector.class, ...)` (e.g. `@AnalyticsPgSql`).
+    private boolean shouldProcess(TypeElement interfaceElement) {
+        for ( var annotationMirror : interfaceElement.getAnnotationMirrors()) {
+            var annotationTypeName = annotationMirror.getAnnotationType()
+                                                     .asElement()
+                                                     .toString();
+            if ( PG_SQL_ANNOTATION.equals(annotationTypeName)) {
+                return true;
+            }
+            if ( hasPgSqlResourceQualifier(annotationMirror)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Checks whether the given annotation carries a `@ResourceQualifier` meta-annotation whose
+    /// `type()` attribute points at `PgSqlConnector`.
+    private boolean hasPgSqlResourceQualifier(javax.lang.model.element.AnnotationMirror annotationMirror) {
+        var annotationType = annotationMirror.getAnnotationType()
+                                             .asElement();
+        for ( var meta : annotationType.getAnnotationMirrors()) {
+            var metaTypeName = meta.getAnnotationType()
+                                   .asElement()
+                                   .toString();
+            if ( !RESOURCE_QUALIFIER_ANNOTATION.equals(metaTypeName)) {
+                continue;
+            }
+            var elementValues = processingEnv.getElementUtils()
+                                             .getElementValuesWithDefaults(meta);
+            for ( var entry : elementValues.entrySet()) {
+                if ( !"type".equals(entry.getKey().getSimpleName().toString())) {
+                    continue;
+                }
+                var value = entry.getValue().getValue();
+                if ( value instanceof javax.lang.model.type.TypeMirror tm
+                     && PG_SQL_CONNECTOR_TYPE.equals(tm.toString())) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private void processInterface(TypeElement interfaceElement) {
@@ -72,6 +162,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         var schemaOpt = schemaLoader.loadSchema(configPath);
         if ( schemaOpt.isEmpty()) {
         note("No schema available for validation; generating factory without validation", interfaceElement);}
+        runMigrationLintOnce(configPath);
         note("Generating " + interfaceName + "Factory", interfaceElement);
         var methods = analyzeMethods(interfaceElement, schemaOpt);
         var additionalImports = collectImports(interfaceElement, methods);
@@ -119,10 +210,17 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     TypeMirrorResolver.ResolvedReturn resolved,
     Query queryAnnotation,
     Option<Schema> schemaOpt) {
+        if (!validateMapperShape(execElement, methodName, resolved)) {
+            return null;
+        }
         var sql = queryAnnotation.value();
         var originalParams = extractMethodParams(execElement);
+        // Validate parameter usage BEFORE record expansion so that the pre-expansion SQL's :record
+        // references match the Java method param names; after expansion `:request` is replaced with
+        // $N positional placeholders and virtual field names would otherwise be flagged as unused.
+        var originalParamNames = originalParams.stream().map(FactoryGenerator.MethodParam::name).toList();
+        validateQueryParams(execElement, methodName, sql, originalParamNames);
         var expansion = expandRecordParams(execElement, sql, originalParams);
-        validateQueryParams(execElement, methodName, expansion.sql(), expansion.allParamNames());
         schemaOpt.onPresent(schema -> validateQueryParamTypes(execElement,
                                                               expansion.sql(),
                                                               expansion.allParamNames(),
@@ -130,6 +228,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                               schema));
         schemaOpt.onPresent(schema -> validateReturnTypeMapping(execElement, resolved, expansion.sql()));
         var rewritten = QueryRewriter.rewriteNamedParams(expansion.sql(), expansion.allParamNames());
+        validateRewrittenSql(execElement, methodName, rewritten.sql(), schemaOpt);
         var mapperColumns = resolveMapperColumns(execElement, resolved);
         var bodyParams = reorderedParams(expansion.bodyParams(), rewritten.parameterOrder());
         if ( expansion.hasExpansion()) {
@@ -142,7 +241,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                originalParams,
                                                bodyParams,
                                                mapperColumns,
-                                               resolved.needsMapper());}
+                                               resolved.needsMapper(),
+                                               resolved.scalarAccessor());}
         return FactoryGenerator.MethodInfo.withSharedParams(methodName,
                                                FactoryGenerator.toSqlConstantName(methodName),
                                                rewritten.sql(),
@@ -151,7 +251,31 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                resolved.innerTypeName(),
                                                reorderedParams(originalParams, rewritten.parameterOrder()),
                                                mapperColumns,
-                                               resolved.needsMapper());
+                                               resolved.needsMapper(),
+                                               resolved.scalarAccessor());
+    }
+
+    /// Verifies that the return type is usable: either a record, a known scalar, or a scalar ReturnKind
+    /// (LONG/BOOLEAN/UNIT). Emits a descriptive compile error for unknown non-record inner types (e.g.
+    /// user classes that aren't records and aren't in `JavaTypeAccessor.SCALARS`).
+    private boolean validateMapperShape(ExecutableElement execElement,
+                                        String methodName,
+                                        TypeMirrorResolver.ResolvedReturn resolved) {
+        if (!resolved.needsMapper()) {
+            return true;
+        }
+        var returnType = execElement.getReturnType();
+        var innerElement = TypeMirrorResolver.innerTypeElement(returnType);
+        if (innerElement != null && innerElement.getKind() == ElementKind.RECORD) {
+            return true;
+        }
+        // No inner element (e.g. byte[]) or not a record: only allow if it's a scalar (handled elsewhere).
+        // Already handled if scalarAccessor present.
+        if (resolved.scalarAccessor().isPresent()) {
+            return true;
+        }
+        error(ProcessorError.unsupportedScalarReturn(methodName, resolved.innerTypeName()), execElement);
+        return false;
     }
 
     private FactoryGenerator.MethodInfo analyzeCrudMethod(
@@ -160,6 +284,9 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     TypeMirrorResolver.ResolvedReturn resolved,
     Option<Schema> schemaOpt,
     TypeElement interfaceElement) {
+        if (!validateMapperShape(execElement, methodName, resolved)) {
+            return null;
+        }
         var parsed = MethodNameParser.parse(methodName);
         if ( parsed == null) {
             error(ProcessorError.unrecognizedMethodName(methodName), execElement);
@@ -182,13 +309,13 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                 params,
                                                 inputFieldNames,
                                                 recordExpansion);}
-        var schema = schemaOpt.unwrap();
+        var schema = schemaOpt.expect("checked with isEmpty above");
         var tableOpt = schema.table(tableName);
         if ( tableOpt.isEmpty()) {
             error(ProcessorError.tableNotFound(tableName), execElement);
             return null;
         }
-        var table = tableOpt.unwrap();
+        var table = tableOpt.expect("checked with isEmpty above");
         validateCrudColumns(execElement, parsed, table);
         validateInsertCoverage(execElement, parsed, table, inputFieldNames);
         validateCrudParamTypes(execElement, parsed, table);
@@ -198,6 +325,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             error(ProcessorError.noPrimaryKey(tableName), execElement);
             return null;
         }
+        var crudSql = sqlOpt.expect("checked with isEmpty above");
+        validateRewrittenSql(execElement, methodName, crudSql, schemaOpt);
         var mapperColumns = resolved.needsMapper()
                             ? FactoryGenerator.resolveMapperColumns(table,
                                                                     extractReturnFieldNames(execElement, resolved))
@@ -205,23 +334,25 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         if ( recordExpansion.hasExpansion()) {
         return new FactoryGenerator.MethodInfo(methodName,
                                                FactoryGenerator.toSqlConstantName(methodName),
-                                               sqlOpt.unwrap(),
+                                               crudSql,
                                                resolved.kind(),
                                                resolved.innerTypeName(),
                                                resolved.innerTypeName(),
                                                params,
                                                recordExpansion.bodyParams(),
                                                mapperColumns,
-                                               resolved.needsMapper());}
+                                               resolved.needsMapper(),
+                                               resolved.scalarAccessor());}
         return FactoryGenerator.MethodInfo.withSharedParams(methodName,
                                                FactoryGenerator.toSqlConstantName(methodName),
-                                               sqlOpt.unwrap(),
+                                               crudSql,
                                                resolved.kind(),
                                                resolved.innerTypeName(),
                                                resolved.innerTypeName(),
                                                params,
                                                mapperColumns,
-                                               resolved.needsMapper());
+                                               resolved.needsMapper(),
+                                               resolved.scalarAccessor());
     }
 
     private FactoryGenerator.MethodInfo buildCrudMethodInfoWithoutSchema(
@@ -246,7 +377,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                params,
                                                recordExpansion.bodyParams(),
                                                mapperColumns,
-                                               resolved.needsMapper());}
+                                               resolved.needsMapper(),
+                                               resolved.scalarAccessor());}
         return FactoryGenerator.MethodInfo.withSharedParams(methodName,
                                                FactoryGenerator.toSqlConstantName(methodName),
                                                sql,
@@ -255,7 +387,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                resolved.innerTypeName(),
                                                params,
                                                mapperColumns,
-                                               resolved.needsMapper());
+                                               resolved.needsMapper(),
+                                               resolved.scalarAccessor());
     }
 
     private String generateCrudSqlWithoutSchema(
@@ -286,9 +419,10 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         return resolveTableFromAnnotation(execElement, schemaOpt);}
         // Try inferring from the return type
         if ( resolved.needsMapper() && schemaOpt.isPresent()) {
-            var inferred = MethodAnalyzer.resolveTableFromTypeName(resolved.simpleTypeName(), schemaOpt.unwrap());
+            var inferred = MethodAnalyzer.resolveTableFromTypeName(resolved.simpleTypeName(),
+                                                                   schemaOpt.expect("checked with isPresent above"));
             if ( inferred.isPresent()) {
-            return inferred.unwrap();}
+            return inferred.expect("checked with isPresent above");}
         }
         // Fallback: try deriving from inner type name with snake_case conversion
         if ( resolved.needsMapper()) {
@@ -309,9 +443,10 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                 var typeElement = (TypeElement) dt.asElement();
                 var typeName = typeElement.getSimpleName().toString();
                 if ( schemaOpt.isPresent()) {
-                    var resolved = MethodAnalyzer.resolveTableFromTypeName(typeName, schemaOpt.unwrap());
+                    var resolved = MethodAnalyzer.resolveTableFromTypeName(typeName,
+                                                                           schemaOpt.expect("checked with isPresent above"));
                     if ( resolved.isPresent()) {
-                    return resolved.unwrap();}
+                    return resolved.expect("checked with isPresent above");}
                 }
                 return deriveTableNameFromTypeName(typeName);
             }
@@ -367,26 +502,10 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
 
     private static FactoryGenerator.MapperColumn toMapperColumn(TypeMirrorResolver.FieldInfo field) {
         var columnName = NamingConvention.toSnakeCase(field.name());
-        var accessor = accessorInfoForJavaType(field.typeName());
+        var accessor = JavaTypeAccessor.forField(field.typeName());
         return new FactoryGenerator.MapperColumn(columnName, accessor.method(), field.name(), accessor.typeArg());
     }
 
-    private record AccessorInfo(String method, String typeArg){}
-
-    private static AccessorInfo accessorInfoForJavaType(String javaTypeName) {
-        return switch (javaTypeName) {case "long", "java.lang.Long" -> new AccessorInfo("getLong", "");case "int", "java.lang.Integer" -> new AccessorInfo("getInt",
-                                                                                                                                                           "");case "double", "java.lang.Double" -> new AccessorInfo("getDouble",
-                                                                                                                                                                                                                     "");case "boolean", "java.lang.Boolean" -> new AccessorInfo("getBoolean",
-                                                                                                                                                                                                                                                                                 "");case "byte[]" -> new AccessorInfo("getBytes",
-                                                                                                                                                                                                                                                                                                                       "");case "java.lang.String", "String" -> new AccessorInfo("getString",
-                                                                                                                                                                                                                                                                                                                                                                                 "");case "java.math.BigDecimal" -> new AccessorInfo("getObject",
-                                                                                                                                                                                                                                                                                                                                                                                                                                     "java.math.BigDecimal.class");case "java.time.Instant" -> new AccessorInfo("getObject",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                "java.time.Instant.class");case "java.time.LocalDateTime" -> new AccessorInfo("getObject",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              "java.time.LocalDateTime.class");case "java.time.LocalDate" -> new AccessorInfo("getObject",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              "java.time.LocalDate.class");case "java.util.UUID" -> new AccessorInfo("getObject",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     "java.util.UUID.class");default -> new AccessorInfo("getString",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         "");};
-    }
 
     private static List<String> extractParamNames(ExecutableElement execElement) {
         return execElement.getParameters().stream()
@@ -585,7 +704,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         var tableOpt = schema.table(tableName);
         if ( tableOpt.isEmpty()) {
         return;}
-        var table = tableOpt.unwrap();
+        var table = tableOpt.expect("checked with isEmpty above");
         var columnRefs = extractColumnParamPairs(sql, paramNames);
         for ( var pair : columnRefs) {
             var colOpt = table.column(pair.columnName());
@@ -599,7 +718,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                       javaType,
                                       pair.columnName(),
                                       table.name(),
-                                      colOpt.unwrap().type());
+                                      colOpt.expect("checked with isEmpty above").type());
         }
     }
 
@@ -678,7 +797,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                       param.typeName(),
                                       condition.columnName(),
                                       table.name(),
-                                      colOpt.unwrap().type());
+                                      colOpt.expect("checked with isEmpty above").type());
             paramIdx += condition.operator().paramCount();
         }
     }
@@ -694,7 +813,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         var mappedOpt = TypeMapper.map(pgType);
         if ( mappedOpt.isEmpty()) {
         return;}
-        var mapped = mappedOpt.unwrap();
+        var mapped = mappedOpt.expect("checked with isEmpty above");
         if ( isTypeCompatible(javaType, mapped, pgType)) {
         return;}
         error(ProcessorError.typeMismatch(paramName, javaType, columnName, tableName, pgType.name()),
@@ -840,8 +959,77 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     private Set<String> collectImports(TypeElement interfaceElement, List<FactoryGenerator.MethodInfo> methods) {
         var imports = new LinkedHashSet<String>();
         for ( var enclosed : interfaceElement.getEnclosedElements()) {
-        if ( enclosed.getKind() == ElementKind.RECORD) {}}
+            if ( enclosed.getKind() != ElementKind.METHOD) {
+                continue;
+            }
+            var method = (ExecutableElement) enclosed;
+            collectTypeImports(method.getReturnType(), imports);
+            for ( var param : method.getParameters()) {
+                collectTypeImports(param.asType(), imports);
+                if ( isRecordType(param)) {
+                    for ( var field : extractRecordComponentFields(param)) {
+                        addImportForQualifiedName(field.typeName(), imports);
+                    }
+                }
+            }
+        }
+        // Scalar return types: ensure the accessor's imported FQN is present (covers
+        // Promise<BigDecimal>, Promise<Option<UUID>>, Promise<List<Instant>>, etc.).
+        for (var methodInfo : methods) {
+            methodInfo.scalarAccessor().onPresent(accessor ->
+                accessor.importStatement().onPresent(imports::add));
+        }
         return imports;
+    }
+
+    /// Walks a type mirror, adding import FQNs for any declared types that are not in java.lang
+    /// and not members of the interface itself. Also descends into type arguments so that
+    /// `Promise<Option<BigDecimal>>` produces an import for java.math.BigDecimal.
+    private void collectTypeImports(javax.lang.model.type.TypeMirror mirror, Set<String> imports) {
+        if ( ! (mirror instanceof DeclaredType dt)) {
+            return;
+        }
+        var element = (TypeElement) dt.asElement();
+        addImportForQualifiedName(element.getQualifiedName().toString(), imports);
+        for ( var arg : dt.getTypeArguments()) {
+            collectTypeImports(arg, imports);
+        }
+    }
+
+    private static void addImportForQualifiedName(String typeName, Set<String> imports) {
+        if ( typeName == null || typeName.isEmpty()) {
+            return;
+        }
+        // Strip generic type arguments: "java.util.List<java.util.UUID>" -> walked separately via DeclaredType path
+        var baseName = typeName;
+        var generic = baseName.indexOf('<');
+        if ( generic >= 0) {
+            baseName = baseName.substring(0, generic);
+        }
+        // Strip array suffix: "java.util.UUID[]" -> "java.util.UUID"
+        while ( baseName.endsWith("[]")) {
+            baseName = baseName.substring(0, baseName.length() - 2);
+        }
+        baseName = baseName.trim();
+        if ( baseName.isEmpty()) {
+            return;
+        }
+        // Skip primitives and types already imported by FactoryGenerator header
+        if ( !baseName.contains(".")) {
+            return;
+        }
+        if ( baseName.startsWith("java.lang.") && baseName.indexOf('.', "java.lang.".length()) < 0) {
+            return;
+        }
+        // Skip pragmatica core types already provided by FactoryGenerator header
+        if ( baseName.equals("org.pragmatica.lang.Option")
+             || baseName.equals("org.pragmatica.lang.Unit")
+             || baseName.equals("org.pragmatica.lang.Result")
+             || baseName.equals("org.pragmatica.lang.Promise")
+             || baseName.equals("java.util.List")) {
+            return;
+        }
+        imports.add(baseName);
     }
 
     // --- SQL generation without schema (fallback) ---
@@ -981,6 +1169,41 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             }
         }
         return "database";
+    }
+
+    private void runMigrationLintOnce(String configPath) {
+        if (migrationsLinted.contains(configPath)) {return;}
+        migrationsLinted.add(configPath);
+        if (lintOptions.isOff()) {return;}
+        var scripts = schemaLoader.loadMigrations(configPath);
+        if (scripts.isEmpty()) {return;}
+        LintRunner.runOnMigrations(processingEnv.getMessager(), scripts, lintOptions);
+    }
+
+    /// Parses and validates the rewritten SQL against the given schema. Emits ERROR
+    /// diagnostics for each validation failure. Returns true when validation passed
+    /// (or was skipped because no schema was available); false on parse or validation failure.
+    private boolean validateRewrittenSql(ExecutableElement execElement,
+                                          String methodName,
+                                          String rewrittenSql,
+                                          Option<Schema> schemaOpt) {
+        if (schemaOpt.isEmpty()) {return true;}
+        var parsed = sqlParseCache.computeIfAbsent(rewrittenSql, sqlParser::parseCst);
+        if (parsed.isFailure()) {
+            var detail = parsed.fold(cause -> cause.message(), _ -> "");
+            error(ProcessorError.sqlParseFailed(methodName, detail), execElement);
+            return false;
+        }
+        var cst = parsed.expect("checked with isFailure above");
+        var result = QueryValidator.queryValidator(schemaOpt.expect("checked with isEmpty above")).validate(cst);
+        if (result.hasErrors()) {
+            for (var err : result.errors()) {
+                ValidationErrorBridge.emit(processingEnv.getMessager(), execElement, err);
+            }
+            return false;
+        }
+        LintRunner.runOnQuery(processingEnv.getMessager(), execElement, cst, lintOptions);
+        return true;
     }
 
     private void note(String message, Element element) {

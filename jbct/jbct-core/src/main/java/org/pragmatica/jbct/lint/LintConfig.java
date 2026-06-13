@@ -109,6 +109,16 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     // Sealed error interfaces
     Map.entry("JBCT-PAT-02", DiagnosticSeverity.WARNING),
     // No Fork-Join inside Sequencer
+    Map.entry("JBCT-PAT-03", DiagnosticSeverity.WARNING),
+    // Blocking .await()
+    // Discarded values
+    Map.entry("JBCT-RET-07", DiagnosticSeverity.ERROR),
+    // Discarded Result/Promise/Option
+    // Style — expression-based
+    Map.entry("JBCT-STY-07", DiagnosticSeverity.WARNING),
+    // Unnecessary var before return
+    Map.entry("JBCT-STY-08", DiagnosticSeverity.WARNING),
+    // If/else with return in both branches
     // Slice
     Map.entry("JBCT-SLICE-01", DiagnosticSeverity.ERROR)),
                                                         Set.of(),

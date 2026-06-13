@@ -17,6 +17,7 @@
 package org.pragmatica.dht;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
@@ -64,17 +65,24 @@ public final class QuorumCollector<T> {
     }
 
     /// Record a successful response. Resolves promise when quorum reached.
+    @Contract
     public void onSuccess(T value) {
         bestValue.accumulateAndGet(value, this::selectBest);
-        if (successCount.incrementAndGet() == quorum) {
+        if (successCount.incrementAndGet() >= quorum) {
             promise.succeed(bestValue.get());
         }
     }
 
-    /// Record a failed response. Fails promise when quorum becomes impossible.
+    /// Record a failed response. Fails promise when quorum becomes arithmetically impossible —
+    /// i.e. once the remaining responses that could still succeed (`total - failures`) drop below
+    /// the required `quorum`. Equivalent to `failures > total - quorum`. This is the
+    /// failure-accrual fast-fail: with `total` live targets and `quorum` required, the
+    /// `(quorum)`-th failure (when `total == quorum`) or earlier (when `total > quorum`) aborts
+    /// immediately rather than letting the promise stall to the per-op timeout.
+    @Contract
     public void onFailure(Cause cause) {
         var failures = failureCount.incrementAndGet();
-        if (failures > total - quorum) {
+        if (total - failures < quorum) {
             promise.fail(DHTError.quorumNotReached(quorum, successCount.get()));
         }
     }

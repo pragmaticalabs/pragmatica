@@ -3,6 +3,7 @@ package org.pragmatica.serialization.codec;
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.RoundEnvironment;
 import javax.annotation.processing.SupportedAnnotationTypes;
+import javax.annotation.processing.SupportedOptions;
 import javax.annotation.processing.SupportedSourceVersion;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.Element;
@@ -17,14 +18,18 @@ import java.util.Map;
 import java.util.Set;
 
 @SupportedAnnotationTypes({"org.pragmatica.serialization.Codec", "org.pragmatica.serialization.CodecFor"})
+@SupportedOptions({"codec.registry.suffix"})
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class CodecProcessor extends AbstractProcessor {
     private CodecClassGenerator generator;
+    private String registrySuffix = "";
 
     @Override
     public synchronized void init(javax.annotation.processing.ProcessingEnvironment processingEnv) {
         super.init(processingEnv);
         this.generator = new CodecClassGenerator(processingEnv.getFiler(), processingEnv.getElementUtils(), processingEnv.getTypeUtils());
+        var suffix = processingEnv.getOptions().get("codec.registry.suffix");
+        this.registrySuffix = suffix == null ? "" : suffix;
     }
 
     @Override
@@ -230,7 +235,16 @@ public class CodecProcessor extends AbstractProcessor {
                     note(subtypeElement, "Generated codec: " + subtypeElement.getSimpleName() + "Codec");
                 }
             } else if (subtypeKind == ElementKind.INTERFACE) {
-                processSealedInterface(subtypeElement, packageToCodecNames);
+                // A non-sealed permitted interface is an extension hatch (e.g. ClusterEvent.ExtendedEvent):
+                // it has no closed permitted set, so no parent-level codec is generated for it. Its concrete
+                // app-provided variants serialize via their own @Codec record codecs at runtime. Recursing
+                // into processSealedInterface would hard-error on the empty permitted set, so skip it here.
+                if (subtypeElement.getPermittedSubclasses().isEmpty()) {
+                    note(subtypeElement, "Skipping non-sealed permitted interface (extension hatch): "
+                        + subtypeElement.getSimpleName());
+                } else {
+                    processSealedInterface(subtypeElement, packageToCodecNames);
+                }
             }
         }
 
@@ -296,12 +310,12 @@ public class CodecProcessor extends AbstractProcessor {
         for (var entry : packageToCodecNames.entrySet()) {
             var packageName = entry.getKey();
             var codecNames = entry.getValue();
-            var registryName = deriveRegistryName(packageName);
+            var registryName = deriveRegistryName(packageName, registrySuffix);
             var requiredTypes = packageToRequiredTypes.getOrDefault(packageName, Set.of());
 
             if (generator.generateRegistry(packageName, registryName, codecNames, requiredTypes)) {
                 processingEnv.getMessager()
-                             .printMessage(Diagnostic.Kind.NOTE, "Generated registry: " + registryName);
+                             .printMessage(Diagnostic.Kind.NOTE, "Generated registry: " + packageName + "." + registryName);
             }
         }
         // @CodecFor-only packages (no @Codec types) don't get generated registries —
@@ -326,11 +340,11 @@ public class CodecProcessor extends AbstractProcessor {
         return -1;
     }
 
-    private static String deriveRegistryName(String packageName) {
+    private static String deriveRegistryName(String packageName, String suffix) {
         var lastDot = packageName.lastIndexOf('.');
         var segment = lastDot >= 0 ? packageName.substring(lastDot + 1) : packageName;
         var capitalized = Character.toUpperCase(segment.charAt(0)) + segment.substring(1);
-        return capitalized + "Codecs";
+        return capitalized + "Codecs" + (suffix == null ? "" : suffix);
     }
 
     private void error(Element element, String message) {

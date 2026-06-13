@@ -22,7 +22,8 @@ cleanup_temp() {
 trap cleanup_temp EXIT
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
+    wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
     log_pass "Cluster ready"
 }
 
@@ -35,7 +36,7 @@ test_generate_artifact() {
 
 test_push_artifact() {
     local status
-    status=$(curl -s -o /dev/null -w "%{http_code}" \
+    status=$(curl -s --max-time 120 -o /dev/null -w "%{http_code}" \
         -X PUT \
         -H "X-API-Key: ${API_KEY}" \
         -H "Content-Type: application/octet-stream" \
@@ -53,7 +54,7 @@ test_resolve_artifact() {
     # Allow time for DHT replication
     sleep 2
     local status
-    status=$(curl -s -o "$RESOLVE_FILE" -w "%{http_code}" \
+    status=$(curl -s --max-time 120 -o "$RESOLVE_FILE" -w "%{http_code}" \
         -H "X-API-Key: ${API_KEY}" \
         "${CLUSTER_ENDPOINT}${ARTIFACT_PATH}")
     if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then

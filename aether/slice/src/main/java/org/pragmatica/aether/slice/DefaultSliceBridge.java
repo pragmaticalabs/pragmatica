@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -18,59 +22,43 @@ import java.util.stream.Collectors;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Default implementation of SliceBridge for Node-Slice communication.
-///
-/// This class bridges the Node (Application ClassLoader) and Slices (isolated ClassLoader)
-/// using byte arrays for serialized data. It wraps a Slice instance and handles all
-/// serialization/deserialization at the boundary.
-///
-/// This implementation uses byte[] at the boundary, avoiding Netty types in the API
-/// to maintain complete isolation from Netty at the API level.
-///
-/// **Invocation Flow:**
-/// <ol>
-///   - Receive method name + serialized input (byte[])
-///   - Look up method by name
-///   - Deserialize input to typed parameter
-///   - Invoke method on slice
-///   - Serialize response to byte[]
-///   - Return serialized response
-/// </ol>
-///
-/// Note: This implementation is in a separate module from SliceBridge (slice-api) due to
-/// classloader isolation requirements. The factory method follows JBCT naming convention.
-///
-/// @see SliceBridge
-/// @see Slice
-@SuppressWarnings("JBCT-NAM-01") public record DefaultSliceBridge(Artifact artifact,
-                                                                  Slice slice,
-                                                                  Map<String, InternalMethod> methodMap,
-                                                                  SliceCodec codec) implements SliceBridge {
-    public record InternalMethod(SliceMethod<?, ?> method, TypeToken<?> parameterType, TypeToken<?> returnType){}
+@SuppressWarnings("JBCT-NAM-01")
+public record DefaultSliceBridge(Artifact artifact,
+                                 Slice slice,
+                                 Map<String, InternalMethod> methodMap,
+                                 SliceCodec codec) implements SliceBridge {
+    public record InternalMethod(SliceMethod<?, ?> method, TypeToken<?> parameterType, TypeToken<?> returnType) {}
 
     public static DefaultSliceBridge defaultSliceBridge(Artifact artifact, Slice slice, SliceCodec codec) {
-        var methodMap = slice.methods().stream()
-                                     .collect(Collectors.toMap(m -> m.name().name(),
-                                                               m -> new InternalMethod(m,
-                                                                                       m.parameterType(),
-                                                                                       m.returnType())));
+        var methodMap = slice.methods().stream().collect(Collectors.toMap(m -> m.name()
+                                                                                .name(),
+                                                                          m -> new InternalMethod(m,
+                                                                                                  m.parameterType(),
+                                                                                                  m.returnType())));
+
         return new DefaultSliceBridge(artifact, slice, Map.copyOf(methodMap), codec);
     }
 
-    @Override public Promise<byte[]> invoke(String methodName, byte[] input) {
-        return lookupMethod(methodName).async().flatMap(method -> invokeWithSerialization(method, input));
+    @Override
+    public Promise<byte[]> invoke(String methodName, byte[] input) {
+        return lookupMethod(methodName).async()
+                           .flatMap(method -> invokeWithSerialization(method, input));
     }
 
-    @Override public Promise<byte[]> encode(Object input) {
+    @Override
+    public Promise<byte[]> encode(Object input) {
         return Promise.lift(Causes::fromThrowable, () -> codec.encode(input));
     }
 
-    @Override public Promise<Object> decode(byte[] bytes) {
+    @Override
+    public Promise<Object> decode(byte[] bytes) {
         return Promise.lift(Causes::fromThrowable, () -> (Object) codec.decode(bytes));
     }
 
-    @Override public ClassLoader classLoader() {
-        return slice.getClass().getClassLoader();
+    @Override
+    public ClassLoader classLoader() {
+        return slice.getClass()
+                    .getClassLoader();
     }
 
     private Promise<byte[]> invokeWithSerialization(InternalMethod method, byte[] input) {
@@ -81,15 +69,18 @@ import static org.pragmatica.lang.Option.option;
         return invokeMethod(method, parameter).flatMap(this::serializeResponse);
     }
 
-    @Override public Promise<Unit> start() {
+    @Override
+    public Promise<Unit> start() {
         return slice.start();
     }
 
-    @Override public Promise<Unit> stop() {
+    @Override
+    public Promise<Unit> stop() {
         return slice.stop();
     }
 
-    @Override public List<String> methodNames() {
+    @Override
+    public List<String> methodNames() {
         return List.copyOf(methodMap.keySet());
     }
 
@@ -97,14 +88,16 @@ import static org.pragmatica.lang.Option.option;
         return option(methodMap.get(methodName)).toResult(METHOD_NOT_FOUND.apply(methodName));
     }
 
-    @SuppressWarnings("unchecked") private <T> Promise<T> deserializeInput(byte[] input) {
+    @SuppressWarnings("unchecked")
+    private <T> Promise<T> deserializeInput(byte[] input) {
         return Promise.lift(Causes::fromThrowable, () -> (T) codec.decode(input));
     }
 
-    @SuppressWarnings("unchecked") private <T, R> Promise<R> invokeMethod(SliceMethod<?, ?> method, T parameter) {
+    @SuppressWarnings("unchecked")
+    private <T, R> Promise<R> invokeMethod(SliceMethod<?, ?> method, T parameter) {
         return Promise.lift(Causes::fromThrowable,
                             () -> ((SliceMethod<R, T>) method).apply(parameter))
-        .flatMap(promise -> promise);
+                      .flatMap(promise -> promise);
     }
 
     private <R> Promise<byte[]> serializeResponse(R response) {

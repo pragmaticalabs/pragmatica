@@ -95,7 +95,7 @@ authorization_role = "VIEWER"
 |------|-----------|
 | **ADMIN** | All commands |
 | **OPERATOR** | Status, scaling, drain, deploy from artifact, schema, updates, backup, config, alerts |
-| **VIEWER** | Read-only commands: `status`, `nodes`, `slices`, `node-slices`, `routes`, `node-routes`, `metrics`, `events`, `health` |
+| **VIEWER** | Read-only commands: `status`, `nodes`, `slices`, `nodes slices`, `routes`, `nodes routes`, `metrics`, `events`, `health` |
 
 When `authorization_role` is omitted, the key defaults to `ADMIN`. See [Management API - Authorization](management-api.md#authorization-rbac) for the full permission mapping.
 
@@ -116,6 +116,40 @@ Cluster Status:
   Nodes: 3
   Healthy: true
 ```
+
+#### whoami
+
+Show the authenticated principal, authorization role, and roles attached to the request. Useful for integration-test identity assertions and operator triage — confirms which API key (or anonymous viewer fallback) the management plane resolved for the caller.
+
+```bash
+aether whoami
+```
+
+Output (authenticated admin API key):
+```json
+{
+  "principal": "api-key:ops-admin",
+  "authorizationRole": "ADMIN",
+  "roles": ["admin", "service"],
+  "authenticated": true
+}
+```
+
+Output (no API key supplied; anonymous viewer):
+```json
+{
+  "principal": "anonymous",
+  "authorizationRole": "VIEWER",
+  "roles": [],
+  "authenticated": false
+}
+```
+
+Fields:
+- `principal` — `api-key:<keyName>` / `user:<subject>` / `service:<name>` / `anonymous`.
+- `authorizationRole` — `ADMIN`, `OPERATOR`, or `VIEWER`.
+- `roles` — sorted, lower-case role values (e.g. `admin`, `service`, `user`).
+- `authenticated` — `false` for the anonymous viewer fallback.
 
 #### nodes
 
@@ -141,6 +175,12 @@ Show all slices across the cluster with per-node instances, target counts, and v
 aether slices
 ```
 
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--state <STATE>` | Filter to slices/instances in this state (case-insensitive, e.g. `ACTIVE`, `LOADED`). When supplied, the response restricts each slice's `instances[]` to entries whose state matches, and drops slices with no matching instances. |
+
 Output:
 ```
 Slices (cluster-wide):
@@ -153,12 +193,72 @@ Slices (cluster-wide):
     node-2  ACTIVE
 ```
 
-#### node-slices
-
-Show slices loaded on the connected node (flat list of artifact names):
+Filtered example — only ACTIVE instances:
 
 ```bash
-aether node-slices
+aether slices --state ACTIVE
+```
+
+Multi-state union via `+`:
+
+```bash
+aether slices --state LOADED+ACTIVE
+```
+
+#### slices status
+
+Show the aggregate slice state breakdown across the cluster — counts by lifecycle state, per-slice rollup. Wraps `GET /api/slices/status`.
+
+```bash
+aether slices status
+```
+
+#### slices topology
+
+Show the slice topology — the per-slice governor mapping across the cluster (which node currently owns each slice's governor assignment). Wraps `GET /api/slices/topology`.
+
+```bash
+aether slices topology
+```
+
+#### slices config
+
+Show the effective configuration view for a loaded slice with per-key layer attribution. Wraps `GET /api/slices/config/{id}`.
+
+```bash
+aether slices config <artifact>
+```
+
+Arguments:
+
+| Name | Description |
+|------|-------------|
+| `<artifact>` | Slice artifact coordinates (`group:artifact:version`) |
+
+Each entry's `source` field reports which layer of the slice-composite (`slice.toml ⊕ KV-overlay ⊕ node.toml`) produced the resolved value — one of `slice.toml`, `KV`, or `node.toml`. Output is sorted alphabetically by key.
+
+Example (JSON):
+
+```bash
+aether slices config org.example:my-slice:1.0.0 --format json
+```
+
+```json
+{
+  "sliceId": "org.example:my-slice:1.0.0",
+  "entries": [
+    {"key": "schedule.interval", "value": "30s", "source": "KV"},
+    {"key": "topic.orders", "value": "orders.v1", "source": "slice.toml"}
+  ]
+}
+```
+
+#### nodes slices
+
+Show slices loaded on the connected node (flat list of artifact names). Pass `[id]` for a specific node:
+
+```bash
+aether nodes slices
 ```
 
 Output:
@@ -183,12 +283,12 @@ Routes (cluster-wide):
   POST /orders   [node-1, node-2]  security: api-key
 ```
 
-#### node-routes
+#### nodes routes
 
-Show HTTP routes on the connected node:
+Show HTTP routes on the connected node. Pass `[id]` for a specific node:
 
 ```bash
-aether node-routes
+aether nodes routes
 ```
 
 Output:
@@ -215,6 +315,30 @@ Metrics:
   Deployments (last 10):
     org.example:order:1.0.0  node-1  1234ms  SUCCESS
     org.example:order:1.0.0  node-2  1156ms  SUCCESS
+```
+
+Variants (wrap `/api/metrics/*` REST routes):
+
+```bash
+# Prometheus-format scrape (text/plain exposition)
+aether metrics prometheus
+
+# Transport-layer metrics (QUIC/Netty connection + I/O counters)
+aether metrics transport
+
+# Minute-aggregated comprehensive snapshot (most recent minute)
+aether metrics comprehensive
+
+# Derived/computed: trends, saturation, cluster health score
+aether metrics derived
+
+# Historical metrics over a time range
+aether metrics history                  # default range (1h)
+aether metrics history --range 15m      # 5m | 15m | 1h | 2h
+aether metrics history --since 5m       # --since is an alias for --range
+
+# Per-subsystem timeout-fired counters (one entry per [timeouts.*] section)
+aether metrics timeouts
 ```
 
 #### events
@@ -253,6 +377,25 @@ Health check:
 aether health
 ```
 
+#### nodes health
+
+Per-node readiness/liveness check. Defaults to the connected node; pass `[id]` to query a specific
+node (the request is forwarded by the management plane to that node and the response carries that
+node's per-component readiness breakdown). Use `--liveness` to query `/health/live` instead of the
+default `/health/ready`.
+
+```bash
+# Readiness on the connected node
+aether nodes health
+
+# Readiness on a specific node
+aether nodes health node-2
+
+# Liveness on a specific node
+aether nodes health node-2 --liveness
+```
+
+Output mirrors the JSON shape of `GET /health/ready` (or `/health/live` with `--liveness`).
 #### scale
 
 Scale a blueprint-deployed slice. The slice must be part of an active blueprint.
@@ -280,25 +423,31 @@ Artifact repository operations:
 
 ```bash
 # Deploy JAR to repository
-aether artifact deploy <jar-path> -g <groupId> -a <artifactId> -v <version>
+aether artifacts deploy <jar-path> -g <groupId> -a <artifactId> -v <version>
 
 # Push blueprint and all its slices from local Maven repository to cluster
-aether artifact push <group:artifact:version>
+aether artifacts push <group:artifact:version>
 
 # List artifacts
-aether artifact list
+aether artifacts list
 
 # List versions
-aether artifact versions <group:artifact>
+aether artifacts versions <group:artifact>
+
+# List versions as a structured JSON envelope (groupId / artifactId / versions[])
+aether artifacts versions <group:artifact> --format json
 
 # Show artifact metadata
-aether artifact info <group:artifact:version>
+aether artifacts info <group:artifact:version>
+
+# Download an artifact file (writes to stdout or --out)
+aether artifacts get <group:artifact:version> [--out=<file>] [--file=<filename>]
 
 # Delete an artifact
-aether artifact delete <group:artifact:version>
+aether artifacts delete <group:artifact:version>
 
 # Show artifact storage metrics
-aether artifact metrics
+aether artifacts metrics
 ```
 
 The `push` command takes blueprint coordinates and automatically pushes the blueprint JAR
@@ -309,23 +458,32 @@ to discover slice references, then pushes each artifact to the cluster repositor
 Examples:
 ```bash
 # Deploy a JAR file directly
-aether artifact deploy target/my-slice.jar -g com.example -a my-slice -v 1.0.0
+aether artifacts deploy target/my-slice.jar -g com.example -a my-slice -v 1.0.0
 
 # Push blueprint + all slices from local Maven repository
-aether artifact push org.pragmatica.aether.example:url-shortener:1.0.0-alpha
+aether artifacts push org.pragmatica.aether.example:url-shortener:1.0.0-rc1
 
 # Example output:
 # Pushing url-shortener blueprint (3 artifacts):
-#   + org.pragmatica.aether.example:url-shortener:1.0.0-alpha:blueprint (65KB)
-#   + org.pragmatica.aether.example:url-shortener-url-shortener:1.0.0-alpha (34KB)
-#   + org.pragmatica.aether.example:url-shortener-analytics:1.0.0-alpha (32KB)
+#   + org.pragmatica.aether.example:url-shortener:1.0.0-rc1:blueprint (65KB)
+#   + org.pragmatica.aether.example:url-shortener-url-shortener:1.0.0-rc1 (34KB)
+#   + org.pragmatica.aether.example:url-shortener-analytics:1.0.0-rc1 (32KB)
 # All artifacts pushed successfully.
 
 # View artifact details
-aether artifact info com.example:my-slice:1.0.0
+aether artifacts info com.example:my-slice:1.0.0
+
+# Download an artifact (default file: <artifactId>-<version>.jar)
+aether artifacts get com.example:my-slice:1.0.0 --out=/tmp/my-slice.jar
+
+# Stream artifact bytes to stdout (defaults to <artifactId>-<version>.jar)
+aether artifacts get com.example:my-slice:1.0.0 > my-slice.jar
+
+# Download a specific file from the artifact (e.g. sources jar)
+aether artifacts get com.example:my-slice:1.0.0 --file=my-slice-1.0.0-sources.jar --out=src.jar
 
 # Remove an artifact
-aether artifact delete com.example:my-slice:1.0.0
+aether artifacts delete com.example:my-slice:1.0.0
 ```
 
 #### blueprint
@@ -334,28 +492,31 @@ Blueprint management:
 
 ```bash
 # Apply a blueprint file
-aether blueprint apply <file.toml>
+aether blueprints apply <file.toml>
 
 # List all deployed blueprints
-aether blueprint list [--format table|json]
+aether blueprints list [--format table|json]
 
 # Get blueprint details
-aether blueprint get <blueprintId> [--format table|json]
+aether blueprints get <blueprintId> [--format table|json]
 
 # Show deployment status of a blueprint
-aether blueprint status <blueprintId> [--format table|json]
+aether blueprints status <blueprintId> [--format table|json]
 
 # Validate a blueprint file without deploying
-aether blueprint validate <file.toml>
+aether blueprints validate <file.toml>
 
 # Delete a blueprint
-aether blueprint delete <blueprintId> [-f|--force]
+aether blueprints delete <blueprintId> [-f|--force]
 
 # Deploy a blueprint from an artifact in the cluster repository
-aether blueprint deploy <coords>
+aether blueprints deploy <coords>
+
+# Publish a blueprint already present in the artifact repository
+aether blueprints publish <coords>
 
 # Upload a blueprint JAR file and deploy it
-aether blueprint upload <file> -g <groupId> -a <artifactId> -v <version>
+aether blueprints upload <file> -g <groupId> -a <artifactId> -v <version>
 ```
 
 Example blueprint file (`order-system.toml`):
@@ -374,28 +535,31 @@ instances = 2
 Example workflow:
 ```bash
 # Validate before deploying
-aether blueprint validate order-system.toml
+aether blueprints validate order-system.toml
 
 # Apply the blueprint
-aether blueprint apply order-system.toml
+aether blueprints apply order-system.toml
 
 # Check deployment status
-aether blueprint status order-system:1.0.0
+aether blueprints status order-system:1.0.0
 
 # List all blueprints
-aether blueprint list
+aether blueprints list
 
 # Get details for a specific blueprint
-aether blueprint get order-system:1.0.0
+aether blueprints get order-system:1.0.0
 
 # Delete a blueprint (with force to skip confirmation)
-aether blueprint delete order-system:1.0.0 -f
+aether blueprints delete order-system:1.0.0 -f
 
 # Deploy from artifact coordinates
-aether blueprint deploy org.example:my-app:1.0.0
+aether blueprints deploy org.example:my-app:1.0.0
+
+# Publish a blueprint already present in the repository (POST /api/blueprints/publish)
+aether blueprints publish org.example:my-app:1.0.0
 
 # Upload a blueprint JAR and deploy it
-aether blueprint upload my-app-1.0.0-blueprint.jar -g org.example -a my-app -v 1.0.0
+aether blueprints upload my-app-1.0.0-blueprint.jar -g org.example -a my-app -v 1.0.0
 ```
 
 #### deploy
@@ -507,19 +671,19 @@ A/B testing management:
 
 ```bash
 # Create an A/B test with variant definitions
-aether ab-test create -a <artifact> --variants <v1=ver1,v2=ver2>
+aether ab-tests create -a <artifact> --variants <v1=ver1,v2=ver2>
 
 # List active A/B tests
-aether ab-test list
+aether ab-tests list
 
 # Show test status
-aether ab-test status <testId>
+aether ab-tests status <testId>
 
 # Show per-variant metrics
-aether ab-test metrics <testId>
+aether ab-tests metrics <testId>
 
 # Conclude test and promote winner
-aether ab-test conclude <testId> --winner <variant>
+aether ab-tests conclude <testId> --winner <variant>
 ```
 
 | Subcommand | Description |
@@ -533,13 +697,13 @@ aether ab-test conclude <testId> --winner <variant>
 Example workflow:
 ```bash
 # Create A/B test: 50/50 split between v1.0.0 and v2.0.0
-aether ab-test create -a org.example:my-service --variants control=1.0.0,experiment=2.0.0
+aether ab-tests create -a org.example:my-service --variants control=1.0.0,experiment=2.0.0
 
 # Monitor per-variant metrics
-aether ab-test metrics ab-001
+aether ab-tests metrics ab-001
 
 # Conclude test and promote winner
-aether ab-test conclude ab-001 --winner experiment
+aether ab-tests conclude ab-001 --winner experiment
 ```
 
 #### invocation-metrics
@@ -596,7 +760,17 @@ aether alerts history
 
 # Clear all active alerts
 aether alerts clear
+
+# Inject a synthetic alert (operator-driven; visible via 'aether alerts list')
+aether alerts inject \
+    --name test-alert \
+    --severity WARNING \
+    --message "synthetic alert from operator" \
+    [--metric test.integration.counter] \
+    [--value 42.0]
 ```
+
+The `inject` subcommand inserts a synthetic alert entry directly, bypassing threshold evaluation. The entry is visible in `aether alerts list` immediately and is also written to alert history with status `INJECTED`. Used by integration tests and operator tooling when no threshold-driven path can produce the alert under test. `--name`, `--severity` (one of `INFO`, `WARNING`, `CRITICAL`), and `--message` are required; `--metric` and `--value` are optional context fields.
 
 #### thresholds
 
@@ -643,7 +817,17 @@ aether traces get <requestId>
 
 # Show trace statistics
 aether traces stats
+
+# Inject a synthetic trace entry (operator-driven; visible via 'aether traces list')
+aether traces inject \
+    --operation processOrder \
+    [--duration-ms 123] \
+    [--depth 2] \
+    [--request-id req-abc-123] \
+    [--trace-id trace-xyz-789]
 ```
+
+The `inject` subcommand inserts a synthetic trace entry directly into the node-local trace store, bypassing the runtime invocation pipeline. The entry is visible in `aether traces list` immediately. Used by integration tests and operator tooling when no deterministic invocation path can produce a trace under test. `--operation` is required; `--duration-ms` defaults to `10`, `--depth` defaults to `0`. `--request-id` and `--trace-id` are independently optional — a UUID is generated when both are omitted; if only `--trace-id` is given, it fills the `requestId` slot.
 
 #### observability
 
@@ -923,37 +1107,46 @@ Manage node lifecycle states:
 
 ```bash
 # List all node lifecycle states
-aether node lifecycle
+aether nodes lifecycle
 
-# Get lifecycle state for a specific node
-aether node lifecycle <nodeId>
+# Filter the list to a single state (case-insensitive)
+aether nodes lifecycle --state READY
 
-# Drain a node (ON_DUTY → DRAINING, CDM evacuates slices respecting budget)
-aether node drain <nodeId>
+# Multi-state union via `+`
+aether nodes lifecycle --state READY+SYNCING
 
-# Activate a node (DRAINING/DECOMMISSIONED → ON_DUTY)
-aether node activate <nodeId>
+# Get lifecycle state for a specific node (--state ignored when [id] is supplied)
+aether nodes lifecycle <nodeId>
 
-# Shut down a node (any → SHUTTING_DOWN)
-aether node shutdown <nodeId>
+# Drain a node (READY → DRAINING via the membership-v2 DRAIN-command heartbeat;
+# the target self-drains, finishing in-flight requests, respecting disruption budget)
+aether nodes drain <nodeId>
+
+# Shut down a node (self-drain then halt via the DRAIN-command heartbeat; CTM
+# grace-terminate backstop reaps the container)
+aether nodes shutdown <nodeId>
+
+# Promote a node to a new role (CORE or WORKER) via consensus
+aether nodes promote <nodeId> --role WORKER
+aether nodes promote <nodeId> --role CORE
 ```
 
 Example workflow:
 ```bash
 # Check current lifecycle states
-aether node lifecycle
+aether nodes lifecycle
 
 # Drain a node before maintenance
-aether node drain node-2
+aether nodes drain node-2
 
 # Verify it's draining
-aether node lifecycle node-2
-
-# Cancel drain and return to active duty
-aether node activate node-2
+aether nodes lifecycle node-2
 
 # Initiate shutdown
-aether node shutdown node-3
+aether nodes shutdown node-3
+
+# Promote node-4 to a WORKER role at runtime (CORE → WORKER); reverse with --role CORE
+aether nodes promote node-4 --role WORKER
 ```
 
 #### workers
@@ -1003,6 +1196,15 @@ aether scheduled-tasks resume <configSection> <artifact> <method>
 
 # Manually trigger a scheduled task
 aether scheduled-tasks trigger <configSection> <artifact> <method>
+
+# Synchronously fire a task and advance its lastExecutionTime (dev-mode only)
+aether scheduled-tasks inject \
+    --section <configSection> \
+    --artifact <artifact> \
+    --method <method>
+
+# Surface per-node execution attribution for a scheduled task (P-NEW-H)
+aether scheduled-tasks executions-by-node <configSection> <artifact> <method>
 ```
 
 Example:
@@ -1021,24 +1223,53 @@ aether scheduled-tasks resume scheduling.cleanup com.example:my-slice:1.0.0 clea
 
 # Manually trigger a task
 aether scheduled-tasks trigger scheduling.cleanup com.example:my-slice:1.0.0 cleanup
+
+# Synchronously inject a task execution (dev-mode only — requires AETHER_INSECURE_DEV_MODE=true
+# on the target node). Returns previousExecutionMs + currentExecutionMs so integration tests
+# can assert strict monotonic advancement. Unblocks 08-resources scheduled-task assertions
+# (RC1-blocker #16 in aether/docs/internal/audits/integration-test-audit-2026-05-21.md §2.2).
+aether scheduled-tasks inject \
+    --section scheduling.cleanup \
+    --artifact com.example:my-slice:1.0.0 \
+    --method cleanup
 ```
+
+> Dev-mode precondition: a node with operator-provided TLS certificates refuses to start in dev-mode, so `scheduled-tasks inject` is never reachable on a node configured with real TLS.
 
 ---
 
 ### backup
 
-Manage cluster backups.
+Manage cluster backups. Two surfaces are available: the **singular** `aether backup` parent
+with verb-style subcommands (`create`, `restore`, `list`) introduced for operator-facing
+workflows in P-NEW-C, and the legacy **plural** `aether backups` parent with the original
+`trigger`/`list`/`restore` subcommands. Both call the same REST routes
+(`POST /api/backups`, `POST /api/backups/restore`, `GET /api/backups`) — pick whichever
+reads more naturally for your scripts.
 
 ```bash
-# Trigger a manual backup
-aether backup trigger
+# Singular surface (P-NEW-C, recommended for new scripts)
+aether backup create                   # create a new backup (synchronous)
+aether backup create --wait            # create + poll /api/backups until the new entry appears
+aether backup create --wait --timeout 120
+aether backup restore <commit-id>      # restore from a specific backup commit
+aether backup list                     # list available backups
 
-# List available backups
-aether backup list
-
-# Restore from a specific backup commit
-aether backup restore <commit-id>
+# Plural surface (legacy alias, identical routes)
+aether backups trigger
+aether backups list
+aether backups restore <commit-id>
 ```
+
+#### `aether backup` subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `create [--wait] [--timeout N]` | Create a new backup (`POST /api/backups`). With `--wait`, polls `GET /api/backups` until the new entry appears or `--timeout` (default 60s) elapses. |
+| `restore <commit>` | Restore the cluster KV-Store from the named backup commit (`POST /api/backups/restore`). |
+| `list` | List available backups (`GET /api/backups`). |
+
+#### `aether backups` subcommands (legacy)
 
 | Subcommand | Description |
 |------------|-------------|
@@ -1105,46 +1336,269 @@ aether schema baseline orders_db -v 3
 
 ## Stream Management
 
-### `aether stream list`
+### `aether streams list`
 
 List all event streams with metadata.
 
 ```bash
-aether stream list
+aether streams list
 ```
 
-### `aether stream status <name>`
+### `aether streams status <name>`
 
 Show detailed stream info including per-partition details.
 
 ```bash
-aether stream status my-events
+aether streams status my-events
 ```
 
-### `aether stream publish <name> <message>`
+### `aether streams publish <name> <message>`
 
 Publish a text message to a stream. The message is base64-encoded automatically.
 
 ```bash
-aether stream publish my-events "Hello, world!"
+aether streams publish my-events "Hello, world!"
+```
+
+### `aether streams read <name> <partition>`
+
+Read events from a specific partition of a stream. Optional `--since <offset>` selects
+the starting offset (maps to `?from=`), and `--limit <N>` caps the number of events
+returned (maps to `?max=`).
+
+```bash
+aether streams read my-events 0
+aether streams read my-events 0 --since 100 --limit 50
+```
+
+### `aether streams create <name> [--partitions N]`
+
+Create a new event stream. The optional `--partitions N` flag overrides the server-side
+default partition count. The underlying `POST /api/streams` route is idempotent — calling
+`create` on an existing stream returns the existing metadata (status `exists`).
+
+```bash
+aether streams create my-events
+aether streams create my-events --partitions 8
+```
+
+### `aether streams delete <name> [--force]`
+
+Delete an event stream. Prompts for confirmation unless `--force` (`-f`) is supplied.
+
+```bash
+aether streams delete my-events
+aether streams delete my-events --force
+```
+
+### `aether streams consumer-group join <group> <stream> --consumer-id <id> [--partitions N]`
+
+Register a consumer in a consumer group on the given stream. `--consumer-id` is the unique
+identifier of the consumer within the group. `--partitions N` (default `1`) is the partition
+count the consumer expects to be assigned to.
+
+```bash
+aether streams consumer-group join orders-workers orders --consumer-id worker-1 --partitions 4
+```
+
+### `aether streams consumer-group leave <group> <stream> --consumer-id <id>`
+
+Remove a consumer from a consumer group on the given stream.
+
+```bash
+aether streams consumer-group leave orders-workers orders --consumer-id worker-1
+```
+
+### `aether streams consumer-group status <group> [<stream>]`
+
+Show the per-stream consumer assignments for the given group. The optional `<stream>`
+positional is informational — the server-side `/api/streams/groups/{id}` returns the full
+multi-stream group status.
+
+```bash
+aether streams consumer-group status orders-workers
+aether streams consumer-group status orders-workers orders
 ```
 
 ### Examples
 
 ```bash
 # List all streams
-aether stream list
+aether streams list
 
 # Check stream details
-aether stream status user-events
+aether streams status user-events
 
 # Publish a message
-aether stream publish user-events "order_created:12345"
+aether streams publish user-events "order_created:12345"
+
+# Read events from partition 0, starting at offset 100, max 50 events
+aether streams read user-events 0 --since 100 --limit 50
 ```
 
 ---
 
+## Stream Namespaces (`aether stream`)
+
+The `aether stream` command group (singular) operates on **namespaced** streams addressed by a
+fully-qualified `namespace:stream:version` triple (version is `MAJOR.MINOR.PATCH`). It wraps the
+namespaced `/api/streams/*` route surface. This is distinct from the legacy `aether streams`
+(plural) commands above, which use flat single-name addressing.
+
+Exit codes: `0` success, `1` error, `2` validation, `3` user-cancelled, `4` not-found,
+`5` conflict, `6` gone.
+
+### `aether stream list [--namespace <ns>]`
+
+List all registered stream versions, optionally filtered to a single namespace.
+
+```bash
+aether stream list
+aether stream list --namespace orders
+```
+
+### `aether stream show <namespace:stream:version>`
+
+Show registry metadata for a specific stream version.
+
+```bash
+aether stream show orders:order-events:1.0.0
+```
+
+### `aether stream tail <namespace:stream:version> [options]`
+
+Tail events from a stream version. Tailing is **polling-based** (paginated GETs against
+`/api/streams/events/...`); each event payload is printed on its own stdout line. Press Ctrl-C to
+stop. A streaming SSE/WebSocket subscription is **deferred to issue #212**.
+
+```bash
+aether stream tail orders:order-events:1.0.0
+aether stream tail orders:order-events:1.0.0 --from-offset 100 --max-events 200
+aether stream tail orders:order-events:1.0.0 --no-follow   # one-shot drain, then exit
+```
+
+| Option | Description |
+|--------|-------------|
+| `--interval` | Polling interval in milliseconds (default `500`) |
+| `--from-offset` | Initial offset to read from (default `0` — from beginning) |
+| `--max-events` | Max events per poll page (default `100`, server-capped at `1000`) |
+| `--follow` / `--no-follow` | Keep polling (default) vs. one-shot drain then exit |
+
+### `aether stream delete <namespace:stream:version> [--force]`
+
+Force-purge a specific stream version. Prompts for confirmation unless `--force` (`-f`) is given.
+Writes to `system:*` streams are rejected by the server with `405`.
+
+```bash
+aether stream delete orders:order-events:1.0.0
+aether stream delete orders:order-events:1.0.0 --force
+```
+
+### `aether stream group create <namespace:stream:version> <group> [--initial-position earliest|latest]`
+
+Create a durable consumer group on a stream version.
+
+```bash
+aether stream group create orders:order-events:1.0.0 fulfillment
+aether stream group create orders:order-events:1.0.0 fulfillment --initial-position earliest
+```
+
+### `aether stream group delete <namespace:stream:version> <group> [--force]`
+
+Delete a durable consumer group; releases its reference on the stream version. Prompts for
+confirmation unless `--force` (`-f`) is given.
+
+```bash
+aether stream group delete orders:order-events:1.0.0 fulfillment --force
+```
+
+---
+
+## Pub/Sub Topics
+
+Pub/sub topics share the streams' `namespace:topic:version` addressing model (the topic-flavored
+view of the same `ResourceAddress` abstraction — see [Stream Namespaces](#stream-namespaces-aether-stream)).
+A bare/legacy topic name has its namespace derived from the publishing slice's blueprint Maven
+coordinates (`groupId.artifactId`) and its version defaulted to `1.0.0`; an explicit
+`namespace:topic:version` declaration in slice config is accepted verbatim. The `system` namespace is
+reserved for framework topics.
+
+Unlike streams, pub/sub is an in-process, declaration-driven delivery mechanism: there is **no
+`aether topic` CLI command group** and **no topic management HTTP route**. Operators inspect topic
+wiring (publishers, subscribers, and their resolved `namespace:topic:version` addresses) through the
+topology graph — `GET /api/slices/topology` and the dashboard topology view — where pub→sub edges
+are matched on the resolved canonical address.
+
+---
+
 ## Cluster Management
+
+### `aether cluster init`
+
+Generate a `cluster-config.toml` interactively (default) or in batch mode driven by flags. Used as the first step of cluster setup; the resulting file is consumed by `aether cluster bootstrap`.
+
+```bash
+# Interactive wizard (default)
+aether cluster init --output cluster-config.toml
+
+# Batch mode — driven by --target plus per-target flags
+aether cluster init --target docker --name test-cluster --nodes 5 --output cluster-config.toml
+
+# Strict non-interactive mode — fails fast if required flags are missing (P-NEW-G)
+aether cluster init --non-interactive --name test-cluster --nodes 5 --output cluster-config.toml
+```
+
+| Option | Description |
+|--------|-------------|
+| `--output` | Output path (default `cluster-config.toml`) |
+| `--force` | Overwrite existing output file |
+| `--non-interactive` | Force non-interactive mode; default `--target=docker` if absent, fail fast on missing required flags (P-NEW-G, 2026-05-21). Required for CI/integration test usage (TC-07-J3). |
+| `--name` | Cluster name (regex `^[a-z][a-z0-9-]{0,62}$`) |
+| `--target` | Deployment target: `docker`, `ssh`, `cloud`, or `forge` |
+| `--nodes` | Total node count (>= 3 for non-SSH targets) |
+| `--hosts` | SSH hosts (ssh target only), comma-separated |
+| `--ssh-user`, `--ssh-key`, `--ssh-port` | SSH credentials (ssh target only) |
+| `--provider`, `--region`, `--instance-type`, `--credential-env` | Cloud target only |
+| `--db-host`, `--db-port`, `--db-name`, `--db-user`, `--db-password-env` | Optional Postgres backing store |
+| `--firewall` | Firewall preset: `standard`, `restrictive`, `open`, `custom` |
+| `--admin-cidr`, `--internal-cidr` | Restrictive firewall preset only |
+| `--tls`, `--tls-cert-env`, `--tls-key-env` | TLS mode: `auto` (default) or `env` |
+| `--secret`, `--secret-env` | Cluster secret mode: `auto` (default) or `env` |
+
+When `--non-interactive` is set without `--target`, the command applies `--target=docker` as the default. Missing required flags (e.g. `--nodes` for docker target) produce a `MissingField` failure and a non-zero exit code rather than dropping into prompts.
+
+### `aether cluster scaffold`
+
+Emit a deployment-manifest template with `aether.cluster` and `aether.node-id` labels pre-set. Operators get a working starting point that's correct-by-construction — no chance of forgetting to label containers, which would otherwise leave cross-cluster tooling unable to distinguish two clusters sharing infrastructure.
+
+```bash
+aether cluster scaffold --name <cluster-name> --format docker-compose [--nodes N] [--image IMG] \
+                        [--mgmt-port-base 5150] [--app-port-base 8070] [--cluster-port 6000] > compose.yml
+```
+
+| Option | Description |
+|--------|-------------|
+| `--name` | Cluster name (regex `^[a-z][a-z0-9-]{0,62}$`) |
+| `--format` | Output format. Currently `docker-compose` |
+| `--nodes` | Compose-fixed node count (default 5) |
+| `--image` | Container image (default `aether-node:local`) |
+| `--mgmt-port-base` | Host port base for management API (default 5150) |
+| `--app-port-base` | Host port base for application HTTP (default 8070) |
+| `--cluster-port` | QUIC cluster transport port (default 6000) |
+
+Example:
+```bash
+aether cluster scaffold --name us-prod --format docker-compose --nodes 5 > compose.yml
+docker compose -f compose.yml up -d
+```
+
+The generated manifest:
+- Sets `aether.cluster=<name>` on every service (matches what `DockerComputeProvider.buildRunCommand` sets on CTM-provisioned replacements)
+- Sets `aether.node-id=node-N` on each compose-fixed service
+- Uses `restart: "no"` per the CTM auto-heal contract (see `aether/docs/operator/deployment-recovery.md`)
+- Provisions a per-cluster bridge network `aether-<name>-network`
+
+See `aether/docs/operator/multi-cluster-deployment.md` for the full labeling model.
 
 ### `aether cluster scale`
 
@@ -1175,6 +1629,250 @@ Scaling down displays a warning:
 Warning: scaling down from 7 to 5 nodes. Excess nodes will be drained.
 ```
 
+### `aether cluster topology`
+
+Show cluster topology with per-node details including role, health, hostname, and zone.
+
+```bash
+aether cluster topology
+```
+
+| Option | Description |
+|--------|-------------|
+| `--format` | Output format: `table` (default), `json`, `value`, `csv` |
+
+Example:
+```bash
+aether cluster topology
+
+# Output (table):
+# NODE              ROLE        HEALTH        HOSTNAME              ZONE            ADDRESS
+# node-1            ACTIVE      HEALTHY       aether-node-1                         aether-node-1:6000
+# node-2            ACTIVE      HEALTHY       aether-node-2                         aether-node-2:6000
+# lb-passive        PASSIVE     HEALTHY       aether-lb                             0.0.0.0:7000
+```
+
+### `aether cluster topology circuit-breaker status`
+
+Show the CTM (Cluster Topology Manager) provisioning circuit breaker state. The breaker trips after 3 consecutive provisioning failures and halts auto-heal until reset.
+
+```bash
+aether cluster topology circuit-breaker status
+```
+
+Example output:
+```json
+{"consecutiveFailures": 0, "trippedAt": 3, "nextAllowedMs": 0, "tripped": false}
+```
+
+### `aether cluster topology circuit-breaker reset`
+
+Operator-triggered reset of the CTM provisioning circuit breaker. Use after fixing the underlying provisioning issue (provider credentials, network connectivity, capacity quota) when none of the auto-recovery triggers (`scale`, node-ready, phase NORMAL, leader handoff) have fired. Returns the prior consecutive-failure count.
+
+```bash
+aether cluster topology circuit-breaker reset
+```
+
+Example output:
+```json
+{"status": "reset", "priorFailureCount": 3}
+```
+
+### `aether cluster topology auto-heal status`
+
+Show whether CTM auto-heal (deficit-driven replacement provisioning) is currently enabled. Operator-controlled gate, distinct from the failure-driven circuit breaker.
+
+```bash
+aether cluster topology auto-heal status
+```
+
+Example output:
+```json
+{"enabled": true}
+```
+
+### `aether cluster topology auto-heal disable`
+
+Disable CTM auto-heal — `handleDeficit` becomes a no-op until re-enabled. Use during disruption-budget testing, planned maintenance windows, or scenarios where the cluster must not automatically rebuild after node loss. Already-in-flight provisioning attempts continue to completion.
+
+```bash
+aether cluster topology auto-heal disable
+```
+
+Example output:
+```json
+{"enabled": false, "previousState": true}
+```
+
+### `aether cluster topology auto-heal enable`
+
+Re-enable CTM auto-heal. If a deficit is pending, the next reconcile picks it up immediately.
+
+```bash
+aether cluster topology auto-heal enable
+```
+
+Example output:
+```json
+{"enabled": true, "previousState": false}
+```
+
+### `aether cluster governors`
+
+Show the per-slice governor assignment across the cluster — which node currently owns the governor role for each slice. Wraps `GET /api/cluster/governors`.
+
+```bash
+aether cluster governors
+```
+
+### `aether cluster journal`
+
+Dump the target node's transition journal (cluster-topology-overhaul spec, Wave 1) — a bounded per-node ring buffer recording every membership-FSM transition (layer `FSM`) and every transport peer-lifecycle transition (layer `PEER`), plus the dialer expected-vs-actual Hello diagnostic and the boot future-history detection. Wraps `GET /api/cluster/journal`.
+
+**Per-node scope:** the journal is local to the node serving the request — target a specific node (`-c <host>`) to read its view (e.g. the leader's view AND the victim's view during a chaos window).
+
+```bash
+# Both layers, most recent 256 entries per layer
+aether cluster journal
+
+# Only membership-FSM transitions
+aether cluster journal --layer fsm
+
+# Only transport peer-lifecycle transitions, last 50 entries
+aether cluster journal --layer peer --limit 50
+```
+
+| Option | Description |
+|--------|-------------|
+| `--layer` | Journal layer to dump: `fsm` or `peer` (default: both, merged in sequence order) |
+| `--limit` | Maximum number of entries per layer, newest kept (default: 256) |
+| `--format` | Output format: `table` (default), `json`, `value`, `csv` |
+
+Example output (table):
+```
+# SEQ      TIME(MS)       LAYER  NODE              FROM            TO              CAUSE                             INC    ROLE
+# 17       1765432100123  FSM    node-3            Suspect         Dead            Stopped                           2      core
+# 18       1765432100456  PEER   node-3            CONNECTED       REMOVED         authoritative-remove              -1
+```
+
+### `aether cluster audit`
+
+**Phase 3 PR-C (lifecycle reconciler):** show recent `audit.lifecycle.commands` events seen by the target node. Backed by the per-node in-memory `RecentCommandsBuffer` populated via a tee on the lifecycle audit publisher.
+
+Each `LifecycleCommand` emitted via `LifecycleWriter.applyCommand(...)` produces a `CommandReceived` + `CommandApplied` pair in the buffer. Use this to inspect operator-issued `aether nodes decommission|force-on-duty|...` actions, and (Phase 4-5) reconciler-emitted recovery commands.
+
+**Per-node scope:** the buffer is local to the node serving the request. Target the leader (`-c <leader-host>`) for cluster-wide visibility. RC2 follow-up: full stream subscription survives restarts and cross-node fan-out.
+
+```bash
+# All events the local node has seen (most recent 100)
+aether cluster audit
+
+# Only operator-emitted events
+aether cluster audit --source operator
+
+# Reconciler-emitted events in the last hour
+aether cluster audit --source reconciler --since 1h
+
+# Specific ISO-8601 window, limit 50, JSON output
+aether cluster audit --since 2026-05-23T10:00:00Z --limit 50 --format json
+```
+
+Options:
+
+| Option | Description |
+|--------|-------------|
+| `--source <name>` | Filter by emitter discriminator: `operator`, `reconciler`, `ctm`, `drain_coordinator`, `bootstrap`, `unknown`, or `all` (default). Case-insensitive. |
+| `--since <when>` | Time window. Accepts epoch-millis, ISO-8601 (`2026-05-23T10:00:00Z`), or relative duration (`30s`, `5m`, `1h`, `2d`). Default: entire buffer. |
+| `--limit <N>` | Max entries to return. Default: 100. Capped by buffer capacity. |
+
+### LifecycleReconciler observability (Phase 4 PR-D)
+
+**No dedicated CLI subcommand.** Observability for the leader-only
+`LifecycleReconciler` (see `aether/docs/specs/membership-architecture-v2-spec.md`) is exposed through the
+audit channel:
+
+- **`aether cluster audit --source reconciler`** — surfaces the reconciler's rule
+  emissions. After the Phase 5 PR-E enforcing flip, five rules emit a
+  `CommandReceived` + `CommandApplied` pair (KV write applied); the two audit-only
+  rules (`JoiningStuckAlert`, `StoppedZombie`) and any rule with operator-overridden
+  `enforce=false` emit a `CommandReceived` only.
+
+```bash
+# Tail reconciler activity (per spec §7.3)
+aether cluster audit --source reconciler --since 5m
+```
+
+**Operator escape hatch — dry-run override.** To roll an enforcing rule back to
+audit-only (e.g. when a false-positive storm surfaces in production), set
+`enforce = false` on the offending rule in `aether.toml`:
+
+```toml
+[reconciler.rules.joiningTimeout]
+enforce = false
+
+[reconciler.rules.onDutyFaulty]
+enforce = false
+```
+
+Setting all five enforcing rules to `enforce = false` reverts the reconciler to the
+Phase 4 dry-run shape. The rule still ticks and still emits `CommandReceived` audit
+events — only the KV write is suppressed. Note that `JoiningStuckAlert` and
+`StoppedZombie` are audit-only forever per spec §7.1 and do not honour a
+`enforce = true` override.
+
+### `aether cluster generation`
+
+Show the current cluster generation snapshot as observed by the queried node. The snapshot summarises the leader-projected epoch, core members, communities, and DHT partition ownership. See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.
+
+```bash
+aether cluster generation
+```
+
+| Option | Description |
+|--------|-------------|
+| `--format` | Output format: `table` (default), `json`, `value`, `csv` |
+
+Example:
+```bash
+aether cluster generation
+
+# Output (table):
+# Epoch:              7:142
+# Mode:               HIERARCHICAL
+# Quiescence:         QUIESCED
+# Rabia term:         7
+# Desired core size:  5
+# Core members:       5
+# Communities:        1
+# Partitions:         2
+```
+
+JSON output returns the full snapshot shape exposed by `GET /api/cluster/generation`.
+
+### `aether cluster await-quiesced`
+
+Block until the queried node observes the requested cluster generation epoch AND the snapshot reports cluster-wide quiescence. Use this in test harnesses or operator scripts that depend on a deterministic settled state before proceeding.
+
+```bash
+aether cluster await-quiesced --epoch <T:C> [--timeout 30s]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--epoch` | Required, epoch in `term:counter` form (e.g. `7:142`). |
+| `--timeout` | Optional, default `30s`, capped at `120s`. |
+| `--format` | Output format: `table` (default) — concise one-liner; `json` — raw response body. |
+
+Exit codes: `0` on success, non-zero on timeout (HTTP 408) or other failure.
+
+Example:
+```bash
+aether cluster await-quiesced --epoch 7:142 --timeout 60s
+# Output: Quiesced at 7:142 (response: {"epoch":"7:142","quiescence":"QUIESCED","waitedMs":1234})
+```
+
+See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.
+
 ### `aether cluster upgrade`
 
 Initiate a cluster version upgrade.
@@ -1195,13 +1893,143 @@ aether cluster upgrade --version 0.26.0
 
 # Output:
 # Upgrade initiated.
-# Version: 1.0.0-alpha -> 0.26.0
+# Version: 1.0.0-rc1 -> 0.26.0
 ```
 
 If the cluster is already at the target version:
 ```
 Already at version 0.26.0. No upgrade needed.
 ```
+
+### `aether cluster bootstrap`
+
+Bootstrap a new cluster from a configuration file.
+
+```bash
+aether cluster bootstrap <config-file> [--cluster <name>] [--yes] [--resume] [--full-check] \
+                                       [--wait [--timeout <seconds>]] [--keep-on-failure] \
+                                       [--ssh-public-key <path>]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--cluster <name>` | Override `[cluster].name` from the TOML (precedence: CLI > TOML > default) |
+| `--yes` | Skip confirmation prompt |
+| `--resume` | Resume a failed bootstrap from last completed phase |
+| `--full-check` | Run full network pre-flight checks (SSH, Docker, floating IP) |
+| `--wait` | Wait for cluster to become healthy (`state == CONVERGED`) after bootstrap |
+| `--timeout <seconds>` | Timeout when using `--wait` (default: `300`) |
+| `--keep-on-failure` | On failure, skip auto-cleanup so VMs/SSH keys remain for SSH-based diagnosis |
+| `--ssh-public-key <path>` | Operator SSH public key for cloud-init injection. Resolution priority: CLI > `[infrastructure.ssh] public_key_files` TOML > `${AETHER_SSH_KEY}.pub` sibling. Cloud sources fail fast if no key resolves |
+
+Seven-phase flow: Validate → Upload SSH Keys → Provision → Collect Addresses → Deploy Runtime → Cluster Formation → Post-Bootstrap. State persisted to `~/.aether/clusters/<name>/bootstrap-state.json` after each phase.
+
+**Runtime modes** (`[runtime.default] type = "container" | "jvm"`):
+- **container** — VMs install Docker, pull `ghcr.io/.../aether-node:<tag>` (from `[runtime.default] image`), run with the composed `aether.toml` bind-mounted over `/app/aether.toml`. Restart via `--restart unless-stopped`.
+- **jvm** — VMs install Eclipse Temurin 25 from Adoptium, download `aether-node.jar` from `[runtime.jvm] jar_url` (or auto-derived `https://github.com/pragmaticalabs/pragmatica/releases/download/v<version>{-candidate?}/aether-node.jar`), run via `nohup java -jar … & disown`. No process supervision (consider auto-heal for crash recovery).
+
+After provisioning, the deploy phase SSHes each cloud node (via `cloud-init status --wait` preflight) and restarts the runtime with the finalized 3-part PEERS list (`nodeId:host:port`). On default (`--keep-on-failure` not set), all tracked resources (VMs, SSH keys, firewall rules, floating IPs) are cleaned up automatically on failure.
+
+### `aether cluster apply`
+
+Apply cluster configuration changes with desired-state reconciliation.
+
+```bash
+aether cluster apply <config-file> [--dry-run] [--yes] [--resume] [--rollback] [--full-check]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--dry-run` | Show planned changes without executing |
+| `--yes` | Skip confirmation prompt |
+| `--resume` | Resume a halted apply from first unfinished wave |
+| `--rollback` | Rollback completed waves to pre-apply state |
+| `--full-check` | Run full network pre-flight checks |
+
+Computes diff against stored config, presents terraform-style plan (`[+]`/`[~]`/`[-]`), then executes in waves: additions → modifications → removals. Rolling restart respects `maxUnavailable` budget for core nodes.
+
+### `aether cluster rotate-key`
+
+Rotate the cluster API key with zero-downtime grace period.
+
+```bash
+aether cluster rotate-key [--grace-period <duration>]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--grace-period` | Grace period for old key (default: `5m`). Accepts `s`, `m`, `h` suffixes |
+
+Generates new key, pushes to cluster, marks old key REVOKED with grace period, updates local `~/.aether/clusters/<name>/api-key`.
+
+### `aether cluster revoke-key`
+
+Revoke an API key by ID.
+
+```bash
+aether cluster revoke-key <keyId> [--immediate]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--immediate` | Skip grace period, revoke immediately |
+
+### `aether cluster list-keys`
+
+List cluster API keys and optionally show audit trail.
+
+```bash
+aether cluster list-keys [--audit]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--audit` | Show full key operation history (create, rotate, revoke, expire) |
+
+---
+
+## TTM (Foundation Model)
+
+### `aether ttm status`
+
+Show the foundation-model / TTM (training & model) runtime status. Wraps `GET /api/ttm/status`.
+
+```bash
+aether ttm status
+```
+
+### `aether ttm training-data`
+
+Show the foundation-model / TTM training-data snapshot. Wraps `GET /api/ttm/training-data`.
+
+```bash
+aether ttm training-data
+```
+
+---
+
+## DHT
+
+### `aether dht replication-map [--limit N] [--prefix P]`
+
+Show the active DHT replication map — which keys live on which nodes under
+the current replication factor. Operator-facing inspection. Wraps
+`GET /api/dht/replication-map`.
+
+Options:
+- `-l`, `--limit N` — max entries to return (default 100, capped at 10000).
+- `-p`, `--prefix P` — only include keys whose UTF-8 prefix matches.
+
+```bash
+aether dht replication-map
+aether dht replication-map --limit 50 --prefix user:
+aether dht replication-map --format json
+```
+
+Each entry's `nodes[0]` is the primary; subsequent entries are replicas
+walking the consistent-hash ring clockwise. The endpoint reports one node's
+storage view — for cluster-wide audits invoke the same command against every
+node and union the results.
 
 ---
 

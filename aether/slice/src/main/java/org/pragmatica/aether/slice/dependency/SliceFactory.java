@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.dependency;
 
 import org.pragmatica.aether.slice.Aspect;
@@ -22,16 +26,8 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 
-/// Creates slice instances via reflection using static factory methods.
-///
-/// RFC-0001 Factory method convention:
-/// - Static method
-/// - Name: lowercase-first version of class name (e.g., UserService.userService(...))
-/// - Returns: Promise<SliceType>
-/// - First parameter: Aspect<SliceType>
-/// - Second parameter: SliceCreationContext
-/// - Remaining parameters: resolved dependency slices in declaration order
-@SuppressWarnings({"JBCT-LAM-01", "JBCT-LAM-02", "JBCT-SEQ-01", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"}) public interface SliceFactory {
+@SuppressWarnings({"JBCT-LAM-01", "JBCT-LAM-02", "JBCT-SEQ-01", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"})
+public interface SliceFactory {
     Logger log = LoggerFactory.getLogger(SliceFactory.class);
 
     static Promise<Slice> createSlice(Class<?> sliceClass,
@@ -40,59 +36,75 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                       List<DependencyDescriptor> descriptors) {
         log.debug("Creating slice from class {} with {} dependencies", sliceClass.getName(), dependencies.size());
         Result<Method> factoryMethodResult;
+
         try {
             factoryMethodResult = findFactoryMethod(sliceClass);
         } catch (Throwable t) {
             log.error("Exception in findFactoryMethod for {}: {}", sliceClass.getName(), t.getMessage(), t);
+
             return new SliceLoadingFailure.Fatal.ClassLoadFailed(sliceClass.getName(), Causes.fromThrowable(t)).promise();
         }
+
         var verifiedResult = factoryMethodResult.onFailure(cause -> log.error("Failed to find factory method for {}: {}",
                                                                               sliceClass.getName(),
-                                                                              cause.message()))
-        .flatMap(method -> {
-                     log.debug("Verifying parameters for method {} with {} dependencies",
-                               method.getName(),
-                               dependencies.size());
-                     return verifyParameters(method, sliceClass, dependencies, descriptors).onFailure(cause -> log.error("Failed to verify parameters for {}: {}",
-                                                                                                                         method.getName(),
-                                                                                                                         cause.message()));
-                 });
-        return verifiedResult.async().flatMap(method -> invokeFactory(method, creationContext, dependencies));
+                                                                              cause.message())).flatMap(method -> {
+            log.debug("Verifying parameters for method {} with {} dependencies", method.getName(), dependencies.size());
+
+            return verifyParameters(method, sliceClass, dependencies, descriptors).onFailure(cause -> log.error("Failed to verify parameters for {}: {}",
+                                                                                                                method.getName(),
+                                                                                                                cause.message()));
+        });
+
+        return verifiedResult.async()
+                             .flatMap(method -> invokeFactory(method, creationContext, dependencies));
     }
 
     private static Result<Method> findFactoryMethod(Class<?> sliceClass) {
         var className = sliceClass.getSimpleName();
+
         log.debug("findFactoryMethod: className={}", className);
         var sliceName = className.endsWith("Factory")
-                       ? className.substring(0,
-                                             className.length() - "Factory".length())
-                       : className;
+                        ? className.substring(0,
+                                              className.length() - "Factory".length())
+                        : className;
         var expectedName = toLowercaseFirst(sliceName) + "Slice";
+
         log.debug("findFactoryMethod: expectedName={}", expectedName);
         Method[] methods;
+
         try {
             methods = sliceClass.getDeclaredMethods();
             log.trace("getDeclaredMethods returned {} methods for {}", methods.length, sliceClass.getName());
         } catch (Throwable t) {
             log.error("findFactoryMethod: getDeclaredMethods FAILED for {}: {}", sliceClass.getName(), t.getMessage(), t);
+
             return new SliceLoadingFailure.Fatal.ClassLoadFailed(sliceClass.getName(), Causes.fromThrowable(t)).result();
         }
-        return Arrays.stream(methods).filter(m -> Modifier.isStatic(m.getModifiers()))
-                            .filter(m -> m.getName().equals(expectedName))
-                            .filter(m -> m.getReturnType().equals(Promise.class))
-                            .filter(m -> isPromiseOfSlice(m, sliceClass))
-                            .findFirst()
-                            .map(Result::success)
-                            .orElseGet(() -> factoryMethodNotFound(sliceClass.getName(),
-                                                                   expectedName).result());
+
+        return Arrays.stream(methods)
+                     .filter(m -> Modifier.isStatic(m.getModifiers()))
+                     .filter(m -> m.getName()
+                                   .equals(expectedName))
+                     .filter(m -> m.getReturnType()
+                                   .equals(Promise.class))
+                     .filter(m -> isPromiseOfSlice(m, sliceClass))
+                     .findFirst()
+                     .map(Result::success)
+                     .orElseGet(() -> factoryMethodNotFound(sliceClass.getName(),
+                                                            expectedName).result());
     }
 
     private static boolean isPromiseOfSlice(Method method, Class<?> sliceClass) {
         var genericReturnType = method.getGenericReturnType();
+
         if (genericReturnType instanceof ParameterizedType parameterizedType) {
             var typeArgs = parameterizedType.getActualTypeArguments();
-            if (typeArgs.length == 1 && typeArgs[0] instanceof Class<?> classTypeArg) {return Slice.class.isAssignableFrom(classTypeArg);}
+
+            if (typeArgs.length == 1 && typeArgs[0] instanceof Class<?> classTypeArg) {
+                return Slice.class.isAssignableFrom(classTypeArg);
+            }
         }
+
         return false;
     }
 
@@ -101,42 +113,59 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                    List<Slice> dependencies,
                                                    List<DependencyDescriptor> descriptors) {
         var parameters = method.getParameters();
-        if (parameters.length != 2) {return parameterCountMismatch(method.getName(), 2, parameters.length).result();}
-        if (!parameters[0].getType().equals(Aspect.class)) {return firstParameterMustBeAspect(method.getName(),
-                                                                                              parameters[0].getType()
-                                                                                                        .getName()).result();}
-        if (!parameters[1].getType().equals(SliceCreationContext.class)) {return secondParameterMustBeCreationContext(method.getName(),
-                                                                                                                      parameters[1].getType()
-                                                                                                                                .getName()).result();}
+
+        if (parameters.length != 2) {
+            return parameterCountMismatch(method.getName(), 2, parameters.length).result();
+        }
+
+        if (!parameters[0].getType().equals(Aspect.class)) {
+            return firstParameterMustBeAspect(method.getName(),
+                                              parameters[0].getType().getName()).result();
+        }
+
+        if (!parameters[1].getType().equals(SliceCreationContext.class)) {
+            return secondParameterMustBeCreationContext(method.getName(),
+                                                        parameters[1].getType().getName()).result();
+        }
+
         return success(method);
     }
 
-    @SuppressWarnings({"unchecked", "JBCT-RET-03"}) private static Promise<Slice> invokeFactory(Method method,
-                                                                                                SliceCreationContext creationContext,
-                                                                                                List<Slice> dependencies) {
+    @SuppressWarnings({"unchecked", "JBCT-RET-03"})
+    private static Promise<Slice> invokeFactory(Method method,
+                                                SliceCreationContext creationContext,
+                                                List<Slice> dependencies) {
         log.debug("Invoking factory method {}", method.getName());
+
         return Promise.lift(Causes::fromThrowable,
                             () -> {
                                 method.setAccessible(true);
                                 var args = new Object[]{Aspect.identity(), creationContext};
+
                                 log.debug("Calling factory method {} with args: Aspect, SliceCreationContext",
                                           method.getName());
+
                                 return (Promise<Slice>) method.invoke(null, args);
-                            }).mapError(SliceLoadingFailure::classify)
-                           .flatMap(promise -> {
-                                        log.info("Factory method {} returned promise, waiting for completion",
-                                                 method.getName());
-                                        return promise.onSuccess(slice -> log.debug("Factory method {} completed, slice class: {}",
-                                                                                    method.getName(),
-                                                                                    slice.getClass().getName()))
-        .onFailure(cause -> log.error("Factory method {} failed: {}",
-                                      method.getName(),
-                                      cause.message()));
-                                    });
+                            })
+                      .mapError(SliceLoadingFailure::classify)
+                      .flatMap(promise -> {
+                                   log.info("Factory method {} returned promise, waiting for completion",
+                                            method.getName());
+
+                                   return promise.onSuccess(slice -> log.debug("Factory method {} completed, slice class: {}",
+                                                                               method.getName(),
+                                                                               slice.getClass().getName()))
+                                                 .onFailure(cause -> log.error("Factory method {} failed: {}",
+                                                                               method.getName(),
+                                                                               cause.message()));
+                               });
     }
 
     private static String toLowercaseFirst(String name) {
-        if (name.isEmpty()) {return name;}
+        if (name.isEmpty()) {
+            return name;
+        }
+
         return Character.toLowerCase(name.charAt(0)) + name.substring(1);
     }
 
@@ -146,7 +175,8 @@ import static org.pragmatica.lang.utils.Causes.cause;
 
     private static Cause parameterCountMismatch(String methodName, int expected, int actual) {
         return new SliceLoadingFailure.Fatal.ParameterMismatch(methodName,
-                                                               "expected " + expected + " (Aspect, SliceCreationContext), got " + actual);
+                                                               "expected " + expected
+                                                              + " (Aspect, SliceCreationContext), got " + actual);
     }
 
     private static Cause firstParameterMustBeAspect(String methodName, String actual) {

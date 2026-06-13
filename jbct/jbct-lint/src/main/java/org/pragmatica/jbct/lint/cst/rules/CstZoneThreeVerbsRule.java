@@ -3,11 +3,12 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 import org.pragmatica.lang.Option;
 
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
@@ -23,6 +24,8 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 ///               read, write, add, remove
 public class CstZoneThreeVerbsRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-ZONE-02";
+
+    private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
     // Zone 3 implementation-level verbs
     private static final Set<String> ZONE_3_VERBS = Set.of("get",
@@ -77,36 +80,31 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         // Find private methods that look like leaf functions
         return findAllMethods(root).stream()
-                      .filter(method -> isLeafFunction(method, root, source))
-                      .flatMap(method -> checkMethodName(method, source, ctx));
+                      .filter(method -> isLeafFunction(method, root))
+                      .flatMap(method -> checkMethodName(method, ctx));
     }
 
-    private boolean isLeafFunction(CstNode method, CstNode root, String source) {
+    private boolean isLeafFunction(Cursor method, Cursor root) {
         // Find the class member containing this method
-        return findAncestor(root, method, RuleId.ClassMember.class).filter(classMember -> isPrivateLeafMethod(classMember,
-                                                                                                              method,
-                                                                                                              source))
-                           .isPresent();
+        return findAncestor(root, method, RuleKind.CLASS_MEMBER)
+                .filter(classMember -> isPrivateLeafMethod(classMember, method))
+                .isPresent();
     }
 
-    private boolean isPrivateLeafMethod(CstNode classMember, CstNode method, String source) {
-        var memberText = text(classMember, source);
+    private boolean isPrivateLeafMethod(Cursor classMember, Cursor method) {
+        var memberText = text(classMember);
         // Check if private
         if (!memberText.contains("private ")) {
             return false;
         }
         // Check if it's a simple method (no monadic chains = leaf)
-        var methodText = text(method, source);
+        var methodText = text(method);
         var hasMonadicChain = methodText.contains(".map(") ||
         methodText.contains(".flatMap(") ||
         methodText.contains(".fold(");
@@ -114,9 +112,8 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
         return ! hasMonadicChain;
     }
 
-    private Stream<Diagnostic> checkMethodName(CstNode method, String source, LintContext ctx) {
-        var methodName = childByRule(method, RuleId.Identifier.class).map(id -> text(id, source))
-                                    .or("");
+    private Stream<Diagnostic> checkMethodName(Cursor method, LintContext ctx) {
+        var methodName = extractMethodName(text(method));
         if (methodName.isEmpty()) {
             return Stream.empty();
         }
@@ -128,6 +125,11 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
                                                         suggestZone3Verb(verb.toLowerCase()),
                                                         ctx))
                           .stream();
+    }
+
+    private static String extractMethodName(String memberText) {
+        var matcher = METHOD_NAME_PATTERN.matcher(memberText);
+        return matcher.find() ? matcher.group(1) : "";
     }
 
     private Option<String> extractVerb(String methodName) {
@@ -156,7 +158,7 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
         };
     }
 
-    private Diagnostic createDiagnostic(CstNode node,
+    private Diagnostic createDiagnostic(Cursor node,
                                         String methodName,
                                         String verb,
                                         String suggestedVerb,

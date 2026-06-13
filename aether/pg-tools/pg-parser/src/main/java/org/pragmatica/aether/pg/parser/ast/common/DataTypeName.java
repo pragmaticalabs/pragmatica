@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.parser.ast.common;
 
 import org.pragmatica.lang.Option;
@@ -6,7 +10,6 @@ import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
 import java.util.List;
 
 
-/// A parsed PostgreSQL data type reference.
 public record DataTypeName(SourceSpan span,
                            String baseName,
                            List<Integer> modifiers,
@@ -20,17 +23,27 @@ public record DataTypeName(SourceSpan span,
         return baseName.toLowerCase();
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         var sb = new StringBuilder();
-        if (customTypeName.isPresent()) {sb.append(customTypeName.unwrap());} else {sb.append(baseName);}
+
+        if (customTypeName.isPresent()) {
+            sb.append(customTypeName.unwrap());
+        } else {
+            sb.append(baseName);
+        }
+
         if (!modifiers.isEmpty()) {
             sb.append("(");
             sb.append(String.join(",",
-                                  modifiers.stream().map(String::valueOf)
-                                                  .toList()));
+                                  modifiers.stream().map(String::valueOf).toList()));
             sb.append(")");
         }
-        for (int i = 0;i <arrayDimensions;i++) {sb.append("[]");}
+
+        for (int i = 0; i < arrayDimensions; i++) {
+            sb.append("[]");
+        }
+
         return sb.toString();
     }
 

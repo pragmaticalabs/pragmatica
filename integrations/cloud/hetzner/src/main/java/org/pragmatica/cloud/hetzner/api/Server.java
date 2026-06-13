@@ -66,11 +66,18 @@ public record Server(long id,
                                       List<FirewallRef> firewalls,
                                       String location,
                                       @JsonProperty("user_data") String userData,
-                                      @JsonProperty("start_after_create") boolean startAfterCreate) {
+                                      @JsonProperty("start_after_create") boolean startAfterCreate,
+                                      @JsonProperty("public_net") PublicNetSpec publicNet,
+                                      Map<String, String> labels) {
         /// Firewall reference for server creation.
         public record FirewallRef(long firewall) {}
 
-        /// Factory method for creating a server request.
+        /// Public-network configuration for new servers. Both fields default to true at the
+        /// Hetzner API; setting them false saves Primary IPs (which are quota-bounded per account).
+        public record PublicNetSpec(@JsonProperty("enable_ipv4") boolean enableIpv4,
+                                    @JsonProperty("enable_ipv6") boolean enableIpv6) {}
+
+        /// Factory method for creating a server request. Defaults to dual-stack (Hetzner API default).
         public static CreateServerRequest createServerRequest(String name,
                                                               String serverType,
                                                               String image,
@@ -79,7 +86,24 @@ public record Server(long id,
                                                               List<Long> firewalls,
                                                               String location,
                                                               String userData,
-                                                              boolean startAfterCreate) {
+                                                              boolean startAfterCreate,
+                                                              Map<String, String> labels) {
+            return createServerRequest(name, serverType, image, sshKeys, networks, firewalls,
+                                       location, userData, startAfterCreate, null, labels);
+        }
+
+        /// Factory method overload for explicit public_net spec (e.g. IPv4-only to conserve Primary IPs).
+        public static CreateServerRequest createServerRequest(String name,
+                                                              String serverType,
+                                                              String image,
+                                                              List<Long> sshKeys,
+                                                              List<Long> networks,
+                                                              List<Long> firewalls,
+                                                              String location,
+                                                              String userData,
+                                                              boolean startAfterCreate,
+                                                              PublicNetSpec publicNet,
+                                                              Map<String, String> labels) {
             return new CreateServerRequest(name,
                                            serverType,
                                            image,
@@ -90,7 +114,9 @@ public record Server(long id,
                                                     .toList(),
                                            location,
                                            userData,
-                                           startAfterCreate);
+                                           startAfterCreate,
+                                           publicNet,
+                                           Map.copyOf(labels));
         }
     }
 

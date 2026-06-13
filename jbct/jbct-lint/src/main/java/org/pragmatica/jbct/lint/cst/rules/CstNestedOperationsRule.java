@@ -3,8 +3,7 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
 
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -41,22 +40,18 @@ public class CstNestedOperationsRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         // Find lambdas with nested operations
         return findAllLambdas(root).stream()
-                      .filter(lambda -> hasNestedOperations(lambda, source))
-                      .map(lambda -> createDiagnostic(lambda, source, ctx));
+                      .filter(this::hasNestedOperations)
+                      .map(lambda -> createDiagnostic(lambda, ctx));
     }
 
-    private boolean hasNestedOperations(CstNode lambda, String source) {
-        var lambdaText = text(lambda, source);
+    private boolean hasNestedOperations(Cursor lambda) {
+        var lambdaText = text(lambda);
         // Skip simple lambdas (single expression without chains)
         if (!lambdaText.contains("->")) {
             return false;
@@ -87,7 +82,7 @@ public class CstNestedOperationsRule implements CstLintRule {
         return false;
     }
 
-    private Diagnostic createDiagnostic(CstNode lambda, String source, LintContext ctx) {
+    private Diagnostic createDiagnostic(Cursor lambda, LintContext ctx) {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),

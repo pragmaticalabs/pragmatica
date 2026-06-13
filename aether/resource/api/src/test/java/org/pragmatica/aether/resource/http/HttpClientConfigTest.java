@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.resource.http;
 
 import org.junit.jupiter.api.Nested;
@@ -111,84 +116,4 @@ class HttpClientConfigTest {
         }
     }
 
-    @Nested
-    class WithMethods {
-
-        @Test
-        void withBaseUrl_returnsNewConfig_withUpdatedUrl() {
-            var config = httpClientConfig().unwrap();
-
-            var updated = config.withBaseUrl("https://new.api.com");
-
-            assertThat(updated.baseUrl().isPresent()).isTrue();
-            updated.baseUrl().onPresent(url -> assertThat(url).isEqualTo("https://new.api.com"));
-            assertThat(updated.connectTimeout()).isEqualTo(config.connectTimeout());
-        }
-
-        @Test
-        void withConnectTimeout_returnsNewConfig_withUpdatedTimeout() {
-            var config = httpClientConfig().unwrap();
-            var newTimeout = timeSpan(2).seconds();
-
-            var updated = config.withConnectTimeout(newTimeout);
-
-            assertThat(updated.connectTimeout()).isEqualTo(newTimeout);
-            assertThat(updated.requestTimeout()).isEqualTo(config.requestTimeout());
-        }
-
-        @Test
-        void withRequestTimeout_returnsNewConfig_withUpdatedTimeout() {
-            var config = httpClientConfig().unwrap();
-            var newTimeout = timeSpan(60).seconds();
-
-            var updated = config.withRequestTimeout(newTimeout);
-
-            assertThat(updated.requestTimeout()).isEqualTo(newTimeout);
-            assertThat(updated.connectTimeout()).isEqualTo(config.connectTimeout());
-        }
-
-        @Test
-        void withFollowRedirects_returnsNewConfig_withUpdatedPolicy() {
-            var config = httpClientConfig().unwrap();
-
-            var updated = config.withFollowRedirects(Redirect.NEVER);
-
-            assertThat(updated.followRedirects()).isEqualTo(Redirect.NEVER);
-        }
-
-        @Test
-        void withJson_returnsNewConfig_withJsonConfig() {
-            var config = httpClientConfig().unwrap();
-            var json = JsonConfig.jsonConfig();
-
-            var updated = config.withJson(json);
-
-            assertThat(updated.json().isPresent()).isTrue();
-        }
-
-        @Test
-        void withDefaultHeaders_returnsNewConfig_withHeaders() {
-            var config = httpClientConfig().unwrap();
-            var headers = Map.of("X-Custom", "value");
-
-            var updated = config.withDefaultHeaders(headers);
-
-            assertThat(updated.defaultHeaders()).containsEntry("X-Custom", "value");
-            assertThat(config.defaultHeaders()).isEmpty();
-        }
-
-        @Test
-        void withMethods_canBeChained_toCustomizeMultipleFields() {
-            var config = httpClientConfig().unwrap()
-                .withBaseUrl("https://api.example.com")
-                .withConnectTimeout(timeSpan(5).seconds())
-                .withFollowRedirects(Redirect.NEVER)
-                .withDefaultHeaders(Map.of("Accept", "application/json"));
-
-            assertThat(config.baseUrl().isPresent()).isTrue();
-            assertThat(config.connectTimeout()).isEqualTo(timeSpan(5).seconds());
-            assertThat(config.followRedirects()).isEqualTo(Redirect.NEVER);
-            assertThat(config.defaultHeaders()).containsEntry("Accept", "application/json");
-        }
-    }
 }

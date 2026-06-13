@@ -17,11 +17,16 @@
 package org.pragmatica.consensus.rabia;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
 
 /// Metrics collection interface for consensus engine observability.
 ///
 /// Implementations can integrate with monitoring systems like Micrometer.
 /// Use [#noop()] for a no-op implementation when metrics are not needed.
+///
+/// Class-level `@Contract`: every method is a fire-and-forget metric recorder whose void
+/// return is the contract (no meaningful result to surface to the caller).
+@Contract
 public interface ConsensusMetrics {
     /// Record a decision being made.
     ///
@@ -76,6 +81,7 @@ public interface ConsensusMetrics {
     }
 
     /// No-op implementation for when metrics are disabled.
+    @Contract
     enum NoopMetrics implements ConsensusMetrics {
         INSTANCE;
         @Override

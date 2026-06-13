@@ -17,6 +17,7 @@
 package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
+import java.util.Map;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.serialization.Codec;
@@ -27,8 +28,18 @@ import org.pragmatica.serialization.Codec;
 /// @param state       current membership state
 /// @param incarnation monotonically increasing counter used to refute suspicions
 /// @param address     network address for sending probes
+/// @param labels      descriptor labels (e.g. role/source) learned from the member's
+///                    ANNOUNCE `NodeInfo`. Empty when the member was learned only via
+///                    transitive piggyback (back-compat default). Never on the SWIM wire —
+///                    `SwimMember` is not a `SwimMessage` variant.
 @Codec
-public record SwimMember(NodeId nodeId, MemberState state, long incarnation, InetSocketAddress address) {
+public record SwimMember(NodeId nodeId, MemberState state, long incarnation, InetSocketAddress address,
+                         Map<String, String> labels) {
+
+    /// Compact constructor ensures labels are an immutable copy.
+    public SwimMember {
+        labels = Map.copyOf(labels);
+    }
 
     /// Membership state of a SWIM member.
     @Codec
@@ -38,23 +49,38 @@ public record SwimMember(NodeId nodeId, MemberState state, long incarnation, Ine
         FAULTY
     }
 
-    /// Factory creating a member with all parameters.
+    /// Factory creating a member with all parameters and explicit labels.
+    public static SwimMember swimMember(NodeId nodeId, MemberState state, long incarnation,
+                                        InetSocketAddress address, Map<String, String> labels) {
+        return new SwimMember(nodeId, state, incarnation, address, labels);
+    }
+
+    /// Factory creating a member with all parameters (no labels — back-compat default).
     public static SwimMember swimMember(NodeId nodeId, MemberState state, long incarnation, InetSocketAddress address) {
-        return new SwimMember(nodeId, state, incarnation, address);
+        return new SwimMember(nodeId, state, incarnation, address, Map.of());
     }
 
-    /// Factory creating an ALIVE member with incarnation 0.
+    /// Factory creating an ALIVE member with incarnation 0 (no labels).
     public static SwimMember swimMember(NodeId nodeId, InetSocketAddress address) {
-        return new SwimMember(nodeId, MemberState.ALIVE, 0, address);
+        return new SwimMember(nodeId, MemberState.ALIVE, 0, address, Map.of());
     }
 
-    /// Return a copy with the given state.
+    /// Return a copy with the given state, preserving labels.
     public SwimMember withState(MemberState newState) {
-        return new SwimMember(nodeId, newState, incarnation, address);
+        return new SwimMember(nodeId, newState, incarnation, address, labels);
     }
 
-    /// Return a copy with the given incarnation.
+    /// Return a copy with the given incarnation, preserving labels.
     public SwimMember withIncarnation(long newIncarnation) {
-        return new SwimMember(nodeId, state, newIncarnation, address);
+        return new SwimMember(nodeId, state, newIncarnation, address, labels);
+    }
+
+    /// Return a copy with the given probe address, preserving identity/state/incarnation/labels
+    /// (cluster-topology-overhaul Wave 9 Fix C). Used when a re-ANNOUNCE / gossip update for an
+    /// ALREADY-KNOWN member carries a NEW source-derived address — e.g. a Docker IP reshuffle on
+    /// partition-heal. Without adopting it, SWIM keeps probing the stale pre-partition IP, acks
+    /// go silent, and the member is falsely declared FAULTY (the post-heal stale-IP probe storm).
+    public SwimMember withAddress(InetSocketAddress newAddress) {
+        return new SwimMember(nodeId, state, incarnation, newAddress, labels);
     }
 }

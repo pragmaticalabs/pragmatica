@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.network;
 
 import org.pragmatica.lang.Result;
@@ -8,10 +12,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Aggregates network metrics from multiple handlers.
-///
-/// Use when you have multiple Netty pipelines (e.g., management server + cluster network)
-/// and want unified metrics.
 public final class NetworkMetricsAggregator {
     private final CopyOnWriteArrayList<NetworkMetricsHandler> handlers = new CopyOnWriteArrayList<>();
 
@@ -23,21 +23,29 @@ public final class NetworkMetricsAggregator {
 
     public Result<Unit> register(NetworkMetricsHandler handler) {
         handlers.addIfAbsent(handler);
+
         return unitResult();
     }
 
     public Result<Unit> unregister(NetworkMetricsHandler handler) {
         handlers.remove(handler);
+
         return unitResult();
     }
 
     public NetworkMetrics snapshot() {
-        if (handlers.isEmpty()) {return NetworkMetrics.EMPTY;}
+        if (handlers.isEmpty()) {
+            return NetworkMetrics.EMPTY;
+        }
+
         return aggregateHandlers(false);
     }
 
     public NetworkMetrics snapshotAndReset() {
-        if (handlers.isEmpty()) {return NetworkMetrics.EMPTY;}
+        if (handlers.isEmpty()) {
+            return NetworkMetrics.EMPTY;
+        }
+
         return aggregateHandlers(true);
     }
 
@@ -49,10 +57,12 @@ public final class NetworkMetricsAggregator {
         int activeConnections = 0;
         int backpressureEvents = 0;
         long lastBackpressure = 0;
+
         for (NetworkMetricsHandler handler : handlers) {
             var metrics = reset
-                         ? handler.snapshotAndReset()
-                         : handler.snapshot();
+                          ? handler.snapshotAndReset()
+                          : handler.snapshot();
+
             bytesRead += metrics.bytesRead();
             bytesWritten += metrics.bytesWritten();
             messagesRead += metrics.messagesRead();
@@ -61,6 +71,7 @@ public final class NetworkMetricsAggregator {
             backpressureEvents += metrics.backpressureEvents();
             lastBackpressure = Math.max(lastBackpressure, metrics.lastBackpressureTimestamp());
         }
+
         return new NetworkMetrics(bytesRead,
                                   bytesWritten,
                                   messagesRead,

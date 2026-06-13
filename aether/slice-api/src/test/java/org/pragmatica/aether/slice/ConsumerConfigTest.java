@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.slice;
 
 import org.junit.jupiter.api.Nested;
@@ -34,8 +39,8 @@ class ConsumerConfigTest {
         }
 
         @Test
-        void readPreference_defaultsToLeader() {
-            assertThat(consumerConfig("analytics").readPreference()).isEqualTo(ReadPreference.LEADER);
+        void readPreference_defaultsToGovernor() {
+            assertThat(consumerConfig("analytics").readPreference()).isEqualTo(ReadPreference.GOVERNOR);
         }
     }
 
@@ -64,18 +69,18 @@ class ConsumerConfigTest {
             assertThat(config.maxBatchSize()).isEqualTo(50);
             assertThat(config.processingMode()).isEqualTo(ProcessingMode.PARALLEL);
             assertThat(config.errorStrategy()).isEqualTo(ErrorStrategy.SKIP);
-            assertThat(config.checkpointIntervalMs()).isEqualTo(1000L);
+            assertThat(config.checkpointInterval().millis()).isEqualTo(1000L);
             assertThat(config.maxRetries()).isEqualTo(3);
             assertThat(config.deadLetterStream()).isEmpty();
-            assertThat(config.readPreference()).isEqualTo(ReadPreference.LEADER);
+            assertThat(config.readPreference()).isEqualTo(ReadPreference.GOVERNOR);
         }
 
         @Test
-        void sevenFieldFactory_defaultsToLeader_forReadPreference() {
+        void sevenFieldFactory_defaultsToGovernor_forReadPreference() {
             var config = consumerConfig("compat", 50, ProcessingMode.PARALLEL, ErrorStrategy.SKIP,
                                         2000L, 5, "dead-letters");
 
-            assertThat(config.readPreference()).isEqualTo(ReadPreference.LEADER);
+            assertThat(config.readPreference()).isEqualTo(ReadPreference.GOVERNOR);
         }
     }
 
@@ -91,11 +96,11 @@ class ConsumerConfigTest {
         }
 
         @Test
-        void readPreference_followerOnly_isPreserved() {
+        void readPreference_anyReplica_isPreserved() {
             var config = consumerConfig("group", 10, ProcessingMode.ORDERED, ErrorStrategy.RETRY,
-                                        1000L, 3, "", ReadPreference.FOLLOWER_ONLY);
+                                        1000L, 3, "", ReadPreference.ANY_REPLICA);
 
-            assertThat(config.readPreference()).isEqualTo(ReadPreference.FOLLOWER_ONLY);
+            assertThat(config.readPreference()).isEqualTo(ReadPreference.ANY_REPLICA);
         }
     }
 
@@ -115,7 +120,7 @@ class ConsumerConfigTest {
         @Test
         void readPreference_hasThreeValues() {
             assertThat(ReadPreference.values()).containsExactly(
-                ReadPreference.LEADER, ReadPreference.NEAREST, ReadPreference.FOLLOWER_ONLY);
+                ReadPreference.GOVERNOR, ReadPreference.ANY_REPLICA, ReadPreference.NEAREST);
         }
     }
 }

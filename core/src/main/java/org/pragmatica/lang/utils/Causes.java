@@ -18,6 +18,7 @@
 package org.pragmatica.lang.utils;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Functions.Fn3;
@@ -159,9 +160,8 @@ public sealed interface Causes {
             }
         }
         var inner = new ArrayList<Cause>();
-        for (Result<?> result : results) {
-            result.onFailure(inner::add);
-        }
+        Stream.of(results)
+              .forEach(result -> result.fold(inner::add, Functions::toNull));
         return new compositeCause(none(), inner);
     }
 }

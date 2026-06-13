@@ -33,7 +33,13 @@ public record NodeId(String id) implements Comparable<NodeId> {
     /// Generate a unique random node ID.
     /// This method cannot fail because IdGenerator always produces valid non-blank IDs.
     public static NodeId randomNodeId() {
-        return new NodeId(IdGenerator.generate("node"));
+        return randomNodeId("node");
+    }
+
+    /// Generate a unique random node ID with the given prefix (e.g. a cluster-scoped
+    /// `aether-<cluster>-node`). The no-arg overload uses the bare `node` prefix.
+    public static NodeId randomNodeId(String prefix) {
+        return new NodeId(IdGenerator.generate(prefix));
     }
 
     @Override

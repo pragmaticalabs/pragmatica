@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.artifact;
 
 import org.pragmatica.aether.slice.MethodName;
@@ -9,20 +13,13 @@ import org.pragmatica.lang.type.TypeToken;
 import java.util.List;
 
 
-/// Artifact Repository Slice - provides Maven-compatible artifact storage.
-///
-///
-/// Endpoints:
-///
-///   - `GET /repository/**` - Resolve artifacts
-///   - `PUT /repository/**` - Deploy artifacts
-///
 public record ArtifactRepoSlice(MavenProtocolHandler mavenHandler) implements Slice {
     public static ArtifactRepoSlice artifactRepoSlice(ArtifactStore store) {
         return new ArtifactRepoSlice(MavenProtocolHandler.mavenProtocolHandler(store));
     }
 
-    @Override public List<SliceMethod<?, ?>> methods() {
+    @Override
+    public List<SliceMethod<?, ?>> methods() {
         return List.of(new SliceMethod<>(MethodName.methodName("get").unwrap(),
                                          this::handleGet,
                                          new TypeToken<MavenProtocolHandler.MavenResponse>() {},
@@ -41,5 +38,5 @@ public record ArtifactRepoSlice(MavenProtocolHandler mavenHandler) implements Sl
         return mavenHandler.handlePut("/repository/" + request.path(), request.content());
     }
 
-    public record RepositoryRequest(String path, byte[] content){}
+    public record RepositoryRequest(String path, byte[] content) {}
 }

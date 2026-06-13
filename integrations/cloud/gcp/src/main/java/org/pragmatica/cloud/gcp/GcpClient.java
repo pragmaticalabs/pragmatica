@@ -100,7 +100,14 @@ record GcpClientRecord(GcpConfig config, HttpOperations http, JsonMapper mapper,
 
     @Override
     public Promise<Instance> insertInstance(InsertInstanceRequest request) {
-        return postJson(zonePath("/instances"), request, Instance.class);
+        var path = request.zoneOverride()
+                          .map(zone -> overrideZonePath(zone, "/instances"))
+                          .or(zonePath("/instances"));
+        return postJson(path, request, Instance.class);
+    }
+
+    private String overrideZonePath(String zone, String suffix) {
+        return "/projects/" + config.projectId() + "/zones/" + zone + suffix;
     }
 
     @Override

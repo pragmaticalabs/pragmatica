@@ -3,7 +3,6 @@ package org.pragmatica.http.routing;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Map;
@@ -115,13 +114,22 @@ public interface StaticFileRouteSource extends RouteSource {
                 contentType.headerText());
         ctx.responseHeaders()
            .set("Cache-Control", "no-cache");
-        return Promise.lift(StaticFileRouteSource::mapException, () -> readResource(resourcePath));
+        return Promise.resolved(readResource(resourcePath));
     }
 
-    private static StaticFileError mapException(Throwable ex) {
-        return ex instanceof FileNotFoundException
-               ? StaticFileError.NOT_FOUND
-               : new StaticFileError.ReadFailed(ex);
+    private static org.pragmatica.lang.Result<byte[]> readResource(String resourcePath) {
+        var stream = StaticFileRouteSource.class.getResourceAsStream(resourcePath);
+        if (stream == null) {
+            return StaticFileError.NOT_FOUND.result();
+        }
+        return org.pragmatica.lang.Result.lift(StaticFileError.ReadFailed::new, () -> readAll(stream));
+    }
+
+    @SuppressWarnings("JBCT-EX-01") // Adapter boundary: JDK InputStream throwing supplier for Result.lift
+    private static byte[] readAll(InputStream stream) throws IOException {
+        try (stream) {
+            return stream.readAllBytes();
+        }
     }
 
     private static String resolveResourcePath(String classpathPrefix, String relativePath) {
@@ -131,15 +139,6 @@ public interface StaticFileRouteSource extends RouteSource {
         return classpathPrefix + (path.startsWith("/")
                                   ? path
                                   : "/" + path);
-    }
-
-    private static byte[] readResource(String resourcePath) throws IOException {
-        try (InputStream is = StaticFileRouteSource.class.getResourceAsStream(resourcePath)) {
-            if (is == null) {
-                throw new FileNotFoundException("Resource not found: " + resourcePath);
-            }
-            return is.readAllBytes();
-        }
     }
 
     static ContentType detectContentType(String path) {

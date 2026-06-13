@@ -1,414 +1,746 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeJoined;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
+import org.pragmatica.consensus.topology.MembershipView;
 import org.pragmatica.consensus.topology.NodeHealth;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.NodeState;
-import org.pragmatica.consensus.topology.TopologyManagementMessage;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.net.tcp.TlsConfig;
-import org.pragmatica.lang.concurrent.CancellableTask;
 
 import java.net.SocketAddress;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.consensus.net.NodeInfo.LABEL_ZONE;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Implementation of ClusterTopologyManager that delegates read-only operations to
-/// TopologyObserver and manages cluster size via a NodeReconcilerState state machine.
-/// @SuppressWarnings: void callbacks required by TopologyManager/ClusterTopologyManager interfaces
-@SuppressWarnings("JBCT-RET-01") record ClusterTopologyManagerRecord(TopologyObserver observer,
-                                                                     NodeLifecycleManager lifecycleManager,
-                                                                     AutoHealConfig autoHealConfig,
-                                                                     DeploymentMap deploymentMap,
-                                                                     AtomicInteger configuredSizeRef,
-                                                                     AtomicInteger desiredSizeRef,
-                                                                     AtomicReference<NodeReconcilerState> stateRef,
-                                                                     AtomicBoolean active,
-                                                                     ConcurrentHashMap<NodeId, Instant> nodeJoinTimes,
-                                                                     CancellableTask recheckFuture) implements ClusterTopologyManager {
+record ClusterTopologyManagerRecord(TopologyObserver observer,
+                                    NodeLifecycleManager lifecycleManager,
+                                    AutoHealConfig autoHealConfig,
+                                    DeploymentMap deploymentMap,
+                                    GenerationSnapshotSource snapshotSource,
+                                    Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                    Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                    Supplier<ClusterPhase> phaseSupplier,
+                                    AtomicReference<NodeReconcilerState> stateRef,
+                                    AtomicBoolean active,
+                                    ConcurrentHashMap<NodeId, Promise<?>> inFlightProvisions,
+                                    AtomicInteger consecutiveProvisioningFailures,
+                                    AtomicLong nextProvisioningAllowedMs,
+                                    AtomicLong lastProvisioningFailureMs,
+                                    AtomicLong formationAnchorMs,
+                                    AtomicBoolean autoHealEnabled,
+                                    LongSupplier clock,
+                                    Consumer<NodeId> drainCommandSink,
+                                    Consumer<NodeId> drainCommandClear) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
-
     private static final int MINIMUM_CLUSTER_SIZE = 3;
-
-    private static final int MAX_WAVE_SIZE = 5;
+    private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
 
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
                                                                      AutoHealConfig config,
-                                                                     DeploymentMap deploymentMap) {
-        var initialSize = observer.clusterSize();
+                                                                     DeploymentMap deploymentMap,
+                                                                     GenerationSnapshotSource snapshotSource,
+                                                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                                     Supplier<ClusterPhase> phaseSupplier,
+                                                                     LongSupplier clock) {
+        return clusterTopologyManagerRecord(observer,
+                                            lifecycleManager,
+                                            config,
+                                            deploymentMap,
+                                            snapshotSource,
+                                            clusterConfigReader,
+                                            commandApplier,
+                                            phaseSupplier,
+                                            clock,
+                                            _ -> {},
+                                            _ -> {});
+    }
+
+    /// Membership v2 / B5b — production factory wiring the leader's DRAIN command channel.
+    /// `drainCommandSink` enqueues the target into the `DrainCommandRegistry` (so the leader's
+    /// outbound ping carries the target in its global `drainNodes` set and the target self-drains via its
+    /// `DrainProcedure`); `drainCommandClear` removes the target after the grace-terminate
+    /// backstop reaps the container. Both default to no-op via the overload above for tests and
+    /// legacy callers.
+    static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
+                                                                     NodeLifecycleManager lifecycleManager,
+                                                                     AutoHealConfig config,
+                                                                     DeploymentMap deploymentMap,
+                                                                     GenerationSnapshotSource snapshotSource,
+                                                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                                     Supplier<ClusterPhase> phaseSupplier,
+                                                                     LongSupplier clock,
+                                                                     Consumer<NodeId> drainCommandSink,
+                                                                     Consumer<NodeId> drainCommandClear) {
         return new ClusterTopologyManagerRecord(observer,
                                                 lifecycleManager,
                                                 config,
                                                 deploymentMap,
-                                                new AtomicInteger(initialSize),
-                                                new AtomicInteger(initialSize),
+                                                snapshotSource,
+                                                clusterConfigReader,
+                                                commandApplier,
+                                                phaseSupplier,
                                                 new AtomicReference<>(new NodeReconcilerState.Inactive("not yet activated")),
                                                 new AtomicBoolean(false),
                                                 new ConcurrentHashMap<>(),
-                                                CancellableTask.cancellableTask());
+                                                new AtomicInteger(0),
+                                                new AtomicLong(0L),
+                                                new AtomicLong(0L),
+                                                new AtomicLong(clock.getAsLong()),
+                                                new AtomicBoolean(true),
+                                                clock,
+                                                drainCommandSink == null
+                                                ? _ -> {}
+                                                : drainCommandSink,
+                                                drainCommandClear == null
+                                                ? _ -> {}
+                                                : drainCommandClear);
     }
 
-    @Override public NodeReconcilerState reconcilerState() {
+    private long nowMs() {
+        return clock.getAsLong();
+    }
+
+    private Instant nowInstant() {
+        return Instant.ofEpochMilli(nowMs());
+    }
+
+    @Override
+    public NodeReconcilerState reconcilerState() {
         return stateRef.get();
     }
 
-    @Override public Result<Unit> setDesiredSize(int size) {
-        if (size <MINIMUM_CLUSTER_SIZE) {return Causes.cause("Cluster size cannot be below " + MINIMUM_CLUSTER_SIZE + " (quorum requirement)")
-                                                            .result();}
-        configuredSizeRef.set(size);
-        desiredSizeRef.set(size);
-        observer.handleSetClusterSize(new TopologyManagementMessage.SetClusterSize(size));
-        reconcile();
-        return Result.success(unit());
-    }
-
-    @Override public int desiredSize() {
-        return desiredSizeRef.get();
-    }
-
-    @Override public int configuredSize() {
-        return configuredSizeRef.get();
-    }
-
-    @Override public void onNodeReady(NodeId nodeId) {
-        if (stateRef.get() instanceof NodeReconcilerState.Reconciling) {
-            log.info("Node {} reached ON_DUTY, checking reconciliation progress", nodeId);
-            reconcile();
+    @Override
+    public Promise<Unit> setDesiredSize(int size) {
+        if (size < MINIMUM_CLUSTER_SIZE) {
+            return Causes.cause("Cluster size cannot be below " + MINIMUM_CLUSTER_SIZE + " (quorum requirement)").promise();
         }
+
+        resetProvisioningCircuit("setDesiredSize=" + size);
+
+        return writeDesiredCoreCount(size);
     }
 
-    @Override@SuppressWarnings("JBCT-RET-01") public void onTopologyChange(TopologyChangeNotification topologyChange) {
-        if (!active.get()) {return;}
-        switch (topologyChange){
-            case NodeAdded added -> handleNodeAdded(added);
+    private Promise<Unit> writeDesiredCoreCount(int size) {
+        var existing = clusterConfigReader.get();
+
+        if (existing.isEmpty()) {
+            return Causes.cause("ClusterConfigValue atom missing — bootstrap must seed it before scale operations are accepted").promise();
+        }
+
+        var updated = withCoreCount(existing.unwrap(), size);
+        @SuppressWarnings("unchecked")
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
+                                                                                                     updated);
+
+        return commandApplier.apply(List.of(command))
+                             .onFailure(cause -> log.warn("CTM: failed to write ClusterConfigValue coreCount={}: {}",
+                                                          size,
+                                                          cause.message()))
+                             .onSuccess(_ -> log.info("CTM: wrote ClusterConfigValue coreCount={} (configVersion={})",
+                                                      size,
+                                                      updated.configVersion()))
+                             .mapToUnit();
+    }
+
+    private ClusterConfigValue withCoreCount(ClusterConfigValue existing, int newCoreCount) {
+        return new ClusterConfigValue(existing.tomlContent(),
+                                      existing.clusterName(),
+                                      existing.version(),
+                                      newCoreCount,
+                                      existing.coreMin(),
+                                      existing.coreMax(),
+                                      existing.deploymentType(),
+                                      existing.configVersion() + 1,
+                                      nowMs());
+    }
+
+    @Override
+    public int desiredSize() {
+        return snapshotDesiredCoreSize();
+    }
+
+    @Override
+    public int configuredSize() {
+        return snapshotDesiredCoreSize();
+    }
+
+    private int snapshotDesiredCoreSize() {
+        return snapshotSource.currentMembershipView()
+                             .map(MembershipView::desiredCoreSize)
+                             .or(0);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Slot-occupancy model retired (CTM v2): the internal slot-reconcile loop is OFF. CTM is now
+    // a pure actuator driven by the LeaderReconciler (spec §7). The ProvisioningSlotKey/
+    // ProvisioningSlotValue KV types remain alive (deleted in a later phase).
+    // ---------------------------------------------------------------------------------------
+    @Contract
+    @Override
+    public void onNodeReady(NodeId nodeId) {
+        resetProvisioningCircuit("node " + nodeId + " became present");
+    }
+
+    @Contract
+    @Override
+    public void onClusterConfigChanged() {
+        if (!active.get()) {
+            return;
+        }
+
+        log.debug("CTM: ClusterConfigKey changed");
+    }
+
+    @Contract
+    @Override
+    public void onMembershipDecision(MembershipDecision decision) {
+        if (!active.get()) {
+            return;
+        }
+
+        switch (decision) {
+            case NodeJoined joined -> handleNodeJoined(joined);
             case NodeRemoved removed -> handleNodeRemoved(removed);
-            case NodeDown down -> handleNodeDown(down);
-            default -> {}
+            case NodeDecommissioned decommissioned -> handleNodeDecommissioned(decommissioned);
+            case MembershipDecision.NodeJoining _, MembershipDecision.NodeDraining _, MembershipDecision.NodeFailedDrain _, MembershipDecision.NodeShuttingDown _ -> {}
         }
     }
 
-    private void handleNodeAdded(NodeAdded added) {
-        nodeJoinTimes.putIfAbsent(added.nodeId(), Instant.now());
-        log.info("CTM: Node {} added, triggering reconciliation", added.nodeId());
-        reconcile();
+    @Contract
+    @Override
+    public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
+        if (!active.get()) {
+            return;
+        }
+
+        log.warn("CTM: Self-shutdown observed for {}", selfShutdown.nodeId());
     }
 
+    @Contract
+    @Override
+    public void onClusterPhaseChanged(ClusterPhase newPhase) {
+        if (newPhase == ClusterPhase.NORMAL) {
+            cancelInFlightProvisions("phase transition to NORMAL — restart stability window");
+            resetProvisioningCircuit("phase transition to NORMAL");
+            log.info("CTM: cluster phase transitioned to NORMAL");
+
+            return;
+        }
+
+        cancelInFlightProvisions("phase transition to " + newPhase + " — auto-heal suspended");
+        log.info("CTM: cluster phase transitioned to {}", newPhase);
+    }
+
+    @Contract
+    private void handleNodeJoined(NodeJoined joined) {
+        log.info("CTM: Node {} joined", joined.nodeId());
+    }
+
+    @Contract
     private void handleNodeRemoved(NodeRemoved removed) {
-        nodeJoinTimes.remove(removed.nodeId());
-        log.info("CTM: Node {} removed, triggering reconciliation", removed.nodeId());
-        reconcile();
+        log.info("CTM: Node {} removed", removed.nodeId());
     }
 
-    private void handleNodeDown(NodeDown down) {
-        log.warn("CTM: Node {} is down, triggering immediate reconciliation", down.nodeId());
-        reconcile();
+    @Contract
+    private void handleNodeDecommissioned(NodeDecommissioned decommissioned) {
+        log.warn("CTM: Node {} decommissioned", decommissioned.nodeId());
     }
 
-    @Override public void activate() {
-        if (!active.compareAndSet(false, true)) {return;}
-        seedJoinTimesForExistingNodes();
+    @Contract
+    private void resetProvisioningCircuit(String reason) {
+        var prev = consecutiveProvisioningFailures.getAndSet(0);
+
+        nextProvisioningAllowedMs.set(0L);
+        var clusterName = clusterConfigReader.get().map(ClusterConfigValue::clusterName).or("");
+
+        lifecycleManager.resetProvisionerState(clusterName);
+        if (prev > 0) {
+            log.info("CTM: provisioning circuit breaker reset ({}); cleared {} prior failure(s)", reason, prev);
+        }
+    }
+
+    @Override
+    public CircuitBreakerState circuitBreakerState() {
+        var failures = consecutiveProvisioningFailures.get();
+
+        return new CircuitBreakerState(failures,
+                                       MAX_CONSECUTIVE_PROVISIONING_FAILURES,
+                                       nextProvisioningAllowedMs.get(),
+                                       failures >= MAX_CONSECUTIVE_PROVISIONING_FAILURES);
+    }
+
+    @Override
+    public int resetCircuitBreaker(String reason) {
+        var prev = consecutiveProvisioningFailures.get();
+
+        resetProvisioningCircuit("operator: " + reason);
+
+        return prev;
+    }
+
+    @Override
+    public boolean isAutoHealEnabled() {
+        return autoHealEnabled.get();
+    }
+
+    @Override
+    public boolean setAutoHealEnabled(boolean enabled, String reason) {
+        var prev = autoHealEnabled.getAndSet(enabled);
+
+        if (prev == enabled) {
+            log.info("CTM: auto-heal already {} (reason: {}) — no-op",
+                     enabled
+                     ? "enabled"
+                     : "disabled",
+                     reason);
+
+            return prev;
+        }
+
+        log.warn("CTM: auto-heal {} (operator: {}) — prior state was {}",
+                 enabled
+                 ? "ENABLED"
+                 : "DISABLED",
+                 reason,
+                 prev
+                 ? "enabled"
+                 : "disabled");
+
+        return prev;
+    }
+
+    /// Membership v2 / E2 — provision a replacement, PURE ACTUATOR.
+    ///
+    /// The `LeaderReconciler` (spec §7) owns shortage derivation and calls this per missing
+    /// slot with the placeholder identity `newNodeId` it minted and tracks in-flight. The
+    /// provisioned node boots under exactly that id: `newNodeId.id()` is threaded into the
+    /// `ProvisionContext.nodeId()` (via `buildProvisionContext`) so the provider boundary
+    /// injects it as `AETHER_NODE_ID` / the Docker container name, and the node adopts it as
+    /// `self`. This is what lets the reconciler treat the id's appearance in membership as the
+    /// authoritative fulfillment signal. CTM no longer runs its own slot machinery here: it
+    /// builds a `ProvisionSpec` whose PEERS are seeded from the LIVE member set `clusterMembers`
+    /// passed in by the reconciler (the freshest "who is in the cluster right now" signal from
+    /// `PresenceSampler.currentMembers`). Each member id is resolved to its
+    /// `nodeId:host:port` entry via the same `observer.get(id)` → `formatPeerEntry` mechanism
+    /// `buildProvisionContext` uses; ids that do not resolve are dropped, and `self` is always
+    /// included (the CTM runs on the leader, which is alive by definition). Seeding from the
+    /// live set — instead of `observer.topology()` ∩ `isHealthyPeer` — keeps just-killed
+    /// hostnames out of the PEERS list, preventing DOA replacements (dead-host PEERS →
+    /// QUIC NPE). If `clusterMembers` is empty (cold paths), the seed falls back to
+    /// `buildProvisionContext`'s topology-derived peers. `failedPeer` is observability-only.
+    @Override
+    public Promise<Unit> provisionReplacement(NodeId newNodeId,
+                                              Option<NodeId> failedPeer,
+                                              Set<NodeId> clusterMembers,
+                                              NodeRole intendedRole) {
+        log.info("CTM v2: provisionReplacement requested (newNodeId={}, failedPeer={}, clusterMembers.size={}, intendedRole={})",
+                 newNodeId,
+                 failedPeer,
+                 clusterMembers.size(),
+                 intendedRole.value());
+        var contextBase = buildProvisionContext(newNodeId, intendedRole);
+        var memberPeers = liveMemberPeers(clusterMembers);
+        var contextSeeded = memberPeers.isEmpty()
+                            ? contextBase
+                            : contextBase.withPeers(memberPeers);
+
+        if (contextSeeded.peers().or("").isEmpty()) {
+            log.warn("CTM v2: provisionReplacement deferred — no healthy peers visible (peers list empty); "
+                    + "returning success so the LeaderReconciler retries on its next tick.");
+
+            return Promise.success(unit());
+        }
+
+        var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", contextSeeded).unwrap();
+        var spec = computePlacementHint().map(baseSpec::withPlacement).or(baseSpec);
+
+        return lifecycleManager.provisionNode(spec)
+                               .mapToUnit();
+    }
+
+    /// Build the PEERS string from the LIVE member set: `self` first (always present — the
+    /// leader is alive by definition), then each resolvable member's `nodeId:host:port` entry.
+    /// Members that fail to resolve via `observer.get` (e.g., a just-killed hostname whose
+    /// `NodeInfo` is gone) are dropped, and `self` is de-duplicated. An empty result signals
+    /// the caller to fall back to the topology-derived seed.
+    private String liveMemberPeers(Set<NodeId> clusterMembers) {
+        if (clusterMembers.isEmpty()) {
+            return "";
+        }
+
+        var selfEntry = formatPeerEntry(observer.self());
+        var remoteEntries = clusterMembers.stream().flatMap(nodeId -> observer.get(nodeId)
+                                                                              .stream()).map(ClusterTopologyManagerRecord::formatPeerEntry).filter(entry -> !entry.equals(selfEntry));
+
+        return Stream.concat(Stream.of(selfEntry),
+                             remoteEntries).distinct()
+                            .collect(Collectors.joining(","));
+    }
+
+    /// Membership v2 / B5b — drain a specific node via the graceful v2 DRAIN-command path.
+    ///
+    /// Enqueues `targetNodeId` into the leader's `DrainCommandRegistry` (`drainCommandSink`) so
+    /// the leader's outbound cluster-sync ping carries the target in its global `drainNodes` set,
+    /// which self-drains (finishes in-flight requests) via its `DrainProcedure`. A grace-terminate
+    /// backstop is scheduled after `autoHealConfig.provisioningTimeout()`: it calls
+    /// `lifecycleManager.terminateNode(target)` to reap the container (prevents Docker
+    /// restart-loop / cloud lingering when the target never self-exits) AND clears the target from
+    /// the registry (`drainCommandClear`). `reason` is observability-only. Returns on the enqueue
+    /// (the drain itself proceeds asynchronously via the heartbeat + backstop).
+    @Override
+    public Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
+        log.info("CTM v2: drainNode requested (target={}, reason={}) — enqueuing DRAIN command", targetNodeId, reason);
+        drainCommandSink.accept(targetNodeId);
+        scheduleGraceTerminate(targetNodeId);
+
+        return Promise.success(unit());
+    }
+
+    /// Backstop reaper: after the grace period, terminate the container and clear the DRAIN
+    /// command. Idempotent — `terminateNode` is safe to call on an already-exited node, and
+    /// `drainCommandClear` no-ops on an absent target.
+    @Contract
+    private void scheduleGraceTerminate(NodeId targetNodeId) {
+        SharedScheduler.schedule(() -> graceTerminate(targetNodeId), autoHealConfig.provisioningTimeout());
+    }
+
+    @Contract
+    private void graceTerminate(NodeId targetNodeId) {
+        log.info("CTM v2: drain grace expired for {} — reaping container + clearing DRAIN command", targetNodeId);
+        drainCommandClear.accept(targetNodeId);
+        lifecycleManager.terminateNode(targetNodeId).onFailure(cause -> log.warn("CTM v2: grace-terminate of {} failed: {}",
+                                                                                 targetNodeId,
+                                                                                 cause.message()));
+    }
+
+    /// Membership v2 / E2 — public reconcile. CTM no longer drives a slot loop; the
+    /// `LeaderReconciler` (spec §7) owns state-derived reconciliation and actuates CTM via
+    /// `provisionReplacement`/`drainNode`. No-op success.
+    @Override
+    public Promise<Unit> reconcile() {
+        log.debug("CTM v2: reconcile requested — no-op (LeaderReconciler owns reconciliation)");
+
+        return Promise.success(unit());
+    }
+
+    @Contract
+    @Override
+    public void activate() {
+        if (!active.compareAndSet(false, true)) {
+            return;
+        }
+
+        resetProvisioningCircuit("activate (leader handoff)");
+        formationAnchorMs.set(nowMs());
+        // CTM v2: the internal slot-reconcile loop is OFF. The LeaderReconciler (spec §7) owns
+        // state-derived reconciliation and actuates CTM via provisionReplacement/drainNode. CTM
+        // only establishes its reconciler state for observability — it neither seeds slots nor
+        // schedules a safety-net reconcile poll.
         activateWithCurrentTopology();
     }
 
-    private void seedJoinTimesForExistingNodes() {
-        for (var nodeId : observer.topology()) {nodeJoinTimes.putIfAbsent(nodeId, Instant.now());}
-    }
-
+    @Contract
     private void activateWithCurrentTopology() {
-        var actual = observer.activeNodeCount();
-        var desired = configuredSizeRef.get();
+        var actual = observer.healthyActiveNodeCount();
+        var desired = activationDesiredSize();
         var readyCount = observer.readyNodeCount();
         var effectiveActual = Math.max(actual, readyCount);
         var clusterWasFormed = readyCount > 0;
+
         log.info("CTM: Activated, desired={}, active={}, ready={}", desired, actual, readyCount);
+        if (desired == 0) {
+            transitionTo(new NodeReconcilerState.Converged());
+            log.info("CTM: Activated without desiredCoreSize (snapshot not yet projected); awaiting snapshot bump");
+
+            return;
+        }
+
         if (effectiveActual >= desired) {
             transitionTo(new NodeReconcilerState.Converged());
             log.info("CTM: Cluster at target size, skipping formation");
-        } else if (clusterWasFormed && effectiveActual >= desired - 1) {activateWithLeaderFailover(effectiveActual,
-                                                                                                   desired);} else {activateWithFormation();}
+        } else if (clusterWasFormed && effectiveActual >= desired - 1) {
+            activateWithLeaderFailover(effectiveActual, desired);
+        } else {
+            activateWithFormation();
+        }
     }
 
+    private int activationDesiredSize() {
+        var fromSnapshot = snapshotDesiredCoreSize();
+
+        if (fromSnapshot > 0) {
+            return fromSnapshot;
+        }
+        // clusterSize() includes SWIM-faulty nodes, returning pre-kill count during the snapshot-gap after failover
+        return clusterConfigReader.get()
+                                  .map(ClusterConfigValue::coreCount)
+                                  .or(() -> observer.clusterSize());
+    }
+
+    @Contract
     private void activateWithLeaderFailover(int effectiveActual, int desired) {
         transitionTo(new NodeReconcilerState.Converged());
-        log.info("CTM: Leader failover detected ({}/{}), enabling immediate reconciliation", effectiveActual, desired);
-        handleDeficit(effectiveActual, desired);
+        log.info("CTM: Leader failover detected ({}/{})", effectiveActual, desired);
     }
 
+    @Contract
     private void activateWithFormation() {
-        transitionTo(new NodeReconcilerState.Forming(Instant.now()));
+        transitionTo(new NodeReconcilerState.Forming(nowInstant()));
         SharedScheduler.schedule(this::checkFormationComplete, autoHealConfig.startupCooldown());
     }
 
-    @Override public void deactivate() {
-        if (!active.compareAndSet(true, false)) {return;}
-        cancelRecheck();
+    @Contract
+    @Override
+    public void deactivate() {
+        if (!active.compareAndSet(true, false)) {
+            return;
+        }
+
         transitionTo(new NodeReconcilerState.Inactive("deactivated (not leader)"));
         log.info("CTM: Deactivated");
     }
 
-    @Override public TopologyObserver observer() {
+    @Override
+    public TopologyObserver observer() {
         return observer;
     }
 
-    @Override public NodeInfo self() {
+    @Override
+    public NodeInfo self() {
         return observer.self();
     }
 
-    @Override public Option<NodeInfo> get(NodeId id) {
+    @Override
+    public Option<NodeInfo> get(NodeId id) {
         return observer.get(id);
     }
 
-    @Override public int clusterSize() {
+    @Override
+    public int clusterSize() {
         return observer.clusterSize();
     }
 
-    @Override public Option<NodeId> reverseLookup(SocketAddress socketAddress) {
+    @Override
+    public Option<NodeId> reverseLookup(SocketAddress socketAddress) {
         return observer.reverseLookup(socketAddress);
     }
 
-    @Override public Promise<Unit> start() {
+    @Override
+    public Promise<Unit> start() {
         return observer.start();
     }
 
-    @Override public Promise<Unit> stop() {
+    @Override
+    public Promise<Unit> stop() {
         deactivate();
+
         return observer.stop();
     }
 
-    @Override public TimeSpan pingInterval() {
+    @Override
+    public TimeSpan pingInterval() {
         return observer.pingInterval();
     }
 
-    @Override public TimeSpan helloTimeout() {
+    @Override
+    public TimeSpan helloTimeout() {
         return observer.helloTimeout();
     }
 
-    @Override public Option<TlsConfig> tls() {
+    @Override
+    public Option<TlsConfig> tls() {
         return observer.tls();
     }
 
-    @Override public Option<NodeState> getState(NodeId id) {
+    @Override
+    public Option<NodeState> getState(NodeId id) {
         return observer.getState(id);
     }
 
-    @Override public List<NodeId> topology() {
+    @Override
+    public List<NodeId> topology() {
         return observer.topology();
     }
 
+    @Contract
     private void transitionTo(NodeReconcilerState newState) {
         var previous = stateRef.getAndSet(newState);
+
         log.info("CTM state: {} -> {}",
                  stateName(previous),
                  stateName(newState));
     }
 
+    @Contract
     private void checkFormationComplete() {
-        if (!active.get()) {return;}
-        if (! (stateRef.get() instanceof NodeReconcilerState.Forming)) {return;}
-        var actual = observer.activeNodeCount();
-        var desired = configuredSizeRef.get();
+        if (!active.get()) {
+            return;
+        }
+
+        if (! (stateRef.get() instanceof NodeReconcilerState.Forming)) {
+            return;
+        }
+
+        var actual = observer.healthyActiveNodeCount();
+        var desired = snapshotDesiredCoreSize();
+
+        if (desired == 0) {
+            return;
+        }
+
         if (actual >= desired) {
             transitionTo(new NodeReconcilerState.Converged());
             log.info("CTM: Cluster formation complete ({}/{})", actual, desired);
-        } else {handleFormationCooldownExpired(actual, desired);}
+        } else {
+            handleFormationCooldownExpired(actual, desired);
+        }
     }
 
+    @Contract
     private void handleFormationCooldownExpired(int actual, int desired) {
-        log.info("CTM: Formation cooldown expired, cluster at {}/{}, enabling reconciliation", actual, desired);
+        log.info("CTM: Formation cooldown expired, cluster at {}/{}", actual, desired);
         transitionTo(new NodeReconcilerState.Converged());
-        handleDeficit(actual, desired);
     }
 
-    private void reconcile() {
-        if (!active.get()) {return;}
-        var currentState = stateRef.get();
-        if (currentState instanceof NodeReconcilerState.Inactive) {return;}
-        if (currentState instanceof NodeReconcilerState.Forming) {
-            reconcileForming();
+    @Contract
+    private void cancelInFlightProvisions(String reason) {
+        if (inFlightProvisions.isEmpty()) {
             return;
         }
-        reconcileActive(currentState);
+
+        var size = inFlightProvisions.size();
+
+        log.info("CTM: cancelling {} in-flight provision(s) ({})", size, reason);
+        inFlightProvisions.values().forEach(Promise::cancel);
+        inFlightProvisions.clear();
     }
 
-    private void reconcileForming() {
-        var actual = observer.activeNodeCount();
-        var configured = configuredSizeRef.get();
-        if (actual >= configured) {
-            transitionTo(new NodeReconcilerState.Converged());
-            log.info("CTM: Cluster formation complete ({}/{})", actual, configured);
+    private ProvisionContext buildProvisionContext(NodeId newNodeId, NodeRole intendedRole) {
+        // Always include self as a fallback bootstrap target — the CTM runs on the leader, which
+        // is alive by definition. Without this fallback, transient "no healthy remote peers"
+        // windows during chaos (e.g., a leader has just decommissioned several SWIM-faulty peers
+        // and the surviving peer's health entries are still propagating) would yield an empty
+        // PEERS list, the new container would cold-boot in isolation, and `DockerComputeProvider.
+        // preflightCheck` would defensively reject it. Including self guarantees the replacement
+        // can always reach at least one live consensus peer.
+        var selfEntry = formatPeerEntry(observer.self());
+        var remoteEntries = observer.topology().stream().filter(this::isHealthyPeer).flatMap(nodeId -> observer.get(nodeId)
+                                                                                                               .stream()).map(ClusterTopologyManagerRecord::formatPeerEntry).filter(entry -> !entry.equals(selfEntry));
+        var peers = Stream.concat(Stream.of(selfEntry), remoteEntries).collect(Collectors.joining(","));
+        var clusterName = clusterConfigReader.get().map(ClusterConfigValue::clusterName).or("");
+        // Thread the leader-minted identity through so the provisioned node boots under exactly
+        // this id (provider injects it as AETHER_NODE_ID / Docker container name; the node adopts
+        // it as `self`). NodeId.id() is `node-<lowercase-ULID>` — alphanumeric + hyphen, a valid
+        // Docker container name and cluster boot identity. The intended role (Wave 2 / W4) rides
+        // the same context so the provider stamps AETHER_ROLE / aether.role explicitly instead of
+        // inheriting the provisioning host's env.
+        return ProvisionContext.forReplacement(clusterName,
+                                               intendedRole.value(),
+                                               newNodeId.id(),
+                                               peers,
+                                               snapshotDesiredCoreSize());
+    }
+
+    private boolean isHealthyPeer(NodeId nodeId) {
+        return observer.getState(nodeId)
+                       .map(state -> state.health() == NodeHealth.HEALTHY)
+                       .or(false);
+    }
+
+    private static String formatPeerEntry(NodeInfo info) {
+        var hostname = info.address().host();
+
+        return info.id()
+                   .id() + ":" + hostname + ":" + info.address()
+                                                      .port();
+    }
+
+    private Option<PlacementHint> computePlacementHint() {
+        var zoneCounts = observer.topology().stream().map(this::zoneLabel).filter(z -> !z.isEmpty()).collect(Collectors.groupingBy(z -> z,
+                                                                                                                                   Collectors.counting()));
+
+        if (zoneCounts.isEmpty()) {
+            return Option.empty();
         }
-    }
 
-    private void reconcileActive(NodeReconcilerState currentState) {
-        var actual = observer.activeNodeCount();
-        var configured = configuredSizeRef.get();
-        if (actual == configured) {
-            cancelRecheck();
-            desiredSizeRef.set(configured);
-            if (! (currentState instanceof NodeReconcilerState.Converged)) {transitionTo(new NodeReconcilerState.Converged());}
-            return;
+        var minCount = zoneCounts.values().stream().mapToLong(Long::longValue).min().orElse(0L);
+        var underRepresented = zoneCounts.entrySet().stream().filter(e -> e.getValue() == minCount).map(Map.Entry::getKey).toList();
+
+        if (underRepresented.size() == 1) {
+            return Option.some(PlacementHint.zoneHint(underRepresented.getFirst()));
         }
-        if (actual <configured) {
-            desiredSizeRef.set(configured);
-            handleDeficit(actual, configured);
-        } else {handleSurplus(actual, configured);}
-    }
 
-    private void handleDeficit(int actual, int desired) {
-        var current = stateRef.get();
-        if (current instanceof NodeReconcilerState.Reconciling) {
-            log.debug("CTM: Already reconciling, waiting for in-flight provisions to complete");
-            return;
+        var overRepresented = zoneCounts.entrySet().stream().filter(e -> e.getValue() > minCount).map(Map.Entry::getKey).collect(Collectors.toSet());
+
+        if (overRepresented.isEmpty()) {
+            return Option.empty();
         }
-        var deficit = desired - actual;
-        if (!lifecycleManager.isCloudManaged()) {
-            var next = new NodeReconcilerState.Reconciling(desired, actual, List.of(), List.of(), Instant.now());
-            if (!stateRef.compareAndSet(current, next)) {return;}
-            log.debug("CTM: Cluster deficit of {} but no ComputeProvider, cannot auto-provision", deficit);
-            return;
-        }
-        var batchSize = provisionBatchSize(deficit);
-        var next = new NodeReconcilerState.Reconciling(desired,
-                                                       actual,
-                                                       buildInFlightList(batchSize),
-                                                       List.of(),
-                                                       Instant.now());
-        if (!stateRef.compareAndSet(current, next)) {return;}
-        log.info("CTM: Cluster at {}/{}, provisioning {} replacement(s)", actual, desired, batchSize);
-        provisionNodes(batchSize);
-        scheduleRecheck();
+
+        return Option.some(PlacementHint.antiAffinityHint(overRepresented));
     }
 
-    private void handleSurplus(int actual, int configured) {
-        var current = stateRef.get();
-        if (current instanceof NodeReconcilerState.Reconciling) {
-            log.debug("CTM: Already reconciling, waiting for in-flight terminations to complete");
-            return;
-        }
-        var surplus = actual - configured;
-        if (!lifecycleManager.isCloudManaged()) {
-            log.info("CTM: Cluster has {} surplus nodes but no ComputeProvider, cannot auto-terminate", surplus);
-            desiredSizeRef.set(actual);
-            transitionTo(new NodeReconcilerState.Converged());
-            return;
-        }
-        var nodesToTerminate = selectNodesForTermination(surplus);
-        if (nodesToTerminate.isEmpty()) {
-            log.warn("CTM: {} surplus nodes but no candidates for termination", surplus);
-            return;
-        }
-        var next = new NodeReconcilerState.Reconciling(configured, actual, List.of(), nodesToTerminate, Instant.now());
-        if (!stateRef.compareAndSet(current, next)) {return;}
-        log.info("CTM: Cluster at {}/{}, terminating {} surplus node(s): {}",
-                 actual,
-                 configured,
-                 nodesToTerminate.size(),
-                 nodesToTerminate);
-        terminateNodes(nodesToTerminate);
-        scheduleRecheck();
-    }
-
-    private List<NodeId> selectNodesForTermination(int count) {
-        var selfId = observer.self().id();
-        var activeNodes = observer.topology().stream()
-                                           .filter(id -> !id.equals(selfId))
-                                           .toList();
-        var emptyNodes = deploymentMap.nodesWithoutSlices(activeNodes);
-        var sortedCandidates = activeNodes.stream().sorted(surplusNodeComparator(emptyNodes))
-                                                 .toList();
-        return sortedCandidates.stream().limit(Math.min(count, MAX_WAVE_SIZE))
-                                      .toList();
-    }
-
-    private Comparator<NodeId> surplusNodeComparator(Set<NodeId> emptyNodes) {
-        return Comparator.<NodeId, Boolean>comparing(id -> !emptyNodes.contains(id))
-                         .thenComparing(id -> nodeJoinTimes.getOrDefault(id, Instant.EPOCH),
-                                        Comparator.reverseOrder());
-    }
-
-    private void terminateNodes(List<NodeId> nodes) {
-        for (var nodeId : nodes) {terminateSingleNode(nodeId);}
-    }
-
-    private void terminateSingleNode(NodeId nodeId) {
-        lifecycleManager.terminateNode(nodeId).onSuccess(_ -> handleTerminationSuccess(nodeId))
-                                      .onFailure(cause -> log.warn("CTM: Node {} termination failed: {}",
-                                                                   nodeId,
-                                                                   cause.message()));
-    }
-
-    private void handleTerminationSuccess(NodeId nodeId) {
-        nodeJoinTimes.remove(nodeId);
-        log.info("CTM: Node {} terminated successfully", nodeId);
-        reconcile();
-    }
-
-    private void provisionNodes(int count) {
-        for (var i = 0;i <count;i++) {provisionSingleNode();}
-    }
-
-    private void provisionSingleNode() {
-        var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", Map.of()).unwrap();
-        lifecycleManager.provisionNode(spec).onSuccess(_ -> log.info("CTM: Node provisioning succeeded"))
-                                      .onFailure(cause -> log.warn("CTM: Node provisioning failed: {}",
-                                                                   cause.message()));
-    }
-
-    private void scheduleRecheck() {
-        recheckFuture.set(SharedScheduler.scheduleAtFixedRate(this::reconcile, autoHealConfig.retryInterval()));
-    }
-
-    private void cancelRecheck() {
-        recheckFuture.cancel();
-    }
-
-    private static int provisionBatchSize(int deficit) {
-        return switch (deficit){
-            case 1 -> 1;
-            case 2, 3 -> deficit;
-            default -> Math.min(deficit, MAX_WAVE_SIZE);
-        };
-    }
-
-    private static List<NodeReconcilerState.ProvisionAttempt> buildInFlightList(int count) {
-        var now = Instant.now();
-        var list = new ArrayList<NodeReconcilerState.ProvisionAttempt>(count);
-        for (var i = 0;i <count;i++) {list.add(new NodeReconcilerState.ProvisionAttempt(now, 1));}
-        return List.copyOf(list);
+    private String zoneLabel(NodeId nodeId) {
+        return observer.get(nodeId)
+                       .map(info -> info.labels()
+                                        .getOrDefault(LABEL_ZONE, ""))
+                       .or("");
     }
 
     private static String stateName(NodeReconcilerState state) {
-        return switch (state){
+        return switch (state) {
             case NodeReconcilerState.Inactive inactive -> "Inactive(" + inactive.reason() + ")";
             case NodeReconcilerState.Forming _ -> "Forming";
             case NodeReconcilerState.Converged _ -> "Converged";

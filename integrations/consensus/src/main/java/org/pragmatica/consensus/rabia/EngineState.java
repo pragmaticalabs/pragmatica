@@ -21,6 +21,12 @@ import java.util.concurrent.ScheduledFuture;
 /// Explicit state machine for Rabia engine node lifecycle.
 /// Replaces 4 independent atomic variables (active, isInPhase, pendingSyncTask, phaseStallTask)
 /// with a single AtomicReference, making invalid state combinations unrepresentable.
+///
+/// Membership-architecture-spec §4.5 / §7.3: `Paused` is the canonical quorum-loss state.
+/// Distinct from `Stopped` — Paused retains in-memory protocol state (phases map,
+/// currentPhase, pendingBatches, lockedValue, correlationMap, bufferedDecisions). On quorum
+/// return (`ESTABLISHED`), resume to `Idle` without a state reset. The only path to a full
+/// reset is the explicit `reconfigure(ClusterConfig)` API; quorum-loss never resets.
 sealed interface EngineState {
     record Stopped() implements EngineState {}
 
@@ -32,6 +38,12 @@ sealed interface EngineState {
 
     record Observing() implements EngineState {}
 
+    /// Paused: quorum is currently unavailable. All in-memory protocol state is retained;
+    /// inbound `Decision` messages are still applied so the engine catches up transparently
+    /// when quorum returns. New `apply()` submissions are rejected. This state is exited
+    /// only by a quorum `ESTABLISHED` notification (→ `Idle`) or by `reconfigure` (→ full reset).
+    record Paused() implements EngineState {}
+
     default boolean isActive() {
         return this instanceof Idle || this instanceof InPhase;
     }
@@ -42,5 +54,9 @@ sealed interface EngineState {
 
     default boolean isObserving() {
         return this instanceof Observing;
+    }
+
+    default boolean isPaused() {
+        return this instanceof Paused;
     }
 }

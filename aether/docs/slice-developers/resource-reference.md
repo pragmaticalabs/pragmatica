@@ -829,14 +829,16 @@ log_duration = true
 ## Pub-Sub Messaging (Subscriber)
 
 **Marker type:** `Subscriber`
-**Config prefix:** user-defined (e.g., `messaging.orders`)
+**Config prefix:** bare kebab-case topic name (e.g., `orders`)
+
+The topic namespace is auto-derived from the blueprint's Maven coordinates. Use the bare topic name (e.g., `orders`); supply an explicit `namespace:name:version` 3-part form only when a different namespace is required.
 
 Pub-sub subscriptions are declared on methods using `@ResourceQualifier(type = Subscriber.class, ...)`. The annotated method becomes a message handler that receives events published to the configured topic.
 
 ### Declaration
 
 ```java
-@ResourceQualifier(type = Subscriber.class, config = "messaging.orders")
+@ResourceQualifier(type = Subscriber.class, config = "orders")
 @Retention(RUNTIME) @Target(METHOD)
 public @interface OrderEvents {}
 ```
@@ -860,7 +862,7 @@ public interface OrderProcessor {
 ### TOML Example
 
 ```toml
-[messaging.orders]
+[orders]
 topic = "order-events"
 ```
 

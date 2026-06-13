@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.dependency;
 
 import org.pragmatica.lang.Cause;
@@ -6,37 +10,52 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 
-/// Represents a dependency on an artifact with version pattern.
-///
-/// Format: `groupId:artifactId:versionPattern`
-///
-/// Examples:
-/// - `org.pragmatica-lite:core:^0.8.0`
-/// - `org.example:order-domain:[1.0.0,2.0.0)`
-/// - `com.fasterxml.jackson.core:jackson-databind:>=2.15.0`
-///
-/// @param groupId        Maven group ID
-/// @param artifactId     Maven artifact ID
-/// @param versionPattern Version pattern for compatibility checking
-@SuppressWarnings("JBCT-UTIL-02") public record ArtifactDependency(String groupId,
-                                                                   String artifactId,
-                                                                   VersionPattern versionPattern) {
+@SuppressWarnings("JBCT-UTIL-02")
+public record ArtifactDependency(String groupId, String artifactId, VersionPattern versionPattern) {
     public static Result<ArtifactDependency> artifactDependency(String line) {
         var trimmed = line.trim();
-        if (trimmed.isEmpty()) {return EMPTY_LINE.result();}
-        if (trimmed.startsWith("#")) {return COMMENT_LINE.result();}
-        if (trimmed.startsWith("[")) {return SECTION_HEADER.result();}
+
+        if (trimmed.isEmpty()) {
+            return EMPTY_LINE.result();
+        }
+
+        if (trimmed.startsWith("#")) {
+            return COMMENT_LINE.result();
+        }
+
+        if (trimmed.startsWith("[")) {
+            return SECTION_HEADER.result();
+        }
+
         var lastColon = trimmed.lastIndexOf(':');
-        if (lastColon <= 0) {return INVALID_FORMAT.apply(line).result();}
+
+        if (lastColon <= 0) {
+            return INVALID_FORMAT.apply(line).result();
+        }
+
         var versionStr = trimmed.substring(lastColon + 1).trim();
         var groupArtifact = trimmed.substring(0, lastColon);
         var colonPos = groupArtifact.lastIndexOf(':');
-        if (colonPos <= 0) {return INVALID_FORMAT.apply(line).result();}
+
+        if (colonPos <= 0) {
+            return INVALID_FORMAT.apply(line).result();
+        }
+
         var groupId = groupArtifact.substring(0, colonPos).trim();
         var artifactId = groupArtifact.substring(colonPos + 1).trim();
-        if (groupId.isEmpty()) {return EMPTY_GROUP_ID.apply(line).result();}
-        if (artifactId.isEmpty()) {return EMPTY_ARTIFACT_ID.apply(line).result();}
-        if (versionStr.isEmpty()) {return EMPTY_VERSION.apply(line).result();}
+
+        if (groupId.isEmpty()) {
+            return EMPTY_GROUP_ID.apply(line).result();
+        }
+
+        if (artifactId.isEmpty()) {
+            return EMPTY_ARTIFACT_ID.apply(line).result();
+        }
+
+        if (versionStr.isEmpty()) {
+            return EMPTY_VERSION.apply(line).result();
+        }
+
         return VersionPattern.parse(versionStr).map(pattern -> new ArtifactDependency(groupId, artifactId, pattern));
     }
 
@@ -49,9 +68,7 @@ import org.pragmatica.lang.utils.Causes;
     }
 
     static final Cause EMPTY_LINE = Causes.cause("Dependency line is empty");
-
     static final Cause COMMENT_LINE = Causes.cause("Dependency line is a comment");
-
     static final Cause SECTION_HEADER = Causes.cause("Line is a section header");
 
     private static final Fn1<Cause, String> INVALID_FORMAT = Causes.forOneValue("Invalid artifact dependency format: %s. Expected groupId:artifactId:versionPattern");

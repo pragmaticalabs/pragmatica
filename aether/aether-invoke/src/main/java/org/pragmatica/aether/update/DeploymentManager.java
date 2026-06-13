@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.update;
 
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -7,25 +11,19 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
-import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.lang.Unit;
 
 import java.util.List;
 
 
-/// Unified deployment manager that operates at blueprint level.
-///
-/// Replaces the per-strategy managers (RollingUpdateManager, CanaryDeploymentManager,
-/// BlueGreenDeploymentManager) and DeploymentStrategyCoordinator with a single interface.
-///
-/// All deployments operate on blueprints — when a blueprint is deployed with a new version,
-/// ALL slices in the blueprint transition atomically through the configured strategy.
-///
-/// State is persisted in KV-Store via DeploymentKey/DeploymentValue, VersionRoutingKey/Value,
-/// and SliceTargetKey/Value entries. All mutations go through consensus for cluster-wide consistency.
 public interface DeploymentManager {
+    Promise<Unit> activate();
+    Promise<Unit> deactivate();
+    boolean isActive();
+
     Result<Deployment> start(String blueprintId,
                              Version newVersion,
                              DeploymentStrategy strategy,
@@ -33,6 +31,7 @@ public interface DeploymentManager {
                              HealthThresholds thresholds,
                              CleanupPolicy cleanupPolicy,
                              int instances);
+
     Result<Deployment> promote(String deploymentId);
     Result<Deployment> rollback(String deploymentId);
     Result<Deployment> complete(String deploymentId);
@@ -40,9 +39,7 @@ public interface DeploymentManager {
     List<Deployment> list();
     Option<ActiveRouting> activeRouting(ArtifactBase artifactBase);
 
-    record ActiveRouting(VersionRouting routing, Version oldVersion, Version newVersion){}
-
-    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onLeaderChange(LeaderChange leaderChange);
+    record ActiveRouting(VersionRouting routing, Version oldVersion, Version newVersion) {}
 
     static DeploymentManager deploymentManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                KVStore<AetherKey, AetherValue> kvStore) {

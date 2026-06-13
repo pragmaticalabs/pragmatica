@@ -33,7 +33,7 @@ public class DatabaseExtension implements BeforeAllCallback, AfterAllCallback, B
     private boolean registeredAsStatic;
 
     private static ConnectibleBuilder defaultBuilder() {
-        return new NettyConnectibleBuilder().ssl(false).encoding("utf-8");
+        return new NettyConnectibleBuilder().ssl(SslConfig.disabled()).encoding("utf-8");
     }
 
     private DatabaseExtension(final ConnectibleBuilder builder) {

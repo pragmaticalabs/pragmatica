@@ -20,6 +20,8 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 
+import org.pragmatica.lang.Contract;
+
 /// Thread-safe QUIC transport metrics using atomic counters.
 ///
 /// Tracks connection lifecycle, handshakes, and message throughput
@@ -34,7 +36,15 @@ public final class QuicTransportMetrics {
     private final LongAdder writeFailures = new LongAdder();
     private final LongAdder backpressureDrops = new LongAdder();
     private final LongAdder backpressureQueued = new LongAdder();
+    private final LongAdder backpressureRetries = new LongAdder();
     private final AtomicInteger backpressureQueueDepth = new AtomicInteger(0);
+    /// Count of lazy lane (re)opens triggered by a write that found a CONNECTED peer with a missing
+    /// data lane (the QUIC reconnect stream-zombie). One increment per write that took the lazy-open
+    /// PRIMARY heal path, regardless of whether the open later succeeds.
+    private final LongAdder streamZombieLazyOpens = new LongAdder();
+    /// Count of stream-zombie BACKSTOP evictions: a write found a CONNECTED peer with no usable
+    /// stream AND the lazy open could not heal it, so the connection was evicted for a clean re-dial.
+    private final LongAdder streamZombieEvictions = new LongAdder();
 
     private QuicTransportMetrics() {}
 
@@ -44,46 +54,78 @@ public final class QuicTransportMetrics {
 
     // --- Recording methods ---
 
+    @Contract
     public void onConnectionEstablished() {
         activeConnections.incrementAndGet();
         handshakeTotal.increment();
     }
 
+    @Contract
     public void onConnectionClosed() {
         activeConnections.decrementAndGet();
     }
 
+    @Contract
     public void onHandshakeFailure() {
         handshakeFailures.increment();
     }
 
+    @Contract
     public void onMessageSent() {
         messagesSent.increment();
     }
 
+    @Contract
     public void onMessageReceived() {
         messagesReceived.increment();
     }
 
+    @Contract
     public void onWriteFailure() {
         writeFailures.increment();
     }
 
+    @Contract
     public void onBackpressureDrop() {
         backpressureDrops.increment();
     }
 
+    /// Records that a CONSENSUS send hit the write high-watermark and was handed to the
+    /// async retry path (instead of being silently dropped). One increment per backpressured
+    /// CONSENSUS send that enters retry — not per retry attempt.
+    @Contract
+    public void onBackpressureRetry() {
+        backpressureRetries.increment();
+    }
+
+    @Contract
     public void onBackpressureQueued() {
         backpressureQueued.increment();
         backpressureQueueDepth.incrementAndGet();
     }
 
+    @Contract
     public void onBackpressureDrained() {
         backpressureQueueDepth.decrementAndGet();
     }
 
+    @Contract
     public void onBackpressureQueueCleared(int size) {
         backpressureQueueDepth.addAndGet(-size);
+    }
+
+    /// Records that a write found a CONNECTED peer with a missing data lane and took the lazy-open
+    /// heal path (the stream-zombie PRIMARY fix).
+    @Contract
+    public void onStreamZombieLazyOpen() {
+        streamZombieLazyOpens.increment();
+    }
+
+    /// Records a stream-zombie BACKSTOP eviction: a CONNECTED peer with no usable stream that the
+    /// lazy open could not heal, evicted for a clean re-dial.
+    @Contract
+    public void onStreamZombieEviction() {
+        streamZombieEvictions.increment();
     }
 
     // --- Snapshot ---
@@ -101,7 +143,10 @@ public final class QuicTransportMetrics {
         metrics.put("quic_write_failures_total", writeFailures.sum());
         metrics.put("quic_backpressure_drops_total", backpressureDrops.sum());
         metrics.put("quic_backpressure_queued_total", backpressureQueued.sum());
+        metrics.put("quic_backpressure_retries_total", backpressureRetries.sum());
         metrics.put("quic_backpressure_queue_depth", backpressureQueueDepth.get());
+        metrics.put("quic_stream_zombie_lazy_opens_total", streamZombieLazyOpens.sum());
+        metrics.put("quic_stream_zombie_evictions_total", streamZombieEvictions.sum());
         return Map.copyOf(metrics);
     }
 
@@ -137,7 +182,19 @@ public final class QuicTransportMetrics {
         return backpressureQueued.sum();
     }
 
+    public long backpressureRetryCount() {
+        return backpressureRetries.sum();
+    }
+
     public int backpressureQueueDepth() {
         return backpressureQueueDepth.get();
+    }
+
+    public long streamZombieLazyOpenCount() {
+        return streamZombieLazyOpens.sum();
+    }
+
+    public long streamZombieEvictionCount() {
+        return streamZombieEvictions.sum();
     }
 }

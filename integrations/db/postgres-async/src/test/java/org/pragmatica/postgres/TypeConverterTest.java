@@ -238,4 +238,36 @@ public class TypeConverterTest {
         PgRow row = (PgRow) dbr.query("select $1::UUID as uuid", singletonList(uuid)).index(0);
         assertEquals(uuid, row.get("uuid"));
     }
+
+    @Test
+    public void shouldConvertViaTypedGet_Boolean() {
+        var row = dbr.query("select $1::BOOL as b", List.of(true)).index(0);
+        assertEquals(Boolean.TRUE, row.get(0, Boolean.class));
+        assertEquals(Boolean.TRUE, row.get("b", Boolean.class));
+    }
+
+    @Test
+    public void shouldConvertViaTypedGet_UUID() {
+        UUID uuid = UUID.randomUUID();
+        var row = dbr.query("select $1::UUID as id", singletonList(uuid)).index(0);
+        assertEquals(uuid, row.get(0, UUID.class));
+        assertEquals(uuid, row.get("id", UUID.class));
+    }
+
+    @Test
+    public void shouldConvertViaTypedGet_Bytes() {
+        var row = dbr.query("select '\\x4142'::BYTEA as data").index(0);
+        assertArrayEquals(new byte[]{0x41, 0x42}, row.get(0, byte[].class));
+        assertArrayEquals(new byte[]{0x41, 0x42}, row.get("data", byte[].class));
+    }
+
+    @Test
+    public void shouldResolveArrayViaTypeToken() {
+        var row = (PgRow) dbr.query("select '{1, 2, 3}'::INT4[] as nums").index(0);
+        var resolved = row.get("",
+                               "nums",
+                               new org.pragmatica.lang.type.TypeToken<Integer[]>() {});
+        var array = resolved.expect("INT4[] should resolve via TypeToken");
+        assertArrayEquals(new Integer[]{1, 2, 3}, array);
+    }
 }

@@ -16,6 +16,8 @@
 
 package org.pragmatica.utility;
 
+import org.pragmatica.lang.Contract;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantLock;
@@ -37,6 +39,9 @@ public final class RingBuffer<T> {
     private int size;
 
     // Current number of elements
+    // TODO(RC2): factory returns RingBuffer<T>; converting to Result<RingBuffer<T>> ripples to all
+    // callers. Capacity is a positive compile-time constant at every call site.
+    @SuppressWarnings("JBCT-EX-01")
     private RingBuffer(int capacity) {
         if (capacity <= 0) {
             throw new IllegalArgumentException("Capacity must be positive");
@@ -53,6 +58,7 @@ public final class RingBuffer<T> {
     }
 
     /// Add an element to the buffer. If full, overwrites the oldest element.
+    @Contract
     public void add(T element) {
         lock.lock();
         try{
@@ -137,6 +143,7 @@ public final class RingBuffer<T> {
     }
 
     /// Clear all elements.
+    @Contract
     public void clear() {
         lock.lock();
         try{

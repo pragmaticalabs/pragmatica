@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.load;
 
 import org.pragmatica.lang.Cause;
@@ -9,9 +13,6 @@ import java.util.List;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Root configuration for load generation, containing multiple targets.
-///
-/// @param targets List of load generation targets to run in parallel
 public record LoadConfig(List<LoadTarget> targets) {
     private static final Cause EMPTY_CONFIG = Causes.cause("Load config must have at least one target");
 
@@ -31,18 +32,19 @@ public record LoadConfig(List<LoadTarget> targets) {
     }
 
     public int totalRequestsPerSecond() {
-        return targets.stream().mapToInt(LoadConfig::targetRequestsPerSecond)
-                             .sum();
+        return targets.stream()
+                      .mapToInt(LoadConfig::targetRequestsPerSecond)
+                      .sum();
     }
 
     private static int targetRequestsPerSecond(LoadTarget t) {
-        return t.rate().requestsPerSecond();
+        return t.rate()
+                .requestsPerSecond();
     }
 
     public static Result<LoadConfig> loadConfig(LoadConfig config, double multiplier) {
-        var scaledTargets = config.targets().stream()
-                                          .map(t -> t.withScaledRate(multiplier))
-                                          .toList();
+        var scaledTargets = config.targets().stream().map(t -> t.withScaledRate(multiplier)).toList();
+
         return success(new LoadConfig(scaledTargets));
     }
 }

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.ManagementApiResponses.ControllerConfigUpdatedResponse;
@@ -6,7 +10,8 @@ import org.pragmatica.aether.api.ManagementApiResponses.EvaluationTriggeredRespo
 import org.pragmatica.aether.api.ManagementApiResponses.TtmForecast;
 import org.pragmatica.aether.api.ManagementApiResponses.TtmStatusResponse;
 import org.pragmatica.aether.controller.ControllerConfig;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.ttm.model.TTMForecast;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -21,15 +26,14 @@ import java.util.stream.Stream;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Routes for controller management: config, status, TTM status.
 public final class ControllerRoutes implements RouteSource {
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
 
-    private ControllerRoutes(Supplier<AetherNode> nodeSupplier) {
+    private ControllerRoutes(Supplier<ManageableNode> nodeSupplier) {
         this.nodeSupplier = nodeSupplier;
     }
 
-    public static ControllerRoutes controllerRoutes(Supplier<AetherNode> nodeSupplier) {
+    public static ControllerRoutes controllerRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new ControllerRoutes(nodeSupplier);
     }
 
@@ -44,31 +48,29 @@ public final class ControllerRoutes implements RouteSource {
                              double latencyP95,
                              double latencyP99,
                              double errorRate,
-                             int eventCount){}
+                             int eventCount) {}
 
     record ControllerConfigRequest(Double cpuScaleUpThreshold,
                                    Double cpuScaleDownThreshold,
                                    Double callRateScaleUpThreshold,
-                                   Long evaluationIntervalMs){}
+                                   Long evaluationIntervalMs) {}
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<ControllerConfig>get("/api/controller/config")
-                              .toJson(this::buildControllerConfigResponse),
-                         Route.<ControllerStatusResponse>get("/api/controller/status")
-                              .toJson(this::buildControllerStatusResponse),
-                         Route.<TtmStatusResponse>get("/api/ttm/status").toJson(this::buildTtmStatusResponse),
-                         Route.<ControllerConfigUpdatedResponse>post("/api/controller/config")
-                              .withBody(ControllerConfigRequest.class)
-                              .toJson(this::handleControllerConfig),
-                         Route.<EvaluationTriggeredResponse>post("/api/controller/evaluate")
-                              .toJson(() -> new EvaluationTriggeredResponse("evaluation_triggered")),
-                         Route.<List<TrainingDataPoint>>get("/api/ttm/training-data")
-                              .toJson(this::buildTrainingDataResponse));
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<ControllerConfig> route(ManagementRoute.CONTROLLER_CONFIG_GET).toJson(this::buildControllerConfigResponse),
+                         ManagementRoutes.<ControllerStatusResponse> route(ManagementRoute.CONTROLLER_STATUS).toJson(this::buildControllerStatusResponse),
+                         ManagementRoutes.<TtmStatusResponse> route(ManagementRoute.TTM_STATUS).toJson(this::buildTtmStatusResponse),
+                         ManagementRoutes.<ControllerConfigUpdatedResponse> route(ManagementRoute.CONTROLLER_CONFIG_SET)
+                                         .withBody(ControllerConfigRequest.class)
+                                         .toJson(this::handleControllerConfig),
+                         ManagementRoutes.<EvaluationTriggeredResponse> route(ManagementRoute.CONTROLLER_EVALUATE).toJson(() -> new EvaluationTriggeredResponse("evaluation_triggered")),
+                         ManagementRoutes.<List<TrainingDataPoint>> route(ManagementRoute.TTM_TRAINING_DATA).toJson(this::buildTrainingDataResponse));
     }
 
     private Promise<ControllerConfigUpdatedResponse> handleControllerConfig(ControllerConfigRequest req) {
         var node = nodeSupplier.get();
         var currentConfig = node.controlLoop().configuration();
+
         return mergeConfig(req, currentConfig).async()
                           .withSuccess(node.controlLoop()::updateConfiguration)
                           .map(newConfig -> new ControllerConfigUpdatedResponse("updated", newConfig));
@@ -82,7 +84,7 @@ public final class ControllerRoutes implements RouteSource {
                                                  mergeDouble(option(req.callRateScaleUpThreshold()),
                                                              current.callRateScaleUpThreshold()),
                                                  mergeLong(option(req.evaluationIntervalMs()),
-                                                           current.evaluationIntervalMs()));
+                                                           current.evaluationInterval().millis()));
     }
 
     private static double mergeDouble(Option<Double> requested, double current) {
@@ -94,14 +96,18 @@ public final class ControllerRoutes implements RouteSource {
     }
 
     private ControllerConfig buildControllerConfigResponse() {
-        return nodeSupplier.get().controlLoop()
-                               .configuration();
+        return nodeSupplier.get()
+                           .controlLoop()
+                           .configuration();
     }
 
     private ControllerStatusResponse buildControllerStatusResponse() {
         var node = nodeSupplier.get();
         var config = node.controlLoop().configuration();
-        return new ControllerStatusResponse(true, config.evaluationIntervalMs(), config);
+
+        return new ControllerStatusResponse(true,
+                                            config.evaluationInterval().millis(),
+                                            config);
     }
 
     private TtmStatusResponse buildTtmStatusResponse() {
@@ -109,6 +115,7 @@ public final class ControllerRoutes implements RouteSource {
         var ttm = node.ttmManager();
         var config = ttm.config();
         var forecast = ttm.currentForecast().map(this::toTtmForecast);
+
         return new TtmStatusResponse(config.enabled(),
                                      ttm.isEnabled(),
                                      ttm.state().name(),
@@ -123,17 +130,17 @@ public final class ControllerRoutes implements RouteSource {
     private TtmForecast toTtmForecast(TTMForecast f) {
         return new TtmForecast(f.timestamp(),
                                f.confidence(),
-                               f.recommendation().getClass()
-                                               .getSimpleName());
+                               f.recommendation().getClass().getSimpleName());
     }
 
     private List<TrainingDataPoint> buildTrainingDataResponse() {
-        return nodeSupplier.get().snapshotCollector()
-                               .minuteAggregator()
-                               .recent(120)
-                               .stream()
-                               .map(ControllerRoutes::toTrainingDataPoint)
-                               .toList();
+        return nodeSupplier.get()
+                           .snapshotCollector()
+                           .minuteAggregator()
+                           .recent(120)
+                           .stream()
+                           .map(ControllerRoutes::toTrainingDataPoint)
+                           .toList();
     }
 
     private static TrainingDataPoint toTrainingDataPoint(org.pragmatica.aether.metrics.MinuteAggregate agg) {

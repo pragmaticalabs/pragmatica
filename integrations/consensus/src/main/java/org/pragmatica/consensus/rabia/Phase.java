@@ -25,6 +25,9 @@ import org.pragmatica.serialization.Codec;
 public record Phase(long value) implements Comparable<Phase> {
     public static final Phase ZERO = new Phase(0);
 
+    @SuppressWarnings("JBCT-EX-01") // TODO(RC2): negative phase is a constructor invariant
+    // (programming error, not business validation). Converting to a Result factory removes the
+    // throwing constructor and ripples into `new Phase(...)`/`successor()` call sites cross-module.
     public Phase {
         if (value < 0) {
             throw new IllegalArgumentException("Phase value must be non-negative: " + value);

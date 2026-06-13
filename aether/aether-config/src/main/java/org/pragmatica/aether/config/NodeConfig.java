@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config;
 
 import org.pragmatica.lang.Option;
@@ -10,22 +14,13 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Per-node configuration.
-///
-/// @param heap              JVM heap size (e.g., "256m", "1g")
-/// @param gc                Garbage collector (zgc, g1)
-/// @param metricsInterval   Metrics collection interval
-/// @param reconciliation    Cluster reconciliation interval
-/// @param resources         Kubernetes resource limits (optional)
 public record NodeConfig(String heap,
                          String gc,
                          TimeSpan metricsInterval,
                          TimeSpan reconciliation,
                          Option<ResourcesConfig> resources) {
     public static final String DEFAULT_GC = "zgc";
-
     public static final TimeSpan DEFAULT_METRICS_INTERVAL = timeSpan(1).seconds();
-
     public static final TimeSpan DEFAULT_RECONCILIATION = timeSpan(5).seconds();
 
     public static Result<NodeConfig> nodeConfig(String heap,
@@ -57,17 +52,18 @@ public record NodeConfig(String heap,
     }
 
     public String javaOpts() {
-        var gcOpt = switch (gc.toLowerCase()){
+        var gcOpt = switch (gc.toLowerCase()) {
             case "zgc" -> "-XX:+UseZGC";
             case "g1" -> "-XX:+UseG1GC";
             default -> "-XX:+UseZGC";
         };
+
         return "-Xmx" + heap + " " + gcOpt;
     }
 
     private static Option<ResourcesConfig> resourcesFor(Environment env) {
         return env == Environment.KUBERNETES
-              ? some(ResourcesConfig.resourcesConfig())
-              : none();
+               ? some(ResourcesConfig.resourcesConfig())
+               : none();
     }
 }

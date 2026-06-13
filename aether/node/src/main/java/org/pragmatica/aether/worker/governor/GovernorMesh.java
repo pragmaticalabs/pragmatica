@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.governor;
 
 import org.pragmatica.consensus.NodeId;
@@ -7,15 +11,16 @@ import org.pragmatica.messaging.MessageRouter.DelegateRouter;
 import java.util.Map;
 
 
-/// Mesh network between community governors for cross-community DHT traffic.
-/// Each governor maintains connections to governors of other communities.
-/// DHT messages between communities are multiplexed over these governor connections.
-///
-/// Phase 2a provides the infrastructure. Full wiring happens in Phase 2b (multi-group).
 public interface GovernorMesh {
-    @SuppressWarnings("JBCT-RET-01") void registerGovernor(String communityId, NodeId governorId);
-    @SuppressWarnings("JBCT-RET-01") void registerGovernor(String communityId, NodeId governorId, String tcpAddress);
-    @SuppressWarnings("JBCT-RET-01") void unregisterGovernor(String communityId);
+    @SuppressWarnings("JBCT-RET-01")
+    void registerGovernor(String communityId, NodeId governorId);
+
+    @SuppressWarnings("JBCT-RET-01")
+    void registerGovernor(String communityId, NodeId governorId, String tcpAddress);
+
+    @SuppressWarnings("JBCT-RET-01")
+    void unregisterGovernor(String communityId);
+
     Option<NodeId> governorFor(String communityId);
     Map<String, NodeId> allGovernors();
     boolean hasGovernor(String communityId);

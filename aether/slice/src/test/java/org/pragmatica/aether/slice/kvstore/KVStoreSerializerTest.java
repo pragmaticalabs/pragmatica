@@ -1,12 +1,28 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.slice.kvstore;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.RetentionMode;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
+import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
+import org.pragmatica.aether.slice.resource.ResourceVersion;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.lang.Option;
@@ -52,20 +68,6 @@ class KVStoreSerializerTest {
         }
 
         @Test
-        void toToml_ephemeralNodeLifecycle_excluded() {
-            var nodeId = NodeId.nodeId("node-abc123").unwrap();
-            var key = NodeLifecycleKey.nodeLifecycleKey(nodeId);
-            var value = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, 1710072000000L);
-
-            KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
-                             .onFailureRun(Assertions::fail)
-                             .onSuccess(toml -> {
-                                 assertThat(toml).doesNotContain("[node-lifecycle]");
-                                 assertThat(toml).doesNotContain("node-abc123");
-                             });
-        }
-
-        @Test
         void toToml_configValue_serializedCorrectly() {
             var key = ConfigKey.forKey("max-replicas");
             var value = new ConfigValue("max-replicas", "5", 1710072000000L);
@@ -95,7 +97,7 @@ class KVStoreSerializerTest {
         void toToml_ephemeralGovernorAnnouncement_excluded() {
             var key = GovernorAnnouncementKey.forCommunity("prod:us-east-1");
             var members = List.of(NodeId.nodeId("worker-1").unwrap(), NodeId.nodeId("worker-2").unwrap());
-            var value = new GovernorAnnouncementValue(
+            var value = GovernorAnnouncementValue.governorAnnouncementValue(
                 NodeId.nodeId("governor-1").unwrap(), 2, members, "0.0.0.0:7201", 1710072000000L);
 
             KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
@@ -151,12 +153,8 @@ class KVStoreSerializerTest {
             entries.put(SliceTargetKey.sliceTargetKey(ab),
                         new SliceTargetValue(ver, 2, 1, Option.none(), "CORE_ONLY", 1000L));
 
-            // Ephemeral: node lifecycle
-            var nodeId = NodeId.nodeId("node-1").unwrap();
-            entries.put(NodeLifecycleKey.nodeLifecycleKey(nodeId),
-                        NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, 2000L));
-
             // Ephemeral: activation directive
+            var nodeId = NodeId.nodeId("node-1").unwrap();
             entries.put(ActivationDirectiveKey.activationDirectiveKey(nodeId),
                         new ActivationDirectiveValue("CORE"));
 
@@ -168,7 +166,6 @@ class KVStoreSerializerTest {
                              .onSuccess(toml -> {
                                  assertThat(toml).contains("[slice-target]");
                                  assertThat(toml).contains("[config]");
-                                 assertThat(toml).doesNotContain("[node-lifecycle]");
                                  assertThat(toml).doesNotContain("[activation]");
                              });
         }
@@ -233,8 +230,8 @@ class KVStoreSerializerTest {
                        phase = 100
                        timestamp = "2026-03-10T12:00:00Z"
 
-                       [node-lifecycle]
-                       "node-1" = "ON_DUTY|1710072000000"
+                       [activation]
+                       "node-1" = "CORE"
 
                        [config]
                        "timeout" = "timeout|5000|3000"
@@ -245,9 +242,9 @@ class KVStoreSerializerTest {
                              .onSuccess(map -> {
                                  assertThat(map).hasSize(1);
                                  assertThat(map).containsKey(ConfigKey.forKey("timeout"));
-                                 // node-lifecycle is ephemeral — should not be restored
+                                 // activation is ephemeral — should not be restored
                                  var nodeId = NodeId.nodeId("node-1").unwrap();
-                                 assertThat(map).doesNotContainKey(NodeLifecycleKey.nodeLifecycleKey(nodeId));
+                                 assertThat(map).doesNotContainKey(ActivationDirectiveKey.activationDirectiveKey(nodeId));
                              });
         }
 
@@ -257,9 +254,6 @@ class KVStoreSerializerTest {
                        [meta]
                        phase = 100
                        timestamp = "2026-03-10T12:00:00Z"
-
-                       [node-lifecycle]
-                       "node-1" = "ON_DUTY|1710072000000"
 
                        [activation]
                        "node-1" = "CORE"
@@ -336,6 +330,37 @@ class KVStoreSerializerTest {
         }
 
         @Test
+        void roundTrip_apiKeyValue_preservesAuthorizationRole() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            entries.put(ApiKeyKey.apiKeyKey("ak_admin01"),
+                        AetherValue.ApiKeyValue.apiKeyValue("ak_admin01", "deadbeef", 5000L, "ADMIN"));
+            entries.put(ApiKeyKey.apiKeyKey("ak_oper001"),
+                        AetherValue.ApiKeyValue.apiKeyValue("ak_oper001", "cafe1234", 5000L, "OPERATOR"));
+            entries.put(ApiKeyKey.apiKeyKey("ak_view001"),
+                        AetherValue.ApiKeyValue.apiKeyValue("ak_view001", "feedface", 5000L, "VIEWER"));
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 var admin = (AetherValue.ApiKeyValue) restored.get(ApiKeyKey.apiKeyKey("ak_admin01"));
+                                 assertThat(admin.authorizationRole()).isEqualTo("ADMIN");
+
+                                 var operator = (AetherValue.ApiKeyValue) restored.get(ApiKeyKey.apiKeyKey("ak_oper001"));
+                                 assertThat(operator.authorizationRole()).isEqualTo("OPERATOR");
+
+                                 var viewer = (AetherValue.ApiKeyValue) restored.get(ApiKeyKey.apiKeyKey("ak_view001"));
+                                 assertThat(viewer.authorizationRole()).isEqualTo("VIEWER");
+                             });
+        }
+
+        @Test
+        void apiKeyValue_factoryWithoutRole_defaultsToViewer() {
+            var keyValue = AetherValue.ApiKeyValue.apiKeyValue("ak_test", "hash", 1000L);
+            assertThat(keyValue.authorizationRole()).isEqualTo("VIEWER");
+        }
+
+        @Test
         void roundTrip_ephemeralKeys_excludedFromOutput() {
             var entries = new LinkedHashMap<AetherKey, AetherValue>();
 
@@ -346,13 +371,9 @@ class KVStoreSerializerTest {
                         new SliceTargetValue(ver, 2, 1, Option.none(), "CORE_ONLY", 1000L));
 
             // Ephemeral — should be filtered out
-            var nodeId = NodeId.nodeId("node-x").unwrap();
-            entries.put(NodeLifecycleKey.nodeLifecycleKey(nodeId),
-                        NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING, 2000L));
-
             var key = GovernorAnnouncementKey.forCommunity("prod:us-east-1");
             var members = List.of(NodeId.nodeId("worker-a").unwrap());
-            entries.put(key, new GovernorAnnouncementValue(
+            entries.put(key, GovernorAnnouncementValue.governorAnnouncementValue(
                 NodeId.nodeId("governor-1").unwrap(), 1, members, "10.0.1.5:7201", 5000L));
 
             KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
@@ -417,6 +438,89 @@ class KVStoreSerializerTest {
     }
 
     @Nested
+    class ProvisioningSlotCodec {
+        @Test
+        void parseProvisioningSlot_legacyThreeFields_dropsDeadlineDefaultsEpochZeroAndNoSuperseded() {
+            var legacy = "1000|61000|node-occupant";
+
+            KVStoreSerializer.parseProvisioningSlotEntry("0", legacy)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> {
+                                 var value = (ProvisioningSlotValue) entry.getValue();
+                                 assertThat(value.spawnedAtMs()).isEqualTo(1000L);
+                                 assertThat(value.assignedNodeId()).isEqualTo(Option.some(NodeId.nodeId("node-occupant").unwrap()));
+                                 assertThat(value.occupantEpoch()).isEqualTo(0L);
+                                 assertThat(value.supersededNodeId().isPresent()).isFalse();
+                             });
+        }
+
+        @Test
+        void parseProvisioningSlot_legacyThreeFieldsEmptyOccupant_defaultsEmpty() {
+            var legacy = "1000|61000|";
+
+            KVStoreSerializer.parseProvisioningSlotEntry("3", legacy)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> {
+                                 var value = (ProvisioningSlotValue) entry.getValue();
+                                 assertThat(value.assignedNodeId().isPresent()).isFalse();
+                                 assertThat(value.occupantEpoch()).isEqualTo(0L);
+                                 assertThat(value.supersededNodeId().isPresent()).isFalse();
+                             });
+        }
+
+        @Test
+        void parseProvisioningSlot_legacyFiveFieldFenced_dropsDeadlinePreservesFencedFields() {
+            // Legacy 5-field wire `(spawnedAtMs|deadlineMs|assignedNodeId|occupantEpoch|supersededNodeId)`
+            // — the stored deadline (62000) is discarded; expiry is derived now (#230).
+            var legacy = "2000|62000|node-new|7|node-dead";
+
+            KVStoreSerializer.parseProvisioningSlotEntry("1", legacy)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> {
+                                 var value = (ProvisioningSlotValue) entry.getValue();
+                                 assertThat(value.spawnedAtMs()).isEqualTo(2000L);
+                                 assertThat(value.assignedNodeId()).isEqualTo(Option.some(NodeId.nodeId("node-new").unwrap()));
+                                 assertThat(value.occupantEpoch()).isEqualTo(7L);
+                                 assertThat(value.supersededNodeId()).isEqualTo(Option.some(NodeId.nodeId("node-dead").unwrap()));
+                             });
+        }
+
+        @Test
+        void roundTrip_currentFourField_preservesAllFields() {
+            var original = new ProvisioningSlotValue(2000L,
+                                                     Option.some(NodeId.nodeId("node-new").unwrap()),
+                                                     7L,
+                                                     Option.some(NodeId.nodeId("node-dead").unwrap()));
+
+            var serialized = KVStoreSerializer.serializeProvisioningSlot(original);
+
+            KVStoreSerializer.parseProvisioningSlotEntry("1", serialized)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> assertThat(entry.getValue()).isEqualTo(original));
+        }
+
+        @Test
+        void roundTrip_currentFourFieldNoOccupantNoSuperseded_preservesEpoch() {
+            var original = new ProvisioningSlotValue(3000L,
+                                                     Option.none(),
+                                                     4L,
+                                                     Option.none());
+
+            var serialized = KVStoreSerializer.serializeProvisioningSlot(original);
+
+            KVStoreSerializer.parseProvisioningSlotEntry("2", serialized)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> assertThat(entry.getValue()).isEqualTo(original));
+        }
+
+        @Test
+        void parseProvisioningSlot_wrongFieldCount_returnsParseFailure() {
+            KVStoreSerializer.parseProvisioningSlotEntry("0", "1000|61000")
+                             .onSuccess(_ -> Assertions.fail());
+        }
+    }
+
+    @Nested
     class EphemeralKeyFiltering {
         @Test
         void isEphemeral_nodeArtifactKey_true() {
@@ -433,12 +537,6 @@ class KVStoreSerializerTest {
         }
 
         @Test
-        void isEphemeral_nodeLifecycleKey_true() {
-            var nodeId = NodeId.nodeId("node-1").unwrap();
-            assertThat(EphemeralKeys.isEphemeral(NodeLifecycleKey.nodeLifecycleKey(nodeId))).isTrue();
-        }
-
-        @Test
         void isEphemeral_activationDirectiveKey_true() {
             var nodeId = NodeId.nodeId("node-1").unwrap();
             assertThat(EphemeralKeys.isEphemeral(ActivationDirectiveKey.activationDirectiveKey(nodeId))).isTrue();
@@ -447,6 +545,27 @@ class KVStoreSerializerTest {
         @Test
         void isEphemeral_governorAnnouncementKey_true() {
             assertThat(EphemeralKeys.isEphemeral(GovernorAnnouncementKey.forCommunity("test"))).isTrue();
+        }
+
+        @Test
+        void isEphemeral_dhtPartitionOwnershipKey_true() {
+            assertThat(EphemeralKeys.isEphemeral(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey("core"))).isTrue();
+        }
+
+        @Test
+        void isEphemeral_spokesmanKey_true() {
+            var nodeId = NodeId.nodeId("core-1").unwrap();
+            assertThat(EphemeralKeys.isEphemeral(SpokesmanKey.spokesmanKey(nodeId))).isTrue();
+        }
+
+        @Test
+        void isEphemeralSection_dhtPartitionOwnership_true() {
+            assertThat(EphemeralKeys.isEphemeralSection("dht-partition-ownership")).isTrue();
+        }
+
+        @Test
+        void isEphemeralSection_spokesman_true() {
+            assertThat(EphemeralKeys.isEphemeralSection("spokesman")).isTrue();
         }
 
         @Test
@@ -469,7 +588,6 @@ class KVStoreSerializerTest {
         void isEphemeralSection_ephemeralSections_true() {
             assertThat(EphemeralKeys.isEphemeralSection("node-artifact")).isTrue();
             assertThat(EphemeralKeys.isEphemeralSection("node-routes")).isTrue();
-            assertThat(EphemeralKeys.isEphemeralSection("node-lifecycle")).isTrue();
             assertThat(EphemeralKeys.isEphemeralSection("endpoints")).isTrue();
             assertThat(EphemeralKeys.isEphemeralSection("activation")).isTrue();
             assertThat(EphemeralKeys.isEphemeralSection("governor-announcement")).isTrue();
@@ -486,6 +604,124 @@ class KVStoreSerializerTest {
             assertThat(EphemeralKeys.isEphemeralSection("topic-sub")).isFalse();
             assertThat(EphemeralKeys.isEphemeralSection("worker-directive")).isFalse();
             assertThat(EphemeralKeys.isEphemeralSection("app-blueprint")).isFalse();
+        }
+    }
+
+    @Nested
+    class StreamNamespaceRoundTrip {
+        private static ResourceAddress addr(String namespace, String stream, int major, int minor, int patch) {
+            return ResourceAddress.resourceAddress(namespace, stream, ResourceVersion.resourceVersion(major, minor, patch).unwrap())
+                                .unwrap();
+        }
+
+        @Test
+        void roundTrip_streamRegistryAndBlueprintBindings_preservesAllFields() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+
+            var streamAddress = addr("com.example.app", "orders", 1, 2, 3);
+            var retention = new RetentionPolicy(7_777L, 555L, 99_000L, RetentionMode.ALL, Option.none());
+            var registryEntry = new StreamRegistryEntry(streamAddress,
+                                                        retention,
+                                                        1710072000000L,
+                                                        StreamRegistryEntry.RegisteredByKind.BLUEPRINT,
+                                                        4);
+            var registryKey = StreamRegistryKey.streamRegistryKey(streamAddress);
+            entries.put(registryKey, StreamRegistryValue.streamRegistryValue(registryEntry));
+
+            var blueprintId = BlueprintId.blueprintId("com.example:my-app-blueprint:2.0.0").unwrap();
+            var bindings = List.of(new NamedAddress("orders-out", addr("com.example.app", "orders", 1, 2, 3)),
+                                   new NamedAddress("events-in", addr("com.example.app", "events", 4, 0, 0)));
+            var bindingsKey = BlueprintStreamBindingsKey.blueprintStreamBindingsKey(blueprintId);
+            entries.put(bindingsKey, BlueprintStreamBindingsValue.blueprintStreamBindingsValue(bindings));
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).hasSize(2);
+                                 assertThat(restored.get(registryKey)).isEqualTo(StreamRegistryValue.streamRegistryValue(registryEntry));
+                                 assertThat(restored.get(bindingsKey)).isEqualTo(BlueprintStreamBindingsValue.blueprintStreamBindingsValue(bindings));
+
+                                 var rv = (StreamRegistryValue) restored.get(registryKey);
+                                 assertThat(rv.entry().address()).isEqualTo(streamAddress);
+                                 assertThat(rv.entry().refCount()).isEqualTo(4);
+                                 assertThat(rv.entry().registeredBy()).isEqualTo(StreamRegistryEntry.RegisteredByKind.BLUEPRINT);
+                                 assertThat(rv.entry().retention()).isEqualTo(retention);
+
+                                 var bv = (BlueprintStreamBindingsValue) restored.get(bindingsKey);
+                                 assertThat(bv.bindings()).hasSize(2);
+                                 assertThat(bv.addressFor("orders-out")).isEqualTo(Option.some(addr("com.example.app", "orders", 1, 2, 3)));
+                                 assertThat(bv.addressFor("events-in")).isEqualTo(Option.some(addr("com.example.app", "events", 4, 0, 0)));
+                             });
+        }
+
+        @Test
+        void roundTrip_namespacedTopicSubscriptionKey_preservesAddressArtifactMethod() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+
+            var address = ResourceAddress.resourceAddress("com.example.app", "order-events",
+                                                    ResourceVersion.resourceVersion(2, 1, 3).unwrap()).unwrap();
+            var artifact = Artifact.artifact("com.example:order-slice:1.0.0").unwrap();
+            var method = MethodName.methodName("onOrder").unwrap();
+            var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, method);
+            var value = TopicSubscriptionValue.topicSubscriptionValue(new NodeId("node-a"));
+            entries.put(key, value);
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).hasSize(1);
+                                 assertThat(restored).containsKey(key);
+                                 var rk = (TopicSubscriptionKey) restored.keySet().iterator().next();
+                                 assertThat(rk.address()).isEqualTo(address);
+                                 assertThat(rk.topicName()).isEqualTo("order-events");
+                                 assertThat(rk.artifact()).isEqualTo(artifact);
+                                 assertThat(rk.methodName()).isEqualTo(method);
+                                 assertThat(restored.get(key)).isEqualTo(value);
+                             });
+        }
+
+        @Test
+        void roundTrip_blueprintBindingsEmpty_preservesEmptyList() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var blueprintId = BlueprintId.blueprintId("com.example:empty-app-blueprint:1.0.0").unwrap();
+            var bindingsKey = BlueprintStreamBindingsKey.blueprintStreamBindingsKey(blueprintId);
+            entries.put(bindingsKey, BlueprintStreamBindingsValue.blueprintStreamBindingsValue(List.of()));
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).hasSize(1);
+                                 var bv = (BlueprintStreamBindingsValue) restored.get(bindingsKey);
+                                 assertThat(bv.bindings()).isEmpty();
+                                 assertThat(restored.get(bindingsKey)).isEqualTo(BlueprintStreamBindingsValue.blueprintStreamBindingsValue(List.of()));
+                             });
+        }
+
+        @Test
+        void roundTrip_streamRegistryRefCountOne_frameworkRegistered() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var streamAddress = addr("system", "audit", 1, 0, 0);
+            var entry = new StreamRegistryEntry(streamAddress,
+                                                RetentionPolicy.retentionPolicy(),
+                                                42L,
+                                                StreamRegistryEntry.RegisteredByKind.FRAMEWORK,
+                                                1);
+            var key = StreamRegistryKey.streamRegistryKey(streamAddress);
+            entries.put(key, StreamRegistryValue.streamRegistryValue(entry));
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).hasSize(1);
+                                 assertThat(restored.get(key)).isEqualTo(StreamRegistryValue.streamRegistryValue(entry));
+                                 var rv = (StreamRegistryValue) restored.get(key);
+                                 assertThat(rv.entry().refCount()).isEqualTo(1);
+                                 assertThat(rv.entry().registeredBy()).isEqualTo(StreamRegistryEntry.RegisteredByKind.FRAMEWORK);
+                             });
         }
     }
 

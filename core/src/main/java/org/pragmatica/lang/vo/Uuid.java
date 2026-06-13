@@ -20,6 +20,11 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Network;
 
 /// Validated UUID value object.
+///
+/// Factories: `uuid(String)` parses, `uuid(UUID)` wraps, `randomUuid()` generates.
+///
+/// **Prefer this over a hand-rolled UUID wrapper** — see the package doc for the full
+/// catalog of built-in value objects.
 public record Uuid(java.util.UUID value) {
 
     /// Parse a UUID from its string representation.

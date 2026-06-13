@@ -1,19 +1,7 @@
-/*
- *  Copyright (c) 2025 Sergiy Yevtushenko.
- *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
- *
- */
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
 import org.pragmatica.lang.Option;
@@ -22,18 +10,17 @@ import org.pragmatica.lang.Result;
 import java.util.ServiceLoader;
 
 
-/// SPI for creating EnvironmentIntegration instances from generic CloudConfig.
-/// Each cloud provider module registers its factory via ServiceLoader.
-/// The node bootstrap uses the provider name to select the correct factory.
 public interface EnvironmentIntegrationFactory {
     String providerName();
     Result<EnvironmentIntegration> create(CloudConfig config);
 
     static Option<EnvironmentIntegrationFactory> forProvider(String providerName) {
-        return Option.from(ServiceLoader.load(EnvironmentIntegrationFactory.class).stream()
-                                             .map(ServiceLoader.Provider::get)
-                                             .filter(f -> f.providerName().equals(providerName))
-                                             .findFirst());
+        return Option.from(ServiceLoader.load(EnvironmentIntegrationFactory.class)
+                                        .stream()
+                                        .map(ServiceLoader.Provider::get)
+                                        .filter(f -> f.providerName()
+                                                      .equals(providerName))
+                                        .findFirst());
     }
 
     static Result<EnvironmentIntegration> createFromConfig(CloudConfig config) {

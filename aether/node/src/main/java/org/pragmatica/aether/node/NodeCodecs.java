@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
 import org.pragmatica.aether.slice.MethodName;
@@ -25,14 +29,13 @@ import static org.pragmatica.serialization.SliceCodec.writeCompact;
 import static org.pragmatica.serialization.SliceCodec.writeString;
 
 
-/// Registry of all node-level types for serialization.
-/// Collects generated codec registries from all modules and adds manual entries
-/// for types that can't use the annotation processor (e.g. shared-package conflicts).
-@CodecFor({InetSocketAddress.class, MethodName.class, TimeSpan.class, URI.class, UUID.class, OffsetDateTime.class, Email.class, Url.class, NonBlankString.class, Uuid.class, IsoDateTime.class}) public sealed interface NodeCodecs {
-    record unused() implements NodeCodecs{}
+@CodecFor({InetSocketAddress.class, MethodName.class, TimeSpan.class, URI.class, UUID.class, OffsetDateTime.class, Email.class, Url.class, NonBlankString.class, Uuid.class, IsoDateTime.class})
+public sealed interface NodeCodecs {
+    record unused() implements NodeCodecs {}
 
     static SliceCodec nodeCodecs(SliceCodec parent) {
         var all = new ArrayList<TypeCodec<?>>();
+
         all.addAll(org.pragmatica.consensus.ConsensusCodecs.CODECS);
         all.addAll(org.pragmatica.consensus.rabia.RabiaCodecs.CODECS);
         all.addAll(org.pragmatica.consensus.net.NetCodecs.CODECS);
@@ -40,13 +43,24 @@ import static org.pragmatica.serialization.SliceCodec.writeString;
         all.addAll(org.pragmatica.cluster.state.kvstore.KvstoreCodecs.CODECS);
         all.addAll(org.pragmatica.cluster.metrics.MetricsCodecs.CODECS);
         all.addAll(org.pragmatica.dht.DhtCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.artifact.ArtifactCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.slice.SliceCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.slice.kvstore.KvstoreCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.slice.blueprint.BlueprintCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.invoke.InvokeCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.http.forward.ForwardCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.dht.DhtCodecs.CODECS);
+        all.addAll(org.pragmatica.aether.artifact.ArtifactCodecsSlice.CODECS);
+        // SliceCodecs registry in org.pragmatica.aether.slice is contributed by four modules; reference each suffixed sub-registry to avoid shade collision.
+        all.addAll(org.pragmatica.aether.slice.SliceCodecsSlice.CODECS);
+        all.addAll(org.pragmatica.aether.slice.SliceCodecsSliceApi.CODECS);
+        all.addAll(org.pragmatica.aether.slice.SliceCodecsNode.CODECS);
+        all.addAll(org.pragmatica.aether.slice.SliceCodecsInvoke.CODECS);
+        all.addAll(org.pragmatica.aether.slice.kvstore.KvstoreCodecsSlice.CODECS);
+        all.addAll(org.pragmatica.aether.api.ApiCodecsNode.CODECS);
+        all.addAll(org.pragmatica.aether.slice.generation.GenerationCodecsSlice.CODECS);
+        all.addAll(org.pragmatica.aether.slice.blueprint.BlueprintCodecsSlice.CODECS);
+        all.addAll(org.pragmatica.aether.invoke.InvokeCodecsInvoke.CODECS);
+        all.addAll(org.pragmatica.aether.http.forward.ForwardCodecsInvoke.CODECS);
+        // aether-stream wire types (replication, read-forward, stream-consensus) — without these the
+        // active replication / catch-up / forward sends throw "No codec registered" over the cluster network.
+        all.addAll(org.pragmatica.aether.stream.consensus.ConsensusCodecsStream.CODECS);
+        all.addAll(org.pragmatica.aether.stream.replication.ReplicationCodecsStream.CODECS);
+        all.addAll(org.pragmatica.aether.stream.forward.ForwardCodecsStream.CODECS);
+        all.addAll(org.pragmatica.aether.dht.DhtCodecsInvoke.CODECS);
         all.addAll(org.pragmatica.aether.http.handler.HandlerCodecs.CODECS);
         all.addAll(org.pragmatica.aether.http.handler.security.SecurityCodecs.CODECS);
         all.addAll(org.pragmatica.swim.SwimCodecs.CODECS);
@@ -59,11 +73,13 @@ import static org.pragmatica.serialization.SliceCodec.writeString;
         all.add(uuidCodec());
         all.add(isoDateTimeCodec());
         var requiredTypes = collectRequiredTypes();
+
         return SliceCodec.sliceCodec(parent, all, requiredTypes);
     }
 
     private static Set<Class<?>> collectRequiredTypes() {
         var types = new java.util.HashSet<Class<?>>();
+
         types.addAll(org.pragmatica.swim.SwimCodecs.REQUIRED_TYPES);
         types.add(InetSocketAddress.class);
         types.add(MethodName.class);
@@ -73,6 +89,7 @@ import static org.pragmatica.serialization.SliceCodec.writeString;
         types.add(NonBlankString.class);
         types.add(Uuid.class);
         types.add(IsoDateTime.class);
+
         return types;
     }
 

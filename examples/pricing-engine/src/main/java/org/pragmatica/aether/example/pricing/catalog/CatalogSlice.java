@@ -17,7 +17,8 @@ import java.util.Objects;
 import java.util.Set;
 
 
-@Slice public interface CatalogSlice {
+@Slice
+public interface CatalogSlice {
     int HIGH_VALUE_THRESHOLD_CENTS = 50000;
 
     record HighValueOrderEvent(String productId, int quantity, int totalCents, String regionCode) {
@@ -57,13 +58,15 @@ import java.util.Set;
 
     sealed interface PricingError extends Cause {
         record ProductNotFound(String productId) implements PricingError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Product not found: " + productId;
             }
         }
 
         record InvalidRequest(String reason) implements PricingError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Invalid request: " + reason;
             }
         }
@@ -80,11 +83,12 @@ import java.util.Set;
                             TaxSlice taxSlice,
                             Publisher<HighValueOrderEvent> highValuePublisher) implements CatalogSlice {
             private static final String SELECT_PRICE = "SELECT price_cents FROM products WHERE product_id = ?";
-
             private static final Set<String> TAX_EXEMPT_REGIONS = Set.of("US-OR", "US-MT", "US-NH", "DE-FREE");
 
-            @Override public Promise<PriceResponse> calculatePrice(PriceRequest request) {
+            @Override
+            public Promise<PriceResponse> calculatePrice(PriceRequest request) {
                 var quantity = request.quantity();
+
                 return lookupBasePrice(request, quantity).flatMap(basePrice -> discountFor(request, basePrice))
                                       .flatMap(ctx -> taxFor(request, ctx))
                                       .flatMap(ctx -> publishIfHighValue(request, ctx));
@@ -98,29 +102,40 @@ import java.util.Set;
                 return db.queryOptional(SELECT_PRICE,
                                         row -> row.getInt("price_cents"),
                                         productId)
-                .flatMap(opt -> opt.async(new PricingError.ProductNotFound(productId)));
+                         .flatMap(opt -> opt.async(new PricingError.ProductNotFound(productId)));
             }
 
             private Promise<PricingContext> discountFor(PriceRequest request, int basePrice) {
-                if (hasCoupon(request)) {return discountSlice.calculateDiscount(new DiscountRequest(request.couponCode(),
-                                                                                                    basePrice))
-                .map(resp -> pricingContext(basePrice,
-                                            resp.discountAmountCents(),
-                                            List.of("catalog", "discount")));}
+                if (hasCoupon(request)) {
+                    return discountSlice.calculateDiscount(new DiscountRequest(request.couponCode(),
+                                                                               basePrice))
+                                        .map(resp -> pricingContext(basePrice,
+                                                                    resp.discountAmountCents(),
+                                                                    List.of("catalog", "discount")));
+                }
+
                 return Promise.success(pricingContext(basePrice, 0, List.of("catalog")));
             }
 
             private Promise<PricingContext> taxFor(PriceRequest request, PricingContext ctx) {
                 var taxableAmount = ctx.basePrice() - ctx.discountAmount();
-                if (isTaxExempt(request.regionCode())) {return Promise.success(ctx.withTax(0));}
+
+                if (isTaxExempt(request.regionCode())) {
+                    return Promise.success(ctx.withTax(0));
+                }
+
                 return taxSlice.calculateTax(new TaxRequest(request.regionCode(),
                                                             taxableAmount))
-                .map(resp -> ctx.withTaxStep(resp.taxAmountCents()));
+                               .map(resp -> ctx.withTaxStep(resp.taxAmountCents()));
             }
 
             private Promise<PriceResponse> publishIfHighValue(PriceRequest request, PricingContext ctx) {
                 var response = toResponse(ctx);
-                if (response.totalPrice() > HIGH_VALUE_THRESHOLD_CENTS) {return publishHighValueEvent(request, response);}
+
+                if (response.totalPrice() > HIGH_VALUE_THRESHOLD_CENTS) {
+                    return publishHighValueEvent(request, response);
+                }
+
                 return Promise.success(response);
             }
 
@@ -129,16 +144,20 @@ import java.util.Set;
                                                     request.quantity(),
                                                     response.totalPrice(),
                                                     request.regionCode());
-                return highValuePublisher.publish(event).map(_ -> response);
+
+                return highValuePublisher.publish(event)
+                                         .map(_ -> response);
             }
 
             private static PriceResponse toResponse(PricingContext ctx) {
                 var total = ctx.basePrice() - ctx.discountAmount() + ctx.taxAmount();
+
                 return new PriceResponse(ctx.basePrice(), ctx.discountAmount(), ctx.taxAmount(), total, ctx.callPath());
             }
 
             private static boolean hasCoupon(PriceRequest request) {
-                return ! request.couponCode().isBlank();
+                return ! request.couponCode()
+                                .isBlank();
             }
 
             private static boolean isTaxExempt(String regionCode) {
@@ -149,6 +168,7 @@ import java.util.Set;
                 return new PricingContext(basePrice, discountAmount, 0, callPath);
             }
         }
+
         return new catalogSlice(db, discountSlice, taxSlice, highValuePublisher);
     }
 
@@ -163,7 +183,9 @@ import java.util.Set;
 
         PricingContext withStep(String step) {
             var updated = new ArrayList<>(callPath);
+
             updated.add(step);
+
             return new PricingContext(basePrice, discountAmount, taxAmount, updated);
         }
 

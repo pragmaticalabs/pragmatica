@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.controller;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -18,7 +23,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
+import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -40,6 +45,7 @@ class RollbackManagerTest {
     private RollbackConfig config;
     private TestClusterNode clusterNode;
     private TestKVStore kvStore;
+    private TestLeaderManager leaderManager;
     private RollbackManager rollbackManager;
 
     @BeforeEach
@@ -47,7 +53,8 @@ class RollbackManagerTest {
         config = RollbackConfig.rollbackConfig();
         clusterNode = new TestClusterNode(SELF);
         kvStore = new TestKVStore();
-        rollbackManager = RollbackManager.rollbackManager(SELF, config, clusterNode, kvStore);
+        leaderManager = new TestLeaderManager();
+        rollbackManager = RollbackManager.rollbackManager(SELF, config, clusterNode, kvStore, leaderManager);
     }
 
     @Nested
@@ -78,7 +85,8 @@ class RollbackManagerTest {
 
         @Test
         void leader_tracksVersionChanges() {
-            rollbackManager.onLeaderChange(new LeaderChange(Option.some(LEADER), true));
+            leaderManager.setLeader(true);
+            rollbackManager.activate();
             var v1 = Artifact.artifact("org.example:test:1.0.0").unwrap();
             var v2 = Artifact.artifact("org.example:test:2.0.0").unwrap();
 
@@ -97,7 +105,8 @@ class RollbackManagerTest {
     class RollbackTriggering {
         @BeforeEach
         void becomeLeader() {
-            rollbackManager.onLeaderChange(new LeaderChange(Option.some(LEADER), true));
+            leaderManager.setLeader(true);
+            rollbackManager.activate();
         }
 
         @Test
@@ -137,7 +146,8 @@ class RollbackManagerTest {
     class StatsTracking {
         @BeforeEach
         void becomeLeader() {
-            rollbackManager.onLeaderChange(new LeaderChange(Option.some(LEADER), true));
+            leaderManager.setLeader(true);
+            rollbackManager.activate();
         }
 
         @Test
@@ -252,5 +262,35 @@ class RollbackManagerTest {
         void put(AetherKey key, AetherValue value) {
             data.put(key, value);
         }
+    }
+
+    static class TestLeaderManager implements LeaderManager {
+        private volatile boolean leader = false;
+
+        void setLeader(boolean value) {
+            this.leader = value;
+        }
+
+        @Override public Option<NodeId> leader() {
+            return leader ? Option.some(LEADER) : Option.none();
+        }
+
+        @Override public boolean isLeader() {
+            return leader;
+        }
+
+        @Override public Option<Long> currentLeaderEpoch() {
+            return Option.none();
+        }
+
+        @Override public void onLeaderCommitted(NodeId leader) {}
+        @Override public void triggerElection() {}
+        @Override public void stop() {}
+        @Override public void peerJoined(org.pragmatica.consensus.topology.TransportObservation.PeerJoined p) {}
+        @Override public void peerDisconnected(org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected p) {}
+        @Override public void peerObservedFaulty(org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty p) {}
+        @Override public void peerReconnected(org.pragmatica.consensus.topology.TransportObservation.PeerReconnected p) {}
+        @Override public void selfShutdown(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown s) {}
+        @Override public void watchClusterState(org.pragmatica.consensus.topology.ClusterStateNotification q) {}
     }
 }

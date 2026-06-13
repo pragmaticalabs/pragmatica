@@ -427,7 +427,7 @@ For `@Query` methods:
 3. Validate parameter types against schema column types
 4. Validate return type field mapping against SELECT output
 5. Determine query rewriting (column narrowing, parameter positional)
-6. Run lint rules (configurable, warning by default)
+6. Run lint rules on migration DDL (configurable, warning by default — **done in rc1** via `LintRunner.runOnMigrations`; severity and rule disable via `-Apg.lint.severity=OFF|WARNING|ERROR` and `-Apg.lint.disabled=PG201,...`)
 
 For auto-generated CRUD methods:
 1. Parse method name → extract operation, columns, operators, ordering
@@ -459,6 +459,36 @@ error: [PG-VALIDATE] NOT NULL column 'email' has no DEFAULT and is not in Create
 error: [PG-VALIDATE] Interface 'LegacyPersistence' uses @Query but its qualifier
   references SqlConnector, not PgSqlConnector. Use a PgSqlConnector-based qualifier.
   → LegacyPersistence.java:3
+```
+
+## Validation Examples (rc1)
+
+With the rc1 `PostgresParser` + `QueryValidator` + `LintEngine` wiring, the following
+diagnostics are emitted directly at compile time. Each includes a `SQL line:column`
+pointing to the offending position inside the `@Query` literal (javac `Messager`
+cannot attach sub-element positions, so they are embedded in the message text).
+
+```
+error: [PG-VALIDATE] Table 'ghost_table' not found in schema at SQL 1:13
+  → @Query("DELETE FROM ghost_table WHERE id = :id")
+
+error: [PG-VALIDATE] Column 'typo_col' not found in table 'users' at SQL 1:8
+  → @Query("SELECT u.typo_col FROM users u WHERE u.id = :id")
+
+error: [PG-VALIDATE] Table or alias 'z' not found at SQL 1:8
+  → @Query("SELECT z.name FROM users u WHERE u.id = :id")
+
+error: [PG-VALIDATE] SQL parse failed in 'broken': unexpected token 'SELEKT'
+  → @Query("SELEKT FRUM users WERE")
+```
+
+Lint diagnostics from the migration pipeline follow the rule-prefixed format; they are
+warnings by default and can be promoted with `-Apg.lint.severity=ERROR` or silenced
+per rule with `-Apg.lint.disabled=PG201,PG204`.
+
+```
+warning: [PG201] Index 'idx_users_email' has an overly broad leading column at SQL 3:1
+warning: [PG207] Column 'email' has no length limit; consider adding a CHECK at SQL 2:5
 ```
 
 ## Generated Code Structure

@@ -1,0 +1,81 @@
+# Cluster B -- Hetzner Cloud (destructive test suites)
+#
+# 5-node cluster on Hetzner cx33 instances (4 vCPU, 8 GB RAM).
+# Requires HCLOUD_TOKEN and PG_URL environment variables.
+
+config_version = "1.0.0"
+
+[cluster]
+name = "cloud-test-b"
+version = "1.0.0"
+
+[cluster.core]
+min = 3
+max = 9
+max_unavailable = 1
+
+[source.hetzner-eu]
+type = "cloud"
+provider = "hetzner"
+zone = "fsn1"             # Hetzner location code (Hetzner's API distinguishes `location` (fsn1) from `datacenter` (fsn1-dc14); the cloud-provider integration uses the location form). When CloudProviderSupport adds a ZoneHint, this value is sent as the `location` field to Hetzner.
+region = "fsn1"           # Same value as zone for now; aether's HetznerComputeProvider uses config.region() as the location fallback when no placement hint is set.
+credentials = "${env:HCLOUD_TOKEN}"
+load_balancer = "none"
+databases.forge = "${env:PG_URL}"
+
+[source.hetzner-eu.core]
+count = 5
+instance_type = "cx33"
+image = "ubuntu-22.04"
+
+[infrastructure.networking]
+# Option A — direct public-IP addressing.
+# Each provisioned VM receives a public IP (Hetzner default); the integration
+# test harness reads those IPs from ~/.aether/clusters/cloud-test-b/bootstrap-state.json
+# (BOOTSTRAP_CLUSTER_NAME) and SSHs to nodes directly. No private network, no
+# bastion. Option B (private network + bastion) is deferred to Phase 4.
+type = "manual"
+
+[operations]
+
+[operations.tls]
+# Disabled for integration testing — mgmt API uses plain HTTP for curl/wget health
+# checks. Cluster QUIC transport still uses TLS via auto-generated [tls].cluster_secret.
+# The cert-rotation test runs against a TLS-disabled cluster and gets a vacuous PASS;
+# real cert-rotation E2E coverage tracked in #209 (RC2).
+auto_generate = false
+
+[operations.ports]
+cluster = 6000
+management = 8080
+app_http = 8070
+swim = 6100
+
+[operations.auto_heal]
+enabled = true
+retry_interval = "30s"
+startup_cooldown = "15s"
+# Integration-test tuning (Wave 3 / Theme B): faster provisioning gate for chaos.
+provision_stability_window = "5s"
+provisioning_timeout = "60s"
+
+[source.hetzner-eu.node_config.app-http]
+# Cluster B runs 05-security tests which assert that unauthenticated requests are
+# rejected — keep API_KEY mode with the static test key configured. The bootstrap
+# CLI uses this same key to authenticate formation POSTs (see
+# BootstrapPhaseFormation.extractConfiguredApiKey).
+enabled = true
+security_mode = "API_KEY"
+
+# Rich-syntax key entry — ADMIN role required because formation POSTs hit
+# /api/cluster/config and /api/cluster/keys, both gated on ADMIN.
+# Simple `api_keys = [...]` defaults to VIEWER (per ApiKeyEntry.defaultEntry)
+# and would yield HTTP 403 during bootstrap.
+[source.hetzner-eu.node_config.app-http.api-keys.aether-integration-test-key]
+name = "integration-test"
+roles = ["service"]
+authorization_role = "ADMIN"
+
+[runtime.default]
+type = "container"
+image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1-candidate"

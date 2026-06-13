@@ -11,11 +11,13 @@ import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.leader.LeaderManager;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionContext;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoverNodes;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes;
 import org.pragmatica.consensus.net.NetworkMessage.Hello;
+import org.pragmatica.consensus.net.NetworkMessage.KeepAlive;
 import org.pragmatica.consensus.net.NetworkMessage.KVSyncRequest;
 import org.pragmatica.consensus.net.NetworkMessage.KVSyncResponse;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
@@ -41,17 +43,20 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound1;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound2;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyObserver;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
+import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.consensus.topology.TransportObservation;
+import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
+import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
+import org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty;
+import org.pragmatica.consensus.topology.TransportObservation.PeerReconnected;
+import org.pragmatica.consensus.topology.TransportObservation.SelfShutdown;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
-import org.pragmatica.consensus.topology.TopologyManagementMessage.AddNode;
-import org.pragmatica.consensus.topology.TopologyManagementMessage.RemoveNode;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.SetClusterSize;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -74,7 +79,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import io.netty.handler.codec.quic.QuicSslContext;
@@ -96,107 +104,51 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
     /// Authorize a gated consensus engine to start participating.
     /// Only meaningful for non-seed nodes with activation gating enabled.
+    @Contract
     void authorizeActivation();
 
     /// Authorize a gated consensus engine to enter observer mode.
     /// The node will receive and apply committed Decisions but won't propose or vote.
+    @Contract
     void authorizeObservation();
 
     /// Check if the consensus engine is in observer mode.
     boolean isObserving();
 
+    /// Wave-1 §6.4 detect-only boot future-history listener pass-through
+    /// (cluster-topology-overhaul spec): installs the listener on the wrapped
+    /// [RabiaEngine] (`RabiaEngine#onBootFutureHistory`), invoked with
+    /// `(persistedPhaseValue, clusterReportedPhaseValue)` when the node's persisted
+    /// Rabia phase exceeds what the joined cluster reports at first sync restore.
+    /// Diagnostic-only; default no-op for implementations without a Rabia engine.
+    @Contract
+    default void onBootFutureHistory(BiConsumer<Long, Long> listener) {}
+
+    /// Post-restore listener pass-through: installs the listener on the wrapped [RabiaEngine]
+    /// (`RabiaEngine#onStateRestored`), invoked after every successful sync restore once the
+    /// restored state has been applied and is queryable. Late-joiner seam for state derived
+    /// from KV notifications (e.g. the cluster gossip-key rotation): a node that syncs after
+    /// the originating `ValuePut` must re-read it from the restored store. Restore can run
+    /// more than once per process, so listeners must be idempotent. Default no-op for
+    /// implementations without a Rabia engine.
+    @Contract
+    default void onStateRestored(Runnable listener) {}
+
     /// Get the route entries for RabiaNode's internal components.
     /// These should be combined with other entries when building the final router.
     List<Entry<?>> routeEntries();
 
-    /// Creates a RabiaNode without metrics collection.
-    /// Uses local leader election (backward compatible).
-    /// Auto-generates self-signed TLS for QUIC transport.
-    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
-                                                              DelegateRouter delegateRouter,
-                                                              StateMachine<C> stateMachine,
-                                                              Serializer serializer,
-                                                              Deserializer deserializer) {
-        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer,
-                         ConsensusMetrics.noop(), false);
-    }
-
-    /// Creates a RabiaNode with metrics collection.
-    /// Uses local leader election (backward compatible).
-    /// Auto-generates self-signed TLS for QUIC transport.
-    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
-                                                              DelegateRouter delegateRouter,
-                                                              StateMachine<C> stateMachine,
-                                                              Serializer serializer,
-                                                              Deserializer deserializer,
-                                                              ConsensusMetrics metrics) {
-        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer, metrics, false);
-    }
-
-    /// Creates a RabiaNode with metrics collection and consensus-based leader election.
-    ///
-    /// When `useConsensusLeaderElection` is true:
-    ///
-    ///   - Leader proposals are submitted through consensus (KVStore with LeaderKey)
-    ///   - LeaderChange notifications are sent asynchronously after commit
-    ///   - All nodes agree on leader through consensus protocol
-    ///
-    ///
-    /// When `useConsensusLeaderElection` is false (default):
-    ///
-    ///   - Leader is computed locally on view change
-    ///   - LeaderChange notifications are sent immediately (synchronously)
-    ///   - Backward compatible with existing behavior
-    ///
-    ///
-    /// Auto-generates self-signed TLS for QUIC transport.
-    ///
-    /// @param config                     Node configuration
-    /// @param delegateRouter             DelegateRouter for message routing (caller must wire after collecting all routes)
-    /// @param stateMachine               State machine for consensus
-    /// @param serializer                 Message serializer
-    /// @param deserializer               Message deserializer
-    /// @param metrics                    Consensus metrics collector
-    /// @param useConsensusLeaderElection Whether to use consensus-based leader election
-    /// @return Result containing RabiaNode instance, or failure if topology/TLS creation fails
-    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
-                                                              DelegateRouter delegateRouter,
-                                                              StateMachine<C> stateMachine,
-                                                              Serializer serializer,
-                                                              Deserializer deserializer,
-                                                              ConsensusMetrics metrics,
-                                                              boolean useConsensusLeaderElection) {
-        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer,
-                         metrics, useConsensusLeaderElection, RabiaPersistence.inMemory());
-    }
-
-    /// Creates a RabiaNode with metrics, consensus-based leader election,
-    /// and explicit persistence implementation.
-    /// Auto-generates self-signed TLS for QUIC transport.
-    ///
-    /// @param config                     Node configuration
-    /// @param delegateRouter             DelegateRouter for message routing
-    /// @param stateMachine               State machine for consensus
-    /// @param serializer                 Message serializer
-    /// @param deserializer               Message deserializer
-    /// @param metrics                    Consensus metrics collector
-    /// @param useConsensusLeaderElection Whether to use consensus-based leader election
-    /// @param persistence                Persistence implementation for consensus state
-    /// @return Result containing RabiaNode instance, or failure if topology/TLS creation fails
-    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
-                                                              DelegateRouter delegateRouter,
-                                                              StateMachine<C> stateMachine,
-                                                              Serializer serializer,
-                                                              Deserializer deserializer,
-                                                              ConsensusMetrics metrics,
-                                                              boolean useConsensusLeaderElection,
-                                                              RabiaPersistence<C> persistence) {
-        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer,
-                         metrics, useConsensusLeaderElection, persistence, Option.empty());
+    /// Phase 2 PR-B (cluster-convergence-reconciler) — leader-side `SyncHoldRegistry`
+    /// tracking peers currently consuming a KV-sync snapshot. Phase 4's `LifecycleReconciler`
+    /// consults this via `Supplier<Set<NodeId>>` (`registry::activeHolds`) to skip
+    /// force-decommission for busy syncing nodes. Default returns an empty registry for
+    /// legacy nodes constructed without convergence-reconciler wiring.
+    default SyncHoldRegistry syncHoldRegistry() {
+        return SyncHoldRegistry.syncHoldRegistry();
     }
 
     /// Creates a RabiaNode with full QUIC transport configuration.
-    /// Uses provided TLS config or auto-generates self-signed certs when absent.
+    /// Requires explicit TLS config — QUIC has no plaintext mode.
     ///
     /// @param config                     Node configuration
     /// @param delegateRouter             DelegateRouter for message routing
@@ -206,7 +158,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// @param metrics                    Consensus metrics collector
     /// @param useConsensusLeaderElection Whether to use consensus-based leader election
     /// @param persistence                Persistence implementation for consensus state
-    /// @param tlsConfig                  TLS configuration (empty for auto-generated self-signed)
+    /// @param tlsConfig                  TLS configuration for QUIC cluster transport (required — no plaintext mode)
     /// @return Result containing RabiaNode instance, or failure if topology/TLS creation fails
     static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
                                                               DelegateRouter delegateRouter,
@@ -216,13 +168,153 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               ConsensusMetrics metrics,
                                                               boolean useConsensusLeaderElection,
                                                               RabiaPersistence<C> persistence,
-                                                              Option<TlsConfig> tlsConfig) {
+                                                              TlsConfig tlsConfig) {
+        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer,
+                          metrics, useConsensusLeaderElection, persistence, tlsConfig,
+                          () -> 0L, TopologyObserver.NEVER_DECOMMISSIONED);
+    }
+
+    /// Overload that accepts a `rabiaTermSupplier` plumbed into the [`LeaderManager`] so
+    /// [`LeaderManager#currentLeaderEpoch`] returns the live cluster-side term. Legacy
+    /// callers without a KV-backed lifecycle predicate use this overload.
+    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
+                                                              DelegateRouter delegateRouter,
+                                                              StateMachine<C> stateMachine,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              ConsensusMetrics metrics,
+                                                              boolean useConsensusLeaderElection,
+                                                              RabiaPersistence<C> persistence,
+                                                              TlsConfig tlsConfig,
+                                                              Supplier<Long> rabiaTermSupplier) {
+        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer,
+                          metrics, useConsensusLeaderElection, persistence, tlsConfig,
+                          rabiaTermSupplier, TopologyObserver.NEVER_DECOMMISSIONED);
+    }
+
+    /// Production overload: accepts an `isDecommissioned` predicate that consults the
+    /// local KV-Store for `NodeLifecycleValue` atoms in DECOMMISSIONED state. The
+    /// predicate is forwarded to [`TopologyObserver`] as the cross-restart persisted-tombstone
+    /// hook: it covers nodes the cluster has durably retired across a process restart, which
+    /// the in-memory membership state cannot (Wave 7 retired the observer's inert in-memory
+    /// tombstone set; same-session resurrect protection lives in the aether FSM incarnation fence).
+    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
+                                                              DelegateRouter delegateRouter,
+                                                              StateMachine<C> stateMachine,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              ConsensusMetrics metrics,
+                                                              boolean useConsensusLeaderElection,
+                                                              RabiaPersistence<C> persistence,
+                                                              TlsConfig tlsConfig,
+                                                              Supplier<Long> rabiaTermSupplier,
+                                                              Predicate<NodeId> isDecommissioned) {
+        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer,
+                          metrics, useConsensusLeaderElection, persistence, tlsConfig,
+                          rabiaTermSupplier, isDecommissioned, Option::none,
+                          GenerationSnapshotSource.noop(), TopologyObserver.ZERO_HLC_SUPPLIER);
+    }
+
+    /// Full-arity overload accepting a `currentLeaderFromKvSupplier` — pull-side complement
+    /// to the push-based `KVStoreNotification.ValuePut<LeaderKey>` listener. Production wiring
+    /// (Aether's `AetherNode`) plumbs `() -> kvStore.get(LeaderKey.INSTANCE).map(LeaderValue::leader)`
+    /// so the leader-election FSM can adopt the cluster-committed leader on entry to
+    /// `Electing` / `ReElecting`, even when the rejoining node missed the notification path.
+    ///
+    /// Also accepts a `snapshotSource` and `hlcSupplier` that are forwarded to
+    /// [`TopologyObserver`] so `MembershipDecision` emissions carry real HLC timestamps
+    /// and are backed by the KV-Store generation snapshot rather than the legacy defaults.
+    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
+                                                              DelegateRouter delegateRouter,
+                                                              StateMachine<C> stateMachine,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              ConsensusMetrics metrics,
+                                                              boolean useConsensusLeaderElection,
+                                                              RabiaPersistence<C> persistence,
+                                                              TlsConfig tlsConfig,
+                                                              Supplier<Long> rabiaTermSupplier,
+                                                              Predicate<NodeId> isDecommissioned,
+                                                              Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                              GenerationSnapshotSource snapshotSource,
+                                                              Supplier<HlcTimestamp> hlcSupplier) {
+        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer,
+                          metrics, useConsensusLeaderElection, persistence, tlsConfig,
+                          rabiaTermSupplier, isDecommissioned, currentLeaderFromKvSupplier,
+                          snapshotSource, hlcSupplier,
+                          SyncHoldRegistry.syncHoldRegistry(),
+                          SyncHoldConfig.defaults(),
+                          () -> {});
+    }
+
+    /// Phase 2 PR-B overload accepting:
+    /// - `syncHoldRegistry` — leader-side tracker of peers currently consuming a KV-sync
+    ///   snapshot (Phase 4 reconciler consults `registry.activeHolds()`).
+    /// - `syncHoldConfig` — configures the hold-duration formula `clamp(bytes/bps, min, max)`.
+    /// - `onSyncResponseReceived` — invoked on the JOINING node when a `KVSyncResponse` lands;
+    ///   typically wired to `() -> readinessTracker.markReady(self)`. Default in the legacy
+    ///   overload is a no-op so embeddings that pre-date the convergence-reconciler keep working.
+    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
+                                                              DelegateRouter delegateRouter,
+                                                              StateMachine<C> stateMachine,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              ConsensusMetrics metrics,
+                                                              boolean useConsensusLeaderElection,
+                                                              RabiaPersistence<C> persistence,
+                                                              TlsConfig tlsConfig,
+                                                              Supplier<Long> rabiaTermSupplier,
+                                                              Predicate<NodeId> isDecommissioned,
+                                                              Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                              GenerationSnapshotSource snapshotSource,
+                                                              Supplier<HlcTimestamp> hlcSupplier,
+                                                              SyncHoldRegistry syncHoldRegistry,
+                                                              SyncHoldConfig syncHoldConfig,
+                                                              Runnable onSyncResponseReceived) {
+        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer, metrics,
+                          useConsensusLeaderElection, persistence, tlsConfig, rabiaTermSupplier,
+                          isDecommissioned, currentLeaderFromKvSupplier,
+                          LeaderElectionContext.DEFAULT_LEADER_PING_FRESH_FN, snapshotSource,
+                          hlcSupplier, syncHoldRegistry, syncHoldConfig, onSyncResponseReceived);
+    }
+
+    /// Overload adding the leader-acting lease predicate (`leaderPingFreshFn`) — a node in
+    /// `Led(X)` (X != self) re-elects when X's leader-stamped `ClusterSync` ping goes silent for
+    /// the silence threshold. Production wiring (Aether's `AetherNode`) backs it with
+    /// `ClusterSyncCollector::hasAuthoritativeReadiness` via a deferred holder (the collector is
+    /// built after this node). Callers that don't wire a freshness signal stay on the prior
+    /// overload (lease-neutral default).
+    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
+                                                              DelegateRouter delegateRouter,
+                                                              StateMachine<C> stateMachine,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              ConsensusMetrics metrics,
+                                                              boolean useConsensusLeaderElection,
+                                                              RabiaPersistence<C> persistence,
+                                                              TlsConfig tlsConfig,
+                                                              Supplier<Long> rabiaTermSupplier,
+                                                              Predicate<NodeId> isDecommissioned,
+                                                              Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                              Predicate<NodeId> leaderPingFreshFn,
+                                                              GenerationSnapshotSource snapshotSource,
+                                                              Supplier<HlcTimestamp> hlcSupplier,
+                                                              SyncHoldRegistry syncHoldRegistry,
+                                                              SyncHoldConfig syncHoldConfig,
+                                                              Runnable onSyncResponseReceived) {
+        // Dedicated single-subscriber channel carrying the quorum established/lost
+        // ClusterStateNotification edge from TopologyObserver to RabiaEngine ONLY. Its delegate
+        // is wired AFTER `consensus` exists (in assembleNode) — TopologyObserver is built here,
+        // before `consensus`, so it must receive a DelegateRouter whose delegate is replaced once
+        // the single-route table { ClusterStateNotification -> consensus::clusterState } is known.
+        var quorumPresenceRouter = DelegateRouter.delegate();
         return Result.all(
-            TopologyObserver.topologyObserver(config.topology(), delegateRouter),
+            TopologyObserver.topologyObserver(config.topology(), delegateRouter, snapshotSource, isDecommissioned, hlcSupplier, quorumPresenceRouter),
             QuicTlsProvider.serverContext(tlsConfig),
             QuicTlsProvider.clientContext(tlsConfig)
         ).map((topologyManager, serverSsl, clientSsl) -> assembleNode(config,
                                                                        delegateRouter,
+                                                                       quorumPresenceRouter,
                                                                        stateMachine,
                                                                        serializer,
                                                                        deserializer,
@@ -231,12 +323,19 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                        serverSsl,
                                                                        clientSsl,
                                                                        useConsensusLeaderElection,
-                                                                       persistence));
+                                                                       persistence,
+                                                                       rabiaTermSupplier,
+                                                                       currentLeaderFromKvSupplier,
+                                                                       leaderPingFreshFn,
+                                                                       syncHoldRegistry,
+                                                                       syncHoldConfig,
+                                                                       onSyncResponseReceived));
     }
 
     @SuppressWarnings("unchecked")
     private static <C extends Command> RabiaNode<C> assembleNode(NodeConfig config,
                                                                  DelegateRouter delegateRouter,
+                                                                 DelegateRouter quorumPresenceRouter,
                                                                  StateMachine<C> stateMachine,
                                                                  Serializer serializer,
                                                                  Deserializer deserializer,
@@ -245,15 +344,39 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                  QuicSslContext serverSsl,
                                                                  QuicSslContext clientSsl,
                                                                  boolean useConsensusLeaderElection,
-                                                                 RabiaPersistence<C> persistence) {
+                                                                 RabiaPersistence<C> persistence,
+                                                                 Supplier<Long> rabiaTermSupplier,
+                                                                 Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                                 Predicate<NodeId> leaderPingFreshFn,
+                                                                 SyncHoldRegistry syncHoldRegistry,
+                                                                 SyncHoldConfig syncHoldConfig,
+                                                                 Runnable onSyncResponseReceived) {
         var network = new QuicClusterNetwork(topologyManager,
                                              serializer,
                                              deserializer,
                                              delegateRouter,
                                              serverSsl,
-                                             clientSsl);
+                                             clientSsl,
+                                             config.clusterFormation());
         var activationGated = config.activationGated();
-        var consensus = new RabiaEngine<>(topologyManager, network, stateMachine, config.protocol(), metrics, activationGated, persistence);
+        var consensusBridge = org.pragmatica.consensus.rabia.ConsensusBridge.consensusBridge(delegateRouter);
+        var consensus = new RabiaEngine<>(topologyManager,
+                                          network,
+                                          stateMachine,
+                                          config.protocol(),
+                                          metrics,
+                                          activationGated,
+                                          persistence,
+                                          RabiaEngine.DEFAULT_PHASE_STALL_CHECK,
+                                          consensusBridge);
+        // Wire the dedicated quorum-presence channel: TopologyObserver delivers the quorum
+        // established/lost ClusterStateNotification edge to RabiaEngine ONLY, via this private
+        // single-subscriber router (NOT the shared bus). Built here because `consensus` only
+        // now exists. A one-entry table cannot have a duplicate-route conflict, but the Result
+        // is handled (not swallowed) per the codebase idiom — a validation failure is logged.
+        buildAndWireRouter(quorumPresenceRouter,
+                           List.of(route(ClusterStateNotification.class, consensus::clusterState)))
+            .onFailure(cause -> log.error("Failed to wire quorum-presence channel: {}", cause));
         // Create leader manager - for consensus mode, we wire the proposal handler
         // Extract expected cluster members for deterministic leader selection
         var expectedCluster = config.topology()
@@ -263,14 +386,27 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                     .toList();
         LeaderManager leaderManager;
         if (useConsensusLeaderElection) {
-            // Consensus-based leader election: submit proposals through consensus
+            // Consensus-based leader election: submit proposals through consensus.
+            // `consensus::isActive` is the push-side SSOT for "consensus engine is ready" — the
+            // FSM consults it on entry to `QuorumWaiting` to decide whether to immediately
+            // advance to electing.
+            // `currentLeaderFromKvSupplier` is the pull-side SSOT for "cluster has elected a
+            // leader" — the FSM consults it on entry to `Electing` / `ReElecting` (and on each
+            // election tick) to short-circuit to `Led(leader)` whenever the local KV-Store
+            // already records a committed leader. Closes the gap where the
+            // `KVStoreNotification.ValuePut<LeaderKey>` push notification didn't fire (e.g.
+            // snapshot-restored state didn't include LeaderKey, or listener wired late).
             LeaderManager.LeaderProposalHandler proposalHandler =
-            (candidate, viewSequence) -> submitLeaderProposal(consensus, candidate, DEFAULT_PROPOSAL_TIMEOUT);
+            (candidate, viewSequence) -> submitLeaderProposal(consensus, candidate, viewSequence, DEFAULT_PROPOSAL_TIMEOUT);
             leaderManager = LeaderManager.leaderManager(config.topology()
                                                               .self(),
                                                         delegateRouter,
                                                         proposalHandler,
-                                                        expectedCluster);
+                                                        expectedCluster,
+                                                        rabiaTermSupplier,
+                                                        consensus::isActive,
+                                                        currentLeaderFromKvSupplier,
+                                                        leaderPingFreshFn);
         } else {
             // Local election mode: backward compatible
             leaderManager = LeaderManager.leaderManager(config.topology()
@@ -279,31 +415,49 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         }
         // Collect sealed hierarchy entries
         var topologyMgmtRoutes = SealedBuilder.from(TopologyManagementMessage.class)
-                                              .route(route(AddNode.class, topologyManager::handleAddNodeMessage),
-                                                     route(RemoveNode.class, topologyManager::handleRemoveNodeMessage),
-                                                     route(SetClusterSize.class, topologyManager::handleSetClusterSize));
+                                              .route(route(SetClusterSize.class, topologyManager::handleSetClusterSize));
         var networkMsgRoutes = SealedBuilder.from(NetworkMessage.class)
                                             .route(route(DiscoverNodes.class, topologyManager::handleDiscoverNodes),
                                                    route(DiscoveredNodes.class, topologyManager::handleDiscoveredNodes),
                                                    route(Hello.class, _ -> {}),
+                                                   // Transport-internal liveness beacon (Wave 5): swallowed by the
+                                                   // QuicClusterNetwork inbound funnel BEFORE routing (it only refreshes
+                                                   // the per-peer receipt clock). This route exists solely to satisfy
+                                                   // sealed-hierarchy startup completeness — it must never receive traffic.
+                                                   route(KeepAlive.class, _ -> {}),
                                                    route(KVSyncRequest.class,
-                                                         request -> handleKVSyncRequest(stateMachine, delegateRouter, config, request)),
-                                                   route(KVSyncResponse.class, _ -> {}));
+                                                         request -> handleKVSyncRequest(stateMachine, delegateRouter, config, request,
+                                                                                         syncHoldRegistry, syncHoldConfig)),
+                                                   route(KVSyncResponse.class,
+                                                         _ -> onSyncResponseReceived.run()));
         var networkServiceRoutes = SealedBuilder.from(NetworkServiceMessage.class)
                                                 .route(route(ConnectedNodesList.class, topologyManager::reconcile),
                                                        route(ConnectNode.class, network::connect),
                                                        route(DisconnectNode.class, network::disconnect),
                                                        route(ListConnectedNodes.class, network::listNodes),
-                                                       route(ConnectionFailed.class,
-                                                             topologyManager::handleConnectionFailed),
-                                                       route(ConnectionEstablished.class,
-                                                             topologyManager::handleConnectionEstablished),
+                                                       // R5: transport never mutates topology projection. ConnectionFailed/Established
+                                                       // are forwarded to SWIM via QuicClusterNetwork's peer-state listener
+                                                       // (AetherNode.attachQuicPeerStateListener -> swimDetector.recordTransportHint).
+                                                       // The router routes are retained only to satisfy sealed-hierarchy coverage.
+                                                       route(ConnectionFailed.class, _ -> {}),
+                                                       route(ConnectionEstablished.class, _ -> {}),
                                                        route(Send.class, network::handleSend),
                                                        route(Broadcast.class, network::handleBroadcast));
-        var topologyChangeRoutes = SealedBuilder.from(TopologyChangeNotification.class)
-                                                .route(route(NodeAdded.class, leaderManager::nodeAdded),
-                                                       route(NodeRemoved.class, leaderManager::nodeRemoved),
-                                                       route(NodeDown.class, leaderManager::nodeDown));
+        // Audit item 5 (cluster-topology-overhaul §Wave 8.5) — NAMED DEFERRAL: leader election
+        // stays fed from raw TransportObservation rather than the MembershipDecision delta
+        // stream. The MembershipDecision TYPE lives in the consensus module, but its only
+        // producer (aether-deployment's MembershipDeltaProjector) lives a layer above — rewiring
+        // here would make this module's election liveness depend on an upper-layer feed that
+        // does not exist for non-Aether users of integrations/cluster, and would couple
+        // election-after-leader-kill latency to membership-decision convergence. The
+        // minority-flap WRITE path that rewiring targeted is closed at the applier instead:
+        // H4 fences LeaderKey writes by viewSequence (KVStore.handlePut + LeaderValue).
+        var transportObservationRoutes = SealedBuilder.from(TransportObservation.class)
+                                                .route(route(PeerJoined.class, leaderManager::peerJoined),
+                                                       route(PeerDisconnected.class, leaderManager::peerDisconnected),
+                                                       route(PeerObservedFaulty.class, leaderManager::peerObservedFaulty),
+                                                       route(PeerReconnected.class, leaderManager::peerReconnected),
+                                                       route(SelfShutdown.class, leaderManager::selfShutdown));
         var syncRoutes = SealedBuilder.from(Synchronous.class)
                                       .route(route(Propose.class, consensus::processPropose),
                                              route(VoteRound1.class, consensus::processVoteRound1),
@@ -320,14 +474,19 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         allEntries.add(topologyMgmtRoutes);
         allEntries.add(networkMsgRoutes);
         allEntries.add(networkServiceRoutes);
-        allEntries.add(topologyChangeRoutes);
+        allEntries.add(transportObservationRoutes);
         allEntries.add(syncRoutes);
         allEntries.add(asyncRoutes);
-        // IMPORTANT: Order matters! Consensus must activate BEFORE LeaderManager emits LeaderChange.
-        // LeaderChange handlers (e.g., ClusterDeploymentManager) may immediately call cluster.apply(),
-        // which requires the consensus engine to be active.
-        allEntries.add(route(QuorumStateNotification.class, consensus::quorumState));
-        allEntries.add(route(QuorumStateNotification.class, leaderManager::watchQuorumState));
+        // Quorum-signal flow is now strictly unidirectional:
+        //   TopologyObserver --(private quorumPresenceRouter)--> RabiaEngine
+        //   RabiaEngine --> ConsensusBridge --(shared bus ClusterStateNotification)--> consumers.
+        // RabiaEngine is NO LONGER on the shared-bus ClusterStateNotification route — it receives
+        // its established/lost activation trigger via the private quorumPresenceRouter wired above.
+        // LeaderManager stays on the shared bus and receives ConsensusBridge's ACTIVE there. The
+        // old "consensus must activate before LeaderManager emits LeaderChange" ordering invariant
+        // is now structurally guaranteed by that chain (TopologyObserver -> Rabia -> ConsensusBridge
+        // -> LeaderManager), not by route-registration order.
+        allEntries.add(route(ClusterStateNotification.class, leaderManager::watchClusterState));
         // NOTE: Leader election commit handling (ValuePut<LeaderKey, LeaderValue> -> onLeaderCommitted)
         // is done by AetherNode.handleLeaderCommit(), not here. RabiaNode only provides the consensus
         // infrastructure; the application layer (AetherNode) wires the leader commit notifications.
@@ -337,7 +496,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                             TopologyManager topologyManager,
                                             RabiaEngine<C> consensus,
                                             LeaderManager leaderManager,
-                                            List<Entry<?>> routeEntries) implements RabiaNode<C> {
+                                            List<Entry<?>> routeEntries,
+                                            SyncHoldRegistry syncHoldRegistry) implements RabiaNode<C> {
             @Override
             public NodeId self() {
                 return config().topology()
@@ -353,6 +513,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
             @Override
             public Promise<Unit> stop() {
+                leaderManager().stop();
                 return consensus().stop()
                                 .onResultRun(topologyManager()::stop)
                                 .flatMap(network()::stop);
@@ -364,11 +525,13 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             }
 
             @Override
+            @Contract
             public void authorizeActivation() {
                 consensus().authorizeActivation();
             }
 
             @Override
+            @Contract
             public void authorizeObservation() {
                 consensus().authorizeObservation();
             }
@@ -376,6 +539,18 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public boolean isObserving() {
                 return consensus().isObserving();
+            }
+
+            @Override
+            @Contract
+            public void onBootFutureHistory(BiConsumer<Long, Long> listener) {
+                consensus().onBootFutureHistory(listener);
+            }
+
+            @Override
+            @Contract
+            public void onStateRestored(Runnable listener) {
+                consensus().onStateRestored(listener);
             }
 
             @Override
@@ -389,7 +564,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                topologyManager,
                                consensus,
                                leaderManager,
-                               List.copyOf(allEntries));
+                               List.copyOf(allEntries),
+                               syncHoldRegistry);
     }
 
     /// Builds an ImmutableRouter from route entries and wires it to a DelegateRouter.
@@ -420,6 +596,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         // Create ImmutableRouter
         record immutableRouter(Map<Class, List<Consumer>> routingTable) implements ImmutableRouter {
             @Override
+            @Contract
             public void route(Message message) {
                 var handlers = routingTable.get(message.getClass());
                 if (handlers != null) {
@@ -439,25 +616,69 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
              .add((Consumer) tuple.last());
     }
 
+    /// Leader-side KV-sync request handler. On arrival, computes a deadline-based hold via
+    /// `SyncHoldConfig.holdMs(snapshotBytes)` and registers `request.sender()` in
+    /// `syncHoldRegistry`. The Phase 4 reconciler (`activeHolds()` consumer) treats the peer
+    /// as "actively syncing — do not force-decommission" while the deadline has not elapsed.
+    ///
+    /// Spec §5.4: the hold is cleared by either (a) deadline expiry (handled by
+    /// `SyncHoldRegistry.activeHolds()` self-pruning) or (b) explicit `readyCandidate` arrival
+    /// (wired in Phase 4 via `SyncHoldRegistry.clear`). The `makeSnapshot()` onFailure path
+    /// also clears the hold so a failed snapshot doesn't leave a stale entry.
     private static <C extends Command> void handleKVSyncRequest(StateMachine<C> stateMachine,
                                                                       DelegateRouter delegateRouter,
                                                                       NodeConfig config,
-                                                                      KVSyncRequest request) {
+                                                                      KVSyncRequest request,
+                                                                      SyncHoldRegistry syncHoldRegistry,
+                                                                      SyncHoldConfig syncHoldConfig) {
+        // Register hold BEFORE makeSnapshot — on large states snapshot construction itself can
+        // take seconds, and the reconciler should treat the peer as protected throughout.
+        // Initial deadline uses syncHoldConfig.minHold(); refined once we know snapshot size.
+        var preliminaryDeadline = System.currentTimeMillis() + syncHoldConfig.minHold().millis();
+        syncHoldRegistry.register(request.sender(), preliminaryDeadline);
         stateMachine.makeSnapshot()
-                    .onSuccess(snapshot -> delegateRouter.route(
-                        new Send(request.sender(), new KVSyncResponse(config.topology().self(), snapshot))))
-                    .onFailure(cause -> log.error("Failed to create KV snapshot: {}", cause));
+                    .onSuccess(snapshot -> dispatchSnapshot(delegateRouter, config, request, snapshot,
+                                                            syncHoldRegistry, syncHoldConfig))
+                    .onFailure(cause -> clearHoldOnFailure(request, syncHoldRegistry, cause));
     }
 
-    /// Default timeout for leader proposals.
-    TimeSpan DEFAULT_PROPOSAL_TIMEOUT = timeSpan(3).seconds();
+    private static void dispatchSnapshot(DelegateRouter delegateRouter,
+                                          NodeConfig config,
+                                          KVSyncRequest request,
+                                          byte[] snapshot,
+                                          SyncHoldRegistry syncHoldRegistry,
+                                          SyncHoldConfig syncHoldConfig) {
+        // Refine hold deadline now that we know snapshot bytes. The peer needs at least
+        // bytes/expectedSyncBps milliseconds (clamped) to ingest — extend the hold to cover.
+        var refinedDeadline = System.currentTimeMillis() + syncHoldConfig.holdMs(snapshot.length);
+        syncHoldRegistry.register(request.sender(), refinedDeadline);
+        delegateRouter.route(new Send(request.sender(),
+                                      new KVSyncResponse(config.topology().self(), snapshot)));
+    }
+
+    private static void clearHoldOnFailure(KVSyncRequest request,
+                                            SyncHoldRegistry syncHoldRegistry,
+                                            org.pragmatica.lang.Cause cause) {
+        syncHoldRegistry.clear(request.sender());
+        log.error("Failed to create KV snapshot: {}", cause);
+    }
+
+    /// Default timeout for leader proposals. Must outlast QUIC reconcile (5s) so a
+    /// proposal mid-reconnect doesn't time out before the link is rebuilt — otherwise
+    /// election cascades retry-loops under chaos.
+    TimeSpan DEFAULT_PROPOSAL_TIMEOUT = timeSpan(8).seconds();
 
     @SuppressWarnings("unchecked")
     private static <C extends Command> Promise<Unit> submitLeaderProposal(RabiaEngine<C> consensus,
                                                                           NodeId candidate,
+                                                                          long viewSequence,
                                                                           TimeSpan proposalTimeout) {
-        log.info("Submitting leader proposal: candidate={}", candidate);
-        var command = new KVCommand.Put<>(LeaderKey.INSTANCE, LeaderValue.leaderValue(candidate));
+        log.info("Submitting leader proposal: candidate={}, viewSequence={}", candidate, viewSequence);
+        // H4 fence (cluster-topology-overhaul §Wave 8.2): the election FSM's viewSequence rides
+        // the committed value. The KV applier (KVStore.handlePut) applies the write only when
+        // this sequence is strictly greater than the stored one — a stale (minority-flapped)
+        // election cannot overwrite the legitimate leader via last-write-wins.
+        var command = new KVCommand.Put<>(LeaderKey.INSTANCE, LeaderValue.leaderValue(candidate, viewSequence));
         // Timeout for leader proposals - if consensus doesn't complete in this time, fail and retry.
         // This handles the case where other nodes are still syncing and ignoring proposals.
         return consensus.apply(List.of((C) command))

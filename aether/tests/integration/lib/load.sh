@@ -14,7 +14,7 @@ LOAD_PIDS=()
 start_load() {
     local rps="$1" duration="$2" method="$3" path="$4" body="${5:-}"
     local interval
-    interval=$(python3 -c "print(1.0 / ${rps})" 2>/dev/null || echo "0.1")
+    interval=$(awk "BEGIN {printf \"%.4f\", 1.0/${rps}}" 2>/dev/null || echo "0.1")
     local end_time=$(($(now_epoch) + duration))
 
     log_info "Starting load: ${rps} rps for ${duration}s — ${method} ${path}"
@@ -32,10 +32,13 @@ start_load() {
                     -H "Content-Type: application/json" \
                     -d "$body")
             fi
-            if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
+            if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
                 success=$((success + 1))
             else
                 failure=$((failure + 1))
+                # Per-failure forensics: status 000 = transport/connect error
+                # (target node down), 4xx/5xx = node up but request rejected.
+                echo "$(date -u +%H:%M:%S) ${status}" >> "/tmp/load_failures_$$.txt"
             fi
             sleep "$interval"
         done
@@ -45,21 +48,25 @@ start_load() {
     log_info "Load PID: $!"
 }
 
-# Start background management API load
+# Start background management API load against MGMT_ENTRY_POINT (witness).
+# The witness node is stable by fixture contract; client-side failover was removed to
+# exercise the product's HttpForwardRequest contract under chaos rather than masking
+# forwarding bugs with per-request port-hopping.
+# A tick is success if MGMT_ENTRY_POINT responds 2xx, failure otherwise.
 start_mgmt_load() {
     local rps="$1" duration="$2" path="$3"
     local interval
-    interval=$(python3 -c "print(1.0 / ${rps})" 2>/dev/null || echo "0.5")
+    interval=$(awk "BEGIN {printf \"%.4f\", 1.0/${rps}}" 2>/dev/null || echo "0.5")
     local end_time=$(($(now_epoch) + duration))
 
-    log_info "Starting management load: ${rps} rps for ${duration}s — GET ${path}"
+    log_info "Starting management load: ${rps} rps for ${duration}s — GET ${path} (via ${MGMT_ENTRY_POINT})"
 
     (
         local success=0 failure=0
         while [ "$(now_epoch)" -lt "$end_time" ]; do
             local status
-            status=$(http_status "${CLUSTER_ENDPOINT}${path}" -H "X-API-Key: ${API_KEY}")
-            if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
+            status=$(http_status "${MGMT_ENTRY_POINT}${path}" -H "X-API-Key: ${API_KEY}")
+            if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
                 success=$((success + 1))
             else
                 failure=$((failure + 1))
@@ -96,6 +103,19 @@ stop_load() {
 
     LOAD_PIDS=()
     log_info "Load results: success=${total_success}, failure=${total_failure}" >&2
+
+    # Failure forensics: status-code histogram + time window of the failures.
+    # Discriminates transport errors (000) from routed-but-rejected (4xx/5xx)
+    # and shows whether failures cluster in a cutover window or span the run.
+    local ff
+    for ff in /tmp/load_failures_*.txt; do
+        if [ -f "$ff" ]; then
+            log_info "Failure status histogram: $(awk '{print $2}' "$ff" | sort | uniq -c | awk '{printf "%sx%s ", $1, $2}')" >&2
+            log_info "Failure window: first=$(head -1 "$ff") last=$(tail -1 "$ff")" >&2
+            rm -f "$ff"
+        fi
+    done
+
     echo "${total_success}:${total_failure}"
 }
 
@@ -109,7 +129,7 @@ load_error_rate() {
         echo "0"
         return
     fi
-    python3 -c "print(round(${failure} * 100.0 / ${total}, 2))"
+    awk "BEGIN {printf \"%.2f\", ${failure} * 100.0 / ${total}}"
 }
 
 # Assert error rate is below threshold
@@ -118,7 +138,7 @@ assert_error_rate_below() {
     local rate
     rate=$(load_error_rate "$result")
     local ok
-    ok=$(python3 -c "print('yes' if ${rate} < ${threshold} else 'no')")
+    ok=$(awk "BEGIN {print (${rate} < ${threshold}) ? \"yes\" : \"no\"}")
     if [ "$ok" = "yes" ]; then
         log_pass "${desc} (error rate: ${rate}%)"
         return 0
@@ -133,7 +153,7 @@ assert_error_rate_below() {
 start_sustained_load() {
     local rps="$1" duration="$2" method="$3" path="$4" body="${5:-}" log_file="${6:-/tmp/sustained_load.log}"
     local interval
-    interval=$(python3 -c "print(1.0 / ${rps})" 2>/dev/null || echo "0.1")
+    interval=$(awk "BEGIN {printf \"%.4f\", 1.0/${rps}}" 2>/dev/null || echo "0.1")
     local end_time=$(($(now_epoch) + duration))
 
     log_info "Starting sustained load: ${rps} rps for ${duration}s — log: ${log_file}"
@@ -142,7 +162,7 @@ start_sustained_load() {
         local success=0 failure=0 count=0
         while [ "$(now_epoch)" -lt "$end_time" ]; do
             local status start_ms end_ms latency
-            start_ms=$(python3 -c "import time; print(int(time.time()*1000))")
+            start_ms=$(date +%s%3N)
             if [ "$method" = "GET" ]; then
                 status=$(http_status "${APP_ENDPOINT}${path}" -H "X-API-Key: ${API_KEY}")
             else
@@ -152,10 +172,10 @@ start_sustained_load() {
                     -H "Content-Type: application/json" \
                     -d "$body")
             fi
-            end_ms=$(python3 -c "import time; print(int(time.time()*1000))")
+            end_ms=$(date +%s%3N)
             latency=$((end_ms - start_ms))
 
-            if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
+            if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
                 success=$((success + 1))
             else
                 failure=$((failure + 1))
@@ -194,7 +214,7 @@ burst_load() {
                 -H "Content-Type: application/json" \
                 -d "$body")
         fi
-        if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
+        if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
             success=$((success + 1))
         else
             failure=$((failure + 1))

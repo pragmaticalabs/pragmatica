@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>jbct-parent</artifactId>
-        <version>1.0.0-alpha</version>
+        <version>1.0.0-rc1</version>
     </parent>
 
     <artifactId>slice-processor</artifactId>
@@ -15,6 +15,14 @@
 
     <name>JBCT Slice Processor</name>
     <description>Annotation processor for Aether slice development</description>
+
+    <licenses>
+        <license>
+            <name>Business Source License 1.1</name>
+            <url>https://mariadb.com/bsl11/</url>
+            <comments>Converts to Apache License 2.0 on January 1, 2030. Aether tooling — licensed under BSL despite residing under jbct/. See LICENSE in this module.</comments>
+        </license>
+    </licenses>
 
     <properties>
         <auto-service.version>1.1.1</auto-service.version>

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.load.pattern;
 
 import org.pragmatica.lang.Result;
@@ -13,10 +17,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Processes templates containing pattern placeholders like `${type:args`}.
-///
-/// A template can contain multiple patterns intermixed with literal text.
-/// Example: `{"sku": "${random:SKU-#####`", "qty": ${range:1-10}}}
 public final class TemplateProcessor {
     private static final Pattern PATTERN_REGEX = Pattern.compile("(\\$\\{[a-z]+(?::[^}]*)?})");
 
@@ -31,7 +31,8 @@ public final class TemplateProcessor {
                 return success(new Literal(text));
             }
 
-            @Override public String render() {
+            @Override
+            public String render() {
                 return text;
             }
         }
@@ -41,13 +42,15 @@ public final class TemplateProcessor {
                 return success(new Generator(generator));
             }
 
-            @Override public String render() {
+            @Override
+            public String render() {
                 return generator.generate();
             }
         }
 
         record unused() implements Segment {
-            @Override public String render() {
+            @Override
+            public String render() {
                 return "";
             }
         }
@@ -70,11 +73,8 @@ public final class TemplateProcessor {
     }
 
     private static Result<List<Segment>> buildSegments(String template) {
-        var matches = PATTERN_REGEX.matcher(template).results()
-                                           .map(m -> new MatchInfo(m.start(),
-                                                                   m.end(),
-                                                                   m.group(1)))
-                                           .toList();
+        var matches = PATTERN_REGEX.matcher(template).results().map(m -> new MatchInfo(m.start(), m.end(), m.group(1))).toList();
+
         return toSegments(template, matches);
     }
 
@@ -86,20 +86,20 @@ public final class TemplateProcessor {
 
     private static Result<List<Segment>> toSegments(String template, List<MatchInfo> matches) {
         return matches.isEmpty()
-              ? success(literalOnlySegments(template))
-              : compileGenerators(template, matches);
+               ? success(literalOnlySegments(template))
+               : compileGenerators(template, matches);
     }
 
     private static Result<List<Segment>> compileGenerators(String template, List<MatchInfo> matches) {
-        var generatorResults = matches.stream().map(m -> PatternParser.parse(m.pattern()))
-                                             .toList();
+        var generatorResults = matches.stream().map(m -> PatternParser.parse(m.pattern())).toList();
+
         return Result.allOf(generatorResults).map(gens -> assembleSegments(template, matches, gens));
     }
 
     private static List<Segment> literalOnlySegments(String template) {
         return template.isEmpty()
-              ? List.of()
-              : List.of(new Segment.Literal(template));
+               ? List.of()
+               : List.of(new Segment.Literal(template));
     }
 
     private static List<Segment> assembleSegments(String template,
@@ -107,14 +107,14 @@ public final class TemplateProcessor {
                                                   List<PatternGenerator> generators) {
         var segments = new ArrayList<Segment>();
         var lastEnd = new int[]{0};
-        IntStream.range(0,
-                        matches.size())
-        .forEach(i -> addSegment(segments,
-                                 template,
-                                 matches.get(i),
-                                 generators.get(i),
-                                 lastEnd));
+
+        IntStream.range(0, matches.size()).forEach(i -> addSegment(segments,
+                                                                   template,
+                                                                   matches.get(i),
+                                                                   generators.get(i),
+                                                                   lastEnd));
         addTrailingLiteral(segments, template, lastEnd[0]);
+
         return List.copyOf(segments);
     }
 
@@ -123,25 +123,31 @@ public final class TemplateProcessor {
                                    MatchInfo match,
                                    PatternGenerator generator,
                                    int[] lastEnd) {
-        if (match.start() > lastEnd[0]) {segments.add(new Segment.Literal(template.substring(lastEnd[0], match.start())));}
+        if (match.start() > lastEnd[0]) {
+            segments.add(new Segment.Literal(template.substring(lastEnd[0], match.start())));
+        }
+
         segments.add(new Segment.Generator(generator));
         lastEnd[0] = match.end();
     }
 
     private static void addTrailingLiteral(List<Segment> segments, String template, int lastEnd) {
-        if (lastEnd <template.length()) {segments.add(new Segment.Literal(template.substring(lastEnd)));}
+        if (lastEnd < template.length()) {
+            segments.add(new Segment.Literal(template.substring(lastEnd)));
+        }
     }
 
     public String process() {
         return segments.isEmpty()
-              ? template
-              : renderSegments();
+               ? template
+               : renderSegments();
     }
 
     private String renderSegments() {
-        return segments.stream().map(Segment::render)
-                              .collect(StringBuilder::new, StringBuilder::append, StringBuilder::append)
-                              .toString();
+        return segments.stream()
+                       .map(Segment::render)
+                       .collect(StringBuilder::new, StringBuilder::append, StringBuilder::append)
+                       .toString();
     }
 
     public String template() {
@@ -149,18 +155,21 @@ public final class TemplateProcessor {
     }
 
     public boolean hasPatterns() {
-        return segments.stream().anyMatch(s -> s instanceof Segment.Generator);
+        return segments.stream()
+                       .anyMatch(s -> s instanceof Segment.Generator);
     }
 
     public int patternCount() {
-        return (int) segments.stream().filter(s -> s instanceof Segment.Generator)
-                                    .count();
+        return (int) segments.stream()
+                             .filter(s -> s instanceof Segment.Generator)
+                             .count();
     }
 
     public Result<Unit> resetSequences() {
-        var sequenceGenerators = segments.stream().filter(TemplateProcessor::isSequenceSegment)
-                                                .map(TemplateProcessor::toSequenceGenerator);
+        var sequenceGenerators = segments.stream().filter(TemplateProcessor::isSequenceSegment).map(TemplateProcessor::toSequenceGenerator);
+
         sequenceGenerators.forEach(SequenceGenerator::reset);
+
         return unitResult();
     }
 

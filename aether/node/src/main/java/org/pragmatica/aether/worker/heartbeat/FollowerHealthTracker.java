@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.heartbeat;
 
 import org.pragmatica.consensus.NodeId;
@@ -8,10 +12,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 
-/// Tracks follower health on the governor side.
-/// Updated on each FollowerHeartbeat, queried to find unresponsive followers.
-@SuppressWarnings({"JBCT-UTIL-02", "JBCT-STY-04", "JBCT-RET-01"}) public sealed interface FollowerHealthTracker permits ActiveFollowerHealthTracker {
-    record FollowerHealth(long lastHeartbeatMs, long lastDecisionSequence){}
+@SuppressWarnings({"JBCT-UTIL-02", "JBCT-STY-04", "JBCT-RET-01"})
+public sealed interface FollowerHealthTracker permits ActiveFollowerHealthTracker {
+    record FollowerHealth(long lastHeartbeatMs, long lastDecisionSequence) {}
 
     void onHeartbeat(FollowerHeartbeat heartbeat);
     Set<NodeId> unresponsiveFollowers(long timeoutMs);
@@ -23,31 +26,39 @@ import java.util.stream.Collectors;
     }
 }
 
-@SuppressWarnings({"JBCT-STY-05", "JBCT-RET-01"}) final class ActiveFollowerHealthTracker implements FollowerHealthTracker {
+@SuppressWarnings({"JBCT-STY-05", "JBCT-RET-01"})
+final class ActiveFollowerHealthTracker implements FollowerHealthTracker {
     private final ConcurrentHashMap<NodeId, FollowerHealth> healthMap;
 
     ActiveFollowerHealthTracker(ConcurrentHashMap<NodeId, FollowerHealth> healthMap) {
         this.healthMap = healthMap;
     }
 
-    @Override public void onHeartbeat(FollowerHeartbeat heartbeat) {
+    @Override
+    public void onHeartbeat(FollowerHeartbeat heartbeat) {
         healthMap.put(heartbeat.nodeId(),
                       new FollowerHealth(heartbeat.timestampMs(), heartbeat.lastDecisionSequence()));
     }
 
-    @Override public Set<NodeId> unresponsiveFollowers(long timeoutMs) {
+    @Override
+    public Set<NodeId> unresponsiveFollowers(long timeoutMs) {
         var now = System.currentTimeMillis();
-        return healthMap.entrySet().stream()
-                                 .filter(entry -> (now - entry.getValue().lastHeartbeatMs()) > timeoutMs)
-                                 .map(Map.Entry::getKey)
-                                 .collect(Collectors.toSet());
+
+        return healthMap.entrySet()
+                        .stream()
+                        .filter(entry -> (now - entry.getValue()
+                                                     .lastHeartbeatMs()) > timeoutMs)
+                        .map(Map.Entry::getKey)
+                        .collect(Collectors.toSet());
     }
 
-    @Override public void removeFollower(NodeId nodeId) {
+    @Override
+    public void removeFollower(NodeId nodeId) {
         healthMap.remove(nodeId);
     }
 
-    @Override public void clear() {
+    @Override
+    public void clear() {
         healthMap.clear();
     }
 }

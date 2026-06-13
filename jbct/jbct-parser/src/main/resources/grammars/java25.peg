@@ -1,5 +1,5 @@
 # Java 25 PEG Grammar for JBCT
-# Synced from java-peglib Java25GrammarExample.java
+# Synced from java-peglib peglib-core/src/test/resources/java25.peg (peglib 0.6.0)
 #
 # Cut operator (^) commits to current alternative, preventing backtracking.
 # Used after discriminating keywords to improve error messages and performance.
@@ -70,7 +70,7 @@ ConstructorDecl <- TypeParams? Identifier '(' ^ Params? ')' Throws? Block
 Block <- '{' BlockStmt* '}'
 BlockStmt <- LocalVar / LocalTypeDecl / Stmt
 LocalTypeDecl <- Annotation* Modifier* TypeKind
-LocalVar <- Modifier* LocalVarType VarDecls ';'
+LocalVar <- Annotation* Modifier* LocalVarType VarDecls ';'
 LocalVarType <- < 'var' ![a-zA-Z0-9_$] > / Type
 # Statement keywords use helper rules to combine keyword + word boundary as single token
 # This prevents the parser from skipping whitespace before the boundary check
@@ -114,9 +114,9 @@ FinallyKW <- < 'finally' ![a-zA-Z0-9_$] >
 WhenKW <- < 'when' ![a-zA-Z0-9_$] >
 ForCtrl <- ForInit? ';' Expr? ';' ExprList? / LocalVarType Identifier ':' Expr
 ForInit <- LocalVarNoSemi / ExprList
-LocalVarNoSemi <- Modifier* LocalVarType VarDecls
+LocalVarNoSemi <- Annotation* Modifier* LocalVarType VarDecls
 ResourceSpec <- '(' Resource (';' Resource)* ';'? ')'
-Resource <- Modifier* LocalVarType Identifier '=' Expr / QualifiedName
+Resource <- Annotation* Modifier* LocalVarType Identifier '=' Expr / QualifiedName
 Catch <- CatchKW ^ '(' Modifier* Type ('|' Type)* Identifier ')' Block
 Finally <- FinallyKW ^ Block
 SwitchBlock <- '{' SwitchRule* '}'
@@ -131,7 +131,7 @@ PatternList <- Pattern (',' Pattern)*
 Guard <- WhenKW Expr
 
 Expr <- Assignment
-Assignment <- Ternary (('=' / '>>>=' / '>>=' / '<<=' / '+=' / '-=' / '*=' / '/=' / '%=' / '&=' / '|=' / '^=') Assignment)?
+Assignment <- Ternary ((URShiftAssign / RShiftAssign / LShiftAssign / '=' / '+=' / '-=' / '*=' / '/=' / '%=' / '&=' / '|=' / '^=') Assignment)?
 Ternary <- LogOr ('?' Expr ':' Ternary)?
 LogOr <- LogAnd ('||' LogAnd)*
 LogAnd <- BitOr ('&&' BitOr)*
@@ -140,12 +140,21 @@ BitXor <- BitAnd (!'^=' '^' BitAnd)*
 BitAnd <- Equality (!'&&' !'&=' '&' Equality)*
 Equality <- Relational (('==' / '!=') Relational)*
 Relational <- Shift (('<=' / '>=' / '<' / '>') Shift / 'instanceof' (Pattern / Type))?
-Shift <- Additive ((!'<<=' '<<' / !'>>>=' '>>>' / !'>>=' !'>>>=' '>>') Additive)*
+Shift <- Additive ((URShift / LShift / RShift) Additive)*
+# Shift / shift-assignment helpers (split into single '<' / '>' / '=' tokens so that
+# the lexer never produces a fused '>>' token. This lets nested generics like
+# List<Map<String, Integer>> parse correctly while still recognising shift ops.)
+URShift <- '>' '>' '>' !'='
+RShift <- '>' '>' !'>' !'='
+LShift <- '<' '<' !'='
+URShiftAssign <- '>' '>' '>' '='
+RShiftAssign <- '>' '>' '='
+LShiftAssign <- '<' '<' '='
 Additive <- Multiplicative ((!'+=' '+' / !'-=' !'->' '-') Multiplicative)*
 Multiplicative <- Unary ((!'*=' '*' / !'/=' '/' / !'%=' '%') Unary)*
 Unary <- ('++' / '--' / '+' / '-' / '!' / '~') Unary / '(' Type ('&' Type)* ')' Unary / Postfix
 Postfix <- Primary PostOp*
-PostOp <- '.' TypeArgs? Identifier ('(' Args? ')')? / '.' 'class' / '.' 'this' / '[' Expr ']' / '(' Args? ')' / '++' / '--' / '::' TypeArgs? (Identifier / 'new')
+PostOp <- '.' TypeArgs? Identifier ('(' Args? ')')? / '.' 'class' / '.' 'this' / '.' 'super' / '[' Expr ']' / '(' Args? ')' / '++' / '--' / '::' TypeArgs? (Identifier / 'new')
 Primary <- Literal / < 'this' ![a-zA-Z0-9_$] > / < 'super' ![a-zA-Z0-9_$] > / < 'new' ![a-zA-Z0-9_$] > TypeArgs? ArrayType (DimExprs Dims? / Dims VarInit / '(' Args? ')' ClassBody?) / SwitchKW '(' Expr ')' SwitchBlock / Lambda / '(' Expr ')' / TypeExpr / QualifiedName
 TypeExpr <- Type ('.' < 'class' > / '::' TypeArgs? (< 'new' > / Identifier))
 Lambda <- LambdaParams '->' (Expr / Block)
@@ -186,4 +195,11 @@ NumLit <- < '0' [xX] [0-9a-fA-F_]+ [lL]? > / < '0' [bB] [01_]+ [lL]? > / < [0-9]
 # Hard keywords only - contextual keywords (var, yield, record, sealed, non-sealed, permits, when, module) are handled by their specific rules
 Keyword <- ('abstract' / 'assert' / 'boolean' / 'break' / 'byte' / 'case' / 'catch' / 'char' / 'class' / 'const' / 'continue' / 'default' / 'double' / 'do' / 'else' / 'enum' / 'extends' / 'false' / 'finally' / 'final' / 'float' / 'for' / 'goto' / 'implements' / 'import' / 'instanceof' / 'interface' / 'int' / 'if' / 'long' / 'native' / 'new' / 'null' / 'package' / 'private' / 'protected' / 'public' / 'return' / 'short' / 'static' / 'strictfp' / 'super' / 'switch' / 'synchronized' / 'this' / 'throws' / 'throw' / 'transient' / 'true' / 'try' / 'void' / 'volatile' / 'while') ![a-zA-Z0-9_$]
 
-%whitespace <- ([ \t\r\n] / '//' [^\n]* / '/*' (!'*/' .)* '*/')*
+%whitespace <- [ \t\r\n]+ / '//' [^\n]* / '/*' (!'*/' .)* '*/'
+
+# 0.6.1 — incremental-reparse boundaries consumed by IncrementalParser.
+# Each %checkpoint names a rule whose CST subtree may be re-parsed in
+# isolation when an edit lies entirely within its byte span.
+%checkpoint Stmt
+%checkpoint MethodDecl
+%checkpoint TypeDecl

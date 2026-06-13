@@ -1,7 +1,12 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.endpoint;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -22,71 +27,92 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Passive KV-Store watcher maintaining a local cache of topic subscriptions.
-///
-///
-/// Tracks which slice methods subscribe to which topics. Used by TopicPublisher
-/// to discover and invoke subscriber methods. Supports competing consumers:
-/// when multiple instances of the same artifact subscribe to a topic,
-/// only one instance per artifact receives each message (round-robin).
 public interface TopicSubscriptionRegistry {
-    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onSubscriptionPut(ValuePut<TopicSubscriptionKey, TopicSubscriptionValue> valuePut);
-    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onSubscriptionRemove(ValueRemove<TopicSubscriptionKey, TopicSubscriptionValue> valueRemove);
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    void onSubscriptionPut(ValuePut<TopicSubscriptionKey, TopicSubscriptionValue> valuePut);
+
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    void onSubscriptionRemove(ValueRemove<TopicSubscriptionKey, TopicSubscriptionValue> valueRemove);
+
     List<TopicSubscriber> findSubscribers(String topicName);
     List<TopicSubscription> allSubscriptions();
 
-    record TopicSubscription(String topicName, Artifact artifact, MethodName methodName, NodeId nodeId) {
+    record TopicSubscription(ResourceAddress address, Artifact artifact, MethodName methodName, NodeId nodeId) {
         public TopicSubscriptionKey toKey() {
-            return TopicSubscriptionKey.topicSubscriptionKey(topicName, artifact, methodName);
+            return TopicSubscriptionKey.topicSubscriptionKey(address, artifact, methodName);
+        }
+
+        /// Bare topic name — the runtime routing identity.
+        public String topicName() {
+            return address.name()
+                          .value();
         }
     }
 
-    record TopicSubscriber(Artifact artifact, MethodName methodName, NodeId nodeId){}
+    record TopicSubscriber(Artifact artifact, MethodName methodName, NodeId nodeId) {}
 
     static TopicSubscriptionRegistry topicSubscriptionRegistry() {
         record topicSubscriptionRegistry(Map<TopicSubscriptionKey, TopicSubscription> subscriptions,
                                          Map<String, AtomicInteger> roundRobinCounters) implements TopicSubscriptionRegistry {
             private static final Logger log = LoggerFactory.getLogger(topicSubscriptionRegistry.class);
 
-            @Override@SuppressWarnings("JBCT-RET-01") public void onSubscriptionPut(ValuePut<TopicSubscriptionKey, TopicSubscriptionValue> valuePut) {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onSubscriptionPut(ValuePut<TopicSubscriptionKey, TopicSubscriptionValue> valuePut) {
                 var key = valuePut.cause().key();
                 var value = valuePut.cause().value();
-                var subscription = new TopicSubscription(key.topicName(),
-                                                         key.artifact(),
-                                                         key.methodName(),
-                                                         value.nodeId());
+                var subscription = new TopicSubscription(key.address(), key.artifact(), key.methodName(), value.nodeId());
+
                 subscriptions.put(key, subscription);
                 log.debug("Registered topic subscription: {}", subscription);
             }
 
-            @Override@SuppressWarnings("JBCT-RET-01") public void onSubscriptionRemove(ValueRemove<TopicSubscriptionKey, TopicSubscriptionValue> valueRemove) {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onSubscriptionRemove(ValueRemove<TopicSubscriptionKey, TopicSubscriptionValue> valueRemove) {
                 var key = valueRemove.cause().key();
-                Option.option(subscriptions.remove(key))
-                             .onPresent(removed -> log.debug("Unregistered topic subscription: {}", removed));
+
+                Option.option(subscriptions.remove(key)).onPresent(removed -> log.debug("Unregistered topic subscription: {}",
+                                                                                        removed));
             }
 
-            @Override public List<TopicSubscriber> findSubscribers(String topicName) {
+            @Override
+            public List<TopicSubscriber> findSubscribers(String topicName) {
                 var groups = new LinkedHashMap<String, List<TopicSubscription>>();
-                for (var sub : subscriptions.values()) {if (sub.topicName().equals(topicName)) {
-                    var groupKey = sub.artifact().asString() + "/" + sub.methodName().name();
-                    groups.computeIfAbsent(groupKey, _ -> new ArrayList<>()).add(sub);
-                }}
+
+                for (var sub : subscriptions.values()) {
+                    if (sub.topicName().equals(topicName)) {
+                        var groupKey = sub.artifact().asString() + "/" + sub.methodName().name();
+
+                        groups.computeIfAbsent(groupKey, _ -> new ArrayList<>()).add(sub);
+                    }
+                }
+
                 var result = new ArrayList<TopicSubscriber>();
+
                 for (var entry : groups.entrySet()) {
                     var group = entry.getValue();
-                    group.sort(Comparator.comparing(s -> s.nodeId().id()));
+
+                    group.sort(Comparator.comparing(s -> s.nodeId()
+                                                          .id()));
                     var counter = roundRobinCounters.computeIfAbsent(entry.getKey(), _ -> new AtomicInteger(0));
                     var index = (counter.getAndIncrement() & 0x7FFFFFFF) % group.size();
                     var selected = group.get(index);
+
                     result.add(new TopicSubscriber(selected.artifact(), selected.methodName(), selected.nodeId()));
                 }
+
                 return result;
             }
 
-            @Override public List<TopicSubscription> allSubscriptions() {
+            @Override
+            public List<TopicSubscription> allSubscriptions() {
                 return List.copyOf(subscriptions.values());
             }
         }
+
         return new topicSubscriptionRegistry(new ConcurrentHashMap<>(), new ConcurrentHashMap<>());
     }
 }

@@ -27,6 +27,7 @@ pom.xml.versionsBackup
 
 CLAUDE.md
 .claude/
+.annotator/
 PUBLISHING.md
 
 ### NDX Search Index ###

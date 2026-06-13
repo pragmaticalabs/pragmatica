@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config;
 
 import org.pragmatica.lang.Cause;
@@ -10,15 +14,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Deployment environment with environment-specific defaults.
-///
-///
-/// Each environment has sensible defaults based on its typical use case:
-///
-///   - LOCAL - Single machine development (3 nodes, minimal resources)
-///   - DOCKER - Production-like Docker Compose (5 nodes, moderate resources)
-///   - KUBERNETES - Cloud-native deployment (5 nodes, TLS enabled)
-///
 public enum Environment {
     LOCAL("local", 3, "256m", false),
     DOCKER("docker", 5, "512m", true),
@@ -53,7 +48,7 @@ public enum Environment {
                            Environment::fromNormalized);
     }
     private static Result<Environment> fromNormalized(String value) {
-        return switch (value.toLowerCase()){
+        return switch (value.toLowerCase()) {
             case "local" -> success(LOCAL);
             case "docker" -> success(DOCKER);
             case "kubernetes", "k8s" -> success(KUBERNETES);

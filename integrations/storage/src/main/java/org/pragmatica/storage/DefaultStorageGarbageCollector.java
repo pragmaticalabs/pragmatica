@@ -2,8 +2,13 @@ package org.pragmatica.storage;
 
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Unit.unit;
 
 /// Default garbage collector implementation.
 /// Scans all lifecycle entries for orphaned blocks past their grace period,
@@ -26,13 +31,15 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
     }
 
     @Override
-    public void activate() {
+    public Result<Unit> activate() {
         active = true;
+        return Result.success(unit());
     }
 
     @Override
-    public void deactivate() {
+    public Result<Unit> deactivate() {
         active = false;
+        return Result.success(unit());
     }
 
     @Override

@@ -1,17 +1,24 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.schema;
 
 import org.pragmatica.lang.Cause;
 
 
-/// Error types for schema migration failures.
 public sealed interface SchemaError extends Cause {
     record ChecksumMismatch(String datasource, int version, long expected, long actual) implements SchemaError {
         public static ChecksumMismatch checksumMismatch(String datasource, int version, long expected, long actual) {
             return new ChecksumMismatch(datasource, version, expected, actual);
         }
 
-        @Override public String message() {
-            return "Checksum mismatch for datasource '" + datasource + "' at version " + version + ": expected " + expected + " but found " + actual;
+        @Override
+        public String message() {
+            return "Checksum mismatch for datasource '" + datasource
+                 + "' at version " + version
+                 + ": expected " + expected
+                 + " but found " + actual;
         }
     }
 
@@ -20,7 +27,8 @@ public sealed interface SchemaError extends Cause {
             return new MigrationFailed(datasource, version, detail);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Migration failed for datasource '" + datasource + "' at version " + version + ": " + detail;
         }
     }
@@ -30,7 +38,8 @@ public sealed interface SchemaError extends Cause {
             return new DatasourceUnreachable(datasource, detail);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Datasource unreachable: '" + datasource + "' — " + detail;
         }
     }
@@ -40,7 +49,8 @@ public sealed interface SchemaError extends Cause {
             return new LockAcquisitionFailed(datasource);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Failed to acquire migration lock for datasource '" + datasource + "'";
         }
     }
@@ -50,8 +60,10 @@ public sealed interface SchemaError extends Cause {
             return new BaselineConflict(datasource, existingVersion);
         }
 
-        @Override public String message() {
-            return "Baseline conflict for datasource '" + datasource + "': versioned migrations already applied up to version " + existingVersion;
+        @Override
+        public String message() {
+            return "Baseline conflict for datasource '" + datasource
+                 + "': versioned migrations already applied up to version " + existingVersion;
         }
     }
 
@@ -60,7 +72,8 @@ public sealed interface SchemaError extends Cause {
             return new UndoNotAvailable(datasource, version);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Undo script not available for datasource '" + datasource + "' at version " + version;
         }
     }
@@ -70,7 +83,8 @@ public sealed interface SchemaError extends Cause {
             return new InvalidMigrationFormat(filename, detail);
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Invalid migration filename '" + filename + "': " + detail;
         }
     }

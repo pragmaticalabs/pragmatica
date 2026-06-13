@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.api;
 
 import org.pragmatica.aether.ember.EmberCluster;
@@ -38,9 +42,6 @@ import static org.pragmatica.http.routing.Route.in;
 import static org.pragmatica.http.routing.Route.post;
 
 
-/// REST API routes for chaos engineering operations.
-/// Provides endpoints for enabling/disabling chaos, injecting events,
-/// and managing cluster nodes (add, kill, rolling restart).
 public final class ChaosRoutes {
     private ChaosRoutes() {}
 
@@ -65,26 +66,26 @@ public final class ChaosRoutes {
     }
 
     private static Route<ChaosStatusResponse> statusRoute(ChaosController chaosController) {
-        return Route.<ChaosStatusResponse>get("/status").toJson(() -> chaosStatus(chaosController));
+        return Route.<ChaosStatusResponse> get("/status").toJson(() -> chaosStatus(chaosController));
     }
 
     private static Route<ChaosEnabledResponse> enableRoute(ChaosController chaosController,
                                                            Consumer<EventLogEntry> eventLogger) {
-        return Route.<ChaosEnabledResponse>post("/enable")
+        return Route.<ChaosEnabledResponse> post("/enable")
                     .withBody(EnableRequest.class)
                     .toJson(req -> enableChaos(chaosController, eventLogger, req));
     }
 
     private static Route<ChaosInjectResponse> injectRoute(ChaosController chaosController,
                                                           Consumer<EventLogEntry> eventLogger) {
-        return Route.<ChaosInjectResponse>post("/inject")
+        return Route.<ChaosInjectResponse> post("/inject")
                     .withBody(InjectRequest.class)
                     .toJson(req -> injectChaos(chaosController, eventLogger, req));
     }
 
     private static Route<ChaosStoppedResponse> stopRoute(ChaosController chaosController,
                                                          Consumer<EventLogEntry> eventLogger) {
-        return Route.<ChaosStoppedResponse>post("/stop")
+        return Route.<ChaosStoppedResponse> post("/stop")
                     .withPath(aString())
                     .to(eventId -> stopChaos(chaosController, eventLogger, eventId))
                     .asJson();
@@ -92,15 +93,15 @@ public final class ChaosRoutes {
 
     private static Route<SuccessResponse> stopAllRoute(ChaosController chaosController,
                                                        Consumer<EventLogEntry> eventLogger) {
-        return Route.<SuccessResponse>post("/stop-all").toJson(_ -> stopAllChaos(chaosController, eventLogger));
+        return Route.<SuccessResponse> post("/stop-all").toJson(_ -> stopAllChaos(chaosController, eventLogger));
     }
 
     private static Route<NodeAddedResponse> addNodeRoute(EmberCluster cluster, Consumer<EventLogEntry> eventLogger) {
-        return Route.<NodeAddedResponse>post("/add-node").toJson(_ -> addNode(cluster, eventLogger));
+        return Route.<NodeAddedResponse> post("/add-node").toJson(_ -> addNode(cluster, eventLogger));
     }
 
     private static Route<NodeActionResponse> killNodeRoute(EmberCluster cluster, Consumer<EventLogEntry> eventLogger) {
-        return Route.<NodeActionResponse>post("/kill")
+        return Route.<NodeActionResponse> post("/kill")
                     .withPath(aString())
                     .to(nodeId -> killNode(cluster, eventLogger, nodeId))
                     .asJson();
@@ -109,28 +110,28 @@ public final class ChaosRoutes {
     private static Route<SuccessResponse> resetMetricsRoute(Deque<ForgeApiResponses.ForgeEvent> events,
                                                             InventoryState inventoryState,
                                                             Consumer<EventLogEntry> eventLogger) {
-        return Route.<SuccessResponse>post("/reset-metrics")
-                    .toJson(_ -> resetMetrics(events, inventoryState, eventLogger));
+        return Route.<SuccessResponse> post("/reset-metrics").toJson(_ -> resetMetrics(events,
+                                                                                       inventoryState,
+                                                                                       eventLogger));
     }
 
     private static Route<RollingRestartResponse> startRollingRestartRoute(EmberCluster cluster,
                                                                           Consumer<EventLogEntry> eventLogger) {
-        return Route.<RollingRestartResponse>post("/start-rolling-restart")
-                    .toJson(_ -> startRollingRestart(cluster, eventLogger));
+        return Route.<RollingRestartResponse> post("/start-rolling-restart").toJson(_ -> startRollingRestart(cluster,
+                                                                                                             eventLogger));
     }
 
     private static Route<RollingRestartResponse> stopRollingRestartRoute(EmberCluster cluster,
                                                                          Consumer<EventLogEntry> eventLogger) {
-        return Route.<RollingRestartResponse>post("/stop-rolling-restart")
-                    .toJson(_ -> stopRollingRestart(cluster, eventLogger));
+        return Route.<RollingRestartResponse> post("/stop-rolling-restart").toJson(_ -> stopRollingRestart(cluster,
+                                                                                                           eventLogger));
     }
 
     private static Route<RollingRestartStatusResponse> rollingRestartStatusRoute(EmberCluster cluster) {
-        return Route.<RollingRestartStatusResponse>get("/rolling-restart-status")
-                    .toJson(() -> rollingRestartStatus(cluster));
+        return Route.<RollingRestartStatusResponse> get("/rolling-restart-status").toJson(() -> rollingRestartStatus(cluster));
     }
 
-    public record EnableRequest(boolean enabled){}
+    public record EnableRequest(boolean enabled) {}
 
     public record InjectRequest(Option<String> type,
                                 Option<String> nodeId,
@@ -141,41 +142,40 @@ public final class ChaosRoutes {
                                 Option<Long> durationSeconds) {
         public InjectRequest {
             type = type != null
-                  ? type
-                  : Option.none();
-            nodeId = nodeId != null
-                    ? nodeId
-                    : Option.none();
-            artifact = artifact != null
-                      ? artifact
-                      : Option.none();
-            latencyMs = latencyMs != null
-                       ? latencyMs
-                       : Option.none();
-            level = level != null
-                   ? level
+                   ? type
                    : Option.none();
+            nodeId = nodeId != null
+                     ? nodeId
+                     : Option.none();
+            artifact = artifact != null
+                       ? artifact
+                       : Option.none();
+            latencyMs = latencyMs != null
+                        ? latencyMs
+                        : Option.none();
+            level = level != null
+                    ? level
+                    : Option.none();
             failureRate = failureRate != null
-                         ? failureRate
-                         : Option.none();
+                          ? failureRate
+                          : Option.none();
             durationSeconds = durationSeconds != null
-                             ? durationSeconds
-                             : Option.none();
+                              ? durationSeconds
+                              : Option.none();
         }
     }
 
     private static ChaosStatusResponse chaosStatus(ChaosController controller) {
         ChaosStatus status = controller.status();
-        List<ActiveChaosEventInfo> activeEventInfos = status.activeEvents().stream()
-                                                                         .map(ChaosRoutes::toEventInfo)
-                                                                         .toList();
+        List<ActiveChaosEventInfo> activeEventInfos = status.activeEvents().stream().map(ChaosRoutes::toEventInfo).toList();
+
         return new ChaosStatusResponse(status.enabled(), status.activeEventCount(), activeEventInfos);
     }
 
     private static ActiveChaosEventInfo toEventInfo(ActiveChaosEvent event) {
         ChaosEvent chaosEvent = event.event();
-        String durationStr = chaosEvent.duration().map(d -> d.toSeconds() + "s")
-                                                .or("indefinite");
+        String durationStr = chaosEvent.duration().map(d -> d.toSeconds() + "s").or("indefinite");
+
         return new ActiveChaosEventInfo(event.eventId(),
                                         chaosEvent.type(),
                                         chaosEvent.description(),
@@ -188,12 +188,14 @@ public final class ChaosRoutes {
                                                              EnableRequest request) {
         controller.setEnabled(request.enabled());
         String eventType = request.enabled()
-                          ? "CHAOS_ENABLED"
-                          : "CHAOS_DISABLED";
+                           ? "CHAOS_ENABLED"
+                           : "CHAOS_DISABLED";
         String message = "Chaos controller " + (request.enabled()
                                                 ? "enabled"
                                                 : "disabled");
+
         eventLogger.accept(new EventLogEntry(eventType, message));
+
         return Promise.success(new ChaosEnabledResponse(true, request.enabled()));
     }
 
@@ -201,6 +203,7 @@ public final class ChaosRoutes {
                                                             Consumer<EventLogEntry> eventLogger,
                                                             InjectRequest request) {
         var duration = Duration.ofSeconds(request.durationSeconds().or(60L));
+
         return parseChaosEvent(request, duration).async()
                               .flatMap(controller::injectChaos)
                               .map(eventId -> logAndBuildInjectResponse(eventLogger, request, eventId));
@@ -210,34 +213,33 @@ public final class ChaosRoutes {
                                                                  InjectRequest request,
                                                                  String eventId) {
         var typeStr = request.type().or("UNKNOWN");
+
         eventLogger.accept(new EventLogEntry("CHAOS_INJECTED", "Injected " + typeStr + " event: " + eventId));
+
         return new ChaosInjectResponse(true, eventId, typeStr);
     }
 
     private static Result<ChaosEvent> parseChaosEvent(InjectRequest request, Duration duration) {
         var optDuration = Option.option(duration);
-        var type = request.type().map(String::toUpperCase)
-                               .or("");
+        var type = request.type().map(String::toUpperCase).or("");
         var nodeId = request.nodeId().fold(() -> null, s -> s);
         var artifact = request.artifact().fold(() -> null, s -> s);
-        return switch (type){
+
+        return switch (type) {
             case "NODE_KILL" -> ChaosEvent.NodeKill.nodeKill(nodeId, optDuration).map(e -> e);
             case "LATENCY_SPIKE" -> ChaosEvent.LatencySpike.latencySpike(nodeId,
                                                                          request.latencyMs().or(500L),
-                                                                         optDuration)
-            .map(e -> e);
+                                                                         optDuration).map(e -> e);
             case "SLICE_CRASH" -> ChaosEvent.SliceCrash.sliceCrash(artifact, request.nodeId(), optDuration).map(e -> e);
             case "INVOCATION_FAILURE" -> ChaosEvent.InvocationFailure.invocationFailure(request.artifact(),
                                                                                         request.failureRate().or(0.5),
-                                                                                        optDuration)
-            .map(e -> e);
+                                                                                        optDuration).map(e -> e);
             case "CPU_SPIKE" -> ChaosEvent.CpuSpike.cpuSpike(nodeId,
                                                              request.level().or(0.8),
                                                              optDuration).map(e -> e);
             case "MEMORY_PRESSURE" -> ChaosEvent.MemoryPressure.memoryPressure(nodeId,
                                                                                request.level().or(0.9),
-                                                                               optDuration)
-            .map(e -> e);
+                                                                               optDuration).map(e -> e);
             default -> UNKNOWN_CHAOS_TYPE.apply(type).result();
         };
     }
@@ -245,11 +247,13 @@ public final class ChaosRoutes {
     private static Promise<ChaosStoppedResponse> stopChaos(ChaosController controller,
                                                            Consumer<EventLogEntry> eventLogger,
                                                            String eventId) {
-        return controller.stopChaos(eventId).map(_ -> logAndBuildStopResponse(eventLogger, eventId));
+        return controller.stopChaos(eventId)
+                         .map(_ -> logAndBuildStopResponse(eventLogger, eventId));
     }
 
     private static ChaosStoppedResponse logAndBuildStopResponse(Consumer<EventLogEntry> eventLogger, String eventId) {
         eventLogger.accept(new EventLogEntry("CHAOS_STOPPED", "Stopped chaos event " + eventId));
+
         return new ChaosStoppedResponse(true, eventId);
     }
 
@@ -257,33 +261,40 @@ public final class ChaosRoutes {
                                                          Consumer<EventLogEntry> eventLogger) {
         controller.stopAllChaos();
         eventLogger.accept(new EventLogEntry("CHAOS_STOPPED_ALL", "Stopped all chaos events"));
+
         return Promise.success(SuccessResponse.OK);
     }
 
     private static Promise<NodeAddedResponse> addNode(EmberCluster cluster, Consumer<EventLogEntry> eventLogger) {
         eventLogger.accept(new EventLogEntry("ADD_NODE", "Adding new node to cluster"));
-        return cluster.addNode().map(nodeId -> logAndBuildNodeAddedResponse(eventLogger, nodeId))
-                              .onFailure(cause -> eventLogger.accept(new EventLogEntry("ADD_NODE_FAILED",
-                                                                                       "Failed to add node: " + cause.message())));
+
+        return cluster.addNode()
+                      .map(nodeId -> logAndBuildNodeAddedResponse(eventLogger, nodeId))
+                      .onFailure(cause -> eventLogger.accept(new EventLogEntry("ADD_NODE_FAILED",
+                                                                               "Failed to add node: " + cause.message())));
     }
 
     private static NodeAddedResponse logAndBuildNodeAddedResponse(Consumer<EventLogEntry> eventLogger,
                                                                   org.pragmatica.consensus.NodeId nodeId) {
         eventLogger.accept(new EventLogEntry("NODE_JOINED", "Node " + nodeId.id() + " joined the cluster"));
+
         return new NodeAddedResponse(true, nodeId.id(), "joining");
     }
 
     private static Promise<NodeActionResponse> killNode(EmberCluster cluster,
                                                         Consumer<EventLogEntry> eventLogger,
                                                         String nodeId) {
-        boolean wasLeader = cluster.currentLeader().map(l -> l.equals(nodeId))
-                                                 .or(false);
-        eventLogger.accept(new EventLogEntry("KILL_NODE", "Killing node " + nodeId + (wasLeader
-                                                                                      ? " (leader)"
-                                                                                      : "")));
-        return cluster.killNode(nodeId).map(_ -> logAndBuildNodeKilledResponse(cluster, eventLogger, nodeId, wasLeader))
-                               .onFailure(cause -> eventLogger.accept(new EventLogEntry("KILL_FAILED",
-                                                                                        "Failed to kill node " + nodeId)));
+        boolean wasLeader = cluster.currentLeader().map(l -> l.equals(nodeId)).or(false);
+
+        eventLogger.accept(new EventLogEntry("KILL_NODE",
+                                             "Killing node " + nodeId + (wasLeader
+                                                                         ? " (leader)"
+                                                                         : "")));
+
+        return cluster.killNode(nodeId)
+                      .map(_ -> logAndBuildNodeKilledResponse(cluster, eventLogger, nodeId, wasLeader))
+                      .onFailure(cause -> eventLogger.accept(new EventLogEntry("KILL_FAILED",
+                                                                               "Failed to kill node " + nodeId)));
     }
 
     private static NodeActionResponse logAndBuildNodeKilledResponse(EmberCluster cluster,
@@ -291,10 +302,13 @@ public final class ChaosRoutes {
                                                                     String nodeId,
                                                                     boolean wasLeader) {
         String newLeader = cluster.currentLeader().or("none");
+
         eventLogger.accept(new EventLogEntry("NODE_KILLED",
-                                             "Node " + nodeId + " killed" + (wasLeader
-                                                                             ? ", new leader: " + newLeader
-                                                                             : "")));
+                                             "Node " + nodeId
+                                            + " killed" + (wasLeader
+                                                           ? ", new leader: " + newLeader
+                                                           : "")));
+
         return new NodeActionResponse(true, newLeader);
     }
 
@@ -304,6 +318,7 @@ public final class ChaosRoutes {
         events.clear();
         inventoryState.reset();
         eventLogger.accept(new EventLogEntry("RESET", "Metrics and events reset"));
+
         return Promise.success(SuccessResponse.OK);
     }
 

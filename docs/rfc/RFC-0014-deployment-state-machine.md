@@ -429,7 +429,7 @@ On deterministic failure of any artifact in an in-flight blueprint:
 
 #### 9.1 Trigger
 
-Node lifecycle state changes to `DRAINING` (via `NodeLifecycleKey` put notification).
+The node begins draining (the leader delivers a `DRAIN` command on the leader↔node heartbeat; the node self-drains and reports `DRAINING` on its heartbeat). Drain is heartbeat-reported and leader-cached — never a KV-Store node-state record. See `aether/docs/specs/membership-architecture-v2-spec.md`.
 
 #### 9.2 Algorithm
 
@@ -514,7 +514,6 @@ On activation failure, cleanup reverses all registrations and publications, then
 | `AppBlueprintKey` | CLI/API | Desired blueprint (expanded) |
 | `SliceTargetKey` | CDM | Per-artifact target instance count |
 | `NodeArtifactKey` | CDM + NDM | Primary CDM/NDM communication channel |
-| `NodeLifecycleKey` | NDM + CDM | Node lifecycle state (ON_DUTY, DRAINING, DECOMMISSIONED, SHUTTING_DOWN) |
 | `SchemaVersionKey` | Blueprint publish | Schema migration status per datasource |
 | `SchemaMigrationLockKey` | SchemaOrchestratorService | Exclusive migration lock |
 | `EndpointKey` | NDM | Published slice endpoints |

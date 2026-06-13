@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.hetzner;
 
 import org.pragmatica.aether.environment.CachingSecretsProvider;
@@ -5,30 +9,30 @@ import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvSecretsProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
+import org.pragmatica.aether.environment.FloatingIpProvider;
 import org.pragmatica.aether.environment.LoadBalancerProvider;
 import org.pragmatica.aether.environment.SecretsProvider;
-import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.aether.environment.hetzner.HetznerComputeProvider.hetznerComputeProvider;
 import static org.pragmatica.aether.environment.hetzner.HetznerDiscoveryProvider.hetznerDiscoveryProvider;
+import static org.pragmatica.aether.environment.hetzner.HetznerFloatingIpProvider.hetznerFloatingIpProvider;
 import static org.pragmatica.aether.environment.hetzner.HetznerLoadBalancerProvider.hetznerLoadBalancerProvider;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Hetzner Cloud implementation of the EnvironmentIntegration SPI.
-/// Provides compute capabilities backed by the Hetzner Cloud API.
-/// Optionally provides load balancer management and label-based discovery when configured.
-/// Always provides environment-variable-based secrets resolution.
 public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvider,
                                             Option<LoadBalancerProvider> loadBalancerProvider,
                                             Option<DiscoveryProvider> discoveryProvider,
-                                            Option<SecretsProvider> secretsProvider) implements EnvironmentIntegration {
+                                            Option<SecretsProvider> secretsProvider,
+                                            Option<FloatingIpProvider> floatingIpProvider) implements EnvironmentIntegration {
     public static Result<HetznerEnvironmentIntegration> hetznerEnvironmentIntegration(HetznerEnvironmentConfig config) {
         var client = HetznerClient.hetznerClient(config.hetznerConfig());
+
         return hetznerEnvironmentIntegration(client, config);
     }
 
@@ -38,13 +42,20 @@ public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvid
         var lbProvider = resolveLbProvider(client, config);
         var discovery = resolveDiscoveryProvider(client, config);
         var secrets = resolveSecretsProvider();
-        return Result.all(compute, lbProvider)
-                         .map((cp, lb) -> new HetznerEnvironmentIntegration(cp, lb, discovery, secrets));
+        var floatingIp = resolveFloatingIpProvider(client);
+
+        return Result.all(compute, lbProvider).map((cp, lb) -> new HetznerEnvironmentIntegration(cp,
+                                                                                                 lb,
+                                                                                                 discovery,
+                                                                                                 secrets,
+                                                                                                 floatingIp));
     }
 
     private static Result<Option<LoadBalancerProvider>> resolveLbProvider(HetznerClient client,
                                                                           HetznerEnvironmentConfig config) {
-        return config.loadBalancer().fold(() -> success(Option.empty()), lbConfig -> toLbOption(client, lbConfig));
+        return config.loadBalancer()
+                     .fold(() -> success(Option.empty()),
+                           lbConfig -> toLbOption(client, lbConfig));
     }
 
     private static Result<Option<LoadBalancerProvider>> toLbOption(HetznerClient client,
@@ -58,7 +69,8 @@ public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvid
 
     private static Option<DiscoveryProvider> resolveDiscoveryProvider(HetznerClient client,
                                                                       HetznerEnvironmentConfig config) {
-        return config.clusterName().map(name -> hetznerDiscoveryProvider(client, config));
+        return config.clusterName()
+                     .map(name -> hetznerDiscoveryProvider(client, config));
     }
 
     private static Option<SecretsProvider> resolveSecretsProvider() {
@@ -66,19 +78,32 @@ public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvid
                                                                   TimeSpan.timeSpan(5).minutes()));
     }
 
-    @Override public Option<ComputeProvider> compute() {
+    @Override
+    public Option<ComputeProvider> compute() {
         return some(computeProvider);
     }
 
-    @Override public Option<SecretsProvider> secrets() {
+    @Override
+    public Option<SecretsProvider> secrets() {
         return secretsProvider;
     }
 
-    @Override public Option<LoadBalancerProvider> loadBalancer() {
+    @Override
+    public Option<LoadBalancerProvider> loadBalancer() {
         return loadBalancerProvider;
     }
 
-    @Override public Option<DiscoveryProvider> discovery() {
+    @Override
+    public Option<DiscoveryProvider> discovery() {
         return discoveryProvider;
+    }
+
+    @Override
+    public Option<FloatingIpProvider> floatingIp() {
+        return floatingIpProvider;
+    }
+
+    private static Option<FloatingIpProvider> resolveFloatingIpProvider(HetznerClient client) {
+        return some(hetznerFloatingIpProvider(client));
     }
 }

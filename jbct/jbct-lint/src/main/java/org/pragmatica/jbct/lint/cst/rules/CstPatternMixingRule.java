@@ -3,8 +3,8 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 
 import java.util.Set;
 import java.util.stream.Stream;
@@ -31,20 +31,20 @@ public class CstPatternMixingRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
         // Find all Lambda expressions (not method references - those are just transformations)
         return findAllLambdas(root).stream()
-                      .filter(lambda -> isInsideFlatMap(lambda, root, source))
-                      .filter(lambda -> containsForkJoinWithLogic(lambda, source))
-                      .map(lambda -> createDiagnostic(lambda, source, ctx));
+                      .filter(lambda -> isInsideFlatMap(lambda, root))
+                      .filter(this::containsForkJoinWithLogic)
+                      .map(lambda -> createDiagnostic(lambda, ctx));
     }
 
-    private boolean isInsideFlatMap(CstNode lambda, CstNode root, String source) {
+    private boolean isInsideFlatMap(Cursor lambda, Cursor root) {
         // Check if this lambda is an argument to flatMap
         // We look at the text before the lambda to see if it contains .flatMap(
-        var lambdaText = text(lambda, source);
+        var lambdaText = text(lambda);
         // Find the expression containing this lambda
-        return findAncestor(root, lambda, RuleId.Expr.class).map(expr -> text(expr, source))
+        return findAncestor(root, lambda, RuleKind.EXPR).map(expr -> text(expr))
                            .filter(exprText -> {
                                        var lambdaStart = exprText.indexOf(lambdaText);
                                        if (lambdaStart > 0) {
@@ -56,8 +56,8 @@ public class CstPatternMixingRule implements CstLintRule {
                            .isPresent();
     }
 
-    private boolean containsForkJoinWithLogic(CstNode lambda, String source) {
-        var lambdaText = text(lambda, source).trim();
+    private boolean containsForkJoinWithLogic(Cursor lambda) {
+        var lambdaText = text(lambda).trim();
         // Skip if lambda body is just a single fork-join call (transformation step, not nested pattern)
         // e.g., "results -> Result.allOf(results)" is fine
         if (isSingleForkJoinCall(lambdaText)) {
@@ -85,7 +85,7 @@ public class CstPatternMixingRule implements CstLintRule {
                                         });
     }
 
-    private Diagnostic createDiagnostic(CstNode node, String source, LintContext ctx) {
+    private Diagnostic createDiagnostic(Cursor node, LintContext ctx) {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),

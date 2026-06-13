@@ -8,11 +8,49 @@ import org.pragmatica.lang.utils.Causes;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
-/// A utility interface that provides validation functionality to ensure values meet specific criteria.
+/// Validation entry point for Result-returning factories: ensures values meet criteria, returning
+/// `Result` success with the original value or a failure with a `Cause`.
 ///
-/// The `Verify` interface encapsulates methods for validating values against predicates and
-/// returning appropriate `Result` objects that indicate success or failure. This interface works
-/// in conjunction with the nested `Is` interface that provides a rich set of predicate functions.
+/// **Rule of thumb: reach for `Verify.ensure` + a `Verify.Is` predicate before writing a predicate
+/// lambda.** Hand-rolled checks that duplicate a catalog predicate (null/blank tests, length and
+/// range comparisons, regex matching) are a JBCT smell — they lose the shared vocabulary and the
+/// no-capture method-reference style.
+///
+/// ## The `ensure` families
+///
+/// Three predicate shapes, so parameterized checks need no capturing lambdas:
+///
+/// | Shape | Form | Example |
+/// |-------|------|---------|
+/// | Unary predicate | `ensure(value, predicate)` | `ensure(raw, Is::present)` |
+/// | One-parameter predicate | `ensure(value, predicate, p1)` | `ensure(num, Is::greaterThan, 0)` |
+/// | Two-parameter predicate | `ensure(value, predicate, p1, p2)` | `ensure(len, Is::between, 3, 50)` |
+///
+/// Each shape has three failure-message variants: default message, fixed `Cause`, and
+/// `Fn1<Cause, T>` provider (lazily builds the cause from the offending value); the
+/// cause/provider is always the LAST argument.
+///
+/// ## Related entry points
+///
+/// - `ensureOption(option, predicate, ...)` — validates optional values with the
+///   `Result<Option<T>>` contract: empty → `Success(None)`, present and valid → `Success(Some)`,
+///   present and invalid → `Failure(cause)`.
+/// - `combine(check1, check2, ...)` — composes several `Fn1<Result<T>, T>` validators into one,
+///   applied left to right, first failure wins.
+///
+/// ## The `Is` predicate catalog
+///
+/// | Group | Predicates |
+/// |-------|-----------|
+/// | Option | `some`, `none` |
+/// | Null | `notNull` |
+/// | Numeric | `positive`, `negative`, `nonNegative`, `nonPositive` |
+/// | Comparable | `greaterThan`, `greaterThanOrEqualTo`, `lessThan`, `lessThanOrEqualTo`, `equalTo`, `notEqualTo`, `between` |
+/// | CharSequence | `empty`, `notEmpty`, `blank`, `notBlank`, `present`, `lenBetween` |
+/// | String | `contains`, `notContains`, `matches` (regex string or `Pattern`) |
+///
+/// `present` = non-null AND non-blank (the usual "required string" check); `notBlank` assumes
+/// non-null input.
 ///
 /// Example usage:
 /// ```java
@@ -22,7 +60,19 @@ import java.util.regex.Pattern;
 /// Result<Integer> result = Verify.ensure(42, Verify.Is::greaterThan, 0);
 /// // Complex condition with multiple parameters
 /// Result<Integer> result = Verify.ensure(42, Verify.Is::between, 0, 100);
+/// // Typical value-object factory
+/// public static Result<Username> username(String raw) {
+///     return Verify.ensure(raw, Verify.Is::present)
+///                  .map(String::trim)
+///                  .flatMap(v -> Verify.ensure(v, Verify.Is::lenBetween, 3, 30))
+///                  .map(Username::new);
+/// }
 /// ```
+///
+/// @see org.pragmatica.lang.vo
+/// @see org.pragmatica.lang.parse.Number
+/// @see org.pragmatica.lang.parse.DateTime
+/// @see org.pragmatica.lang.parse.Network
 public sealed interface Verify {
     //------------------------------------------------------------------------------------------------------------------
     // Unary predicate variants
@@ -76,38 +126,6 @@ public sealed interface Verify {
                             .result();
     }
 
-    /// Ensures that a value satisfies a given predicate, with a fixed cause on failure.
-    ///
-    /// @param cause     the cause to use if validation fails
-    /// @param value     the value to verify
-    /// @param predicate the predicate to test the value against
-    /// @param <T>       the type of the value being verified
-    ///
-    /// @return a success result containing the value if the predicate is satisfied,
-    ///         or a failure result with the specified cause if not
-    ///
-    /// @deprecated Use {@link #ensure(Object, Predicate, Cause)} instead for more natural parameter order.
-    @Deprecated(forRemoval = true)
-    static <T> Result<T> ensure(Cause cause, T value, Predicate<T> predicate) {
-        return ensure(value, predicate, cause);
-    }
-
-    /// Ensures that a value satisfies a given predicate, with a custom cause provider.
-    ///
-    /// @param causeProvider function that creates a Cause based on the input value when validation fails
-    /// @param value         the value to verify
-    /// @param predicate     the predicate to test the value against
-    /// @param <T>           the type of the value being verified
-    ///
-    /// @return a success result containing the value if the predicate is satisfied,
-    ///         or a failure result with the generated cause if not
-    ///
-    /// @deprecated Use {@link #ensure(Object, Predicate, Fn1)} instead for more natural parameter order.
-    @Deprecated(forRemoval = true)
-    static <T> Result<T> ensure(Fn1<Cause, T> causeProvider, T value, Predicate<T> predicate) {
-        return ensure(value, predicate, causeProvider);
-    }
-
     //------------------------------------------------------------------------------------------------------------------
     // Binary predicate variants (predicate with one additional parameter)
     //------------------------------------------------------------------------------------------------------------------
@@ -158,42 +176,6 @@ public sealed interface Verify {
     ///         or a failure result with the generated cause if not
     static <T, P1> Result<T> ensure(T value, Fn2<Boolean, T, P1> predicate, P1 param1, Fn1<Cause, T> causeProvider) {
         return ensure(value, v -> predicate.apply(v, param1), causeProvider);
-    }
-
-    /// Ensures that a value satisfies a binary predicate, with a fixed cause on failure.
-    ///
-    /// @param cause     the cause to use if validation fails
-    /// @param value     the value to verify
-    /// @param predicate the binary predicate to test the value against
-    /// @param param1    the additional parameter to pass to the predicate
-    /// @param <T>       the type of the value being verified
-    /// @param <P1>      the type of the additional parameter
-    ///
-    /// @return a success result containing the value if the predicate is satisfied,
-    ///         or a failure result with the specified cause if not
-    ///
-    /// @deprecated Use {@link #ensure(Object, Fn2, Object, Cause)} instead for more natural parameter order.
-    @Deprecated(forRemoval = true)
-    static <T, P1> Result<T> ensure(Cause cause, T value, Fn2<Boolean, T, P1> predicate, P1 param1) {
-        return ensure(value, predicate, param1, cause);
-    }
-
-    /// Ensures that a value satisfies a binary predicate, with a custom cause provider.
-    ///
-    /// @param causeProvider function that creates a Cause based on the input value when validation fails
-    /// @param value         the value to verify
-    /// @param predicate     the binary predicate to test the value against
-    /// @param param1        the additional parameter to pass to the predicate
-    /// @param <T>           the type of the value being verified
-    /// @param <P1>          the type of the additional parameter
-    ///
-    /// @return a success result containing the value if the predicate is satisfied,
-    ///         or a failure result with the generated cause if not
-    ///
-    /// @deprecated Use {@link #ensure(Object, Fn2, Object, Fn1)} instead for more natural parameter order.
-    @Deprecated(forRemoval = true)
-    static <T, P1> Result<T> ensure(Fn1<Cause, T> causeProvider, T value, Fn2<Boolean, T, P1> predicate, P1 param1) {
-        return ensure(value, predicate, param1, causeProvider);
     }
 
     //------------------------------------------------------------------------------------------------------------------
@@ -256,50 +238,6 @@ public sealed interface Verify {
                                         P2 param2,
                                         Fn1<Cause, T> causeProvider) {
         return ensure(value, v -> predicate.apply(v, param1, param2), causeProvider);
-    }
-
-    /// Ensures that a value satisfies a ternary predicate, with a fixed cause on failure.
-    ///
-    /// @param cause     the cause to use if validation fails
-    /// @param value     the value to verify
-    /// @param predicate the ternary predicate to test the value against
-    /// @param param1    the first additional parameter to pass to the predicate
-    /// @param param2    the second additional parameter to pass to the predicate
-    /// @param <T>       the type of the value being verified
-    /// @param <P1>      the type of the first additional parameter
-    /// @param <P2>      the type of the second additional parameter
-    ///
-    /// @return a success result containing the value if the predicate is satisfied,
-    ///         or a failure result with the specified cause if not
-    ///
-    /// @deprecated Use {@link #ensure(Object, Fn3, Object, Object, Cause)} instead for more natural parameter order.
-    @Deprecated(forRemoval = true)
-    static <T, P1, P2> Result<T> ensure(Cause cause, T value, Fn3<Boolean, T, P1, P2> predicate, P1 param1, P2 param2) {
-        return ensure(value, predicate, param1, param2, cause);
-    }
-
-    /// Ensures that a value satisfies a ternary predicate, with a custom cause provider.
-    ///
-    /// @param causeProvider function that creates a Cause based on the input value when validation fails
-    /// @param value         the value to verify
-    /// @param predicate     the ternary predicate to test the value against
-    /// @param param1        the first additional parameter to pass to the predicate
-    /// @param param2        the second additional parameter to pass to the predicate
-    /// @param <T>           the type of the value being verified
-    /// @param <P1>          the type of the first additional parameter
-    /// @param <P2>          the type of the second additional parameter
-    ///
-    /// @return a success result containing the value if the predicate is satisfied,
-    ///         or a failure result with the generated cause if not
-    ///
-    /// @deprecated Use {@link #ensure(Object, Fn3, Object, Object, Fn1)} instead for more natural parameter order.
-    @Deprecated(forRemoval = true)
-    static <T, P1, P2> Result<T> ensure(Fn1<Cause, T> causeProvider,
-                                        T value,
-                                        Fn3<Boolean, T, P1, P2> predicate,
-                                        P1 param1,
-                                        P2 param2) {
-        return ensure(value, predicate, param1, param2, causeProvider);
     }
 
     //------------------------------------------------------------------------------------------------------------------

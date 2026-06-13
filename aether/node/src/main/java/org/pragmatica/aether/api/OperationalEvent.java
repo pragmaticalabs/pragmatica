@@ -1,14 +1,12 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
 import org.pragmatica.messaging.Message;
 
 
-/// Operational audit events emitted to the cluster event stream.
-/// Covers security, lifecycle, and configuration changes that operators
-/// and AI agents need for full operational awareness.
-///
-/// These events flow through the MessageRouter to ClusterEventAggregator,
-/// which converts them to ClusterEvent records for dashboard and API consumption.
 public sealed interface OperationalEvent extends Message.Local {
     record AccessDenied(String principal,
                         String method,
@@ -58,6 +56,12 @@ public sealed interface OperationalEvent extends Message.Local {
     record BlueprintDeleted(String artifactId, String requestedBy, long timestamp) implements OperationalEvent {
         public static BlueprintDeleted blueprintDeleted(String artifactId, String requestedBy) {
             return new BlueprintDeleted(artifactId, requestedBy, System.currentTimeMillis());
+        }
+    }
+
+    record GenerationChanged(String oldEpoch, String newEpoch, String reason, long timestamp) implements OperationalEvent {
+        public static GenerationChanged generationChanged(String oldEpoch, String newEpoch, String reason) {
+            return new GenerationChanged(oldEpoch, newEpoch, reason, System.currentTimeMillis());
         }
     }
 }

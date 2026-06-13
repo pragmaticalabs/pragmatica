@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.environment.aws;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -46,6 +51,9 @@ class AwsComputeProviderTest {
         void provision_success_returnsInstanceInfo() {
             testClient.runInstancesResponse = Promise.success(
                 TestAwsClient.runResponseWith(runningInstance("i-abc123")));
+            // confirmRunning polls describeInstances("instance-id", ...) for infra readiness.
+            testClient.describeResponse = Promise.success(
+                TestAwsClient.describeResponseWith(List.of(runningInstance("i-abc123"))));
 
             provider.provision(InstanceType.ON_DEMAND)
                     .await()
@@ -61,6 +69,50 @@ class AwsComputeProviderTest {
                     .await()
                     .onSuccess(info -> assertThat(info).isNull())
                     .onFailure(AwsComputeProviderTest::assertProvisionFailedError);
+        }
+
+        @Test
+        void provision_instanceNeverReachesRunning_failsWithReadinessTimeout() {
+            // runInstances + createTags succeed, but the readiness poll observes a
+            // terminated instance — confirmRunning must FAIL (no phantom success).
+            testClient.runInstancesResponse = Promise.success(
+                TestAwsClient.runResponseWith(runningInstance("i-doomed")));
+            testClient.describeResponse = Promise.success(
+                TestAwsClient.describeResponseWith(List.of(terminatedInstance("i-doomed"))));
+
+            provider.provision(InstanceType.ON_DEMAND)
+                    .await()
+                    .onSuccess(info -> assertThat(info).as("expected readiness failure, not a phantom success").isNull())
+                    .onFailure(AwsComputeProviderTest::assertProvisionFailedError);
+        }
+
+        @Test
+        void provisionFailure_runInstancesSucceedsButTaggingFails_rollbackTerminatesInstance() {
+            // runInstances succeeds — we obtain instance i-rollback-me.
+            testClient.runInstancesResponse = Promise.success(
+                TestAwsClient.runResponseWith(runningInstance("i-rollback-me")));
+            // createTags fails — must trigger terminateInstances rollback.
+            testClient.createTagsResponse = new AwsError.ApiError(500, "InternalError", "tag service down").promise();
+
+            provider.provision(InstanceType.ON_DEMAND)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(AwsComputeProviderTest::assertProvisionFailedError);
+
+            assertThat(testClient.lastTerminatedIds).containsExactly("i-rollback-me");
+        }
+
+        @Test
+        void provisionSuccess_noTerminationCalled() {
+            testClient.runInstancesResponse = Promise.success(
+                TestAwsClient.runResponseWith(runningInstance("i-ok")));
+            testClient.describeResponse = Promise.success(
+                TestAwsClient.describeResponseWith(List.of(runningInstance("i-ok"))));
+
+            provider.provision(InstanceType.ON_DEMAND).await()
+                    .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastTerminatedIds).isNull();
         }
     }
 
@@ -350,6 +402,13 @@ class AwsComputeProviderTest {
         return new Instance(instanceId, "t3.medium", "ami-12345",
                             "10.0.0.2", null,
                             new Instance.InstanceState("pending", 0),
+                            null);
+    }
+
+    static Instance terminatedInstance(String instanceId) {
+        return new Instance(instanceId, "t3.medium", "ami-12345",
+                            "10.0.0.3", null,
+                            new Instance.InstanceState("terminated", 48),
                             null);
     }
 

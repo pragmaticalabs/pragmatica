@@ -1,0 +1,16 @@
+# Aether node — global default configuration (Layer 1)
+#
+# Composed at bootstrap time by the CLI. Source-type defaults (Layer 2),
+# operator overrides (Layer 3), and CLI-generated overlay (Layer 4)
+# stack on top of these settings.
+#
+# This file MUST NOT contain source-specific sections like
+# [cloud.compute] or [database] — those belong in per-source-type files.
+
+[slice]
+# "builtin" resolves artifacts from the distributed DHT (quorum reads, replicated across nodes).
+# "local" falls back to ~/.m2/repository — useful for dev, not needed in production.
+repositories = ["builtin"]
+
+[app-http]
+enabled = true

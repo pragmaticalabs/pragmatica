@@ -21,7 +21,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.pragmatica.consensus.Command;
-import org.pragmatica.consensus.rabia.Batch;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.consensus.rabia.StateValue;
 import org.pragmatica.consensus.rabia.helper.ClusterConfiguration;
@@ -37,6 +37,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RabiaSpecInvariantTest {
 
     record TestCommand(String value) implements Command {}
+
+    private static final org.pragmatica.serialization.SliceCodec SERIALIZER =
+        org.pragmatica.consensus.rabia.TestSerializers.stringCommandSerializer(TestCommand.class, TestCommand::value, TestCommand::new);
 
     static Stream<Arguments> clusterSizes() {
         return Stream.of(
@@ -55,8 +58,8 @@ class RabiaSpecInvariantTest {
         void proposal_uniqueness(int size) {
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
-            var batch1 = Batch.batch(List.of(new TestCommand("cmd1")));
-            var batch2 = Batch.batch(List.of(new TestCommand("cmd2")));
+            var batch1 = Batch.create(SERIALIZER, List.of(new TestCommand("cmd1")));
+            var batch2 = Batch.create(SERIALIZER, List.of(new TestCommand("cmd2")));
 
             var node = config.nodeIds().getFirst();
             state.propose(node, batch1);
@@ -82,7 +85,7 @@ class RabiaSpecInvariantTest {
             // When a full value decision is made, there must be a V1 decision_bc
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
             var phase = Phase.ZERO;
             var node = config.nodeIds().getFirst();
 
@@ -101,7 +104,7 @@ class RabiaSpecInvariantTest {
         void decision_full_val_requires_majority(int size) {
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             // Have majority propose same batch
             for (int i = 0; i < config.quorumSize(); i++) {
@@ -123,7 +126,7 @@ class RabiaSpecInvariantTest {
         void decision_full_val_validity(int size) {
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
             var phase = Phase.ZERO;
 
             // Propose the batch
@@ -152,7 +155,7 @@ class RabiaSpecInvariantTest {
         void decision_full_val_agreement(int size) {
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
             var phase = Phase.ZERO;
 
             // Multiple nodes make full_val decisions - they must all agree

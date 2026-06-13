@@ -34,7 +34,7 @@
 
 ### 1.1 Purpose
 
-This specification defines a unified hierarchical storage layer for the Aether distributed runtime, referred to as **AHSE** (Aether Hierarchical Storage Engine) throughout Aether documentation. The system provides tiered, content-addressable block storage that serves as the persistence foundation for multiple Aether subsystems.
+This specification defines a unified hierarchical storage layer for the Aether runtime, referred to as **AHSE** (Aether Hierarchical Storage Engine) throughout Aether documentation. The system provides tiered, content-addressable block storage that serves as the persistence foundation for multiple Aether subsystems.
 
 ### 1.2 The Problem
 

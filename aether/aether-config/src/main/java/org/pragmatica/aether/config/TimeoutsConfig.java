@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config;
 
 import org.pragmatica.lang.io.TimeSpan;
@@ -5,8 +9,6 @@ import org.pragmatica.lang.io.TimeSpan;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Centralized timeout configuration for all Aether subsystems.
-/// All duration fields use TimeSpan; TOML values use human-readable strings ("5s", "500ms").
 public record TimeoutsConfig(InvocationTimeouts invocation,
                              ForwardingTimeouts forwarding,
                              DeploymentTimeouts deployment,
@@ -47,9 +49,12 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
         }
     }
 
-    public record ForwardingTimeouts(TimeSpan retryDelay, int maxRetries) {
+    public record ForwardingTimeouts(TimeSpan retryDelay,
+                                     int maxRetries,
+                                     TimeSpan appTimeout,
+                                     TimeSpan managementTimeout) {
         public static ForwardingTimeouts forwardingTimeouts() {
-            return new ForwardingTimeouts(timeSpan(200).millis(), 3);
+            return new ForwardingTimeouts(timeSpan(200).millis(), 3, timeSpan(5).seconds(), timeSpan(5).seconds());
         }
     }
 
@@ -105,7 +110,7 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
         public static ConsensusTimeouts consensusTimeouts() {
             return new ConsensusTimeouts(timeSpan(5).seconds(),
                                          timeSpan(60).seconds(),
-                                         timeSpan(3).seconds(),
+                                         timeSpan(8).seconds(),
                                          timeSpan(500).millis(),
                                          timeSpan(30).seconds());
         }
@@ -119,7 +124,7 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
 
     public record SwimTimeouts(TimeSpan period, TimeSpan probeTimeout, TimeSpan suspectTimeout) {
         public static SwimTimeouts swimTimeouts() {
-            return new SwimTimeouts(timeSpan(1).seconds(), timeSpan(500).millis(), timeSpan(5).seconds());
+            return new SwimTimeouts(timeSpan(1).seconds(), timeSpan(500).millis(), timeSpan(10).seconds());
         }
     }
 
@@ -143,7 +148,11 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
 
     public record DhtTimeouts(TimeSpan operation, TimeSpan antiEntropyInterval) {
         public static DhtTimeouts dhtTimeouts() {
-            return new DhtTimeouts(timeSpan(10).seconds(), timeSpan(30).seconds());
+            // operation=30s aligns with `DHTConfig.DEFAULT_TIMEOUT` (raised
+            // from 10s to give the `/api/blueprints/deploy` chain — which
+            // hits `dht.get` via BuiltinRepository — enough headroom during
+            // cluster bootstrap + parallel-suite-load. See DHTConfig javadoc.
+            return new DhtTimeouts(timeSpan(30).seconds(), timeSpan(30).seconds());
         }
     }
 

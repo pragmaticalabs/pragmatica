@@ -19,36 +19,38 @@ package org.pragmatica.lang.utils;
 
 import org.pragmatica.lang.io.TimeSpan;
 
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 
-/// Common scheduler for use by [Retry] and [CircuitBreaker]
+/// Common scheduler for periodic and one-shot work across the runtime.
+///
+/// Backed by a single process-wide [VirtualThreadScheduler]: one platform timer thread owns a
+/// deadline-ordered queue and dispatches every task body to a virtual-thread-per-task executor.
+/// This decouples timekeeping from execution, so a slow or blocking task body can never starve
+/// the timing of other scheduled work — the failure mode of the previous fixed-size
+/// `ScheduledThreadPoolExecutor`, where a handful of blocked tasks delayed every periodic tick.
 public final class SharedScheduler {
     private SharedScheduler() {}
 
-    private static final ScheduledExecutorService SCHEDULER =
-        new ScheduledThreadPoolExecutor(Math.max(Runtime.getRuntime().availableProcessors(), 8));
+    private static final VirtualThreadScheduler SCHEDULER = new VirtualThreadScheduler();
 
     /// Schedule one-time invocation
     ///
     /// @return instance of [ScheduledFuture] that can be used to cancel scheduled task
     public static ScheduledFuture<?> schedule(Runnable runnable, TimeSpan interval) {
-        return SCHEDULER.schedule(runnable, interval.millis(), TimeUnit.MILLISECONDS);
+        return SCHEDULER.schedule(runnable, interval);
     }
 
     /// Schedule periodic invocation
     ///
     /// @return instance of [ScheduledFuture] that can be used to cancel scheduled task
     public static ScheduledFuture<?> scheduleAtFixedRate(Runnable runnable, TimeSpan interval) {
-        return SCHEDULER.scheduleAtFixedRate(runnable, interval.millis(), interval.millis(), TimeUnit.MILLISECONDS);
+        return SCHEDULER.scheduleAtFixedRate(runnable, interval);
     }
 
     /// Schedule periodic invocation with custom initial delay
     ///
     /// @return instance of [ScheduledFuture] that can be used to cancel scheduled task
     public static ScheduledFuture<?> scheduleAtFixedRate(Runnable runnable, TimeSpan initialDelay, TimeSpan interval) {
-        return SCHEDULER.scheduleAtFixedRate(runnable, initialDelay.millis(), interval.millis(), TimeUnit.MILLISECONDS);
+        return SCHEDULER.scheduleAtFixedRate(runnable, initialDelay, interval);
     }
 }

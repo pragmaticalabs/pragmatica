@@ -3,6 +3,7 @@ package org.pragmatica.cluster.node.forward;
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.messaging.StreamType;
 
 import java.util.List;
 
@@ -13,7 +14,7 @@ public record ForwardApplyRequest<C extends Command>(
     List<C> commands
 ) implements ProtocolMessage {
     @Override
-    public boolean deliverToPassive() {
-        return true;
+    public StreamType streamType() {
+        return StreamType.CONSENSUS;
     }
 }

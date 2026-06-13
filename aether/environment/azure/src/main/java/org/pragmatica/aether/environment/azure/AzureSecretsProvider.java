@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.azure;
 
 import org.pragmatica.aether.environment.EnvironmentError;
@@ -9,14 +13,13 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Azure Key Vault implementation of the SecretsProvider SPI.
-/// Resolves secrets from Azure Key Vault using path format: `{vaultName}/{secretName}`.
 public record AzureSecretsProvider(AzureClient client) implements SecretsProvider {
     public static Result<AzureSecretsProvider> azureSecretsProvider(AzureClient client) {
         return success(new AzureSecretsProvider(client));
     }
 
-    @Override public Promise<String> resolveSecret(String secretPath) {
+    @Override
+    public Promise<String> resolveSecret(String secretPath) {
         return splitPath(secretPath).async()
                         .flatMap(this::fetchSecret)
                         .mapError(cause -> EnvironmentError.secretResolutionFailed(secretPath,
@@ -25,9 +28,12 @@ public record AzureSecretsProvider(AzureClient client) implements SecretsProvide
 
     static Result<VaultAndSecret> splitPath(String path) {
         var slashIndex = path.indexOf('/');
-        if (slashIndex <= 0 || slashIndex >= path.length() - 1) {return EnvironmentError.secretResolutionFailed(path,
-                                                                                                                new IllegalArgumentException("Path must be in format: vaultName/secretName"))
-        .result();}
+
+        if (slashIndex <= 0 || slashIndex >= path.length() - 1) {
+            return EnvironmentError.secretResolutionFailed(path,
+                                                           new IllegalArgumentException("Path must be in format: vaultName/secretName")).result();
+        }
+
         return success(new VaultAndSecret(path.substring(0, slashIndex), path.substring(slashIndex + 1)));
     }
 
@@ -35,5 +41,5 @@ public record AzureSecretsProvider(AzureClient client) implements SecretsProvide
         return client.getSecret(vas.vaultName(), vas.secretName());
     }
 
-    record VaultAndSecret(String vaultName, String secretName){}
+    record VaultAndSecret(String vaultName, String secretName) {}
 }

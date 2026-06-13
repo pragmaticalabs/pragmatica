@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.linter.rules;
 
 import org.pragmatica.aether.pg.schema.event.SchemaEvent;
@@ -14,7 +18,6 @@ import java.util.Set;
 import static org.pragmatica.aether.pg.schema.linter.LintDiagnostic.Severity.WARNING;
 
 
-/// Rules detecting problematic type choices.
 public final class TypeDesignRules {
     private TypeDesignRules() {}
 
@@ -178,16 +181,23 @@ public final class TypeDesignRules {
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
             if (event instanceof SchemaEvent.TableCreated e) {
                 var results = new ArrayList<LintDiagnostic>();
-                var pkColumns = e.constraints().stream()
-                                             .filter(c -> c instanceof Constraint.PrimaryKey)
-                                             .flatMap(c -> ((Constraint.PrimaryKey) c).columns().stream())
-                                             .toList();
-                for (var col : e.columns()) {if (pkColumns.contains(col.name()) && col.type() instanceof PgType.BuiltinType bt && SMALL_INT_TYPES.contains(bt.name())) {results.add(LintDiagnostic.warning(id(),
-                                                                                                                                                                                                           "Primary key column '" + col.name() + "' uses " + bt.name() + " — risk of ID exhaustion",
-                                                                                                                                                                                                           e.span(),
-                                                                                                                                                                                                           "Use bigint or bigserial for primary key columns"));}}
+                var pkColumns = e.constraints().stream().filter(c -> c instanceof Constraint.PrimaryKey).flatMap(c -> ((Constraint.PrimaryKey) c).columns()
+                                                                                                                                                 .stream()).toList();
+
+                for (var col : e.columns()) {
+                    if (pkColumns.contains(col.name()) && col.type() instanceof PgType.BuiltinType bt && SMALL_INT_TYPES.contains(bt.name())) {
+                        results.add(LintDiagnostic.warning(id(),
+                                                           "Primary key column '" + col.name()
+                                                          + "' uses " + bt.name()
+                                                          + " — risk of ID exhaustion",
+                                                           e.span(),
+                                                           "Use bigint or bigserial for primary key columns"));
+                    }
+                }
+
                 return results;
             }
+
             return List.of();
         }
     }
@@ -255,8 +265,10 @@ public final class TypeDesignRules {
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
             return checkColumnType(event,
-                                   type -> type instanceof PgType.BuiltinType bt && "varchar".equals(bt.name()) && !bt.modifiers()
-                                                                                                                                .isEmpty(),
+                                   type -> type instanceof PgType.BuiltinType bt
+                                           && "varchar".equals(bt.name())
+                                           && !bt.modifiers()
+                                                 .isEmpty(),
                                    id(),
                                    "varchar(n) — changing length later requires ACCESS EXCLUSIVE lock, no performance benefit over text",
                                    "Use text + CHECK constraint for max length, or text without limit");
@@ -279,20 +291,25 @@ public final class TypeDesignRules {
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
             if (event instanceof SchemaEvent.TableCreated e) {
                 var results = new ArrayList<LintDiagnostic>();
-                var pkColumns = e.constraints().stream()
-                                             .filter(c -> c instanceof Constraint.PrimaryKey)
-                                             .flatMap(c -> ((Constraint.PrimaryKey) c).columns().stream())
-                                             .toList();
-                for (var col : e.columns()) {if (pkColumns.contains(col.name()) && col.type() instanceof PgType.BuiltinType bt && Set.of("smallint",
-                                                                                                                                         "int2",
-                                                                                                                                         "smallserial",
-                                                                                                                                         "serial2")
-                .contains(bt.name())) {results.add(LintDiagnostic.warning(id(),
-                                                                          "Primary key column '" + col.name() + "' uses smallint — exhausts at ~32K rows",
-                                                                          e.span(),
-                                                                          "Use bigint for primary keys"));}}
+                var pkColumns = e.constraints().stream().filter(c -> c instanceof Constraint.PrimaryKey).flatMap(c -> ((Constraint.PrimaryKey) c).columns()
+                                                                                                                                                 .stream()).toList();
+
+                for (var col : e.columns()) {
+                    if (pkColumns.contains(col.name()) && col.type() instanceof PgType.BuiltinType bt && Set.of("smallint",
+                                                                                                                "int2",
+                                                                                                                "smallserial",
+                                                                                                                "serial2").contains(bt.name())) {
+                        results.add(LintDiagnostic.warning(id(),
+                                                           "Primary key column '" + col.name()
+                                                          + "' uses smallint — exhausts at ~32K rows",
+                                                           e.span(),
+                                                           "Use bigint for primary keys"));
+                    }
+                }
+
                 return results;
             }
+
             return List.of();
         }
     }
@@ -333,20 +350,28 @@ public final class TypeDesignRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if (event instanceof SchemaEvent.TypeCreated e && e.type() instanceof PgType.EnumType) {return List.of(LintDiagnostic.warning(id(),
-                                                                                                                                          "Enum type '" + e.type()
-                                                                                                                                                                .name() + "' — values cannot be removed or reordered after creation",
-                                                                                                                                          e.span(),
-                                                                                                                                          "Consider a text column with CHECK constraint for frequently changing value sets"));}
+            if (event instanceof SchemaEvent.TypeCreated e && e.type() instanceof PgType.EnumType) {
+                return List.of(LintDiagnostic.warning(id(),
+                                                      "Enum type '" + e.type()
+                                                                       .name()
+                                                     + "' — values cannot be removed or reordered after creation",
+                                                      e.span(),
+                                                      "Consider a text column with CHECK constraint for frequently changing value sets"));
+            }
+
             return List.of();
         }
     }
 
     private static boolean hasZeroPrecisionTimestamp(PgType type) {
-        return type instanceof PgType.BuiltinType bt && (bt.name().startsWith("timestamp") || bt.name()
-                                                                                                     .startsWith("time")) && !bt.modifiers()
-                                                                                                                                          .isEmpty() && bt.modifiers()
-                                                                                                                                                                    .getFirst() == 0;
+        return type instanceof PgType.BuiltinType bt
+               && (bt.name()
+                     .startsWith("timestamp") || bt.name()
+                                                   .startsWith("time"))
+               && !bt.modifiers()
+                     .isEmpty()
+               && bt.modifiers()
+                    .getFirst() == 0;
     }
 
     static List<LintDiagnostic> checkColumnType(SchemaEvent event,
@@ -355,28 +380,37 @@ public final class TypeDesignRules {
                                                 String message,
                                                 String suggestion) {
         var results = new ArrayList<LintDiagnostic>();
-        switch (event){
+
+        switch (event) {
             case SchemaEvent.TableCreated e -> {
-                for (var col : e.columns()) {if (typeCheck.test(col.type())) {results.add(LintDiagnostic.warning(ruleId,
-                                                                                                                 "Column '" + col.name() + "': " + message,
-                                                                                                                 e.span(),
-                                                                                                                 suggestion));}}
+                for (var col : e.columns()) {
+                    if (typeCheck.test(col.type())) {
+                        results.add(LintDiagnostic.warning(ruleId,
+                                                           "Column '" + col.name() + "': " + message,
+                                                           e.span(),
+                                                           suggestion));
+                    }
+                }
             }
             case SchemaEvent.ColumnAdded e -> {
-                if (typeCheck.test(e.column().type())) {results.add(LintDiagnostic.warning(ruleId,
-                                                                                           "Column '" + e.column()
-                                                                                                                .name() + "': " + message,
-                                                                                           e.span(),
-                                                                                           suggestion));}
+                if (typeCheck.test(e.column().type())) {
+                    results.add(LintDiagnostic.warning(ruleId,
+                                                       "Column '" + e.column().name() + "': " + message,
+                                                       e.span(),
+                                                       suggestion));
+                }
             }
             case SchemaEvent.ColumnTypeChanged e -> {
-                if (typeCheck.test(e.newType())) {results.add(LintDiagnostic.warning(ruleId,
-                                                                                     "Column '" + e.column() + "': " + message,
-                                                                                     e.span(),
-                                                                                     suggestion));}
+                if (typeCheck.test(e.newType())) {
+                    results.add(LintDiagnostic.warning(ruleId,
+                                                       "Column '" + e.column() + "': " + message,
+                                                       e.span(),
+                                                       suggestion));
+                }
             }
             default -> {}
         }
+
         return results;
     }
 }

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.codegen;
 
 import org.pragmatica.aether.pg.schema.model.BuiltinTypes;
@@ -9,7 +13,6 @@ import java.util.Map;
 import java.util.Set;
 
 
-/// Maps PostgreSQL types to Java types.
 public final class TypeMapper {
     private TypeMapper() {}
 
@@ -18,7 +21,7 @@ public final class TypeMapper {
                                boolean primitive,
                                Option<String> importStatement,
                                String rowAccessorMethod,
-                               Option<String> rowAccessorTypeArg){}
+                               Option<String> rowAccessorTypeArg) {}
 
     private static final Map<String, JavaTypeInfo> MAPPINGS = Map.ofEntries(entry("smallint",
                                                                                   "short",
@@ -274,20 +277,22 @@ public final class TypeMapper {
                                                                                   null));
 
     public static Option<JavaTypeInfo> map(PgType type) {
-        return switch (type){
+        return switch (type) {
             case PgType.BuiltinType bt -> {
                 var canonical = BuiltinTypes.canonicalize(bt.name());
                 var info = MAPPINGS.get(canonical);
+
                 yield info != null
-                     ? Option.present(info)
-                     : Option.empty();
+                      ? Option.present(info)
+                      : Option.empty();
             }
             case PgType.ArrayType at -> map(at.elementType()).map(elem -> new JavaTypeInfo(elem.typeName() + "[]",
                                                                                            elem.boxedTypeName() + "[]",
                                                                                            false,
                                                                                            elem.importStatement(),
                                                                                            "getObject",
-                                                                                           Option.present(elem.typeName() + "[].class")));
+                                                                                           Option.present(elem.typeName()
+                                                                                                         + "[].class")));
             case PgType.EnumType _ -> Option.present(new JavaTypeInfo("String",
                                                                       "String",
                                                                       false,
@@ -308,7 +313,10 @@ public final class TypeMapper {
     }
 
     private static JavaTypeInfo boxIfNeeded(JavaTypeInfo info, CodegenConfig.NullableStyle style) {
-        if (style != CodegenConfig.NullableStyle.OPTION || !info.primitive()) {return info;}
+        if (style != CodegenConfig.NullableStyle.OPTION || !info.primitive()) {
+            return info;
+        }
+
         return new JavaTypeInfo(info.boxedTypeName(),
                                 info.boxedTypeName(),
                                 false,
@@ -319,7 +327,9 @@ public final class TypeMapper {
 
     public static Set<String> importsFor(JavaTypeInfo info) {
         var imports = new HashSet<String>();
+
         info.importStatement().onPresent(imports::add);
+
         return imports;
     }
 

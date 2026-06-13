@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.invoke;
 
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -9,9 +14,10 @@ import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.update.DeploymentStrategy;
 import org.pragmatica.aether.update.HealthThresholds;
 import org.pragmatica.aether.update.StrategyConfig;
-import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.util.List;
 
@@ -26,22 +32,22 @@ class StubDeploymentManager implements DeploymentManager {
                                     HealthThresholds thresholds,
                                     CleanupPolicy cleanupPolicy,
                                     int instances) {
-        return DeploymentError.General.NOT_LEADER.result();
+        return DeploymentError.General.NOT_ASSIGNED.result();
     }
 
     @Override
     public Result<Deployment> promote(String deploymentId) {
-        return DeploymentError.General.NOT_LEADER.result();
+        return DeploymentError.General.NOT_ASSIGNED.result();
     }
 
     @Override
     public Result<Deployment> rollback(String deploymentId) {
-        return DeploymentError.General.NOT_LEADER.result();
+        return DeploymentError.General.NOT_ASSIGNED.result();
     }
 
     @Override
     public Result<Deployment> complete(String deploymentId) {
-        return DeploymentError.General.NOT_LEADER.result();
+        return DeploymentError.General.NOT_ASSIGNED.result();
     }
 
     @Override
@@ -60,5 +66,17 @@ class StubDeploymentManager implements DeploymentManager {
     }
 
     @Override
-    public void onLeaderChange(LeaderChange leaderChange) {}
+    public Promise<Unit> activate() {
+        return Promise.success(Unit.unit());
+    }
+
+    @Override
+    public Promise<Unit> deactivate() {
+        return Promise.success(Unit.unit());
+    }
+
+    @Override
+    public boolean isActive() {
+        return false;
+    }
 }

@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.environment.hetzner;
 
 import org.junit.jupiter.api.Assumptions;
@@ -19,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.cloud.hetzner.HetznerConfig.hetznerConfig;
 
 /// Integration tests for the Hetzner Cloud provider.
-/// Requires HETZNER_API_TOKEN environment variable to be set.
+/// Requires HCLOUD_TOKEN environment variable to be set.
 /// Run with: mvn verify -Djbct.skip=true -Pwith-cloud-tests -pl aether/environment/hetzner -am
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class HetznerCloudIT {
@@ -30,14 +35,14 @@ class HetznerCloudIT {
 
     @BeforeAll
     static void setUp() {
-        var token = System.getenv("HETZNER_API_TOKEN");
-        Assumptions.assumeTrue(token != null && !token.isBlank(), "HETZNER_API_TOKEN not set");
+        var token = System.getenv("HCLOUD_TOKEN");
+        Assumptions.assumeTrue(token != null && !token.isBlank(), "HCLOUD_TOKEN not set");
 
         var config = hetznerConfig(token);
         client = HetznerClient.hetznerClient(config);
 
         var envConfig = HetznerEnvironmentConfig.hetznerEnvironmentConfig(
-            config, "cx22", "ubuntu-24.04", "fsn1",
+            config, "cax11", "ubuntu-24.04", "fsn1",
             List.of(), List.of(), List.of(), "").unwrap();
 
         provider = HetznerComputeProvider.hetznerComputeProvider(client, envConfig).unwrap();

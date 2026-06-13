@@ -4,6 +4,7 @@ document.addEventListener('alpine:init', function() {
             currentPage: 'overview',
             wsConnected: false,
             pollTimer: null,
+            secondaryPollTimer: null,
             sparklines: {},
             charts: {},
             chartsInitialized: false,
@@ -144,10 +145,24 @@ document.addEventListener('alpine:init', function() {
                     self.pollStatus();
                     Alpine.store('events').refresh();
                 }, 2000);
+
+                // Secondary stores: poll at lower frequency as fallback
+                // for when WS misses INITIAL_STATE or drops connection
+                this.secondaryPollTimer = setInterval(function() {
+                    Alpine.store('topology').refresh();
+                    Alpine.store('governors').refresh();
+                    Alpine.store('strategies').refresh();
+                    Alpine.store('streams').refresh();
+                    Alpine.store('storage').refresh();
+                    Alpine.store('observability').refresh();
+                    Alpine.store('deployments').refreshSlices();
+                    Alpine.store('deployments').refreshRoutes();
+                    Alpine.store('schema').refresh();
+                }, 10000);
             },
 
             async pollStatus() {
-                var data = await RestClient.get('/api/status');
+                var data = await RestClient.get('/api/nodes/status');
                 if (data) {
                     Alpine.store('cluster').updateFromStatus(data);
                     Alpine.store('metrics').updateFromStatus(data);
@@ -156,7 +171,7 @@ document.addEventListener('alpine:init', function() {
                     Alpine.store('metrics').updateNodeHistory(Alpine.store('cluster').nodes);
                     this.updateCharts();
                 }
-                // Fetch slice details for node→slice mapping (REST /api/status only has sliceCount)
+                // Fetch slice details for node→slice mapping (REST /api/nodes/status only has sliceCount)
                 var slices = await RestClient.get('/api/slices');
                 if (slices) {
                     Alpine.store('cluster').updateSlices(slices);
@@ -175,6 +190,7 @@ document.addEventListener('alpine:init', function() {
                 Alpine.store('governors').refresh();
                 Alpine.store('strategies').refresh();
                 Alpine.store('streams').refresh();
+                Alpine.store('storage').refresh();
             },
 
             initSparklines() {

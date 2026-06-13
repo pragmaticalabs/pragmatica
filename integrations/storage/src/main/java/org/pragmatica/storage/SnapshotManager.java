@@ -1,5 +1,6 @@
 package org.pragmatica.storage;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
 /// Manages automatic metadata snapshots to local disk.
@@ -8,9 +9,11 @@ public interface SnapshotManager {
 
     /// Check if a snapshot is needed and take one if so.
     /// Called after metadata mutations.
+    @Contract
     void maybeSnapshot();
 
     /// Force a snapshot regardless of triggers.
+    @Contract
     void forceSnapshot();
 
     /// Restore metadata from the latest local disk snapshot.

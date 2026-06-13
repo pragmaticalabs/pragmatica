@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, release-*, feature/*]
   pull_request:
-    branches: [main]
+    branches: [main, release-*]
   workflow_dispatch:
 
 jobs:
@@ -26,12 +26,16 @@ jobs:
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
 
       - name: Build and test all modules
-        run: mvn install -B
-        timeout-minutes: 30
+        run: mvn install -B -pl '!examples'
+        timeout-minutes: 45
 
       - name: Run postgres-async integration tests
         run: mvn test -B -pl integrations/db/postgres-async -Dpostgres-async.skipTests=false
         timeout-minutes: 10
+
+      - name: Verify examples (end-to-end pipeline check)
+        run: mvn verify -B -f examples/pom.xml
+        timeout-minutes: 15
 
       - name: Upload test results
         uses: actions/upload-artifact@v4

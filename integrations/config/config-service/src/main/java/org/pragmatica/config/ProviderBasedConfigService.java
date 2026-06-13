@@ -178,7 +178,24 @@ public final class ProviderBasedConfigService implements ConfigService {
         if (extracted.isSuccess()) {
             return extracted.flatMap(v -> IndexedValue.indexedValue(index, v));
         }
+        // Convention: derive `name` (String) from the section suffix when it's absent from TOML.
+        // Supports blueprint patterns like [streams.test-events] where the trailing segment IS the name.
+        var derived = deriveNameFromSectionSuffix(section, component);
+        if (derived.isPresent()) {
+            return IndexedValue.indexedValue(index, derived.unwrap());
+        }
         return getDefaultComponentValue(configClass, component, index);
+    }
+
+    private static Option<Object> deriveNameFromSectionSuffix(String section, RecordComponent component) {
+        if (!"name".equals(component.getName()) || component.getType() != String.class) {
+            return none();
+        }
+        var lastDot = section.lastIndexOf('.');
+        if (lastDot < 0 || lastDot == section.length() - 1) {
+            return none();
+        }
+        return some(section.substring(lastDot + 1));
     }
 
     private static Result<Object[]> accumulateArg(Result<Object[]> acc, Result<IndexedValue> next) {

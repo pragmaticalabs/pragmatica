@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.jbct.slice.model;
 
 import org.pragmatica.lang.Option;
@@ -165,5 +170,13 @@ public record ResourceQualifierModel(TypeMirror resourceType,
     /// Deduplication key: type simple name + config section.
     public String deduplicationKey() {
         return resourceTypeSimpleName + ":" + configSection;
+    }
+
+    private static final String CONFIGURATION_SECTION_TYPE = "org.pragmatica.aether.slice.annotation.ConfigurationSection";
+
+    /// Check if this resource qualifier is a ConfigurationSection marker.
+    /// When true, the processor generates config parsing code instead of ctx.resources().provide().
+    public boolean isConfigurationSection() {
+        return CONFIGURATION_SECTION_TYPE.equals(resourceType.toString());
     }
 }

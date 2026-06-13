@@ -1075,7 +1075,6 @@ The in-memory Phase 1 design must not preclude the persistence path. Key constra
 ## References
 
 ### Internal
-- [Passive Worker Pools Spec](passive-worker-pools-spec.md) — Two-layer topology, governor protocol, SWIM integration, KV-Store split
 - [Hierarchical Storage Engine (AHSE) Spec](hierarchical-storage-spec.md) — Tiered storage for streaming persistence, content store, and artifact storage
 - [KV-Store Scalability Analysis](../internal/kv-store-scalability.md) — Consensus data budget analysis
 

@@ -1,6 +1,22 @@
-# Pragmatica Aether
+# Aether — Unified Application Runtime
 
-Distributed runtime for Java -- scale horizontally without microservices complexity.
+Unified Application Runtime for Java -- scale horizontally without microservices complexity.
+
+> **Release status: `1.0.0-rc1` (release candidate).** This RC validates the distributed
+> foundation — consensus, leader election, failure detection, membership, and topology
+> management — under sustained cloud load. Scope for this RC:
+> - **Single trust domain.** Aether assumes all cluster nodes and management clients are
+>   operated by one trusted party. It is **not** hardened for multi-tenant or hostile-network
+>   deployment.
+> - **Security is ON by default**, not off: the management API requires API-key auth with
+>   role-based access (viewer / operator / admin), and inter-node transport uses TLS
+>   (self-signed by default, or operator-supplied certificates). `AETHER_INSECURE_DEV_MODE`
+>   is an explicit **opt-in** (off by default) that enables test-injection endpoints; it is
+>   **refused at boot** when operator TLS certificates are configured, and logs a loud startup
+>   warning whenever it is active.
+> - **Not yet production-hardened.** Some background reconcilers are tuned for settled clusters
+>   and can be transiently slower to converge under heavy churn; these are tracked for the next
+>   milestones. Use RC1 for evaluation and non-critical workloads.
 
 ## Overview
 

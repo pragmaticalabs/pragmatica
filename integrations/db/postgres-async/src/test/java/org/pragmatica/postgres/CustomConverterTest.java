@@ -1,6 +1,8 @@
 package org.pragmatica.postgres;
 
 import org.pragmatica.postgres.net.Converter;
+import org.pragmatica.postgres.net.PgValue;
+import org.pragmatica.postgres.net.PgWriter;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -32,13 +34,16 @@ public class CustomConverterTest {
         }
 
         @Override
-        public String from(Json o) {
-            return o.json;
+        public void from(Json o, PgWriter writer) {
+            writer.writeText(o.json);
         }
 
         @Override
-        public Json to(Oid oid, String value) {
-            return new Json(value);
+        public Json to(PgValue value) {
+            return switch (value) {
+                case PgValue.Text text -> new Json(text.asString());
+                case PgValue.Binary binary -> new Json(new String(binary.asBytes()));
+            };
         }
     }
 

@@ -14,21 +14,33 @@ x-node-common: &node-common
   image: aether-node:local
   networks:
     - aether-network
+  group_add:
+    - "${DOCKER_GID:-984}"
   volumes:
     - /var/run/docker.sock:/var/run/docker.sock
   environment: &node-env
     CLUSTER_PORT: "6000"
     MANAGEMENT_PORT: "8080"
-    PEERS: "node-1:aether-node-1:6000,node-2:aether-node-2:6000,node-3:aether-node-3:6000,node-4:aether-node-4:6000,node-5:aether-node-5:6000"
+    PEERS: "aether-it-node-1:aether-it-node-1:6000,aether-it-node-2:aether-it-node-2:6000,aether-it-node-3:aether-it-node-3:6000,aether-it-node-4:aether-it-node-4:6000,aether-it-node-5:aether-it-node-5:6000"
     CORE_MAX: "5"
+    DOCKER_GID: "${DOCKER_GID:-984}"
     JAVA_OPTS: "-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
+    AETHER_CLUSTER_SECRET: "aether-integration-test-cluster-secret"
+    AETHER_CLUSTER_NAME: "it"
   healthcheck:
     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
     interval: 10s
     timeout: 5s
     retries: 6
     start_period: 30s
-  restart: unless-stopped
+  # Aether uses a TERMINAL-REMOVAL membership model: a dead NodeId NEVER returns under
+  # the same id — recovery is always a brand-new node with a new ULID NodeId minted by
+  # CTM auto-heal. Container auto-restart (`unless-stopped`/`always`) would revive a
+  # crashed node under the SAME identity, resurrecting a NodeId the cluster has already
+  # terminally removed and corrupting membership. `restart: "no"` keeps `docker kill`
+  # authoritative and lets auto-heal own recovery. (postgres below is infra, not an
+  # Aether node, so it legitimately restarts.)
+  restart: "no"
 
 services:
   # --- PostgreSQL (for database/schema tests and @PgSql persistence) ---
@@ -53,66 +65,69 @@ services:
       retries: 10
 
   # --- 5-node Aether cluster ---
-  aether-node-1:
+  aether-it-node-1:
     <<: *node-common
-    container_name: aether-node-1
-    hostname: aether-node-1
+    container_name: aether-it-node-1
+    hostname: aether-it-node-1
     environment:
       <<: *node-env
-      NODE_ID: "node-1"
+      NODE_ID: "aether-it-node-1"
     ports:
       - "5150:8080"   # Management API
       - "8070:8070"   # App HTTP
+      - "9090:8070"   # LB app port (node-1 serves directly)
+      - "9091:8080"   # LB mgmt port (node-1 serves directly)
     depends_on:
       postgres:
         condition: service_healthy
 
-  aether-node-2:
+  aether-it-node-2:
     <<: *node-common
-    container_name: aether-node-2
-    hostname: aether-node-2
+    container_name: aether-it-node-2
+    hostname: aether-it-node-2
     environment:
       <<: *node-env
-      NODE_ID: "node-2"
+      NODE_ID: "aether-it-node-2"
     ports:
       - "5151:8080"
       - "8071:8070"
 
-  aether-node-3:
+  aether-it-node-3:
     <<: *node-common
-    container_name: aether-node-3
-    hostname: aether-node-3
+    container_name: aether-it-node-3
+    hostname: aether-it-node-3
     environment:
       <<: *node-env
-      NODE_ID: "node-3"
+      NODE_ID: "aether-it-node-3"
     ports:
       - "5152:8080"
       - "8072:8070"
 
-  aether-node-4:
+  aether-it-node-4:
     <<: *node-common
-    container_name: aether-node-4
-    hostname: aether-node-4
+    container_name: aether-it-node-4
+    hostname: aether-it-node-4
     environment:
       <<: *node-env
-      NODE_ID: "node-4"
+      NODE_ID: "aether-it-node-4"
     ports:
       - "5153:8080"
       - "8073:8070"
 
-  aether-node-5:
+  aether-it-node-5:
     <<: *node-common
-    container_name: aether-node-5
-    hostname: aether-node-5
+    container_name: aether-it-node-5
+    hostname: aether-it-node-5
     environment:
       <<: *node-env
-      NODE_ID: "node-5"
+      NODE_ID: "aether-it-node-5"
     ports:
       - "5154:8080"
       - "8074:8070"
 
 networks:
   aether-network:
+    name: aether-network
     driver: bridge
 
 volumes:

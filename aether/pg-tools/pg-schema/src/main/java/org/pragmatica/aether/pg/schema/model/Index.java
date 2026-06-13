@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.model;
 
 import org.pragmatica.lang.Option;
@@ -5,7 +9,6 @@ import org.pragmatica.lang.Option;
 import java.util.List;
 
 
-/// An index definition.
 public record Index(String name,
                     String table,
                     List<IndexElement> elements,
@@ -14,7 +17,7 @@ public record Index(String name,
                     boolean concurrent,
                     Option<String> whereClause,
                     List<String> includeColumns) {
-    public record IndexElement(String expression, Option<SortOrder> order, Option<NullsOrder> nullsOrder){}
+    public record IndexElement(String expression, Option<SortOrder> order, Option<NullsOrder> nullsOrder) {}
 
     public enum IndexMethod {
         BTREE,

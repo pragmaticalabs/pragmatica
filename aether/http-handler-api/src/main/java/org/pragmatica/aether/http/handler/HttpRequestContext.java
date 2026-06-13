@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.handler;
 
 import org.pragmatica.aether.http.handler.security.Role;
@@ -12,26 +16,14 @@ import java.util.Objects;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Raw HTTP request data passed through SliceInvoker.
-///
-/// Contains all information needed to reconstruct HTTP request at destination node
-/// where parameter extraction occurs.
-///
-///
-/// @param path        request path (e.g., "/users/123")
-/// @param method      HTTP method (e.g., "GET", "POST")
-/// @param queryParams query parameters as multi-value map
-/// @param headers     HTTP headers as multi-value map
-/// @param body        request body bytes (empty for GET)
-/// @param requestId   unique request identifier for tracing
-/// @param security    security context with authentication info
-@Codec public record HttpRequestContext(String path,
-                                        String method,
-                                        Map<String, List<String>> queryParams,
-                                        Map<String, List<String>> headers,
-                                        byte[] body,
-                                        String requestId,
-                                        SecurityContext security) {
+@Codec
+public record HttpRequestContext(String path,
+                                 String method,
+                                 Map<String, List<String>> queryParams,
+                                 Map<String, List<String>> headers,
+                                 byte[] body,
+                                 String requestId,
+                                 SecurityContext security) {
     private static final byte[] EMPTY_BODY = new byte[0];
 
     public HttpRequestContext {
@@ -41,7 +33,9 @@ import static org.pragmatica.lang.Result.success;
         Objects.requireNonNull(headers, "headers");
         Objects.requireNonNull(requestId, "requestId");
         Objects.requireNonNull(security, "security");
-        if (body == null || body.length == 0) {body = EMPTY_BODY;}
+        if (body == null || body.length == 0) {
+            body = EMPTY_BODY;
+        }
     }
 
     public static Result<HttpRequestContext> httpRequestContext(Result<String> path,

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.http;
 
 import org.pragmatica.aether.slice.annotation.ResourceQualifier;
@@ -8,11 +12,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 
-/// Resource qualifier for injecting HttpClient instances.
-///
-/// Use this annotation on factory method parameters to inject an HttpClient
-/// configured from the "http" section of aether.toml.
-///
-/// @see HttpClient
-/// @see ResourceQualifier
-@ResourceQualifier(type = HttpClient.class, config = "http") @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.PARAMETER) public@interface Http {}
+@ResourceQualifier(type = HttpClient.class, config = "http")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+public @interface Http {}

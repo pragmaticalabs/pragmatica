@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.shared;
 
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import java.net.URI;
 import java.util.Set;
@@ -19,10 +20,12 @@ public sealed interface UrlValidation permits UrlValidation.unused {
     /// @param url The URL string to validate
     /// @return Result containing the validated URI, or failure if URL is unsafe
     static Result<URI> validateDownloadUrl(String url) {
-        if (url == null || url.isBlank()) {
-            return SecurityError.UrlRejected.urlRejected(url, "URL is null or blank")
-                                .result();
-        }
+        return Verify.ensure(url, Verify.Is::present,
+                             SecurityError.UrlRejected.urlRejected("", "URL is null or blank"))
+                     .flatMap(UrlValidation::validateUrl);
+    }
+
+    private static Result<URI> validateUrl(String url) {
         URI uri;
         try{
             uri = URI.create(url);

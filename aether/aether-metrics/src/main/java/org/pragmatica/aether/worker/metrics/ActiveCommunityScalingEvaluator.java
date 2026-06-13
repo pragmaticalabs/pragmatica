@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.metrics;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -15,12 +19,10 @@ import static org.pragmatica.lang.Option.empty;
 import static org.pragmatica.lang.Option.some;
 
 
-/// Active implementation of CommunityScalingEvaluator.
-@SuppressWarnings({"JBCT-STY-05", "JBCT-RET-01", "JBCT-ZONE-02"}) final class ActiveCommunityScalingEvaluator implements CommunityScalingEvaluator {
+@SuppressWarnings({"JBCT-STY-05", "JBCT-RET-01", "JBCT-ZONE-02"})
+final class ActiveCommunityScalingEvaluator implements CommunityScalingEvaluator {
     private static final Logger log = LoggerFactory.getLogger(CommunityScalingEvaluator.class);
-
     private static final String SCALE_UP = "UP";
-
     private static final String SCALE_DOWN = "DOWN";
 
     private final double scaleUpCpuThreshold;
@@ -53,73 +55,83 @@ import static org.pragmatica.lang.Option.some;
         this.lastScalingRequestTime = lastScalingRequestTime;
     }
 
-    @Override public Option<CommunityScalingRequest> evaluate(String communityId,
-                                                              NodeId governorId,
-                                                              int memberCount,
-                                                              WindowSample currentSample) {
+    @Override
+    public Option<CommunityScalingRequest> evaluate(String communityId,
+                                                    NodeId governorId,
+                                                    int memberCount,
+                                                    WindowSample currentSample) {
         addSample(currentSample);
-        if (window.size() <sustainedCount) {
+        if (window.size() < sustainedCount) {
             log.trace("Window not full enough ({}/{}), skipping evaluation", window.size(), sustainedCount);
+
             return empty();
         }
+
         return detectScaleUp(communityId, governorId, memberCount).orElse(() -> detectScaleDown(communityId,
                                                                                                 governorId,
                                                                                                 memberCount));
     }
 
-    @Override public List<WindowSample> slidingWindow() {
+    @Override
+    public List<WindowSample> slidingWindow() {
         return List.copyOf(window);
     }
 
-    @Override public void reset() {
+    @Override
+    public void reset() {
         window.clear();
         lastScalingRequestTime.clear();
     }
 
     private void addSample(WindowSample sample) {
         window.addLast(sample);
-        while (window.size() > windowSize) {window.removeFirst();}
+        while (window.size() > windowSize) {
+            window.removeFirst();
+        }
     }
 
     private Option<CommunityScalingRequest> detectScaleUp(String communityId, NodeId governorId, int memberCount) {
         var cpuBreaches = countCpuBreachesUp();
         var p95Breaches = countP95Breaches();
         var errorBreaches = countErrorBreaches();
-        if (cpuBreaches >= sustainedCount || p95Breaches >= sustainedCount || errorBreaches >= sustainedCount) {return emitIfNotCoolingDown(communityId,
-                                                                                                                                            governorId,
-                                                                                                                                            SCALE_UP,
-                                                                                                                                            memberCount,
-                                                                                                                                            memberCount + 1);}
+
+        if (cpuBreaches >= sustainedCount || p95Breaches >= sustainedCount || errorBreaches >= sustainedCount) {
+            return emitIfNotCoolingDown(communityId, governorId, SCALE_UP, memberCount, memberCount + 1);
+        }
+
         return empty();
     }
 
     private Option<CommunityScalingRequest> detectScaleDown(String communityId, NodeId governorId, int memberCount) {
-        if (countCpuBreachesDown() >= sustainedCount) {return emitIfNotCoolingDown(communityId,
-                                                                                   governorId,
-                                                                                   SCALE_DOWN,
-                                                                                   memberCount,
-                                                                                   Math.max(1, memberCount - 1));}
+        if (countCpuBreachesDown() >= sustainedCount) {
+            return emitIfNotCoolingDown(communityId, governorId, SCALE_DOWN, memberCount, Math.max(1, memberCount - 1));
+        }
+
         return empty();
     }
 
     private long countCpuBreachesUp() {
-        return window.stream().filter(s -> s.avgCpuUsage() > scaleUpCpuThreshold)
-                            .count();
+        return window.stream()
+                     .filter(s -> s.avgCpuUsage() > scaleUpCpuThreshold)
+                     .count();
     }
 
     private long countCpuBreachesDown() {
-        return window.stream().filter(s -> s.avgCpuUsage() <scaleDownCpuThreshold)
-                            .count();
+        return window.stream()
+                     .filter(s -> s.avgCpuUsage() < scaleDownCpuThreshold)
+                     .count();
     }
 
     private long countP95Breaches() {
-        return window.stream().filter(s -> s.avgP95LatencyMs() > scaleUpP95ThresholdMs)
-                            .count();
+        return window.stream()
+                     .filter(s -> s.avgP95LatencyMs() > scaleUpP95ThresholdMs)
+                     .count();
     }
 
     private long countErrorBreaches() {
-        return window.stream().filter(s -> s.avgErrorRate() > scaleUpErrorRateThreshold)
-                            .count();
+        return window.stream()
+                     .filter(s -> s.avgErrorRate() > scaleUpErrorRateThreshold)
+                     .count();
     }
 
     private Option<CommunityScalingRequest> emitIfNotCoolingDown(String communityId,
@@ -130,13 +142,16 @@ import static org.pragmatica.lang.Option.some;
         var now = System.currentTimeMillis();
         var cooldownKey = communityId + ":" + direction;
         var lastTime = lastScalingRequestTime.get(cooldownKey);
-        if (lastTime != null && (now - lastTime) <cooldownMs) {
+
+        if (lastTime != null && (now - lastTime) < cooldownMs) {
             log.debug("Scaling {} for {} in cooldown ({} ms remaining)",
                       direction,
                       communityId,
                       cooldownMs - (now - lastTime));
+
             return empty();
         }
+
         lastScalingRequestTime.put(cooldownKey, now);
         var evidence = buildEvidence(currentInstances);
         var artifact = buildPlaceholderArtifact(communityId);
@@ -147,27 +162,23 @@ import static org.pragmatica.lang.Option.some;
                                                                       currentInstances,
                                                                       requestedInstances,
                                                                       evidence);
+
         log.info("Emitting {} scaling request for community '{}': {} -> {} instances",
                  direction,
                  communityId,
                  request.currentInstances(),
                  request.requestedInstances());
+
         return some(request);
     }
 
     private ScalingEvidence buildEvidence(int memberCount) {
-        var avgCpu = window.stream().mapToDouble(WindowSample::avgCpuUsage)
-                                  .average()
-                                  .orElse(0.0);
-        var avgP95 = window.stream().mapToDouble(WindowSample::avgP95LatencyMs)
-                                  .average()
-                                  .orElse(0.0);
-        var totalInvocations = window.stream().mapToLong(WindowSample::totalActiveInvocations)
-                                            .sum();
-        var avgError = window.stream().mapToDouble(WindowSample::avgErrorRate)
-                                    .average()
-                                    .orElse(0.0);
+        var avgCpu = window.stream().mapToDouble(WindowSample::avgCpuUsage).average().orElse(0.0);
+        var avgP95 = window.stream().mapToDouble(WindowSample::avgP95LatencyMs).average().orElse(0.0);
+        var totalInvocations = window.stream().mapToLong(WindowSample::totalActiveInvocations).sum();
+        var avgError = window.stream().mapToDouble(WindowSample::avgErrorRate).average().orElse(0.0);
         var windowDuration = computeWindowDuration();
+
         return ScalingEvidence.scalingEvidence(memberCount, avgCpu, avgP95, totalInvocations, avgError, windowDuration);
     }
 
@@ -182,6 +193,7 @@ import static org.pragmatica.lang.Option.some;
     }
 
     private static String sanitizeArtifactId(String communityId) {
-        return communityId.toLowerCase().replaceAll("[^a-z0-9-]", "-");
+        return communityId.toLowerCase()
+                          .replaceAll("[^a-z0-9-]", "-");
     }
 }

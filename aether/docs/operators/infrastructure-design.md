@@ -35,7 +35,7 @@ Pattern: `Generator.generate(AetherConfig, Path) -> Result<GeneratorOutput>`
 | `/api/deploy` | POST | Deploy slice |
 | `/api/scale` | POST | Scale instances |
 | `/api/undeploy` | POST | Undeploy slice |
-| `/api/blueprint` | POST | Apply blueprint |
+| `/api/blueprints` | POST | Apply blueprint |
 | `/api/nodes` | GET | List nodes |
 | `/health` | GET | Health check |
 

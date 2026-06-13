@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
 import org.pragmatica.lang.Result;
@@ -7,7 +11,6 @@ import java.util.List;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Information about a managed load balancer, including its targets and status.
 public record LoadBalancerInfo(String id, String name, String publicIp, String status, List<TargetInfo> targets) {
     public record TargetInfo(String ip, String healthStatus, int weight) {
         public static Result<TargetInfo> targetInfo(String ip, String healthStatus, int weight) {

@@ -16,8 +16,13 @@
 
 package org.pragmatica.consensus.net.quic;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
@@ -25,6 +30,7 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
@@ -35,12 +41,15 @@ import io.netty.handler.codec.quic.QuicClientCodecBuilder;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.handler.codec.quic.QuicStreamType;
+import io.netty.resolver.DefaultNameResolver;
+import io.netty.resolver.NameResolver;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
-import org.pragmatica.consensus.net.NodeRole;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -66,27 +75,47 @@ public sealed interface QuicClusterClient {
     /// @return promise resolving to the established peer connection
     Promise<QuicPeerConnection> connect(NodeId peerId, InetSocketAddress address);
 
+    /// Resolve a hostname to an [InetAddress] **non-blocking**, on the client's Netty event loop
+    /// (via [io.netty.resolver.DefaultNameResolver]). Used by the dialer to defer DNS resolution to
+    /// dial time — a stale hostname that fails to resolve fails the returned promise cleanly instead
+    /// of producing an eagerly-constructed *unresolved* `InetSocketAddress` that
+    /// [#connect] would reject on every reconciler tick. The caller constructs the dial target from
+    /// the resolved address (`new InetSocketAddress(inetAddress, port)`, which never re-resolves).
+    Promise<InetAddress> resolve(String host);
+
     /// Shut down the client and release resources.
     Promise<Unit> close();
+
+    /// Close the per-peer datagram (UDP) channel allocated by [#connect].
+    ///
+    /// Each successful or attempted `connect` allocates a fresh ephemeral UDP socket
+    /// via `bootstrap.bind(0)`. When the QUIC link to that peer is evicted, the
+    /// underlying datagram channel must be closed too — otherwise the kernel-level
+    /// socket leaks until JVM exit. Idempotent: a missing entry resolves immediately.
+    Promise<Unit> closeDatagramChannel(NodeId peerId);
+
+    /// Snapshot the count of currently-tracked datagram channels. Test/diagnostic only.
+    int datagramChannelCount();
 
     /// Create a new QUIC cluster client.
     ///
     /// @param selfId          this node's identity
-    /// @param selfRole        this node's role in the cluster
+    /// @param selfAddress     this node's cluster address
+    /// @param selfLabels      this node's metadata labels
     /// @param serializer      message serializer
     /// @param deserializer    message deserializer
     /// @param sslContext      QUIC client SSL context (TLS 1.3)
     /// @param eventLoop       optional shared event loop group
     /// @param messageReceiver callback invoked for each message received after Hello
     static QuicClusterClient quicClusterClient(NodeId selfId,
-                                               NodeRole selfRole,
                                                NodeAddress selfAddress,
+                                               Map<String, String> selfLabels,
                                                Serializer serializer,
                                                Deserializer deserializer,
                                                QuicSslContext sslContext,
                                                Option<EventLoopGroup> eventLoop,
                                                QuicClusterServer.MessageReceiver messageReceiver) {
-        return new QuicClusterClientInstance(selfId, selfRole, selfAddress, serializer, deserializer,
+        return new QuicClusterClientInstance(selfId, selfAddress, selfLabels, serializer, deserializer,
                                             sslContext, eventLoop, messageReceiver);
     }
 
@@ -97,8 +126,23 @@ public sealed interface QuicClusterClient {
         }
 
         @Override
+        public Promise<InetAddress> resolve(String host) {
+            return UNEXPECTED_MESSAGE.promise();
+        }
+
+        @Override
         public Promise<Unit> close() {
             return Promise.unitPromise();
+        }
+
+        @Override
+        public Promise<Unit> closeDatagramChannel(NodeId peerId) {
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public int datagramChannelCount() {
+            return 0;
         }
     }
 }
@@ -106,34 +150,55 @@ public sealed interface QuicClusterClient {
 final class QuicClusterClientInstance implements QuicClusterClient {
     private static final Logger log = LoggerFactory.getLogger(QuicClusterClientInstance.class);
     private static final long HELLO_TIMEOUT_MS = 15_000;
-    private static final int WRITE_TIMEOUT_SECONDS = 10;
     private static final long MAX_IDLE_TIMEOUT_MS = 0; // Disabled per QUIC RFC 9000 §10.1 — cluster connections are persistent
-    private static final long INITIAL_MAX_DATA = 16_000_000;
-    private static final long INITIAL_MAX_STREAM_DATA = 4_000_000;
+    private static final long INITIAL_MAX_DATA = 64_000_000;
+    private static final int MAX_FRAME_LENGTH = 32 * 1024 * 1024;
+    private static final long INITIAL_MAX_STREAM_DATA = 32_000_000;
     private static final long INITIAL_MAX_STREAMS = 64;
+    /// Data-lane streams the dialer opens after the CONTROL handshake stream, in this fixed
+    /// order. Excludes CONTROL (already established by the handshake). Seven lanes.
+    private static final StreamType[] DATA_LANES = {
+        StreamType.CONSENSUS,
+        StreamType.KV,
+        StreamType.METRICS,
+        StreamType.INVOKE,
+        StreamType.FORWARD,
+        StreamType.DHT,
+        StreamType.SYNC
+    };
 
     private final NodeId selfId;
-    private final NodeRole selfRole;
     private final NodeAddress selfAddress;
+    private final Map<String, String> selfLabels;
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final QuicSslContext sslContext;
     private final EventLoopGroup eventLoopGroup;
     private final boolean ownsEventLoop;
     private final QuicClusterServer.MessageReceiver messageReceiver;
-    private volatile Channel datagramChannel;
+    /// Non-blocking DNS resolver backed by the client's Netty event loop. Lazily built on first
+    /// [#resolve] so construction stays cheap and tests that never dial never allocate it. The
+    /// `DefaultNameResolver` performs the JDK lookup on the supplied [io.netty.util.concurrent.EventExecutor],
+    /// never on the reconciler thread that initiates the dial.
+    private volatile NameResolver<InetAddress> nameResolver;
+    /// Per-peer ephemeral UDP socket. `bootstrap.bind(0)` is invoked on every
+    /// `connect(peerId, ...)` call, so without per-peer tracking the previous channel
+    /// reference would be dropped (and the kernel-level socket leaked) on every
+    /// reconnect. The map is the single ownership root for client-side datagram
+    /// channels and is drained by [#closeDatagramChannel] / [#initiateClose].
+    private final Map<NodeId, Channel> datagramChannels = new ConcurrentHashMap<>();
 
     QuicClusterClientInstance(NodeId selfId,
-                              NodeRole selfRole,
                               NodeAddress selfAddress,
+                              Map<String, String> selfLabels,
                               Serializer serializer,
                               Deserializer deserializer,
                               QuicSslContext sslContext,
                               Option<EventLoopGroup> eventLoop,
                               QuicClusterServer.MessageReceiver messageReceiver) {
         this.selfId = selfId;
-        this.selfRole = selfRole;
         this.selfAddress = selfAddress;
+        this.selfLabels = Map.copyOf(selfLabels);
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.sslContext = sslContext;
@@ -148,6 +213,44 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     }
 
     @Override
+    public Promise<InetAddress> resolve(String host) {
+        return Promise.promise(promise -> resolveHost(host, promise));
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") // Netty resolver future callback
+    private void resolveHost(String host, Promise<InetAddress> promise) {
+        nameResolver().resolve(host)
+                      .addListener(future -> completeResolve(host, promise, future));
+    }
+
+    private void completeResolve(String host,
+                                 Promise<InetAddress> promise,
+                                 io.netty.util.concurrent.Future<? super InetAddress> future) {
+        if (future.isSuccess()) {
+            promise.succeed((InetAddress) future.getNow());
+        } else {
+            promise.fail(new QuicTransportError.UnresolvedAddress(host));
+        }
+    }
+
+    /// Lazily build the event-loop-backed name resolver. Double-checked under the instance monitor
+    /// so concurrent first-dials share one resolver bound to one event executor.
+    private NameResolver<InetAddress> nameResolver() {
+        var existing = nameResolver;
+        if (existing != null) {
+            return existing;
+        }
+        return buildNameResolver();
+    }
+
+    private synchronized NameResolver<InetAddress> buildNameResolver() {
+        if (nameResolver == null) {
+            nameResolver = new DefaultNameResolver(eventLoopGroup.next());
+        }
+        return nameResolver;
+    }
+
+    @Override
     public Promise<Unit> close() {
         return Promise.promise(this::initiateClose);
     }
@@ -156,10 +259,30 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     private void initiateConnection(NodeId peerId,
                                     InetSocketAddress address,
                                     Promise<QuicPeerConnection> promise) {
+        // Guard against an unresolved/null peer address (e.g. a stale or unknown DNS name).
+        // Handing such an address to Netty's QUIC SockaddrIn would dereference a null
+        // InetAddress and crash the node with an NPE. Instead fail the dial cleanly down the
+        // same connection-failure path a normal dial failure takes, so the caller retries on
+        // a later tick.
+        if (address == null || address.isUnresolved() || address.getAddress() == null) {
+            log.debug("Skipping QUIC dial to peer {}: unresolved address {}", peerId, address);
+            promise.fail(new QuicTransportError.UnresolvedAddress(String.valueOf(address)));
+            return;
+        }
+        // Close any previously-tracked datagram channel for this peer BEFORE allocating a new
+        // ephemeral UDP socket. Without this, repeated reconnects (e.g. eviction storm at 1Hz
+        // during chaos tests) leaked one socket per reconnect to JVM exit.
+        var stale = datagramChannels.remove(peerId);
+        if (stale != null) {
+            stale.close();
+        }
         var codec = buildQuicCodec();
         var bootstrap = new Bootstrap()
             .group(eventLoopGroup)
             .channel(NioDatagramChannel.class)
+            // SO_REUSEADDR: defensive on the client side — eliminates rebind hangs if a previous
+            // ephemeral binding lingers in TIME_WAIT during rapid reconnect storms.
+            .option(ChannelOption.SO_REUSEADDR, true)
             .handler(codec);
 
         bootstrap.bind(0)
@@ -175,8 +298,18 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             promise.fail(new QuicTransportError.ConnectFailed(address.toString(), future.cause()));
             return;
         }
-        datagramChannel = ((io.netty.channel.ChannelFuture) future).channel();
-        connectQuicChannel(datagramChannel, peerId, address, promise);
+        var newChannel = ((io.netty.channel.ChannelFuture) future).channel();
+        // Stash by peerId so eviction / shutdown can close it deterministically. If a
+        // concurrent connect for the same peer raced ahead, close the previous entry
+        // (defence-in-depth — initiateConnection already removed any stale entry).
+        // The dialed peerId IS the verified registration identity: the Wave-3 Hello identity
+        // check rejects a mismatched sender before any attach, so the key here always matches
+        // the id the connection registers (and is later evicted) under.
+        var racedOut = datagramChannels.put(peerId, newChannel);
+        if (racedOut != null && racedOut != newChannel) {
+            racedOut.close();
+        }
+        connectQuicChannel(newChannel, peerId, address, promise);
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Netty QUIC channel bootstrap
@@ -211,10 +344,10 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         // QUIC streams are byte-oriented — need framing to delimit messages
         var streamInitializer = new ChannelInitializer<QuicStreamChannel>() {
             @Override
+            @Contract
             protected void initChannel(QuicStreamChannel ch) {
                 ch.pipeline()
-                  .addLast(new io.netty.handler.timeout.WriteTimeoutHandler(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS))
-                  .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(1_048_576, 0, 4, 0, 4))
+                  .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
                   .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
                   .addLast(new ClientHelloHandler(peerId, quicChannel, promise));
             }
@@ -236,9 +369,13 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     }
 
     private void sendHello(QuicStreamChannel streamChannel, NodeId peerId) {
-        var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfRole, selfAddress));
+        // The handshake stream is now the CONTROL lane. Write the 1-byte lane preamble first
+        // (its own framed message), then the Hello frame, so the acceptor attributes this
+        // stream to CONTROL before reading the Hello.
+        streamChannel.writeAndFlush(Unpooled.wrappedBuffer(new byte[]{(byte) StreamType.CONTROL.streamIndex()}));
+        var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfAddress, selfLabels));
         streamChannel.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
-        log.debug("Sent Hello to peer {} on stream", peerId);
+        log.debug("Sent CONTROL preamble + Hello to peer {} on stream", peerId);
     }
 
     private io.netty.channel.ChannelHandler buildQuicCodec() {
@@ -249,6 +386,9 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             .initialMaxStreamDataBidirectionalLocal(INITIAL_MAX_STREAM_DATA)
             .initialMaxStreamDataBidirectionalRemote(INITIAL_MAX_STREAM_DATA)
             .initialMaxStreamsBidirectional(INITIAL_MAX_STREAMS)
+            // Enables QUIC connection migration so a path change (not a socket teardown)
+            // survives without a reconnect.
+            .activeMigration(true)
             .build();
     }
 
@@ -256,16 +396,44 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         return new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
     }
 
+    @SuppressWarnings("JBCT-PAT-01") // Lifecycle: close all per-peer channels then shut event loop
     private void initiateClose(Promise<Unit> promise) {
-        var channel = datagramChannel;
-        if (channel != null) {
-            channel.close().addListener(_ -> shutdownEventLoop(promise));
-        } else {
+        var snapshot = new ArrayList<Channel>(datagramChannels.values());
+        datagramChannels.clear();
+        if (snapshot.isEmpty()) {
             shutdownEventLoop(promise);
+            return;
+        }
+        var pending = new AtomicInteger(snapshot.size());
+        for (var ch : snapshot) {
+            ch.close().addListener(_ -> {
+                if (pending.decrementAndGet() == 0) {
+                    shutdownEventLoop(promise);
+                }
+            });
         }
     }
 
+    @Override
+    public Promise<Unit> closeDatagramChannel(NodeId peerId) {
+        var channel = datagramChannels.remove(peerId);
+        if (channel == null) {
+            return Promise.unitPromise();
+        }
+        return Promise.promise(promise ->
+            channel.close().addListener(_ -> promise.succeed(unit())));
+    }
+
+    @Override
+    public int datagramChannelCount() {
+        return datagramChannels.size();
+    }
+
     private void shutdownEventLoop(Promise<Unit> promise) {
+        var resolver = nameResolver;
+        if (resolver != null) {
+            resolver.close();
+        }
         if (!ownsEventLoop) {
             promise.succeed(unit());
             return;
@@ -277,6 +445,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     /// Per-connection initializer (no-op for raw QUIC client).
     private static class ClientConnectionInitializer extends ChannelInitializer<QuicChannel> {
         @Override
+        @Contract
         protected void initChannel(QuicChannel ch) {
             // No additional handlers needed for raw QUIC connections
         }
@@ -301,6 +470,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         }
 
         @Override
+        @Contract
         protected void channelRead0(ChannelHandlerContext ctx, ByteBuf buf) {
             if (helloReceived) {
                 return;
@@ -310,12 +480,14 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         }
 
         @Override
+        @Contract
         public void channelActive(ChannelHandlerContext ctx) throws Exception {
             super.channelActive(ctx);
             scheduleHelloTimeout(ctx);
         }
 
         @Override
+        @Contract
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
             log.error("Error in QUIC client Hello handler for peer {}", peerId, cause);
             promise.fail(new QuicTransportError.ConnectFailed(peerId.id(), cause));
@@ -364,61 +536,138 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             buf.readBytes(bytes);
             return deserializer.decode(bytes);
         }
-
         private void completePeerConnection(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
-            var peerConnection = quicPeerConnection(hello.sender(), quicChannel);
-            peerConnection.registerStream(StreamType.CONSENSUS, (QuicStreamChannel) ctx.channel());
+            // Wave-1 §6.1 dialer expected-vs-actual diagnostic: record the dialed identity vs the
+            // Hello sender's claimed identity vs the address the dial actually resolved to, on
+            // EVERY completed outbound handshake.
+            log.info("QUIC dialer Hello identity: dialed={} helloSender={} resolvedAddress={}",
+                     peerId, hello.sender(), quicChannel.remoteSocketAddress());
+            // Wave-3 dialer-side identity verification: a misdirected dial (e.g. a DNS
+            // re-resolution landing on whatever answers) must NOT attach under the wrong identity
+            // or supersede a healthy incumbent via adopt-newer. On mismatch: close the connection,
+            // do NOT attach, and fail the dial down the normal connect-failure path so the
+            // caller's backoff/eviction machinery engages exactly as for any failed dial.
+            if (!hello.sender().equals(peerId)) {
+                log.warn("QUIC dialer Hello identity mismatch — rejecting connection: dialed={} helloSender={} resolvedAddress={}",
+                         peerId, hello.sender(), quicChannel.remoteSocketAddress());
+                promise.fail(new QuicTransportError.IdentityMismatch(peerId, hello.sender(),
+                                                                     String.valueOf(quicChannel.remoteSocketAddress())));
+                quicChannel.close();
+                return;
+            }
+            // peerId == hello.sender() (verified above): the connection is registered under the
+            // VERIFIED identity, consistent with `datagramChannels` (keyed by the dialed peerId
+            // at bind time) — eviction closes the right channel, and no code path can register
+            // a connection under an unverified id.
+            var peerConnection = quicPeerConnection(peerId, quicChannel);
+            // The handshake stream is the CONTROL lane.
+            peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());
+            // Install the lazy lane-opener so a write that finds a lost data lane can re-open it on
+            // the live channel instead of failing "No stream available" (symmetry with the acceptor).
+            peerConnection.laneOpener((lane, onResult) -> openLaneStream(peerConnection, peerId, lane, onResult));
 
-            // Replace Hello handler with data handler for ongoing messages
-            ctx.pipeline().replace(this, "data-handler", new DataHandler(hello.sender()));
+            // Swap the CONTROL stream's Hello handler for the shared data handler (CONTROL lane).
+            ctx.pipeline().replace(this, "data-handler",
+                                   new QuicLaneDataHandler(peerId, StreamType.CONTROL, deserializer, messageReceiver, log));
 
-            log.info("QUIC Hello handshake complete with peer {} (role={})", hello.sender(), hello.role());
-            promise.succeed(peerConnection);
+            log.info("QUIC Hello handshake complete with peer {} — opening data lanes", peerId);
+            openDataLanes(peerConnection, peerId);
         }
-    }
 
-    /// Handles ongoing data messages after Hello handshake completes.
-    /// Deserializes incoming bytes and routes them via the message receiver callback.
-    /// Also monitors channel writability to drain backpressure queues.
-    private class DataHandler extends SimpleChannelInboundHandler<ByteBuf> {
-        private final NodeId peerId;
-        private final Runnable onWritable;
-
-        DataHandler(NodeId peerId) {
-            this(peerId, () -> {});
-        }
-
-        DataHandler(NodeId peerId, Runnable onWritable) {
-            this.peerId = peerId;
-            this.onWritable = onWritable;
-        }
-
-        @Override
-        @SuppressWarnings("JBCT-PAT-01") // Adapter boundary: catch deserialization errors from external input
-        protected void channelRead0(ChannelHandlerContext ctx, ByteBuf buf) {
-            var bytes = new byte[buf.readableBytes()];
-            buf.readBytes(bytes);
-
-            try {
-                var message = deserializer.decode(bytes);
-                messageReceiver.onMessage(peerId, message);
-            } catch (Exception e) {
-                log.error("Failed to deserialize message from peer {}", peerId, e);
+        /// Open the 6 data-lane streams (CONSENSUS, KV, METRICS, INVOKE, FORWARD, DHT) and only
+        /// succeed the connect promise once ALL of them are created + registered. This guarantees
+        /// the dialer attaches (onPeerConnected via promise success) with all 7 lanes present.
+        private void openDataLanes(QuicPeerConnection peerConnection, NodeId peerNodeId) {
+            var pending = new AtomicInteger(DATA_LANES.length);
+            for (var lane : DATA_LANES) {
+                openDataLane(peerConnection, peerNodeId, lane, pending);
             }
         }
 
-        @Override
-        public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
-            if (ctx.channel().isWritable()) {
-                onWritable.run();
-            }
-            super.channelWritabilityChanged(ctx);
+        @SuppressWarnings({"JBCT-PAT-01", "unchecked"}) // Netty stream creation
+        private void openDataLane(QuicPeerConnection peerConnection,
+                                  NodeId peerNodeId,
+                                  StreamType lane,
+                                  AtomicInteger pending) {
+            var initializer = new ChannelInitializer<QuicStreamChannel>() {
+                @Override
+                @Contract
+                protected void initChannel(QuicStreamChannel ch) {
+                    ch.pipeline()
+                      .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
+                      .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
+                      .addLast(new QuicLaneDataHandler(peerNodeId, lane, deserializer, messageReceiver, log));
+                }
+            };
+            quicChannel.createStream(QuicStreamType.BIDIRECTIONAL, initializer)
+                       .addListener(future -> handleDataLaneCreated(peerConnection, peerNodeId, lane, pending, future));
         }
 
-        @Override
-        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            log.error("Error processing message from peer {}", peerId, cause);
-            ctx.close();
+        @SuppressWarnings({"JBCT-PAT-01", "unchecked"}) // Netty future callback
+        private void handleDataLaneCreated(QuicPeerConnection peerConnection,
+                                           NodeId peerNodeId,
+                                           StreamType lane,
+                                           AtomicInteger pending,
+                                           io.netty.util.concurrent.Future<?> future) {
+            if (!future.isSuccess()) {
+                log.warn("Failed to open {} lane stream to peer {} — failing connect", lane, peerNodeId, future.cause());
+                promise.fail(new QuicTransportError.StreamCreationFailed(future.cause()));
+                quicChannel.close();
+                return;
+            }
+            var streamChannel = (QuicStreamChannel) future.getNow();
+            // Write this lane's 1-byte preamble (opener→acceptor, once) so the acceptor
+            // attributes the inbound stream to its lane.
+            streamChannel.writeAndFlush(Unpooled.wrappedBuffer(new byte[]{(byte) lane.streamIndex()}));
+            peerConnection.registerStream(lane, streamChannel);
+            if (pending.decrementAndGet() == 0) {
+                log.info("All 8 lanes registered for peer {} — connection ready", peerNodeId);
+                promise.succeed(peerConnection);
+            }
+        }
+
+        /// Lazily (re)open a single missing `lane` on the live channel — the dial-side mirror of the
+        /// acceptor's lane-opener. Reports the registered stream (some) or empty on failure so the
+        /// transport write path can heal a lost lane without a full re-dial.
+        @SuppressWarnings({"JBCT-PAT-01", "unchecked"}) // Netty stream creation for lazy lane re-open
+        private void openLaneStream(QuicPeerConnection peerConnection,
+                                    NodeId peerNodeId,
+                                    StreamType lane,
+                                    java.util.function.Consumer<Option<QuicStreamChannel>> onResult) {
+            if (!quicChannel.isActive()) {
+                onResult.accept(Option.empty());
+                return;
+            }
+            var initializer = new ChannelInitializer<QuicStreamChannel>() {
+                @Override
+                @Contract
+                protected void initChannel(QuicStreamChannel ch) {
+                    ch.pipeline()
+                      .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
+                      .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
+                      .addLast(new QuicLaneDataHandler(peerNodeId, lane, deserializer, messageReceiver, log));
+                }
+            };
+            quicChannel.createStream(QuicStreamType.BIDIRECTIONAL, initializer)
+                       .addListener(future -> completeLazyLaneOpen(peerConnection, peerNodeId, lane, onResult, future));
+        }
+
+        @SuppressWarnings({"JBCT-PAT-01", "unchecked"}) // Netty future callback for lazy lane re-open
+        private void completeLazyLaneOpen(QuicPeerConnection peerConnection,
+                                          NodeId peerNodeId,
+                                          StreamType lane,
+                                          java.util.function.Consumer<Option<QuicStreamChannel>> onResult,
+                                          io.netty.util.concurrent.Future<?> future) {
+            if (!future.isSuccess()) {
+                log.warn("Lazy re-open of {} lane to peer {} failed", lane, peerNodeId, future.cause());
+                onResult.accept(Option.empty());
+                return;
+            }
+            var streamChannel = (QuicStreamChannel) future.getNow();
+            streamChannel.writeAndFlush(Unpooled.wrappedBuffer(new byte[]{(byte) lane.streamIndex()}));
+            peerConnection.registerStream(lane, streamChannel);
+            log.info("Lazily (re)opened {} lane to peer {} — stream-zombie healed without re-dial", lane, peerNodeId);
+            onResult.accept(option(streamChannel));
         }
     }
 }

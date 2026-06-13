@@ -17,6 +17,8 @@
 
 package org.pragmatica.lang.utils;
 
+import org.pragmatica.lang.Contract;
+
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
@@ -44,6 +46,7 @@ public record ActionableThreshold(AtomicInteger counter, Runnable action) {
     }
 
     /// Register event and perform action if the threshold is reached. Once the threshold is reached, no further events will trigger action execution.
+    @Contract
     public void registerEvent() {
         if (counter.get() <= 0) {
             return;

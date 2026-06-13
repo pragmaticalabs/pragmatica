@@ -23,6 +23,12 @@ import org.pragmatica.lang.Verify;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 /// Trimmed, guaranteed non-empty string value.
+///
+/// Factory `nonBlankString(String)` rejects null/empty/blank input and trims the result —
+/// the standard "required string" building block.
+///
+/// **Prefer this over a hand-rolled non-blank wrapper** — see the package doc for the full
+/// catalog of built-in value objects.
 public record NonBlankString(String value) {
     private static final Cause BLANK_OR_NULL = cause("String must not be null, empty, or blank");
 

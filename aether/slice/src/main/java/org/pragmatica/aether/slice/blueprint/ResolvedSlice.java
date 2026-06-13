@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -13,11 +17,13 @@ import static org.pragmatica.lang.Verify.Is;
 import static org.pragmatica.lang.Verify.ensure;
 
 
-@Codec@SuppressWarnings({"JBCT-NAM-01", "JBCT-UTIL-02"}) public record ResolvedSlice(Artifact artifact,
-                                                                                     int instances,
-                                                                                     int minAvailable,
-                                                                                     boolean isDependency,
-                                                                                     Set<Artifact> dependencies) {
+@Codec
+@SuppressWarnings({"JBCT-NAM-01", "JBCT-UTIL-02"})
+public record ResolvedSlice(Artifact artifact,
+                            int instances,
+                            int minAvailable,
+                            boolean isDependency,
+                            Set<Artifact> dependencies) {
     private static final Cause NULL_ARTIFACT = Causes.cause("Artifact cannot be null");
 
     private static final Fn1<Cause, Integer> INVALID_INSTANCES = Causes.forOneValue("Instances must be positive, got: %s");
@@ -32,14 +38,15 @@ import static org.pragmatica.lang.Verify.ensure;
                      .map(a -> toResolvedSlice(a, instances, minAvailable, isDependency, dependencies));
     }
 
-    @SuppressWarnings("JBCT-VO-02") private static ResolvedSlice toResolvedSlice(Artifact artifact,
-                                                                                 int instances,
-                                                                                 int minAvailable,
-                                                                                 boolean isDependency,
-                                                                                 Set<Artifact> dependencies) {
+    private static ResolvedSlice toResolvedSlice(Artifact artifact,
+                                                 int instances,
+                                                 int minAvailable,
+                                                 boolean isDependency,
+                                                 Set<Artifact> dependencies) {
         var safeDeps = dependencies == null
-                      ? Set.<Artifact>of()
-                      : Set.copyOf(dependencies);
+                       ? Set.<Artifact> of()
+                       : Set.copyOf(dependencies);
+
         return new ResolvedSlice(artifact, instances, minAvailable, isDependency, safeDeps);
     }
 

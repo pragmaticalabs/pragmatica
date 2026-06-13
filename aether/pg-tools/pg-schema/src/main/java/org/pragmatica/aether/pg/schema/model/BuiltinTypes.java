@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.model;
 
 import org.pragmatica.lang.Option;
@@ -8,7 +12,6 @@ import java.util.Map;
 import static org.pragmatica.aether.pg.schema.model.PgType.TypeCategory.*;
 
 
-/// Registry of built-in PostgreSQL types and their aliases.
 public final class BuiltinTypes {
     private BuiltinTypes() {}
 
@@ -90,13 +93,15 @@ public final class BuiltinTypes {
     public static Option<PgType.BuiltinType> lookup(String typeName) {
         var normalized = typeName.toLowerCase().trim();
         var type = TYPES.get(normalized);
+
         return type != null
-              ? Option.present(type)
-              : Option.empty();
+               ? Option.present(type)
+               : Option.empty();
     }
 
     public static String canonicalize(String typeName) {
         var normalized = typeName.toLowerCase().trim();
+
         return ALIASES.getOrDefault(normalized, normalized);
     }
 
@@ -104,11 +109,12 @@ public final class BuiltinTypes {
         var canonical = canonicalize(typeName);
         var builtin = TYPES.get(canonical);
         PgType base = builtin != null
-                     ? new PgType.BuiltinType(canonical, builtin.category(), modifiers)
-                     : new PgType.CustomType(typeName, "");
+                      ? new PgType.BuiltinType(canonical, builtin.category(), modifiers)
+                      : new PgType.CustomType(typeName, "");
+
         return arrayDims > 0
-              ? new PgType.ArrayType(base, arrayDims)
-              : base;
+               ? new PgType.ArrayType(base, arrayDims)
+               : base;
     }
 
     private static Map.Entry<String, PgType.BuiltinType> entry(String name, PgType.TypeCategory category) {

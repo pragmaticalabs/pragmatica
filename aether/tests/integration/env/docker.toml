@@ -1,0 +1,41 @@
+# Cluster A -- Local Docker (non-destructive test suites)
+#
+# 5-node cluster for parallel integration tests.
+# Shares PostgreSQL with Cluster B (docker-b.toml).
+
+config_version = "1.0.0"
+
+[cluster]
+name = "test-a"
+version = "1.0.0-rc1"
+
+[cluster.core]
+min = 3
+max = 15
+max_unavailable = 1
+
+[source.docker]
+type = "docker"
+load_balancer = "elected"
+databases.forge = "jdbc:postgresql://forge-postgres:5432/forge?user=forge&password=forge"
+
+[source.docker.core]
+count = 5
+
+[infrastructure.networking]
+type = "manual"
+
+[operations.ports]
+cluster = 6000
+management = 8080
+app_http = 8070
+swim = 6100
+
+[operations.auto_heal]
+enabled = true
+retry_interval = "30s"
+startup_cooldown = "15s"
+
+[runtime.default]
+type = "docker"
+image = "aether-node:local"

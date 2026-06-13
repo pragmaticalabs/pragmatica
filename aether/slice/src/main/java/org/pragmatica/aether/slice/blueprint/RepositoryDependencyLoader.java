@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -19,32 +23,38 @@ import java.util.stream.Stream;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Default DependencyLoader implementation using Repository.
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-NEST-01", "JBCT-ZONE-02", "JBCT-ZONE-03"}) public interface RepositoryDependencyLoader {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-NEST-01", "JBCT-ZONE-02", "JBCT-ZONE-03"})
+public interface RepositoryDependencyLoader {
     static DependencyLoader repositoryDependencyLoader(Repository repository) {
-        return artifact -> repository.locate(artifact).flatMap(location -> loadDependenciesFromJar(artifact, location));
+        return artifact -> repository.locate(artifact)
+                                     .flatMap(location -> loadDependenciesFromJar(artifact, location));
     }
 
     private static Promise<Set<Artifact>> loadDependenciesFromJar(Artifact artifact, Location location) {
-        return SliceManifest.read(location.url()).flatMap(manifest -> validateManifest(artifact, manifest))
-                                 .flatMap(manifest -> loadDependencies(manifest,
-                                                                       location.url()))
-                                 .async();
+        return SliceManifest.read(location.url())
+                            .flatMap(manifest -> validateManifest(artifact, manifest))
+                            .flatMap(manifest -> loadDependencies(manifest,
+                                                                  location.url()))
+                            .async();
     }
 
     private static Result<SliceManifest.SliceManifestInfo> validateManifest(Artifact expected,
                                                                             SliceManifest.SliceManifestInfo manifest) {
-        if (!manifest.artifact().equals(expected)) {return ExpanderError.ArtifactMismatch.artifactMismatch(expected,
-                                                                                                           manifest.artifact())
-        .result();}
+        if (!manifest.artifact().equals(expected)) {
+            return ExpanderError.ArtifactMismatch.artifactMismatch(expected,
+                                                                   manifest.artifact())
+                                                 .result();
+        }
+
         return success(manifest);
     }
 
     private static Result<Set<Artifact>> loadDependencies(SliceManifest.SliceManifestInfo manifest, URL jarUrl) {
         var classLoader = new SliceClassLoader(new URL[]{jarUrl}, RepositoryDependencyLoader.class.getClassLoader());
+
         return DependencyFile.load(manifest.sliceClassName(),
                                    classLoader)
-        .flatMap(RepositoryDependencyLoader::convertToArtifacts);
+                             .flatMap(RepositoryDependencyLoader::convertToArtifacts);
     }
 
     private static Result<Set<Artifact>> convertToArtifacts(DependencyFile dependencyFile) {
@@ -52,6 +62,7 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static Stream<Result<Artifact>> toArtifacts(List<ArtifactDependency> dependencies) {
-        return dependencies.stream().map(ArtifactMapper::toArtifact);
+        return dependencies.stream()
+                           .map(ArtifactMapper::toArtifact);
     }
 }

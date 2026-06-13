@@ -1,10 +1,19 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.health;
 
+import org.pragmatica.aether.metrics.observation.PeerObservationStore;
+import org.pragmatica.aether.node.health.fsm.SwimHealthContext;
+import org.pragmatica.aether.node.health.fsm.SwimHealthEvents;
+import org.pragmatica.aether.node.health.fsm.SwimHealthState;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
-import org.pragmatica.consensus.topology.TopologyManagementMessage;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -12,19 +21,29 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.swim.GossipEncryptor;
+import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.NettySwimTransport;
 import org.pragmatica.swim.SwimConfig;
+import org.pragmatica.swim.SwimHealth;
 import org.pragmatica.swim.SwimMember;
 import org.pragmatica.swim.SwimMembershipListener;
 import org.pragmatica.swim.SwimMessage;
+import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.SwimProtocol;
 import org.pragmatica.swim.SwimTransport;
+import org.pragmatica.swim.TransportObservation;
 
 import java.net.InetSocketAddress;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
@@ -35,241 +54,460 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Bridges SWIM failure detection to cluster network connection management.
-/// SWIM is the sole failure detector — cluster network Ping/Pong keepalive has been removed.
-///
-/// Cooperative model with QuicClusterNetwork (QCN):
-/// - **SWIM -> QCN:** On member FAULTY/LEFT, routes DisconnectNode to close zombie QUIC connections
-/// - **QCN -> SWIM:** On QUIC Hello handshake, onNodeConnected() resets FAULTY state
-/// - **QCN owns:** quorum tracking, topology notifications, QUIC transport
-/// - **SWIM owns:** failure detection via UDP probing (sole detector)
-///
-/// SWIM binds its own UDP port (cluster port + 100) for health detection probing.
 public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private static final Logger log = LoggerFactory.getLogger(CoreSwimHealthDetector.class);
+    public static final int SWIM_PORT_OFFSET = SwimHealthState.SWIM_PORT_OFFSET;
 
-    private static final SwimConfig CORE_SWIM_CONFIG = SwimConfig.DEFAULT;
+    private final SwimHealthContext context;
+    private final SwimConfig swimConfig;
+    private final List<Consumer<SwimObservation>> pendingObservationListeners = new CopyOnWriteArrayList<>();
 
-    public static final int SWIM_PORT_OFFSET = 100;
+    /// Transport-observation emitters pending wiring into the underlying [`SwimProtocol`]
+    /// once it is created in `seedAndWrap`. Bridges SWIM's protocol-level FAULTY edge
+    /// (the only edge SWIM emits to the cluster-wide `TransportObservation` stream) to
+    /// the cluster `MessageRouter`. Wired by the Aether node assembly.
+    private final List<SwimProtocol.TransportObservationEmitter> pendingTransportObservationEmitters = new CopyOnWriteArrayList<>();
 
-    private final MessageRouter router;
-    private final TopologyConfig topologyConfig;
-    private final Serializer serializer;
-    private final Deserializer deserializer;
-    private volatile GossipEncryptor encryptor;
+    private volatile Option<AnnounceJoinCall> pendingAnnounceJoin = none();
 
-    private final AtomicReference<Option<SwimProtocol>> swimProtocol = new AtomicReference<>(none());
+    private record AnnounceJoinCall(NodeInfo self,
+                                    String clusterName,
+                                    long incarnation,
+                                    List<InetSocketAddress> seeds) {}
 
-    private final AtomicReference<Option<SwimTransport>> swimTransport = new AtomicReference<>(none());
-
-    private final AtomicBoolean starting = new AtomicBoolean(false);
-
-    private final AtomicInteger faultyCountInWindow = new AtomicInteger();
-
-    private volatile long faultyWindowStart;
-    private volatile boolean locallyDisconnected;
-
-    private CoreSwimHealthDetector(MessageRouter router,
-                                   TopologyConfig topologyConfig,
-                                   Serializer serializer,
-                                   Deserializer deserializer) {
-        this.router = router;
-        this.topologyConfig = topologyConfig;
-        this.serializer = serializer;
-        this.deserializer = deserializer;
-        this.encryptor = GossipEncryptor.none();
+    private CoreSwimHealthDetector(SwimHealthContext context, SwimConfig swimConfig) {
+        this.context = context;
+        this.swimConfig = swimConfig;
     }
 
     public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
                                                                 TopologyConfig topologyConfig,
                                                                 Serializer serializer,
                                                                 Deserializer deserializer) {
-        return new CoreSwimHealthDetector(router, topologyConfig, serializer, deserializer);
+        return coreSwimHealthDetector(router,
+                                      topologyConfig,
+                                      serializer,
+                                      deserializer,
+                                      HealthSignalSink.noop(),
+                                      () -> Epoch.ZERO,
+                                      () -> true,
+                                      PeerObservationStore.peerObservationStore(),
+                                      SwimConfig.DEFAULT);
+    }
+
+    public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
+                                                                TopologyConfig topologyConfig,
+                                                                Serializer serializer,
+                                                                Deserializer deserializer,
+                                                                HealthSignalSink signalSink,
+                                                                Supplier<Epoch> epochSupplier) {
+        return coreSwimHealthDetector(router,
+                                      topologyConfig,
+                                      serializer,
+                                      deserializer,
+                                      signalSink,
+                                      epochSupplier,
+                                      () -> true,
+                                      PeerObservationStore.peerObservationStore(),
+                                      SwimConfig.DEFAULT);
+    }
+
+    public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
+                                                                TopologyConfig topologyConfig,
+                                                                Serializer serializer,
+                                                                Deserializer deserializer,
+                                                                HealthSignalSink signalSink,
+                                                                Supplier<Epoch> epochSupplier,
+                                                                BooleanSupplier isLeaderSupplier,
+                                                                PeerObservationStore observationStore) {
+        return coreSwimHealthDetector(router,
+                                      topologyConfig,
+                                      serializer,
+                                      deserializer,
+                                      signalSink,
+                                      epochSupplier,
+                                      isLeaderSupplier,
+                                      observationStore,
+                                      SwimConfig.DEFAULT);
+    }
+
+    public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
+                                                                TopologyConfig topologyConfig,
+                                                                Serializer serializer,
+                                                                Deserializer deserializer,
+                                                                HealthSignalSink signalSink,
+                                                                Supplier<Epoch> epochSupplier,
+                                                                BooleanSupplier isLeaderSupplier,
+                                                                PeerObservationStore observationStore,
+                                                                SwimConfig swimConfig) {
+        return coreSwimHealthDetector(router,
+                                      topologyConfig,
+                                      serializer,
+                                      deserializer,
+                                      signalSink,
+                                      epochSupplier,
+                                      isLeaderSupplier,
+                                      observationStore,
+                                      swimConfig,
+                                      () -> true);
+    }
+
+    /// Phase-aware overload (D.3 three-phase model, 2026-05-11). `isBootingSupplier`
+    /// is the cluster's `ClusterPhaseView.compute() == ClusterPhase.COLD_BOOT` projection
+    /// wired from `AetherNode`. When `false` (NORMAL or RECOVERING), SWIM emits
+    /// `FaultyObserved` regardless of per-peer `everSeenHealthy`.
+    public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
+                                                                TopologyConfig topologyConfig,
+                                                                Serializer serializer,
+                                                                Deserializer deserializer,
+                                                                HealthSignalSink signalSink,
+                                                                Supplier<Epoch> epochSupplier,
+                                                                BooleanSupplier isLeaderSupplier,
+                                                                PeerObservationStore observationStore,
+                                                                SwimConfig swimConfig,
+                                                                BooleanSupplier isBootingSupplier) {
+        return coreSwimHealthDetector(router,
+                                      topologyConfig,
+                                      serializer,
+                                      deserializer,
+                                      signalSink,
+                                      epochSupplier,
+                                      isLeaderSupplier,
+                                      observationStore,
+                                      swimConfig,
+                                      isBootingSupplier,
+                                      _ -> {});
+    }
+
+    public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
+                                                                TopologyConfig topologyConfig,
+                                                                Serializer serializer,
+                                                                Deserializer deserializer,
+                                                                HealthSignalSink signalSink,
+                                                                Supplier<Epoch> epochSupplier,
+                                                                BooleanSupplier isLeaderSupplier,
+                                                                PeerObservationStore observationStore,
+                                                                SwimConfig swimConfig,
+                                                                BooleanSupplier isBootingSupplier,
+                                                                java.util.function.Consumer<NodeId> faultyLeaderEvictor) {
+        return coreSwimHealthDetector(router,
+                                      topologyConfig,
+                                      serializer,
+                                      deserializer,
+                                      signalSink,
+                                      epochSupplier,
+                                      isLeaderSupplier,
+                                      observationStore,
+                                      swimConfig,
+                                      isBootingSupplier,
+                                      faultyLeaderEvictor,
+                                      id -> false);
+    }
+
+    /// Deepest overload (gate RCA fix, 2026-06-11): additionally accepts the
+    /// `transportConnected` predicate forwarded into [`SwimProtocol`] — the transport-
+    /// connectivity veto for SWIM's never-HEALTHY join-grace bypass. Production wiring
+    /// (`AetherNode`) sources it from the QUIC network's live `connectedPeers()` view (deref'd
+    /// per call, so construction order is safe); the `id -> false` default of the shallower
+    /// overloads never vetoes, preserving legacy behavior for tests.
+    public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
+                                                                TopologyConfig topologyConfig,
+                                                                Serializer serializer,
+                                                                Deserializer deserializer,
+                                                                HealthSignalSink signalSink,
+                                                                Supplier<Epoch> epochSupplier,
+                                                                BooleanSupplier isLeaderSupplier,
+                                                                PeerObservationStore observationStore,
+                                                                SwimConfig swimConfig,
+                                                                BooleanSupplier isBootingSupplier,
+                                                                java.util.function.Consumer<NodeId> faultyLeaderEvictor,
+                                                                Predicate<NodeId> transportConnected) {
+        var ctxHolder = new AtomicReference<SwimHealthContext>();
+        Function<Fsm<SwimHealthState, SwimHealthEvents>, SwimHealthState> initialStateFactory = fsm -> buildContextAndStopped(fsm,
+                                                                                                                              ctxHolder,
+                                                                                                                              router,
+                                                                                                                              topologyConfig,
+                                                                                                                              serializer,
+                                                                                                                              deserializer,
+                                                                                                                              signalSink,
+                                                                                                                              epochSupplier,
+                                                                                                                              isLeaderSupplier,
+                                                                                                                              observationStore,
+                                                                                                                              swimConfig,
+                                                                                                                              isBootingSupplier,
+                                                                                                                              faultyLeaderEvictor,
+                                                                                                                              transportConnected);
+
+        Fsm.fsm("swim-health",
+                topologyConfig.self().id(),
+                initialStateFactory);
+
+        return new CoreSwimHealthDetector(ctxHolder.get(), swimConfig);
+    }
+
+    private static SwimHealthState buildContextAndStopped(Fsm<SwimHealthState, SwimHealthEvents> fsm,
+                                                          AtomicReference<SwimHealthContext> ctxHolder,
+                                                          MessageRouter router,
+                                                          TopologyConfig topologyConfig,
+                                                          Serializer serializer,
+                                                          Deserializer deserializer,
+                                                          HealthSignalSink signalSink,
+                                                          Supplier<Epoch> epochSupplier,
+                                                          BooleanSupplier isLeaderSupplier,
+                                                          PeerObservationStore observationStore,
+                                                          SwimConfig swimConfig,
+                                                          BooleanSupplier isBootingSupplier,
+                                                          java.util.function.Consumer<NodeId> faultyLeaderEvictor,
+                                                          Predicate<NodeId> transportConnected) {
+        var ctx = new SwimHealthContext(fsm,
+                                        router,
+                                        topologyConfig,
+                                        serializer,
+                                        deserializer,
+                                        signalSink,
+                                        epochSupplier,
+                                        isLeaderSupplier,
+                                        observationStore,
+                                        swimConfig,
+                                        System::currentTimeMillis,
+                                        isBootingSupplier,
+                                        faultyLeaderEvictor,
+                                        transportConnected);
+
+        ctxHolder.set(ctx);
+
+        return ctx.stopped();
     }
 
     public Promise<Unit> start() {
         return start(none(), GossipEncryptor.none());
     }
 
-    @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03", "JBCT-EX-01"}) public Promise<Unit> start(Option<EventLoopGroup> sharedEventLoopGroup,
-                                                                                               GossipEncryptor gossipEncryptor) {
-        this.encryptor = gossipEncryptor;
-        if (!starting.compareAndSet(false, true)) {
-            log.debug("SWIM start already in progress, skipping");
-            return Promise.success(Unit.unit());
-        }
-        if (swimProtocol.get().isPresent()) {
-            starting.set(false);
-            log.debug("SWIM already running, skipping start");
-            return Promise.success(Unit.unit());
-        }
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+    public Promise<Unit> start(Option<EventLoopGroup> sharedEventLoopGroup, GossipEncryptor gossipEncryptor) {
+        context.dispatch(new SwimHealthEvents.StartRequested());
         var selfPort = findSelfPort();
         var swimPort = selfPort + SWIM_PORT_OFFSET;
         var selfHost = findSelfHost();
         var selfAddress = new InetSocketAddress(selfHost, swimPort);
-        return createTransport(sharedEventLoopGroup).flatMap(transport -> createAndStartProtocol(transport,
-                                                                                                 selfAddress,
-                                                                                                 swimPort))
+
+        return createTransport(sharedEventLoopGroup, gossipEncryptor).flatMap(transport -> createAndStartProtocol(transport,
+                                                                                                                  selfAddress,
+                                                                                                                  swimPort,
+                                                                                                                  gossipEncryptor))
                               .async()
-                              .onFailure(_ -> starting.set(false))
+                              .onSuccess(context::dispatch)
+                              .onFailure(_ -> context.dispatch(new SwimHealthEvents.StartFailed()))
                               .mapToUnit();
     }
 
-    @SuppressWarnings("JBCT-RET-01") public void stop() {
-        swimProtocol.getAndSet(none()).onPresent(SwimProtocol::stop);
-        swimTransport.getAndSet(none()).onPresent(SwimTransport::stop);
+    @Contract
+    public void stop() {
+        context.dispatch(new SwimHealthEvents.StopRequested());
     }
 
-    @SuppressWarnings("JBCT-RET-01") public void onNodeConnected(NodeId nodeId) {
-        swimProtocol.get().onPresent(protocol -> readdOrMarkAlive(protocol, nodeId));
-        clearLocalDisconnectFlag();
+    public SwimHealthState lifecycleState() {
+        return context.fsm()
+                      .current();
     }
 
-    @Override@SuppressWarnings("JBCT-RET-01") public void onMemberJoined(SwimMember member) {
-        log.info("SWIM member joined: {}", member.nodeId());
-        clearLocalDisconnectFlag();
+    SwimHealthContext contextForTest() {
+        return context;
     }
 
-    @Override@SuppressWarnings("JBCT-RET-01") public void onMemberSuspect(SwimMember member) {
+    @Contract
+    public void onNodeConnected(NodeId nodeId) {
+        context.dispatch(new SwimHealthEvents.PeerConnected(nodeId, none()));
+    }
+
+    @Contract
+    public void onNodeConnected(NodeInfo peer) {
+        context.dispatch(new SwimHealthEvents.PeerConnected(peer.id(), option(peer)));
+    }
+
+    @Override
+    @Contract
+    public void onMemberJoined(SwimMember member) {
+        context.dispatch(new SwimHealthEvents.PeerJoined(member));
+    }
+
+    @Override
+    @Contract
+    public void onMemberSuspect(SwimMember member) {
         log.warn("SWIM member suspected: {}", member.nodeId());
+        context.dispatch(new SwimHealthEvents.PeerSuspect(member));
     }
 
-    @Override@SuppressWarnings("JBCT-RET-01") public void onMemberFaulty(SwimMember member) {
-        if (isLocalDisconnect(member)) {return;}
-        log.error("SWIM member faulty: {}, routing DisconnectNode and RemoveNode", member.nodeId());
-        router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(member.nodeId()));
-        router.routeAsync(() -> new TopologyManagementMessage.RemoveNode(member.nodeId()));
+    @Override
+    @Contract
+    public void onMemberFaulty(SwimMember member, boolean firstHand) {
+        context.dispatch(new SwimHealthEvents.PeerFaulty(member, firstHand));
     }
 
-    @Override@SuppressWarnings("JBCT-RET-01") public void onMemberLeft(NodeId leftNodeId) {
-        log.warn("SWIM member left: {}, routing DisconnectNode", leftNodeId);
-        router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(leftNodeId));
+    @Override
+    @Contract
+    public void onMemberLeft(NodeId leftNodeId) {
+        context.dispatch(new SwimHealthEvents.PeerLeft(leftNodeId));
     }
 
-    public boolean isLocallyDisconnected() {
-        return locallyDisconnected;
+    @Contract
+    public void onLeaderChanged(Option<NodeId> leader) {
+        context.dispatch(new SwimHealthEvents.LeaderChanged(leader));
     }
 
-    private boolean isLocalDisconnect(SwimMember member) {
-        var now = System.currentTimeMillis();
-        var suspectTimeoutMs = CORE_SWIM_CONFIG.suspectTimeout().millis();
-        if (now - faultyWindowStart > suspectTimeoutMs) {
-            faultyCountInWindow.set(0);
-            faultyWindowStart = now;
-        }
-        var faultyCount = faultyCountInWindow.incrementAndGet();
-        var totalMembers = swimProtocol.get().map(p -> p.members().size())
-                                           .or(0);
-        if (totalMembers > 0 && faultyCount > totalMembers / 2) {
-            locallyDisconnected = true;
-            log.warn("Local disconnect detected: {}/{} peers FAULTY within {}ms — suppressing topology drain for {}",
-                     faultyCount,
-                     totalMembers,
-                     suspectTimeoutMs,
-                     member.nodeId().id());
-            return true;
-        }
-        return false;
+    @Contract
+    public void recordTransportHint(TransportObservation hint) {
+        protocol().onPresent(p -> p.recordTransportHint(hint.peer(), hint));
     }
 
-    @SuppressWarnings("JBCT-RET-01") private void clearLocalDisconnectFlag() {
-        if (locallyDisconnected) {
-            locallyDisconnected = false;
-            faultyCountInWindow.set(0);
-            log.info("Network recovered from local disconnect");
-        }
+    @Contract
+    public void addObservationListener(Consumer<SwimObservation> consumer) {
+        pendingObservationListeners.add(consumer);
+        protocol().onPresent(p -> p.addObservationListener(consumer));
     }
 
-    @SuppressWarnings("JBCT-RET-01") private void readdOrMarkAlive(SwimProtocol protocol, NodeId nodeId) {
-        if (protocol.members().containsKey(nodeId)) {protocol.markAlive(nodeId);} else {resolveSwimAddress(nodeId).onPresent(addr -> addAndLogSeedMember(protocol,
-                                                                                                                                                         nodeId,
-                                                                                                                                                         addr));}
+    @Contract
+    public void announceJoin(NodeInfo self, String clusterName, long incarnation, List<InetSocketAddress> seeds) {
+        pendingAnnounceJoin = option(new AnnounceJoinCall(self, clusterName, incarnation, seeds));
+        protocol().onPresent(p -> p.announceJoin(self, clusterName, incarnation, seeds));
     }
 
-    @SuppressWarnings("JBCT-RET-01") private static void addAndLogSeedMember(SwimProtocol protocol,
-                                                                             NodeId nodeId,
-                                                                             InetSocketAddress addr) {
-        protocol.addSeedMember(nodeId, addr);
-        log.info("Re-added SWIM member {} at {} after disconnect recovery", nodeId.id(), addr);
+    public SwimHealth healthOf(NodeId nodeId) {
+        return protocol().map(p -> p.healthOf(nodeId))
+                       .or(SwimHealth.UNKNOWN);
     }
 
-    private Option<InetSocketAddress> resolveSwimAddress(NodeId nodeId) {
-        return Option.from(topologyConfig.coreNodes().stream()
-                                                   .filter(node -> node.id().equals(nodeId))
-                                                   .map(CoreSwimHealthDetector::toSwimAddress)
-                                                   .findFirst());
+    /// This node's current durable SWIM self-incarnation — the single `(NodeId, incarnation)`
+    /// authority fed to both SWIM membership and the metrics readiness epoch. Returns 0 before
+    /// the underlying [`SwimProtocol`] is running / `announceJoin` has seeded it (pre-announce
+    /// sentinel); the metrics supplier floors this at the captured boot value.
+    public long selfIncarnation() {
+        return protocol().map(SwimProtocol::selfIncarnation)
+                       .or(0L);
     }
 
-    private static InetSocketAddress toSwimAddress(NodeInfo node) {
-        return InetSocketAddress.createUnresolved(node.address().host(),
-                                                  node.address().port() + SWIM_PORT_OFFSET);
+    /// Test-only: toggle silent-death fault injection on the SWIM UDP transport plane.
+    /// Forwards to the running [`SwimTransport`] so a black-holed node goes silent on the
+    /// SWIM plane in addition to QUIC, reproducing genuine silent death across both planes.
+    @Contract
+    public void setSwimBlackholed(boolean enabled) {
+        transport().onPresent(t -> t.blackhole(enabled));
     }
 
-    private Result<SwimTransport> createTransport(Option<EventLoopGroup> sharedEventLoopGroup) {
-        return sharedEventLoopGroup.map(group -> NettySwimTransport.nettySwimTransport(serializer,
-                                                                                       deserializer,
+    private Option<SwimTransport> transport() {
+        return switch (context.fsm()
+                              .current()) {
+            case SwimHealthState.Running r -> option(r.transport());
+            default -> none();
+        };
+    }
+
+    /// Register a cluster-wide [`org.pragmatica.consensus.topology.TransportObservation`] emitter.
+    /// Invoked from `SwimProtocol.emitFaultyOrUnknown` whenever a peer transitions to FAULTY,
+    /// producing `TransportObservation.PeerObservedFaulty` for the cluster `MessageRouter`.
+    /// Buffered until the underlying [`SwimProtocol`] is constructed (start path).
+    @Contract
+    public void addTransportObservationEmitter(SwimProtocol.TransportObservationEmitter emitter) {
+        pendingTransportObservationEmitters.add(emitter);
+        protocol().onPresent(p -> p.addTransportObservationEmitter(emitter));
+    }
+
+    public Option<HealthSnapshot> currentHealth() {
+        return protocol().map(SwimProtocol::currentHealth);
+    }
+
+    private Option<SwimProtocol> protocol() {
+        return switch (context.fsm()
+                              .current()) {
+            case SwimHealthState.Running r -> option(r.swim());
+            default -> none();
+        };
+    }
+
+    private Result<SwimTransport> createTransport(Option<EventLoopGroup> sharedEventLoopGroup,
+                                                  GossipEncryptor encryptor) {
+        return sharedEventLoopGroup.map(group -> NettySwimTransport.nettySwimTransport(context.serializer(),
+                                                                                       context.deserializer(),
                                                                                        encryptor,
                                                                                        group))
-        .or(NettySwimTransport.nettySwimTransport(serializer, deserializer, encryptor));
+                                   .or(NettySwimTransport.nettySwimTransport(context.serializer(),
+                                                                             context.deserializer(),
+                                                                             encryptor));
     }
 
-    private Option<NodeInfo> findSelfNode() {
-        return Option.from(topologyConfig.coreNodes().stream()
-                                                   .filter(this::isSelf)
-                                                   .findFirst());
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+    private Result<SwimHealthEvents.ProtocolReady> createAndStartProtocol(SwimTransport transport,
+                                                                          InetSocketAddress selfAddress,
+                                                                          int swimPort,
+                                                                          GossipEncryptor encryptor) {
+        return transport.start(swimPort,
+                               (sender, message) -> deliverToProtocol(sender, message))
+                        .await(timeSpan(5).seconds())
+                        .onFailure(cause -> log.error("SWIM transport failed to start: {}",
+                                                      cause.message()))
+                        .flatMap(_ -> SwimProtocol.swimProtocol(swimConfig,
+                                                                transport,
+                                                                this,
+                                                                context.topologyConfig().self(),
+                                                                selfAddress,
+                                                                context.isBootingSupplier(),
+                                                                context.transportConnected()))
+                        .flatMap(SwimProtocol::start)
+                        .map(protocol -> seedAndWrap(protocol, transport, encryptor));
     }
 
-    private int findSelfPort() {
-        return findSelfNode().map(n -> n.address().port()).or(0);
-    }
-
-    private String findSelfHost() {
-        return findSelfNode().map(n -> n.address().host()).or("localhost");
-    }
-
-    private boolean isSelf(NodeInfo node) {
-        return node.id().equals(topologyConfig.self());
-    }
-
-    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) private Result<SwimProtocol> createAndStartProtocol(SwimTransport transport,
-                                                                                                         InetSocketAddress selfAddress,
-                                                                                                         int swimPort) {
-        this.swimTransport.set(option(transport));
-        return transport.start(swimPort, this::delegateToProtocol).await(timeSpan(5).seconds())
-                              .onFailure(cause -> {
-                                             log.error("SWIM transport failed to start: {}",
-                                                       cause.message());
-                                             this.swimTransport.set(none());
-                                         })
-                              .flatMap(_ -> SwimProtocol.swimProtocol(CORE_SWIM_CONFIG,
-                                                                      transport,
-                                                                      this,
-                                                                      topologyConfig.self(),
-                                                                      selfAddress))
-                              .flatMap(SwimProtocol::start)
-                              .map(this::storeAndSeed);
-    }
-
-    private void delegateToProtocol(InetSocketAddress sender, SwimMessage message) {
-        swimProtocol.get().onPresent(protocol -> protocol.onMessage(sender, message));
-    }
-
-    private SwimProtocol storeAndSeed(SwimProtocol protocol) {
-        swimProtocol.set(option(protocol));
+    private SwimHealthEvents.ProtocolReady seedAndWrap(SwimProtocol protocol,
+                                                       SwimTransport transport,
+                                                       GossipEncryptor encryptor) {
+        // Register observation listeners + transport-observation emitters BEFORE seeding members.
+        // seedMembers adds the configured peers, each of which fires a `MemberDiscovered` observation
+        // (notifyMemberJoined → deliverObservation) that the AetherNode listener routes into the QUIC
+        // dial set. If seeding ran first (the prior order), those seed observations fired into an empty
+        // observationListeners list and were lost — a last-joining node (which learns its peers only
+        // from the static seed set, having missed peers' live ANNOUNCE window) then never populated its
+        // dial set and, being the higher NodeId that must initiate, never dialed — wedging cold-start.
+        pendingObservationListeners.forEach(protocol::addObservationListener);
+        pendingTransportObservationEmitters.forEach(protocol::addTransportObservationEmitter);
         seedMembers(protocol);
-        return protocol;
+        pendingAnnounceJoin.onPresent(call -> protocol.announceJoin(call.self(),
+                                                                    call.clusterName(),
+                                                                    call.incarnation(),
+                                                                    call.seeds()));
+
+        return new SwimHealthEvents.ProtocolReady(protocol, transport, encryptor);
     }
 
     private void seedMembers(SwimProtocol protocol) {
-        topologyConfig.coreNodes().stream()
-                                .filter(node -> !node.id().equals(topologyConfig.self()))
-                                .forEach(node -> addSeedMember(protocol, node));
+        context.topologyConfig().coreNodes().stream().filter(node -> !node.id()
+                                                                          .equals(context.topologyConfig().self())).forEach(node -> addSeedMember(protocol,
+                                                                                                                                                  node));
     }
 
     private static void addSeedMember(SwimProtocol protocol, NodeInfo node) {
         var host = node.address().host();
         var swimPort = node.address().port() + SWIM_PORT_OFFSET;
         var swimAddress = InetSocketAddress.createUnresolved(host, swimPort);
+
         protocol.addSeedMember(node.id(), swimAddress);
+    }
+
+    private void deliverToProtocol(InetSocketAddress sender, SwimMessage message) {
+        if (context.fsm().current() instanceof SwimHealthState.Running running) {
+            running.swim().onMessage(sender, message);
+        }
+    }
+
+    private int findSelfPort() {
+        return context.findSelfNode()
+                      .map(n -> n.address()
+                                 .port())
+                      .or(0);
+    }
+
+    private String findSelfHost() {
+        return context.findSelfNode()
+                      .map(n -> n.address()
+                                 .host())
+                      .or("localhost");
     }
 }

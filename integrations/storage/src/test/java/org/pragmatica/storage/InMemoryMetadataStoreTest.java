@@ -109,6 +109,31 @@ class InMemoryMetadataStoreTest {
 
             assertThat(secondClaim).isFalse();
         }
+
+        @Test
+        void releaseClaim_afterClaim_allowsReClaim() {
+            var id = blockIdOf(CONTENT_A);
+            var sentinel = BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK);
+
+            store.claimBlock(id, sentinel);
+            var released = store.releaseClaim(id, sentinel);
+
+            assertThat(released).isTrue();
+            assertThat(store.claimBlock(id, sentinel)).isTrue();
+        }
+
+        @Test
+        void releaseClaim_afterRefCountBumped_preservesClaim() {
+            var id = blockIdOf(CONTENT_A);
+            var sentinel = BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK);
+
+            store.claimBlock(id, sentinel);
+            store.computeLifecycle(id, BlockLifecycle::withRefCountIncremented);
+            var released = store.releaseClaim(id, sentinel);
+
+            assertThat(released).isFalse();
+            assertThat(store.containsBlock(id)).isTrue();
+        }
     }
 
     @Nested

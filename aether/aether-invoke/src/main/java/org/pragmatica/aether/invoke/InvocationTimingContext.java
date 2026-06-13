@@ -1,16 +1,16 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Records nanosecond-precision stage timings for an invocation.
-/// Zero-overhead when trace logging is disabled — all operations are no-ops.
 @SuppressWarnings("JBCT-RET-01")
-// Timing methods are fire-and-forget state mutations — void is intentional
 public final class InvocationTimingContext {
     private static final Logger log = LoggerFactory.getLogger(InvocationTimingContext.class);
-
     private static final InvocationTimingContext NOOP = new InvocationTimingContext(false);
 
     private final boolean active;
@@ -28,13 +28,15 @@ public final class InvocationTimingContext {
 
     private InvocationTimingContext(boolean active) {
         this.active = active;
-        if (active) {this.startNs = System.nanoTime();}
+        if (active) {
+            this.startNs = System.nanoTime();
+        }
     }
 
     public static InvocationTimingContext invocationTimingContext() {
         return log.isTraceEnabled()
-              ? new InvocationTimingContext(true)
-              : NOOP;
+               ? new InvocationTimingContext(true)
+               : NOOP;
     }
 
     public void routeResolved() {
@@ -74,9 +76,13 @@ public final class InvocationTimingContext {
     }
 
     public void complete(String artifact, String method) {
-        if (!active) {return;}
+        if (!active) {
+            return;
+        }
+
         completedNs = System.nanoTime();
-        log.trace("Invocation timing [{}::{}] total={}us route={}us ser={}us endpoint={}us net_send={}us " + "handler={}us bridge={}us resp_ser={}us net_resp={}us deser={}us",
+        log.trace("Invocation timing [{}::{}] total={}us route={}us ser={}us endpoint={}us net_send={}us "
+                 + "handler={}us bridge={}us resp_ser={}us net_resp={}us deser={}us",
                   artifact,
                   method,
                   deltaUs(startNs, completedNs),
@@ -93,7 +99,7 @@ public final class InvocationTimingContext {
 
     private static long deltaUs(long from, long to) {
         return to > 0 && from > 0
-              ? (to - from) / 1_000
-              : 0;
+               ? (to - from) / 1_000
+               : 0;
     }
 }

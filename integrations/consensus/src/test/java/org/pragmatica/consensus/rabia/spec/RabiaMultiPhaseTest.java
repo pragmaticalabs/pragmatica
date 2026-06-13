@@ -21,7 +21,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.pragmatica.consensus.Command;
-import org.pragmatica.consensus.rabia.Batch;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.consensus.rabia.StateValue;
 import org.pragmatica.consensus.rabia.helper.ClusterConfiguration;
@@ -36,6 +36,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RabiaMultiPhaseTest {
 
     record TestCommand(String value) implements Command {}
+
+    private static final org.pragmatica.serialization.SliceCodec SERIALIZER =
+        org.pragmatica.consensus.rabia.TestSerializers.stringCommandSerializer(TestCommand.class, TestCommand::value, TestCommand::new);
 
     static Stream<Arguments> clusterSizes() {
         return Stream.of(
@@ -54,7 +57,7 @@ class RabiaMultiPhaseTest {
             // All nodes propose same value -> V1 decision
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             // All propose same batch
             for (var node : config.nodeIds()) {
@@ -88,7 +91,7 @@ class RabiaMultiPhaseTest {
 
             // Each node proposes different batch
             for (int i = 0; i < config.nodeIds().size(); i++) {
-                var batch = Batch.batch(List.of(new TestCommand("cmd-" + i)));
+                var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd-" + i)));
                 state.propose(config.nodeIds().get(i), batch);
             }
 
@@ -118,7 +121,7 @@ class RabiaMultiPhaseTest {
 
             for (int phase = 0; phase < 3; phase++) {
                 var p = new Phase(phase);
-                var batch = Batch.batch(List.of(new TestCommand("cmd-" + phase)));
+                var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd-" + phase)));
 
                 for (var node : config.nodeIds()) {
                     state.propose(node, batch);
@@ -152,7 +155,7 @@ class RabiaMultiPhaseTest {
 
             // Phase 1: V1 decision
             var phase1 = new Phase(1);
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
             for (var node : config.nodeIds()) {
                 state.propose(node, batch);
                 state.voteRound1(node, phase1, StateValue.V1);
@@ -172,7 +175,7 @@ class RabiaMultiPhaseTest {
             var state = new ClusterState<TestCommand>(config.nodeIds());
 
             // First phase decides V1
-            var batch = Batch.batch(List.of(new TestCommand("locked-cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("locked-cmd")));
             for (var node : config.nodeIds()) {
                 state.propose(node, batch);
                 state.voteRound1(node, Phase.ZERO, StateValue.V1);
@@ -195,7 +198,7 @@ class RabiaMultiPhaseTest {
             // f nodes fail before proposing - remaining nodes still form quorum
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             // Only quorum nodes propose
             for (int i = 0; i < config.quorumSize(); i++) {
@@ -264,7 +267,7 @@ class RabiaMultiPhaseTest {
             // Exactly quorum nodes are available - minimum for progress
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             var availableNodes = config.nodeIds().subList(0, config.quorumSize());
 

@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.pg.codegen.processor;
 
 import javax.tools.DiagnosticCollector;
@@ -25,6 +30,12 @@ final class TestCompilationHelper {
     }
 
     static CompilationResult compileWithProcessor(String sourceCode, String fileName, Path tempDir) throws Exception {
+        return compileWithProcessor(List.of(new SourceEntry(fileName, sourceCode)), tempDir);
+    }
+
+    record SourceEntry(String fileName, String sourceCode) {}
+
+    static CompilationResult compileWithProcessor(List<SourceEntry> sources, Path tempDir) throws Exception {
         var compiler = ToolProvider.getSystemJavaCompiler();
         var diagnosticCollector = new DiagnosticCollector<JavaFileObject>();
 
@@ -34,7 +45,6 @@ final class TestCompilationHelper {
         var classOutputDir = tempDir.resolve("classes");
         Files.createDirectories(classOutputDir);
 
-        var sourceFile = new InMemoryJavaFileObject(fileName, sourceCode);
         var classpath = System.getProperty("java.class.path");
 
         var options = List.of(
@@ -46,9 +56,13 @@ final class TestCompilationHelper {
             "--release", "25"
         );
 
+        var sourceFiles = sources.stream()
+                                 .map(s -> (JavaFileObject) new InMemoryJavaFileObject(s.fileName(), s.sourceCode()))
+                                 .toList();
+
         try (var fileManager = compiler.getStandardFileManager(diagnosticCollector, null, null)) {
             var task = compiler.getTask(
-                null, fileManager, diagnosticCollector, options, null, List.of(sourceFile)
+                null, fileManager, diagnosticCollector, options, null, sourceFiles
             );
             task.setProcessors(List.of(new QueryAnnotationProcessor()));
             var success = task.call();

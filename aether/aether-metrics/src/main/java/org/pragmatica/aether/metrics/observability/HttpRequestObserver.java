@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.observability;
 
 import java.util.concurrent.TimeUnit;
@@ -6,14 +10,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Timer;
 
 
-/// Records per-route HTTP request metrics using Micrometer.
-///
-/// Tracks:
-///   - `aether_http_requests_total` counter with method, path, status tags
-///   - `aether_http_request_duration_seconds` timer with method, path tags
-///   - `aether_security_denials_total` counter with type, method, path tags
 @SuppressWarnings("JBCT-RET-01")
-// Fire-and-forget metric recording — no result needed
 public final class HttpRequestObserver {
     private final ObservabilityRegistry registry;
 
@@ -39,8 +36,9 @@ public final class HttpRequestObserver {
     }
 
     private Timer requestTimer(String method, String routePattern) {
-        return Timer.builder("aether_http_request_duration_seconds").tags("method", method, "route", routePattern)
-                            .register(registry.registry());
+        return Timer.builder("aether_http_request_duration_seconds")
+                    .tags("method", method, "route", routePattern)
+                    .register(registry.registry());
     }
 
     private Counter securityDenialCounter(String type, String method, String routePattern) {

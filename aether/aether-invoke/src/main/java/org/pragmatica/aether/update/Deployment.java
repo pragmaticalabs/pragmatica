@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.update;
 
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -10,28 +14,6 @@ import org.pragmatica.lang.utils.Causes;
 import java.util.List;
 
 
-/// Unified deployment record for blueprint-level version transitions.
-///
-/// Replaces the per-strategy deployment records (CanaryDeployment, BlueGreenDeployment,
-/// RollingUpdate) with a single unified model. Strategy-specific behavior is captured
-/// in the StrategyConfig sealed interface.
-///
-/// Immutable record - state changes create new instances via transition methods.
-///
-/// @param deploymentId unique identifier for this deployment
-/// @param blueprintId blueprint identifier (e.g., "org.example:my-app:1.0")
-/// @param oldVersion version being replaced
-/// @param newVersion version being deployed
-/// @param state current lifecycle state
-/// @param strategy which deployment strategy to use
-/// @param strategyConfig strategy-specific configuration
-/// @param routing current traffic routing between old and new versions
-/// @param thresholds health thresholds for auto-progression
-/// @param cleanupPolicy how to handle old version cleanup
-/// @param artifacts all slices in the blueprint
-/// @param newInstances target number of new version instances
-/// @param createdAt timestamp when deployment was created
-/// @param updatedAt timestamp of last state change
 public record Deployment(String deploymentId,
                          String blueprintId,
                          Version oldVersion,
@@ -48,17 +30,18 @@ public record Deployment(String deploymentId,
                          long updatedAt) {
     private static final Fn1<Cause, String> INVALID_TRANSITION = Causes.forOneValue("Invalid deployment state transition: %s");
 
-    @SuppressWarnings("JBCT-VO-02") public static Deployment deployment(String deploymentId,
-                                                                        String blueprintId,
-                                                                        Version oldVersion,
-                                                                        Version newVersion,
-                                                                        DeploymentStrategy strategy,
-                                                                        StrategyConfig strategyConfig,
-                                                                        HealthThresholds thresholds,
-                                                                        CleanupPolicy cleanupPolicy,
-                                                                        List<ArtifactBase> artifacts,
-                                                                        int newInstances) {
+    public static Deployment deployment(String deploymentId,
+                                        String blueprintId,
+                                        Version oldVersion,
+                                        Version newVersion,
+                                        DeploymentStrategy strategy,
+                                        StrategyConfig strategyConfig,
+                                        HealthThresholds thresholds,
+                                        CleanupPolicy cleanupPolicy,
+                                        List<ArtifactBase> artifacts,
+                                        int newInstances) {
         var now = System.currentTimeMillis();
+
         return new Deployment(deploymentId,
                               blueprintId,
                               oldVersion,
@@ -95,6 +78,10 @@ public record Deployment(String deploymentId,
         return transitionTo(DeploymentState.ROLLING_BACK);
     }
 
+    public Result<Deployment> rolledBack() {
+        return transitionTo(DeploymentState.ROLLED_BACK);
+    }
+
     public Result<Deployment> complete() {
         return transitionTo(DeploymentState.COMPLETED);
     }
@@ -119,9 +106,11 @@ public record Deployment(String deploymentId,
         return System.currentTimeMillis() - updatedAt;
     }
 
-    @SuppressWarnings("JBCT-VO-02") private Result<Deployment> transitionTo(DeploymentState newState) {
-        if (!state.validTransitions().contains(newState)) {return INVALID_TRANSITION.apply(state + " -> " + newState)
-                                                                                          .result();}
+    private Result<Deployment> transitionTo(DeploymentState newState) {
+        if (!state.validTransitions().contains(newState)) {
+            return INVALID_TRANSITION.apply(state + " -> " + newState).result();
+        }
+
         return Result.success(new Deployment(deploymentId,
                                              blueprintId,
                                              oldVersion,
@@ -138,7 +127,7 @@ public record Deployment(String deploymentId,
                                              System.currentTimeMillis()));
     }
 
-    @SuppressWarnings("JBCT-VO-02") private Deployment withRouting(VersionRouting newRouting) {
+    private Deployment withRouting(VersionRouting newRouting) {
         return new Deployment(deploymentId,
                               blueprintId,
                               oldVersion,

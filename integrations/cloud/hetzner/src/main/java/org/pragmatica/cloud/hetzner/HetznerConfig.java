@@ -29,4 +29,9 @@ public record HetznerConfig(String apiToken, String baseUrl) {
     public static HetznerConfig hetznerConfig(String apiToken, String baseUrl) {
         return new HetznerConfig(apiToken, baseUrl);
     }
+
+    @Override
+    public String toString() {
+        return "HetznerConfig[apiToken=REDACTED, baseUrl=" + baseUrl + "]";
+    }
 }

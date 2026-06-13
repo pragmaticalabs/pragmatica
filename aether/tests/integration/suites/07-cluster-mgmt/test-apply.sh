@@ -7,7 +7,7 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     log_pass "Cluster ready"
 }
 
@@ -18,16 +18,16 @@ test_get_current_config() {
 }
 
 test_apply_config_override() {
-    # Apply a benign config change
-    local body='{"overrides":{"test.integration.marker":"applied"}}'
+    # /api/config expects {key, value, nodeId?} per ConfigRoutes.SetConfigRequest.
+    # The earlier {overrides:{...}} shape always 500s with "Missing key or value field".
+    local body='{"key":"test.integration.marker","value":"applied"}'
     local result
     result=$(config_apply "$body")
-    # Accept any non-error response
     if [ -n "$result" ]; then
         log_pass "Config apply returned response"
     else
-        log_warn "Config apply returned empty — may not support arbitrary overrides"
-        log_pass "Config apply endpoint responds"
+        log_fail "Config apply returned empty for {key,value} body"
+        return 1
     fi
 }
 
@@ -38,13 +38,43 @@ test_config_converges() {
 }
 
 test_config_visible_on_all_nodes() {
-    # Verify cluster config endpoint returns consistently
-    local config1 config2
-    config1=$(config_export)
-    sleep 2
-    config2=$(config_export)
-    assert_ne "$config1" "" "Config export 1 non-empty"
-    assert_ne "$config2" "" "Config export 2 non-empty"
+    # Audit fix (#13): the prior shape called config_export twice on
+    # CLUSTER_ENDPOINT and never probed individual nodes — "all nodes" was a lie.
+    # Now we probe each node's direct management port (MGMT_PORT + offset) and
+    # assert the marker key applied by test_apply_config_override is visible
+    # everywhere with the expected value. Any disagreement → hard fail.
+    local expected_key="test.integration.marker"
+    local expected_value="applied"
+    local mismatches=0
+    local i
+    for i in $(seq 0 $((NODE_COUNT - 1))); do
+        local node_name="node-$((i + 1))"
+        local port=$((MGMT_PORT + i))
+        local overrides
+        if ! overrides=$(node_api_get "$i" "/api/config/overrides"); then
+            log_fail "Per-node config probe failed on ${node_name} (port ${port})"
+            mismatches=$((mismatches + 1))
+            continue
+        fi
+        if [ -z "$overrides" ]; then
+            log_fail "${node_name} returned empty overrides body"
+            mismatches=$((mismatches + 1))
+            continue
+        fi
+        local actual
+        actual=$(json_value "$overrides" "$expected_key")
+        if [ "$actual" = "$expected_value" ]; then
+            log_pass "${node_name} sees ${expected_key}=${expected_value}"
+        else
+            log_fail "${node_name} expected ${expected_key}='${expected_value}', got '${actual}'"
+            mismatches=$((mismatches + 1))
+        fi
+    done
+    if [ "$mismatches" -gt 0 ]; then
+        log_fail "Config not visible on all nodes (${mismatches}/${NODE_COUNT} disagreed)"
+        return 1
+    fi
+    log_pass "Config marker visible on all ${NODE_COUNT} nodes"
 }
 
 test_overrides_endpoint() {
@@ -60,7 +90,7 @@ test_overrides_endpoint() {
 
 test_cluster_unchanged() {
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "5" "Node count unchanged after config apply"
 }
 

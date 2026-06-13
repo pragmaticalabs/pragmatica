@@ -7,66 +7,73 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     log_pass "Cluster ready"
 }
 
 test_cluster_formed_with_encryption() {
+    # Operational health, not raw generation-snapshot membership.
+    # `cluster_member_count` (generation `core.members[]` length) can transiently carry
+    # tombstones / mid-decommission CTM-replacement entries left by an earlier suite,
+    # producing 6-7 even though only 5 nodes are actively serving. The test's intent
+    # is "the cluster formed with 5 operational nodes under encryption" — the right
+    # signal for that is the transport-honest healthy core count exposed by
+    # /api/cluster/topology.coreCount (the same metric restore_cluster_baseline gates on).
     local count
-    count=$(cluster_node_count)
-    assert_eq "$count" "5" "Cluster formed with 5 nodes (encryption enabled)"
+    count=$(cluster_active_core_count)
+    assert_eq "$count" "5" "Cluster formed with 5 healthy cores (encryption enabled)"
 }
 
 test_gossip_encryption_active_via_config() {
-    local config
-    config=$(cluster_config)
-    if [ -z "$config" ]; then
-        log_warn "Cluster config unavailable"
-        log_pass "Config endpoint responds"
+    # `quic_handshake_total` from /api/metrics/transport is the deterministic positive
+    # signal: every QUIC connection requires a TLS handshake (QuicSslContext is
+    # mandatory in `QuicClusterNetwork`). A non-zero handshake count between cluster
+    # bring-up and the time of this assertion proves the cluster transport is
+    # TLS-encrypted — there is no QUIC-without-TLS code path. This replaces the
+    # config-flag fishing expedition with a runtime fact.
+    local metrics handshake_count
+    metrics=$(api_get "/api/metrics/transport")
+    if [ -z "$metrics" ]; then
+        log_fail "GET /api/metrics/transport returned empty — cannot read QUIC handshake counter"
+        return 1
+    fi
+    handshake_count=$(json_value "$metrics" "quic_handshake_total")
+    handshake_count="${handshake_count:--1}"
+    if [ "$handshake_count" -gt 0 ] 2>/dev/null; then
+        log_pass "Gossip encryption verified: ${handshake_count} TLS handshakes recorded (QUIC mandates TLS via QuicSslContext)"
         return 0
     fi
-
-    local encryption_enabled
-    encryption_enabled=$(echo "$config" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    # Check various possible config paths for gossip encryption
-    tls = data.get('tls', data.get('security', {}))
-    gossip = data.get('gossip', {})
-    enc = tls.get('enabled', tls.get('gossipEncryption', gossip.get('encrypted', 'unknown')))
-    print(str(enc).lower())
-except:
-    print('unknown')
-" 2>/dev/null)
-
-    if [ "$encryption_enabled" = "true" ]; then
-        log_pass "Gossip encryption confirmed enabled in config"
-    elif [ "$encryption_enabled" = "unknown" ]; then
-        log_warn "Gossip encryption status not found in config — checking via logs/metrics"
-        log_pass "Config endpoint responds"
-    else
-        log_warn "Gossip encryption may be disabled: ${encryption_enabled}"
-        log_pass "Config endpoint responds"
-    fi
+    log_fail "quic_handshake_total=${handshake_count}: no TLS handshakes recorded — cluster transport is either down or non-QUIC"
+    return 1
 }
 
 test_gossip_encryption_via_transport() {
-    local metrics
+    # Verify TLS handshake failures are bounded: a healthy QUIC cluster has handshake
+    # successes vastly outnumbering failures (failures only occur on cert/version
+    # mismatches). The ratio is the canonical "are encrypted handshakes succeeding"
+    # signal — not just "are encryption-related metrics present".
+    local metrics handshake_total handshake_failures
     metrics=$(api_get "/api/metrics/transport")
     if [ -z "$metrics" ]; then
-        log_warn "Transport metrics unavailable"
-        log_pass "Transport endpoint responds"
-        return 0
+        log_fail "GET /api/metrics/transport returned empty"
+        return 1
     fi
-
-    # Check for encryption-related metrics
-    if echo "$metrics" | grep -qiE 'encrypt|tls|cipher|handshake' 2>/dev/null; then
-        log_pass "Encryption-related transport metrics present"
-    else
-        log_warn "No explicit encryption metrics — encryption may be implicit via QUIC"
-        log_pass "Transport metrics available (QUIC provides encryption by default)"
+    handshake_total=$(json_value "$metrics" "quic_handshake_total")
+    handshake_failures=$(json_value "$metrics" "quic_handshake_failures_total")
+    handshake_total="${handshake_total:--1}"
+    handshake_failures="${handshake_failures:--1}"
+    if [ "$handshake_total" -lt 1 ] 2>/dev/null; then
+        log_fail "quic_handshake_total=${handshake_total}: no handshakes recorded"
+        return 1
     fi
+    # Fail only if failures exceed half of total (catastrophic cert/version mismatch).
+    # Some failures are expected during chaos/restart cycles.
+    local failure_threshold=$((handshake_total / 2))
+    if [ "$handshake_failures" -gt "$failure_threshold" ] 2>/dev/null; then
+        log_fail "TLS handshake failures (${handshake_failures}) exceed half of total (${handshake_total}) — cert/protocol issue"
+        return 1
+    fi
+    log_pass "TLS handshakes succeeding: total=${handshake_total} failures=${handshake_failures} (failure ratio ≤ 50%)"
 }
 
 test_nodes_communicating_encrypted() {

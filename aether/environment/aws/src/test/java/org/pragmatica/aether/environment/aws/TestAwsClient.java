@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.environment.aws;
 
 import org.pragmatica.cloud.aws.AwsClient;
@@ -14,6 +19,7 @@ import org.pragmatica.lang.Unit;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 
 /// Test stub for AwsClient that returns canned responses and captures arguments.
 final class TestAwsClient implements AwsClient {
@@ -26,6 +32,7 @@ final class TestAwsClient implements AwsClient {
     Promise<Unit> deregisterTargetsResponse = Promise.success(Unit.unit());
     Promise<List<TargetHealth>> describeTargetHealthResponse = Promise.success(List.of());
     Promise<String> getSecretValueResponse = Promise.success("secret-value");
+    Queue<Promise<String>> secretResponses;
 
     List<String> lastTerminatedIds;
     List<String> lastRebootedIds;
@@ -99,6 +106,9 @@ final class TestAwsClient implements AwsClient {
     @Override
     public Promise<String> getSecretValue(String secretId) {
         lastSecretId = secretId;
+        if (secretResponses != null && !secretResponses.isEmpty()) {
+            return secretResponses.poll();
+        }
         return getSecretValueResponse;
     }
 

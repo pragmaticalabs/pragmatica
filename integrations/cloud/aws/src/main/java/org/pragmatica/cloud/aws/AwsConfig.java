@@ -38,4 +38,9 @@ public record AwsConfig(String accessKeyId, String secretAccessKey, String regio
     public String secretsManagerUrl() {
         return "https://secretsmanager." + region + ".amazonaws.com";
     }
+
+    @Override
+    public String toString() {
+        return "AwsConfig[accessKeyId=" + accessKeyId + ", secretAccessKey=REDACTED, region=" + region + "]";
+    }
 }

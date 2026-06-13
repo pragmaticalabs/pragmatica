@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.db.jooq.r2dbc;
 
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
@@ -24,10 +28,6 @@ import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
 
 
-/// R2DBC implementation of JooqConnector for reactive type-safe SQL queries.
-///
-/// Combines jOOQ's type-safe query building with R2DBC's reactive execution.
-/// Uses JooqR2dbcOperations from integrations/db/jooq-r2dbc for Promise-based execution.
 public final class R2dbcJooqConnector implements JooqConnector {
     private final DatabaseConnectorConfig config;
     private final ConnectionFactory connectionFactory;
@@ -46,38 +46,50 @@ public final class R2dbcJooqConnector implements JooqConnector {
     public static R2dbcJooqConnector r2dbcJooqConnector(DatabaseConnectorConfig config,
                                                         ConnectionFactory connectionFactory) {
         var dialect = JooqConnector.mapDialect(config.effectiveType());
+
         return new R2dbcJooqConnector(config, connectionFactory, dialect);
     }
 
-    @Override public DSLContext dsl() {
+    @Override
+    public DSLContext dsl() {
         return operations.dsl();
     }
 
-    @Override public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
-        return operations.fetchOne(query).mapError(R2dbcJooqConnector::toConnectorError);
+    @Override
+    public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
+        return operations.fetchOne(query)
+                         .mapError(R2dbcJooqConnector::toConnectorError);
     }
 
-    @Override public <R extends Record> Promise<Option<R>> fetchOptional(ResultQuery<R> query) {
-        return operations.fetchOptional(query).mapError(R2dbcJooqConnector::toConnectorError);
+    @Override
+    public <R extends Record> Promise<Option<R>> fetchOptional(ResultQuery<R> query) {
+        return operations.fetchOptional(query)
+                         .mapError(R2dbcJooqConnector::toConnectorError);
     }
 
-    @Override public <R extends Record> Promise<List<R>> fetch(ResultQuery<R> query) {
-        return operations.fetch(query).mapError(R2dbcJooqConnector::toConnectorError);
+    @Override
+    public <R extends Record> Promise<List<R>> fetch(ResultQuery<R> query) {
+        return operations.fetch(query)
+                         .mapError(R2dbcJooqConnector::toConnectorError);
     }
 
-    @Override public Promise<Integer> execute(Query query) {
-        return operations.execute(query).mapError(R2dbcJooqConnector::toConnectorError);
+    @Override
+    public Promise<Integer> execute(Query query) {
+        return operations.execute(query)
+                         .mapError(R2dbcJooqConnector::toConnectorError);
     }
 
-    @Override public <T> Promise<T> transactional(JooqConnector.TransactionCallback<T> callback) {
+    @Override
+    public <T> Promise<T> transactional(JooqConnector.TransactionCallback<T> callback) {
         return withConnection(conn -> beginAndExecute(conn, callback).fold(result -> resolveTransaction(conn, result)));
     }
 
     private <T> Promise<T> beginAndExecute(Connection conn, JooqConnector.TransactionCallback<T> callback) {
-        return ReactiveOperations.fromVoidPublisher(conn.beginTransaction()).flatMap(_ -> callback.execute(new TransactionalR2dbcJooqConnector(config,
-                                                                                                                                               conn,
-                                                                                                                                               dialect)))
-                                                   .flatMap(result -> commitAndResolve(conn, result));
+        return ReactiveOperations.fromVoidPublisher(conn.beginTransaction())
+                                 .flatMap(_ -> callback.execute(new TransactionalR2dbcJooqConnector(config,
+                                                                                                    conn,
+                                                                                                    dialect)))
+                                 .flatMap(result -> commitAndResolve(conn, result));
     }
 
     private static <T> Promise<T> commitAndResolve(Connection conn, T result) {
@@ -92,30 +104,36 @@ public final class R2dbcJooqConnector implements JooqConnector {
         return ReactiveOperations.fromVoidPublisher(conn.rollbackTransaction()).fold(_ -> cause.promise());
     }
 
-    @Override public DatabaseConnectorConfig config() {
+    @Override
+    public DatabaseConnectorConfig config() {
         return config;
     }
 
-    @Override public Promise<Boolean> isHealthy() {
-        return operations.fetchOne(dsl().selectOne()).map(_ -> true)
-                                  .recover(_ -> false);
+    @Override
+    public Promise<Boolean> isHealthy() {
+        return operations.fetchOne(dsl().selectOne())
+                         .map(_ -> true)
+                         .recover(_ -> false);
     }
 
-    @Override public Promise<Unit> stop() {
-        if (connectionFactory instanceof AutoCloseable closeable) {return Promise.lift(DatabaseConnectorError::databaseFailure,
-                                                                                       closeable::close)
-        .mapToUnit();}
+    @Override
+    public Promise<Unit> stop() {
+        if (connectionFactory instanceof AutoCloseable closeable) {
+            return Promise.lift(DatabaseConnectorError::databaseFailure, closeable::close).mapToUnit();
+        }
+
         return Promise.success(Unit.unit());
     }
 
     private <T> Promise<T> withConnection(java.util.function.Function<Connection, Promise<T>> operation) {
-        return ReactiveOperations.<Connection>fromPublisher(connectionFactory.create())
-                                 .flatMap(conn -> executeAndClose(conn, operation));
+        return ReactiveOperations.<Connection> fromPublisher(connectionFactory.create()).flatMap(conn -> executeAndClose(conn,
+                                                                                                                         operation));
     }
 
     private <T> Promise<T> executeAndClose(Connection conn,
                                            java.util.function.Function<Connection, Promise<T>> operation) {
-        return operation.apply(conn).fold(result -> closeAndResolve(conn, result));
+        return operation.apply(conn)
+                        .fold(result -> closeAndResolve(conn, result));
     }
 
     private static <T> Promise<T> closeAndResolve(Connection conn, Result<T> result) {
@@ -123,62 +141,73 @@ public final class R2dbcJooqConnector implements JooqConnector {
     }
 
     static DatabaseConnectorError toConnectorError(Cause cause) {
-        if (cause instanceof R2dbcError r2dbcError) {return switch (r2dbcError){
-            case R2dbcError.NoResult _ -> DatabaseConnectorError.ResultNotFound.INSTANCE;
-            case R2dbcError.MultipleResults m -> DatabaseConnectorError.multipleResults(m.count());
-            case R2dbcError.ConnectionFailed c -> DatabaseConnectorError.connectionFailed(c.message());
-            case R2dbcError.ConstraintViolation v -> DatabaseConnectorError.constraintViolation(v.constraint());
-            case R2dbcError.Timeout t -> DatabaseConnectorError.timeout(t.operation());
-            case R2dbcError.QueryFailed q -> DatabaseConnectorError.queryFailed("", q.message());
-            case R2dbcError.DatabaseFailure d -> DatabaseConnectorError.databaseFailure(d.cause());
-        };}
+        if (cause instanceof R2dbcError r2dbcError) {
+            return switch (r2dbcError) {
+                case R2dbcError.NoResult _ -> DatabaseConnectorError.ResultNotFound.INSTANCE;
+                case R2dbcError.MultipleResults m -> DatabaseConnectorError.multipleResults(m.count());
+                case R2dbcError.ConnectionFailed c -> DatabaseConnectorError.connectionFailed(c.message());
+                case R2dbcError.ConstraintViolation v -> DatabaseConnectorError.constraintViolation(v.constraint());
+                case R2dbcError.Timeout t -> DatabaseConnectorError.timeout(t.operation());
+                case R2dbcError.QueryFailed q -> DatabaseConnectorError.queryFailed("", q.message());
+                case R2dbcError.DatabaseFailure d -> DatabaseConnectorError.databaseFailure(d.cause());
+            };
+        }
+
         return DatabaseConnectorError.databaseFailure(new RuntimeException(cause.message()));
     }
 
     private record TransactionalR2dbcJooqConnector(DatabaseConnectorConfig config,
                                                    Connection connection,
                                                    SQLDialect dialect) implements JooqConnector {
-        @Override public DSLContext dsl() {
+        @Override
+        public DSLContext dsl() {
             return DSL.using(dialect);
         }
 
-        @Override public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
+        @Override
+        public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
             return Promise.lift(e -> mapException(e,
                                                   query.getSQL()),
                                 () -> JooqConnector.extractSingleResult(DSL.using(connection, dialect).fetch(query)))
-            .mapError(R2dbcJooqConnector::toConnectorError);
+                          .mapError(R2dbcJooqConnector::toConnectorError);
         }
 
-        @Override public <R extends Record> Promise<Option<R>> fetchOptional(ResultQuery<R> query) {
+        @Override
+        public <R extends Record> Promise<Option<R>> fetchOptional(ResultQuery<R> query) {
             return Promise.lift(e -> mapException(e,
                                                   query.getSQL()),
                                 () -> JooqConnector.extractOptionalResult(DSL.using(connection, dialect).fetch(query)))
-            .mapError(R2dbcJooqConnector::toConnectorError);
+                          .mapError(R2dbcJooqConnector::toConnectorError);
         }
 
-        @Override public <R extends Record> Promise<List<R>> fetch(ResultQuery<R> query) {
+        @Override
+        public <R extends Record> Promise<List<R>> fetch(ResultQuery<R> query) {
             return Promise.lift(e -> mapException(e,
                                                   query.getSQL()),
                                 () -> List.copyOf(DSL.using(connection, dialect).fetch(query)))
-            .mapError(R2dbcJooqConnector::toConnectorError);
+                          .mapError(R2dbcJooqConnector::toConnectorError);
         }
 
-        @Override public Promise<Integer> execute(Query query) {
+        @Override
+        public Promise<Integer> execute(Query query) {
             return Promise.lift(e -> mapException(e,
                                                   query.getSQL()),
                                 () -> DSL.using(connection, dialect).execute(query))
-            .mapError(R2dbcJooqConnector::toConnectorError);
+                          .mapError(R2dbcJooqConnector::toConnectorError);
         }
 
-        @Override public <T> Promise<T> transactional(JooqConnector.TransactionCallback<T> callback) {
+        @Override
+        public <T> Promise<T> transactional(JooqConnector.TransactionCallback<T> callback) {
             return callback.execute(this);
         }
 
-        @Override public Promise<Boolean> isHealthy() {
+        @Override
+        public Promise<Boolean> isHealthy() {
             return Promise.success(true);
         }
 
-        @Override public Promise<Unit> stop() {
+        @Override
+        public Promise<Unit> stop() {
             return Promise.success(Unit.unit());
         }
 

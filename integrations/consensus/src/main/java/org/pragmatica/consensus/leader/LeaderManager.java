@@ -3,176 +3,149 @@
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
  */
 
 package org.pragmatica.consensus.leader;
 
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
+import org.pragmatica.consensus.fsm.ClusterFsmEvent;
+import org.pragmatica.consensus.fsm.ClusterFsmRouter;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionContext;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionFsm;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionState;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
+import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
+import org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty;
+import org.pragmatica.consensus.topology.TransportObservation.PeerReconnected;
+import org.pragmatica.consensus.topology.TransportObservation.SelfShutdown;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.statemachine.Fsm;
+import org.pragmatica.statemachine.FsmObserver;
 
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import static org.pragmatica.consensus.leader.LeaderNotification.leaderChange;
-import static org.pragmatica.lang.io.TimeSpan.timeSpan;
-
-/// Leader manager is responsible for choosing which node is the leader.
-/// Although consensus is leaderless, it is often necessary to have a single
-/// source of truth for the cluster management. The leader node can be used for this purpose.
+/// Leader manager responsible for choosing the cluster leader. Backed by the
+/// [`LeaderElectionFsm`](fsm/LeaderElectionFsm.java) — a GoF-style state machine with CAS-guarded
+/// transitions, caller-thread dispatch (no executor), and explicit per-state event handlers.
 ///
-/// Two modes of operation:
-/// 1. **Local election** (backward compatible): Leader is computed locally on view change
-///    and notifications are sent immediately via synchronous `router.route()`.
-/// 2. **Consensus-based election**: Leader proposal is submitted through consensus.
-///    Notifications are sent asynchronously via `router.routeAsync()` only after commit.
-///
-/// TODO: Consider consolidating TopologyManager and LeaderManager into a single ClusterViewManager.
-///
-/// **Current issue:** LeaderManager duplicates topology tracking (currentTopology field) because
-/// it needs the full topology to determine if this node should submit a leader proposal. This
-/// duplication exists to prevent race conditions where multiple nodes think they're the candidate.
-///
-/// **Arguments FOR consolidation:**
-/// - Eliminates state duplication and synchronization issues between components
-/// - Topology change and leader re-election could happen atomically
-/// - Simpler message flow - no need to route NodeAdded/NodeRemoved/NodeDown events
-/// - Single "cluster view" component owns the complete picture: who's in the cluster and who's leading
-///
-/// **Arguments AGAINST consolidation:**
-/// - Separation of concerns: topology detection (network-level) vs leader election (application policy)
-/// - Election algorithm flexibility: could swap strategies (first-in-topology, consensus-based, Raft)
-///   without touching topology code
-/// - Testability: easier to test each concern in isolation
-/// - Reusability: some use cases might want topology tracking without leader election
-///
-/// **Possible design if consolidated:**
-/// ```
-/// interface ClusterView {
-///     List<NodeId> topology();
-///     Option<NodeId> leader();
-///     boolean isLeader();
-/// }
-///
-/// ClusterViewManager.clusterViewManager(
-///     self,
-///     router,
-///     LeaderElectionStrategy.consensusBased(proposalHandler)  // or .localFirstNode()
-/// )
-/// ```
-/// This keeps the algorithm swappable while eliminating state synchronization issues.
+/// Modes:
+/// 1. **Local election** (backward compatible): no `LeaderProposalHandler`; leader is computed
+///    locally as the first node in sorted topology and fed back as a synthesized
+///    `LeaderCommitted`.
+/// 2. **Consensus-based election**: proposals go through consensus; the committed leader flows
+///    back via [`onLeaderCommitted`](#onLeaderCommitted(NodeId)).
 public interface LeaderManager {
-    /// Get the current leader node ID.
-    /// @return the current leader, or empty if no leader is elected
     Option<NodeId> leader();
 
-    /// Check if this node is the current leader.
     boolean isLeader();
 
-    /// Called when leader election is committed through consensus.
-    /// Updates local state and sends async notification.
-    /// ViewSequence is tracked internally - no need to pass from external source.
+    /// Returns the current leader's epoch (the cluster-side rabia term) iff this node is the
+    /// elected leader; otherwise [`Option#none`]. Source: the [`Supplier<Long>`] injected at
+    /// construction (`leaderManager(...)` overloads). Consumers (e.g. Aether's
+    /// `HealthReconciler`) wrap this raw term into their domain epoch type.
     ///
-    /// @param leader the committed leader node ID
+    /// SSOT note: leader-tenure identity (NodeId) and the rabia term advance together — the term
+    /// increments on each leader transition (view change), so a live read here is semantically
+    /// equivalent to a snapshot taken at promotion for the active-leader case.
+    Option<Long> currentLeaderEpoch();
+
+    /// Called when leader election is committed through consensus.
+    @Contract
     void onLeaderCommitted(NodeId leader);
 
-    /// Trigger leader election manually. Call this after consensus is ready.
-    /// In consensus mode, submits a proposal for the tracked candidate.
-    /// In local mode, this is a no-op (election happens automatically on quorum).
+    /// Variant carrying the committed [`viewSequence`] (H4 fence, cluster-topology-overhaul
+    /// §Wave 8.2). Seeds the local election baseline (so this node's NEXT proposal is fenced
+    /// strictly above the committed sequence) before dispatching the commit. Default delegates
+    /// to the sequence-less variant for implementations (test stubs, legacy local mode) that do
+    /// not track the baseline.
+    @Contract
+    default void onLeaderCommitted(NodeId leader, long viewSequence) {
+        onLeaderCommitted(leader);
+    }
+
+    /// Signal that consensus has completed sync and the node is ready to elect.
+    @Contract
     void triggerElection();
 
+    /// Stop the manager — further events are ignored.
+    @Contract
+    void stop();
+
+    @Contract
+    @MessageReceiver
+    void peerJoined(PeerJoined peerJoined);
+
+    @Contract
+    @MessageReceiver
+    void peerDisconnected(PeerDisconnected peerDisconnected);
+
+    @Contract
+    @MessageReceiver
+    void peerObservedFaulty(PeerObservedFaulty peerObservedFaulty);
+
+    @Contract
+    @MessageReceiver
+    void peerReconnected(PeerReconnected peerReconnected);
+
+    @Contract
+    @MessageReceiver
+    void selfShutdown(SelfShutdown selfShutdown);
+
+    @Contract
+    @MessageReceiver
+    void watchClusterState(ClusterStateNotification clusterState);
+
     /// Handler for submitting leader proposals through consensus.
-    /// When provided, leader election goes through consensus instead of local computation.
     @FunctionalInterface
     interface LeaderProposalHandler {
-        /// Submit a leader proposal through consensus.
-        ///
-        /// @param candidate the proposed leader node ID
-        /// @param viewSequence monotonic view sequence number
-        /// @return Promise that completes when proposal is submitted (not necessarily committed)
         Promise<Unit> propose(NodeId candidate, long viewSequence);
     }
 
-    /// Create a leader manager with local election (backward compatible).
-    /// Leader is computed locally on view change and notifications are sent immediately.
+    // --- Factories ---
+
     static LeaderManager leaderManager(NodeId self, MessageRouter router) {
-        return leaderManager(self, router, Option.none(), List.of());
+        return build(self, router, Option.none(), List.of(),
+                     LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
+                     LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
+                     LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
+                     LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
+                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER,
+                     LeaderElectionContext.DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
     }
 
-    /// Create a leader manager with consensus-based election.
-    /// When proposal handler is provided, leader election goes through consensus.
-    ///
-    /// @param self this node's ID
-    /// @param router message router for notifications
-    /// @param proposalHandler handler for submitting proposals through consensus
     static LeaderManager leaderManager(NodeId self, MessageRouter router, LeaderProposalHandler proposalHandler) {
-        return leaderManager(self, router, Option.some(proposalHandler), List.of());
+        return build(self, router, Option.some(proposalHandler), List.of(),
+                     LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
+                     LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
+                     LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
+                     LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
+                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER,
+                     LeaderElectionContext.DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
     }
 
-    /// Create a leader manager with consensus-based election and expected cluster membership.
-    /// The expected cluster is used for deterministic leader candidate selection to prevent
-    /// flapping when nodes have different views during startup.
-    ///
-    /// @param self this node's ID
-    /// @param router message router for notifications
-    /// @param proposalHandler handler for submitting proposals through consensus
-    /// @param expectedCluster expected cluster members for deterministic min calculation
     static LeaderManager leaderManager(NodeId self,
                                        MessageRouter router,
                                        LeaderProposalHandler proposalHandler,
                                        List<NodeId> expectedCluster) {
-        return leaderManager(self, router, Option.some(proposalHandler), expectedCluster);
+        return build(self, router, Option.some(proposalHandler), expectedCluster,
+                     LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
+                     LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
+                     LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
+                     LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
+                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER,
+                     LeaderElectionContext.DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
     }
 
-    Logger log = LoggerFactory.getLogger(LeaderManager.class);
-
-    /// Default retry delay for leader proposals that fail (e.g., when consensus not ready yet)
-    TimeSpan DEFAULT_PROPOSAL_RETRY_DELAY = timeSpan(500).millis();
-
-    /// Default base delay before the first leader proposal after consensus activation.
-    /// This allows all nodes to complete consensus sync before any proposals are submitted.
-    /// Without this, the first node to activate submits proposals that fail because
-    /// other nodes are still dormant (syncing), and those proposals time out after 3 seconds.
-    TimeSpan DEFAULT_BASE_ELECTION_DELAY = timeSpan(2).seconds();
-
-    /// Default additional delay per rank position for staggered initial election.
-    /// Rank 0 proposes after BASE_ELECTION_DELAY, rank 1 after BASE + 1s, rank 2 after BASE + 2s.
-    /// This ensures only one node proposes at a time.
-    TimeSpan DEFAULT_PER_RANK_DELAY = timeSpan(1).seconds();
-
-    /// Create a leader manager with consensus-based election and configurable timeouts.
-    ///
-    /// @param self this node's ID
-    /// @param router message router for notifications
-    /// @param proposalHandler handler for submitting proposals through consensus
-    /// @param expectedCluster expected cluster members for deterministic min calculation
-    /// @param proposalRetryDelay delay before retrying failed proposals
-    /// @param baseElectionDelay base delay before first election attempt
-    /// @param perRankDelay additional delay per rank position
     static LeaderManager leaderManager(NodeId self,
                                        MessageRouter router,
                                        LeaderProposalHandler proposalHandler,
@@ -180,424 +153,266 @@ public interface LeaderManager {
                                        TimeSpan proposalRetryDelay,
                                        TimeSpan baseElectionDelay,
                                        TimeSpan perRankDelay) {
-        return leaderManager(self, router, Option.some(proposalHandler), expectedCluster,
-                             proposalRetryDelay, baseElectionDelay, perRankDelay);
+        return build(self, router, Option.some(proposalHandler), expectedCluster,
+                     proposalRetryDelay, baseElectionDelay, perRankDelay,
+                     LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
+                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER,
+                     LeaderElectionContext.DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
     }
 
-    private static LeaderManager leaderManager(NodeId self,
-                                               MessageRouter router,
-                                               Option<LeaderProposalHandler> proposalHandler,
-                                               List<NodeId> expectedCluster) {
-        return leaderManager(self, router, proposalHandler, expectedCluster,
-                             DEFAULT_PROPOSAL_RETRY_DELAY, DEFAULT_BASE_ELECTION_DELAY, DEFAULT_PER_RANK_DELAY);
+    /// Factory accepting the `rabiaTermSupplier` consumed by [`#currentLeaderEpoch`]. The
+    /// `consensusReadySupplier` defaults to `() -> false` — callers that want auto-advancement
+    /// from `QuorumWaiting` must use the [`#leaderManager(NodeId, MessageRouter,
+    /// LeaderProposalHandler, List, Supplier, Supplier)`] overload below.
+    static LeaderManager leaderManager(NodeId self,
+                                       MessageRouter router,
+                                       LeaderProposalHandler proposalHandler,
+                                       List<NodeId> expectedCluster,
+                                       Supplier<Long> rabiaTermSupplier) {
+        return build(self, router, Option.some(proposalHandler), expectedCluster,
+                     LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
+                     LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
+                     LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
+                     rabiaTermSupplier,
+                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER,
+                     LeaderElectionContext.DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
     }
 
-    private static LeaderManager leaderManager(NodeId self,
-                                               MessageRouter router,
-                                               Option<LeaderProposalHandler> proposalHandler,
-                                               List<NodeId> expectedCluster,
-                                               TimeSpan proposalRetryDelay,
-                                               TimeSpan baseElectionDelay,
-                                               TimeSpan perRankDelay) {
-        record leaderManager(NodeId self,
-                             MessageRouter router,
-                             Option<LeaderProposalHandler> proposalHandler,
-                             List<NodeId> expectedCluster,
-                             TimeSpan proposalRetryDelay,
-                             TimeSpan baseElectionDelay,
-                             TimeSpan perRankDelay,
-                             AtomicBoolean active,
-                             AtomicLong viewSequence,
-                             AtomicReference<Option<NodeId>> currentLeader,
-                             AtomicReference<List<NodeId>> currentTopology,
-                             AtomicBoolean proposalInFlight,
-                             AtomicBoolean needsReactivation,
-                             AtomicBoolean hasEverHadLeader,
-                             AtomicInteger electionRetryCount,
-                             AtomicLong quorumSequence) implements LeaderManager {
-            @Override
-            public Option<NodeId> leader() {
-                return currentLeader.get();
-            }
+    /// Factory accepting rabia-term + consensus-readiness suppliers; defaults the KV-leader
+    /// supplier to `Option.none()`. Existing callers (and tests) that don't need the
+    /// pull-from-KV path stay on this overload.
+    static LeaderManager leaderManager(NodeId self,
+                                       MessageRouter router,
+                                       LeaderProposalHandler proposalHandler,
+                                       List<NodeId> expectedCluster,
+                                       Supplier<Long> rabiaTermSupplier,
+                                       Supplier<Boolean> consensusReadySupplier) {
+        return build(self, router, Option.some(proposalHandler), expectedCluster,
+                     LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
+                     LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
+                     LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
+                     rabiaTermSupplier,
+                     consensusReadySupplier,
+                     LeaderElectionContext.DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
+    }
 
-            @Override
-            public boolean isLeader() {
-                return currentLeader.get()
-                                    .filter(self::equals)
-                                    .isPresent();
-            }
+    /// Full-arity factory accepting all injectable suppliers including the cluster KV-Store
+    /// leader accessor. Production wiring (Aether's `RabiaNode`) plumbs:
+    ///   - `RabiaEngine::isActive` as `consensusReadySupplier` (push-side: ready-state poll)
+    ///   - `() -> kvStore.get(LeaderKey).map(LeaderValue::leader)` as `currentLeaderFromKvSupplier`
+    ///     (pull-side: cluster's source-of-truth leader read)
+    /// The pull-side closes the gap where a rejoining node misses the
+    /// `KVStoreNotification.ValuePut<LeaderKey>` notification (e.g. snapshot-restored state didn't
+    /// include the LeaderKey, or the listener wired after the Decision was already applied).
+    static LeaderManager leaderManager(NodeId self,
+                                       MessageRouter router,
+                                       LeaderProposalHandler proposalHandler,
+                                       List<NodeId> expectedCluster,
+                                       Supplier<Long> rabiaTermSupplier,
+                                       Supplier<Boolean> consensusReadySupplier,
+                                       Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
+        return build(self, router, Option.some(proposalHandler), expectedCluster,
+                     LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
+                     LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
+                     LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
+                     rabiaTermSupplier,
+                     consensusReadySupplier,
+                     currentLeaderFromKvSupplier);
+    }
 
-            @Override
-            public void onLeaderCommitted(NodeId leader) {
-                log.debug("onLeaderCommitted: self={}, leader={}, needsReactivation={}",
-                          self,
-                          leader,
-                          needsReactivation.get());
-                // Mark that we've successfully elected a leader (used for re-election logic)
-                hasEverHadLeader.set(true);
-                // Clear in-flight flag - proposal has committed through consensus
-                proposalInFlight.set(false);
-                electionRetryCount.set(0);
-                var oldLeader = currentLeader.get();
-                var newLeader = Option.some(leader);
-                if (currentLeader.compareAndSet(oldLeader, newLeader)) {
-                    // Only consume forceNotify AFTER CAS succeeds to avoid losing reactivation signal
-                    var forceNotify = needsReactivation.compareAndSet(true, false);
-                    // Increment viewSequence on each commit to track local state progression
-                    viewSequence.incrementAndGet();
-                    if (forceNotify || !newLeader.equals(oldLeader)) {
-                        log.debug("Leader committed: {} (forceNotify={}, changed={}), notifying",
-                                  newLeader,
-                                  forceNotify,
-                                  !newLeader.equals(oldLeader));
-                        // Use synchronous notification to ensure all handlers (especially
-                        // ClusterDeploymentManager) process LeaderChange BEFORE any API
-                        // can report isLeader=true. This prevents race conditions where
-                        // deploy commands arrive before ClusterDeploymentManager is active.
-                        notifyLeaderChange();
-                    } else {
-                        log.debug("Leader unchanged ({}), skipping notification", newLeader);
-                    }
-                }
-            }
+    /// Full-arity factory adding the leader-acting lease predicate. A node in `Led(X)` (X != self)
+    /// re-checks `leaderPingFreshFn.test(X)` once per lease interval; consecutive silent checks
+    /// trip a re-election (the recovery edge for a SWIM-alive but non-committing leader). Production
+    /// wiring (Aether's `RabiaNode` / `AetherNode`) backs the predicate with the follower's
+    /// observed leader-ping freshness (`ClusterSyncCollector::hasAuthoritativeReadiness`). Callers
+    /// that don't wire a freshness signal stay on the prior overloads (lease-neutral default).
+    static LeaderManager leaderManager(NodeId self,
+                                       MessageRouter router,
+                                       LeaderProposalHandler proposalHandler,
+                                       List<NodeId> expectedCluster,
+                                       Supplier<Long> rabiaTermSupplier,
+                                       Supplier<Boolean> consensusReadySupplier,
+                                       Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                       Predicate<NodeId> leaderPingFreshFn) {
+        return buildWithLease(self, router, Option.some(proposalHandler), expectedCluster,
+                              LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
+                              LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
+                              LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
+                              rabiaTermSupplier,
+                              consensusReadySupplier,
+                              currentLeaderFromKvSupplier,
+                              leaderPingFreshFn);
+    }
 
-            @Override
-            public void triggerElection() {
-                log.debug("triggerElection called: self={}, active={}, topology={}, expectedCluster={}",
-                          self,
-                          active.get(),
-                          currentTopology.get(),
-                          expectedCluster);
-                if (!active.get()) {
-                    log.debug("triggerElection deferred: not active yet, retrying in 500ms");
-                    SharedScheduler.schedule(this::triggerElection, timeSpan(500).millis());
-                    return;
-                }
-                // On first call during initial election, apply base delay + rank-based stagger.
-                // Base delay: allows all nodes to complete consensus sync (nodes activate
-                // at different times, and proposals fail when target nodes are still dormant).
-                // Rank stagger: ensures only one node proposes at a time, preventing livelock.
-                if (!hasEverHadLeader.get() && electionRetryCount.get() == 0) {
-                    var rank = computeRank();
-                    var totalDelay = timeSpan(baseElectionDelay.millis() + rank * perRankDelay.millis()).millis();
-                    log.info("Initial election: rank={}, delaying {}ms (base={}ms + rank*{}ms) before first attempt",
-                             rank,
-                             totalDelay.millis(),
-                             baseElectionDelay.millis(),
-                             perRankDelay.millis());
-                    electionRetryCount.incrementAndGet();
-                    SharedScheduler.schedule(this::triggerElection, totalDelay);
-                    return;
-                }
-                proposalHandler.onPresent(handler -> {
-                    handleConsensusElection(handler);
-                    scheduleElectionRetryIfNeeded();
-                });
-            }
+    private static LeaderManager build(NodeId self,
+                                       MessageRouter router,
+                                       Option<LeaderProposalHandler> proposalHandler,
+                                       List<NodeId> expectedCluster,
+                                       TimeSpan proposalRetryDelay,
+                                       TimeSpan baseElectionDelay,
+                                       TimeSpan perRankDelay,
+                                       Supplier<Long> rabiaTermSupplier,
+                                       Supplier<Boolean> consensusReadySupplier,
+                                       Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
+        return buildWithLease(self, router, proposalHandler, expectedCluster, proposalRetryDelay,
+                              baseElectionDelay, perRankDelay, rabiaTermSupplier,
+                              consensusReadySupplier, currentLeaderFromKvSupplier,
+                              LeaderElectionContext.DEFAULT_LEADER_PING_FRESH_FN);
+    }
 
-            private void scheduleElectionRetryIfNeeded() {
-                if (currentLeader.get().isEmpty()) {
-                    var retries = electionRetryCount.incrementAndGet();
-                    var jitteredDelay = timeSpan((long) (proposalRetryDelay.millis() * (1.0 + Math.random() * 0.5))).millis();
-                    log.debug("No leader yet, scheduling election retry #{} in {}ms",
-                              retries,
-                              jitteredDelay.millis());
-                    SharedScheduler.schedule(this::triggerElection, jitteredDelay);
-                }
-            }
+    private static LeaderManager buildWithLease(NodeId self,
+                                                MessageRouter router,
+                                                Option<LeaderProposalHandler> proposalHandler,
+                                                List<NodeId> expectedCluster,
+                                                TimeSpan proposalRetryDelay,
+                                                TimeSpan baseElectionDelay,
+                                                TimeSpan perRankDelay,
+                                                Supplier<Long> rabiaTermSupplier,
+                                                Supplier<Boolean> consensusReadySupplier,
+                                                Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                Predicate<NodeId> leaderPingFreshFn) {
+        var built = LeaderElectionFsm.leaderElectionFsm(self, proposalHandler, expectedCluster,
+                                                        router, proposalRetryDelay,
+                                                        baseElectionDelay, perRankDelay,
+                                                        FsmObserver.noop(), rabiaTermSupplier,
+                                                        consensusReadySupplier,
+                                                        currentLeaderFromKvSupplier,
+                                                        leaderPingFreshFn);
+        return new FsmBackedLeaderManager(built.fsm(), built.context(), proposalHandler.isEmpty());
+    }
 
-            private void handleConsensusElection(LeaderProposalHandler handler) {
-                var topology = currentTopology.get();
-                if (topology.isEmpty()) {
-                    log.debug("Skipping election trigger: topology is empty");
-                    return;
-                }
-                var candidatePool = selectCandidatePool(topology);
-                var sortedCandidates = candidatePool.stream()
-                                                    .sorted()
-                                                    .toList();
-                if (sortedCandidates.isEmpty()) {
-                    log.debug("Skipping election trigger: no candidates available");
-                    return;
-                }
-                // During initial election, only the lowest-ranked node (first in sorted order)
-                // submits proposals. The base delay + rank-based stagger in triggerElection()
-                // ensures: (1) all nodes are active before the first proposal, and (2) only one
-                // node proposes at a time. No fallback is needed — the lowest-ranked node retries
-                // until consensus completes. If it's truly stuck, re-election via quorum flap
-                // will eventually resolve it.
-                var candidate = sortedCandidates.getFirst();
-                // During initial election, only min-rank node submits to prevent livelock.
-                // During re-election, any node can submit — consensus deduplicates, and
-                // the min-rank node may be in the majority partition (never lost quorum)
-                // and won't re-propose since it already has a leader.
-                if (!hasEverHadLeader.get() && !self.equals(candidate)) {
-                    log.debug("Skipping initial election: self={} is not designated candidate {}",
-                              self,
-                              candidate);
-                    return;
-                }
-                log.debug("Submitting leader proposal: candidate={}, submitter={}",
-                          candidate,
-                          self);
-                // DON'T clear currentLeader here - let consensus decide.
-                // The leader will be updated via onLeaderCommitted().
-                submitProposal(handler, candidate);
-            }
+    /// FSM-backed implementation. `localMode=true` means no consensus; we synthesize
+    /// `LeaderCommitted` events locally to drive the FSM.
+    record FsmBackedLeaderManager(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
+                                  LeaderElectionContext context,
+                                  boolean localMode) implements LeaderManager {
+        @Override
+        public Option<NodeId> leader() {
+            return context.currentLeader();
+        }
 
-            /// Selects the candidate pool for leader election.
-            /// - Initial election: use expectedCluster UNFILTERED to ensure all nodes agree
-            /// - Re-election: filter by topology to exclude known dead nodes
-            private List<NodeId> selectCandidatePool(List<NodeId> topology) {
-                if (expectedCluster.isEmpty()) {
-                    return topology;
-                }
-                var isInitialElection = !hasEverHadLeader.get();
-                if (isInitialElection) {
-                    // All nodes MUST agree on the same candidate regardless of local topology view
-                    return expectedCluster;
-                }
-                // Re-election: filter out dead nodes
-                var filtered = expectedCluster.stream()
-                                              .filter(topology::contains)
-                                              .toList();
-                return filtered.isEmpty()
-                       ? topology
-                       : filtered;
-            }
+        @Override
+        public boolean isLeader() {
+            return context.isLeader();
+        }
 
-            @Override
-            public void nodeAdded(NodeAdded nodeAdded) {
-                var topology = nodeAdded.topology();
-                currentTopology.set(topology);
-                if (!topology.isEmpty()) {
-                    tryElect(topology.getFirst());
-                }
-            }
+        @Override
+        public Option<Long> currentLeaderEpoch() {
+            return context.isLeader() ? Option.some(context.rabiaTermSupplier().get()) : Option.none();
+        }
 
-            @Override
-            public void nodeRemoved(NodeRemoved nodeRemoved) {
-                var topology = nodeRemoved.topology();
-                // Should not happen, but better be safe than sorry.
-                if (topology.isEmpty()) {
-                    return;
-                }
-                currentTopology.set(topology);
-                // Check if the removed node was the leader - use atomic update to avoid race
-                var removedNode = nodeRemoved.nodeId();
-                // Atomically clear leader only if it matches the removed node
-                var leaderWasRemoved = currentLeader.getAndUpdate(current -> current.filter(removedNode::equals)
-                                                                                    .isPresent()
-                                                                             ? Option.none()
-                                                                             : current)
-                                                    .filter(removedNode::equals)
-                                                    .isPresent();
-                if (leaderWasRemoved && active.get()) {
-                    // Leader was removed while we still have quorum - trigger re-election
-                    log.debug("Leader {} was removed, triggering re-election", removedNode);
-                    if (proposalHandler.isPresent()) {
-                        // Consensus mode: submit proposal
-                        triggerElection();
-                    } else {
-                        // Local mode: immediate election
-                        tryElect(topology.getFirst());
-                    }
-                } else {
-                    tryElect(topology.getFirst());
-                }
-            }
+        @Contract
+        @Override
+        public void onLeaderCommitted(NodeId leader) {
+            fsm.dispatch(new LeaderElectionEvents.LeaderCommitted(leader));
+        }
 
-            @Override
-            public void nodeDown(NodeDown nodeDown) {
-                var topology = nodeDown.topology();
-                // If no nodes remain or no quorum, stop
-                if (topology.isEmpty() || !active.get()) {
-                    currentLeader.set(Option.none());
-                    stop();
-                    return;
-                }
-                // Node went down but we still have quorum - trigger re-election
-                currentTopology.set(topology);
-                // Atomically clear leader only if it matches the down node
-                var downNode = nodeDown.nodeId();
-                currentLeader.getAndUpdate(current -> current.filter(downNode::equals)
-                                                             .isPresent()
-                                                      ? Option.none()
-                                                      : current);
-                // In consensus mode, trigger election submission if we're the candidate
-                // tryElect is not needed - triggerElection handles everything
-                proposalHandler.onPresent(_ -> triggerElection());
-            }
+        @Contract
+        @Override
+        public void onLeaderCommitted(NodeId leader, long viewSequence) {
+            context.observeViewSequence(viewSequence);
+            // Carry the committed sequence on the event so the `Led` swap fence (FIX 2) can reject
+            // a later-arriving lower-sequence commit. The sequence-less `onLeaderCommitted(leader)`
+            // path (local mode / test stubs) dispatches `LeaderCommitted.NO_SEQUENCE` and bypasses
+            // the fence, as before.
+            fsm.dispatch(new LeaderElectionEvents.LeaderCommitted(leader, viewSequence));
+        }
 
-            private void tryElect(NodeId candidate) {
-                if (!active.get()) {
-                    // In consensus mode, don't pre-cache leader - wait for onLeaderCommitted()
-                    // Pre-caching causes "Leader unchanged" in onLeaderCommitted, skipping notification
-                    if (proposalHandler.isPresent()) {
-                        return;
-                    }
-                    // Local mode only: track the candidate locally
-                    var oldLeader = currentLeader.get();
-                    var newLeader = Option.some(candidate);
-                    currentLeader.compareAndSet(oldLeader, newLeader);
-                    return;
-                }
-                // Local election mode: immediate update and sync notification
-                // Consensus mode when active: DON'T update currentLeader here!
-                // The leader will be set via onLeaderCommitted() after consensus.
-                if (proposalHandler.isEmpty()) {
-                    electLocally(candidate);
-                }
-            }
+        @Contract
+        @Override
+        public void triggerElection() {
+            fsm.dispatch(new LeaderElectionEvents.ConsensusReady());
+        }
 
-            private void submitProposal(LeaderProposalHandler handler, NodeId candidate) {
-                // Prevent duplicate submissions while a proposal is in flight
-                if (!proposalInFlight.compareAndSet(false, true)) {
-                    log.debug("Skipping proposal submission - another proposal is in flight");
-                    return;
-                }
-                var nextViewSequence = viewSequence.incrementAndGet();
-                handler.propose(candidate, nextViewSequence)
-                       .onFailure(cause -> {
-                                      // Clear in-flight flag on failure to allow retry
-                proposalInFlight.set(false);
-                                      log.debug("Leader proposal failed ({}), scheduling retry in {}ms",
-                                                cause.message(),
-                                                proposalRetryDelay.millis());
-                                      scheduleProposalRetry(handler, candidate);
-                                  });
-            }
+        @Contract
+        @Override
+        public void stop() {
+            fsm.dispatch(new ClusterFsmEvent.Shutdown());
+        }
 
-            private void scheduleProposalRetry(LeaderProposalHandler handler, NodeId candidate) {
-                SharedScheduler.schedule(() -> {
-                                             // Only retry if still active and no leader elected yet
-                if (active.get() && currentLeader.get()
-                                                 .isEmpty()) {
-                                                 log.debug("Retrying leader proposal for {}", candidate);
-                                                 submitProposal(handler, candidate);
-                                             }
-                                         },
-                                         proposalRetryDelay);
-            }
-
-            private void electLocally(NodeId candidate) {
-                var oldLeader = currentLeader.get();
-                var newLeader = Option.some(candidate);
-                // Potential leader change. Implicitly handles initial election.
-                if (currentLeader.compareAndSet(oldLeader, newLeader)) {
-                    if (!newLeader.equals(oldLeader)) {
-                        notifyLeaderChange();
-                    }
-                }
-            }
-
-            private void notifyLeaderChange() {
-                if (active.get()) {
-                    var leaderOpt = currentLeader.get();
-                    router.route(leaderChange(leaderOpt,
-                                              leaderOpt.filter(self::equals)
-                                                       .isPresent()));
-                }
-            }
-
-            private void notifyLeaderChangeAsync() {
-                if (active.get()) {
-                    router.routeAsync(() -> {
-                                          var leaderOpt = currentLeader.get();
-                                          return leaderChange(leaderOpt,
-                                                              leaderOpt.filter(self::equals)
-                                                                       .isPresent());
-                                      });
-                }
-            }
-
-            @Override
-            public void watchQuorumState(QuorumStateNotification quorumState) {
-                if (!quorumState.advanceSequence(quorumSequence)) {
-                    log.debug("Ignoring stale QuorumStateNotification: {}", quorumState);
-                    return;
-                }
-                switch (quorumState.state()) {
-                    case ESTABLISHED -> start();
-                    case DISAPPEARED -> stop();
-                }
-            }
-
-            private void start() {
-                active.set(true);
-                if (proposalHandler.isPresent()) {
-                    // Consensus mode: do NOT schedule election here.
-                    // ESTABLISHED fires before consensus sync completes, so proposals would be
-                    // rejected by dormant engines. The caller (AetherNode) triggers election
-                    // after consensus is fully synchronized, with rank-based staggering applied
-                    // inside triggerElection() to prevent livelock.
-                    //
-                    // For re-election (hasEverHadLeader=true), trigger immediately — consensus
-                    // is already active, no sync delay to worry about.
-                    if (hasEverHadLeader.get()) {
-                        log.debug("Quorum re-established, triggering re-election immediately");
-                        SharedScheduler.schedule(this::triggerElection, proposalRetryDelay);
-                    } else {
-                        log.debug("Quorum established, waiting for consensus sync before initial election");
-                    }
-                } else {
-                    // Local mode: notify if we have a candidate
-                    currentLeader.get()
-                                 .onPresent(_ -> notifyLeaderChange());
-                }
-            }
-
-            /// Compute the rank of this node within the candidate pool.
-            /// Rank 0 = lowest NodeId (first to propose). Unknown nodes get last rank.
-            private int computeRank() {
-                var pool = expectedCluster.isEmpty() ? currentTopology.get() : expectedCluster;
-                var sorted = pool.stream()
-                                 .sorted()
-                                 .toList();
-                var rank = sorted.indexOf(self);
-                return rank >= 0 ? rank : sorted.size();
-            }
-
-            private void stop() {
-                // Set inactive first to prevent new elections during shutdown
-                active.set(false);
-                currentLeader.set(Option.none());
-                // Clear in-flight flag to reset state
-                proposalInFlight.set(false);
-                // Mark that we need reactivation when leader is committed again
-                // This ensures notification even if the same leader is re-committed
-                needsReactivation.set(true);
-                // Always send stop notification synchronously for immediate effect
-                router.route(leaderChange(Option.none(), false));
+        @Contract
+        @Override
+        public void peerJoined(PeerJoined peerJoined) {
+            fsm.dispatch(new ClusterFsmEvent.NodeAdded(peerJoined.nodeId(), peerJoined.topology()));
+            if (localMode) {
+                electLocallyIfPossible();
             }
         }
-        return new leaderManager(self,
-                                 router,
-                                 proposalHandler,
-                                 List.copyOf(expectedCluster),
-                                 proposalRetryDelay,
-                                 baseElectionDelay,
-                                 perRankDelay,
-                                 new AtomicBoolean(false),
-                                 new AtomicLong(0),
-                                 new AtomicReference<>(Option.none()),
-                                 new AtomicReference<>(List.of()),
-                                 new AtomicBoolean(false),
-                                 new AtomicBoolean(false),
-                                 new AtomicBoolean(false),
-                                 new AtomicInteger(0),
-                                 new AtomicLong(0));
+
+        @Contract
+        @Override
+        public void peerDisconnected(PeerDisconnected peerDisconnected) {
+            // Local mode needs the new leader to appear BEFORE the NodeGone event so the FSM
+            // stays in Led (different leader) rather than going Led → ReElecting → Led, which
+            // would emit an intermediate "no leader" notification unexpected for legacy consumers.
+            if (localMode) {
+                dispatchLocalModeAdoption(peerDisconnected.topology());
+            }
+            fsm.dispatch(new ClusterFsmEvent.NodeGone(peerDisconnected.nodeId(), peerDisconnected.topology()));
+        }
+
+        @Contract
+        @Override
+        public void peerObservedFaulty(PeerObservedFaulty peerObservedFaulty) {
+            // SWIM-FAULTY treated as departure for FSM purposes.
+            if (localMode) {
+                dispatchLocalModeAdoption(peerObservedFaulty.topology());
+            }
+            fsm.dispatch(new ClusterFsmEvent.NodeGone(peerObservedFaulty.nodeId(), peerObservedFaulty.topology()));
+        }
+
+        @Contract
+        @Override
+        public void peerReconnected(PeerReconnected peerReconnected) {
+            // Transparent — peer is already known to the FSM via prior PeerJoined. No event.
+        }
+
+        @Contract
+        @Override
+        public void selfShutdown(SelfShutdown selfShutdown) {
+            // Self-shutdown is not a cluster decision — local view collapsing.
+            fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+        }
+
+        private void dispatchLocalModeAdoption(List<NodeId> topology) {
+            var sorted = topology.stream().sorted().toList();
+            if (sorted.isEmpty()) {
+                return;
+            }
+            fsm.dispatch(new LeaderElectionEvents.LeaderCommitted(sorted.getFirst()));
+        }
+
+        @Contract
+        @Override
+        public void watchClusterState(ClusterStateNotification clusterState) {
+            if (!clusterState.advanceSequence(context.quorumSequence())) {
+                return;
+            }
+            switch (clusterState.state()) {
+                case ACTIVE -> onClusterActive();
+                case PASSIVE -> fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+            }
+        }
+
+        private void onClusterActive() {
+            fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());
+            if (localMode) {
+                fsm.dispatch(new LeaderElectionEvents.ConsensusReady());
+                electLocallyIfPossible();
+            }
+        }
+
+        private void electLocallyIfPossible() {
+            // No external FSM-state read here — per state's handler, a LeaderCommitted that does
+            // not match the current topology / active state is ignored or logged. We still need
+            // to read topology to *construct* the LeaderCommitted event (it requires a concrete
+            // NodeId), so an empty topology short-circuits before event construction — this is
+            // a data-validity check, not a TOCTOU guard on FSM state.
+            var topology = context.currentTopology();
+            if (topology.isEmpty()) {
+                return;
+            }
+            fsm.dispatch(new LeaderElectionEvents.LeaderCommitted(topology.getFirst()));
+        }
     }
-
-    @MessageReceiver
-    void nodeAdded(NodeAdded nodeAdded);
-
-    @MessageReceiver
-    void nodeRemoved(NodeRemoved nodeRemoved);
-
-    @MessageReceiver
-    void nodeDown(NodeDown nodeDown);
-
-    @MessageReceiver
-    void watchQuorumState(QuorumStateNotification quorumState);
 }

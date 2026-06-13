@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
@@ -75,10 +80,10 @@ class SliceDeploymentTest {
     void cleanUp() {
         // Undeploy any slices left by previous tests
         delete(cluster.getLeaderManagementPort().or(cluster.status().nodes().getFirst().mgmtPort()),
-               "/api/blueprint/" + BLUEPRINT_ID);
+               "/api/blueprints/" + BLUEPRINT_ID);
         // Also undeploy any blueprint from blueprintApply test
         delete(cluster.getLeaderManagementPort().or(cluster.status().nodes().getFirst().mgmtPort()),
-               "/api/blueprint/org.test:blueprint:1.0.0");
+               "/api/blueprints/org.test:blueprint:1.0.0");
     }
 
     @AfterAll
@@ -205,7 +210,7 @@ class SliceDeploymentTest {
     private String postBlueprintWithRetry(int port, String body) {
         String lastResponse = null;
         for (int attempt = 1; attempt <= 3; attempt++) {
-            lastResponse = post(port, "/api/blueprint", body, "application/toml");
+            lastResponse = post(port, "/api/blueprints", body, "application/toml");
             if (!lastResponse.contains("\"error\"")) {
                 return lastResponse;
             }
@@ -227,11 +232,11 @@ class SliceDeploymentTest {
     }
 
     private String undeploy(int port, String artifact) {
-        return delete(port, "/api/blueprint/" + BLUEPRINT_ID);
+        return delete(port, "/api/blueprints/" + BLUEPRINT_ID);
     }
 
     private String applyBlueprint(int port, String blueprintContent) {
-        return post(port, "/api/blueprint", blueprintContent, "application/toml");
+        return post(port, "/api/blueprints", blueprintContent, "application/toml");
     }
 
     private String getSlices(int port) {

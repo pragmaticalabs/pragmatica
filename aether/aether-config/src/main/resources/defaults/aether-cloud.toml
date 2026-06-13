@@ -1,0 +1,15 @@
+# Aether node — Cloud source-type defaults (Layer 2)
+#
+# Applied for source.type = "cloud" (Hetzner / AWS / GCP / Azure).
+# Layered on top of aether-default.toml.
+
+[cluster]
+# Production security: management API uses mTLS, cluster transport uses
+# deterministic CA derived from cluster_secret.
+tls = true
+
+[tls]
+auto_generate = true
+
+[cloud]
+# provider, api_token, image, network_id are filled by CLI overlay (Layer 4)

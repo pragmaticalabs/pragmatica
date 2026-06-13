@@ -9,16 +9,41 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 BLUEPRINT_V1="org.pragmatica.aether.example:url-shortener:1.0.0"
 BLUEPRINT_V2="org.pragmatica.aether.example:url-shortener:1.0.1"
 
+# Persist the deployment ID across test stages. `deploy_list` can omit an entry once its
+# state transitions to terminal (COMPLETED/ROLLED_BACK/FAILED), so relying on the list to
+# re-discover the ID after each stage is brittle. The start response is authoritative.
+DEPLOYMENT_ID=""
+
+test_cluster_ready() {
+    wait_for_cluster_ready 60
+    wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
+    log_pass "Cluster ready"
+}
+
 test_canary_start() {
     deploy_cleanup
-    # Register v2 blueprint (immediate deploy registers it in KV-Store)
+    # Baseline v1 must be active for canary upgrade to v2. A prior strategy test
+    # (blue-green / rolling) can leave v1.0.1 ACTIVE — `deploy_cleanup` only aborts
+    # NON-terminal deployments, so a COMPLETED v2 stays active. `deploy_blueprint v1`
+    # is the redeployment-safe downgrade that restores v1 ACTIVE; without a verified
+    # v1 baseline the canary `deploy_start v2` hits SameVersionDeployment (500) and
+    # the response carries no deploymentId.
+    push_blueprint "$BLUEPRINT_V1"
+    deploy_blueprint "$BLUEPRINT_V1"
+    # Barrier on "current" (not "current+1"): when v1 is already active the redeploy
+    # is a no-op that does NOT advance the generation, so a "current+1" target never
+    # quiesces and silently warn-times-out. "current" settles in both the no-op and
+    # the genuine v1.0.1→v1.0.0 downgrade branch.
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 30 || log_warn "v1 baseline did not quiesce"
+    assert_active_version "$BLUEPRINT_V1" "Baseline v1 ACTIVE before canary upgrade"
     push_blueprint "$BLUEPRINT_V2"
-    deploy_blueprint "$BLUEPRINT_V2"
-    sleep 3
-    # Now start canary strategy deploy
+    publish_blueprint "$BLUEPRINT_V2"
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "v2 publish did not quiesce"
     local result
     result=$(deploy_start "$BLUEPRINT_V2" canary --traffic 5 --instances 1)
     assert_contains "$result" "deploymentId" "Canary started with deployment ID"
+    DEPLOYMENT_ID=$(deploy_extract_id "$result")
+    assert_ne "$DEPLOYMENT_ID" "" "Captured deployment ID from start response"
 }
 
 test_canary_list() {
@@ -28,31 +53,59 @@ test_canary_list() {
 }
 
 test_canary_promote() {
-    local deployments did
-    deployments=$(deploy_list)
-    did=$(deploy_extract_id "$deployments")
-    assert_ne "$did" "" "Got deployment ID"
-    deploy_promote "$did"
-    sleep 5
-    local status_result
-    status_result=$(deploy_status "$did")
-    log_info "Deployment status after promote: $status_result"
+    assert_ne "$DEPLOYMENT_ID" "" "Have deployment ID"
+    deploy_promote "$DEPLOYMENT_ID"
+    if ! await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30; then
+        log_fail "Canary promote of ${DEPLOYMENT_ID} did not quiesce within 30s"
+        return 1
+    fi
+    # Strict post-promote state check. Canary promote() either advances the stage
+    # (state=ROUTING) when intermediate stages remain, or transitions to PROMOTING
+    # when ALL_NEW is reached (DeploymentManagerImpl.transitionForPromote). Accept
+    # the union of legal forward states; PROMOTING may async-advance to
+    # DRAINING/COMPLETED before this assertion observes it.
+    local status_result state
+    status_result=$(deploy_status "$DEPLOYMENT_ID")
+    state=$(json_value "$status_result" "state")
+    case "$state" in
+        ROUTING|PROMOTING|DRAINING|COMPLETED)
+            log_pass "Canary promote of ${DEPLOYMENT_ID} reached post-promote state=${state}"
+            ;;
+        *)
+            log_fail "Canary promote of ${DEPLOYMENT_ID} did not reach a post-promote state — got state='${state}'; deploy_status: $(printf '%s' "$status_result" | head -c 500)"
+            return 1
+            ;;
+    esac
 }
 
 test_canary_complete() {
-    local deployments did
-    deployments=$(deploy_list)
-    did=$(deploy_extract_id "$deployments")
-    # Capture complete response directly — status endpoint won't show terminal deployments
+    assert_ne "$DEPLOYMENT_ID" "" "Have deployment ID"
+    # Wait for promote's post-quiescence state before asserting terminal state.
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 30 || log_warn "promote snapshot not quiesced"
     local result
-    result=$(aether_failover deploy complete "$did" --format json 2>/dev/null)
+    result=$(deploy_complete "$DEPLOYMENT_ID" 2>/dev/null || echo "")
+    # If the canary has already auto-advanced to COMPLETED (promote resolved ALL_NEW),
+    # the deployment is a no-op but deploy_status still reflects COMPLETED.
+    local status_check
+    status_check=$(deploy_status "$DEPLOYMENT_ID" 2>/dev/null || echo "")
+    if printf '%s' "$status_check" | grep -q '"state"[[:space:]]*:[[:space:]]*"COMPLETED"'; then
+        log_pass "Canary in COMPLETED state"
+        return 0
+    fi
     assert_contains "$result" "COMPLETED" "Canary completed"
 }
 
 cleanup() {
-    deploy_cleanup
+    # Restore baseline v1.0.0 ACTIVE so the next test (blue-green / rolling) can
+    # cleanly upgrade to v1.0.1. Without this, canary's `deploy_complete` leaves
+    # v1.0.1 ACTIVE and the next `deploy_start v1.0.1` returns 500 "already active".
+    # `/api/blueprints/deploy` is the redeployment-safe endpoint (downgrade allowed).
+    deploy_cleanup || true
+    deploy_blueprint "$BLUEPRINT_V1" >/dev/null 2>&1 || \
+        log_warn "cleanup: failed to revert active version to ${BLUEPRINT_V1}"
 }
 
+run_test "Cluster ready" test_cluster_ready
 run_test "Canary start" test_canary_start
 run_test "Canary list" test_canary_list
 run_test "Canary promote" test_canary_promote

@@ -16,15 +16,9 @@
 
 package org.pragmatica.consensus.topology;
 
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.messaging.Message;
 
 /// Notification related to topology change.
 sealed public interface TopologyManagementMessage extends Message.Local {
-    record AddNode(NodeInfo nodeInfo) implements TopologyManagementMessage {}
-
-    record RemoveNode(NodeId nodeId) implements TopologyManagementMessage {}
-
     record SetClusterSize(int clusterSize) implements TopologyManagementMessage {}
 }

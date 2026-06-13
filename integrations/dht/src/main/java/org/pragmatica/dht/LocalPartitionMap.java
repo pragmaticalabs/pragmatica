@@ -16,6 +16,7 @@
 
 package org.pragmatica.dht;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -99,11 +100,13 @@ public final class LocalPartitionMap<N extends Comparable<N>> implements Partiti
     }
 
     /// Add a node to the partition map.
+    @Contract
     public void addNode(N node) {
         ring.addNode(node);
     }
 
     /// Remove a node from the partition map.
+    @Contract
     public void removeNode(N node) {
         ring.removeNode(node);
     }

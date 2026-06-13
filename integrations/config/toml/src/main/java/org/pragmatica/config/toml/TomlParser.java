@@ -20,8 +20,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
+
+import static org.pragmatica.lang.io.FileOps.readString;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -756,9 +757,8 @@ public final class TomlParser {
     /// @param path the path to the TOML file
     /// @return Result containing the parsed TomlDocument, or an error
     public static Result<TomlDocument> parseFile(Path path) {
-        return Result.lift(e -> TomlError.fileReadFailed(path.toString(),
-                                                         e.getMessage()),
-                           () -> Files.readString(path))
+        return readString(path)
+                     .mapError(e -> TomlError.fileReadFailed(path.toString(), e.message()))
                      .flatMap(TomlParser::parse);
     }
 

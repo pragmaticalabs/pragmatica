@@ -2,6 +2,9 @@ package org.pragmatica.storage;
 
 import java.util.List;
 
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
 /// Manages background tier demotion — moves blocks from faster tiers to slower tiers
 /// when utilization exceeds the configured high watermark threshold.
 ///
@@ -18,10 +21,10 @@ public interface DemotionManager {
     DemotionStats stats();
 
     /// Activate the demotion manager, allowing demote() to process blocks.
-    void activate();
+    Result<Unit> activate();
 
     /// Deactivate the demotion manager. Subsequent demote() calls will no-op.
-    void deactivate();
+    Result<Unit> deactivate();
 
     /// Whether the demotion manager is currently active.
     boolean isActive();

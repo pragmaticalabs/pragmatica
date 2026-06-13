@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.http;
 
 import org.junit.jupiter.api.AfterAll;
@@ -5,10 +10,13 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SecurityMode;
+import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
+import java.util.Map;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -39,8 +47,8 @@ class AppHttpServerSecurityModeTest {
 
         @Test
         void withSecurityMode_updatesMode() {
-            var config = AppHttpConfig.appHttpConfig(19090)
-                                      .withSecurityMode(SecurityMode.API_KEY);
+            var config = AppHttpConfig.appHttpConfig(true, 19090, Map.of(), AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE,
+                                                          SecurityMode.API_KEY, Option.none(), HttpProtocol.H1).unwrap();
             assertThat(config.securityMode()).isEqualTo(SecurityMode.API_KEY);
             assertThat(config.securityEnabled()).isTrue();
         }
@@ -60,6 +68,7 @@ class AppHttpServerSecurityModeTest {
                                    .build();
             var config = AppHttpConfig.appHttpConfig(SECURE_PORT, Set.of(VALID_API_KEY));
             server = AppHttpServer.appHttpServer(config,
+                                                 ForwardingTimeouts.forwardingTimeouts(),
                                                  SELF_NODE,
                                                  HttpRouteRegistry.httpRouteRegistry(),
                                                  Option.none(),
@@ -144,6 +153,7 @@ class AppHttpServerSecurityModeTest {
                                    .build();
             var config = AppHttpConfig.appHttpConfig(OPEN_PORT);
             server = AppHttpServer.appHttpServer(config,
+                                                 ForwardingTimeouts.forwardingTimeouts(),
                                                  SELF_NODE,
                                                  HttpRouteRegistry.httpRouteRegistry(),
                                                  Option.none(),

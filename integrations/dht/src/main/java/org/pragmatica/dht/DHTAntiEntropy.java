@@ -17,10 +17,11 @@
 package org.pragmatica.dht;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
-import org.pragmatica.utility.KSUID;
+import org.pragmatica.utility.IdGenerator;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -82,6 +83,7 @@ public final class DHTAntiEntropy {
     }
 
     /// Start the periodic anti-entropy process.
+    @Contract
     public void start() {
         if (!running.compareAndSet(false, true)) {
             return;
@@ -91,6 +93,7 @@ public final class DHTAntiEntropy {
     }
 
     /// Stop the anti-entropy process.
+    @Contract
     public void stop() {
         if (!running.compareAndSet(true, false)) {
             return;
@@ -145,8 +148,7 @@ public final class DHTAntiEntropy {
             if (peer.equals(node.nodeId())) {
                 continue;
             }
-            var correlationId = KSUID.ksuid()
-                                     .toString();
+            var correlationId = IdGenerator.generate();
             pendingDigests.put(correlationId, new PendingDigest(peer, partitionIndex, localDigest));
             network.send(peer,
                          new DHTMessage.DigestRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex));
@@ -155,6 +157,7 @@ public final class DHTAntiEntropy {
 
     /// Handle a digest response from a remote peer.
     /// Compares local vs remote digest; if they differ, requests migration data.
+    @Contract
     public void onDigestResponse(DHTMessage.DigestResponse response) {
         Option.option(pendingDigests.remove(response.requestId()))
               .onPresent(pending -> handleDigestComparison(pending, response));
@@ -171,6 +174,7 @@ public final class DHTAntiEntropy {
     }
 
     /// Handle migration data response: merge received entries into local storage.
+    @Contract
     public void onMigrationDataResponse(DHTMessage.MigrationDataResponse response) {
         if (response.entries().isEmpty()) {
             return;
@@ -180,8 +184,7 @@ public final class DHTAntiEntropy {
     }
 
     private void requestMigrationData(NodeId peer, int partitionIndex) {
-        var correlationId = KSUID.ksuid()
-                                 .toString();
+        var correlationId = IdGenerator.generate();
         network.send(peer,
                      new DHTMessage.MigrationDataRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex));
     }

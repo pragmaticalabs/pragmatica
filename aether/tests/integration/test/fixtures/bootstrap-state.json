@@ -1,0 +1,20 @@
+{
+  "clusterName": "cloud-test-fixture",
+  "configHash": "deadbeef",
+  "startedAt": "2026-05-01T00:00:00Z",
+  "phases": {
+    "VALIDATE": "COMPLETED",
+    "PROVISION": "COMPLETED",
+    "COLLECT_ADDRESSES": "COMPLETED",
+    "DEPLOY": "COMPLETED",
+    "POST_DEPLOY": "COMPLETED",
+    "FORMATION": "COMPLETED"
+  },
+  "createdResources": [
+    {"type": "ProvisionedVm", "provider": "hetzner", "resourceId": "hetzner-eu-core-0", "sourceName": "hetzner-eu", "role": "core"},
+    {"type": "ProvisionedVm", "provider": "hetzner", "resourceId": "hetzner-eu-core-1", "sourceName": "hetzner-eu", "role": "core"},
+    {"type": "ProvisionedVm", "provider": "hetzner", "resourceId": "hetzner-eu-core-2", "sourceName": "hetzner-eu", "role": "core"}
+  ],
+  "provisionedNodeIds": ["hetzner-eu-core-0", "hetzner-eu-core-1", "hetzner-eu-core-2"],
+  "collectedAddresses": ["203.0.113.10", "203.0.113.11", "203.0.113.12"]
+}

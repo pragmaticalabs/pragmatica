@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.environment.azure;
 
 import org.pragmatica.cloud.azure.AzureClient;
@@ -12,6 +17,7 @@ import org.pragmatica.lang.Unit;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 
 /// Test stub for AzureClient that returns canned responses and captures arguments.
 final class TestAzureClient implements AzureClient {
@@ -30,9 +36,11 @@ final class TestAzureClient implements AzureClient {
         new AzureLoadBalancer("lb-id", "test-lb", new AzureLoadBalancer.LbProperties(List.of())));
     Promise<List<ResourceRow>> queryResourcesResponse = Promise.success(List.of());
     Promise<String> getSecretResponse = Promise.success("secret-value");
+    Queue<Promise<String>> secretResponses;
 
     String lastDeletedVmName;
     String lastGetVmName;
+    CreateVmRequest lastCreateRequest;
     String lastRestartedVmName;
     String lastUpdateTagsVmName;
     Map<String, String> lastUpdateTags;
@@ -46,6 +54,7 @@ final class TestAzureClient implements AzureClient {
 
     @Override
     public Promise<VirtualMachine> createVm(CreateVmRequest request) {
+        lastCreateRequest = request;
         return createVmResponse;
     }
 
@@ -103,6 +112,9 @@ final class TestAzureClient implements AzureClient {
     public Promise<String> getSecret(String vaultName, String secretName) {
         lastGetSecretVaultName = vaultName;
         lastGetSecretName = secretName;
+        if (secretResponses != null && !secretResponses.isEmpty()) {
+            return secretResponses.poll();
+        }
         return getSecretResponse;
     }
 }

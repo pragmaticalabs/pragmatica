@@ -1,4 +1,4 @@
-# RBAC Design Specification for Aether Distributed Runtime
+# RBAC Design Specification for Aether Unified Application Runtime
 
 **Version:** 1.0
 **Target Release:** 0.18.0 (Tier 1 - API Keys)

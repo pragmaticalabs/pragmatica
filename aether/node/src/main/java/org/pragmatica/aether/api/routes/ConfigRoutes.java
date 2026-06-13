@@ -1,9 +1,14 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.DynamicConfigManager;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.http.security.AuditLog;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.api.ManagementApiResponses.ConfigRemovedResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ConfigSetResponse;
 import org.pragmatica.consensus.NodeId;
@@ -20,80 +25,96 @@ import java.util.stream.Stream;
 import static org.pragmatica.http.routing.PathParameter.aString;
 
 
-/// Routes for dynamic configuration management: get, set, remove config overrides.
 public final class ConfigRoutes implements RouteSource {
     private final DynamicConfigManager configManager;
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
 
-    private ConfigRoutes(DynamicConfigManager configManager, Supplier<AetherNode> nodeSupplier) {
+    private ConfigRoutes(DynamicConfigManager configManager, Supplier<ManageableNode> nodeSupplier) {
         this.configManager = configManager;
         this.nodeSupplier = nodeSupplier;
     }
 
-    public static ConfigRoutes configRoutes(DynamicConfigManager configManager, Supplier<AetherNode> nodeSupplier) {
+    public static ConfigRoutes configRoutes(DynamicConfigManager configManager, Supplier<ManageableNode> nodeSupplier) {
         return new ConfigRoutes(configManager, nodeSupplier);
     }
 
-    record SetConfigRequest(String key, String value, Option<String> nodeId){}
+    record SetConfigRequest(String key, String value, Option<String> nodeId) {}
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<Object>get("/api/config").toJson(configManager::allConfigAsJson),
-                         Route.<Object>get("/api/config/overrides").toJson(configManager::overridesAsJson),
-                         Route.<ConfigSetResponse>post("/api/config")
-                              .withBody(SetConfigRequest.class)
-                              .toJson(this::handleSetConfig),
-                         Route.<ConfigRemovedResponse>delete("/api/config")
-                              .withPath(aString())
-                              .to(this::handleDeleteConfig)
-                              .asJson(),
-                         Route.<ConfigRemovedResponse>delete("/api/config/node")
-                              .withPath(aString(),
-                                        aString())
-                              .to(this::handleDeleteNodeConfig)
-                              .asJson());
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<Object> route(ManagementRoute.CONFIG_LIST).toJson(configManager::allConfigAsJson),
+                         ManagementRoutes.<Object> route(ManagementRoute.CONFIG_OVERRIDES).toJson(configManager::overridesAsJson),
+                         ManagementRoutes.<ConfigSetResponse> route(ManagementRoute.CONFIG_SET)
+                                         .withBody(SetConfigRequest.class)
+                                         .toJson(this::handleSetConfig),
+                         ManagementRoutes.<ConfigRemovedResponse> route(ManagementRoute.CONFIG_DELETE)
+                                         .withPath(aString())
+                                         .to(this::handleDeleteConfig)
+                                         .asJson(),
+                         ManagementRoutes.<ConfigRemovedResponse> route(ManagementRoute.CONFIG_NODE_DELETE)
+                                         .withPath(aString(),
+                                                   aString())
+                                         .to(this::handleDeleteNodeConfig)
+                                         .asJson());
     }
 
     private Promise<ConfigSetResponse> handleSetConfig(SetConfigRequest req) {
-        return validateSetRequest(req).async().flatMap(this::applySetConfig);
+        return validateSetRequest(req).async()
+                                 .flatMap(this::applySetConfig);
     }
 
     private Promise<ConfigSetResponse> applySetConfig(SetConfigRequest req) {
-        return req.nodeId().filter(id -> !id.isEmpty())
-                         .fold(() -> configManager.setConfig(req.key(),
-                                                             req.value()).onSuccess(_ -> auditAndEmitConfigSet(req.key(),
-                                                                                                               "cluster"))
-                                                            .map(_ -> new ConfigSetResponse("config_set",
-                                                                                            req.key(),
-                                                                                            req.value())),
-                               nodeIdStr -> NodeId.nodeId(nodeIdStr).async()
-                                                         .flatMap(nodeId -> configManager.setNodeConfig(req.key(),
-                                                                                                        req.value(),
-                                                                                                        nodeId).onSuccess(_ -> auditAndEmitConfigSet(req.key(),
-                                                                                                                                                     "node:" + nodeIdStr))
-                                                                                                       .map(_ -> new ConfigSetResponse("config_set",
-                                                                                                                                       req.key(),
-                                                                                                                                       req.value()))));
+        return req.nodeId()
+                  .filter(id -> !id.isEmpty())
+                  .fold(() -> configManager.setConfig(req.key(),
+                                                      req.value()).onSuccess(_ -> auditAndEmitConfigSet(req.key(),
+                                                                                                        "cluster"))
+                                                     .map(_ -> new ConfigSetResponse("config_set",
+                                                                                     req.key(),
+                                                                                     req.value())),
+                        nodeIdStr -> NodeId.nodeId(nodeIdStr)
+                                           .async()
+                                           .flatMap(nodeId -> configManager.setNodeConfig(req.key(),
+                                                                                          req.value(),
+                                                                                          nodeId).onSuccess(_ -> auditAndEmitConfigSet(req.key(),
+                                                                                                                                       "node:" + nodeIdStr))
+                                                                                         .map(_ -> new ConfigSetResponse("config_set",
+                                                                                                                         req.key(),
+                                                                                                                         req.value()))));
     }
 
     private Result<SetConfigRequest> validateSetRequest(SetConfigRequest req) {
-        if (req.key() == null || req.key().isEmpty()) {return ConfigError.MISSING_FIELDS.result();}
-        if (req.value() == null || req.value().isEmpty()) {return ConfigError.MISSING_FIELDS.result();}
+        if (req.key() == null || req.key().isEmpty()) {
+            return ConfigError.MISSING_FIELDS.result();
+        }
+
+        if (req.value() == null || req.value().isEmpty()) {
+            return ConfigError.MISSING_FIELDS.result();
+        }
+
         return Result.success(req);
     }
 
     private Promise<ConfigRemovedResponse> handleDeleteConfig(String key) {
-        if (key.isEmpty()) {return ConfigError.KEY_REQUIRED.promise();}
-        return configManager.removeConfig(key).onSuccess(_ -> auditAndEmitConfigRemove(key, "cluster"))
-                                         .map(_ -> new ConfigRemovedResponse("config_removed", key));
+        if (key.isEmpty()) {
+            return ConfigError.KEY_REQUIRED.promise();
+        }
+
+        return configManager.removeConfig(key)
+                            .onSuccess(_ -> auditAndEmitConfigRemove(key, "cluster"))
+                            .map(_ -> new ConfigRemovedResponse("config_removed", key));
     }
 
     private Promise<ConfigRemovedResponse> handleDeleteNodeConfig(String nodeIdStr, String key) {
-        if (nodeIdStr.isEmpty() || key.isEmpty()) {return ConfigError.KEY_REQUIRED.promise();}
-        return NodeId.nodeId(nodeIdStr).async()
-                            .flatMap(nodeId -> configManager.removeNodeConfig(key, nodeId).onSuccess(_ -> auditAndEmitConfigRemove(key,
-                                                                                                                                   "node:" + nodeIdStr))
-                                                                             .map(_ -> new ConfigRemovedResponse("config_removed",
-                                                                                                                 key)));
+        if (nodeIdStr.isEmpty() || key.isEmpty()) {
+            return ConfigError.KEY_REQUIRED.promise();
+        }
+
+        return NodeId.nodeId(nodeIdStr)
+                     .async()
+                     .flatMap(nodeId -> configManager.removeNodeConfig(key, nodeId)
+                                                     .onSuccess(_ -> auditAndEmitConfigRemove(key, "node:" + nodeIdStr))
+                                                     .map(_ -> new ConfigRemovedResponse("config_removed", key)));
     }
 
     private void auditAndEmitConfigSet(String key, String scope) {
@@ -113,7 +134,8 @@ public final class ConfigRoutes implements RouteSource {
         ConfigError(String message) {
             this.message = message;
         }
-        @Override public String message() {
+        @Override
+        public String message() {
             return message;
         }
     }

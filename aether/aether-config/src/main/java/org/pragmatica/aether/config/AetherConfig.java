@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config;
 
 import org.pragmatica.aether.environment.CloudConfig;
@@ -12,46 +16,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Root configuration for Aether cluster.
-///
-///
-/// This is the unified configuration used by all Aether tools:
-///
-///   - aether-up: Reads config to generate deployment artifacts
-///   - AetherNode: Reads config at runtime
-///   - AetherCli: Reads connection info from config
-///
-///
-///
-/// Example aether.toml:
-/// ```
-/// [cluster]
-/// environment = "docker"
-/// nodes = 5
-/// tls = false
-///
-/// [cluster.ports]
-/// management = 8080
-/// cluster = 8090
-///
-/// [node]
-/// heap = "512m"
-/// gc = "zgc"
-/// ```
-///
-/// @param cluster    Cluster-level configuration
-/// @param node       Per-node configuration
-/// @param tls        TLS configuration (when cluster.tls = true)
-/// @param docker     Docker-specific settings
-/// @param kubernetes Kubernetes-specific settings
-/// @param ttm        TTM (Tiny Time Mixers) predictive scaling configuration
-/// @param slice          Slice loading and repository configuration
-/// @param appHttp        Application HTTP server configuration
-/// @param backup         Backup configuration
-/// @param dhtReplication DHT replication behavior configuration
-/// @param timeouts       Centralized timeout configuration
-/// @param storage        Named hierarchical storage instance configurations from [storage.*] sections
-/// @param endpoints      Infrastructure endpoint configurations from [endpoints.*] sections
 public record AetherConfig(ClusterConfig cluster,
                            NodeConfig node,
                            Option<TlsConfig> tls,
@@ -65,7 +29,9 @@ public record AetherConfig(ClusterConfig cluster,
                            TimeoutsConfig timeouts,
                            Map<String, StorageConfig> storage,
                            Option<CloudConfig> cloud,
-                           Map<String, EndpointConfig> endpoints) {
+                           Map<String, EndpointConfig> endpoints,
+                           StreamingConfig streaming,
+                           Option<MembershipConfigBinding> membership) {
     public static Result<AetherConfig> aetherConfig(ClusterConfig cluster,
                                                     NodeConfig node,
                                                     Option<TlsConfig> tls,
@@ -90,10 +56,13 @@ public record AetherConfig(ClusterConfig cluster,
                                         timeouts,
                                         Map.of(),
                                         none(),
-                                        Map.of()));
+                                        Map.of(),
+                                        StreamingConfig.streamingConfig(),
+                                        none()));
     }
 
-    @SuppressWarnings("JBCT-SEQ-01") public static AetherConfig aetherConfig(Environment env) {
+    @SuppressWarnings("JBCT-SEQ-01")
+    public static AetherConfig aetherConfig(Environment env) {
         return aetherConfig(ClusterConfig.clusterConfig(env),
                             NodeConfig.nodeConfig(env),
                             tlsForEnvironment(env),
@@ -119,7 +88,7 @@ public record AetherConfig(ClusterConfig cluster,
         return cluster.tls();
     }
 
-    @SuppressWarnings("JBCT-VO-02") public AetherConfig withStorage(Map<String, StorageConfig> storage) {
+    public AetherConfig withStorage(Map<String, StorageConfig> storage) {
         return new AetherConfig(cluster,
                                 node,
                                 tls,
@@ -133,10 +102,12 @@ public record AetherConfig(ClusterConfig cluster,
                                 timeouts,
                                 storage,
                                 cloud,
-                                endpoints);
+                                endpoints,
+                                streaming,
+                                membership);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public AetherConfig withEndpoints(Map<String, EndpointConfig> endpoints) {
+    public AetherConfig withEndpoints(Map<String, EndpointConfig> endpoints) {
         return new AetherConfig(cluster,
                                 node,
                                 tls,
@@ -150,10 +121,12 @@ public record AetherConfig(ClusterConfig cluster,
                                 timeouts,
                                 storage,
                                 cloud,
-                                endpoints);
+                                endpoints,
+                                streaming,
+                                membership);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public AetherConfig withCloud(CloudConfig cloud) {
+    public AetherConfig withCloud(CloudConfig cloud) {
         return new AetherConfig(cluster,
                                 node,
                                 tls,
@@ -167,7 +140,47 @@ public record AetherConfig(ClusterConfig cluster,
                                 timeouts,
                                 storage,
                                 some(cloud),
-                                endpoints);
+                                endpoints,
+                                streaming,
+                                membership);
+    }
+
+    public AetherConfig withStreaming(StreamingConfig streaming) {
+        return new AetherConfig(cluster,
+                                node,
+                                tls,
+                                docker,
+                                kubernetes,
+                                ttm,
+                                slice,
+                                appHttp,
+                                backup,
+                                dhtReplication,
+                                timeouts,
+                                storage,
+                                cloud,
+                                endpoints,
+                                streaming,
+                                membership);
+    }
+
+    public AetherConfig withMembership(MembershipConfigBinding membership) {
+        return new AetherConfig(cluster,
+                                node,
+                                tls,
+                                docker,
+                                kubernetes,
+                                ttm,
+                                slice,
+                                appHttp,
+                                backup,
+                                dhtReplication,
+                                timeouts,
+                                storage,
+                                cloud,
+                                endpoints,
+                                streaming,
+                                some(membership));
     }
 
     public static Builder builder() {
@@ -176,25 +189,24 @@ public record AetherConfig(ClusterConfig cluster,
 
     private static Option<TlsConfig> tlsForEnvironment(Environment env) {
         return env.defaultTls()
-              ? some(TlsConfig.tlsConfig())
-              : none();
+               ? some(TlsConfig.tlsConfig())
+               : none();
     }
 
     private static Option<DockerConfig> dockerForEnvironment(Environment env) {
         return env == Environment.DOCKER
-              ? some(DockerConfig.dockerConfig())
-              : none();
+               ? some(DockerConfig.dockerConfig())
+               : none();
     }
 
     private static Option<KubernetesConfig> kubernetesForEnvironment(Environment env) {
         return env == Environment.KUBERNETES
-              ? some(KubernetesConfig.kubernetesConfig())
-              : none();
+               ? some(KubernetesConfig.kubernetesConfig())
+               : none();
     }
 
     public static class Builder {
         private Environment environment = Environment.DOCKER;
-
         private Integer nodes;
         private Boolean tls;
         private String heap;
@@ -213,99 +225,133 @@ public record AetherConfig(ClusterConfig cluster,
         private CloudConfig cloudConfig;
         private Map<String, StorageConfig> storageConfig;
         private Map<String, EndpointConfig> endpointsConfig;
+        private StreamingConfig streamingConfig;
+        private MembershipConfigBinding membershipConfig;
 
-        @SuppressWarnings("JBCT-NAM-01") public Builder withEnvironment(Environment environment) {
+        @SuppressWarnings("JBCT-NAM-01")
+        public Builder withEnvironment(Environment environment) {
             this.environment = environment;
+
             return this;
         }
 
         public Builder nodes(int nodes) {
             this.nodes = nodes;
+
             return this;
         }
 
         public Builder tls(boolean tls) {
             this.tls = tls;
+
             return this;
         }
 
         public Builder heap(String heap) {
             this.heap = heap;
+
             return this;
         }
 
         public Builder gc(String gc) {
             this.gc = gc;
+
             return this;
         }
 
         public Builder ports(PortsConfig ports) {
             this.ports = ports;
+
             return this;
         }
 
         public Builder tlsConfig(TlsConfig tlsConfig) {
             this.tlsConfig = tlsConfig;
+
             return this;
         }
 
         public Builder dockerConfig(DockerConfig dockerConfig) {
             this.dockerConfig = dockerConfig;
+
             return this;
         }
 
         public Builder kubernetesConfig(KubernetesConfig kubernetesConfig) {
             this.kubernetesConfig = kubernetesConfig;
+
             return this;
         }
 
         public Builder ttm(TtmConfig ttmConfig) {
             this.ttmConfig = ttmConfig;
+
             return this;
         }
 
         public Builder sliceConfig(SliceConfig sliceConfig) {
             this.sliceConfig = sliceConfig;
+
             return this;
         }
 
         public Builder appHttp(AppHttpConfig appHttpConfig) {
             this.appHttpConfig = appHttpConfig;
+
             return this;
         }
 
         public Builder backup(BackupConfig backupConfig) {
             this.backupConfig = backupConfig;
+
             return this;
         }
 
         public Builder dhtReplication(DhtReplicationConfig dhtReplicationConfig) {
             this.dhtReplicationConfig = dhtReplicationConfig;
+
             return this;
         }
 
         public Builder timeouts(TimeoutsConfig timeoutsConfig) {
             this.timeoutsConfig = timeoutsConfig;
+
             return this;
         }
 
         public Builder coreMax(int coreMax) {
             this.coreMax = coreMax;
+
             return this;
         }
 
         public Builder cloud(CloudConfig cloudConfig) {
             this.cloudConfig = cloudConfig;
+
             return this;
         }
 
         public Builder storage(Map<String, StorageConfig> storageConfig) {
             this.storageConfig = storageConfig;
+
             return this;
         }
 
         public Builder endpoints(Map<String, EndpointConfig> endpointsConfig) {
             this.endpointsConfig = endpointsConfig;
+
+            return this;
+        }
+
+        public Builder streaming(StreamingConfig streamingConfig) {
+            this.streamingConfig = streamingConfig;
+
+            return this;
+        }
+
+        public Builder membership(MembershipConfigBinding membershipConfig) {
+            this.membershipConfig = membershipConfig;
+
             return this;
         }
 
@@ -332,29 +378,35 @@ public record AetherConfig(ClusterConfig cluster,
                                                    finalAppHttp,
                                                    finalBackup,
                                                    finalDhtReplication,
-                                                   finalTimeouts)
-            .unwrap();
+                                                   finalTimeouts).unwrap();
             var finalStorage = storageFor();
             var withStorage = finalStorage.isEmpty()
-                             ? config
-                             : config.withStorage(finalStorage);
+                              ? config
+                              : config.withStorage(finalStorage);
             var finalEndpoints = endpointsFor();
             var withEp = finalEndpoints.isEmpty()
-                        ? withStorage
-                        : withStorage.withEndpoints(finalEndpoints);
-            return option(cloudConfig).fold(() -> withEp, withEp::withCloud);
+                         ? withStorage
+                         : withStorage.withEndpoints(finalEndpoints);
+            var withStreaming = option(streamingConfig).map(withEp::withStreaming).or(withEp);
+            var withCloudConfig = option(cloudConfig).fold(() -> withStreaming, withStreaming::withCloud);
+
+            return option(membershipConfig).fold(() -> withCloudConfig, withCloudConfig::withMembership);
         }
 
         private ClusterConfig applyClusterOverrides(ClusterConfig base) {
             var withNodes = option(nodes).map(base::withNodes).or(base);
             var withTls = option(tls).map(withNodes::withTls).or(withNodes);
             var withPorts = option(ports).map(withTls::withPorts).or(withTls);
-            return option(coreMax).map(withPorts::withCoreMax).or(withPorts);
+
+            return option(coreMax).map(withPorts::withCoreMax)
+                         .or(withPorts);
         }
 
         private NodeConfig applyNodeOverrides(NodeConfig base) {
             var withHeap = option(heap).map(base::withHeap).or(base);
-            return option(gc).map(withHeap::withGc).or(withHeap);
+
+            return option(gc).map(withHeap::withGc)
+                         .or(withHeap);
         }
 
         private Option<TlsConfig> tlsFor(ClusterConfig clusterCfg) {
@@ -363,8 +415,8 @@ public record AetherConfig(ClusterConfig cluster,
 
         private static Option<TlsConfig> defaultTlsFor(ClusterConfig clusterCfg) {
             return clusterCfg.tls()
-                  ? some(TlsConfig.tlsConfig())
-                  : none();
+                   ? some(TlsConfig.tlsConfig())
+                   : none();
         }
 
         private Option<DockerConfig> dockerFor() {

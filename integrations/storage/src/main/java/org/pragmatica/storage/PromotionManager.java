@@ -2,6 +2,9 @@ package org.pragmatica.storage;
 
 import java.util.List;
 
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
 /// Manages background tier promotion — copies frequently-accessed blocks from slower
 /// tiers to faster tiers to optimize read latency.
 ///
@@ -18,10 +21,10 @@ public interface PromotionManager {
     PromotionStats stats();
 
     /// Activate the promotion manager, allowing promote() to process blocks.
-    void activate();
+    Result<Unit> activate();
 
     /// Deactivate the promotion manager. Subsequent promote() calls will no-op.
-    void deactivate();
+    Result<Unit> deactivate();
 
     /// Whether the promotion manager is currently active.
     boolean isActive();

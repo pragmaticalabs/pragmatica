@@ -7,7 +7,7 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     log_pass "Cluster ready"
 }
 
@@ -20,7 +20,7 @@ test_storage_list() {
         return 0
     fi
     # Response may be {} (no storage configured) or {"instances": [...]}
-    if echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print('ok' if 'instances' in d or d == {} else 'fail')" 2>/dev/null | grep -q "ok"; then
+    if echo "$result" | grep -qE '"instances"|^\s*\{\s*\}'; then
         log_pass "Storage list returns valid response"
     else
         log_fail "Storage list returns instances array: unexpected format"
@@ -28,92 +28,59 @@ test_storage_list() {
     fi
 }
 
-# Verify the default "artifacts" instance appears in the list
+# Verify the default "artifacts" instance appears in the list.
+#
+# Audit 2026-05-21 §2.2 #28: previous form demoted a missing "artifacts" instance to
+# log_warn + return 0. The artifacts instance is mandatory — it backs the artifact-repo
+# service used by every deploy; its absence is a real product regression that the suite
+# must surface, not paper over.
 test_storage_list_contains_artifacts() {
     local result
     result=$(api_get "/api/storage")
     if [ -z "$result" ]; then
-        skip_test "Artifacts in list" "Storage API not available"
-        return 0
+        log_fail "/api/storage returned empty body — storage management endpoint unreachable"
+        return 1
     fi
-    # The artifacts instance may or may not be configured; check gracefully
-    if echo "$result" | grep -q "artifacts"; then
-        log_pass "Artifacts instance found in storage list"
-    else
-        log_warn "No 'artifacts' instance in storage list — may not be configured in test cluster"
-        # List what instances are available
-        local names
-        names=$(json_field "$result" "['instances']" 2>/dev/null) || true
-        log_info "Available instances: ${names:-none}"
-        return 0
+    # Match the JSON field as emitted by StorageInstanceSummary (`"name":"artifacts"`).
+    if ! echo "$result" | grep -qE '"name"[[:space:]]*:[[:space:]]*"artifacts"'; then
+        log_fail "/api/storage missing mandatory 'artifacts' instance — artifact-repo service would be broken. Body: $(printf '%s' "$result" | head -c 300)"
+        return 1
     fi
+    log_pass "/api/storage lists mandatory 'artifacts' instance"
 }
 
-# GET /api/storage/{name} — returns detail with tiers and readiness
+# GET /api/storage/{name} — returns detail with tiers and readiness.
+#
+# Target the mandatory "artifacts" instance directly (per audit 2026-05-21 §1.16: discovery
+# via REST + skip-on-empty was a green-sticker). Drop the tautological `assert_ne $detail ""`
+# (lint R3, audit §2.1) since `assert_contains` on real fields below is a strictly stronger
+# check.
 test_storage_instance_detail() {
-    local result
-    result=$(api_get "/api/storage")
-    if [ -z "$result" ]; then
-        skip_test "Instance detail" "Storage API not available"
-        return 0
-    fi
-
-    # Extract the first instance name from the list
-    local first_name
-    first_name=$(echo "$result" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    instances = data.get('instances', [])
-    if instances:
-        print(instances[0].get('name', ''))
-except: pass
-" 2>/dev/null)
-
-    if [ -z "$first_name" ]; then
-        skip_test "Instance detail" "No storage instances configured"
-        return 0
-    fi
-
     local detail
-    detail=$(api_get "/api/storage/${first_name}")
-    assert_ne "$detail" "" "Storage detail returned for '${first_name}'"
+    detail=$(api_get "/api/storage/artifacts")
+    if [ -z "$detail" ]; then
+        log_fail "/api/storage/artifacts returned empty body"
+        return 1
+    fi
     assert_contains "$detail" "tiers" "Detail includes tiers"
     assert_contains "$detail" "readiness" "Detail includes readiness"
 }
 
-# POST /api/storage/{name}/snapshot — triggers snapshot
+# POST /api/storage/snapshot/{name} — triggers snapshot.
+#
+# Audit 2026-05-21 §2.2 #26: previous form demoted an empty response body to log_warn +
+# return 0. An empty body is "endpoint not wired" — a real product regression, not a
+# benign skip. Target the mandatory "artifacts" instance directly and hard-fail on empty.
 test_storage_snapshot() {
-    local result
-    result=$(api_get "/api/storage")
-    if [ -z "$result" ]; then
-        skip_test "Snapshot trigger" "Storage API not available"
-        return 0
-    fi
-
-    local first_name
-    first_name=$(echo "$result" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    instances = data.get('instances', [])
-    if instances:
-        print(instances[0].get('name', ''))
-except: pass
-" 2>/dev/null)
-
-    if [ -z "$first_name" ]; then
-        skip_test "Snapshot trigger" "No storage instances configured"
-        return 0
-    fi
-
     local snapshot
-    snapshot=$(api_post "/api/storage/${first_name}/snapshot" "{}")
+    snapshot=$(api_post "/api/storage/snapshot/artifacts" "{}")
     if [ -z "$snapshot" ]; then
-        log_warn "Snapshot trigger returned empty — endpoint may not be wired yet"
-        return 0
+        log_fail "POST /api/storage/snapshot/artifacts returned empty body — endpoint not wired or instance missing"
+        return 1
     fi
+    # SnapshotResponse carries name + epoch + timestampMs. Assert epoch is present.
     assert_contains "$snapshot" "epoch" "Snapshot response includes epoch"
+    log_pass "Snapshot of 'artifacts' instance returned: $(printf '%s' "$snapshot" | head -c 200)"
 }
 
 # GET /api/cluster/storage — returns cluster-wide storage view
@@ -137,15 +104,7 @@ test_cluster_storage_detail() {
     fi
 
     local first_name
-    first_name=$(echo "$list_result" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    instances = data.get('instances', [])
-    if instances:
-        print(instances[0].get('name', ''))
-except: pass
-" 2>/dev/null)
+    first_name=$(echo "$list_result" | (grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' || true) | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
 
     if [ -z "$first_name" ]; then
         skip_test "Cluster storage detail" "No storage instances configured"

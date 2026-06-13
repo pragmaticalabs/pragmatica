@@ -73,6 +73,11 @@ var config = AetherNodeConfig.aetherNodeConfig(...)
                              .withTls(tlsConfig);
 ```
 
+When `[tls]` `auto_generate = false` with operator-provided `cert_path`/`key_path`, the node
+**refuses to start** if `AETHER_INSECURE_DEV_MODE=true` is also set — insecure dev-mode is
+incompatible with real operator certificates. See
+[TLS Certificate Management](../operators/tls-certificates.md).
+
 ## Slice Configuration
 
 ### SliceActionConfig
@@ -210,6 +215,8 @@ For container deployment, configuration via environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NODE_ID` | auto-generated | Unique node identifier |
+| `AETHER_CLUSTER_NAME` | **required** | Cluster name (1-63 lowercase DNS label, no trailing hyphen; single-character names allowed). Resolved from this env var or bootstrap-seeded KV — the node refuses to start if it resolves to missing/empty |
+| `AETHER_INSECURE_DEV_MODE` | false | Enables dev-only inject/test endpoints. Incompatible with operator-provided TLS certificates — see TLS Configuration |
 | `CLUSTER_PORT` | 8090 | Cluster communication port |
 | `MANAGEMENT_PORT` | 8080 | HTTP API port |
 | `PEERS` | required | Cluster peer list |
@@ -217,6 +224,11 @@ For container deployment, configuration via environment variables:
 | `TLS_ENABLED` | false | Enable TLS |
 | `TLS_CERT_PATH` | none | TLS certificate path |
 | `TLS_KEY_PATH` | none | TLS key path |
+
+A node **fails to start** (loud error, non-zero exit) when its cluster name is missing or empty.
+The name is resolved from `AETHER_CLUSTER_NAME` or, for bootstrapped clusters, from the
+bootstrap-seeded KV entry. The same validation regex (1-63 lowercase DNS label, no trailing
+hyphen, single-character names permitted) is applied uniformly across the node, CLI, and config.
 
 ## CLI Arguments
 
@@ -360,7 +372,7 @@ Cloud provider integration is configured via the `[cloud]` TOML section. See [Cl
 provider = "hetzner"                          # Required: hetzner | aws | gcp | azure
 
 [cloud.credentials]                            # Provider-specific authentication
-api_token = "${env:HETZNER_API_TOKEN}"         # Supports ${env:VAR} interpolation
+api_token = "${env:HCLOUD_TOKEN}"         # Supports ${env:VAR} interpolation
 
 [cloud.compute]                                # Instance provisioning parameters
 server_type = "cx22"

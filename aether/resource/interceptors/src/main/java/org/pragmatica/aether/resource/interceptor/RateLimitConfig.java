@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.interceptor;
 
 import org.pragmatica.lang.Result;
@@ -9,15 +13,11 @@ import static org.pragmatica.lang.Verify.ensure;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Configuration for rate limit interceptor.
-///
-/// @param maxRequests Maximum requests allowed in the window
-/// @param window      Time window for rate limiting
-/// @param burst       Additional burst capacity above the base rate
 public record RateLimitConfig(int maxRequests, TimeSpan window, int burst) {
     public static Result<RateLimitConfig> rateLimitConfig(int maxRequests, TimeSpan window) {
         var validRequests = ensure(maxRequests, Verify.Is::positive);
         var validWindow = ensure(window, Verify.Is::notNull);
+
         return all(validRequests, validWindow).map((r, w) -> new RateLimitConfig(r, w, 0));
     }
 
@@ -25,6 +25,7 @@ public record RateLimitConfig(int maxRequests, TimeSpan window, int burst) {
         var validRequests = ensure(maxRequests, Verify.Is::positive);
         var validWindow = ensure(window, Verify.Is::notNull);
         var validBurst = ensure(burst, Verify.Is::nonNegative);
+
         return all(validRequests, validWindow, validBurst).map(RateLimitConfig::new);
     }
 

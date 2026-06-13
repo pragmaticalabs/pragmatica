@@ -1,7 +1,5 @@
 package org.pragmatica.postgres.net;
 
-import org.pragmatica.postgres.Oid;
-
 /**
  * Converters extend the driver to handle complex data types,
  * for example json or hstore that have no "standard" Java
@@ -17,16 +15,22 @@ public interface Converter<T> {
     Class<T> type();
 
     /**
-     * @param o Object to convert, never null
-     * @return data in backend format
+     * Write a value into the bind sink. The converter must call exactly one of
+     * `writer.writeText(...)` / `writer.writeBinary(...)` per invocation.
+     *
+     * @param value Value to encode, never null
+     * @param writer Sink to receive the encoded wire bytes
      */
-    String from(T o);
+    void from(T value, PgWriter writer);
 
     /**
-     * @param oid Value oid
-     * @param value Value in backend format, never null
+     * Decode a value received from PostgreSQL.
+     *
+     * @param value Value carried in either text or binary wire format. Use
+     *              `value.asBytes()` for raw bytes, pattern-match on
+     *              `PgValue.Text` / `PgValue.Binary` to handle each format
+     *              explicitly.
      * @return Converted object, never null
      */
-    T to(Oid oid, String value);
-
+    T to(PgValue value);
 }

@@ -1,6 +1,6 @@
 # Aether runtime configuration
 
-[messaging.click-events]
+[click-events]
 topic_name = "click-events"
 
 [database]

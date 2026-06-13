@@ -92,13 +92,4 @@ public record HttpServerConfig(String name,
         return new HttpServerConfig(name, port, tls, maxContentLength, webSocketEndpoints, true, socketOptions);
     }
 
-    public HttpServerConfig withSocketOptions(SocketOptions socketOptions) {
-        return new HttpServerConfig(name,
-                                    port,
-                                    tls,
-                                    maxContentLength,
-                                    webSocketEndpoints,
-                                    chunkedWriteEnabled,
-                                    socketOptions);
-    }
 }

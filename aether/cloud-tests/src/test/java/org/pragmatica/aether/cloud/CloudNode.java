@@ -1,19 +1,7 @@
-/*
- *  Copyright (c) 2025 Sergiy Yevtushenko.
- *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
- *
- */
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 
 package org.pragmatica.aether.cloud;
 
@@ -82,7 +70,7 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
 
     /// Queries the status endpoint of this node.
     public Result<String> getStatus() {
-        return httpGet("/api/status");
+        return httpGet("/api/nodes/status");
     }
 
     /// Queries the nodes endpoint of this node.
@@ -131,7 +119,7 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
             instances = %d
             """.formatted(blueprintId, artifact, instances);
 
-        return httpPost("/api/blueprint", blueprint, "application/toml");
+        return httpPost("/api/blueprints", blueprint, "application/toml");
     }
 
     /// Uploads an artifact JAR to the DHT repository via management API.
@@ -159,7 +147,7 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
 
     /// Undeploys a blueprint by ID.
     public Result<String> undeploy(String blueprintId) {
-        return httpDelete("/api/blueprint/" + blueprintId);
+        return httpDelete("/api/blueprints/" + blueprintId);
     }
 
     /// Scales a deployed slice.

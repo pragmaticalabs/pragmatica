@@ -17,6 +17,7 @@
 
 package org.pragmatica.lang.io;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Tuple.Tuple2;
 
 import java.time.Duration;
@@ -92,6 +93,7 @@ public sealed interface TimeSpan extends Comparable<TimeSpan> {
     /// Sleep for this time span duration.
     /// <p>
     /// If interrupted, restores the interrupt flag and returns immediately.
+    @Contract
     default void sleep() {
         try{
             Thread.sleep(millis());

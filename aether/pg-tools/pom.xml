@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>1.0.0-alpha</version>
+        <version>1.0.0-rc1</version>
     </parent>
 
     <artifactId>aether-pg-tools</artifactId>
@@ -25,7 +25,8 @@
     </modules>
 
     <properties>
-        <peglib.version>0.2.1</peglib.version>
+        <peglib.version>0.6.0</peglib.version>
+        <peglib.maven.plugin.version>0.6.0</peglib.maven.plugin.version>
     </properties>
 
     <dependencyManagement>

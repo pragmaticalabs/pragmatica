@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.config;
 
 import org.junit.jupiter.api.Nested;
@@ -267,7 +272,9 @@ class AppHttpSecurityIntegrationTest {
                 role_claim = "groups"
                 jwks_cache_ttl_seconds = 1800
                 max_request_size = "50MB"
-                forward_timeout_ms = 15000
+
+                [timeouts.forwarding]
+                app_timeout = "15s"
                 """;
 
             ConfigLoader.loadFromString(toml)
@@ -280,7 +287,7 @@ class AppHttpSecurityIntegrationTest {
                     assertThat(appHttp.securityMode()).isEqualTo(SecurityMode.JWT);
                     assertThat(appHttp.securityEnabled()).isTrue();
                     assertThat(appHttp.maxRequestSize()).isEqualTo(50 * 1024 * 1024);
-                    assertThat(appHttp.forwardTimeout().millis()).isEqualTo(15000);
+                    assertThat(config.timeouts().forwarding().appTimeout().millis()).isEqualTo(15000);
 
                     var jwt = appHttp.jwtConfig();
                     assertThat(jwt.isPresent()).isTrue();

@@ -1,5 +1,6 @@
 package org.pragmatica.http.routing;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
 import java.util.ArrayList;
@@ -46,6 +47,7 @@ public final class RequestRouter {
         return map;
     }
 
+    @Contract
     public void print() {
         if (!log.isInfoEnabled()) {
             return;
@@ -56,11 +58,21 @@ public final class RequestRouter {
 
     public Option<Route<?>> findRoute(HttpMethod method, String inputPath) {
         var path = inputPath + "/";
-        return option(routes.get(method)).flatMap(map -> option(map.floorEntry(path)))
-                     .filter(routeEntry -> isSameOrStartOfPath(path,
-                                                               routeEntry.getKey()))
-                     .flatMap(routeEntry -> selectBestRoute(routeEntry.getValue(),
-                                                            inputPath));
+        var methodRoutes = routes.get(method);
+        if (methodRoutes == null) {
+            return Option.empty();
+        }
+        // Walk back through candidate prefixes via descending headMap. floorEntry alone is
+        // not sufficient: with sibling routes like `/api/streams/publish/`, `/api/streams/read/`
+        // and `/api/streams/`, an input of `/api/streams/test1/` lands on `/api/streams/read/`
+        // (alphabetically nearest) but fails isSameOrStartOfPath. We must keep walking to the
+        // broader `/api/streams/` entry.
+        for (var entry : methodRoutes.headMap(path, true).descendingMap().entrySet()) {
+            if (isSameOrStartOfPath(path, entry.getKey())) {
+                return selectBestRoute(entry.getValue(), inputPath);
+            }
+        }
+        return Option.empty();
     }
 
     /// Select the best matching route from a list of routes with the same base path.

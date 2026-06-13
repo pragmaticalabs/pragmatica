@@ -111,6 +111,12 @@ public enum Oid {
     public boolean supportsBinary() {
         return switch (this) {
             case INT2, INT4, INT8, FLOAT4, FLOAT8, BOOL, BYTEA, UUID, DATE, TIME, TIMETZ, TIMESTAMP, TIMESTAMPTZ -> true;
+            // Arrays whose element type has a registered BinaryCodec — see BinaryCodecs.
+            // Text-typed arrays (TEXT_ARRAY, VARCHAR_ARRAY, etc.) and NUMERIC_ARRAY stay
+            // text-only because their element decoders are not implemented binary-side.
+            case INT2_ARRAY, INT4_ARRAY, INT8_ARRAY, FLOAT4_ARRAY, FLOAT8_ARRAY,
+                 BOOL_ARRAY, BYTEA_ARRAY, UUID_ARRAY,
+                 DATE_ARRAY, TIME_ARRAY, TIMETZ_ARRAY, TIMESTAMP_ARRAY, TIMESTAMPTZ_ARRAY -> true;
             default -> false;
         };
     }

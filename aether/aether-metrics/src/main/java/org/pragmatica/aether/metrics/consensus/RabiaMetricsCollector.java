@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.consensus;
 
 import org.pragmatica.consensus.NodeId;
@@ -17,24 +21,14 @@ import java.util.concurrent.atomic.LongAdder;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Implementation of ConsensusMetrics that collects Rabia consensus statistics.
-///
-/// Thread-safe: uses atomic operations for all counters.
 public final class RabiaMetricsCollector implements ConsensusMetrics {
     private final AtomicLong decisionsCount = new AtomicLong();
-
     private final AtomicLong proposalsCount = new AtomicLong();
-
     private final AtomicLong syncSuccessCount = new AtomicLong();
-
     private final AtomicLong syncFailureCount = new AtomicLong();
-
     private final AtomicInteger pendingBatches = new AtomicInteger();
-
     private final LongAdder totalDecisionLatencyNs = new LongAdder();
-
     private final AtomicReference<String> role = new AtomicReference<>("FOLLOWER");
-
     private final AtomicReference<Option<String>> leaderId = new AtomicReference<>(Option.empty());
 
     private RabiaMetricsCollector() {}
@@ -43,26 +37,44 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
         return new RabiaMetricsCollector();
     }
 
-    @Override@Contract public void recordDecision(NodeId nodeId, Phase phase, StateValue stateValue, long durationNs) {
+    @Override
+    @Contract
+    public void recordDecision(NodeId nodeId, Phase phase, StateValue stateValue, long durationNs) {
         decisionsCount.incrementAndGet();
         totalDecisionLatencyNs.add(durationNs);
     }
 
-    @Override@Contract public void recordProposal(NodeId nodeId, Phase phase) {
+    @Override
+    @Contract
+    public void recordProposal(NodeId nodeId, Phase phase) {
         proposalsCount.incrementAndGet();
     }
 
-    @Override@Contract public void recordVoteRound1(NodeId nodeId, Phase phase, StateValue stateValue) {}
+    @Override
+    @Contract
+    public void recordVoteRound1(NodeId nodeId, Phase phase, StateValue stateValue) {}
 
-    @Override@Contract public void recordVoteRound2(NodeId nodeId, Phase phase, StateValue stateValue) {}
+    @Override
+    @Contract
+    public void recordVoteRound2(NodeId nodeId, Phase phase, StateValue stateValue) {}
 
-    @Override@Contract public void recordFastPath(NodeId nodeId, Phase phase, StateValue value) {}
+    @Override
+    @Contract
+    public void recordFastPath(NodeId nodeId, Phase phase, StateValue value) {}
 
-    @Override@Contract public void recordSyncAttempt(NodeId nodeId, boolean success) {
-        if (success) {syncSuccessCount.incrementAndGet();} else {syncFailureCount.incrementAndGet();}
+    @Override
+    @Contract
+    public void recordSyncAttempt(NodeId nodeId, boolean success) {
+        if (success) {
+            syncSuccessCount.incrementAndGet();
+        } else {
+            syncFailureCount.incrementAndGet();
+        }
     }
 
-    @Override@Contract public void updatePendingBatches(NodeId nodeId, int count) {
+    @Override
+    @Contract
+    public void updatePendingBatches(NodeId nodeId, int count) {
         pendingBatches.set(count);
     }
 
@@ -71,6 +83,7 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
                  ? "LEADER"
                  : "FOLLOWER");
         leaderId.set(currentLeaderId);
+
         return unitResult();
     }
 

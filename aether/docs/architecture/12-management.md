@@ -197,7 +197,7 @@ Testing is split across three layers:
 | Forge integration | 21 | In-process EmberCluster tests (cluster formation, chaos, deployments) |
 | Docker integration | 14 suites, ~50 scripts | 5-node Docker cluster on target host (smoke, chaos, scaling, streaming, security, deployment, resources, artifacts, database, observability, network, edge-cases) |
 
-Docker integration tests run via `aether/tests/integration/scripts/run-all.sh` against a target host. See [integration test README](../../tests/integration/README.md) for setup and environment variables.
+Docker integration tests run via `aether/tests/integration/run-tests.sh --env docker` against a target host. See [integration test README](../../tests/integration/README.md) for setup and environment variables.
 
 ## Related Documents
 

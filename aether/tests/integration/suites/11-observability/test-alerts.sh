@@ -6,98 +6,119 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
+ALERT_NAME="integration-test-alert-$$"
+ALERT_METRIC="test.integration.counter"
+ALERT_SEVERITY="WARNING"
+ALERT_MESSAGE="synthetic alert from integration test pid=$$"
+# Captured by test_trigger_alert_condition; read by the downstream check_alerts_fired /
+# alerts_have_fields tests so they can correlate the injected entry by id.
+INJECTED_ALERT_ID=""
+
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     log_pass "Cluster ready"
 }
 
+# Smoke: thresholds endpoint must respond 200 (covered earlier by alerts coverage,
+# but kept explicit). An empty list IS a valid response — there may be zero
+# thresholds — so we assert HTTP status, not body content.
 test_thresholds_endpoint() {
-    local thresholds
-    thresholds=$(api_get "/api/thresholds")
-    if [ -n "$thresholds" ]; then
-        log_pass "Thresholds endpoint returns data"
-    else
-        log_pass "Thresholds endpoint responds (empty is valid)"
-    fi
+    assert_http_status "${CLUSTER_ENDPOINT}/api/thresholds" "200" \
+        "GET /api/thresholds returns 200" \
+        -H "X-API-Key: ${API_KEY}"
 }
 
+# Strict: POST a threshold, then GET /api/thresholds and verify it appears.
+# This converts "endpoint responds" into "endpoint accepts and persists my write".
 test_set_alert_threshold() {
-    local body='{"metric":"test.integration.counter","operator":"gt","value":0,"severity":"warning","name":"integration-test-alert"}'
-    local result
-    result=$(api_post "/api/thresholds" "$body")
-    if [ -n "$result" ]; then
-        log_pass "Alert threshold set"
-    else
-        log_warn "Threshold creation returned empty — alerting may not be configured"
-        log_pass "Thresholds endpoint responds"
+    # Server contract: ThresholdRequest{metric, warning, critical} — see AlertRoutes.java.
+    # The prior body shape `{metric,operator,value,severity,name}` was wrong; server
+    # rejected with 500 "Missing metric, warning, or critical field". The pre-strict
+    # assertion warn-then-pass demotion silently swallowed it.
+    local body
+    body="{\"metric\":\"${ALERT_METRIC}\",\"warning\":1,\"critical\":5}"
+    local create_result
+    if ! create_result=$(api_post "/api/thresholds" "$body"); then
+        log_fail "POST /api/thresholds failed (api_post returned non-zero)"
+        return 1
     fi
+    # Read back and verify our threshold appears in the list (matched by metric name —
+    # the server response shape uses the metric as the identity, not a synthetic name).
+    local thresholds
+    if ! thresholds=$(api_get "/api/thresholds"); then
+        log_fail "GET /api/thresholds failed after creation"
+        return 1
+    fi
+    assert_contains "$thresholds" "$ALERT_METRIC" \
+        "Created threshold for metric '${ALERT_METRIC}' is visible in /api/thresholds"
 }
 
+# Drive the alert path explicitly via POST /api/alerts/inject. The runtime does
+# not publish a test-only metric, so threshold-driven firing on `${ALERT_METRIC}`
+# can't be exercised end-to-end here. The injection endpoint exists for exactly
+# this gap — see aether/docs/reference/management-api.md → POST /api/alerts/inject.
 test_trigger_alert_condition() {
-    # Generate load to trigger alert condition
-    for i in $(seq 1 20); do
-        api_get "/api/status" > /dev/null 2>&1 || true
-    done
-    sleep 5
-    log_pass "Generated load to trigger alert"
+    local body
+    body="{\"name\":\"${ALERT_NAME}\",\"severity\":\"${ALERT_SEVERITY}\",\"message\":\"${ALERT_MESSAGE}\",\"metric\":\"${ALERT_METRIC}\",\"value\":42.0}"
+    local response
+    if ! response=$(api_post "/api/alerts/inject" "$body"); then
+        log_fail "POST /api/alerts/inject failed (api_post returned non-zero)"
+        return 1
+    fi
+    # Server returns {alertId, name, severity, message, timestamp}. Grab alertId so
+    # downstream tests can correlate the inject with the read-back entry.
+    INJECTED_ALERT_ID=$(printf '%s' "$response" | grep -oE '"alertId"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)"$/\1/' | head -1)
+    if [ -z "$INJECTED_ALERT_ID" ]; then
+        log_fail "Inject response missing alertId field — response was: ${response}"
+        return 1
+    fi
+    log_pass "Injected alert id=${INJECTED_ALERT_ID} name=${ALERT_NAME}"
 }
 
+# Verify the injected alert is visible via GET /api/alerts (active list). The
+# injection endpoint is local-to-node by design (alerts are node-local state, not
+# KV-replicated), but api_get hits the same endpoint cluster used for the POST
+# via _resolve_live_endpoint — same target node, same in-memory store.
 test_check_alerts_fired() {
-    local alerts
-    alerts=$(api_get "/api/alerts")
-    if [ -n "$alerts" ]; then
-        local count
-        count=$(echo "$alerts" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    entries = data if isinstance(data, list) else data.get('alerts', [])
-    print(len(entries))
-except:
-    print(0)
-" 2>/dev/null)
-        if [ "$count" -gt 0 ] 2>/dev/null; then
-            log_pass "Alerts fired: ${count} alert(s)"
-        else
-            log_warn "No alerts triggered — threshold may not match any active metric"
-            log_pass "Alerts endpoint responds"
-        fi
-    else
-        log_warn "Alerts endpoint returned empty"
-        log_pass "Alerts endpoint responds"
+    if [ -z "$INJECTED_ALERT_ID" ]; then
+        log_fail "Pre-condition broken: INJECTED_ALERT_ID is empty (test_trigger_alert_condition must have failed)"
+        return 1
     fi
+    local alerts
+    if ! alerts=$(api_get "/api/alerts"); then
+        log_fail "GET /api/alerts failed (api_get returned non-zero)"
+        return 1
+    fi
+    assert_contains "$alerts" "$INJECTED_ALERT_ID" \
+        "GET /api/alerts must surface the injected alertId=${INJECTED_ALERT_ID}"
 }
 
+# With an injected alert present, assert each contract field carries a sensible
+# value. Substring match (not literal "key":"value" syntax) because /api/alerts
+# returns `AlertsResponse(Object active, Object history)` and the Object fields
+# currently hold pre-serialized String JSON which Jackson re-encodes with
+# escaped quotes — making the literal-form assertion brittle. Substring on
+# values is sufficient to catch field omission. A post-RC1 refactor of
+# `AlertManager.activeAlertsAsJson()` to return structured types (List<...>)
+# would let assertions tighten back to literal "key":"value" form.
 test_alerts_have_fields() {
+    if [ -z "$INJECTED_ALERT_ID" ]; then
+        log_fail "Pre-condition broken: INJECTED_ALERT_ID is empty (test_trigger_alert_condition must have failed)"
+        return 1
+    fi
     local alerts
-    alerts=$(api_get "/api/alerts")
-    if [ -z "$alerts" ]; then
-        log_pass "Alerts endpoint responds (no alerts to verify fields)"
-        return 0
+    if ! alerts=$(api_get "/api/alerts"); then
+        log_fail "GET /api/alerts failed (api_get returned non-zero)"
+        return 1
     fi
-
-    local has_fields
-    has_fields=$(echo "$alerts" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    entries = data if isinstance(data, list) else data.get('alerts', [])
-    if entries:
-        first = entries[0]
-        has_name = 'name' in first or 'alertName' in first or 'metric' in first
-        has_severity = 'severity' in first or 'level' in first
-        print('yes' if has_name else 'no')
-    else:
-        print('no')
-except:
-    print('no')
-" 2>/dev/null)
-    if [ "$has_fields" = "yes" ]; then
-        log_pass "Alert entries contain expected fields"
-    else
-        log_warn "Alert entries missing name/severity fields"
-        log_pass "Alerts endpoint returns data"
-    fi
+    assert_contains "$alerts" "$ALERT_NAME" \
+        "Injected alert exposes name='${ALERT_NAME}' value"
+    assert_contains "$alerts" "$ALERT_SEVERITY" \
+        "Injected alert exposes severity='${ALERT_SEVERITY}' value"
+    assert_contains "$alerts" "$ALERT_MESSAGE" \
+        "Injected alert exposes message='${ALERT_MESSAGE}' value"
+    assert_contains "$alerts" "injected" \
+        "Injected alert marked with source='injected' (distinguishes operator-driven from threshold-driven)"
 }
 
 test_cluster_healthy_after_alerts() {

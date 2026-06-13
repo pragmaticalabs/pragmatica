@@ -33,7 +33,31 @@ import static org.pragmatica.lang.Tuple.*;
 import static org.pragmatica.lang.Unit.unit;
 
 /// Representation of the operation result. The result can be either success or failure. In case of success it holds value returned by the operation.
-/// In case of failure it holds a failure description.
+/// In case of failure it holds a failure description ([Cause]).
+///
+/// `Result` is the synchronous fallible carrier among the three core monads: [Option] —
+/// presence, `Result` — synchronous fallibility, [Promise] — asynchronous fallibility
+/// (the JBCT four-return-kinds rule).
+///
+/// ## Combinator map
+///
+/// | Purpose | Combinators |
+/// |---------|-------------|
+/// | Construct | `success(value)`, `unitResult()`, `cause.result()` (preferred over failure factories), `lift(...)` family (exception boundary → `Result`) |
+/// | Transform | `map(fn)`, `flatMap(fn)` (+ `Supplier` forms, `flatMap2(fn, param)`), `mapToUnit()` |
+/// | Context-preserving stages | `mapWith(op, factory)` / `flatMapWith(op, factory)` / `ensureWith(op)` + field-scoped getter forms — run an effectful operation, continue with the ORIGINAL value combined via the factory; `ensureWith` discards the operation result and gates the chain. See `core/docs/knowledge-gathering-pipelines.md` |
+/// | Failure handling | `mapError(fn)`, `recover(fn)`, `or(value/supplier)`, `orElse(result/supplier)` |
+/// | Validate | `filter(cause, predicate)`, `filter(causeMapper, predicate)` — and [Verify] for the full validation vocabulary |
+/// | Multi-projection | instance `all(fn1..fnN)` → `MapperN.map/flatMap` (decompose one value into several fallible projections); static `all(r1..rN)` (combine independent results, collects failures); `allOf(list)` |
+/// | Side effects (non-gating) | `onSuccess`/`onSuccessRun`, `onFailure`/`onFailureRun`, `onResult`/`onResultRun`, `apply(failureC, successC)` — observation only; a fallible gating effect is `ensureWith` |
+/// | Convert | `option()`, `stream()`, `async()` (→ [Promise]) |
+/// | Inspect | `isSuccess()`, `isFailure()` |
+///
+/// Tuple-valued results additionally provide arity overloads of `map`/`flatMap` (`Fn2`..`Fn15`).
+///
+/// Rules of thumb: `Promise<Result<T>>` is forbidden — [Promise] IS the async `Result`;
+/// `Result<Option<T>>` is the valid "optional with validation" shape; construct failures via
+/// `cause.result()`, not static failure factories.
 ///
 /// @param <T> Type of value in case of success.
 @SuppressWarnings("unused")
@@ -84,6 +108,98 @@ public sealed interface Result<T> permits Success, Failure {
     /// @return New result instance
     default <U, I> Result<U> flatMap2(Fn2<Result<U>, ? super T, ? super I> mapper, I parameter2) {
         return flatMap(value -> mapper.apply(value, parameter2));
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to the value, then combine the ORIGINAL value with the operation's result via a pure factory.
+    /// Operation failure short-circuits; the factory always receives the full original value.
+    ///
+    /// @param operation Effectful operation applied to the value
+    /// @param factory   Pure combiner receiving the original value and the operation's result
+    /// @param <U>       Type of the combined value
+    /// @param <B>       Type of the operation's result
+    ///
+    /// @return combined value (in case of success) or propagated failure
+    default <U, B> Result<U> mapWith(Fn1<Result<B>, ? super T> operation, Fn2<U, ? super T, ? super B> factory) {
+        return flatMap(t -> operation.apply(t)
+                                     .map(b -> factory.apply(t, b)));
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to the value, then combine the ORIGINAL value with the operation's result via a factory.
+    /// Operation failure short-circuits; the factory always receives the full original value and itself may fail, in which case its failure propagates.
+    ///
+    /// @param operation Effectful operation applied to the value
+    /// @param factory   Combiner receiving the original value and the operation's result, itself returning a [Result]
+    /// @param <U>       Type of the combined value
+    /// @param <B>       Type of the operation's result
+    ///
+    /// @return combined value (in case of success) or propagated failure
+    default <U, B> Result<U> flatMapWith(Fn1<Result<B>, ? super T> operation, Fn2<Result<U>, ? super T, ? super B> factory) {
+        return flatMap(t -> operation.apply(t)
+                                     .flatMap(b -> factory.apply(t, b)));
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to the value; when successful CONTINUE WITH THE ORIGINAL VALUE UNCHANGED — the operation's result is discarded; on
+    /// failure the failure propagates. Operation failure gates the chain (unlike [#onSuccess(Consumer)]).
+    /// Use for TRANSIENT gates whose outcome no later step reads (rate-limit check, fire-and-forget audit, notification).
+    /// The moment a later step needs the outcome, the operation should return evidence and be accreted via [#mapWith(Fn1, Fn1, Fn2)] instead —
+    /// a load-bearing check that returns only a boolean is the parse-don't-validate anti-pattern. See `core/docs/knowledge-gathering-pipelines.md`.
+    ///
+    /// @param operation Effectful operation applied to the value
+    /// @param <B>       Type of the operation's (discarded) result
+    ///
+    /// @return the original value (in case of success) or propagated failure
+    default <B> Result<T> ensureWith(Fn1<Result<B>, ? super T> operation) {
+        return flatMap(t -> operation.apply(t)
+                                     .map(_ -> t));
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to a projection of the value, then combine the ORIGINAL value with the operation's result via a pure factory.
+    /// Operation failure short-circuits; the factory always receives the full original value.
+    ///
+    /// @param getter    Projection extracting the input for the operation
+    /// @param operation Effectful operation applied to the projection
+    /// @param factory   Pure combiner receiving the original value and the operation's result
+    /// @param <U>       Type of the combined value
+    /// @param <A>       Type of the projection
+    /// @param <B>       Type of the operation's result
+    ///
+    /// @return combined value (in case of success) or propagated failure
+    default <U, A, B> Result<U> mapWith(Fn1<A, ? super T> getter, Fn1<Result<B>, ? super A> operation, Fn2<U, ? super T, ? super B> factory) {
+        return mapWith(t -> operation.apply(getter.apply(t)), factory);
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to a projection of the value, then combine the ORIGINAL value with the operation's result via a factory.
+    /// Operation failure short-circuits; the factory always receives the full original value and itself may fail, in which case its failure propagates.
+    ///
+    /// @param getter    Projection extracting the input for the operation
+    /// @param operation Effectful operation applied to the projection
+    /// @param factory   Combiner receiving the original value and the operation's result, itself returning a [Result]
+    /// @param <U>       Type of the combined value
+    /// @param <A>       Type of the projection
+    /// @param <B>       Type of the operation's result
+    ///
+    /// @return combined value (in case of success) or propagated failure
+    default <U, A, B> Result<U> flatMapWith(Fn1<A, ? super T> getter, Fn1<Result<B>, ? super A> operation, Fn2<Result<U>, ? super T, ? super B> factory) {
+        return flatMapWith(t -> operation.apply(getter.apply(t)), factory);
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to a projection of the value; when successful CONTINUE WITH THE ORIGINAL VALUE UNCHANGED — the operation's result is
+    /// discarded; on failure the failure propagates. Operation failure gates the chain (unlike [#onSuccess(Consumer)]).
+    ///
+    /// @param getter    Projection extracting the input for the operation
+    /// @param operation Effectful operation applied to the projection
+    /// @param <A>       Type of the projection
+    /// @param <B>       Type of the operation's (discarded) result
+    ///
+    /// @return the original value (in case of success) or propagated failure
+    default <A, B> Result<T> ensureWith(Fn1<A, ? super T> getter, Fn1<Result<B>, ? super A> operation) {
+        return ensureWith(t -> operation.apply(getter.apply(t)));
     }
 
     /// **[Pure Transform]**
@@ -158,6 +274,7 @@ public sealed interface Result<T> permits Success, Failure {
     /// @param consumer Consumer to pass value to
     ///
     /// @return current instance for fluent call chaining
+    @NullReturn
     default Result<T> onSuccess(Consumer<T> consumer) {
         fold(Functions::toNull,
              v -> {
@@ -171,6 +288,7 @@ public sealed interface Result<T> permits Success, Failure {
     /// Run provided action in case of success.
     ///
     /// @return current instance for fluent call chaining
+    @NullReturn
     default Result<T> onSuccessRun(Runnable action) {
         fold(Functions::toNull,
              _ -> {
@@ -186,6 +304,7 @@ public sealed interface Result<T> permits Success, Failure {
     /// @param consumer Consumer to pass value to
     ///
     /// @return current instance for fluent call chaining
+    @NullReturn
     default Result<T> onFailure(Consumer<? super Cause> consumer) {
         fold(v -> {
                  consumer.accept(v);
@@ -199,6 +318,7 @@ public sealed interface Result<T> permits Success, Failure {
     /// Run provided action in case of failure.
     ///
     /// @return current instance for fluent call chaining
+    @NullReturn
     default Result<T> onFailureRun(Runnable action) {
         fold(_ -> {
                  action.run();
@@ -370,6 +490,7 @@ public sealed interface Result<T> permits Success, Failure {
     ///
     /// @param failureConsumer Consumer for failure result
     /// @param successConsumer Consumer for success result
+    @Contract
     default void run(Consumer<? super Cause> failureConsumer, Consumer<? super T> successConsumer) {
         apply(failureConsumer, successConsumer);
     }
@@ -852,6 +973,7 @@ public sealed interface Result<T> permits Success, Failure {
     ///
     /// @return the success value if this Result is successful
     /// @throws RuntimeException created by the factory if this Result is a failure
+    @Contract
     default T getOrThrow(Fn1<RuntimeException, String> exceptionFactory, String message) {
         return fold(cause -> {
                         throw exceptionFactory.apply(message + ": " + cause.message());
@@ -1347,13 +1469,37 @@ public sealed interface Result<T> permits Success, Failure {
     static <T> Result<List<T>> allOf(List<Result<T>> results) {
         var causes = Causes.composite();
         var values = new ArrayList<T>();
-        for (var value : results) {
-            value.onFailure(causes::append)
-                 .onSuccess(values::add);
-        }
+        results.forEach(value -> value.fold(causes::append, values::add));
         return causes.isEmpty()
                ? success(values)
                : failure(causes);
+    }
+
+    /// **[Factory]**
+    /// Transform the list of [Result] instances into [Result] with the list of values, short-circuiting on the first failure.
+    ///
+    /// Unlike [#allOf(List)] which inspects every input and aggregates **all** failures into a composite cause, this
+    /// variant stops at the first failure encountered and returns its cause unwrapped — no composite, no accumulation
+    /// of later failures. Use this when only one failure matters (early-exit validation, fail-fast pipelines) or when
+    /// the inputs are expensive to inspect past the first rejection.
+    ///
+    /// @param results input list of [Result] instances
+    ///
+    /// @return success instance with values in input order if every [Result] is a success, or a failure carrying the
+    ///         cause of the first failure in iteration order
+    static <T> Result<List<T>> firstFailureOf(List<Result<T>> results) {
+        var values = new ArrayList<T>();
+        for (var value : results) {
+            switch (value) {
+                case Failure<T> failure -> {
+                    return failure.cause().result();
+                }
+                case Success<T> success -> {
+                    values.add(success.value());
+                }
+            }
+        }
+        return Result.success(values);
     }
 
     /// **[Factory]**

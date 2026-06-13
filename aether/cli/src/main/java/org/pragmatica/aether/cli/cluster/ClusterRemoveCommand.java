@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.ExitCode;
@@ -11,20 +15,22 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
 
 
-/// Removes a cluster from the registry.
-///
-/// If the removed cluster is the current context, the current context is cleared.
-/// This command does not destroy the actual cluster -- it only removes the local registry entry.
-@Command(name = "remove", description = "Remove a cluster from the registry") @SuppressWarnings("JBCT-RET-01") class ClusterRemoveCommand implements Callable<Integer> {
-    @Parameters(index = "0", description = "Cluster name to remove") private String name;
+@Command(name = "remove", description = "Remove a cluster from the registry")
+@SuppressWarnings("JBCT-RET-01")
+class ClusterRemoveCommand implements Callable<Integer> {
+    @Parameters(index = "0", description = "Cluster name to remove")
+    private String name;
 
-    @CommandLine.ParentCommand private ClusterCommand parent;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
-    @Override public Integer call() {
-        return ClusterRegistry.load().flatMap(registry -> registry.remove(name))
-                                   .flatMap(ClusterRegistry::save)
-                                   .fold(ClusterRemoveCommand::onFailure,
-                                         _ -> onSuccess());
+    @Override
+    public Integer call() {
+        return ClusterRegistry.load()
+                              .flatMap(registry -> registry.remove(name))
+                              .flatMap(ClusterRegistry::save)
+                              .fold(ClusterRemoveCommand::onFailure,
+                                    _ -> onSuccess());
     }
 
     private int onSuccess() {
@@ -35,6 +41,7 @@ import picocli.CommandLine.Parameters;
 
     private static int onFailure(Cause cause) {
         System.err.println("Error: " + cause.message());
+
         return ExitCode.ERROR;
     }
 }

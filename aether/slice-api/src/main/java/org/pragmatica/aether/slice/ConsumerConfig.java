@@ -1,10 +1,19 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
+
+import org.pragmatica.lang.io.TimeSpan;
+
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+
 
 public record ConsumerConfig(String groupId,
                              int maxBatchSize,
                              ProcessingMode processingMode,
                              ErrorStrategy errorStrategy,
-                             long checkpointIntervalMs,
+                             TimeSpan checkpointInterval,
                              int maxRetries,
                              String deadLetterStream,
                              ReadPreference readPreference) {
@@ -20,11 +29,8 @@ public record ConsumerConfig(String groupId,
     }
 
     private static final int DEFAULT_BATCH_SIZE = 1;
-
-    private static final long DEFAULT_CHECKPOINT_INTERVAL_MS = 1000L;
-
+    private static final TimeSpan DEFAULT_CHECKPOINT_INTERVAL = timeSpan(1).seconds();
     private static final int DEFAULT_MAX_RETRIES = 3;
-
     private static final String DEFAULT_DEAD_LETTER_STREAM = "";
 
     public static ConsumerConfig consumerConfig(String groupId) {
@@ -32,10 +38,10 @@ public record ConsumerConfig(String groupId,
                                   DEFAULT_BATCH_SIZE,
                                   ProcessingMode.ORDERED,
                                   ErrorStrategy.RETRY,
-                                  DEFAULT_CHECKPOINT_INTERVAL_MS,
+                                  DEFAULT_CHECKPOINT_INTERVAL,
                                   DEFAULT_MAX_RETRIES,
                                   DEFAULT_DEAD_LETTER_STREAM,
-                                  ReadPreference.LEADER);
+                                  ReadPreference.GOVERNOR);
     }
 
     public static ConsumerConfig consumerConfig(String groupId,
@@ -46,10 +52,10 @@ public record ConsumerConfig(String groupId,
                                   maxBatchSize,
                                   processingMode,
                                   errorStrategy,
-                                  DEFAULT_CHECKPOINT_INTERVAL_MS,
+                                  DEFAULT_CHECKPOINT_INTERVAL,
                                   DEFAULT_MAX_RETRIES,
                                   DEFAULT_DEAD_LETTER_STREAM,
-                                  ReadPreference.LEADER);
+                                  ReadPreference.GOVERNOR);
     }
 
     public static ConsumerConfig consumerConfig(String groupId,
@@ -63,10 +69,10 @@ public record ConsumerConfig(String groupId,
                                   maxBatchSize,
                                   processingMode,
                                   errorStrategy,
-                                  checkpointIntervalMs,
+                                  timeSpan(checkpointIntervalMs).millis(),
                                   maxRetries,
                                   deadLetterStream,
-                                  ReadPreference.LEADER);
+                                  ReadPreference.GOVERNOR);
     }
 
     public static ConsumerConfig consumerConfig(String groupId,
@@ -81,7 +87,7 @@ public record ConsumerConfig(String groupId,
                                   maxBatchSize,
                                   processingMode,
                                   errorStrategy,
-                                  checkpointIntervalMs,
+                                  timeSpan(checkpointIntervalMs).millis(),
                                   maxRetries,
                                   deadLetterStream,
                                   readPreference);

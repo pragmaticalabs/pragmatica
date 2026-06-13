@@ -18,6 +18,7 @@ package org.pragmatica.consensus.net.quic;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.messaging.StreamType;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -31,41 +32,38 @@ class StreamTypeTest {
         }
 
         @Test
-        void kvStore_hasIndex1() {
-            assertThat(StreamType.KV_STORE.streamIndex()).isEqualTo(1);
+        void kv_hasIndex1() {
+            assertThat(StreamType.KV.streamIndex()).isEqualTo(1);
         }
 
         @Test
-        void httpForward_hasIndex2() {
-            assertThat(StreamType.HTTP_FORWARD.streamIndex()).isEqualTo(2);
+        void metrics_hasIndex2() {
+            assertThat(StreamType.METRICS.streamIndex()).isEqualTo(2);
         }
 
         @Test
-        void dhtRelay_hasIndex3() {
-            assertThat(StreamType.DHT_RELAY.streamIndex()).isEqualTo(3);
-        }
-    }
-
-    @Nested
-    class Lifecycle {
-        @Test
-        void consensus_isLongLived() {
-            assertThat(StreamType.CONSENSUS.longLived()).isTrue();
+        void invoke_hasIndex3() {
+            assertThat(StreamType.INVOKE.streamIndex()).isEqualTo(3);
         }
 
         @Test
-        void kvStore_isLongLived() {
-            assertThat(StreamType.KV_STORE.longLived()).isTrue();
+        void forward_hasIndex4() {
+            assertThat(StreamType.FORWARD.streamIndex()).isEqualTo(4);
         }
 
         @Test
-        void httpForward_isShortLived() {
-            assertThat(StreamType.HTTP_FORWARD.longLived()).isFalse();
+        void dht_hasIndex5() {
+            assertThat(StreamType.DHT.streamIndex()).isEqualTo(5);
         }
 
         @Test
-        void dhtRelay_isShortLived() {
-            assertThat(StreamType.DHT_RELAY.longLived()).isFalse();
+        void control_hasIndex6() {
+            assertThat(StreamType.CONTROL.streamIndex()).isEqualTo(6);
+        }
+
+        @Test
+        void sync_hasIndex7() {
+            assertThat(StreamType.SYNC.streamIndex()).isEqualTo(7);
         }
     }
 
@@ -73,10 +71,14 @@ class StreamTypeTest {
     class FromIndex {
         @Test
         void fromIndex_validIndex_returnsStreamType() {
-            assertThat(StreamType.fromIndex(0).or(StreamType.DHT_RELAY)).isEqualTo(StreamType.CONSENSUS);
-            assertThat(StreamType.fromIndex(1).or(StreamType.DHT_RELAY)).isEqualTo(StreamType.KV_STORE);
-            assertThat(StreamType.fromIndex(2).or(StreamType.DHT_RELAY)).isEqualTo(StreamType.HTTP_FORWARD);
-            assertThat(StreamType.fromIndex(3).or(StreamType.CONSENSUS)).isEqualTo(StreamType.DHT_RELAY);
+            assertThat(StreamType.fromIndex(0).or(StreamType.CONTROL)).isEqualTo(StreamType.CONSENSUS);
+            assertThat(StreamType.fromIndex(1).or(StreamType.CONTROL)).isEqualTo(StreamType.KV);
+            assertThat(StreamType.fromIndex(2).or(StreamType.CONTROL)).isEqualTo(StreamType.METRICS);
+            assertThat(StreamType.fromIndex(3).or(StreamType.CONTROL)).isEqualTo(StreamType.INVOKE);
+            assertThat(StreamType.fromIndex(4).or(StreamType.CONTROL)).isEqualTo(StreamType.FORWARD);
+            assertThat(StreamType.fromIndex(5).or(StreamType.CONTROL)).isEqualTo(StreamType.DHT);
+            assertThat(StreamType.fromIndex(6).or(StreamType.CONSENSUS)).isEqualTo(StreamType.CONTROL);
+            assertThat(StreamType.fromIndex(7).or(StreamType.CONSENSUS)).isEqualTo(StreamType.SYNC);
         }
 
         @Test
@@ -86,7 +88,7 @@ class StreamTypeTest {
 
         @Test
         void fromIndex_outOfRange_returnsEmpty() {
-            assertThat(StreamType.fromIndex(4).isEmpty()).isTrue();
+            assertThat(StreamType.fromIndex(8).isEmpty()).isTrue();
             assertThat(StreamType.fromIndex(100).isEmpty()).isTrue();
         }
     }
