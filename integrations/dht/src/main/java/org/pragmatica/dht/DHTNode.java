@@ -19,6 +19,7 @@ package org.pragmatica.dht;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -70,7 +71,7 @@ public final class DHTNode {
                                   StorageEngine storage,
                                   ConsistentHashRing<NodeId> ring,
                                   DHTConfig config) {
-        var clock = HlcClock.hlcClock(nodeId.id()).unwrap();
+        var clock = HlcClock.hlcClock(nodeId);
         return new DHTNode(nodeId, storage, ring, config, clock);
     }
 
@@ -159,6 +160,7 @@ public final class DHTNode {
     }
 
     /// Handle a get request (for message routing integration).
+    @Contract
     public void handleGetRequest(DHTMessage.GetRequest request,
                                  Consumer<DHTMessage.GetResponse> responseHandler) {
         storage.get(request.key())
@@ -171,6 +173,7 @@ public final class DHTNode {
     }
 
     /// Handle a put request (for message routing integration).
+    @Contract
     public void handlePutRequest(DHTMessage.PutRequest request,
                                  Consumer<DHTMessage.PutResponse> responseHandler) {
         storage.putVersioned(request.key(), request.value(), request.version())
@@ -185,6 +188,7 @@ public final class DHTNode {
     }
 
     /// Handle a remove request (for message routing integration).
+    @Contract
     public void handleRemoveRequest(DHTMessage.RemoveRequest request,
                                     Consumer<DHTMessage.RemoveResponse> responseHandler) {
         storage.remove(request.key())
@@ -197,6 +201,7 @@ public final class DHTNode {
     }
 
     /// Handle an exists request (for message routing integration).
+    @Contract
     public void handleExistsRequest(DHTMessage.ExistsRequest request,
                                     Consumer<DHTMessage.ExistsResponse> responseHandler) {
         storage.exists(request.key())
@@ -209,6 +214,7 @@ public final class DHTNode {
     }
 
     /// Handle a digest request: compute digest for the requested partition range and respond.
+    @Contract
     public void handleDigestRequest(DHTMessage.DigestRequest request,
                                     Consumer<DHTMessage.DigestResponse> responseHandler) {
         var partition = Partition.at(request.partitionStart());
@@ -222,6 +228,7 @@ public final class DHTNode {
     }
 
     /// Handle a migration data request: return all entries for the requested partition range.
+    @Contract
     public void handleMigrationDataRequest(DHTMessage.MigrationDataRequest request,
                                            Consumer<DHTMessage.MigrationDataResponse> responseHandler) {
         var partition = Partition.at(request.partitionStart());
@@ -235,6 +242,7 @@ public final class DHTNode {
     }
 
     /// Apply migration data by merging received entries into local storage using versioned puts.
+    @Contract
     public void applyMigrationData(java.util.List<DHTMessage.KeyValue> entries) {
         entries.forEach(kv -> storage.putVersioned(kv.key(), kv.value(), kv.version()));
     }

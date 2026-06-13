@@ -16,6 +16,7 @@
 
 package org.pragmatica.dht;
 
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 
 /// Error causes for distributed DHT operations.
@@ -26,6 +27,21 @@ public sealed interface DHTError extends Cause {
 
     static DHTError quorumNotReached(int required, int achieved) {
         return new QuorumNotReached(required, achieved);
+    }
+
+    /// Transport-layer refusal observed synchronously when dispatching a per-replica
+    /// request. Carries the target peer id and a short reason ("backpressure",
+    /// "connection dead", "no peer state") so the `QuorumCollector` can record this
+    /// replica as failed immediately, without waiting the per-op timeout.
+    static DHTError peerUnreachable(NodeId peerId, String reason) {
+        return new PeerUnreachable(peerId, reason);
+    }
+
+    record PeerUnreachable(NodeId peerId, String reason) implements DHTError {
+        @Override
+        public String message() {
+            return "Peer " + peerId.id() + " unreachable: " + reason;
+        }
     }
 
     record QuorumNotReached(int required, int achieved) implements DHTError {

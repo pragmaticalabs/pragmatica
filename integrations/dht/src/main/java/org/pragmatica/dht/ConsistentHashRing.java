@@ -16,6 +16,7 @@
 
 package org.pragmatica.dht;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
 import java.nio.charset.StandardCharsets;
@@ -55,6 +56,7 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     }
 
     /// Add a node to the ring.
+    @Contract
     public void addNode(N node) {
         lock.writeLock()
             .lock();
@@ -76,6 +78,7 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     }
 
     /// Remove a node from the ring.
+    @Contract
     public void removeNode(N node) {
         lock.writeLock()
             .lock();

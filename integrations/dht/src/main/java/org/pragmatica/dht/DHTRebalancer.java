@@ -17,7 +17,8 @@
 package org.pragmatica.dht;
 
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.utility.KSUID;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.utility.IdGenerator;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -53,6 +54,7 @@ public final class DHTRebalancer {
     /// Called after a node is removed from the ring.
     /// Scans local storage partition by partition and pushes data to new replica
     /// nodes that need copies to restore the replication factor.
+    @Contract
     public void onNodeRemoved(NodeId removedNode) {
         if (config.isFullReplication()) {
             return;
@@ -103,7 +105,7 @@ public final class DHTRebalancer {
     }
 
     private void sendMigrationData(NodeId target, int partitionIndex, List<DHTMessage.KeyValue> entries) {
-        var correlationId = KSUID.ksuid().toString();
+        var correlationId = IdGenerator.generate();
 
         log.debug("Pushing {} entries for partition {} to {}", entries.size(), partitionIndex, target.id());
 
