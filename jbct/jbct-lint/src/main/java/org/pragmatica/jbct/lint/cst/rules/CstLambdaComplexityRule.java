@@ -3,8 +3,7 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
 
 import java.util.stream.Stream;
 
@@ -27,21 +26,17 @@ public class CstLambdaComplexityRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         return findAllLambdas(root).stream()
-                      .filter(lambda -> hasComplexLogic(lambda, source))
-                      .map(lambda -> createDiagnostic(lambda, source, ctx));
+                      .filter(this::hasComplexLogic)
+                      .map(lambda -> createDiagnostic(lambda, ctx));
     }
 
-    private boolean hasComplexLogic(CstNode lambda, String source) {
-        var lambdaText = text(lambda, source);
+    private boolean hasComplexLogic(Cursor lambda) {
+        var lambdaText = text(lambda);
         return hasControlFlow(lambdaText) || hasMultipleStatements(lambdaText);
     }
 
@@ -87,8 +82,8 @@ public class CstLambdaComplexityRule implements CstLintRule {
         return count;
     }
 
-    private Diagnostic createDiagnostic(CstNode lambda, String source, LintContext ctx) {
-        var lambdaText = text(lambda, source);
+    private Diagnostic createDiagnostic(Cursor lambda, LintContext ctx) {
+        var lambdaText = text(lambda);
         var message = hasControlFlow(lambdaText)
                       ? "Lambda contains control flow - extract to a method"
                       : "Lambda contains multiple statements - extract to a method";

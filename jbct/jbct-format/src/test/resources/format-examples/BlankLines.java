@@ -10,7 +10,6 @@ public class BlankLines {
     private final boolean active;
 
     private static final int MAX_SIZE = 100;
-
     private static final String DEFAULT = "";
 
     public BlankLines(String name, int age, boolean active) {
@@ -33,24 +32,31 @@ public class BlankLines {
 
     public Result<String> methodWithBody() {
         var result = process(name);
+
         return Result.success(result);
     }
 
     public Result<String> anotherMethod() {
         var value = name.trim();
         var upper = value.toUpperCase();
+
         return Result.success(upper);
     }
 
     public Result<String> methodWithSections() {
-        if (name == null) {return Result.failure(Causes.cause("Inline error example"));}
+        if (name == null) {
+            return Result.failure(Causes.cause("Inline error example"));
+        }
+
         var trimmed = name.trim();
         var upper = trimmed.toUpperCase();
+
         return Result.success(upper);
     }
 
     public String simpleMethod() {
         var result = name.trim();
+
         return result.toUpperCase();
     }
 
@@ -76,7 +82,7 @@ public class BlankLines {
         THREE
     }
 
-    record NestedRecord(String value){}
+    record NestedRecord(String value) {}
 
     private String process(String input) {
         return input.trim();

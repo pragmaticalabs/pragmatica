@@ -1,14 +1,13 @@
 package org.pragmatica.jbct.format.flow;
 
+import org.pragmatica.jbct.format.AlignmentContext;
 import org.pragmatica.jbct.format.FormatterConfig;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
-import org.pragmatica.jbct.parser.Java25Parser.Trivia;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 import org.pragmatica.lang.Option;
+import org.pragmatica.peg.v6.token.TokenArray;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
@@ -24,7 +23,7 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 ///
 /// This printer never inspects trivia (comments, whitespace) from the original source
 /// for layout decisions. All formatting decisions are based on:
-/// - The syntactic structure (RuleId dispatch)
+/// - The syntactic structure (RuleKind dispatch)
 /// - Width measurement (does it fit on the current line?)
 /// - Alignment rules (chains, arguments, parameters)
 ///
@@ -38,12 +37,17 @@ final class FlowPrinter {
     // ===== Configuration and state =====
     private final FormatterConfig config;
     private final String source;
-    private final StringBuilder output;
+    private StringBuilder output;
     private int currentColumn;
     private int indentLevel;
     private char lastChar;
     private char prevChar;
     private String lastWord = "";
+    /// >0 while emitting tokens inside a TYPE_ARGS / TYPE_PARAMS node. Disambiguates a generic
+    /// '<'/'>' (glued punctuation) from a relational/shift operator '<'/'>' (spaced) — the parser
+    /// already separates them into distinct rules, so we key spacing off that rather than guessing
+    /// from characters (which cannot tell `static <T>` from `a < b`).
+    private int typeContextDepth = 0;
 
     // Measurement mode
     private boolean measuringMode;
@@ -54,10 +58,15 @@ final class FlowPrinter {
     private final Map<Integer, Integer> tokenLineMap = new HashMap<>();
     private int currentLine;
 
+    // Track trivia tokens we've already emitted as comments (prevents double-emit when
+    // an outer node and its first CST child share leading trivia under v6 attribution).
+    private final Set<Integer> emittedTriviaTokens = new HashSet<>();
+
     // Alignment tracking
-    private final Deque<Integer> lambdaAlignStack = new ArrayDeque<>();
-    private int chainColumn = -1;
-    private boolean inBreakingChain;
+    private final AlignmentContext alignment = new AlignmentContext();
+    // When >= 0, emitLeadingComments uses printAlignedTo(forcedIndentCol) instead of printIndent().
+    // Set by printAlignedBlockStatements so comments in aligned lambda bodies land at bodyCol.
+    private int forcedIndentCol = -1;
 
     // Pattern for detecting method calls in chains
     private static final Pattern METHOD_CALL_PATTERN = Pattern.compile("\\.[a-zA-Z_][a-zA-Z0-9_]*\\s*\\(");
@@ -83,7 +92,6 @@ final class FlowPrinter {
         this.measureBuffer = 0;
         this.tokenIndex = 0;
         this.currentLine = 0;
-        this.inBreakingChain = false;
     }
 
     /// Result of flow printing: formatted text and token-to-line mapping.
@@ -93,7 +101,7 @@ final class FlowPrinter {
     record OperandInfo(boolean startsWithString, int width) {}
 
     /// Print the CST root and return formatted text with token mapping.
-    FlowResult print(CstNode root) {
+    FlowResult print(Cursor root) {
         printNode(root);
         var result = output.toString()
             .lines()
@@ -105,12 +113,13 @@ final class FlowPrinter {
 
     // ===== Measurement =====
 
-    private int measureWidth(CstNode node) {
+    private int measureWidth(Cursor node) {
         boolean wasMeasuring = measuringMode;
         int oldBuffer = measureBuffer;
         char oldLastChar = lastChar;
         char oldPrevChar = prevChar;
         String oldLastWord = lastWord;
+        int oldTypeContextDepth = typeContextDepth;
         measuringMode = true;
         measureBuffer = 0;
         printNode(node);
@@ -120,70 +129,333 @@ final class FlowPrinter {
         lastChar = oldLastChar;
         prevChar = oldPrevChar;
         lastWord = oldLastWord;
+        typeContextDepth = oldTypeContextDepth;
         return width;
     }
 
-    private boolean fitsOnLine(CstNode node) {
+    private boolean fitsOnLine(Cursor node) {
         return currentColumn + measureWidth(node) <= config.maxLineLength();
+    }
+
+    /// Complete snapshot of all mutable render state, captured before a speculative trial
+    /// render (see `inlineBlockFits`) and restored afterwards. Capturing EVERYTHING — the
+    /// scalar cursor state, the two mutable collections (defensively copied), AND the
+    /// alignment context — guarantees the trial cannot leak state even if `printNode`
+    /// follows an unbalanced force-break/early-return path inside a scope guard.
+    private record SavedState(StringBuilder output,
+                              int currentColumn,
+                              int indentLevel,
+                              char lastChar,
+                              char prevChar,
+                              String lastWord,
+                              int typeContextDepth,
+                              boolean measuringMode,
+                              int measureBuffer,
+                              int tokenIndex,
+                              int currentLine,
+                              int forcedIndentCol,
+                              Map<Integer, Integer> tokenLineMap,
+                              Set<Integer> emittedTriviaTokens,
+                              AlignmentContext.Snapshot alignment) {}
+
+    private SavedState saveState() {
+        return new SavedState(output,
+                              currentColumn,
+                              indentLevel,
+                              lastChar,
+                              prevChar,
+                              lastWord,
+                              typeContextDepth,
+                              measuringMode,
+                              measureBuffer,
+                              tokenIndex,
+                              currentLine,
+                              forcedIndentCol,
+                              new HashMap<>(tokenLineMap),
+                              new HashSet<>(emittedTriviaTokens),
+                              alignment.snapshot());
+    }
+
+    private void restoreState(SavedState saved) {
+        output = saved.output();
+        currentColumn = saved.currentColumn();
+        indentLevel = saved.indentLevel();
+        lastChar = saved.lastChar();
+        prevChar = saved.prevChar();
+        lastWord = saved.lastWord();
+        typeContextDepth = saved.typeContextDepth();
+        measuringMode = saved.measuringMode();
+        measureBuffer = saved.measureBuffer();
+        tokenIndex = saved.tokenIndex();
+        currentLine = saved.currentLine();
+        forcedIndentCol = saved.forcedIndentCol();
+        tokenLineMap.clear();
+        tokenLineMap.putAll(saved.tokenLineMap());
+        emittedTriviaTokens.clear();
+        emittedTriviaTokens.addAll(saved.emittedTriviaTokens());
+        alignment.restore(saved.alignment());
     }
 
     // ===== Node dispatch =====
 
-    private void printNode(CstNode node) {
-        // Emit leading comments inline (but not during measurement)
+    private void printNode(Cursor node) {
+        // Emit leading comments inline (but not during measurement).
         if (!measuringMode) {
             emitLeadingComments(node);
         }
         switch (node) {
-            case CstNode.Terminal t -> emitToken(t.text());
-            case CstNode.Token tok -> emitToken(tok.text());
-            case CstNode.NonTerminal nt -> printNonTerminal(nt);
-            case CstNode.Error err -> emitToken(err.skippedText());
+            case Cursor.Leaf leaf -> emitLeafTokens(leaf);
+            case Cursor.Branch br -> printBranch(br);
+            case Cursor.ErrorNode err -> emitToken(err.skippedText().toString());
         }
     }
 
-    private void printNonTerminal(CstNode.NonTerminal nt) {
-        switch (nt.rule()) {
-            case RuleId.CompilationUnit _ -> printOrdinaryUnit(nt);
-            case RuleId.OrdinaryUnit _ -> printOrdinaryUnit(nt);
-            case RuleId.ImportDecl _ -> printImportDecl(nt);
-            case RuleId.EnumBody _ -> printEnumBody(nt);
-            case RuleId.RecordBody _ -> printRecordBody(nt);
-            case RuleId.Member _ -> printMember(nt);
-            case RuleId.FieldDecl _ -> printFieldDecl(nt);
-            case RuleId.ClassBody _ -> printClassBody(nt);
-            case RuleId.AnnotationBody _ -> printAnnotationBody(nt);
-            case RuleId.Block _ -> printBlock(nt);
-            case RuleId.SwitchBlock _ -> printSwitchBlock(nt);
-            case RuleId.Unary _ -> printUnary(nt);
-            case RuleId.Postfix _ -> printPostfix(nt);
-            case RuleId.PostOp _ -> printPostOp(nt);
-            case RuleId.Args _ -> printArgs(nt);
-            case RuleId.Lambda _ -> printLambda(nt);
-            case RuleId.LambdaParam _ -> printLambdaParam(nt);
-            case RuleId.Param _ -> printParam(nt);
-            case RuleId.Params _ -> printParams(nt);
-            case RuleId.Primary _ -> printPrimary(nt);
-            case RuleId.RecordDecl _ -> printRecordDecl(nt);
-            case RuleId.RecordComponents _ -> printRecordComponents(nt);
-            case RuleId.ResourceSpec _ -> printResourceSpec(nt);
-            case RuleId.Ternary _ -> printTernary(nt);
-            case RuleId.Additive _ -> printAdditive(nt);
-            case RuleId.TypeArgs _ -> printTypeArgs(nt);
-            case RuleId.TypeParams _ -> printTypeParams(nt);
-            case RuleId.MethodDecl _ -> printMethodDecl(nt);
-            default -> printChildren(nt);
+    /// Emit `node`'s own-line leading comments (if any) at the current indent level, then its
+    /// content via the trivia-free `printNodeContent` path. The CALLER MUST be at column 0 (have
+    /// just emitted a `newline()`) and MUST NOT pre-indent: when the node carries leading comments
+    /// `emitLeadingComments` owns the indentation of both the comment lines and the following
+    /// content — pre-indenting would leave a stripped spaces-only line (a spurious blank) ahead of
+    /// the comment; when it does not, we indent here. Custom printers that place a child on its own
+    /// line (enum-body members/constants, switch rules) route through this so a comment claimed as
+    /// the child's leading trivia is not silently deleted — `printNodeContent` skips trivia by
+    /// contract (bug report S1–S4). Output is byte-identical for comment-free nodes.
+    private void printOwnLineChildContent(Cursor node) {
+        if (!measuringMode && hasUnEmittedLeadingComment(node)) {
+            emitLeadingComments(node);
+        } else {
+            printIndent();
         }
+        printNodeContent(node);
+    }
+
+    /// As `printOwnLineChildContent`, but indents to an explicit column via `printAlignedTo` rather
+    /// than the indent level — for aligned list layouts (broken record components). Caller must be
+    /// at column 0.
+    private void printOwnLineChildContentAligned(Cursor node, int col) {
+        if (!measuringMode && hasUnEmittedLeadingComment(node)) {
+            int savedForcedIndentCol = forcedIndentCol;
+            forcedIndentCol = col;
+            emitLeadingComments(node);
+            forcedIndentCol = savedForcedIndentCol;
+        } else {
+            printAlignedTo(col);
+        }
+        printNodeContent(node);
+    }
+
+    /// Emit a Leaf node's tokens by walking the TokenArray range (skipping trivia).
+    /// Using `leaf.text()` instead would return the source slice covering trailing trivia,
+    /// causing whitespace bleed into the output.
+    private void emitLeafTokens(Cursor.Leaf leaf) {
+        var tokens = leaf.cst().tokens();
+        // Position of the last `}` token in this leaf (or -1). Orphan line comments are emitted
+        // ONLY when they sit BEFORE a `}` within the leaf — the bodyless `{ // note }` empty-body
+        // case, where the comment is trivia on the bare `}` leaf and no node's leadingTrivia owns
+        // it. A comment AFTER the `}` is the leading trivia of the FOLLOWING declaration and is
+        // emitted by emitLeadingComments; re-emitting it here would re-place it (idempotency break).
+        int lastBrace = -1;
+        for (int t = leaf.firstTokenIdx(); t <= leaf.lastTokenIdx(); t++) {
+            if (!tokens.isTrivia(t) && "}".contentEquals(tokens.textAt(t))) {
+                lastBrace = t;
+            }
+        }
+        for (int t = leaf.firstTokenIdx(); t <= leaf.lastTokenIdx(); t++) {
+            if (!tokens.isTrivia(t)) {
+                emitToken(tokens.textAt(t).toString());
+                continue;
+            }
+            int kind = tokens.kindAt(t);
+            boolean isLine = kind == 1 || kind == 3;   // LINE_COMMENT / DOC_LINE_COMMENT
+            boolean isBlock = kind == 2 || kind == 4;  // BLOCK_COMMENT / DOC_BLOCK_COMMENT
+            if (measuringMode || (!isLine && !isBlock) || t >= lastBrace || emittedTriviaTokens.contains(t)) {
+                continue;
+            }
+            // Orphan comment enclosed before a `}` in this bare-leaf body — emit so it is not
+            // silently deleted (bug B2 / report mechanism C). A single-line block comment stays
+            // inline (`{ /* note */ }`); line comments and multi-line block comments go own-line.
+            var text = tokens.textAt(t).toString().stripTrailing();
+            boolean sameLine = precedingContentOnSameLine(tokens.startAt(t)) && currentColumn > 0;
+            if (isBlock && sameLine && text.indexOf('\n') < 0) {
+                emit(" " + text + " ");
+            } else if (isLine && sameLine) {
+                emit("  " + text);
+            } else {
+                if (currentColumn > 0) {
+                    newline();
+                }
+                printIndent();
+                emit(text);
+                newline();
+                printIndent();
+            }
+            emittedTriviaTokens.add(t);
+        }
+    }
+
+    private void printBranch(Cursor.Branch br) {
+        switch (br.kind()) {
+            case COMPILATION_UNIT -> walkTokens(br);
+            case ORDINARY_UNIT -> printOrdinaryUnit(br);
+            case IMPORT_DECL -> printImportDecl(br);
+            case ENUM_BODY -> printEnumBody(br);
+            case RECORD_BODY -> printRecordBody(br);
+            case MEMBER -> printMember(br);
+            case FIELD_DECL -> printFieldDecl(br);
+            case CLASS_BODY -> printClassBody(br);
+            case ANNOTATION_BODY -> printAnnotationBody(br);
+            case BLOCK -> printBlock(br);
+            case STMT -> printStmt(br);
+            case SWITCH_BLOCK -> printSwitchBlock(br);
+            case UNARY -> printUnary(br);
+            case POSTFIX -> printPostfix(br);
+            case POST_OP -> printPostOp(br);
+            case ARGS -> printArgs(br);
+            case LAMBDA -> printLambda(br);
+            case LAMBDA_PARAM -> printLambdaParam(br);
+            case PARAM -> printParam(br);
+            case PARAMS -> printParams(br);
+            case PRIMARY -> printPrimary(br);
+            case RECORD_DECL -> printRecordDecl(br);
+            case RECORD_COMPONENTS -> printRecordComponents(br);
+            case RESOURCE_SPEC -> printResourceSpec(br);
+            case TERNARY -> printTernary(br);
+            case ADDITIVE -> printAdditive(br);
+            case LOG_AND -> printLogAnd(br);
+            case TYPE_ARGS -> printTypeArgs(br);
+            case TYPE_PARAMS -> printTypeParams(br);
+            case METHOD_DECL -> printMethodDecl(br);
+            default -> walkTokens(br);
+        }
+    }
+
+    // ===== Token-walking core =====
+
+    /// Walk the tokens covered by the branch's range. At each step, if a child branch
+    /// begins at the current token index, recurse into that child; otherwise emit the
+    /// token text (skipping trivia). This is the default rendering for any branch that
+    /// doesn't override emission — it mirrors the legacy "walk children" pattern, but
+    /// under v6 keyword/punctuation tokens are not CST children, so we drive iteration
+    /// via the TokenArray.
+    private void walkTokens(Cursor.Branch parent) {
+        var kids = parent.children().toList();
+        walkTokenRange(parent, kids, parent.firstTokenIdx(), parent.lastTokenIdx());
+    }
+
+    private void walkTokenRange(Cursor parent, List<Cursor> kids, int start, int end) {
+        var tokens = parent.cst().tokens();
+        boolean breakAfterAnnotation = parent instanceof Cursor.Branch pb
+            && annotationsBreakOnNewlineInParent(pb.kind());
+        boolean spaceAfterAnnotation = parent instanceof Cursor.Branch pb2
+            && annotationsForceSpaceAfterInParent(pb2.kind());
+        int kidIdx = 0;
+        int t = start;
+        while (t <= end) {
+            if (kidIdx < kids.size() && kids.get(kidIdx).firstTokenIdx() == t) {
+                var kid = kids.get(kidIdx);
+                printNode(kid);
+                t = kid.lastTokenIdx() + 1;
+                kidIdx++;
+                // Rescue self-closing block comments inside the child's span (safe: cannot swallow).
+                flushInSpanBlockComments(kid);
+                if (breakAfterAnnotation && kid.kindIs(RuleKind.ANNOTATION)) {
+                    // Flush a same-line trailing comment after the annotation (e.g. `@Ann // note`)
+                    // BEFORE the break newline — safe here precisely because a newline immediately
+                    // follows, so the comment cannot swallow trailing tokens (bug report mechanism
+                    // B, annotation-trailing). The parser may attach it INSIDE the annotation span
+                    // (flushInSpanTrailingComment) or as a gap token after it (the while-scan).
+                    flushInSpanTrailingComment(kid);
+                    while (t <= end && tokens.isTrivia(t)) {
+                        int kind = tokens.kindAt(t);
+                        if (kind >= 1 && kind <= 4 && !emitTrailingOrphanComment(tokens, t)) {
+                            break;
+                        }
+                        t++;
+                    }
+                    newline();
+                    printIndent();
+                } else if (spaceAfterAnnotation && kid.kindIs(RuleKind.ANNOTATION)) {
+                    emit(" ");
+                }
+            } else {
+                if (!tokens.isTrivia(t)) {
+                    emitToken(tokens.textAt(t).toString());
+                } else {
+                    emitInlineBlockComment(tokens, t);
+                }
+                t++;
+            }
+        }
+    }
+
+    /// True if ANNOTATION children of a parent of the given kind should be followed by a
+    /// space rather than a newline. Applies to type-use positions (DIMS, ANNOTATED_TYPE_NAME)
+    /// where the annotation is inline but separated from the next token by a space.
+    private static boolean annotationsForceSpaceAfterInParent(RuleKind kind) {
+        return switch (kind) {
+            case DIMS, ANNOTATED_TYPE_NAME -> true;
+            default -> false;
+        };
+    }
+
+    /// True if ANNOTATION children of a parent of the given kind should each be followed
+    /// by newline + indent. Applies to declaration-scope parents (type decls, class members,
+    /// record members, enum constants, local var/type decls, annotation members).
+    private static boolean annotationsBreakOnNewlineInParent(RuleKind kind) {
+        return switch (kind) {
+            case TYPE_DECL,
+                 CLASS_MEMBER,
+                 ANNOTATION_MEMBER,
+                 ANNOTATION_ELEM_DECL,
+                 RECORD_MEMBER,
+                 ENUM_CONST,
+                 LOCAL_VAR,
+                 LOCAL_VAR_NO_SEMI,
+                 LOCAL_TYPE_DECL -> true;
+            default -> false;
+        };
+    }
+
+    /// Walk tokens of a branch, but route children and tokens through callback hooks.
+    /// Used by special handlers that need to know which terminal/child they're emitting.
+    private void walkTokensWith(Cursor.Branch parent, TokenWalker walker) {
+        var tokens = parent.cst().tokens();
+        var kids = parent.children().toList();
+        int kidIdx = 0;
+        int t = parent.firstTokenIdx();
+        int end = parent.lastTokenIdx();
+        while (t <= end) {
+            if (kidIdx < kids.size() && kids.get(kidIdx).firstTokenIdx() == t) {
+                var kid = kids.get(kidIdx);
+                walker.onChild(kid);
+                t = kid.lastTokenIdx() + 1;
+                kidIdx++;
+                // Rescue self-closing block comments inside the child's span (safe: cannot swallow).
+                flushInSpanBlockComments(kid);
+            } else {
+                if (!tokens.isTrivia(t)) {
+                    walker.onToken(tokens.kindAt(t), tokens.textAt(t).toString());
+                } else {
+                    emitInlineBlockComment(tokens, t);
+                }
+                t++;
+            }
+        }
+    }
+
+    @FunctionalInterface
+    private interface TokenWalker {
+        void onChild(Cursor child);
+        default void onToken(int kind, String text) {}
     }
 
     // ===== Compilation unit and imports =====
 
-    private void printOrdinaryUnit(CstNode.NonTerminal ou) {
-        var hasPackage = childByRule(ou, RuleId.PackageDecl.class)
+    private void printOrdinaryUnit(Cursor.Branch ou) {
+        var hasPackage = childByRule(ou, RuleKind.PACKAGE_DECL)
             .onPresent(this::printNode)
             .isPresent();
 
-        var imports = childrenByRule(ou, RuleId.ImportDecl.class);
+        var imports = childrenByRule(ou, RuleKind.IMPORT_DECL);
         var hasImports = !imports.isEmpty();
         if (hasImports) {
             newline();
@@ -191,11 +463,11 @@ final class FlowPrinter {
             printOrganizedImports(imports);
         }
 
-        var types = childrenByRule(ou, RuleId.TypeDecl.class);
+        var types = childrenByRule(ou, RuleKind.TYPE_DECL);
         boolean first = true;
         for (var type : types) {
             if (first) {
-                if (hasPackage || hasImports) {
+                if (hasImports || hasPackage) {
                     newline();
                     newline();
                 }
@@ -208,116 +480,166 @@ final class FlowPrinter {
         }
     }
 
-    private void printOrganizedImports(List<CstNode> imports) {
+    private void printOrganizedImports(List<Cursor> imports) {
         var pragmatica = filterImports(imports, "org.pragmatica", false);
         var javaImports = filterJavaImports(imports);
         var otherImports = filterOtherImports(imports);
         var staticImports = filterImports(imports, "static", true);
 
+        // De-duplicate against the rendered statement text, not the CST span. Some import
+        // nodes absorb the following type's doc-comment as trailing trivia (e.g. a `java.*`
+        // import whose doc mentions `org.pragmatica`); without dedup such an import is
+        // emitted in two groups and re-formatting never reaches a fixpoint.
+        var emitted = new HashSet<String>();
         boolean needsBlank = false;
-        needsBlank = printImportGroup(pragmatica, needsBlank);
-        needsBlank = printImportGroup(javaImports, needsBlank);
-        needsBlank = printImportGroup(otherImports, needsBlank);
-        printImportGroup(staticImports, needsBlank);
+        needsBlank = printImportGroup(pragmatica, needsBlank, emitted);
+        needsBlank = printImportGroup(javaImports, needsBlank, emitted);
+        needsBlank = printImportGroup(otherImports, needsBlank, emitted);
+        printImportGroup(staticImports, needsBlank, emitted);
     }
 
-    private List<CstNode> filterImports(List<CstNode> imports, String contains, boolean isStatic) {
+    private List<Cursor> filterImports(List<Cursor> imports, String contains, boolean isStatic) {
         return imports.stream()
             .filter(i -> matchesImportFilter(i, contains, isStatic))
             .toList();
     }
 
-    private boolean matchesImportFilter(CstNode i, String contains, boolean isStatic) {
-        var t = text(i, source);
+    private boolean matchesImportFilter(Cursor i, String contains, boolean isStatic) {
+        var t = importStatementText(i);
         return t.contains(contains) && (isStatic || !t.contains("static"));
     }
 
-    private List<CstNode> filterJavaImports(List<CstNode> imports) {
+    private List<Cursor> filterJavaImports(List<Cursor> imports) {
         return imports.stream()
             .filter(this::isJavaImport)
             .toList();
     }
 
-    private boolean isJavaImport(CstNode i) {
-        var t = text(i, source);
+    private boolean isJavaImport(Cursor i) {
+        var t = importStatementText(i);
         return (t.contains("java.") || t.contains("javax.")) && !t.contains("static");
     }
 
-    private List<CstNode> filterOtherImports(List<CstNode> imports) {
+    private List<Cursor> filterOtherImports(List<Cursor> imports) {
         return imports.stream()
             .filter(this::isOtherImport)
             .toList();
     }
 
-    private boolean isOtherImport(CstNode i) {
-        var t = text(i, source);
+    private boolean isOtherImport(Cursor i) {
+        var t = importStatementText(i);
         return !t.contains("org.pragmatica") && !t.contains("java.") && !t.contains("javax.") && !t.contains("static");
     }
 
-    private boolean printImportGroup(List<CstNode> group, boolean needsBlank) {
-        if (group.isEmpty()) {
+    private boolean printImportGroup(List<Cursor> group, boolean needsBlank, Set<String> emitted) {
+        var fresh = group.stream()
+            .filter(imp -> emitted.add(importStatementText(imp)))
+            .toList();
+        if (fresh.isEmpty()) {
             return needsBlank;
         }
         if (needsBlank) {
             newline();
         }
-        for (var imp : group) {
-            printImportDecl((CstNode.NonTerminal) imp);
+        for (var imp : fresh) {
+            printImportDecl(imp);
         }
         return true;
     }
 
-    private void printImportDecl(CstNode.NonTerminal imp) {
-        var importText = text(imp, source).trim();
-        emit(importText);
+    private void printImportDecl(Cursor imp) {
+        emit(importStatementText(imp));
         newline();
+    }
+
+    /// Render an import as just its statement text (`import a.b.C;`), built from the
+    /// node's non-trivia tokens. Trailing comments (`/// ...` after `;`) are excluded —
+    /// they belong to whatever follows. This is the single source of truth for both
+    /// classifying imports into groups and de-duplicating them.
+    private String importStatementText(Cursor imp) {
+        var tokens = imp.cst().tokens();
+        var sb = new StringBuilder();
+        for (int t = imp.firstTokenIdx(); t <= imp.lastTokenIdx(); t++) {
+            if (!tokens.isTrivia(t)) {
+                if (sb.length() > 0) {
+                    sb.append(' ');
+                }
+                sb.append(tokens.textAt(t));
+            }
+        }
+        // Drop the space before `.` and `;` and before `*` after `.`.
+        return sb.toString().replaceAll(" ([.;*])", "$1").replaceAll("([.]) ", "$1");
     }
 
     // ===== Type bodies =====
 
-    private void printClassBody(CstNode.NonTerminal classBody) {
-        printBracedBody(children(classBody), RuleId.ClassMember.class);
+    private void printClassBody(Cursor.Branch classBody) {
+        printBracedBody(classBody, RuleKind.CLASS_MEMBER);
     }
 
-    private void printAnnotationBody(CstNode.NonTerminal annotBody) {
-        printBracedBody(children(annotBody), RuleId.AnnotationMember.class);
+    private void printAnnotationBody(Cursor.Branch annotBody) {
+        printBracedBody(annotBody, RuleKind.ANNOTATION_MEMBER);
     }
 
-    private void printRecordBody(CstNode.NonTerminal recordBody) {
-        var allChildren = children(recordBody);
-        boolean hasContent = allChildren.stream()
-            .anyMatch(c -> !isTerminalWithText(c, "{") && !isTerminalWithText(c, "}"));
-        if (!hasContent) {
+    private void printRecordBody(Cursor.Branch recordBody) {
+        var members = childrenByRule(recordBody, RuleKind.RECORD_MEMBER);
+        var tokens = recordBody.cst().tokens();
+        // Detect empty body by token-content: between `{` and `}` of the recordBody range,
+        // are all tokens trivia? (firstTokenIdx is `{`, lastTokenIdx may include trailing
+        // trivia past `}`.) Walk inclusive non-trivia tokens; if only `{` and `}` are
+        // present, the body is empty.
+        int firstTok = recordBody.firstTokenIdx();
+        int lastTok = recordBody.lastTokenIdx();
+        int nonTriviaCount = 0;
+        for (int t = firstTok; t <= lastTok; t++) {
+            if (!tokens.isTrivia(t)) {
+                nonTriviaCount++;
+                if (nonTriviaCount > 2) {
+                    break;
+                }
+            }
+        }
+        boolean isEmpty = nonTriviaCount <= 2 && members.isEmpty();
+        if (nonTriviaCount <= 2) {
             emit("{}");
         } else {
-            printBracedBody(allChildren, RuleId.RecordMember.class);
+            printBracedBody(recordBody, RuleKind.RECORD_MEMBER);
         }
     }
 
-    private void printBracedBody(List<CstNode> children, Class<? extends RuleId> memberRule) {
-        var hasMembers = children.stream().anyMatch(c -> memberRule.isInstance(c.rule()));
+    private void printBracedBody(Cursor.Branch parent, RuleKind memberKind) {
+        var members = childrenByRule(parent, memberKind);
 
-        emitTerminalFrom(children, "{");
+        emitToken("{");
 
-        if (hasMembers) {
+        if (!members.isEmpty()) {
             indentLevel++;
             newline();
+            Option<Cursor> prevMember = Option.none();
             boolean first = true;
-            Option<CstNode> prevMember = Option.none();
-            for (var child : children) {
-                if (memberRule.isInstance(child.rule())) {
-                    if (!first && BlankLineRules.needsBlankLineBetween(child, prevMember, source)) {
-                        newline();
-                    }
-                    printIndent();
-                    printNodeContent(child);
+            for (int mi = 0; mi < members.size(); mi++) {
+                var member = members.get(mi);
+                if (!first && BlankLineRules.needsBlankLineBetween(member, prevMember)) {
                     newline();
-                    first = false;
-                    prevMember = Option.some(child);
-                } else if (!isTerminalWithText(child, "{") && !isTerminalWithText(child, "}")) {
-                    printNode(child);
                 }
+                // Skip printIndent when the member has unemitted leading comments — emitLeadingComments
+                // owns its own newline/indent and we'd otherwise emit a stray spaces-only line.
+                if (!hasUnEmittedLeadingComment(member)) {
+                    printIndent();
+                }
+                printNode(member);
+                // Emit trailing line comments from the NEXT member's leading trivia before
+                // the newline, so they stay on the same line as the current member.
+                if (mi + 1 < members.size()) {
+                    emitTrailingCommentsFrom(members.get(mi + 1));
+                }
+                newline();
+                first = false;
+                prevMember = Option.some(member);
             }
+            // Own-line comments dangling after the last member, before the body's `}` (mechanism
+            // E3). Deduped against comments already emitted as members' leading trivia.
+            emitTrailingBodyComments(parent, members.get(members.size() - 1));
             indentLevel--;
             printIndent();
         }
@@ -325,57 +647,84 @@ final class FlowPrinter {
         emitBare("}");
     }
 
-    private void emitTerminalFrom(List<CstNode> children, String text) {
-        for (var child : children) {
-            if (isTerminalWithText(child, text)) {
-                emitToken(text);
-                return;
-            }
-        }
-    }
-
     // ===== Members =====
 
-    private void printMember(CstNode.NonTerminal member) {
-        var kids = children(member);
-        boolean hasRecordComponents = kids.stream()
-            .anyMatch(c -> c.rule() instanceof RuleId.RecordComponents);
-
+    private void printMember(Cursor.Branch member) {
+        boolean hasRecordComponents = hasChildOfRule(member, RuleKind.RECORD_COMPONENTS);
         if (hasRecordComponents) {
             printRecordDecl(member);
             return;
         }
 
-        boolean hasBlock = kids.stream().anyMatch(c -> c.rule() instanceof RuleId.Block);
-        boolean hasParams = kids.stream().anyMatch(c -> c.rule() instanceof RuleId.Params);
+        boolean hasBlock = hasChildOfRule(member, RuleKind.BLOCK);
+        boolean hasParams = hasChildOfRule(member, RuleKind.PARAMS);
 
         if (hasBlock || hasParams) {
             printMethodDeclContent(member);
         } else {
-            // Print children content directly to avoid recursion (Member -> printNodeContent -> printMember)
-            for (var child : kids) {
-                printNodeContent(child);
-            }
+            walkTokens(member);
         }
     }
 
-    private void printFieldDecl(CstNode.NonTerminal field) {
-        for (var child : children(field)) {
-            printNodeContent(child);
+    private void printFieldDecl(Cursor.Branch field) {
+        // Check for array initializer `{elem, ...}` that overflows the line. If found and
+        // it doesn't fit, walk up to the `=` inline then break each element aligned to
+        // the first element's column. Otherwise just walk everything inline.
+        var varInitOpt = findFirst(field, RuleKind.VAR_INIT);
+        if (!measuringMode && varInitOpt.isPresent()) {
+            var varInit = varInitOpt.unwrap();
+            var initText = text(varInit);
+            if (initText.startsWith("{") && !fitsOnLine(field)) {
+                printArrayFieldDecl(field, (Cursor.Branch) varInit);
+                return;
+            }
+        }
+        walkTokens(field);
+    }
+
+    private void printArrayFieldDecl(Cursor.Branch field, Cursor.Branch varInit) {
+        // Emit everything up to and including `=` inline, then break the `{...}` initializer.
+        // Each element is on its own line aligned to the column right after `{`.
+        var tokens = field.cst().tokens();
+        int initStart = varInit.firstTokenIdx();
+        for (int t = field.firstTokenIdx(); t < initStart; t++) {
+            if (!tokens.isTrivia(t)) emitToken(tokens.textAt(t).toString());
+        }
+        final int[] alignCol = {-1};
+        walkTokensWith(varInit, new TokenWalker() {
+            @Override
+            public void onChild(Cursor c) { printNodeContent(c); }
+            @Override
+            public void onToken(int kind, String text) {
+                if ("{".equals(text)) {
+                    emitToken("{");
+                    alignCol[0] = currentColumn; // right after `{`
+                } else if ("}".equals(text)) {
+                    emitToken("}");
+                } else if (",".equals(text)) {
+                    emit(",");
+                    newline();
+                    printAlignedTo(alignCol[0]);
+                } else {
+                    emitToken(text);
+                }
+            }
+        });
+        for (int t = varInit.lastTokenIdx() + 1; t <= field.lastTokenIdx(); t++) {
+            if (!tokens.isTrivia(t)) emitToken(tokens.textAt(t).toString());
         }
     }
 
     // ===== Enum body =====
 
-    private void printEnumBody(CstNode.NonTerminal enumBody) {
-        var children = children(enumBody);
-        var classMembers = childrenByRule(enumBody, RuleId.ClassMember.class);
+    private void printEnumBody(Cursor.Branch enumBody) {
+        var classMembers = childrenByRule(enumBody, RuleKind.CLASS_MEMBER);
 
-        emitTerminalFrom(children, "{");
+        emitToken("{");
         indentLevel++;
         newline();
 
-        childByRule(enumBody, RuleId.EnumConsts.class)
+        childByRule(enumBody, RuleKind.ENUM_CONSTS)
             .onPresent(this::printEnumConstsWithIndent);
 
         if (!classMembers.isEmpty()) {
@@ -384,8 +733,7 @@ final class FlowPrinter {
 
         for (var member : classMembers) {
             newline();
-            printIndent();
-            printNodeContent(member);
+            printOwnLineChildContent(member);
         }
 
         indentLevel--;
@@ -394,57 +742,51 @@ final class FlowPrinter {
         emitBare("}");
     }
 
-    private void printEnumConstsWithIndent(CstNode consts) {
-        printIndent();
-        printEnumConsts((CstNode.NonTerminal) consts);
+    private void printEnumConstsWithIndent(Cursor consts) {
+        // No pre-indent: printOwnLineChildContent (called per constant) owns the indentation so a
+        // constant carrying a leading doc comment isn't preceded by a spurious blank line.
+        printEnumConsts(consts);
     }
 
-    private void printEnumConsts(CstNode.NonTerminal enumConsts) {
-        var childList = children(enumConsts);
-        for (int i = 0; i < childList.size(); i++) {
-            var child = childList.get(i);
-            if (isTerminalWithText(child, ",")) {
-                if (hasEnumConstAfter(childList, i)) {
-                    emit(",");
-                    newline();
-                    printIndent();
-                }
-            } else if (child.rule() instanceof RuleId.EnumConst) {
-                printNodeContent(child);
+    private void printEnumConsts(Cursor enumConsts) {
+        var constNodes = childrenByRule(enumConsts, RuleKind.ENUM_CONST);
+        for (int i = 0; i < constNodes.size(); i++) {
+            if (i > 0) {
+                emit(",");
+                newline();
             }
+            printOwnLineChildContent(constNodes.get(i));
         }
     }
 
-    private boolean hasEnumConstAfter(List<CstNode> childList, int fromIndex) {
-        for (int j = fromIndex + 1; j < childList.size(); j++) {
-            if (childList.get(j).rule() instanceof RuleId.EnumConst) {
-                return true;
+    /// Under v6, `Stmt` body shapes are unified:
+    /// - `Stmt[Block]` for braced bodies → dispatch to printBlock on the Block child
+    /// - `Stmt[<other>]` for unbraced single-statement bodies → walk tokens
+    /// No brace-shape detection needed (per Stage 0 findings).
+    private void printStmt(Cursor.Branch stmt) {
+        var kids = stmt.children().toList();
+        if (kids.size() == 1 && kids.get(0).kindIs(RuleKind.BLOCK) && kids.get(0) instanceof Cursor.Branch block) {
+            printBlock(block);
+        } else if (isReturnOrThrowStmt(stmt)) {
+            try (var scope = alignment.enterTailContext()) {
+                walkTokens(stmt);
             }
+        } else {
+            walkTokens(stmt);
         }
-        return false;
     }
 
     // ===== Block =====
 
-    private void printBlock(CstNode.NonTerminal block) {
-        var children = children(block);
+    private void printBlock(Cursor.Branch block) {
+        boolean useLambdaAlign = alignment.hasLambdaAlign();
+        int lambdaAlignCol = alignment.lambdaColumn();
+        boolean useChainAlign = !useLambdaAlign && alignment.chainColumn() >= 0;
+        int chainAlignCol = alignment.chainColumn();
 
-        boolean useLambdaAlign = !lambdaAlignStack.isEmpty();
-        int lambdaAlignCol = lambdaAlignStack.isEmpty() ? -1 : lambdaAlignStack.peek();
-        boolean useChainAlign = !useLambdaAlign && chainColumn >= 0;
-        int chainAlignCol = chainColumn;
+        emitToken("{");
 
-        // Opening brace
-        for (var child : children) {
-            if (isTerminalWithText(child, "{")) {
-                emitToken("{");
-                break;
-            }
-        }
-
-        var stmts = children.stream()
-            .filter(c -> c.rule() instanceof RuleId.BlockStmt)
-            .toList();
+        var stmts = childrenByRule(block, RuleKind.BLOCK_STMT);
 
         if (!stmts.isEmpty()) {
             newline();
@@ -456,59 +798,432 @@ final class FlowPrinter {
                 printAlignedTo(chainAlignCol);
             } else {
                 indentLevel++;
-                for (var stmt : stmts) {
-                    printIndent();
-                    printNodeContent(stmt);
+                // Blank-line rules, applied uniformly in regular and lambda bodies (only the
+                // base indent differs): R1 blank after a block-shaped stmt; R2 blank after a
+                // local-var-decl run before a non-var stmt; R3 blank before a return/throw. A
+                // single newline() is emitted, so overlapping rules coalesce to one blank.
+                for (int i = 0; i < stmts.size(); i++) {
+                    var stmt = stmts.get(i);
+                    if (i >= 1 && !hasLeadingComment(stmt) && needsBlankBeforeStmt(stmts.get(i - 1), stmt)) {
+                        newline();
+                    }
+                    if (!hasUnEmittedLeadingComment(stmt)) {
+                        printIndent();
+                    }
+                    printNode(stmt);
+                    // Emit trailing line comments from next stmt's leading trivia before newline.
+                    if (i + 1 < stmts.size()) {
+                        emitTrailingCommentsFrom(stmts.get(i + 1));
+                    } else {
+                        // Last stmt: emit trailing comments from the block's closing `}` token range.
+                        emitBlockTrailingComments(block, stmts.get(i));
+                    }
                     newline();
                 }
                 indentLevel--;
                 printIndent();
             }
+        } else {
+            emitEmptyBlockComments(block);
         }
 
-        // Closing brace
-        for (var child : children) {
-            if (isTerminalWithText(child, "}")) {
-                emitBare("}");
-                break;
+        emitBare("}");
+    }
+
+    /// Preserve line comments that are the sole content of an otherwise-empty block — emit each
+    /// on its own indented line so a comment-only body (`{ // note }`) is not collapsed to `{}`
+    /// (bug B2). No-op (leaves `{}`) when the block carries no un-emitted comments.
+    private void emitEmptyBlockComments(Cursor.Branch block) {
+        if (measuringMode) {
+            return;
+        }
+        var tokens = block.cst().tokens();
+        int open = block.firstTokenIdx();
+        int close = block.lastTokenIdx();
+        var comments = new ArrayList<Integer>();
+        boolean needsOwnLines = false; // a line comment or a multi-line block comment forces expansion
+        for (int t = open + 1; t < close; t++) {
+            if (!tokens.isTrivia(t)) {
+                continue;
+            }
+            int kind = tokens.kindAt(t);
+            boolean isLine = kind == 1 || kind == 3;   // LINE_COMMENT / DOC_LINE_COMMENT
+            boolean isBlock = kind == 2 || kind == 4;  // BLOCK_COMMENT / DOC_BLOCK_COMMENT
+            if ((!isLine && !isBlock) || emittedTriviaTokens.contains(t)) {
+                continue;
+            }
+            comments.add(t);
+            if (isLine || tokens.textAt(t).toString().indexOf('\n') >= 0) {
+                needsOwnLines = true;
+            }
+        }
+        if (comments.isEmpty()) {
+            return;
+        }
+        if (!needsOwnLines) {
+            // Only single-line block comments: keep them inline so `{ /* note */ }` stays one line.
+            for (int t : comments) {
+                emit(" " + tokens.textAt(t).toString().stripTrailing());
+                emittedTriviaTokens.add(t);
+            }
+            emit(" ");
+            return;
+        }
+        // A line comment (or multi-line block comment) can't share the `}` line — expand the body.
+        indentLevel++;
+        for (int t : comments) {
+            newline();
+            printIndent();
+            emit(tokens.textAt(t).toString().stripTrailing());
+            emittedTriviaTokens.add(t);
+        }
+        indentLevel--;
+        newline();
+        printIndent();
+    }
+
+    /// Emit trailing line comments that sit in the last stmt's trailing trivia region
+    /// (between the last stmt's last non-trivia token and the block's closing `}`).
+    private void emitBlockTrailingComments(Cursor.Branch block, Cursor lastStmt) {
+        if (measuringMode) return;
+        var tokens = block.cst().tokens();
+        int closingBrace = block.lastTokenIdx();
+        // Find the last non-trivia token of the last stmt to start scanning from.
+        int lastNonTrivia = lastStmt.lastTokenIdx();
+        while (lastNonTrivia > lastStmt.firstTokenIdx() && tokens.isTrivia(lastNonTrivia)) {
+            lastNonTrivia--;
+        }
+        for (int t = lastNonTrivia + 1; t <= closingBrace; t++) {
+            if (!tokens.isTrivia(t)) break;
+            int kind = tokens.kindAt(t);
+            if (kind != 1 && kind != 3) { // LINE_COMMENT or DOC_LINE_COMMENT only
+                continue;
+            }
+            if (emittedTriviaTokens.contains(t)) {
+                continue;
+            }
+            int commentStart = tokens.startAt(t);
+            var text = tokens.textAt(t).toString().stripTrailing();
+            if (precedingContentOnSameLine(commentStart) && currentColumn > 0) {
+                // Trailing comment on the same source line as the preceding stmt.
+                emit("  " + text);
+            } else {
+                // Comment on its OWN line before `}` — emit it on a fresh indented line instead
+                // of dropping it. The `}` is emitted via emitBare, which never runs the
+                // leading-comment path, so without this the comment is lost (bug B2).
+                newline();
+                printIndent();
+                emit(text);
+            }
+            emittedTriviaTokens.add(t);
+        }
+    }
+
+    /// Emit any trailing line comments from `nextNode`'s leading trivia that sit on the
+    /// same source line as the preceding non-trivia content. Marks them emitted so
+    /// `emitLeadingComments` skips them. Call this BEFORE the `newline()` that follows the
+    /// current node, so the trailing comment lands on the right line.
+    private void emitTrailingCommentsFrom(Cursor nextNode) {
+        if (measuringMode) return;
+        var tokens = nextNode.cst().tokens();
+        for (int tokIdx : nextNode.leadingTriviaTokens().toArray()) {
+            if (emittedTriviaTokens.contains(tokIdx)) continue;
+            int kind = tokens.kindAt(tokIdx);
+            if (kind != 1 && kind != 3) continue; // LINE_COMMENT or DOC_LINE_COMMENT only
+            int commentStart = tokens.startAt(tokIdx);
+            if (!precedingContentOnSameLine(commentStart)) break;
+            var text = tokens.textAt(tokIdx).toString().stripTrailing();
+            emit("  " + text);
+            emittedTriviaTokens.add(tokIdx);
+        }
+    }
+
+    /// Returns true if there is non-whitespace content before `sourcePos` on the same source
+    /// line — i.e., this position is a trailing context (not the start of a new line).
+    private boolean precedingContentOnSameLine(int sourcePos) {
+        for (int pos = sourcePos - 1; pos >= 0; pos--) {
+            char ch = source.charAt(pos);
+            if (ch == '\n') return false;
+            if (ch != ' ' && ch != '\t' && ch != '\r') return true;
+        }
+        return false;
+    }
+
+    private boolean hasLeadingComment(Cursor node) {
+        return node.leadingTrivia().anyMatch(t -> t.isLineComment() || t.isBlockComment());
+    }
+
+    /// Emit token `t` as a trailing comment when it is an unclaimed comment sitting at the END of a
+    /// source line (non-whitespace precedes it on the same source line) — e.g. `// note` after an
+    /// annotation, or after the last argument before `)`. Such comments are claimed by no node, so
+    /// the trivia-skipping token walk would otherwise delete them (bug report mechanism B). Returns
+    /// true when it emitted a comment. Own-line comments return false and are left for the
+    /// leading-comment machinery. No-op in measuring mode, for non-comments, for already-emitted
+    /// tokens, and for multi-line block comments (which cannot be inlined as a trailing comment).
+    private boolean emitTrailingOrphanComment(TokenArray tokens, int t) {
+        if (measuringMode || emittedTriviaTokens.contains(t)) {
+            return false;
+        }
+        int kind = tokens.kindAt(t);
+        boolean isLine = kind == 1 || kind == 3;
+        boolean isBlock = kind == 2 || kind == 4;
+        if (!isLine && !isBlock) {
+            return false;
+        }
+        if (currentColumn == 0 || !precedingContentOnSameLine(tokens.startAt(t))) {
+            return false;
+        }
+        var text = tokens.textAt(t).toString().stripTrailing();
+        if (isBlock && text.indexOf('\n') >= 0) {
+            return false;
+        }
+        emit("  " + text);
+        emittedTriviaTokens.add(t);
+        return true;
+    }
+
+    /// Emit token `t` as an inline block comment (`/* note */`) when it is an unclaimed,
+    /// single-line block comment in mid-line position. Block comments are self-closing, so —
+    /// unlike line comments — emitting one inline cannot swallow the tokens that follow it on the
+    /// same line; this is the safe way to preserve `x /* note */ y` comments that the trivia-
+    /// skipping walk would otherwise delete (bug report mechanism E1). No-op for line comments,
+    /// multi-line block comments, start-of-line positions, measuring mode, and already-emitted
+    /// tokens.
+    private void emitInlineBlockComment(TokenArray tokens, int t) {
+        if (measuringMode || emittedTriviaTokens.contains(t) || currentColumn == 0) {
+            return;
+        }
+        int kind = tokens.kindAt(t);
+        if (kind != 2 && kind != 4) {
+            return;
+        }
+        // Only inline a block comment that was a same-line trailing comment in the source. An
+        // own-line standalone block comment (`\n/* note */\n`) belongs to the leading-comment
+        // machinery and must NOT be pulled up onto the previous token's line.
+        if (!precedingContentOnSameLine(tokens.startAt(t))) {
+            return;
+        }
+        var text = tokens.textAt(t).toString().stripTrailing();
+        if (text.indexOf('\n') >= 0) {
+            return;
+        }
+        emit(" " + text);
+        emittedTriviaTokens.add(t);
+    }
+
+    /// Emit any unclaimed single-line block comments living INSIDE `node`'s token span, inline at
+    /// the current position (after the node has rendered). Block comments are self-closing, so this
+    /// cannot corrupt following tokens; it rescues `x /* note */ y` comments that the parser places
+    /// inside a child expression span where the trivia-skipping walk never visits them (bug report
+    /// mechanism E1). No-op for comment-free spans and for comments already emitted by their own
+    /// node's leading-trivia handling (deduped via emittedTriviaTokens).
+    private void flushInSpanBlockComments(Cursor node) {
+        if (measuringMode) {
+            return;
+        }
+        var tokens = node.cst().tokens();
+        for (int t = node.firstTokenIdx(); t <= node.lastTokenIdx(); t++) {
+            if (tokens.isTrivia(t)) {
+                emitInlineBlockComment(tokens, t);
             }
         }
     }
 
-    private void printAlignedBlockStatements(List<CstNode> stmts, int alignCol) {
-        int bodyCol = alignCol + config.indentSize();
-        int savedChainCol = chainColumn;
-        boolean savedBreaking = inBreakingChain;
-        lambdaAlignStack.push(bodyCol);
-        try {
-            for (var stmt : stmts) {
-                printAlignedTo(bodyCol);
-                printNodeContent(stmt);
+    /// Emit same-line trailing comments that live INSIDE `node`'s own token span (e.g. the comment
+    /// in `arg // note` trailing the last argument before `)`, which the parser places inside the
+    /// argument expression rather than after it). Returns true if a LINE comment was emitted — the
+    /// caller must then break the following delimiter (`,`/`)`) onto a new line so the line comment
+    /// does not swallow it. No-op for comment-free spans.
+    private boolean flushInSpanTrailingComment(Cursor node) {
+        var tokens = node.cst().tokens();
+        boolean lineEmitted = false;
+        for (int t = node.firstTokenIdx(); t <= node.lastTokenIdx(); t++) {
+            if (!tokens.isTrivia(t)) {
+                continue;
+            }
+            int kind = tokens.kindAt(t);
+            boolean wasLine = kind == 1 || kind == 3;
+            if (emitTrailingOrphanComment(tokens, t) && wasLine) {
+                lineEmitted = true;
+            }
+        }
+        return lineEmitted;
+    }
+
+    /// Emit unclaimed own-line comments dangling between the last member and the body's closing
+    /// `}` — i.e. comments that trail the final member of a class/interface/annotation body (bug
+    /// report mechanism E3). Boundaries are computed from the actual tokens, NOT `lastTokenIdx()`,
+    /// which includes trailing trivia attributed PAST the brace (e.g. the next sibling's leading
+    /// comment) and would otherwise both over-reach (pulling a sibling's comment inside this body)
+    /// and under-reach (skipping genuine tail comments absorbed into the member's trailing span).
+    private void emitTrailingBodyComments(Cursor.Branch parent, Cursor lastMember) {
+        if (measuringMode) {
+            return;
+        }
+        var tokens = parent.cst().tokens();
+        // First token after the last member's last NON-trivia token.
+        int afterToken = lastMember.lastTokenIdx();
+        while (afterToken >= lastMember.firstTokenIdx() && tokens.isTrivia(afterToken)) {
+            afterToken--;
+        }
+        afterToken++;
+        // The body's own closing `}` (last non-trivia `}` within the parent span).
+        int close = parent.lastTokenIdx();
+        while (close >= afterToken && (tokens.isTrivia(close) || !"}".contentEquals(tokens.textAt(close)))) {
+            close--;
+        }
+        for (int t = afterToken; t < close; t++) {
+            if (!tokens.isTrivia(t)) {
+                continue;
+            }
+            int kind = tokens.kindAt(t);
+            if (kind < 1 || kind > 4 || emittedTriviaTokens.contains(t)) {
+                continue;
+            }
+            if (currentColumn > 0) {
                 newline();
             }
-        } finally {
-            if (!lambdaAlignStack.isEmpty()) {
-                lambdaAlignStack.pop();
-            }
-            chainColumn = savedChainCol;
-            inBreakingChain = savedBreaking;
+            printIndent();
+            emit(tokens.textAt(t).toString().stripTrailing());
+            newline();
+            emittedTriviaTokens.add(t);
         }
     }
 
-    private void printSwitchBlock(CstNode.NonTerminal switchBlock) {
-        var children = children(switchBlock);
-        emit("{");
+    /// Emit unclaimed OWN-LINE comments dangling inside an argument list before its `)` (e.g.
+    /// `f(a,\n // note\n)`), each on its own line aligned to `alignCol`. Returns true if any was
+    /// emitted, so the caller can break the closing `)` onto a new line (bug report mechanism E2).
+    /// Same-line comments are handled by `flushInSpanTrailingComment` / `emitInlineBlockComment`.
+    private boolean emitDanglingOwnLineArgComments(Cursor args, int alignCol) {
+        if (measuringMode) {
+            return false;
+        }
+        var tokens = args.cst().tokens();
+        boolean any = false;
+        for (int t = args.firstTokenIdx(); t <= args.lastTokenIdx(); t++) {
+            if (!tokens.isTrivia(t)) {
+                continue;
+            }
+            int kind = tokens.kindAt(t);
+            if (kind < 1 || kind > 4 || emittedTriviaTokens.contains(t)
+                || precedingContentOnSameLine(tokens.startAt(t))) {
+                continue;
+            }
+            newline();
+            printAlignedTo(alignCol);
+            emit(tokens.textAt(t).toString().stripTrailing());
+            any = true;
+            emittedTriviaTokens.add(t);
+        }
+        return any;
+    }
+
+    /// True if `node` has any line/block comment in its leading trivia that has NOT yet
+    /// been emitted. Used instead of `hasLeadingComment` when trailing comments may have
+    /// already been claimed by `emitTrailingCommentsFrom`, so we don't skip `printIndent`
+    /// for a node whose only leading trivia was a trailing comment of the prior statement.
+    private boolean hasUnEmittedLeadingComment(Cursor node) {
+        if (measuringMode) return hasLeadingComment(node);
+        var tokens = node.cst().tokens();
+        for (int tokIdx : node.leadingTriviaTokens().toArray()) {
+            if (emittedTriviaTokens.contains(tokIdx)) continue;
+            int kind = tokens.kindAt(tokIdx);
+            if (kind >= 1 && kind <= 4) return true; // any comment kind (1=LINE, 2=BLOCK, 3=DOC_LINE, 4=DOC_BLOCK)
+        }
+        return false;
+    }
+
+    /// Whether a blank line is required between `prev` and `cur` per the uniform rules:
+    /// R1 — blank after a block-shaped statement; R2 — blank after a local-variable-declaration
+    /// run, before a non-var statement; R3 — blank before a return/throw. Overlapping rules
+    /// coalesce because the caller emits a single newline.
+    private static boolean needsBlankBeforeStmt(Cursor prev, Cursor cur) {
+        return isBlockShapedStmt(prev)
+               || (isLocalVarDecl(prev) && !isLocalVarDecl(cur))
+               || isReturnOrThrowStmt(cur);
+    }
+
+    /// True iff the statement is a local-variable declaration. In the v6 CST a var-decl
+    /// statement uniquely presents as a BLOCK_STMT whose direct child is a LOCAL_VAR (other
+    /// statements wrap an intermediate STMT or a leaf).
+    private static boolean isLocalVarDecl(Cursor stmt) {
+        return stmt instanceof Cursor.Branch br
+               && br.children().anyMatch(c -> c.kindIs(RuleKind.LOCAL_VAR) || c.kindIs(RuleKind.LOCAL_VAR_NO_SEMI));
+    }
+
+    /// True if a stmt is one of the block-shaped control-flow constructs.
+    private static boolean isBlockShapedStmt(Cursor stmt) {
+        if (!(stmt instanceof Cursor.Branch br)) {
+            return false;
+        }
+        var tokens = br.cst().tokens();
+        for (int t = br.firstTokenIdx(); t <= br.lastTokenIdx(); t++) {
+            if (tokens.isTrivia(t)) continue;
+            var txt = tokens.textAt(t).toString();
+            return switch (txt) {
+                case "if", "try", "while", "for", "do", "switch", "synchronized", "{" -> true;
+                default -> false;
+            };
+        }
+        return false;
+    }
+
+    /// True if `stmt` is a return or throw statement (used to decide whether to insert a
+    /// blank line before the final statement of a non-trivial block).
+    private static boolean isReturnOrThrowStmt(Cursor stmt) {
+        if (!(stmt instanceof Cursor.Branch br)) {
+            return false;
+        }
+        var tokens = br.cst().tokens();
+        for (int t = br.firstTokenIdx(); t <= br.lastTokenIdx(); t++) {
+            if (tokens.isTrivia(t)) continue;
+            var txt = tokens.textAt(t).toString();
+            return "return".equals(txt) || "throw".equals(txt);
+        }
+        return false;
+    }
+
+    private void printAlignedBlockStatements(List<Cursor> stmts, int alignCol) {
+        int bodyCol = alignCol + config.indentSize();
+        // Use forcedIndentCol so emitLeadingComments uses printAlignedTo(bodyCol)
+        // instead of printIndent() (which uses indentLevel and may round incorrectly).
+        int savedForcedIndent = forcedIndentCol;
+        forcedIndentCol = bodyCol;
+        for (int i = 0; i < stmts.size(); i++) {
+            var stmt = stmts.get(i);
+            // Same uniform blank-line rules as the non-aligned body path (R1/R2/R3).
+            if (i >= 1 && !hasLeadingComment(stmt) && needsBlankBeforeStmt(stmts.get(i - 1), stmt)) {
+                newline();
+            }
+            // Skip printAlignedTo for stmts with leading comments: currentColumn is
+            // already 0 from the preceding newline, so emitLeadingComments won't add
+            // an extra blank line (it only newlines when currentColumn > 0).
+            if (!hasUnEmittedLeadingComment(stmt)) {
+                printAlignedTo(bodyCol);
+            }
+            printNode(stmt);
+            newline();
+        }
+        forcedIndentCol = savedForcedIndent;
+    }
+
+    private void printSwitchBlock(Cursor.Branch switchBlock) {
+        emit(" {");
         indentLevel++;
 
-        var rules = children.stream()
-            .filter(c -> c.rule() instanceof RuleId.SwitchRule)
-            .toList();
+        var rules = childrenByRule(switchBlock, RuleKind.SWITCH_RULE);
 
         if (!rules.isEmpty()) {
             newline();
             for (var rule : rules) {
-                printIndent();
-                printNodeContent(rule);
+                // Switch case bodies render inline regardless of width — wrap in an
+                // inline-expression scope so chain/additive/etc. break logic stays inline.
+                try (var inlineScope = alignment.enterInlineExpression()) {
+                    printOwnLineChildContent(rule);
+                }
+                // Rescue a same-line trailing comment after the arm (e.g. `default -> null; // x`)
+                // before the newline — safe because a newline follows (bug report mechanism E4).
+                flushInSpanTrailingComment(rule);
                 newline();
             }
         }
@@ -520,63 +1235,67 @@ final class FlowPrinter {
 
     // ===== Chains and postfix =====
 
-    private void printUnary(CstNode.NonTerminal unary) {
-        var children = children(unary);
-        CstNode primary = null;
-        CstNode.NonTerminal postfix = null;
-        var directPostOps = new ArrayList<CstNode>();
-        var prefixChildren = new ArrayList<CstNode>();
+    private void printUnary(Cursor.Branch unary) {
+        var kids = unary.children().toList();
+        Cursor primary = null;
+        Cursor.Branch postfix = null;
+        var directPostOps = new ArrayList<Cursor>();
 
-        // Classify children, preserving order for prefix operators (!, ~, -, +, ++, --)
-        boolean foundPrimary = false;
-        for (var child : children) {
-            if (child.rule() instanceof RuleId.Primary) {
+        // Classify children. A Unary may contain a nested Unary (e.g., `!!x` or `!(x)`),
+        // in which case we just walk tokens and let recursion handle the inner Unary.
+        for (var child : kids) {
+            if (child.kindIs(RuleKind.PRIMARY)) {
                 primary = child;
-                foundPrimary = true;
-            } else if (child.rule() instanceof RuleId.Postfix && child instanceof CstNode.NonTerminal nt) {
-                postfix = nt;
-            } else if (child.rule() instanceof RuleId.PostOp) {
+            } else if (child.kindIs(RuleKind.POSTFIX) && child instanceof Cursor.Branch pf) {
+                postfix = pf;
+            } else if (child.kindIs(RuleKind.POST_OP)) {
                 directPostOps.add(child);
-            } else if (!foundPrimary) {
-                prefixChildren.add(child);
             }
         }
 
-        // Print prefix operators first (!, ~, etc.)
-        for (var prefix : prefixChildren) {
-            printNode(prefix);
-        }
-
-        if (primary != null && postfix != null) {
-            printPostfixWithPrimary(primary, postfix);
-        } else if (primary != null && !directPostOps.isEmpty()) {
-            printNode(primary);
-            for (var postOp : directPostOps) {
-                printNode(postOp);
+        // If we found a Primary, walk tokens BEFORE primary to emit prefix operators
+        // (!, ~, -, +, ++, --), then dispatch primary+postfix.
+        if (primary != null) {
+            int prefixEnd = primary.firstTokenIdx() - 1;
+            if (prefixEnd >= unary.firstTokenIdx()) {
+                walkTokenRange(unary, List.of(), unary.firstTokenIdx(), prefixEnd);
             }
-        } else if (primary != null) {
-            printNode(primary);
+            if (postfix != null) {
+                printPostfixWithPrimary(primary, postfix);
+            } else if (!directPostOps.isEmpty()) {
+                printNode(primary);
+                for (var postOp : directPostOps) {
+                    printNode(postOp);
+                }
+            } else {
+                printNode(primary);
+            }
         } else {
-            printChildren(unary);
+            // No Primary — fall through to default token walk, which will recursively
+            // dispatch nested Unary/Postfix children correctly.
+            walkTokens(unary);
         }
     }
 
-    private void printPostfixWithPrimary(CstNode primary, CstNode.NonTerminal postfix) {
-        var postOps = new ArrayList<CstNode>();
-        for (var child : children(postfix)) {
-            if (child.rule() instanceof RuleId.PostOp) {
-                postOps.add(child);
+    private void printPostfixWithPrimary(Cursor primary, Cursor.Branch postfix) {
+        if (measuringMode) {
+            // Measurement only needs width — emit primary + each postOp inline.
+            printNode(primary);
+            for (var postOp : childrenByRule(postfix, RuleKind.POST_OP)) {
+                printNode(postOp);
             }
+            return;
         }
+        var postOps = childrenByRule(postfix, RuleKind.POST_OP);
 
+        int allDotMethodCount = countDotMethodChainLinks(postfix);
         var dotPlusParenPostOps = postOps.stream().filter(this::isDotMethodPostOp).toList();
         boolean primaryHasMethodAccess = hasMethodAccessInPrimary(primary);
         boolean hasInvocationOfMethodInPrimary = primaryHasMethodAccess
             && postOps.stream().anyMatch(this::isBareInvocationPostOp);
-        int chainLinkCount = dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary ? 1 : 0);
-        // Break chains with 3+ links always; break 2-link chains only if they don't fit
-        boolean shouldBreakChain = chainLinkCount >= 3
-            || (chainLinkCount >= 2 && !fitsOnLineUnary(primary, postOps));
+        int chainLinkCount = Math.max(allDotMethodCount,
+                                      dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary ? 1 : 0));
+        boolean shouldBreakChain = shouldBreakChain(primary, chainLinkCount, postOps);
 
         if (shouldBreakChain && !measuringMode) {
             printMethodChainAligned(primary, postOps, dotPlusParenPostOps, hasInvocationOfMethodInPrimary);
@@ -593,7 +1312,66 @@ final class FlowPrinter {
         }
     }
 
-    private boolean fitsOnLineUnary(CstNode primary, List<CstNode> postOps) {
+    /// Sequencer-as-steps: chain (2+ method calls) breaks vertically only in TAIL contexts
+    /// (return/throw expression, lambda body). Exception: when the receiver is a static
+    /// factory call (e.g. `Class.method(...)`) and there are exactly 2 chain links AND
+    /// the first invocation's args don't themselves have complex multi-call content,
+    /// the chain stays inline — matches the idiom `Result.all(args).map(Tuple3::new)`.
+    /// In non-tail contexts (assignment RHS, argument, ternary branch), chains stay inline.
+    private boolean shouldBreakChain(Cursor primary, int chainLinkCount, List<Cursor> postOps) {
+        if (chainLinkCount < 2 || alignment.isInInlineExpression()) {
+            return false;
+        }
+        if (!alignment.isInTailContext()) {
+            return false;
+        }
+        if (chainLinkCount == 2 && primary != null && isStaticFactoryReceiver(primary)
+            && !firstPostOpHasComplexArgs(postOps)) {
+            return false;
+        }
+        return true;
+    }
+
+    /// True if the first PostOp in the list carries an Args subtree where at least one
+    /// argument contains a `.method(...)` call (signals the args layout will break
+    /// vertically, dragging the surrounding chain into vertical layout too).
+    private boolean firstPostOpHasComplexArgs(List<Cursor> postOps) {
+        if (postOps.isEmpty()) return false;
+        var first = postOps.get(0);
+        if (!(first instanceof Cursor.Branch br)) return false;
+        return br.descendants()
+            .filter(c -> c.kindIs(RuleKind.ARGS))
+            .findFirst()
+            .map(args -> {
+                if (!(args instanceof Cursor.Branch ab)) return false;
+                var exprs = childrenByRule(ab, RuleKind.EXPR);
+                if (exprs.size() < 2) return false;
+                return exprs.stream().anyMatch(e -> METHOD_CALL_PATTERN.matcher(text(e)).find());
+            })
+            .orElse(false);
+    }
+
+    /// True if `primary` is a class-like receiver — its first token is an identifier
+    /// starting with an uppercase letter (heuristic for a class type such as `Result` in
+    /// `Result.all(...)` or `Result.success(...)`). Used to identify the "static factory"
+    /// chain receiver, which inlines a 2-link chain.
+    private boolean isStaticFactoryReceiver(Cursor primary) {
+        var t = text(primary).trim();
+        return !t.isEmpty() && Character.isUpperCase(t.charAt(0));
+    }
+
+    /// Count remaining method-call PostOps in `postOps` starting from `fromIdx` (inclusive).
+    private static int countMethodCallsFromIndex(List<Cursor> postOps,
+                                                  java.util.Set<Cursor> methodCallSet,
+                                                  int fromIdx) {
+        int n = 0;
+        for (int i = fromIdx; i < postOps.size(); i++) {
+            if (methodCallSet.contains(postOps.get(i))) n++;
+        }
+        return n;
+    }
+
+    private boolean fitsOnLineUnary(Cursor primary, List<Cursor> postOps) {
         int width = measureWidth(primary);
         for (var postOp : postOps) {
             width += measureWidth(postOp);
@@ -601,26 +1379,37 @@ final class FlowPrinter {
         return currentColumn + width <= config.maxLineLength();
     }
 
-    private void printPostfix(CstNode.NonTerminal postfix) {
-        var children = children(postfix);
-        CstNode primary = null;
-        var postOps = new ArrayList<CstNode>();
-        for (var child : children) {
-            if (child.rule() instanceof RuleId.Primary) {
+    private void printPostfix(Cursor.Branch postfix) {
+        if (measuringMode) {
+            // Measurement only needs the width; just emit primary + postOps in order.
+            for (var child : postfix.children().toList()) {
+                printNode(child);
+            }
+            return;
+        }
+        var kids = postfix.children().toList();
+        Cursor primary = null;
+        var postOps = new ArrayList<Cursor>();
+        for (var child : kids) {
+            if (child.kindIs(RuleKind.PRIMARY)) {
                 primary = child;
-            } else if (child.rule() instanceof RuleId.PostOp) {
+            } else if (child.kindIs(RuleKind.POST_OP)) {
                 postOps.add(child);
             }
         }
 
+        // Under v6, chains can be encoded as nested Postfixes (Postfix's Primary may itself
+        // contain a nested Postfix wrapped in a parenthesized PRIMARY). To detect chains,
+        // count dot-method post-ops across the WHOLE outer expression by descending into
+        // nested Postfixes / Primarys reachable via the Primary chain.
+        int allDotMethodCount = countDotMethodChainLinks(postfix);
         var dotPlusParenPostOps = postOps.stream().filter(this::isDotMethodPostOp).toList();
         boolean primaryHasMethodAccess = primary != null && hasMethodAccessInPrimary(primary);
         boolean hasInvocationOfMethodInPrimary = primaryHasMethodAccess
             && postOps.stream().anyMatch(this::isBareInvocationPostOp);
-        int chainLinkCount = dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary ? 1 : 0);
-        // Break chains with 3+ links always; break 2-link chains only if they don't fit
-        boolean shouldBreakChain = chainLinkCount >= 3
-            || (chainLinkCount >= 2 && !fitsOnLine(postfix));
+        int chainLinkCount = Math.max(allDotMethodCount,
+                                      dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary ? 1 : 0));
+        boolean shouldBreakChain = shouldBreakChain(primary, chainLinkCount, postOps);
 
         if (shouldBreakChain && !measuringMode) {
             printMethodChainAligned(primary, postOps, dotPlusParenPostOps, hasInvocationOfMethodInPrimary);
@@ -639,178 +1428,233 @@ final class FlowPrinter {
         }
     }
 
-    private void printMethodChainAligned(CstNode primary,
-                                         List<CstNode> postOps,
-                                         List<CstNode> methodCallPostOps,
+    private void printMethodChainAligned(Cursor primary,
+                                         List<Cursor> postOps,
+                                         List<Cursor> methodCallPostOps,
                                          boolean primaryHasInvocation) {
         int startColumn = currentColumn;
         int alignColumn = startColumn;
         var methodCallSet = new HashSet<>(methodCallPostOps);
 
         if (primary != null) {
+            // If primary contains an internal `.` (e.g. `value.trim`), the chain anchor
+            // should be that `.`'s column — that's where the FIRST chain call begins.
+            // Compute the suffix length AFTER the last `.` (e.g. `trim` = 4) so
+            // alignColumn = currentColumn (post-primary) − suffixLen − 1 (the `.` itself).
+            int suffixAfterLastDot = primaryHasInvocation ? suffixAfterLastDotInPrimary(primary) : -1;
             printNodeContent(primary);
-            alignColumn = currentColumn;
+            if (suffixAfterLastDot >= 0) {
+                alignColumn = currentColumn - suffixAfterLastDot - 1;
+            } else {
+                alignColumn = currentColumn;
+            }
         }
 
-        int savedChainCol = chainColumn;
-        boolean savedBreaking = inBreakingChain;
-        chainColumn = alignColumn;
-        inBreakingChain = true;
-        try {
-            // For 3+ dot-method PostOps, keep the first inline and break from second.
-            // For 2-link chains that don't fit, break at the first.
-            boolean firstMethodCall = methodCallPostOps.size() >= 2;
-            boolean previousWasMultiLineBareInvoke = false;
-            for (var postOp : postOps) {
+        try (var scope = alignment.enterChain(alignColumn)) {
+            // Rule: primary + first chain call stay inline; remaining dot-method postOps
+            // each go on their own line aligned to the chain column. Special case: after
+            // a multi-line bare-args invocation, when MULTIPLE dot-method follow-ups remain,
+            // the first follow-up stays inline (on the same line as the closing `)`) and
+            // subsequent ones break — this balances the chain layout. When only ONE
+            // follow-up remains, it breaks onto its own line aligned to the chain column.
+            boolean firstMethodCallPending = !primaryHasInvocation;
+            for (int pi = 0; pi < postOps.size(); pi++) {
+                var postOp = postOps.get(pi);
                 boolean isMethodCall = methodCallSet.contains(postOp);
-                if (isMethodCall && !firstMethodCall) {
-                    newline();
-                    // If the previous bare invocation had multi-line args,
-                    // align to standard indent instead of chain column
-                    int effectiveAlign = previousWasMultiLineBareInvoke
-                        ? indentLevel * config.indentSize()
-                        : alignColumn;
-                    printAlignedTo(effectiveAlign);
+                // A leading comment on this post-op forces it onto its own line at the chain
+                // column. Handle positioning here (a single newline to column 0, then let
+                // emitLeadingComments own the indent) and SKIP the normal pre-align below, which
+                // would otherwise stack a spurious blank line ahead of the comment (bug report S5).
+                boolean hasLead = !measuringMode && hasUnEmittedLeadingComment(postOp);
+                if (hasLead) {
+                    if (currentColumn > 0) {
+                        newline();
+                    }
+                    if (isMethodCall && !firstMethodCallPending && scope.lastPostOpWasBrokenArgs()) {
+                        scope.clearBrokenArgsAnchor();
+                    }
+                    int savedForcedIndentCol = forcedIndentCol;
+                    forcedIndentCol = alignColumn;
+                    emitLeadingComments(postOp);
+                    forcedIndentCol = savedForcedIndentCol;
+                } else if (isMethodCall && !firstMethodCallPending) {
+                    if (scope.lastPostOpWasBrokenArgs()
+                        && countMethodCallsFromIndex(postOps, methodCallSet, pi) >= 2) {
+                        // 2+ follow-ups remain after a broken-args invocation: the first
+                        // follow-up stays inline on the same line as the closing `)`.
+                        // Subsequent ones align to the args-open-paren column.
+                        scope.consumeBrokenArgsInlineSlot();
+                    } else if (scope.lastPostOpWasBrokenArgs()) {
+                        // Single follow-up after broken-args: break to the chain column
+                        // (not the args-paren column). Clear postBrokenArgsAnchor so the
+                        // chain column is used instead.
+                        newline();
+                        printAlignedTo(alignColumn);
+                        scope.clearBrokenArgsAnchor();
+                    } else {
+                        // Subsequent method calls (after the inline-consumed first) align
+                        // to the args-open-paren column when one was recorded; otherwise
+                        // align to the chain column.
+                        newline();
+                        int anchor = scope.nextDotMethodAnchor(alignColumn);
+                        printAlignedTo(anchor);
+                    }
                 }
                 int lineBefore = currentLine;
+                int colBefore = currentColumn;
+                boolean isBareInvoc = isBareInvocationPostOp(postOp);
                 printNodeContent(postOp);
-                // Track if this was a multi-line bare invocation (not a dot-method call)
-                if (!isMethodCall && currentLine - lineBefore > 0) {
-                    previousWasMultiLineBareInvoke = true;
+                // Emit trailing line comments from the next postOp's leading trivia
+                // before the newline that separates chain calls.
+                if (pi + 1 < postOps.size()) {
+                    emitTrailingCommentsFrom(postOps.get(pi + 1));
+                }
+                boolean spanned = currentLine != lineBefore;
+                scope.notePostOpEmitted(spanned, containsLambda(postOp));
+                if (isBareInvoc && spanned && !containsLambda(postOp)) {
+                    // Broken bare-args: capture the col where `(` landed. colBefore is the
+                    // column right before the `(` was emitted; the `(` itself sits at colBefore.
+                    scope.noteBrokenArgsPostOp(colBefore);
                 }
                 if (isMethodCall) {
-                    firstMethodCall = false;
-                    previousWasMultiLineBareInvoke = false;
+                    firstMethodCallPending = false;
                 }
             }
-        } finally {
-            chainColumn = savedChainCol;
-            inBreakingChain = savedBreaking;
         }
     }
 
-    private boolean isDotMethodPostOp(CstNode postOp) {
-        boolean hasDot = false;
+    /// True if the post-op carries a lambda anywhere inside it. Used to distinguish
+    /// "multi-line because of broken args" (next method goes to body indent) from
+    /// "multi-line because of a lambda body" (next method stays at chain column).
+    private static boolean containsLambda(Cursor postOp) {
+        return findFirst(postOp, RuleKind.LAMBDA).isPresent();
+    }
+
+    /// Count chain links visible within this Postfix when chains are encoded as nested
+    /// Postfix wrappers. Walks the Primary chain and aggregates dot-method post-ops at
+    /// each level. Used to decide whether `shouldBreakChain` for the OUTER print.
+    private int countDotMethodChainLinks(Cursor.Branch postfix) {
+        int count = 0;
+        Cursor.Branch cur = postfix;
+        while (cur != null) {
+            Cursor primaryChild = null;
+            for (var child : cur.children().toList()) {
+                if (child.kindIs(RuleKind.PRIMARY)) {
+                    primaryChild = child;
+                } else if (child.kindIs(RuleKind.POST_OP) && isDotMethodPostOp(child)) {
+                    count++;
+                }
+            }
+            cur = innerPostfix(primaryChild);
+        }
+        return count;
+    }
+
+    /// If a Primary contains a nested Postfix (chain continuation), return it. v6 may
+    /// wrap chains via deeper intermediate rules (PRIMARY > EXPR > ... > POSTFIX), so we
+    /// walk descendants looking for the first POSTFIX whose span fits inside primary's.
+    private Cursor.Branch innerPostfix(Cursor primary) {
+        if (!(primary instanceof Cursor.Branch pb)) {
+            return null;
+        }
+        return pb.descendants()
+            .filter(c -> c.kindIs(RuleKind.POSTFIX))
+            .findFirst()
+            .filter(c -> c instanceof Cursor.Branch)
+            .map(c -> (Cursor.Branch) c)
+            .orElse(null);
+    }
+
+    /// A dot-method PostOp's FIRST non-trivia token is `.` and the range contains `(`
+    /// somewhere (the call's args paren — could be nested inside args expressions, but at
+    /// least one exists for invocation forms). Distinguished from a bare `(args)` postOp
+    /// whose first token is `(`.
+    private boolean isDotMethodPostOp(Cursor postOp) {
+        var tokens = postOp.cst().tokens();
+        boolean firstIsDot = false;
+        boolean seenFirst = false;
         boolean hasParen = false;
-        for (var child : children(postOp)) {
-            if (isTerminalWithText(child, ".")) {
-                hasDot = true;
+        for (int t = postOp.firstTokenIdx(); t <= postOp.lastTokenIdx(); t++) {
+            if (tokens.isTrivia(t)) continue;
+            var s = tokens.textAt(t).toString();
+            if (!seenFirst) {
+                firstIsDot = ".".equals(s);
+                seenFirst = true;
             }
-            if (isTerminalWithText(child, "(")) {
-                hasParen = true;
+            if ("(".equals(s)) hasParen = true;
+        }
+        return firstIsDot && hasParen;
+    }
+
+    /// A bare invocation PostOp's FIRST non-trivia token is `(` (e.g. `(args)`, the
+    /// invocation following an already-qualified primary like `Result.all`). Distinguished
+    /// from a `.method(args)` postOp where the first token is `.`. Inner `.` tokens belong
+    /// to nested expressions and are not relevant.
+    private boolean isBareInvocationPostOp(Cursor postOp) {
+        var tokens = postOp.cst().tokens();
+        for (int t = postOp.firstTokenIdx(); t <= postOp.lastTokenIdx(); t++) {
+            if (tokens.isTrivia(t)) continue;
+            return "(".equals(tokens.textAt(t).toString());
+        }
+        return false;
+    }
+
+    private boolean hasMethodAccessInPrimary(Cursor primary) {
+        // Primary contains a method-access path if its text contains a dot
+        // outside of identifier suffix (we check the structural Primary's source text).
+        var t = text(primary);
+        return t.contains(".");
+    }
+
+    /// Return the total non-trivia text length AFTER the last `.` token within `primary`
+    /// (e.g. `value.trim` -> 4 for `trim`), or -1 if no `.`. Used to compute the chain
+    /// alignment column when the primary path itself contains a method access — we subtract
+    /// this plus 1 (for the `.`) from post-primary currentColumn to get the dot's column.
+    private int suffixAfterLastDotInPrimary(Cursor primary) {
+        var tokens = primary.cst().tokens();
+        int startTok = primary.firstTokenIdx();
+        int lastTok = primary.lastTokenIdx();
+        while (startTok <= lastTok && tokens.isTrivia(startTok)) startTok++;
+        int lastDotTok = -1;
+        for (int t = startTok; t <= lastTok; t++) {
+            if (tokens.isTrivia(t)) continue;
+            if (".".equals(tokens.textAt(t).toString())) {
+                lastDotTok = t;
             }
         }
-        return hasDot && hasParen;
-    }
-
-    private boolean isBareInvocationPostOp(CstNode postOp) {
-        boolean hasParen = false;
-        boolean hasDot = false;
-        for (var child : children(postOp)) {
-            if (isTerminalWithText(child, ".")) {
-                hasDot = true;
-            }
-            if (isTerminalWithText(child, "(")) {
-                hasParen = true;
-            }
+        if (lastDotTok < 0) return -1;
+        int suffix = 0;
+        for (int t = lastDotTok + 1; t <= lastTok; t++) {
+            if (tokens.isTrivia(t)) continue;
+            suffix += tokens.textAt(t).length();
         }
-        return hasParen && !hasDot;
+        return suffix;
     }
 
-    private boolean hasMethodAccessInPrimary(CstNode primary) {
-        return containsDotInIdentifierChain(primary);
-    }
-
-    private boolean containsDotInIdentifierChain(CstNode node) {
-        return switch (node) {
-            case CstNode.Terminal t -> ".".equals(t.text());
-            case CstNode.Token _ -> false;
-            case CstNode.Error _ -> false;
-            case CstNode.NonTerminal nt -> {
-                if (nt.rule() instanceof RuleId.QualifiedName) {
-                    for (var child : children(nt)) {
-                        if (containsDotInIdentifierChain(child)) {
-                            yield true;
-                        }
-                    }
-                } else if (nt.rule() instanceof RuleId.Identifier) {
-                    yield false;
+    private void printPostOp(Cursor.Branch postOp) {
+        // PostOps look like `.method(args)`, `<TypeArgs>method(args)`, `(args)`, or `[expr]`.
+        // We walk tokens and let child branches handle their own rendering.
+        walkTokensWith(postOp, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) {
+                if (child.kindIs(RuleKind.ARGS)) {
+                    printNodeContent(child);
                 } else {
-                    for (var child : children(nt)) {
-                        if (child.rule() instanceof RuleId.QualifiedName && containsDotInIdentifierChain(child)) {
-                            yield true;
-                        }
-                    }
+                    printNode(child);
                 }
-                yield false;
             }
-        };
-    }
 
-    private int findFirstDotPosition(CstNode node) {
-        return findDotPositionHelper(node, new int[]{0});
-    }
-
-    private int findDotPositionHelper(CstNode node, int[] position) {
-        return switch (node) {
-            case CstNode.Terminal t -> {
-                if (".".equals(t.text())) {
-                    yield position[0];
-                }
-                position[0] += t.text().length();
-                yield -1;
+            @Override
+            public void onToken(int kind, String text) {
+                emitToken(text);
             }
-            case CstNode.Token tok -> {
-                if (".".equals(tok.text())) {
-                    yield position[0];
-                }
-                position[0] += tok.text().length();
-                yield -1;
-            }
-            case CstNode.NonTerminal nt -> {
-                for (var child : children(nt)) {
-                    int result = findDotPositionHelper(child, position);
-                    if (result >= 0) {
-                        yield result;
-                    }
-                }
-                yield -1;
-            }
-            case CstNode.Error err -> {
-                position[0] += err.skippedText().length();
-                yield -1;
-            }
-        };
-    }
-
-    private void printPostOp(CstNode.NonTerminal postOp) {
-        var children = children(postOp);
-        boolean afterTypeArgs = false;
-        for (var child : children) {
-            if (child.rule() instanceof RuleId.TypeArgs) {
-                printNode(child);
-                afterTypeArgs = true;
-            } else if (afterTypeArgs && child.rule() instanceof RuleId.Identifier) {
-                var identText = text(child, source).trim();
-                emit(identText);
-                afterTypeArgs = false;
-            } else if (isTerminalWithText(child, "(") && child.rule() instanceof RuleId.Args == false) {
-                printNode(child);
-                afterTypeArgs = false;
-            } else if (child.rule() instanceof RuleId.Args) {
-                printNodeContent(child);
-                afterTypeArgs = false;
-            } else {
-                printNode(child);
-                afterTypeArgs = false;
-            }
-        }
+        });
     }
 
     // ===== Arguments =====
 
-    private void printArgs(CstNode.NonTerminal args) {
-        if (measuringMode) { printChildren(args); return; }
+    private void printArgs(Cursor.Branch args) {
+        if (measuringMode) { walkTokens(args); return; }
 
         boolean hasComplexArgs = hasComplexArguments(args);
         if (hasComplexArgs) {
@@ -820,28 +1664,95 @@ final class FlowPrinter {
 
         int argsWidth = measureWidth(args);
         if (currentColumn + argsWidth <= config.maxLineLength()) {
-            for (var child : children(args)) {
-                printNodeContent(child);
+            // Inline: walk tokens but use printNodeContent for child expressions. Suppress
+            // chain breaking inside inline args — chains that fit horizontally as an
+            // argument stay inline (e.g. `Result.all(user.map(a).map(b), ...)`).
+            try (var scope = alignment.enterInlineExpression()) {
+                walkTokensWith(args, new TokenWalker() {
+                    @Override public void onChild(Cursor c) { printNodeContent(c); }
+                    @Override public void onToken(int kind, String text) { emitToken(text); }
+                });
             }
         } else {
             printBrokenArgs(args);
         }
     }
 
-    private boolean hasComplexArguments(CstNode.NonTerminal args) {
-        var exprs = childrenByRule(args, RuleId.Expr.class);
+    /// True if the node's token range contains a line (`//`) or doc-line (`///`) comment token.
+    /// Token-based (not text-based), so `//` inside a string literal does not trigger it.
+    private boolean hasLineCommentToken(Cursor node) {
+        var tokens = node.cst().tokens();
+        for (int t = node.firstTokenIdx(); t <= node.lastTokenIdx(); t++) {
+            int kind = tokens.kindAt(t);
+            if (kind == 1 || kind == 3) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasComplexArguments(Cursor args) {
+        // A line comment anywhere in the argument list cannot be rendered inline (`f(a, b // c)`
+        // would swallow `)` into the comment), so force broken layout — the broken walk then emits
+        // the trailing comment on its argument's line (bug report mechanism B, last-arg trailing).
+        if (hasLineCommentToken(args)) {
+            return true;
+        }
+        // Block lambda args that contain line comments are underestimated by measureWidth()
+        // (comments are emitted to output, not measureBuffer). Force broken layout when
+        // a block lambda body has leading comments — the `//` check is a reliable proxy.
+        var argsText = text(args);
+        if (argsText.contains("-> {") && argsText.contains("//")) return true;
+
+        var exprs = childrenByRule(args, RuleKind.EXPR);
         if (exprs.size() >= 2) {
+            // 2+ lambda args: always break (each lambda on own line).
+            int lambdaCount = 0;
             for (var expr : exprs) {
-                var exprText = text(expr, source);
+                if (containsLambdaArrow(expr)) lambdaCount++;
+            }
+            if (lambdaCount >= 2) {
+                // Force complex layout only when any lambda has non-trivial content:
+                // block body, method call in body, or string concatenation.
+                // Short expression lambdas like `s -> s` or `c -> ""` can stay inline.
+                boolean anyComplexLambda = exprs.stream().anyMatch(e -> {
+                    var t = text(e);
+                    return t.contains("-> {") || containsMethodCall(t) || t.contains(" + ");
+                });
+                if (anyComplexLambda) return true;
+            }
+            for (var expr : exprs) {
+                var exprText = text(expr);
                 if (containsMethodCall(exprText) || exprText.contains("-> {")) {
                     return true;
                 }
-                if (inBreakingChain && exprText.contains("(")) {
+                if (containsTopLevelTernary(expr)) {
+                    return true;
+                }
+                if (alignment.isInBreakingChain() && exprText.contains("(")) {
                     return true;
                 }
             }
         }
         return false;
+    }
+
+    /// True if `expr` contains a LAMBDA descendant (any `->` form).
+    private boolean containsLambdaArrow(Cursor expr) {
+        if (!(expr instanceof Cursor.Branch br)) return false;
+        return br.descendants().anyMatch(c -> c.kindIs(RuleKind.LAMBDA));
+    }
+
+    /// True if `expr` contains a TERNARY node at its first-level descent (i.e. the
+    /// expression IS a ternary, possibly wrapped in trivial precedence nodes). Used to
+    /// detect when an argument will break vertically due to a `?:` operator, dragging
+    /// the surrounding arg list into broken layout.
+    private boolean containsTopLevelTernary(Cursor expr) {
+        if (!(expr instanceof Cursor.Branch br)) return false;
+        return br.descendants()
+            .anyMatch(c -> c.kindIs(RuleKind.TERNARY)
+                && text(c).contains("?")
+                && text(c).contains(":"));
     }
 
     private boolean containsMethodCall(String text) {
@@ -856,587 +1767,662 @@ final class FlowPrinter {
         return false;
     }
 
-    private void printBrokenArgs(CstNode.NonTerminal args) {
-        var children = children(args);
+    private void printBrokenArgs(Cursor.Branch args) {
         int alignCol = currentColumn;
+        // A single argument at statement level (no enclosing broken method chain) has no commas
+        // to align, and its block-lambda body should indent from the statement, not the deep arg
+        // column (bug B3). Inside a broken chain the body aligns to the lambda parameter, so keep
+        // lambda-align there. Multi-argument calls always align.
+        if (childrenByRule(args, RuleKind.EXPR).size() < 2 && alignment.chainColumn() < 0) {
+            printBrokenArgsBody(args, alignCol);
+            return;
+        }
+        try (var scope = alignment.pushLambdaAlign(alignCol)) {
+            printBrokenArgsBody(args, alignCol);
+        }
+    }
 
-        lambdaAlignStack.push(alignCol);
-        try {
-            for (var child : children) {
-                if (isTerminalWithText(child, ",")) {
-                    emit(",");
-                    newline();
-                    printAlignedTo(alignCol);
-                } else if (child.rule() instanceof RuleId.Expr) {
-                    printNodeContent(child);
+    private void printBrokenArgsBody(Cursor.Branch args, int alignCol) {
+        boolean[] pendingLineBreak = {false};
+        walkTokensWith(args, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) {
+                if (child.kindIs(RuleKind.EXPR)) {
+                    // If this single arg fits on its own line, render its inner
+                    // chains/expressions inline. The args layout already broke at
+                    // commas; an individual arg-expression should not force further
+                    // vertical breaks unless its own width demands it.
+                    int width = measureWidth(child);
+                    if (currentColumn + width <= config.maxLineLength()) {
+                        try (var inlineScope = alignment.enterInlineExpression()) {
+                            printNodeContent(child);
+                        }
+                    } else {
+                        printNodeContent(child);
+                    }
+                    // Rescue a comment trailing this argument (inside its span) before the next
+                    // delimiter; a line comment forces that delimiter onto a new line.
+                    if (flushInSpanTrailingComment(child)) {
+                        pendingLineBreak[0] = true;
+                    }
                 } else {
                     printNode(child);
                 }
             }
-        } finally {
-            if (!lambdaAlignStack.isEmpty()) {
-                lambdaAlignStack.pop();
+
+            @Override
+            public void onToken(int kind, String text) {
+                if (",".equals(text)) {
+                    if (pendingLineBreak[0]) {
+                        newline();
+                        printAlignedTo(alignCol);
+                        pendingLineBreak[0] = false;
+                    }
+                    emit(",");
+                    newline();
+                    printAlignedTo(alignCol);
+                } else {
+                    emitToken(text);
+                }
             }
+        });
+        // Last argument carried a trailing line comment, OR own-line comments dangle before `)`:
+        // break so the enclosing `)` (emitted by the post-op after this returns) lands on its own
+        // line instead of being swallowed (bug report mechanisms B last-arg / E2).
+        boolean danglingOwnLine = emitDanglingOwnLineArgComments(args, alignCol);
+        if (pendingLineBreak[0] || danglingOwnLine) {
+            newline();
+            printAlignedTo(Math.max(0, alignCol - 1));
         }
     }
 
     // ===== Lambda =====
 
-    private void printLambda(CstNode.NonTerminal lambda) {
-        var children = children(lambda);
-        boolean afterArrow = false;
-        for (var child : children) {
-            if (isTerminalWithText(child, "->")) {
-                emit(" -> ");
-                afterArrow = true;
-            } else if (afterArrow) {
-                printNodeContent(child);
-                afterArrow = false;
-            } else {
-                printNode(child);
+    private void printLambda(Cursor.Branch lambda) {
+        walkTokensWith(lambda, new TokenWalker() {
+            boolean afterArrow = false;
+
+            @Override
+            public void onChild(Cursor child) {
+                if (afterArrow) {
+                    // Lambda body: enter tail context so chains inside break vertically.
+                    try (var scope = alignment.enterTailContext()) {
+                        printNodeContent(child);
+                    }
+                    afterArrow = false;
+                } else {
+                    printNode(child);
+                }
             }
-        }
+
+            @Override
+            public void onToken(int kind, String text) {
+                if ("->".equals(text)) {
+                    emit(" -> ");
+                    afterArrow = true;
+                } else {
+                    emitToken(text);
+                }
+            }
+        });
     }
 
     // ===== Parameters =====
 
-    private void printParams(CstNode.NonTerminal params) {
+    private void printParams(Cursor.Branch params) {
         if (measuringMode) {
-            for (var child : children(params)) {
-                printNodeContent(child);
-            }
+            walkTokens(params);
             return;
         }
 
         int paramsWidth = measureWidth(params);
         // Account for closing paren and typical suffix (") {" = 3 chars)
         if (currentColumn + paramsWidth + 3 <= config.maxLineLength()) {
-            for (var child : children(params)) {
-                printNodeContent(child);
-            }
+            walkTokensWith(params, new TokenWalker() {
+                @Override public void onChild(Cursor c) { printNodeContent(c); }
+                @Override public void onToken(int kind, String text) { emitToken(text); }
+            });
         } else {
             printBrokenParams(params);
         }
     }
 
-    private void printBrokenParams(CstNode.NonTerminal params) {
-        var children = children(params);
+    private void printBrokenParams(Cursor.Branch params) {
         int alignCol = currentColumn;
-        for (var child : children) {
-            if (isTerminalWithText(child, ",")) {
-                emit(",");
-                newline();
-                printAlignedTo(alignCol);
-            } else if (child.rule() instanceof RuleId.Param) {
-                printNodeContent(child);
-            }
-        }
-    }
-
-    private void printParam(CstNode.NonTerminal param) {
-        var children = children(param);
-        var paramText = text(param, source);
-        boolean isVarargs = paramText.contains("...");
-        boolean printedDots = false;
-
-        for (var child : children) {
-            if (isTerminalWithText(child, "...")) {
-                if (!printedDots) {
-                    emitToken("...");
-                    printedDots = true;
-                }
-            } else if (child.rule() instanceof RuleId.Type && isVarargs) {
-                var typeText = text(child, source).trim();
-                if (typeText.endsWith("...")) {
-                    typeText = typeText.substring(0, typeText.length() - 3);
-                }
-                emitToken(typeText);
-            } else {
-                printNodeContent(child);
-            }
-        }
-    }
-
-    private void printLambdaParam(CstNode.NonTerminal param) {
-        var children = children(param);
-        var identifierTexts = children.stream()
-            .filter(c -> c.rule() instanceof RuleId.Identifier)
-            .map(c -> text(c, source).trim())
-            .collect(Collectors.toSet());
-
-        for (var child : children) {
-            var rule = child.rule();
-            var childText = text(child, source).trim();
-            if (rule instanceof RuleId.Identifier) {
-                emitToken(childText);
-            } else if (rule instanceof RuleId.Type) {
-                if (!identifierTexts.contains(childText)) {
+        walkTokensWith(params, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) {
+                if (child.kindIs(RuleKind.PARAM)) {
                     printNodeContent(child);
+                } else {
+                    printNode(child);
                 }
-            } else if (rule instanceof RuleId.Annotation || rule instanceof RuleId.Modifier) {
-                printNode(child);
-            } else if (isTerminalWithText(child, "...")) {
-                emitToken("...");
-            } else {
-                printNode(child);
             }
-        }
+
+            @Override
+            public void onToken(int kind, String text) {
+                if (",".equals(text)) {
+                    emit(",");
+                    newline();
+                    printAlignedTo(alignCol);
+                } else {
+                    emitToken(text);
+                }
+            }
+        });
+    }
+
+    private void printParam(Cursor.Branch param) {
+        walkTokens(param);
+    }
+
+    private void printLambdaParam(Cursor.Branch param) {
+        walkTokens(param);
     }
 
     // ===== Primary and record =====
 
-    private void printPrimary(CstNode.NonTerminal primary) {
-        var children = children(primary);
-        boolean afterOpenParen = false;
-        for (var child : children) {
-            if (isTerminalWithText(child, "(")) {
-                printNode(child);
-                afterOpenParen = true;
-            } else if (afterOpenParen && child.rule() instanceof RuleId.Args) {
-                printNodeContent(child);
-                afterOpenParen = false;
-            } else {
-                printNode(child);
-                afterOpenParen = false;
+    private void printPrimary(Cursor.Branch primary) {
+        // Primary may be a method call `Foo.bar()`, a parenthesized expression, a new
+        // expression, etc. Walk tokens; for ARGS child use printNodeContent so it can
+        // break across lines.
+        walkTokensWith(primary, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) {
+                if (child.kindIs(RuleKind.ARGS)) {
+                    printNodeContent(child);
+                } else {
+                    printNode(child);
+                }
             }
-        }
+
+            @Override
+            public void onToken(int kind, String text) {
+                emitToken(text);
+            }
+        });
     }
 
-    private void printRecordDecl(CstNode.NonTerminal recordDecl) {
-        var children = children(recordDecl);
-        boolean afterOpenParen = false;
-        for (var child : children) {
-            if (isTerminalWithText(child, "(")) {
-                printNode(child);
-                afterOpenParen = true;
-            } else if (afterOpenParen && child.rule() instanceof RuleId.RecordComponents) {
-                printNodeContent(child);
-                afterOpenParen = false;
-            } else {
-                printNode(child);
-                afterOpenParen = false;
+    private void printRecordDecl(Cursor.Branch recordDecl) {
+        boolean[] afterComponents = {false};
+        walkTokensWith(recordDecl, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) {
+                if (child.kindIs(RuleKind.RECORD_COMPONENTS)) {
+                    printNodeContent(child);
+                    afterComponents[0] = true;
+                } else if (child.kindIs(RuleKind.RECORD_BODY)) {
+                    // RECORD_BODY may be a Leaf (empty `{}`) or a Branch (has members).
+                    // Always include a space before `{` (matches Records.java golden where
+                    // empty bodies render as `{}` with a separating space, never `(){}`.
+                    if (child instanceof Cursor.Branch rbBranch) {
+                        printRecordBody(rbBranch);
+                    } else {
+                        emit(" {}");
+                    }
+                    afterComponents[0] = false;
+                } else {
+                    printNode(child);
+                }
             }
-        }
+
+            @Override
+            public void onToken(int kind, String text) {
+                if ("{".equals(text) && afterComponents[0]) {
+                    emit(" {");
+                    afterComponents[0] = false;
+                } else {
+                    emitToken(text);
+                }
+            }
+        });
     }
 
-    private void printRecordComponents(CstNode.NonTerminal components) {
+    private void printRecordComponents(Cursor.Branch components) {
         if (measuringMode) {
-            for (var child : children(components)) {
-                printNodeContent(child);
-            }
+            walkTokens(components);
             return;
         }
 
         int width = measureWidth(components);
-        if (currentColumn + width + 3 <= config.maxLineLength()) {
-            for (var child : children(components)) {
-                printNodeContent(child);
-            }
+        // A line comment between components cannot be inlined — force broken layout so each
+        // component (and its leading comment) lands on its own line (bug report mechanism A).
+        if (!hasLineCommentToken(components) && currentColumn + width + 3 <= config.maxLineLength()) {
+            walkTokensWith(components, new TokenWalker() {
+                @Override public void onChild(Cursor c) { printNodeContent(c); }
+                @Override public void onToken(int kind, String text) { emitToken(text); }
+            });
         } else {
             printBrokenRecordComponents(components);
         }
     }
 
-    private void printBrokenRecordComponents(CstNode.NonTerminal components) {
-        var children = children(components);
+    private void printBrokenRecordComponents(Cursor.Branch components) {
         int alignCol = currentColumn;
-        for (var child : children) {
-            if (isTerminalWithText(child, ",")) {
-                emit(",");
-                newline();
-                printAlignedTo(alignCol);
-            } else if (child.rule() instanceof RuleId.RecordComp) {
-                printNodeContent(child);
+        walkTokensWith(components, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) {
+                if (child.kindIs(RuleKind.RECORD_COMP)) {
+                    printOwnLineChildContentAligned(child, alignCol);
+                } else {
+                    printNode(child);
+                }
             }
-        }
+
+            @Override
+            public void onToken(int kind, String text) {
+                if (",".equals(text)) {
+                    emit(",");
+                    newline();
+                } else {
+                    emitToken(text);
+                }
+            }
+        });
     }
 
     // ===== Resource spec =====
 
-    private void printResourceSpec(CstNode.NonTerminal resourceSpec) {
-        var children = children(resourceSpec);
-        // In measuring mode, just measure children sequentially — no breaking logic
+    private void printResourceSpec(Cursor.Branch resourceSpec) {
         if (measuringMode) {
-            printChildren(resourceSpec);
+            walkTokens(resourceSpec);
             return;
         }
-        // Width-based decision instead of trivia-based
         int width = measureWidth(resourceSpec);
         if (currentColumn + width <= config.maxLineLength()) {
-            printChildren(resourceSpec);
+            walkTokens(resourceSpec);
             return;
         }
 
-        boolean afterOpen = false;
-        int alignCol = 0;
-        boolean first = true;
-        for (var child : children) {
-            if (isTerminalWithText(child, "(")) {
-                emitToken("(");
-                alignCol = currentColumn;
-                afterOpen = true;
-            } else if (isTerminalWithText(child, ")")) {
-                emitToken(")");
-            } else if (isTerminalWithText(child, ";")) {
-                emitToken(";");
-            } else if (child.rule() instanceof RuleId.Resource) {
-                if (afterOpen) {
-                    if (!first) {
-                        newline();
-                        printAlignedTo(alignCol);
+        // Wrapped form: resources align after `(`, separated by `;` + newline.
+        int[] alignCol = {0};
+        boolean[] afterOpen = {false};
+        boolean[] first = {true};
+        walkTokensWith(resourceSpec, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) {
+                if (child.kindIs(RuleKind.RESOURCE)) {
+                    if (afterOpen[0]) {
+                        if (!first[0]) {
+                            newline();
+                            printAlignedTo(alignCol[0]);
+                        }
+                        printNodeContent(child);
+                        first[0] = false;
+                    } else {
+                        printNode(child);
                     }
-                    printNodeContent(child);
-                    first = false;
                 } else {
                     printNode(child);
                 }
             }
-        }
+
+            @Override
+            public void onToken(int kind, String text) {
+                if ("(".equals(text)) {
+                    emitToken("(");
+                    alignCol[0] = currentColumn;
+                    afterOpen[0] = true;
+                } else if (";".equals(text)) {
+                    emitToken(";");
+                } else if (")".equals(text)) {
+                    emitToken(")");
+                } else {
+                    emitToken(text);
+                }
+            }
+        });
     }
 
     // ===== Type generics =====
 
-    private void printTypeArgs(CstNode.NonTerminal typeArgs) {
-        var children = children(typeArgs);
-        boolean first = true;
-        for (var child : children) {
-            if (first && isTerminalWithText(child, "<")) {
-                emitToken("<");
-                first = false;
-            } else if (isTerminalWithText(child, ">")) {
-                emitToken(">");
-            } else {
-                printNode(child);
-            }
-        }
+    private void printTypeArgs(Cursor.Branch typeArgs) {
+        typeContextDepth++;
+        walkTokens(typeArgs);
+        typeContextDepth--;
     }
 
-    private void printTypeParams(CstNode.NonTerminal typeParams) {
-        var children = children(typeParams);
-        boolean first = true;
-        for (var child : children) {
-            if (first && isTerminalWithText(child, "<")) {
-                emitToken("<");
-                first = false;
-            } else if (isTerminalWithText(child, ">")) {
-                emitToken(">");
-            } else {
-                printNode(child);
-            }
-        }
+    private void printTypeParams(Cursor.Branch typeParams) {
+        typeContextDepth++;
+        walkTokens(typeParams);
+        typeContextDepth--;
     }
 
     // ===== Method declarations =====
 
-    private void printMethodDecl(CstNode.NonTerminal methodDecl) {
-        var children = children(methodDecl);
-        int typeParamsIndex = -1;
-        for (int i = 0; i < children.size(); i++) {
-            if (children.get(i).rule() instanceof RuleId.TypeParams) {
-                typeParamsIndex = i;
-                break;
-            }
-        }
-
-        if (typeParamsIndex == -1) {
-            printChildren(methodDecl);
-            return;
-        }
-
-        for (int i = 0; i <= typeParamsIndex; i++) {
-            printNode(children.get(i));
-        }
-
-        var signatureWidth = measureSignatureWidth(children, typeParamsIndex);
-        if (currentColumn + 1 + signatureWidth <= config.maxLineLength()) {
-            emit(" ");
-        } else {
-            newline();
-            printIndent();
-        }
-
-        for (int i = typeParamsIndex + 1; i < children.size(); i++) {
-            printNodeContent(children.get(i));
-        }
+    private void printMethodDecl(Cursor.Branch methodDecl) {
+        // Default: walk tokens for the entire method decl. v6 keeps modifiers and type
+        // params naturally on the same line via the spacing rules; we only need a special
+        // line-break heuristic when there's a TYPE_PARAMS clause AND the post-typeParams
+        // signature would overflow.
+        walkTokens(methodDecl);
     }
 
-    private void printMethodDeclContent(CstNode.NonTerminal methodDecl) {
-        var children = children(methodDecl);
-        int typeParamsIndex = -1;
-        for (int i = 0; i < children.size(); i++) {
-            if (children.get(i).rule() instanceof RuleId.TypeParams) {
-                typeParamsIndex = i;
-                break;
-            }
-        }
-
-        if (typeParamsIndex == -1) {
-            printNodeContent(methodDecl);
-            return;
-        }
-
-        printNodeContent(children.get(0));
-        for (int i = 1; i <= typeParamsIndex; i++) {
-            printNode(children.get(i));
-        }
-
-        var signatureWidth = measureSignatureWidth(children, typeParamsIndex);
-        if (currentColumn + 1 + signatureWidth <= config.maxLineLength()) {
-            emit(" ");
-        } else {
-            newline();
-            printIndent();
-        }
-
-        for (int i = typeParamsIndex + 1; i < children.size(); i++) {
-            printNodeContent(children.get(i));
-        }
-    }
-
-    private int measureSignatureWidth(List<CstNode> children, int typeParamsIndex) {
-        var signatureText = new StringBuilder();
-        for (int i = typeParamsIndex + 1; i < children.size(); i++) {
-            var childText = text(children.get(i), source);
-            signatureText.append(childText);
-            if (childText.contains("(")) {
-                break;
-            }
-        }
-        return signatureText.toString().replaceAll("\\s+", " ").trim().length();
+    private void printMethodDeclContent(Cursor.Branch methodDecl) {
+        printMethodDecl(methodDecl);
     }
 
     // ===== Ternary =====
 
-    private void printTernary(CstNode.NonTerminal ternary) {
-        var ternaryText = text(ternary, source);
+    private void printTernary(Cursor.Branch ternary) {
+        var ternaryText = text(ternary);
         if (ternaryText.contains("?") && ternaryText.contains(":")) {
-            var children = children(ternary);
-            int alignCol = currentColumn;
-            boolean skipNext = false;
-            for (var child : children) {
-                if (isTerminalWithText(child, "?")) {
-                    newline();
-                    printAlignedTo(alignCol);
-                    emit("? ");
-                    skipNext = true;
-                } else if (isTerminalWithText(child, ":")) {
-                    newline();
-                    printAlignedTo(alignCol);
-                    emit(": ");
-                    skipNext = true;
-                } else if (skipNext) {
-                    printNodeContent(child);
-                    skipNext = false;
-                } else {
-                    printNode(child);
+            // Align `?` and `:` under the first non-space char of the cond expression.
+            // `currentColumn` at entry sits BEFORE any auto-space that the spacing
+            // machinery will emit before the cond's first token. We probe with a
+            // representative identifier-like first char ("x") to compute whether
+            // that auto-space is pending; if so, the cond's first emit lands at
+            // currentColumn + 1 rather than currentColumn. Each ternary uses its
+            // OWN cond-start column — nested ternaries do NOT inherit; e.g. the
+            // inner ternary in `cond ? a : (b ? c : d)` aligns at `b`'s column.
+            int alignCol = currentColumn + (needsSpaceBefore("x") ? 1 : 0);
+            boolean[] skipNext = {false};
+            walkTokensWith(ternary, new TokenWalker() {
+                @Override
+                public void onChild(Cursor child) {
+                    if (skipNext[0]) {
+                        printNodeContent(child);
+                        skipNext[0] = false;
+                    } else {
+                        // Ternary cond: suppress LOG_AND/LOG_OR breaking so `&&`/`||`
+                        // in the cond stay on one line per the always-break-`?`/`:` rule.
+                        try (var tc = alignment.enterTernaryCond()) {
+                            printNode(child);
+                        }
+                    }
                 }
-            }
+
+                @Override
+                public void onToken(int kind, String text) {
+                    if ("?".equals(text)) {
+                        newline();
+                        printAlignedTo(alignCol);
+                        emit("? ");
+                        skipNext[0] = true;
+                    } else if (":".equals(text)) {
+                        newline();
+                        printAlignedTo(alignCol);
+                        emit(": ");
+                        skipNext[0] = true;
+                    } else {
+                        emitToken(text);
+                    }
+                }
+            });
         } else {
-            printChildren(ternary);
+            walkTokens(ternary);
         }
     }
 
     // ===== Additive (string concatenation wrapping) =====
 
-    private void printAdditive(CstNode.NonTerminal additive) {
+    private void printAdditive(Cursor.Branch additive) {
         if (measuringMode) {
-            for (var child : children(additive)) {
-                printNodeContent(child);
-            }
+            walkTokensWith(additive, new TokenWalker() {
+                @Override public void onChild(Cursor c) { printNodeContent(c); }
+                @Override public void onToken(int kind, String text) { emitToken(text); }
+            });
             return;
         }
 
         boolean hasStringLit = containsStringLit(additive);
         if (!hasStringLit) {
-            for (var child : children(additive)) {
-                printNodeContent(child);
-            }
+            walkTokensWith(additive, new TokenWalker() {
+                @Override public void onChild(Cursor c) { printNodeContent(c); }
+                @Override public void onToken(int kind, String text) { emitToken(text); }
+            });
             return;
         }
 
         int width = measureWidth(additive);
         if (currentColumn + width <= config.maxLineLength()) {
-            for (var child : children(additive)) {
-                printNodeContent(child);
-            }
+            walkTokensWith(additive, new TokenWalker() {
+                @Override public void onChild(Cursor c) { printNodeContent(c); }
+                @Override public void onToken(int kind, String text) { emitToken(text); }
+            });
             return;
         }
 
-        var children = children(additive);
-        int alignCol = currentColumn;
-        var operandInfo = new IdentityHashMap<CstNode, OperandInfo>();
-        for (var child : children) {
-            if (!isTerminalWithText(child, "+") && !isTerminalWithText(child, "-")) {
-                operandInfo.put(child, new OperandInfo(startsWithStringLit(child), measureWidth(child)));
-            }
+        // Multi-line: break before string-literal operands. Suppress breaking inside
+        // switch case expressions — goldens render those inline regardless of width.
+        if (alignment.isInInlineExpression()) {
+            walkTokensWith(additive, new TokenWalker() {
+                @Override public void onChild(Cursor c) { printNodeContent(c); }
+                @Override public void onToken(int kind, String text) { emitToken(text); }
+            });
+            return;
+        }
+        var kids = additive.children().toList();
+        // alignCol = currentColumn - 1 so that the `+` lands one column LEFT of the
+        // first operand (the goldens align `+` under the first operand's quote, but the
+        // operand itself sits one column to the right because of the trailing space
+        // after `+`).
+        int alignCol = Math.max(0, currentColumn - 1);
+        // Key by firstTokenIdx — Cursor identity is unstable across children() calls.
+        var operandInfo = new HashMap<Integer, OperandInfo>();
+        for (var child : kids) {
+            operandInfo.put(child.firstTokenIdx(), new OperandInfo(startsWithStringLit(child), measureWidth(child)));
         }
 
-        boolean firstPrinted = false;
-        boolean pendingPlus = false;
-        for (var child : children) {
-            if (isTerminalWithText(child, "+")) {
-                pendingPlus = true;
-            } else if (isTerminalWithText(child, "-")) {
-                emit(" - ");
-            } else {
-                if (pendingPlus) {
-                    var info = operandInfo.get(child);
+        boolean[] firstPrinted = {false};
+        boolean[] pendingPlus = {false};
+        walkTokensWith(additive, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) {
+                if (pendingPlus[0]) {
+                    var info = operandInfo.get(child.firstTokenIdx());
                     boolean startsWithStr = info != null && info.startsWithString();
-                    int opWidth = info != null ? info.width() : 0;
-                    if (startsWithStr && firstPrinted && currentColumn + 3 + opWidth > config.maxLineLength()) {
+                    if (startsWithStr && firstPrinted[0]) {
+                        // Multi-line additive: every `+` followed by a string-literal
+                        // operand breaks onto its own line (the goldens render each
+                        // continuation aligned under the first operand).
                         newline();
                         printAlignedTo(alignCol);
                         emit("+ ");
                     } else {
                         emit(" + ");
                     }
-                    pendingPlus = false;
+                    pendingPlus[0] = false;
                 }
                 printNodeContent(child);
-                firstPrinted = true;
+                firstPrinted[0] = true;
             }
+
+            @Override
+            public void onToken(int kind, String text) {
+                if ("+".equals(text)) {
+                    pendingPlus[0] = true;
+                } else if ("-".equals(text)) {
+                    emit(" - ");
+                } else {
+                    emitToken(text);
+                }
+            }
+        });
+    }
+
+    /// Print a `LOG_AND` (`&&`) chain. In TAIL contexts (return/throw/lambda body),
+    /// always break — each `&&` lands on a new line aligned to the first operand. In
+    /// non-tail contexts (assignment RHS, args, switch case), render inline.
+    private void printLogAnd(Cursor.Branch logAnd) {
+        // Count `&&` operators — only break when 2+ operators (3+ operands);
+        // short `a && b` chains stay inline.
+        int operatorCount = 0;
+        var tokens = logAnd.cst().tokens();
+        for (int t = logAnd.firstTokenIdx(); t <= logAnd.lastTokenIdx(); t++) {
+            if (tokens.isTrivia(t)) continue;
+            if ("&&".equals(tokens.textAt(t).toString())) operatorCount++;
         }
+        if (measuringMode
+            || alignment.isInInlineExpression()
+            || alignment.isInTernaryCond()
+            || !alignment.isInTailContext()
+            || operatorCount < 2) {
+            walkTokensWith(logAnd, new TokenWalker() {
+                @Override public void onChild(Cursor c) { printNodeContent(c); }
+                @Override public void onToken(int kind, String text) { emitToken(text); }
+            });
+            return;
+        }
+        // Multi-line: break before each `&&` aligned to the first operand's column.
+        // currentColumn at entry sits before any pending auto-space; add 1 if the next
+        // emit would auto-space (e.g. after `return`).
+        int alignCol = currentColumn + (needsSpaceBefore("x") ? 1 : 0);
+        boolean[] firstPrinted = {false};
+        walkTokensWith(logAnd, new TokenWalker() {
+            @Override
+            public void onChild(Cursor c) {
+                printNodeContent(c);
+                firstPrinted[0] = true;
+            }
+            @Override
+            public void onToken(int kind, String text) {
+                if ("&&".equals(text) && firstPrinted[0]) {
+                    newline();
+                    printAlignedTo(alignCol);
+                    emit("&& ");
+                } else {
+                    emitToken(text);
+                }
+            }
+        });
     }
 
-    private boolean containsStringLit(CstNode node) {
-        return switch (node) {
-            case CstNode.Terminal _ -> false;
-            case CstNode.Token _ -> false;
-            case CstNode.Error _ -> false;
-            case CstNode.NonTerminal nt -> {
-                if (nt.rule() instanceof RuleId.StringLit) {
-                    yield true;
-                }
-                for (var child : children(nt)) {
-                    if (containsStringLit(child)) {
-                        yield true;
-                    }
-                }
-                yield false;
-            }
-        };
+    private boolean containsStringLit(Cursor node) {
+        return text(node).contains("\"");
     }
 
-    private boolean startsWithStringLit(CstNode node) {
-        return switch (node) {
-            case CstNode.Terminal _ -> false;
-            case CstNode.Token _ -> false;
-            case CstNode.Error _ -> false;
-            case CstNode.NonTerminal nt -> {
-                if (nt.rule() instanceof RuleId.StringLit) {
-                    yield true;
-                }
-                var childList = children(nt);
-                if (!childList.isEmpty()) {
-                    yield startsWithStringLit(childList.getFirst());
-                }
-                yield false;
-            }
-        };
+    private boolean startsWithStringLit(Cursor node) {
+        var t = text(node).stripLeading();
+        return !t.isEmpty() && t.charAt(0) == '"';
     }
 
     // ===== Content printing (no trivia, with spacing) =====
 
-    private void printNodeContent(CstNode node) {
+    private void printNodeContent(Cursor node) {
         switch (node) {
-            case CstNode.Terminal t -> emitToken(t.text());
-            case CstNode.Token tok -> emitToken(tok.text());
-            case CstNode.Error err -> emitToken(err.skippedText());
-            case CstNode.NonTerminal nt -> {
-                switch (nt.rule()) {
-                    case RuleId.Lambda _ -> printLambdaContent(nt);
-                    case RuleId.LambdaParam _ -> printLambdaParam(nt);
-                    case RuleId.Args _ -> printArgs(nt);
-                    case RuleId.Block _ -> printBlock(nt);
-                    case RuleId.Postfix _ -> printPostfix(nt);
-                    case RuleId.PostOp _ -> printPostOp(nt);
-                    case RuleId.Ternary _ -> printTernary(nt);
-                    case RuleId.Additive _ -> printAdditive(nt);
-                    case RuleId.Params _ -> printParams(nt);
-                    case RuleId.RecordComponents _ -> printRecordComponents(nt);
-                    case RuleId.TypeArgs _ -> printTypeArgs(nt);
-                    case RuleId.TypeParams _ -> printTypeParams(nt);
-                    case RuleId.SwitchBlock _ -> printSwitchBlock(nt);
-                    case RuleId.Unary _ -> printUnary(nt);
-                    case RuleId.FieldDecl _ -> printFieldDecl(nt);
-                    case RuleId.Param _ -> printParam(nt);
-                    case RuleId.EnumBody _ -> printEnumBody(nt);
-                    case RuleId.RecordBody _ -> printRecordBody(nt);
-                    case RuleId.ClassBody _ -> printClassBody(nt);
-                    case RuleId.AnnotationBody _ -> printAnnotationBody(nt);
-                    case RuleId.Primary _ -> printPrimary(nt);
-                    case RuleId.RecordDecl _ -> printRecordDecl(nt);
-                    case RuleId.ResourceSpec _ -> printResourceSpec(nt);
-                    case RuleId.LambdaParams _ -> {
-                        for (var child : children(nt)) {
-                            printNodeContent(child);
-                        }
-                    }
+            case Cursor.Leaf leaf -> emitLeafTokens(leaf);
+            case Cursor.ErrorNode err -> emitToken(err.skippedText().toString());
+            case Cursor.Branch br -> {
+                switch (br.kind()) {
+                    case LAMBDA -> printLambdaContent(br);
+                    case LAMBDA_PARAM -> printLambdaParam(br);
+                    case ARGS -> printArgs(br);
+                    case BLOCK -> printBlock(br);
+                    case POSTFIX -> printPostfix(br);
+                    case POST_OP -> printPostOp(br);
+                    case TERNARY -> printTernary(br);
+                    case ADDITIVE -> printAdditive(br);
+            case LOG_AND -> printLogAnd(br);
+                    case PARAMS -> printParams(br);
+                    case RECORD_COMPONENTS -> printRecordComponents(br);
+                    case TYPE_ARGS -> printTypeArgs(br);
+                    case TYPE_PARAMS -> printTypeParams(br);
+                    case SWITCH_BLOCK -> printSwitchBlock(br);
+                    case UNARY -> printUnary(br);
+                    case FIELD_DECL -> printFieldDecl(br);
+                    case PARAM -> printParam(br);
+                    case ENUM_BODY -> printEnumBody(br);
+                    case RECORD_BODY -> printRecordBody(br);
+                    case CLASS_BODY -> printClassBody(br);
+                    case ANNOTATION_BODY -> printAnnotationBody(br);
+                    case PRIMARY -> printPrimary(br);
+                    case RECORD_DECL -> printRecordDecl(br);
+                    case RESOURCE_SPEC -> printResourceSpec(br);
                     default -> {
-                        for (var child : children(nt)) {
-                            printNodeContent(child);
-                        }
+                        boolean breakAfterAnnotation = annotationsBreakOnNewlineInParent(br.kind());
+                        walkTokensWith(br, new TokenWalker() {
+                            @Override public void onChild(Cursor c) {
+                                printNodeContent(c);
+                                if (breakAfterAnnotation && c.kindIs(RuleKind.ANNOTATION)) {
+                                    newline();
+                                    printIndent();
+                                }
+                            }
+                            @Override public void onToken(int kind, String text) { emitToken(text); }
+                        });
                     }
                 }
             }
         }
     }
 
-    private void printLambdaContent(CstNode.NonTerminal lambda) {
-        var children = children(lambda);
-        for (var child : children) {
-            if (isTerminalWithText(child, "->")) {
-                emit(" -> ");
-            } else {
-                printNodeContent(child);
-            }
-        }
-    }
+    private void printLambdaContent(Cursor.Branch lambda) {
+        walkTokensWith(lambda, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) { printNodeContent(child); }
 
-    private void printChildren(CstNode.NonTerminal nt) {
-        for (var child : children(nt)) {
-            printNode(child);
-        }
+            @Override
+            public void onToken(int kind, String text) {
+                if ("->".equals(text)) {
+                    emit(" -> ");
+                } else {
+                    emitToken(text);
+                }
+            }
+        });
     }
 
     // ===== Comment emission (inline, but never affects layout decisions) =====
 
-    private void emitLeadingComments(CstNode node) {
-        for (var trivia : node.leadingTrivia()) {
-            switch (trivia) {
-                case Trivia.LineComment lc -> {
-                    if (currentColumn > 0) {
-                        newline();
-                    }
+    private void emitLeadingComments(Cursor node) {
+        boolean emittedAny = false;
+        // Iterate by token index so we can dedupe (under v6, leading trivia is sometimes
+        // attributed to both the outer node and its first CST child — emit each token at
+        // most once across the whole format pass).
+        var triviaTokenIdxs = node.leadingTriviaTokens().toArray();
+        var tokens = node.cst().tokens();
+        for (int tokIdx : triviaTokenIdxs) {
+            if (emittedTriviaTokens.contains(tokIdx)) {
+                continue;
+            }
+            int kind = tokens.kindAt(tokIdx);
+            boolean isLine = kind == 1 || kind == 3;        // LINE_COMMENT or DOC_LINE_COMMENT
+            boolean isBlock = kind == 2 || kind == 4;       // BLOCK_COMMENT or DOC_BLOCK_COMMENT
+            if (isLine) {
+                if (currentColumn > 0) {
+                    newline();
+                }
+                if (forcedIndentCol >= 0) {
+                    printAlignedTo(forcedIndentCol);
+                } else {
                     printIndent();
-                    var text = lc.text().stripTrailing();
-                    output.append(text);
-                    currentColumn += text.length();
+                }
+                var text = tokens.textAt(tokIdx).toString().stripTrailing();
+                output.append(text);
+                currentColumn += text.length();
+                newline();
+                emittedAny = true;
+                emittedTriviaTokens.add(tokIdx);
+            } else if (isBlock) {
+                if (currentColumn > 0) {
                     newline();
                 }
-                case Trivia.BlockComment bc -> {
-                    if (currentColumn > 0) {
-                        newline();
+                var lines = tokens.textAt(tokIdx).toString().split("\n", -1);
+                for (int i = 0; i < lines.length; i++) {
+                    if (i == 0) {
+                        printIndent();
                     }
-                    var lines = bc.text().split("\n", -1);
-                    for (int i = 0; i < lines.length; i++) {
-                        if (i == 0) {
-                            printIndent();
-                        }
-                        var line = lines[i].stripTrailing();
-                        output.append(line);
-                        currentColumn += line.length();
-                        if (i < lines.length - 1) {
-                            output.append("\n");
-                            currentColumn = 0;
-                            currentLine++;
-                        }
+                    var line = lines[i].stripTrailing();
+                    output.append(line);
+                    currentColumn += line.length();
+                    if (i < lines.length - 1) {
+                        output.append("\n");
+                        currentColumn = 0;
+                        currentLine++;
                     }
-                    newline();
                 }
-                case Trivia.Whitespace _ -> {
-                    // Ignored — flow formatter controls all whitespace
-                }
+                newline();
+                emittedAny = true;
+                emittedTriviaTokens.add(tokIdx);
+            }
+            // Whitespace trivia ignored — flow formatter controls all whitespace
+        }
+        if (emittedAny && currentColumn == 0) {
+            if (forcedIndentCol >= 0) {
+                printAlignedTo(forcedIndentCol);
+            } else {
+                printIndent();
             }
         }
     }
@@ -1461,6 +2447,7 @@ final class FlowPrinter {
     private void emitBare(String text) {
         emit(text);
     }
+
 
     private void emit(String text) {
         if (measuringMode) {
@@ -1518,15 +2505,6 @@ final class FlowPrinter {
         }
     }
 
-    private boolean isTerminalWithText(CstNode node, String text) {
-        return switch (node) {
-            case CstNode.Terminal t -> text.equals(t.text());
-            case CstNode.Token tok -> text.equals(tok.text());
-            case CstNode.NonTerminal _ -> false;
-            case CstNode.Error _ -> false;
-        };
-    }
-
     // ===== Spacing rules (inlined from SpacingRules — package-private in cst) =====
 
     private boolean needsSpaceBefore(String text) {
@@ -1560,13 +2538,60 @@ final class FlowPrinter {
             return true;
         }
         if (lastChar == '<') {
-            return true;
-        }
-        if (firstChar == '?' && lastChar == '<') {
-            return true;
+            // Generic '<' (inside TYPE_ARGS / TYPE_PARAMS) glues to the type argument that follows
+            // (`List<String`, `static <T`). A relational/shift operator '<' (any non-type context)
+            // glues only a following '<' to form '<<'; before an operand it takes a space, added in
+            // checkSpaceRules (e.g. `a < 0`, `v << n`).
+            if (typeContextDepth > 0) {
+                return true;
+            }
+            return firstChar == '<';
         }
         if (firstChar == '>' && lastChar == '?') {
             return true;
+        }
+        // Unary minus/plus: when the previous emitted token was `-` or `+` AND it sits in
+        // a unary-operator position (preceded by a unary-context char), suppress the
+        // space before the operand.
+        if ((lastChar == '-' || lastChar == '+') && isUnaryPosition()) {
+            return true;
+        }
+        return false;
+    }
+
+    /// True iff the previously emitted `-`/`+` is in a unary-operator position where the
+    /// goldens render with NO trailing space. Applies after any binary-op char, `(`, `,`,
+    /// or unary-context keyword: `return -x`, `throw -1`, `f(-x)`, `f(a, -b)`,
+    /// `x = -1`, `cond ? -x : y`. After an operand (`a - b`), the operator is binary —
+    /// return false.
+    private boolean isUnaryPosition() {
+        if (measuringMode || output.length() < 2) {
+            return false;
+        }
+        // The operator sits at output[length-1]. Skip a single space to find the char
+        // preceding it.
+        int spaceIdx = output.length() - 2;
+        boolean sawSpace = spaceIdx >= 0 && output.charAt(spaceIdx) == ' ';
+        int beforeIdx = sawSpace ? spaceIdx - 1 : spaceIdx;
+        if (beforeIdx < 0) {
+            return true;
+        }
+        char before = output.charAt(beforeIdx);
+        if (before == '(' || before == ',' || BINARY_OP_CHARS.contains(before)) {
+            return true;
+        }
+        // Keyword-prefixed: only when the operator immediately follows a space which
+        // immediately follows the keyword (no intervening operand). The keyword ends
+        // with a letter, so verify `before` is a letter AND `lastWord` is in the
+        // unary-context keyword set.
+        if (sawSpace && Character.isLetter(before) && SPACE_AFTER_KEYWORDS.contains(lastWord)) {
+            // Confirm the letter run ending at `before` actually equals `lastWord` —
+            // i.e. nothing was emitted between the keyword and this operator.
+            int len = lastWord.length();
+            if (beforeIdx + 1 - len >= 0
+                && output.substring(beforeIdx + 1 - len, beforeIdx + 1).equals(lastWord)) {
+                return true;
+            }
         }
         return false;
     }
@@ -1574,6 +2599,11 @@ final class FlowPrinter {
     private boolean checkSpaceRules(String text, char firstChar) {
         // Comma rule
         if (lastChar == ',') {
+            return true;
+        }
+        // Semicolon separator in a `for` header. A statement-terminating `;` is followed by a
+        // newline (lastChar would be '\n'), so this only fires mid-line — between for-clauses.
+        if (lastChar == ';') {
             return true;
         }
         // Closing brace keyword
@@ -1603,13 +2633,21 @@ final class FlowPrinter {
         if (lastChar == '.' && prevChar == '.' && Character.isLetter(firstChar)) {
             return true;
         }
-        // Annotation rules
-        if (firstChar == '@' && lastChar == ')') {
+        // Annotation rules: `@` is a type-use or stacked annotation when following
+        // `)`, `]`, an identifier char, or `>` (after generic close).
+        if (firstChar == '@' && (lastChar == ')' || lastChar == ']' || lastChar == '>' || isIdentifierChar(lastChar))) {
             return true;
         }
         // Angle bracket rules
         if (text.equals("<") || text.equals(">")) {
             return checkAngleBracketRules(text, firstChar);
+        }
+        // Relational/shift operator '<' (outside any TYPE_ARGS / TYPE_PARAMS context) before its
+        // operand. '<' is not in BINARY_OP_CHARS, so it needs this explicit rule; a generic-open
+        // '<' (typeContextDepth > 0) was already suppressed in mustNotHaveSpaceBefore and never
+        // reaches here. The symmetric '>' operand is handled by checkGenericClosing.
+        if (lastChar == '<' && typeContextDepth == 0) {
+            return true;
         }
         // Binary operators
         if (BINARY_OPS.contains(text) || isBinaryOpLastChar()) {

@@ -3,10 +3,10 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.CstNodes;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
@@ -14,9 +14,12 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// JBCT-RET-03: Never return null.
 ///
 /// JBCT code never returns null. Use Option<T> for optional values.
+/// Annotate with @NullReturn if returning null is intentional (side-effect fold branches,
+/// JDK callback contracts like Map.computeIfPresent).
 public class CstNullReturnRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-03";
     private static final String DOC_LINK = "https://github.com/siy/coding-technology/blob/main/skills/jbct/fundamentals/four-return-kinds.md";
+    private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
     @Override
     public String ruleId() {
@@ -24,24 +27,19 @@ public class CstNullReturnRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        // Get package name
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         // Find all return statements that return null
         return findAllStatements(root).stream()
-                      .filter(stmt -> isReturnNull(stmt, source))
-                      .map(stmt -> createDiagnostic(root, stmt, source, ctx));
+                      .filter(this::isReturnNull)
+                      .map(stmt -> createDiagnostic(root, stmt, ctx));
     }
 
-    private boolean isReturnNull(CstNode stmt, String source) {
+    private boolean isReturnNull(Cursor stmt) {
         // Check if this is "return null;"
-        var stmtText = text(stmt, source).trim();
+        var stmtText = text(stmt).trim();
         if (!stmtText.startsWith("return")) {
             return false;
         }
@@ -49,14 +47,13 @@ public class CstNullReturnRule implements CstLintRule {
         return stmtText.matches("return\\s+null\\s*;");
     }
 
-    private Diagnostic createDiagnostic(CstNode root, CstNode stmt, String source, LintContext ctx) {
+    private Diagnostic createDiagnostic(Cursor root, Cursor stmt, LintContext ctx) {
         var line = startLine(stmt);
         var column = startColumn(stmt);
         // Find enclosing method name
-        var methodName = findAncestor(root, stmt, RuleId.Member.class).flatMap(md -> childByRule(md,
-                                                                                                   RuleId.Identifier.class))
-                                     .map(id -> text(id, source))
-                                     .or("(unknown)");
+        var methodName = findAncestor(root, stmt, RuleKind.MEMBER)
+            .map(member -> extractMethodName(text(member)))
+            .or("(unknown)");
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
@@ -64,7 +61,8 @@ public class CstNullReturnRule implements CstLintRule {
                                      column,
                                      "Method '" + methodName + "' returns null; use Option<T> instead",
                                      "JBCT code never returns null. Use Option.none() for absent values, "
-                                     + "Option.some(value) for present values.")
+                                     + "Option.some(value) for present values. "
+                                     + "Annotate with @NullReturn if null return is intentional.")
                          .withExample("""
             // Before: returning null
             public User findUser(UserId id) {
@@ -79,5 +77,10 @@ public class CstNullReturnRule implements CstLintRule {
             }
             """)
                          .withDocLink(DOC_LINK);
+    }
+
+    private static String extractMethodName(String memberText) {
+        var matcher = METHOD_NAME_PATTERN.matcher(memberText);
+        return matcher.find() ? matcher.group(1) : "(unknown)";
     }
 }

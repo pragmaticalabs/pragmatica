@@ -2,8 +2,8 @@ package org.pragmatica.jbct.config;
 
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.FileOps;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 
 /// Loads JBCT configuration with priority:
@@ -49,7 +49,7 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
 
     /// Load config from a specific file.
     static Option<JbctConfig> loadFromFile(Path path) {
-        if (!Files.exists(path) || !Files.isRegularFile(path)) {
+        if (!FileOps.exists(path) || !FileOps.isRegularFile(path)) {
             return Option.none();
         }
         return TomlParser.parseFile(path)
@@ -66,7 +66,7 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
     private static Option<Path> findProjectConfigRecursive(Option<Path> dirOpt) {
         return dirOpt.flatMap(dir -> {
                                   var configPath = dir.resolve(PROJECT_CONFIG_NAME);
-                                  return Files.exists(configPath) && Files.isRegularFile(configPath)
+                                  return FileOps.exists(configPath) && FileOps.isRegularFile(configPath)
                                          ? Option.some(configPath)
                                          : findProjectConfigRecursive(Option.option(dir.getParent()));
                               });

@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.shared;
 
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import java.nio.file.Path;
 
@@ -14,10 +15,12 @@ public sealed interface PathValidation permits PathValidation.unused {
     /// @param baseDir      The base directory that the path must stay within
     /// @return Result containing the resolved absolute path, or failure if path is unsafe
     static Result<Path> validateRelativePath(String relativePath, Path baseDir) {
-        if (relativePath == null || relativePath.isBlank()) {
-            return SecurityError.PathTraversalDetected.pathTraversalDetected(relativePath, "path is null or blank")
-                                .result();
-        }
+        return Verify.ensure(relativePath, Verify.Is::present,
+                             SecurityError.PathTraversalDetected.pathTraversalDetected("", "path is null or blank"))
+                     .flatMap(path -> validatePath(path, baseDir));
+    }
+
+    private static Result<Path> validatePath(String relativePath, Path baseDir) {
         // Reject path traversal sequences
         if (relativePath.contains("..")) {
             return SecurityError.PathTraversalDetected.pathTraversalDetected(relativePath, "contains '..' sequence")

@@ -3,8 +3,8 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 
 import java.util.stream.Stream;
 
@@ -20,21 +20,17 @@ public class CstFluentFailureRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         // Find Result.failure patterns (Primary doesn't include the parenthesis)
-        return findAll(root, RuleId.Primary.class).stream()
-                      .filter(node -> text(node, source).equals("Result.failure"))
+        return findAll(root, RuleKind.PRIMARY).stream()
+                      .filter(node -> text(node).equals("Result.failure"))
                       .map(node -> createDiagnostic(node, ctx));
     }
 
-    private Diagnostic createDiagnostic(CstNode node, LintContext ctx) {
+    private Diagnostic createDiagnostic(Cursor node, LintContext ctx) {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),

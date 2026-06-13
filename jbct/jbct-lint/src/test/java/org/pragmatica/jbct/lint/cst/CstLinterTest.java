@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/// Comprehensive test suite for all 37 JBCT lint rules.
+/// Comprehensive test suite for all 41 JBCT lint rules.
 /// Each test verifies that violations are properly detected.
 class CstLinterTest {
     private CstLinter linter;
@@ -449,6 +449,84 @@ class CstLinterTest {
                 }
                 """);
             assertNoRule(diagnostics, "JBCT-VO-02");
+        }
+
+        @Test
+        void allowsConstructFactoryAlongsideParseFactory() {
+            // Parse + construct factory pattern: a value-object type T may have a
+            // typed-arg static factory returning T directly (no Result wrapper) when
+            // the inputs are already-validated value objects. The Result<T> parse
+            // factory is the validation entry point; the construct factory is a typed
+            // shortcut used by callers that already hold validated components.
+            var diagnostics = lint("""
+                package com.example.domain.test;
+                import org.pragmatica.lang.Result;
+                record OrderId(String value) {
+                    public static Result<OrderId> orderId(String raw) {
+                        return Result.success(new OrderId(raw));
+                    }
+                    public static OrderId orderId(ValidatedString validated) {
+                        return new OrderId(validated.value());
+                    }
+                }
+                record ValidatedString(String value) {}
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-02");
+        }
+
+        @Test
+        void allowsConstructFactoryViaStaticConstantInValueObject() {
+            // Static field initializers inside a value-object type that allocate the
+            // type itself follow the same parse + construct trust boundary as factories.
+            var diagnostics = lint("""
+                package com.example.domain.test;
+                import org.pragmatica.lang.Result;
+                record Version(int value) {
+                    public static final Version CURRENT = new Version(0);
+                    public static Result<Version> version(String raw) {
+                        return Result.success(new Version(Integer.parseInt(raw)));
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-02");
+        }
+
+        @Test
+        void allowsWithBuilderOnValueObjectRecord() {
+            // Instance-level `with*` builders create a new immutable instance from
+            // existing-validated state. Allowed inside the value-object's own scope.
+            var diagnostics = lint("""
+                package com.example.domain.test;
+                import org.pragmatica.lang.Result;
+                record Config(String name, long timeoutMs) {
+                    public static Result<Config> config(String n, long t) {
+                        return Result.success(new Config(n, t));
+                    }
+                    public Config withTimeoutMs(long timeoutMs) {
+                        return new Config(name, timeoutMs);
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-02");
+        }
+
+        @Test
+        void stillFlagsConstructionFromUnrelatedClass() {
+            // A static method on an unrelated, non-value-object class that constructs
+            // a value object directly bypasses validation — keep flagging this case.
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                import org.pragmatica.lang.Result;
+                public class Helper {
+                    public static Email bypass() {
+                        return new Email("evil@example.com");
+                    }
+                }
+                record Email(String value) {
+                    public static Result<Email> email(String v) { return Result.success(new Email(v)); }
+                }
+                """);
+            assertHasRule(diagnostics, "JBCT-VO-02");
         }
     }
 
@@ -2173,6 +2251,64 @@ class CstLinterTest {
                 }
                 """);
             assertNoRule(diagnostics, "JBCT-RET-01");
+        }
+    }
+
+    // ========== @NullReturn Annotation Support ==========
+    @Nested
+    @DisplayName("@NullReturn annotation suppresses JBCT-RET-03")
+    class NullReturnAnnotationTests {
+        @Test
+        void nullReturnOnMethod_suppressesNullWarning() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                public class Test {
+                    @NullReturn
+                    public <R> R toNull() {
+                        return null;
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-03");
+        }
+
+        @Test
+        void nullReturnOnClass_suppressesAllNullWarnings() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                @NullReturn
+                public class Test {
+                    public String findOne() { return null; }
+                    public String findTwo() { return null; }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-03");
+        }
+
+        @Test
+        void nullReturnScopeIsLimited_otherMethodsStillFlagged() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                public class Test {
+                    @NullReturn
+                    public String allowed() { return null; }
+
+                    public String notAllowed() { return null; }
+                }
+                """);
+            assertHasRule(diagnostics, "JBCT-RET-03");
+        }
+
+        @Test
+        void fullyQualifiedNullReturn_alsoWorks() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                public class Test {
+                    @org.pragmatica.lang.NullReturn
+                    public String allowed() { return null; }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-03");
         }
     }
 

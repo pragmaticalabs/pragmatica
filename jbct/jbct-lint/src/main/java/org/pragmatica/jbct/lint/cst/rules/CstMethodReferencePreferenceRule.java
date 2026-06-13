@@ -3,8 +3,7 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.lang.Option;
 
 import java.util.regex.Pattern;
@@ -40,21 +39,17 @@ public class CstMethodReferencePreferenceRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         return findAllLambdas(root).stream()
-                      .map(lambda -> checkLambda(lambda, source, ctx))
+                      .map(lambda -> checkLambda(lambda, ctx))
                       .flatMap(Option::stream);
     }
 
-    private Option<Diagnostic> checkLambda(CstNode lambda, String source, LintContext ctx) {
-        var lambdaText = text(lambda, source).trim();
+    private Option<Diagnostic> checkLambda(Cursor lambda, LintContext ctx) {
+        var lambdaText = text(lambda).trim();
         // Check for constructor lambda: x -> new Type(x)
         var constructorMatch = CONSTRUCTOR_LAMBDA.matcher(lambdaText);
         if (constructorMatch.matches()) {
@@ -84,7 +79,7 @@ public class CstMethodReferencePreferenceRule implements CstLintRule {
         return Option.none();
     }
 
-    private Diagnostic createDiagnostic(CstNode lambda, String lambdaText, String suggestion, LintContext ctx) {
+    private Diagnostic createDiagnostic(Cursor lambda, String lambdaText, String suggestion, LintContext ctx) {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),

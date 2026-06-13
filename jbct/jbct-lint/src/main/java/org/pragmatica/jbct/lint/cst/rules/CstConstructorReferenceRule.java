@@ -3,8 +3,7 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
 
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -24,26 +23,22 @@ public class CstConstructorReferenceRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         return findAllLambdas(root).stream()
-                      .filter(lambda -> isConstructorLambda(lambda, source))
+                      .filter(this::isConstructorLambda)
                       .map(lambda -> createDiagnostic(lambda, ctx));
     }
 
-    private boolean isConstructorLambda(CstNode lambda, String source) {
-        var lambdaText = text(lambda, source);
+    private boolean isConstructorLambda(Cursor lambda) {
+        var lambdaText = text(lambda);
         return CONSTRUCTOR_LAMBDA.matcher(lambdaText)
                                  .find();
     }
 
-    private Diagnostic createDiagnostic(CstNode lambda, LintContext ctx) {
+    private Diagnostic createDiagnostic(Cursor lambda, LintContext ctx) {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),

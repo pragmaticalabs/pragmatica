@@ -3,8 +3,7 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.lang.Option;
 
 import java.util.ArrayList;
@@ -66,29 +65,23 @@ public class CstZoneMixingRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         // Find methods with monadic chains
         return findAllMethods(root).stream()
-                      .filter(method -> hasMonadicChain(method, source))
-                      .flatMap(method -> checkChainForZoneMixing(method, source, ctx));
+                      .filter(this::hasMonadicChain)
+                      .flatMap(method -> checkChainForZoneMixing(method, ctx));
     }
 
-    private boolean hasMonadicChain(CstNode method, String source) {
-        var methodText = text(method, source);
+    private boolean hasMonadicChain(Cursor method) {
+        var methodText = text(method);
         return methodText.contains(".flatMap(") || methodText.contains(".map(");
     }
 
-    private Stream<Diagnostic> checkChainForZoneMixing(CstNode method,
-                                                       String source,
-                                                       LintContext ctx) {
-        var methodText = text(method, source);
+    private Stream<Diagnostic> checkChainForZoneMixing(Cursor method, LintContext ctx) {
+        var methodText = text(method);
         var violations = new ArrayList<String>();
         // Check lambda calls in chains
         findZone3VerbsInPattern(methodText, CHAIN_CALL_PATTERN, 2, violations);
@@ -133,7 +126,7 @@ public class CstZoneMixingRule implements CstLintRule {
                : Option.some(sb.toString());
     }
 
-    private Diagnostic createDiagnostic(CstNode node, List<String> violations, LintContext ctx) {
+    private Diagnostic createDiagnostic(Cursor node, List<String> violations, LintContext ctx) {
         var verbList = String.join(", ", violations);
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),

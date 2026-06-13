@@ -7,20 +7,33 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>jbct-parent</artifactId>
-        <version>1.0.0-alpha</version>
+        <version>1.0.0-rc1</version>
     </parent>
 
     <artifactId>jbct-parser</artifactId>
     <packaging>jar</packaging>
 
     <name>JBCT Parser</name>
-    <description>Java 25 PEG parser with CST output for JBCT tools</description>
+    <description>Java 25 PEG parser with CST output for JBCT tools (v6 lex-then-parse pipeline)</description>
+
+    <properties>
+        <peglib.maven.plugin.version>0.6.2</peglib.maven.plugin.version>
+    </properties>
 
     <dependencies>
         <!-- Pragmatica Lite Core -->
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
+        </dependency>
+
+        <!-- Peglib v6 runtime — CstArray / TokenArray / ParseResult / Diagnostic types used by
+             the generated lex+parse code. Compile-scoped because Cursor (consumer-facing
+             abstraction) wraps CstArray, so all jbct-parser consumers depend on this. -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>peglib-runtime</artifactId>
+            <version>${peglib.maven.plugin.version}</version>
         </dependency>
 
         <!-- Testing -->
@@ -33,4 +46,36 @@
             <artifactId>assertj-core</artifactId>
         </dependency>
     </dependencies>
+
+    <profiles>
+        <profile>
+            <id>generate-parser</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.pragmatica-lite</groupId>
+                        <artifactId>peglib-maven-plugin</artifactId>
+                        <version>${peglib.maven.plugin.version}</version>
+                        <executions>
+                            <execution>
+                                <id>generate-java25-parser-v6</id>
+                                <phase>generate-sources</phase>
+                                <goals>
+                                    <goal>generate-v6</goal>
+                                </goals>
+                                <configuration>
+                                    <grammarFile>${project.basedir}/src/main/resources/grammars/java25.peg</grammarFile>
+                                    <outputDirectory>${project.basedir}/src/main/java</outputDirectory>
+                                    <packageName>org.pragmatica.jbct.parser.v6</packageName>
+                                    <lexerClassName>Java25Lexer</lexerClassName>
+                                    <parserClassName>Java25ParserV6</parserClassName>
+                                    <visitorClassName>Java25Visitor</visitorClassName>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

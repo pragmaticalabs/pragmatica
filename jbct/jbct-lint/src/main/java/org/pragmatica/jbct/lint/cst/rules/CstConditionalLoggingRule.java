@@ -3,8 +3,7 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
 
 import java.util.stream.Stream;
 
@@ -20,22 +19,18 @@ public class CstConditionalLoggingRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         // Find if statements wrapping log calls
         return findAllStatements(root).stream()
-                      .filter(stmt -> isConditionalLogging(stmt, source))
+                      .filter(this::isConditionalLogging)
                       .map(stmt -> createDiagnostic(stmt, ctx));
     }
 
-    private boolean isConditionalLogging(CstNode stmt, String source) {
-        var stmtText = text(stmt, source);
+    private boolean isConditionalLogging(Cursor stmt) {
+        var stmtText = text(stmt);
         if (!stmtText.startsWith("if ") && !stmtText.startsWith("if(")) {
             return false;
         }
@@ -48,7 +43,7 @@ public class CstConditionalLoggingRule implements CstLintRule {
         stmtText.contains(".info("));
     }
 
-    private Diagnostic createDiagnostic(CstNode stmt, LintContext ctx) {
+    private Diagnostic createDiagnostic(Cursor stmt, LintContext ctx) {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),

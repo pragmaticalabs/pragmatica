@@ -3,8 +3,8 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 
 import java.util.HashSet;
 import java.util.List;
@@ -43,26 +43,22 @@ public class CstStaticImportRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         // Collect static imports already in the file
-        var staticImports = collectStaticImports(root, source);
+        var staticImports = collectStaticImports(root);
         // Find qualified factory calls
         return findAllMethods(root).stream()
-                      .flatMap(method -> findQualifiedCalls(method, source, staticImports, ctx));
+                      .flatMap(method -> findQualifiedCalls(method, staticImports, ctx));
     }
 
-    private Set<String> collectStaticImports(CstNode root, String source) {
+    private Set<String> collectStaticImports(Cursor root) {
         var imports = new HashSet<String>();
-        findAll(root, RuleId.ImportDecl.class)
+        findAll(root, RuleKind.IMPORT_DECL)
         .forEach(imp -> {
-                     var importText = text(imp, source);
+                     var importText = text(imp);
                      if (importText.contains("static")) {
                          // Extract the imported members
         for (var pattern : FACTORY_PATTERNS) {
@@ -80,11 +76,10 @@ public class CstStaticImportRule implements CstLintRule {
         return imports;
     }
 
-    private Stream<Diagnostic> findQualifiedCalls(CstNode method,
-                                                  String source,
+    private Stream<Diagnostic> findQualifiedCalls(Cursor method,
                                                   Set<String> staticImports,
                                                   LintContext ctx) {
-        var methodText = text(method, source);
+        var methodText = text(method);
         var matcher = QUALIFIED_CALL.matcher(methodText);
         return Stream.iterate(matcher.find(),
                               found -> found,
@@ -104,7 +99,7 @@ public class CstStaticImportRule implements CstLintRule {
          .contains(methodName));
     }
 
-    private Diagnostic createDiagnostic(CstNode node,
+    private Diagnostic createDiagnostic(Cursor node,
                                         String typeName,
                                         String methodName,
                                         LintContext ctx) {

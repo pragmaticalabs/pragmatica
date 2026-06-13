@@ -292,6 +292,13 @@ public class PackageSlicesMojo extends AbstractMojo {
             if (manifestFile.exists()) {
                 archiver.addFile(manifestFile, "META-INF/slice/" + manifest.sliceName() + ".manifest");
             }
+            // Include intrinsic resources.toml in per-slice JAR — slice-composite's bottom layer
+            // (Batch 1 layered-config refactor). Without this the slice classloader returns null
+            // and the slice's intrinsic config (@PgSql/@Http/@Heartbeat sections) is unreachable.
+            var resourcesTomlFile = new File(classesDirectory, "resources.toml");
+            if (resourcesTomlFile.exists()) {
+                archiver.addFile(resourcesTomlFile, "META-INF/resources.toml");
+            }
             var mavenArchiver = new MavenArchiver();
             mavenArchiver.setArchiver(archiver);
             mavenArchiver.setOutputFile(jarFile);

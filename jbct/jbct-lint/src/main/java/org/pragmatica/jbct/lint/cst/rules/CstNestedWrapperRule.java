@@ -3,8 +3,8 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 import org.pragmatica.lang.Option;
 
 import java.util.Set;
@@ -24,6 +24,7 @@ public class CstNestedWrapperRule implements CstLintRule {
 
     // Pattern to detect nested wrappers like Promise<Result<...>>
     private static final Pattern NESTED_PATTERN = Pattern.compile("(Promise|Result|Option)<\\s*(Promise|Result|Option)<");
+    private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
     @Override
     public String ruleId() {
@@ -31,31 +32,31 @@ public class CstNestedWrapperRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         return findAllMethods(root).stream()
-                      .flatMap(method -> checkMethod(method, source, ctx));
+                      .flatMap(method -> checkMethod(method, ctx));
     }
 
-    private Stream<Diagnostic> checkMethod(CstNode method, String source, LintContext ctx) {
-        return childByRule(method, RuleId.Type.class).flatMap(type -> checkTypeForNesting(method, type, source, ctx))
+    private Stream<Diagnostic> checkMethod(Cursor method, LintContext ctx) {
+        return methodReturnType(method).flatMap(type -> checkTypeForNesting(method, type, ctx))
                           .stream();
     }
 
-    private Option<Diagnostic> checkTypeForNesting(CstNode method, CstNode type, String source, LintContext ctx) {
-        var typeText = text(type, source).trim();
+    private Option<Diagnostic> checkTypeForNesting(Cursor method, Cursor type, LintContext ctx) {
+        var typeText = text(type).trim();
         return detectNestedWrapper(typeText)
         .map(nestedPattern -> {
-                 var methodName = childByRule(method, RuleId.Identifier.class).map(id -> text(id, source))
-                                             .or("(unknown)");
+                 var methodName = extractMethodName(text(method));
                  return createDiagnostic(method, methodName, nestedPattern, ctx);
              });
+    }
+
+    private static String extractMethodName(String memberText) {
+        var matcher = METHOD_NAME_PATTERN.matcher(memberText);
+        return matcher.find() ? matcher.group(1) : "(unknown)";
     }
 
     private Option<String> detectNestedWrapper(String typeText) {
@@ -83,7 +84,7 @@ public class CstNestedWrapperRule implements CstLintRule {
         return Option.none();
     }
 
-    private Diagnostic createDiagnostic(CstNode method, String methodName, String pattern, LintContext ctx) {
+    private Diagnostic createDiagnostic(Cursor method, String methodName, String pattern, LintContext ctx) {
         var suggestion = getSuggestion(pattern);
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),

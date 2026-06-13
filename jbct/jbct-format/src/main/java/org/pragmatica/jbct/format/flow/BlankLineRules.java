@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.format.flow;
 
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 import org.pragmatica.lang.Option;
 
 import static org.pragmatica.jbct.parser.CstNodes.text;
@@ -14,21 +15,96 @@ final class BlankLineRules {
     private BlankLineRules() {}
 
     /// Determine if a blank line is needed between two consecutive members.
-    static boolean needsBlankLineBetween(CstNode current, Option<CstNode> previous, String source) {
+    static boolean needsBlankLineBetween(Cursor current, Option<Cursor> previous) {
         return previous
-            .filter(prev -> !areBothSimpleNoInitDeclarations(current, prev, source))
+            .filter(prev -> !canPackTogether(current, prev))
             .isPresent();
     }
 
-    private static boolean areBothSimpleNoInitDeclarations(CstNode current, CstNode previous, String source) {
-        return isSimpleNoInitDeclaration(text(current, source))
-            && isSimpleNoInitDeclaration(text(previous, source));
+    /// Two members pack tightly together (no blank line) iff:
+    /// - Both are simple declarations (no body, no annotation), AND
+    /// - Both share the same `static` modifier status, AND
+    /// - Neither has an initializer with a multi-line value (text blocks, broken-args
+    ///   lambdas) — multi-line values visually separate themselves and warrant blank
+    ///   separation from neighbours.
+    private static boolean canPackTogether(Cursor current, Cursor previous) {
+        if (!isSimpleNoBodyDeclaration(current) || !isSimpleNoBodyDeclaration(previous)) {
+            return false;
+        }
+        if (isStaticField(current) != isStaticField(previous)) {
+            return false;
+        }
+        if (hasMultilineValue(current) || hasMultilineValue(previous)) {
+            return false;
+        }
+        // Fields containing an annotation anywhere in their text (e.g. annotated lambda
+        // params) get blank separation from their neighbours.
+        if (text(current).contains("@") || text(previous).contains("@")) {
+            return false;
+        }
+        return true;
     }
 
-    /// A simple declaration without initializer: ends with semicolon, no block body, no assignment.
-    /// Matches interface methods like `String email();` and bare fields like `Request raw;`.
-    private static boolean isSimpleNoInitDeclaration(String memberText) {
-        var trimmed = memberText.trim();
-        return trimmed.endsWith(";") && !trimmed.contains("{") && !trimmed.contains("=");
+    /// A simple declaration: ends with semicolon, no block body, AND no annotation. Examines the
+    /// member's non-trivia tokens (not `text()`, which bleeds trailing trivia such as a following
+    /// member's leading comment into this member and would otherwise hide the terminating `;`).
+    private static boolean isSimpleNoBodyDeclaration(Cursor member) {
+        if (hasAnnotationChild(member)) {
+            return false;
+        }
+        if (!(member instanceof Cursor.Branch br)) {
+            return false;
+        }
+        var tokens = br.cst().tokens();
+        int lastNonTrivia = -1;
+        for (int t = br.firstTokenIdx(); t <= br.lastTokenIdx(); t++) {
+            if (tokens.isTrivia(t)) {
+                continue;
+            }
+            if ("{".contentEquals(tokens.textAt(t))) {
+                return false;
+            }
+            lastNonTrivia = t;
+        }
+        return lastNonTrivia >= 0 && ";".contentEquals(tokens.textAt(lastNonTrivia));
+    }
+
+    /// True if any token's text contains a `\n` (text blocks, multi-line strings) OR if
+    /// the member's flat-token concatenation exceeds the typical line length (suggesting
+    /// it will format multi-line). "Fat" declarations get blank-line separation from
+    /// neighbours.
+    private static boolean hasMultilineValue(Cursor member) {
+        if (!(member instanceof Cursor.Branch br)) {
+            return false;
+        }
+        var tokens = br.cst().tokens();
+        int total = 0;
+        for (int t = br.firstTokenIdx(); t <= br.lastTokenIdx(); t++) {
+            if (tokens.isTrivia(t)) continue;
+            var s = tokens.textAt(t).toString();
+            if (s.indexOf('\n') >= 0) return true;
+            total += s.length() + 1; // +1 for typical inter-token space
+        }
+        return total > 120;
+    }
+
+    /// True if the member contains a `static` modifier token.
+    private static boolean isStaticField(Cursor member) {
+        if (!(member instanceof Cursor.Branch br)) {
+            return false;
+        }
+        var tokens = br.cst().tokens();
+        for (int t = br.firstTokenIdx(); t <= br.lastTokenIdx(); t++) {
+            if (tokens.isTrivia(t)) continue;
+            if ("static".equals(tokens.textAt(t).toString())) return true;
+        }
+        return false;
+    }
+
+    private static boolean hasAnnotationChild(Cursor member) {
+        if (!(member instanceof Cursor.Branch br)) {
+            return false;
+        }
+        return br.children().anyMatch(c -> c.kindIs(RuleKind.ANNOTATION));
     }
 }
