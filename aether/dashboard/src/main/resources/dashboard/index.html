@@ -61,7 +61,7 @@
         submit: function(key) {
             var self = this;
             // Validate key against server before accepting
-            fetch('/api/status', { headers: { 'x-api-key': key } }).then(function(r) {
+            fetch('/api/nodes/status', { headers: { 'x-api-key': key } }).then(function(r) {
                 if (r.ok) {
                     sessionStorage.setItem('aether-api-key', key);
                     self.hide();
@@ -674,17 +674,16 @@
                     <template x-if="$store.strategies.canaries.length > 0">
                         <div class="strategy-section">
                             <h3 class="strategy-section-title">Canary Deployments</h3>
-                            <template x-for="c in $store.strategies.canaries" :key="c.canaryId">
+                            <template x-for="c in $store.strategies.canaries" :key="c.deploymentId">
                                 <div class="strategy-card">
                                     <div class="strategy-card-header">
-                                        <span class="mono-text" x-text="c.artifactBase"></span>
+                                        <span class="mono-text" x-text="c.blueprintId"></span>
                                         <span class="status-badge" :class="$store.strategies.stateClass(c.state)" x-text="c.state"></span>
                                     </div>
                                     <div class="strategy-card-details">
                                         <span x-text="c.oldVersion + ' → ' + c.newVersion"></span>
-                                        <span x-text="'Stage ' + c.currentStage + '/' + c.totalStages"></span>
-                                        <span x-text="c.newInstances + ' instances'"></span>
-                                        <span class="strategy-routing" x-text="c.routing"></span>
+                                        <span x-text="(c.newInstances || 0) + ' instances'"></span>
+                                        <span class="strategy-routing" x-text="c.routing || (c.routingNewWeight + '/' + c.routingOldWeight)"></span>
                                     </div>
                                 </div>
                             </template>
@@ -698,14 +697,13 @@
                             <template x-for="bg in $store.strategies.blueGreen" :key="bg.deploymentId">
                                 <div class="strategy-card">
                                     <div class="strategy-card-header">
-                                        <span class="mono-text" x-text="bg.artifactBase"></span>
+                                        <span class="mono-text" x-text="bg.blueprintId"></span>
                                         <span class="status-badge" :class="$store.strategies.stateClass(bg.state)" x-text="bg.state"></span>
                                     </div>
                                     <div class="strategy-card-details">
-                                        <span class="strategy-env blue" x-text="'Blue: ' + bg.blueVersion"></span>
-                                        <span class="strategy-env green" x-text="'Green: ' + bg.greenVersion"></span>
-                                        <span x-text="'Active: ' + bg.activeEnvironment"></span>
-                                        <span class="strategy-routing" x-text="bg.routing"></span>
+                                        <span x-text="bg.oldVersion + ' → ' + bg.newVersion"></span>
+                                        <span x-text="(bg.newInstances || 0) + ' instances'"></span>
+                                        <span class="strategy-routing" x-text="bg.routing || (bg.routingNewWeight + '/' + bg.routingOldWeight)"></span>
                                     </div>
                                 </div>
                             </template>
@@ -752,6 +750,63 @@
                         </tbody>
                     </table>
                     <div x-show="$store.streams.streams.length === 0" class="no-data">No streams registered</div>
+                </div>
+
+                <!-- Storage -->
+                <div class="panel" x-show="$store.storage.totalInstances() > 0">
+                    <h2 class="panel-header">
+                        STORAGE
+                        <span class="panel-count" x-text="$store.storage.totalInstances() + ' INSTANCES'"></span>
+                        <span style="margin-left:auto; display:flex; gap:var(--space-xs);">
+                            <button class="btn btn-small" :class="$store.storage.viewMode === 'local' ? 'btn-primary' : 'btn-secondary'"
+                                    @click="$store.storage.viewMode = 'local'">Local</button>
+                            <button class="btn btn-small" :class="$store.storage.viewMode === 'cluster' ? 'btn-primary' : 'btn-secondary'"
+                                    @click="$store.storage.viewMode = 'cluster'">Cluster</button>
+                        </span>
+                    </h2>
+
+                    <!-- Local view -->
+                    <template x-if="$store.storage.viewMode === 'local'">
+                        <table class="streams-table">
+                            <thead><tr><th>Name</th><th>State</th><th>Tiers</th><th>Actions</th></tr></thead>
+                            <tbody>
+                                <template x-for="inst in $store.storage.instances" :key="inst.name">
+                                    <tr>
+                                        <td><span class="mono-text" x-text="inst.name"></span></td>
+                                        <td>
+                                            <span class="status-badge" :class="$store.storage.readinessClass(inst.readiness)"
+                                                  x-text="$store.storage.readinessLabel(inst.readiness)"></span>
+                                        </td>
+                                        <td>
+                                            <template x-for="tier in (inst.tiers || [])" :key="tier.level">
+                                                <span class="member-badge" x-text="tier.level + ' ' + $store.storage.tierUtilization(tier)"></span>
+                                            </template>
+                                        </td>
+                                        <td>
+                                            <button class="btn btn-small btn-secondary" @click="$store.storage.forceSnapshot(inst.name)">Snapshot</button>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </template>
+
+                    <!-- Cluster view -->
+                    <template x-if="$store.storage.viewMode === 'cluster'">
+                        <table class="streams-table">
+                            <thead><tr><th>Name</th><th>Nodes</th><th>Used</th><th>Max</th></tr></thead>
+                            <tbody>
+                                <template x-for="inst in $store.storage.clusterInstances" :key="inst.name">
+                                    <tr>
+                                        <td><span class="mono-text" x-text="inst.name"></span></td>
+                                        <td x-text="inst.nodeCount"></td>
+                                        <td x-text="formatBytes(inst.totalUsedBytes)"></td>
+                                        <td x-text="formatBytes(inst.totalMaxBytes)"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </template>
                 </div>
             </div>
 
@@ -921,6 +976,7 @@
     <script src="js/stores/governors.js"></script>
     <script src="js/stores/strategies.js"></script>
     <script src="js/stores/streams.js"></script>
+    <script src="js/stores/storage.js"></script>
     <script src="js/stores/topology.js"></script>
     <script src="js/stores/requests.js"></script>
     <script src="js/stores/forge.js"></script>

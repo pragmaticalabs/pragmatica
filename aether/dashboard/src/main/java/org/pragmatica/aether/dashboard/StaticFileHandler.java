@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.dashboard;
 
 import org.pragmatica.http.CommonContentType;
@@ -18,11 +22,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Serves static files from classpath resources.
-/// Supports configurable classpath prefix for resource lookup.
-@SuppressWarnings("JBCT-RET-01") public final class StaticFileHandler {
+@SuppressWarnings("JBCT-RET-01")
+public final class StaticFileHandler {
     private static final Logger log = LoggerFactory.getLogger(StaticFileHandler.class);
-
     private static final String DEFAULT_PREFIX = "dashboard/";
 
     private static final Map<String, ContentType> CONTENT_TYPES = Map.ofEntries(Map.entry(".html",
@@ -59,7 +61,6 @@ import org.slf4j.LoggerFactory;
                                                                                           CommonContentType.APPLICATION_OCTET_STREAM));
 
     private final String classpathPrefix;
-
     private final Map<String, Option<byte[]>> resourceCache = new ConcurrentHashMap<>();
 
     private StaticFileHandler(String classpathPrefix) {
@@ -76,25 +77,32 @@ import org.slf4j.LoggerFactory;
 
     public void handle(RequestContext request, ResponseWriter response) {
         var path = request.path();
-        if (path.equals("/") || path.equals("/index.html")) {path = "/index.html";}
+
+        if (path.equals("/") || path.equals("/index.html")) {
+            path = "/index.html";
+        }
+
         path = URLDecoder.decode(path, StandardCharsets.UTF_8);
         if (path.contains("..")) {
             sendError(response, HttpStatus.FORBIDDEN, "Invalid path");
+
             return;
         }
+
         var finalPath = path;
         var resourcePath = classpathPrefix + (finalPath.startsWith("/")
                                               ? finalPath.substring(1)
                                               : finalPath);
+
         loadResource(resourcePath).onEmpty(() -> {
-                                               log.debug("Static file not found: {}", resourcePath);
-                                               sendError(response, HttpStatus.NOT_FOUND, "File not found: " + finalPath);
-                                           })
-                    .onPresent(content -> sendStaticContent(response, finalPath, content));
+            log.debug("Static file not found: {}", resourcePath);
+            sendError(response, HttpStatus.NOT_FOUND, "File not found: " + finalPath);
+        }).onPresent(content -> sendStaticContent(response, finalPath, content));
     }
 
     private void sendStaticContent(ResponseWriter response, String path, byte[] content) {
         var contentType = getContentType(path);
+
         response.header("Cache-Control", "no-cache").write(HttpStatus.OK, content, contentType);
     }
 
@@ -104,16 +112,25 @@ import org.slf4j.LoggerFactory;
 
     private Option<byte[]> doLoadResource(String path) {
         try (InputStream is = getClass().getClassLoader().getResourceAsStream(path)) {
-            if (is == null) {return Option.empty();}
+            if (is == null) {
+                return Option.empty();
+            }
+
             return Option.option(is.readAllBytes());
         } catch (IOException e) {
             log.error("Error loading resource: {}", path, e);
+
             return Option.empty();
         }
     }
 
     private ContentType getContentType(String path) {
-        for (var entry : CONTENT_TYPES.entrySet()) {if (path.endsWith(entry.getKey())) {return entry.getValue();}}
+        for (var entry : CONTENT_TYPES.entrySet()) {
+            if (path.endsWith(entry.getKey())) {
+                return entry.getValue();
+            }
+        }
+
         return CommonContentType.APPLICATION_OCTET_STREAM;
     }
 
