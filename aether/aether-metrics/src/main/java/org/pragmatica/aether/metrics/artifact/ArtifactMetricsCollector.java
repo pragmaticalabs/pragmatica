@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.artifact;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -7,29 +11,11 @@ import java.util.Map;
 import java.util.Set;
 
 
-/// Collects and exposes artifact storage and deployment metrics.
-///
-///
-/// Provides the following metrics:
-///
-///   - `artifact_chunks_total` - Total chunks stored on this node
-///   - `artifact_memory_bytes` - Memory used (chunks x 64KB)
-///   - `artifact_count` - Number of distinct artifacts stored
-///   - `artifact_deployed_count` - Number of artifacts deployed in cluster
-///
-///
-///
-/// Combines storage metrics from {@link ArtifactStore} and deployment tracking
-/// from {@link ArtifactDeploymentTracker}.
 public interface ArtifactMetricsCollector {
     String ARTIFACT_CHUNKS_TOTAL = "artifact.chunks.total";
-
     String ARTIFACT_MEMORY_BYTES = "artifact.memory.bytes";
-
     String ARTIFACT_COUNT = "artifact.count";
-
     String ARTIFACT_DEPLOYED_COUNT = "artifact.deployed.count";
-
     Map<String, Double> collectMetrics();
     boolean isDeployed(Artifact artifact);
     Set<Artifact> deployedArtifacts();
@@ -50,8 +36,10 @@ class ArtifactMetricsCollectorImpl implements ArtifactMetricsCollector {
         this.deploymentTracker = deploymentTracker;
     }
 
-    @Override public Map<String, Double> collectMetrics() {
+    @Override
+    public Map<String, Double> collectMetrics() {
         var storeMetrics = artifactStore.metrics();
+
         return Map.of(ARTIFACT_CHUNKS_TOTAL,
                       (double) storeMetrics.chunkCount(),
                       ARTIFACT_MEMORY_BYTES,
@@ -62,19 +50,23 @@ class ArtifactMetricsCollectorImpl implements ArtifactMetricsCollector {
                       (double) deploymentTracker.deployedCount());
     }
 
-    @Override public boolean isDeployed(Artifact artifact) {
+    @Override
+    public boolean isDeployed(Artifact artifact) {
         return deploymentTracker.isDeployed(artifact);
     }
 
-    @Override public Set<Artifact> deployedArtifacts() {
+    @Override
+    public Set<Artifact> deployedArtifacts() {
         return deploymentTracker.deployedArtifacts();
     }
 
-    @Override public ArtifactStore.Metrics storeMetrics() {
+    @Override
+    public ArtifactStore.Metrics storeMetrics() {
         return artifactStore.metrics();
     }
 
-    @Override public ArtifactDeploymentTracker deploymentTracker() {
+    @Override
+    public ArtifactDeploymentTracker deploymentTracker() {
         return deploymentTracker;
     }
 }

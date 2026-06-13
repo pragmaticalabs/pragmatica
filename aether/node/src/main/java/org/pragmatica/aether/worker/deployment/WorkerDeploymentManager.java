@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.deployment;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -28,11 +32,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Manages slice deployment lifecycle on worker nodes.
-/// Watches WorkerSliceDirective entries and self-assigns instances via consistent hashing.
-@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01", "JBCT-STY-05"}) public interface WorkerDeploymentManager {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01", "JBCT-STY-05"})
+public interface WorkerDeploymentManager {
     Logger log = LoggerFactory.getLogger(WorkerDeploymentManager.class);
-
     void onDirectivePut(WorkerSliceDirectiveValue directive);
     void onDirectiveRemove(Artifact artifact);
     void onMembershipChange(List<NodeId> aliveMembers);
@@ -61,17 +63,23 @@ import org.slf4j.LoggerFactory;
                                                            MutationForwarder mutationForwarder,
                                                            List<NodeId> initialMembers,
                                                            Supplier<String> communityIdSupplier) {
-        @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01", "JBCT-STY-05", "JBCT-SEQ-01", "JBCT-LAM-01"}) record workerDeploymentManager(NodeId self,
-                                                                                                                                     SliceStore sliceStore,
-                                                                                                                                     MutationForwarder mutationForwarder,
-                                                                                                                                     ConcurrentHashMap<Artifact, WorkerSliceDeployment> deployments,
-                                                                                                                                     ConcurrentHashMap<Artifact, WorkerSliceDirectiveValue> directives,
-                                                                                                                                     AtomicReference<List<NodeId>> aliveMembers,
-                                                                                                                                     AtomicLong correlationCounter,
-                                                                                                                                     Supplier<String> communityIdSupplier) implements WorkerDeploymentManager {
-            @Override public void onDirectivePut(WorkerSliceDirectiveValue directive) {
-                if (isDirectiveForDifferentCommunity(directive)) {return;}
+        @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01", "JBCT-STY-05", "JBCT-SEQ-01", "JBCT-LAM-01"})
+        record workerDeploymentManager(NodeId self,
+                                       SliceStore sliceStore,
+                                       MutationForwarder mutationForwarder,
+                                       ConcurrentHashMap<Artifact, WorkerSliceDeployment> deployments,
+                                       ConcurrentHashMap<Artifact, WorkerSliceDirectiveValue> directives,
+                                       AtomicReference<List<NodeId>> aliveMembers,
+                                       AtomicLong correlationCounter,
+                                       Supplier<String> communityIdSupplier) implements WorkerDeploymentManager {
+            @Override
+            public void onDirectivePut(WorkerSliceDirectiveValue directive) {
+                if (isDirectiveForDifferentCommunity(directive)) {
+                    return;
+                }
+
                 var artifact = directive.artifact();
+
                 directives.put(artifact, directive);
                 log.info("Received worker directive for {} with {} target instances",
                          artifact,
@@ -81,23 +89,27 @@ import org.slf4j.LoggerFactory;
 
             private boolean isDirectiveForDifferentCommunity(WorkerSliceDirectiveValue directive) {
                 var myCommunity = communityIdSupplier.get();
-                var isDifferent = directive.targetCommunity().map(target -> !target.equals(myCommunity))
-                                                           .or(false);
-                if (isDifferent) {log.debug("Skipping directive for {} — targets community '{}', this worker is in '{}'",
-                                            directive.artifact(),
-                                            directive.targetCommunity().or(""),
-                                            myCommunity);}
+                var isDifferent = directive.targetCommunity().map(target -> !target.equals(myCommunity)).or(false);
+
+                if (isDifferent) {
+                    log.debug("Skipping directive for {} — targets community '{}', this worker is in '{}'",
+                              directive.artifact(),
+                              directive.targetCommunity().or(""),
+                              myCommunity);
+                }
+
                 return isDifferent;
             }
 
-            @Override public void onDirectiveRemove(Artifact artifact) {
+            @Override
+            public void onDirectiveRemove(Artifact artifact) {
                 directives.remove(artifact);
                 log.info("Worker directive removed for {}", artifact);
-                Option.option(deployments.remove(artifact)).filter(d -> d.state() != DeploymentState.IDLE)
-                             .onPresent(_ -> teardownSlice(artifact));
+                Option.option(deployments.remove(artifact)).filter(d -> d.state() != DeploymentState.IDLE).onPresent(_ -> teardownSlice(artifact));
             }
 
-            @Override public void onMembershipChange(List<NodeId> newMembers) {
+            @Override
+            public void onMembershipChange(List<NodeId> newMembers) {
                 aliveMembers.set(List.copyOf(newMembers));
                 log.debug("Membership changed to {} members, recomputing assignments", newMembers.size());
                 directives.forEach(this::computeAndApplyAssignment);
@@ -109,52 +121,58 @@ import org.slf4j.LoggerFactory;
                                                                           aliveMembers.get(),
                                                                           self);
                 var current = Option.option(deployments.get(artifact));
+
                 if (assigned > 0 && needsDeploy(current)) {
                     deployments.put(artifact, new WorkerSliceDeployment(artifact, DeploymentState.LOADING, assigned));
                     loadAndActivateSlice(artifact);
                 } else if (assigned == 0 && needsUndeploy(current)) {
                     deployments.remove(artifact);
                     teardownSlice(artifact);
-                } else {current.onPresent(c -> deployments.put(artifact, c.withInstances(assigned)));}
+                } else {
+                    current.onPresent(c -> deployments.put(artifact, c.withInstances(assigned)));
+                }
             }
 
             private static boolean needsDeploy(Option<WorkerSliceDeployment> current) {
-                return current.map(c -> c.state() == DeploymentState.IDLE).or(true);
+                return current.map(c -> c.state() == DeploymentState.IDLE)
+                              .or(true);
             }
 
             private static boolean needsUndeploy(Option<WorkerSliceDeployment> current) {
                 return current.map(c -> c.state() == DeploymentState.LOADED || c.state() == DeploymentState.ACTIVE)
-                                  .or(false);
+                              .or(false);
             }
 
             private void loadAndActivateSlice(Artifact artifact) {
                 var sliceKey = new SliceNodeKey(artifact, self);
+
                 forwardSliceStateUpdate(sliceKey, SliceState.LOADING);
-                sliceStore.loadSlice(artifact).flatMap(_ -> transitionToLoaded(artifact, sliceKey))
-                                    .flatMap(_ -> sliceStore.activateSlice(artifact))
-                                    .flatMap(_ -> transitionToActive(artifact, sliceKey))
-                                    .flatMap(_ -> publishEndpoints(artifact))
-                                    .onSuccess(_ -> log.info("Slice {} fully deployed and active on worker {}",
-                                                             artifact,
-                                                             self.id()))
-                                    .onFailure(cause -> handleDeploymentFailure(artifact, sliceKey, cause));
+                sliceStore.loadSlice(artifact).flatMap(_ -> transitionToLoaded(artifact, sliceKey)).flatMap(_ -> sliceStore.activateSlice(artifact)).flatMap(_ -> transitionToActive(artifact,
+                                                                                                                                                                                     sliceKey)).flatMap(_ -> publishEndpoints(artifact)).onSuccess(_ -> log.info("Slice {} fully deployed and active on worker {}",
+                                                                                                                                                                                                                                                                 artifact,
+                                                                                                                                                                                                                                                                 self.id())).onFailure(cause -> handleDeploymentFailure(artifact,
+                                                                                                                                                                                                                                                                                                                        sliceKey,
+                                                                                                                                                                                                                                                                                                                        cause));
             }
 
             private Promise<Unit> transitionToLoaded(Artifact artifact, SliceNodeKey sliceKey) {
                 updateDeploymentState(artifact, DeploymentState.LOADED);
                 forwardSliceStateUpdate(sliceKey, SliceState.LOADED);
+
                 return transitionToActivating(artifact, sliceKey);
             }
 
             private Promise<Unit> transitionToActivating(Artifact artifact, SliceNodeKey sliceKey) {
                 updateDeploymentState(artifact, DeploymentState.ACTIVATING);
                 forwardSliceStateUpdate(sliceKey, SliceState.ACTIVATING);
+
                 return Promise.unitPromise();
             }
 
             private Promise<Unit> transitionToActive(Artifact artifact, SliceNodeKey sliceKey) {
                 updateDeploymentState(artifact, DeploymentState.ACTIVE);
                 forwardSliceStateUpdate(sliceKey, SliceState.ACTIVE);
+
                 return Promise.unitPromise();
             }
 
@@ -166,17 +184,14 @@ import org.slf4j.LoggerFactory;
 
             private void teardownSlice(Artifact artifact) {
                 var sliceKey = new SliceNodeKey(artifact, self);
+
                 log.info("Tearing down slice {} on worker {}", artifact, self.id());
-                unpublishEndpoints(artifact).flatMap(_ -> sliceStore.deactivateSlice(artifact))
-                                  .flatMap(_ -> sliceStore.unloadSlice(artifact))
-                                  .onSuccess(_ -> forwardSliceRemoval(sliceKey))
-                                  .onSuccess(_ -> log.info("Slice {} torn down on worker {}",
-                                                           artifact,
-                                                           self.id()))
-                                  .onFailure(cause -> log.error("Failed to tear down slice {} on worker {}: {}",
-                                                                artifact,
-                                                                self.id(),
-                                                                cause.message()));
+                unpublishEndpoints(artifact).flatMap(_ -> sliceStore.deactivateSlice(artifact)).flatMap(_ -> sliceStore.unloadSlice(artifact)).onSuccess(_ -> forwardSliceRemoval(sliceKey)).onSuccess(_ -> log.info("Slice {} torn down on worker {}",
+                                                                                                                                                                                                                     artifact,
+                                                                                                                                                                                                                     self.id())).onFailure(cause -> log.error("Failed to tear down slice {} on worker {}: {}",
+                                                                                                                                                                                                                                                              artifact,
+                                                                                                                                                                                                                                                              self.id(),
+                                                                                                                                                                                                                                                              cause.message()));
             }
 
             private Promise<Unit> publishEndpoints(Artifact artifact) {
@@ -187,14 +202,20 @@ import org.slf4j.LoggerFactory;
 
             private Promise<Unit> publishEndpointsForSlice(Artifact artifact, Slice slice) {
                 var methods = slice.methods();
-                if (methods.isEmpty()) {return Promise.unitPromise();}
+
+                if (methods.isEmpty()) {
+                    return Promise.unitPromise();
+                }
+
                 int instanceNumber = Math.abs(self.id().hashCode());
-                var methodNames = methods.stream().map(m -> m.name().name())
-                                                .toList();
+                var methodNames = methods.stream().map(m -> m.name()
+                                                             .name()).toList();
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, artifact);
                 var nodeArtifactValue = NodeArtifactValue.activeNodeArtifactValue(instanceNumber, methodNames);
+
                 forwardPut(nodeArtifactKey, nodeArtifactValue, "publish-endpoints-" + artifact);
                 log.debug("Published {} endpoints for slice {} on worker", methods.size(), artifact);
+
                 return Promise.unitPromise();
             }
 
@@ -206,10 +227,16 @@ import org.slf4j.LoggerFactory;
 
             private Promise<Unit> unpublishEndpointsForSlice(Artifact artifact, Slice slice) {
                 var methods = slice.methods();
-                if (methods.isEmpty()) {return Promise.unitPromise();}
+
+                if (methods.isEmpty()) {
+                    return Promise.unitPromise();
+                }
+
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, artifact);
                 var nodeArtifactValue = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
+
                 forwardPut(nodeArtifactKey, nodeArtifactValue, "unpublish-endpoints-" + artifact);
+
                 return Promise.unitPromise();
             }
 
@@ -217,25 +244,28 @@ import org.slf4j.LoggerFactory;
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, sliceKey.artifact());
                 var nodeArtifactValue = NodeArtifactValue.nodeArtifactValue(state);
                 var correlationId = nextCorrelationId("state-" + state.name().toLowerCase());
+
                 forwardPut(nodeArtifactKey, nodeArtifactValue, correlationId);
             }
 
             private void forwardSliceRemoval(SliceNodeKey sliceKey) {
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, sliceKey.artifact());
                 var correlationId = nextCorrelationId("remove");
+
                 forwardRemove(nodeArtifactKey, correlationId);
             }
 
-            @SuppressWarnings("unchecked") private <K extends AetherKey> void forwardPut(K key,
-                                                                                         Object value,
-                                                                                         String correlationId) {
+            @SuppressWarnings("unchecked")
+            private <K extends AetherKey> void forwardPut(K key, Object value, String correlationId) {
                 KVCommand<AetherKey> command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
+
                 mutationForwarder.forward(WorkerMutation.workerMutation(self, correlationId, command));
             }
 
-            @SuppressWarnings("unchecked") private <K extends AetherKey> void forwardRemove(K key,
-                                                                                            String correlationId) {
+            @SuppressWarnings("unchecked")
+            private <K extends AetherKey> void forwardRemove(K key, String correlationId) {
                 KVCommand<AetherKey> command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
+
                 mutationForwarder.forward(WorkerMutation.workerMutation(self, correlationId, command));
             }
 
@@ -248,11 +278,11 @@ import org.slf4j.LoggerFactory;
             }
 
             private Option<SliceStore.LoadedSlice> findLoadedSlice(Artifact artifact) {
-                return Option.from(sliceStore.loaded().stream()
-                                                    .filter(ls -> ls.artifact().equals(artifact))
-                                                    .findFirst());
+                return Option.from(sliceStore.loaded().stream().filter(ls -> ls.artifact()
+                                                                               .equals(artifact)).findFirst());
             }
         }
+
         return new workerDeploymentManager(self,
                                            sliceStore,
                                            mutationForwarder,

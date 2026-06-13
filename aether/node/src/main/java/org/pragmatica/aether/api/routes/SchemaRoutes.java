@@ -1,22 +1,12 @@
-/*
- *  Copyright (c) 2020-2025 Sergiy Yevtushenko.
- *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
- */
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.http.security.AuditLog;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
@@ -38,19 +28,18 @@ import java.util.stream.Stream;
 import static org.pragmatica.http.routing.PathParameter.aString;
 
 
-/// Routes for datasource schema management: status, history, migrate, undo, baseline.
 public final class SchemaRoutes implements RouteSource {
     private static final Cause SCHEMA_NOT_FOUND = Causes.cause("Schema status not found for datasource");
 
     private static final Cause SCHEMA_NOT_FAILED = Causes.cause("Schema is not in FAILED state — retry only applies to failed migrations");
 
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
 
-    private SchemaRoutes(Supplier<AetherNode> nodeSupplier) {
+    private SchemaRoutes(Supplier<ManageableNode> nodeSupplier) {
         this.nodeSupplier = nodeSupplier;
     }
 
-    public static SchemaRoutes schemaRoutes(Supplier<AetherNode> nodeSupplier) {
+    public static SchemaRoutes schemaRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new SchemaRoutes(nodeSupplier);
     }
 
@@ -63,7 +52,7 @@ public final class SchemaRoutes implements RouteSource {
         }
     }
 
-    record SchemaStatusListResponse(List<SchemaStatusResponse> datasources){}
+    record SchemaStatusListResponse(List<SchemaStatusResponse> datasources) {}
 
     record SchemaMigrateResponse(boolean success, String message) {
         static SchemaMigrateResponse schemaMigrateResponse(boolean success, String message) {
@@ -71,42 +60,44 @@ public final class SchemaRoutes implements RouteSource {
         }
     }
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<SchemaStatusListResponse>get("/api/schema/status").toJson(this::allSchemaStatuses),
-                         Route.<SchemaStatusResponse>get("/api/schema/status")
-                              .withPath(aString())
-                              .to(this::singleSchemaStatus)
-                              .asJson(),
-                         Route.<SchemaStatusResponse>get("/api/schema/history")
-                              .withPath(aString())
-                              .to(this::schemaHistory)
-                              .asJson(),
-                         Route.<SchemaMigrateResponse>post("/api/schema/migrate")
-                              .withPath(aString())
-                              .to(this::triggerMigration)
-                              .asJson(),
-                         Route.<SchemaMigrateResponse>post("/api/schema/undo")
-                              .withPath(aString())
-                              .withQuery(QueryParameter.aString("targetVersion"))
-                              .to(this::undoMigration)
-                              .asJson(),
-                         Route.<SchemaMigrateResponse>post("/api/schema/baseline")
-                              .withPath(aString())
-                              .withQuery(QueryParameter.aString("version"))
-                              .to(this::baselineDatasource)
-                              .asJson(),
-                         Route.<SchemaMigrateResponse>post("/api/schema/retry")
-                              .withPath(aString())
-                              .to(this::retryMigration)
-                              .asJson());
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<SchemaStatusListResponse> route(ManagementRoute.SCHEMA_STATUS_ALL).toJson(this::allSchemaStatuses),
+                         ManagementRoutes.<SchemaStatusResponse> route(ManagementRoute.SCHEMA_STATUS_ONE)
+                                         .withPath(aString())
+                                         .to(this::singleSchemaStatus)
+                                         .asJson(),
+                         ManagementRoutes.<SchemaStatusResponse> route(ManagementRoute.SCHEMA_HISTORY)
+                                         .withPath(aString())
+                                         .to(this::schemaHistory)
+                                         .asJson(),
+                         ManagementRoutes.<SchemaMigrateResponse> route(ManagementRoute.SCHEMA_MIGRATE)
+                                         .withPath(aString())
+                                         .to(this::triggerMigration)
+                                         .asJson(),
+                         ManagementRoutes.<SchemaMigrateResponse> route(ManagementRoute.SCHEMA_UNDO)
+                                         .withPath(aString())
+                                         .withQuery(QueryParameter.aString("targetVersion"))
+                                         .to(this::undoMigration)
+                                         .asJson(),
+                         ManagementRoutes.<SchemaMigrateResponse> route(ManagementRoute.SCHEMA_BASELINE)
+                                         .withPath(aString())
+                                         .withQuery(QueryParameter.aString("version"))
+                                         .to(this::baselineDatasource)
+                                         .asJson(),
+                         ManagementRoutes.<SchemaMigrateResponse> route(ManagementRoute.SCHEMA_RETRY)
+                                         .withPath(aString())
+                                         .to(this::retryMigration)
+                                         .asJson());
     }
 
     private SchemaStatusListResponse allSchemaStatuses() {
         var entries = new ArrayList<SchemaStatusResponse>();
-        nodeSupplier.get().kvStore()
-                        .forEach(SchemaVersionKey.class,
-                                 SchemaVersionValue.class,
-                                 (_, value) -> entries.add(SchemaStatusResponse.schemaStatusResponse(value)));
+
+        nodeSupplier.get().kvStore().forEach(SchemaVersionKey.class,
+                                             SchemaVersionValue.class,
+                                             (_, value) -> entries.add(SchemaStatusResponse.schemaStatusResponse(value)));
+
         return new SchemaStatusListResponse(entries);
     }
 
@@ -124,21 +115,25 @@ public final class SchemaRoutes implements RouteSource {
 
     private Promise<SchemaMigrateResponse> undoMigration(String datasource, Option<String> targetVersionOpt) {
         var targetVersion = targetVersionOpt.map(SchemaRoutes::parseIntSafe).or(0);
+
         return lookupSchemaVersion(datasource).flatMap(current -> writeUndoStatus(current, datasource, targetVersion));
     }
 
     private Promise<SchemaMigrateResponse> baselineDatasource(String datasource, Option<String> versionOpt) {
         var version = versionOpt.map(SchemaRoutes::parseIntSafe).or(1);
+
         return writeBaselineStatus(datasource, version);
     }
 
     private Promise<SchemaVersionValue> lookupSchemaVersion(String datasource) {
         var key = SchemaVersionKey.schemaVersionKey(datasource);
-        return nodeSupplier.get().kvStore()
-                               .get(key)
-                               .filter(v -> v instanceof SchemaVersionValue)
-                               .map(v -> (SchemaVersionValue) v)
-                               .async(SCHEMA_NOT_FOUND);
+
+        return nodeSupplier.get()
+                           .kvStore()
+                           .get(key)
+                           .filter(v -> v instanceof SchemaVersionValue)
+                           .map(v -> (SchemaVersionValue) v)
+                           .async(SCHEMA_NOT_FOUND);
     }
 
     private Promise<SchemaMigrateResponse> writeMigratingStatus(SchemaVersionValue current, String datasource) {
@@ -147,6 +142,7 @@ public final class SchemaRoutes implements RouteSource {
                                                             current.lastMigration(),
                                                             SchemaStatus.MIGRATING,
                                                             current.artifactCoords());
+
         return applySchemaUpdate(datasource, updated).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
                                                                                                            "Migration triggered for " + datasource));
     }
@@ -159,8 +155,10 @@ public final class SchemaRoutes implements RouteSource {
                                                             current.lastMigration(),
                                                             SchemaStatus.PENDING,
                                                             current.artifactCoords());
+
         return applySchemaUpdate(datasource, updated).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
-                                                                                                           "Undo to version " + targetVersion + " initiated for " + datasource));
+                                                                                                           "Undo to version " + targetVersion
+                                                                                                          + " initiated for " + datasource));
     }
 
     private Promise<SchemaMigrateResponse> writeBaselineStatus(String datasource, int version) {
@@ -168,14 +166,18 @@ public final class SchemaRoutes implements RouteSource {
                                                               version,
                                                               "V" + String.format("%03d", version) + "__baseline",
                                                               SchemaStatus.COMPLETED);
+
         return applySchemaUpdate(datasource, baselined).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
-                                                                                                             "Baselined " + datasource + " at version " + version));
+                                                                                                             "Baselined " + datasource
+                                                                                                            + " at version " + version));
     }
 
     private Promise<List<Long>> applySchemaUpdate(String datasource, SchemaVersionValue value) {
         var key = SchemaVersionKey.schemaVersionKey(datasource);
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
-        return nodeSupplier.get().apply(List.of(command));
+
+        return nodeSupplier.get()
+                           .apply(List.of(command));
     }
 
     private Promise<SchemaMigrateResponse> retryMigration(String datasource) {
@@ -184,13 +186,17 @@ public final class SchemaRoutes implements RouteSource {
     }
 
     private Promise<SchemaMigrateResponse> writeRetryStatus(SchemaVersionValue current, String datasource) {
-        if (current.status() != SchemaStatus.FAILED) {return SCHEMA_NOT_FAILED.promise();}
+        if (current.status() != SchemaStatus.FAILED) {
+            return SCHEMA_NOT_FAILED.promise();
+        }
+
         var updated = SchemaVersionValue.schemaVersionValue(datasource,
                                                             current.currentVersion(),
                                                             current.lastMigration(),
                                                             SchemaStatus.PENDING,
                                                             current.artifactCoords(),
                                                             0);
+
         return applySchemaUpdate(datasource, updated).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
                                                                                                            "Retry initiated for " + datasource));
     }

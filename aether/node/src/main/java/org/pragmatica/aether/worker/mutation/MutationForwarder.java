@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.mutation;
 
 import org.pragmatica.cluster.node.passive.PassiveNode;
@@ -12,14 +16,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Forwards mutations from worker nodes to core cluster via the governor.
-///
-/// Path: Worker -> Governor -> Core (any node, since Rabia is leaderless).
-/// If the governor is FAULTY, falls back to sending directly to any core node
-/// via the PassiveNode's cluster network.
-@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) public interface MutationForwarder {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+public interface MutationForwarder {
     Logger LOG = LoggerFactory.getLogger(MutationForwarder.class);
-
     void forward(WorkerMutation mutation);
     void onMutationFromFollower(WorkerMutation mutation);
     void updateGovernor(Option<NodeId> governor);
@@ -32,25 +31,32 @@ import org.slf4j.LoggerFactory;
         record mutationForwarder(NodeId selfId,
                                  DelegateRouter delegateRouter,
                                  AtomicReference<Option<NodeId>> currentGovernor) implements MutationForwarder {
-            @Override public void forward(WorkerMutation mutation) {
+            @Override
+            public void forward(WorkerMutation mutation) {
                 var governor = currentGovernor.get();
+
                 if (governor.isEmpty() || isGovernor(governor)) {
                     forwardToCore(mutation);
+
                     return;
                 }
+
                 forwardToGovernor(mutation, governor.unwrap());
             }
 
-            @Override public void onMutationFromFollower(WorkerMutation mutation) {
+            @Override
+            public void onMutationFromFollower(WorkerMutation mutation) {
                 forwardToCore(mutation);
             }
 
-            @Override public void updateGovernor(Option<NodeId> governor) {
+            @Override
+            public void updateGovernor(Option<NodeId> governor) {
                 currentGovernor.set(governor);
             }
 
             private boolean isGovernor(Option<NodeId> governor) {
-                return governor.map(selfId::equals).or(false);
+                return governor.map(selfId::equals)
+                               .or(false);
             }
 
             private void forwardToCore(WorkerMutation mutation) {
@@ -63,6 +69,7 @@ import org.slf4j.LoggerFactory;
                 LOG.trace("Forwarded mutation {} to governor {}", mutation.correlationId(), governorId.id());
             }
         }
+
         return new mutationForwarder(selfId, delegateRouter, new AtomicReference<>(Option.empty()));
     }
 }

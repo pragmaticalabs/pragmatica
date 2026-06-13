@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.deployment.cluster;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -9,6 +14,7 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
+import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
@@ -25,13 +31,13 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.leader.LeaderNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 
 import static org.pragmatica.lang.utils.Causes.cause;
@@ -42,6 +48,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -74,6 +81,7 @@ class ClusterDeploymentManagerTest {
     private TestKVStore kvStore;
     private MessageRouter router;
     private ClusterDeploymentManager manager;
+    private final java.util.Set<NodeId> memberSeed = new java.util.LinkedHashSet<>();
 
     @BeforeEach
     void setUp() {
@@ -83,8 +91,32 @@ class ClusterDeploymentManagerTest {
         clusterNode = new TestClusterNode(self);
         kvStore = new TestKVStore();
         router = MessageRouter.mutable();
-        manager = ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router, List.of(self, node2, node3),
-                                                                      clusterNode.topologyManager(), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
+        manager = buildManager(List.of(self, node2, node3), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT);
+    }
+
+    // Membership-v2 finale: the node-lifecycle KV atom is deleted and presence IS membership.
+    // Tests seed present members into `memberSeed`; activeNodes() reads from that in-memory counted
+    // set (drainingNodes() reads the dedicated draining supplier).
+    private Supplier<java.util.Set<NodeId>> countedMembersSupplier() {
+        return () -> java.util.Set.copyOf(memberSeed);
+    }
+
+    private ClusterDeploymentManager buildManager(List<NodeId> initialTopology,
+                                                   ClusterDeploymentManager.DeploymentAtomicity atomicity) {
+        return ClusterDeploymentManager.clusterDeploymentManager(self,
+                                                                  clusterNode,
+                                                                  kvStore,
+                                                                  router,
+                                                                  initialTopology,
+                                                                  clusterNode.topologyManager(),
+                                                                  atomicity,
+                                                                  0,
+                                                                  ClusterDeploymentManager.DEFAULT_RECONCILE_INTERVAL,
+                                                                  NO_OP_SCHEMA,
+                                                                  HealthSignalSink.noop(),
+                                                                  countedMembersSupplier(),
+                                                                  () -> Set.copyOf(initialTopology),
+                                                                  Set::of);
     }
 
     // === Leader State Tests ===
@@ -183,10 +215,8 @@ class ClusterDeploymentManagerTest {
     @Test
     void no_allocation_when_no_nodes_available() {
         // Create manager with empty initial topology
-        var emptyTopologyManager = ClusterDeploymentManager.clusterDeploymentManager(
-            self, clusterNode, kvStore, router, List.of(),
-            clusterNode.topologyManager(), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
-        emptyTopologyManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+        var emptyTopologyManager = buildManager(List.of(), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT);
+        emptyTopologyManager.activate();
         clusterNode.appliedCommands.clear();
 
         var artifact = createTestArtifact();
@@ -258,9 +288,8 @@ class ClusterDeploymentManagerTest {
         clusterNode.appliedCommands.clear();
 
         // Add third node with ON_DUTY lifecycle
-        kvStore.put(AetherKey.NodeLifecycleKey.nodeLifecycleKey(node3),
-                    AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY));
-        manager.onTopologyChange(TopologyChangeNotification.nodeAdded(node3, List.of(self, node2, node3)));
+        memberSeed.add(node3);
+        manager.onMembershipDecision(MembershipDecision.nodeJoined(node3, List.of(self, node2, node3)));
 
         // Should allocate 1 more instance to reach desired 3
         assertThat(filterNodeArtifactPuts()).hasSize(1);
@@ -280,21 +309,13 @@ class ClusterDeploymentManagerTest {
         clusterNode.appliedCommands.clear();
 
         // Remove node3 - this removes slice state for node3 and triggers reconciliation
-        manager.onTopologyChange(TopologyChangeNotification.nodeRemoved(node3, List.of(self, node2)));
+        manager.onMembershipDecision(MembershipDecision.nodeRemoved(node3, List.of(self, node2)));
 
         // NodeArtifactKey removes for node3
         var naRemoves = filterNodeArtifactRemoves();
         assertThat(naRemoves).hasSize(1);
         assertThat(naRemoves.getFirst().key().nodeId()).isEqualTo(node3);
         assertThat(naRemoves.getFirst().key().artifact()).isEqualTo(artifact);
-
-        // Consensus commands should include Remove for lifecycle key
-        var removeCommands = clusterNode.appliedCommands.stream()
-                                                         .filter(cmd -> cmd instanceof KVCommand.Remove<?>)
-                                                         .map(cmd -> ((KVCommand.Remove<?>) cmd).key())
-                                                         .toList();
-        assertThat(removeCommands).anySatisfy(key ->
-            assertThat(key).isInstanceOf(AetherKey.NodeLifecycleKey.class));
     }
 
     // === Slice State Tracking Tests ===
@@ -642,23 +663,19 @@ class ClusterDeploymentManagerTest {
         kvStore.put(targetKey, targetValue);
 
         // Create a new CDM that will rebuild from KVStore on leader activation
-        var restoredManager = ClusterDeploymentManager.clusterDeploymentManager(
-            self, clusterNode, kvStore, router, List.of(self, node2, node3),
-            clusterNode.topologyManager(),
-            ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
+        var restoredManager = buildManager(List.of(self, node2, node3), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT);
 
         // Become leader triggers rebuildStateFromKVStore
-        restoredManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+        restoredManager.activate();
 
         // Clear tracking from restoration
         clusterNode.appliedCommands.clear();
 
         // Add topology so allocations can happen
         for (var nodeId : List.of(self, node2, node3)) {
-            kvStore.put(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId),
-                        AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY));
+            memberSeed.add(nodeId);
         }
-        restoredManager.onTopologyChange(TopologyChangeNotification.nodeAdded(node3, List.of(self, node2, node3)));
+        restoredManager.onMembershipDecision(MembershipDecision.nodeJoined(node3, List.of(self, node2, node3)));
 
         clusterNode.appliedCommands.clear();
 
@@ -693,6 +710,78 @@ class ClusterDeploymentManagerTest {
         assertThat(targetValue.owningBlueprint().unwrap()).isEqualTo(blueprintA.id());
     }
 
+    // === Register-only blueprint publish semantics (Fix A — RC1) ===
+    // Publish via /api/blueprints/publish stores AppBlueprintValue with registerOnly=true.
+    // SliceTargetValue Put MUST be suppressed iff (registerOnly && existing SliceTargetValue
+    // present) — first-ever publish always bootstraps the target.
+
+    @Test
+    void handleAppBlueprintChange_registerOnlyFalse_firstPublish_writesSliceTargetValue() {
+        becomeLeader();
+        addTopology(self, node2, node3);
+
+        var blueprint = createNamedBlueprint("app-deploy-first", "service-deploy-first");
+        sendAppBlueprintPut(manager, blueprint, false);
+
+        assertThat(collectSliceTargetPuts()).hasSize(1);
+    }
+
+    @Test
+    void handleAppBlueprintChange_registerOnlyTrue_firstPublish_suppressesSliceTargetValue() {
+        becomeLeader();
+        addTopology(self, node2, node3);
+
+        // Register-only suppression is unconditional (#124): even a first-ever publish must
+        // not activate — the operator activates explicitly. (Pre-#124 this bootstrapped.)
+        var blueprint = createNamedBlueprint("app-register-first", "service-register-first");
+        sendAppBlueprintPut(manager, blueprint, true);
+
+        assertThat(collectSliceTargetPuts()).isEmpty();
+    }
+
+    @Test
+    void handleAppBlueprintChange_registerOnlyFalse_rePublish_writesSliceTargetValue() {
+        becomeLeader();
+        addTopology(self, node2, node3);
+
+        // Seed an existing SliceTargetValue for the slice base (simulates a prior active version).
+        var sliceArtifact = Artifact.artifact("org.example:service-redeploy:1.0.0").unwrap();
+        kvStore.put(SliceTargetKey.sliceTargetKey(sliceArtifact.base()),
+                    SliceTargetValue.sliceTargetValue(sliceArtifact.version(), 3, 0, Option.none()));
+        clusterNode.appliedCommands.clear();
+
+        // Deploy (registerOnly=false) — must write SliceTargetValue (activate the new version).
+        var blueprint = createNamedBlueprint("app-redeploy", "service-redeploy");
+        sendAppBlueprintPut(manager, blueprint, false);
+
+        assertThat(collectSliceTargetPuts()).hasSize(1);
+    }
+
+    @Test
+    void handleAppBlueprintChange_registerOnlyTrue_rePublish_suppressesSliceTargetValue() {
+        becomeLeader();
+        addTopology(self, node2, node3);
+
+        // Seed an existing SliceTargetValue for the slice base (simulates a prior active version).
+        var sliceArtifact = Artifact.artifact("org.example:service-register-redeploy:1.0.0").unwrap();
+        kvStore.put(SliceTargetKey.sliceTargetKey(sliceArtifact.base()),
+                    SliceTargetValue.sliceTargetValue(sliceArtifact.version(), 3, 0, Option.none()));
+        clusterNode.appliedCommands.clear();
+
+        // Publish (registerOnly=true) — Fix A — MUST suppress SliceTargetValue Put.
+        var blueprint = createNamedBlueprint("app-register-redeploy", "service-register-redeploy");
+        sendAppBlueprintPut(manager, blueprint, true);
+
+        assertThat(collectSliceTargetPuts()).isEmpty();
+    }
+
+    private List<SliceTargetValue> collectSliceTargetPuts() {
+        return clusterNode.appliedCommands.stream()
+            .filter(cmd -> cmd instanceof KVCommand.Put<?, ?> put && put.key() instanceof SliceTargetKey)
+            .map(cmd -> (SliceTargetValue) ((KVCommand.Put<?, ?>) cmd).value())
+            .toList();
+    }
+
     @Test
     void handleSliceTargetChange_preservesOwner() {
         becomeLeader();
@@ -720,15 +809,15 @@ class ClusterDeploymentManagerTest {
     }
 
     private void becomeLeader() {
-        manager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+        manager.activate();
     }
 
     private void becomeLeader(ClusterDeploymentManager mgr) {
-        mgr.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+        mgr.activate();
     }
 
     private void loseLeadership() {
-        manager.onLeaderChange(LeaderNotification.leaderChange(Option.option(node2), false));
+        manager.deactivate();
     }
 
     private void addTopology(NodeId... nodes) {
@@ -739,10 +828,9 @@ class ClusterDeploymentManagerTest {
         var topology = List.of(nodes);
         // Register ON_DUTY lifecycle for each node so CDM considers them allocatable
         for (var nodeId : nodes) {
-            kvStore.put(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId),
-                        AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY));
+            memberSeed.add(nodeId);
         }
-        mgr.onTopologyChange(TopologyChangeNotification.nodeAdded(nodes[nodes.length - 1], topology));
+        mgr.onMembershipDecision(MembershipDecision.nodeJoined(nodes[nodes.length - 1], topology));
     }
 
     @SuppressWarnings("unchecked")
@@ -811,13 +899,20 @@ class ClusterDeploymentManagerTest {
     }
 
     private ClusterDeploymentManager createAllOrNothingManager() {
-        return ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router, List.of(self, node2, node3),
-            clusterNode.topologyManager(), ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING, 0, NO_OP_SCHEMA);
+        return buildManager(List.of(self, node2, node3), ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING);
     }
 
     private void sendAppBlueprintPut(ClusterDeploymentManager mgr, ExpandedBlueprint blueprint) {
         var key = new AppBlueprintKey(blueprint.id());
         var value = new AppBlueprintValue(blueprint);
+        var command = new KVCommand.Put<>(key, value);
+        var notification = new ValuePut<>(command, Option.none());
+        mgr.onAppBlueprintPut(notification);
+    }
+
+    private void sendAppBlueprintPut(ClusterDeploymentManager mgr, ExpandedBlueprint blueprint, boolean registerOnly) {
+        var key = new AppBlueprintKey(blueprint.id());
+        var value = new AppBlueprintValue(blueprint, registerOnly);
         var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
         mgr.onAppBlueprintPut(notification);

@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.metrics.deployment;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -10,7 +15,7 @@ import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetrics
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsPing;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
 
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.lang.Option;
@@ -268,7 +273,7 @@ class DeploymentMetricsCollectorTest {
         assertThat(collector.inProgressDeployments()).hasSize(1);
 
         // Remove remote node
-        collector.onTopologyChange(TopologyChangeNotification.nodeRemoved(remoteNode, List.of(self)));
+        collector.onMembershipDecision(MembershipDecision.nodeRemoved(remoteNode, List.of(self)));
 
         // In-progress deployment should be removed
         assertThat(collector.inProgressDeployments()).isEmpty();
@@ -289,7 +294,7 @@ class DeploymentMetricsCollectorTest {
         assertThat(collector.allDeploymentMetrics()).containsKey(artifact);
 
         // Remove remote node
-        collector.onTopologyChange(TopologyChangeNotification.nodeRemoved(remoteNode, List.of(self)));
+        collector.onMembershipDecision(MembershipDecision.nodeRemoved(remoteNode, List.of(self)));
 
         // Remote metrics should be removed
         assertThat(collector.allDeploymentMetrics()).isEmpty();
@@ -305,7 +310,7 @@ class DeploymentMetricsCollectorTest {
         collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, remoteNode, 3000L));
 
         // Remove remote node
-        collector.onTopologyChange(TopologyChangeNotification.nodeRemoved(remoteNode, List.of(self)));
+        collector.onMembershipDecision(MembershipDecision.nodeRemoved(remoteNode, List.of(self)));
 
         // Local metrics should remain
         assertThat(collector.metricsFor(artifact)).hasSize(1);
@@ -319,7 +324,7 @@ class DeploymentMetricsCollectorTest {
         collector.onDeploymentCompleted(DeploymentCompleted.deploymentCompleted(artifact, self, 2000L));
 
         var newNode = NodeId.randomNodeId();
-        collector.onTopologyChange(TopologyChangeNotification.nodeAdded(newNode, List.of(self, newNode)));
+        collector.onMembershipDecision(MembershipDecision.nodeJoined(newNode, List.of(self, newNode)));
 
         // Metrics should remain unchanged
         assertThat(collector.metricsFor(artifact)).hasSize(1);

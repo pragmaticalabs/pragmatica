@@ -1,8 +1,13 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.update.AbTestDeployment;
 import org.pragmatica.aether.update.AbTestMetrics;
 import org.pragmatica.aether.update.SplitRule;
@@ -26,64 +31,59 @@ import static org.pragmatica.aether.api.ManagementApiResponses.AbTestListRespons
 import static org.pragmatica.aether.api.ManagementApiResponses.AbTestMetricsResponse;
 import static org.pragmatica.aether.api.ManagementApiResponses.AbTestVariantMetrics;
 import static org.pragmatica.http.routing.PathParameter.aString;
-import static org.pragmatica.http.routing.PathParameter.spacer;
 
 
-/// Routes for A/B test management: create, conclude, metrics.
 public final class AbTestRoutes implements RouteSource {
     private static final Cause MISSING_ARTIFACT_BASE = Causes.cause("Missing artifactBase");
-
     private static final Cause MISSING_VARIANTS = Causes.cause("Missing or empty variants");
-
     private static final Cause NOT_LEADER = Causes.cause("This operation requires the leader node");
-
     private static final Cause TEST_NOT_FOUND = Causes.cause("A/B test not found");
 
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
 
-    private AbTestRoutes(Supplier<AetherNode> nodeSupplier) {
+    private AbTestRoutes(Supplier<ManageableNode> nodeSupplier) {
         this.nodeSupplier = nodeSupplier;
     }
 
-    public static AbTestRoutes abTestRoutes(Supplier<AetherNode> nodeSupplier) {
+    public static AbTestRoutes abTestRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new AbTestRoutes(nodeSupplier);
     }
 
     record AbTestCreateRequest(String artifactBase,
                                Map<String, String> variants,
                                String splitType,
-                               String splitHeader){}
+                               String splitHeader) {}
 
-    record AbTestConcludeRequest(String winner){}
+    record AbTestConcludeRequest(String winner) {}
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<AbTestListResponse>get("/api/ab-tests").toJson(this::buildAbTestListResponse),
-                         Route.<AbTestMetricsResponse>get("/api/ab-test")
-                              .withPath(aString(),
-                                        spacer("metrics"))
-                              .to((testId, _) -> buildAbTestMetricsResponse(testId))
-                              .asJson(),
-                         Route.<AbTestInfo>get("/api/ab-test")
-                              .withPath(aString())
-                              .to(this::buildAbTestResponse)
-                              .asJson(),
-                         Route.<AbTestInfo>post("/api/ab-test/create")
-                              .withBody(AbTestCreateRequest.class)
-                              .toJson(this::handleAbTestCreate),
-                         Route.<AbTestInfo>post("/api/ab-test")
-                              .withPath(aString(),
-                                        spacer("conclude"))
-                              .withBody(AbTestConcludeRequest.class)
-                              .to((testId, _, body) -> handleAbTestConclude(testId, body))
-                              .asJson());
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<AbTestListResponse> route(ManagementRoute.AB_TEST_LIST).toJson(this::buildAbTestListResponse),
+                         ManagementRoutes.<AbTestMetricsResponse> route(ManagementRoute.AB_TEST_METRICS)
+                                         .withPath(aString())
+                                         .to(this::buildAbTestMetricsResponse)
+                                         .asJson(),
+                         ManagementRoutes.<AbTestInfo> route(ManagementRoute.AB_TEST_GET)
+                                         .withPath(aString())
+                                         .to(this::buildAbTestResponse)
+                                         .asJson(),
+                         ManagementRoutes.<AbTestInfo> route(ManagementRoute.AB_TEST_CREATE)
+                                         .withBody(AbTestCreateRequest.class)
+                                         .toJson(this::handleAbTestCreate),
+                         ManagementRoutes.<AbTestInfo> route(ManagementRoute.AB_TEST_CONCLUDE)
+                                         .withPath(aString())
+                                         .withBody(AbTestConcludeRequest.class)
+                                         .to(this::handleAbTestConclude)
+                                         .asJson());
     }
 
     private Promise<AbTestInfo> handleAbTestCreate(AbTestCreateRequest request) {
         return requireLeader().flatMap(_ -> parseCreateRequest(request))
-                            .flatMap(parsed -> nodeSupplier.get().abTestManager()
-                                                               .createTest(parsed.artifactBase(),
-                                                                           parsed.variantVersions(),
-                                                                           parsed.splitRule()))
+                            .flatMap(parsed -> nodeSupplier.get()
+                                                           .abTestManager()
+                                                           .createTest(parsed.artifactBase(),
+                                                                       parsed.variantVersions(),
+                                                                       parsed.splitRule()))
                             .map(this::toAbTestInfo)
                             .onSuccess(info -> AuditLog.deploymentStart("ab-test",
                                                                         info.testId(),
@@ -93,9 +93,10 @@ public final class AbTestRoutes implements RouteSource {
     }
 
     private Promise<AbTestInfo> handleAbTestConclude(String testId, AbTestConcludeRequest request) {
-        return requireLeader().flatMap(_ -> nodeSupplier.get().abTestManager()
-                                                            .concludeTest(testId,
-                                                                          request.winner()))
+        return requireLeader().flatMap(_ -> nodeSupplier.get()
+                                                        .abTestManager()
+                                                        .concludeTest(testId,
+                                                                      request.winner()))
                             .map(this::toAbTestInfo)
                             .onSuccess(info -> AuditLog.deploymentComplete("ab-test",
                                                                            info.testId(),
@@ -104,68 +105,81 @@ public final class AbTestRoutes implements RouteSource {
 
     private Promise<org.pragmatica.lang.Unit> requireLeader() {
         var node = nodeSupplier.get();
+
         if (!node.isLeader()) {
-            var leaderInfo = node.leader().map(id -> " Current leader: " + id.id())
-                                        .or("");
+            var leaderInfo = node.leader().map(id -> " Current leader: " + id.id()).or("");
+
             return Causes.cause(NOT_LEADER.message() + leaderInfo).promise();
         }
+
         return Promise.unitPromise();
     }
 
     private record ParsedAbTestRequest(ArtifactBase artifactBase,
                                        Map<String, Version> variantVersions,
-                                       SplitRule splitRule){}
+                                       SplitRule splitRule) {}
 
     private Promise<ParsedAbTestRequest> parseCreateRequest(AbTestCreateRequest request) {
-        if (request.artifactBase() == null) {return MISSING_ARTIFACT_BASE.promise();}
-        if (request.variants() == null || request.variants().isEmpty()) {return MISSING_VARIANTS.promise();}
-        return ArtifactBase.artifactBase(request.artifactBase()).async()
-                                        .flatMap(artifactBase -> parseVariants(request.variants()).async()
-                                                                              .map(variants -> new ParsedAbTestRequest(artifactBase,
-                                                                                                                       variants,
-                                                                                                                       parseSplitRule(request))));
+        if (request.artifactBase() == null) {
+            return MISSING_ARTIFACT_BASE.promise();
+        }
+
+        if (request.variants() == null || request.variants().isEmpty()) {
+            return MISSING_VARIANTS.promise();
+        }
+
+        return ArtifactBase.artifactBase(request.artifactBase())
+                           .async()
+                           .flatMap(artifactBase -> parseVariants(request.variants()).async()
+                                                                 .map(variants -> new ParsedAbTestRequest(artifactBase,
+                                                                                                          variants,
+                                                                                                          parseSplitRule(request))));
     }
 
     private static Result<Map<String, Version>> parseVariants(Map<String, String> rawVariants) {
         var parsed = new HashMap<String, Version>();
+
         for (var entry : rawVariants.entrySet()) {
             var result = Version.version(entry.getValue());
-            if (result.isFailure()) {return Causes.cause("Invalid version for variant " + entry.getKey() + ": " + entry.getValue())
-                                                        .result();}
+
+            if (result.isFailure()) {
+                return Causes.cause("Invalid version for variant " + entry.getKey() + ": " + entry.getValue()).result();
+            }
+
             result.onSuccess(v -> parsed.put(entry.getKey(), v));
         }
+
         return Result.success(Map.copyOf(parsed));
     }
 
     private static SplitRule parseSplitRule(AbTestCreateRequest request) {
         var splitType = request.splitType() != null
-                       ? request.splitType()
-                       : "header-hash";
+                        ? request.splitType()
+                        : "header-hash";
         var headerName = request.splitHeader() != null
-                        ? request.splitHeader()
-                        : "X-Request-Id";
+                         ? request.splitHeader()
+                         : "X-Request-Id";
+
         return SplitRule.HeaderHashSplit.headerHashSplit(headerName, 2);
     }
 
     private AbTestListResponse buildAbTestListResponse() {
-        var tests = nodeSupplier.get().abTestManager()
-                                    .allTests()
-                                    .stream()
-                                    .map(this::toAbTestInfo)
-                                    .toList();
+        var tests = nodeSupplier.get().abTestManager().allTests().stream().map(this::toAbTestInfo).toList();
+
         return new AbTestListResponse(tests);
     }
 
     private Promise<AbTestInfo> buildAbTestResponse(String testId) {
-        return nodeSupplier.get().abTestManager()
-                               .getTest(testId)
-                               .map(this::toAbTestInfo)
-                               .async(TEST_NOT_FOUND);
+        return nodeSupplier.get()
+                           .abTestManager()
+                           .getTest(testId)
+                           .map(this::toAbTestInfo)
+                           .async(TEST_NOT_FOUND);
     }
 
     private Promise<AbTestMetricsResponse> buildAbTestMetricsResponse(String testId) {
-        var metrics = nodeSupplier.get().abTestManager()
-                                      .getMetrics(testId);
+        var metrics = nodeSupplier.get().abTestManager().getMetrics(testId);
+
         return Promise.success(toAbTestMetricsResponse(metrics));
     }
 
@@ -180,10 +194,9 @@ public final class AbTestRoutes implements RouteSource {
     }
 
     private AbTestMetricsResponse toAbTestMetricsResponse(AbTestMetrics metrics) {
-        var variants = metrics.variantMetrics().entrySet()
-                                             .stream()
-                                             .collect(Collectors.toMap(Map.Entry::getKey,
-                                                                       entry -> toVariantMetrics(entry.getValue())));
+        var variants = metrics.variantMetrics().entrySet().stream().collect(Collectors.toMap(Map.Entry::getKey,
+                                                                                             entry -> toVariantMetrics(entry.getValue())));
+
         return new AbTestMetricsResponse(metrics.testId(), variants, metrics.collectedAt());
     }
 

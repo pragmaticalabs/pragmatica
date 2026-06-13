@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.handler;
 
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
@@ -8,16 +12,6 @@ import java.util.Objects;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Route metadata for KV-Store registration.
-///
-/// Maps HTTP method + path prefix to artifact + slice method.
-/// Used by HttpRouteRegistry to route incoming requests.
-///
-/// @param httpMethod    HTTP method (GET, POST, PUT, DELETE, etc.)
-/// @param pathPrefix    path prefix for TreeMap matching (e.g., "/users/", "/api/orders/")
-/// @param artifactCoord full artifact coordinate (e.g., "org.example:user-service:1.0.0")
-/// @param sliceMethod   slice method name to invoke
-/// @param security      security policy for this route
 public record HttpRouteDefinition(String httpMethod,
                                   String pathPrefix,
                                   String artifactCoord,
@@ -62,10 +56,17 @@ public record HttpRouteDefinition(String httpMethod,
     private static String normalizePrefix(String path) {
         Objects.requireNonNull(path, "path");
         var normalized = path.isBlank()
-                        ? "/"
-                        : path.strip();
-        if (!normalized.startsWith("/")) {normalized = "/" + normalized;}
-        if (!normalized.endsWith("/")) {normalized = normalized + "/";}
+                         ? "/"
+                         : path.strip();
+
+        if (!normalized.startsWith("/")) {
+            normalized = "/" + normalized;
+        }
+
+        if (!normalized.endsWith("/")) {
+            normalized = normalized + "/";
+        }
+
         return normalized;
     }
 }

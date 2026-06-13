@@ -1,19 +1,12 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.handler.security;
 
 import org.pragmatica.lang.Option;
 
 
-/// ScopedValue-based holder for propagating SecurityContext to slice handlers.
-///
-/// Set by AppHttpServer during request processing when security is enabled.
-/// Slice handlers access it via `SecurityContextHolder.currentContext()`.
-///
-/// Usage:
-/// ```{@code
-/// // In slice handler:
-/// var ctx = SecurityContextHolder.currentContext();
-/// ctx.onPresent(sc -> log.info("Authenticated as: {}", sc.principal().value()));
-/// }```
 public final class SecurityContextHolder {
     private static final ScopedValue<SecurityContext> SECURITY_CONTEXT = ScopedValue.newInstance();
 
@@ -21,8 +14,8 @@ public final class SecurityContextHolder {
 
     public static Option<SecurityContext> currentContext() {
         return SECURITY_CONTEXT.isBound()
-              ? Option.option(SECURITY_CONTEXT.get())
-              : Option.empty();
+               ? Option.option(SECURITY_CONTEXT.get())
+               : Option.empty();
     }
 
     public static boolean isAuthenticated() {

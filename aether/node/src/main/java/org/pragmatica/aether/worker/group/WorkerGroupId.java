@@ -1,9 +1,13 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.group;
 
 public record WorkerGroupId(String groupName, String zone) {
     public static final WorkerGroupId DEFAULT = workerGroupId("default", "local");
 
-    @SuppressWarnings("JBCT-VO-02") public static WorkerGroupId workerGroupId(String groupName, String zone) {
+    public static WorkerGroupId workerGroupId(String groupName, String zone) {
         return new WorkerGroupId(groupName, zone);
     }
 
@@ -11,7 +15,8 @@ public record WorkerGroupId(String groupName, String zone) {
         return groupName + ":" + zone;
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return communityId();
     }
 }

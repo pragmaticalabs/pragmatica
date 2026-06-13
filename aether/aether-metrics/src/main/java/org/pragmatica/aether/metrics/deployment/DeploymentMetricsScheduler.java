@@ -1,20 +1,27 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.deployment;
 
-import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsPing;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
+import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeJoined;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.concurrent.CancellableTask;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -22,18 +29,22 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Scheduler for deployment metrics broadcast that runs on the leader node.
-///
-///
-/// When this node is the leader, periodically sends DeploymentMetricsPing to all nodes.
-/// Each node responds with DeploymentMetricsPong containing their deployment metrics.
 public interface DeploymentMetricsScheduler {
     TimeSpan DEFAULT_INTERVAL = TimeSpan.timeSpan(5).seconds();
+    Promise<Unit> activate();
+    Promise<Unit> deactivate();
+    boolean isActive();
 
-    @MessageReceiver@Contract void onLeaderChange(LeaderChange leaderChange);
-    @MessageReceiver@Contract void onTopologyChange(TopologyChangeNotification topologyChange);
-    @MessageReceiver@Contract void onQuorumStateChange(QuorumStateNotification notification);
-    @Contract void stop();
+    @MessageReceiver
+    @Contract
+    void onMembershipDecision(MembershipDecision decision);
+
+    @MessageReceiver
+    @Contract
+    void onQuorumStateChange(ClusterStateNotification notification);
+
+    @Contract
+    void stop();
 
     static DeploymentMetricsScheduler deploymentMetricsScheduler(NodeId self,
                                                                  ClusterNetwork network,
@@ -56,12 +67,10 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
     private final ClusterNetwork network;
     private final DeploymentMetricsCollector collector;
     private final TimeSpan interval;
-
     private final CancellableTask pingTask = CancellableTask.cancellableTask();
-
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
-
     private final AtomicLong quorumSequence = new AtomicLong();
+    private final AtomicBoolean active = new AtomicBoolean(false);
 
     DeploymentMetricsSchedulerImpl(NodeId self,
                                    ClusterNetwork network,
@@ -73,36 +82,60 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
         this.interval = interval;
     }
 
-    @Override@Contract public void onLeaderChange(LeaderChange leaderChange) {
-        if (leaderChange.localNodeIsLeader()) {
-            log.info("Node {} became leader, starting deployment metrics scheduler", self);
-            startPinging();
-        } else {
-            log.info("Node {} is no longer leader, stopping deployment metrics scheduler", self);
-            stopPinging();
+    @Override
+    public Promise<Unit> activate() {
+        log.info("Node {} activating deployment metrics scheduler", self);
+        active.set(true);
+        startPinging();
+
+        return Promise.unitPromise();
+    }
+
+    @Override
+    public Promise<Unit> deactivate() {
+        log.info("Node {} deactivating deployment metrics scheduler", self);
+        active.set(false);
+        stopPinging();
+
+        return Promise.unitPromise();
+    }
+
+    @Override
+    public boolean isActive() {
+        return active.get();
+    }
+
+    @Override
+    @Contract
+    public void onMembershipDecision(MembershipDecision decision) {
+        switch (decision) {
+            case NodeJoined(_, List<NodeId> newTopology, _, _) -> topology.set(newTopology);
+            case NodeRemoved(_, List<NodeId> newTopology, _, _) -> topology.set(newTopology);
+            case NodeDecommissioned(_, List<NodeId> newTopology, _, _) -> topology.set(newTopology);
+            // RC1 Step 2 lifecycle-projection variants: pre-terminal transitions do not
+            // change the committed topology shape — schedule unchanged.
+            case MembershipDecision.NodeJoining _, MembershipDecision.NodeDraining _, MembershipDecision.NodeFailedDrain _, MembershipDecision.NodeShuttingDown _ -> {}
         }
     }
 
-    @Override@Contract public void onTopologyChange(TopologyChangeNotification topologyChange) {
-        switch (topologyChange){
-            case NodeAdded(_, List<NodeId> newTopology) -> topology.set(newTopology);
-            case NodeRemoved(_, List<NodeId> newTopology) -> topology.set(newTopology);
-            default -> {}
-        }
-    }
-
-    @Override@Contract public void onQuorumStateChange(QuorumStateNotification notification) {
+    @Override
+    @Contract
+    public void onQuorumStateChange(ClusterStateNotification notification) {
         if (!notification.advanceSequence(quorumSequence)) {
-            log.debug("Ignoring stale QuorumStateNotification: {}", notification);
+            log.debug("Ignoring stale ClusterStateNotification: {}", notification);
+
             return;
         }
-        if (notification.state() == QuorumStateNotification.State.DISAPPEARED) {
+
+        if (notification.state() == ClusterStateNotification.State.PASSIVE) {
             log.info("Quorum disappeared, stopping deployment metrics scheduler");
             stopPinging();
         }
     }
 
-    @Override@Contract public void stop() {
+    @Override
+    @Contract
+    public void stop() {
         stopPinging();
     }
 
@@ -114,14 +147,19 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
         pingTask.cancel();
     }
 
-    @SuppressWarnings("JBCT-EX-01") private void sendPingsToAllNodes() {
+    @SuppressWarnings("JBCT-EX-01")
+    private void sendPingsToAllNodes() {
         try {
             var currentTopology = topology.get();
-            if (currentTopology.isEmpty()) {return;}
+
+            if (currentTopology.isEmpty()) {
+                return;
+            }
+
             var localMetrics = collector.collectLocalEntries();
             var ping = new DeploymentMetricsPing(self, localMetrics);
-            currentTopology.stream().filter(nodeId -> !nodeId.equals(self))
-                                  .forEach(nodeId -> network.send(nodeId, ping));
+
+            currentTopology.stream().filter(nodeId -> !nodeId.equals(self)).forEach(nodeId -> network.send(nodeId, ping));
             log.trace("Sent DeploymentMetricsPing to {} nodes", currentTopology.size() - 1);
         } catch (Exception e) {
             log.warn("Failed to send deployment metrics ping: {}", e.getMessage());

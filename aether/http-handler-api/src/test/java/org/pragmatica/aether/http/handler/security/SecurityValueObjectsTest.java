@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.http.handler.security;
 
 import org.junit.jupiter.api.Assertions;
@@ -191,9 +196,9 @@ class SecurityValueObjectsTest {
         }
 
         @Test
-        void fromString_unknownDefaultsToPublic() {
+        void fromString_unknownDefaultsToApiKeyRequired() {
             assertThat(SecurityPolicy.fromString("UNKNOWN"))
-                .isInstanceOf(SecurityPolicy.Public.class);
+                .isInstanceOf(SecurityPolicy.ApiKeyRequired.class);
         }
 
         @Test
@@ -456,9 +461,9 @@ class SecurityValueObjectsTest {
         }
 
         @Test
-        void fromBlueprintString_unknownDefaultsToPublic() {
+        void fromBlueprintString_unknownDefaultsToApiKeyRequired() {
             assertThat(SecurityPolicy.fromBlueprintString("unknown_value"))
-                .isInstanceOf(SecurityPolicy.Public.class);
+                .isInstanceOf(SecurityPolicy.ApiKeyRequired.class);
         }
     }
 }

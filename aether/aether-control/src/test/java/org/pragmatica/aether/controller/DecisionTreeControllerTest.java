@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.controller;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -7,7 +12,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.ClusterController.Blueprint;
 import org.pragmatica.aether.controller.ClusterController.BlueprintChange;
 import org.pragmatica.aether.controller.ClusterController.ControlContext;
-import org.pragmatica.aether.metrics.MetricsCollector;
+import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.consensus.NodeId;
 
 import java.util.List;
@@ -135,14 +140,14 @@ class DecisionTreeControllerTest {
 
     private static ControlContext contextWithCpu(double cpuValue, int instances) {
         var nodeId = NodeId.randomNodeId();
-        var metrics = Map.of(nodeId, Map.of(MetricsCollector.CPU_USAGE, cpuValue));
+        var metrics = Map.of(nodeId, Map.of(ClusterSyncCollector.CPU_USAGE, cpuValue));
         var blueprints = Map.of(TEST_ARTIFACT, new Blueprint(TEST_ARTIFACT, instances, 1));
         return new ControlContext(metrics, blueprints, List.of(nodeId));
     }
 
     private static ControlContext contextWithCpuAndMinInstances(double cpuValue, int instances, int minInstances) {
         var nodeId = NodeId.randomNodeId();
-        var metrics = Map.of(nodeId, Map.of(MetricsCollector.CPU_USAGE, cpuValue));
+        var metrics = Map.of(nodeId, Map.of(ClusterSyncCollector.CPU_USAGE, cpuValue));
         var blueprints = Map.of(TEST_ARTIFACT, new Blueprint(TEST_ARTIFACT, instances, minInstances));
         return new ControlContext(metrics, blueprints, List.of(nodeId));
     }

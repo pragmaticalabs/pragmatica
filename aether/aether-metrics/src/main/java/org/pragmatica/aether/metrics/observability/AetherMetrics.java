@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.observability;
 
 import org.pragmatica.metrics.PromiseMetrics;
@@ -5,16 +9,6 @@ import org.pragmatica.metrics.PromiseMetrics;
 import io.micrometer.core.instrument.Counter;
 
 
-/// Pre-configured metrics for Aether operations.
-///
-///
-/// Provides standardized metric names and tags for:
-///
-///   - Slice invocations (local and remote)
-///   - Consensus operations
-///   - Deployment lifecycle
-///   - HTTP routing
-///
 public interface AetherMetrics {
     PromiseMetrics sliceInvocation(String artifact, String method);
     PromiseMetrics localInvocation(String artifact, String method);
@@ -36,55 +30,68 @@ public interface AetherMetrics {
 }
 
 record AetherMetricsDelegate(ObservabilityRegistry registry) implements AetherMetrics {
-    @Override public PromiseMetrics sliceInvocation(String artifact, String method) {
+    @Override
+    public PromiseMetrics sliceInvocation(String artifact, String method) {
         return registry.combined("aether.slice.invocation", "artifact", artifact, "method", method);
     }
 
-    @Override public PromiseMetrics localInvocation(String artifact, String method) {
+    @Override
+    public PromiseMetrics localInvocation(String artifact, String method) {
         return registry.combined("aether.slice.invocation.local", "artifact", artifact, "method", method);
     }
 
-    @Override public PromiseMetrics remoteInvocation(String artifact, String method) {
+    @Override
+    public PromiseMetrics remoteInvocation(String artifact, String method) {
         return registry.combined("aether.slice.invocation.remote", "artifact", artifact, "method", method);
     }
 
-    @Override public PromiseMetrics sliceLoad(String artifact) {
+    @Override
+    public PromiseMetrics sliceLoad(String artifact) {
         return registry.timer("aether.slice.load", "artifact", artifact);
     }
 
-    @Override public PromiseMetrics sliceActivate(String artifact) {
+    @Override
+    public PromiseMetrics sliceActivate(String artifact) {
         return registry.timer("aether.slice.activate", "artifact", artifact);
     }
 
-    @Override public PromiseMetrics sliceDeactivate(String artifact) {
+    @Override
+    public PromiseMetrics sliceDeactivate(String artifact) {
         return registry.timer("aether.slice.deactivate", "artifact", artifact);
     }
 
-    @Override public PromiseMetrics consensusCommit() {
+    @Override
+    public PromiseMetrics consensusCommit() {
         return registry.combined("aether.consensus.commit");
     }
 
-    @Override public Counter consensusBatchCounter() {
+    @Override
+    public Counter consensusBatchCounter() {
         return registry.counter("aether.consensus.batches");
     }
 
-    @Override public PromiseMetrics httpRequest(String method, String path) {
+    @Override
+    public PromiseMetrics httpRequest(String method, String path) {
         return registry.combined("aether.http.request", "method", method, "path", path);
     }
 
-    @Override public Counter httpRequestCounter(String method, String path, String status) {
+    @Override
+    public Counter httpRequestCounter(String method, String path, String status) {
         return registry.counter("aether.http.requests", "method", method, "path", path, "status", status);
     }
 
-    @Override public Counter rollingUpdateStarted() {
+    @Override
+    public Counter rollingUpdateStarted() {
         return registry.counter("aether.rolling_update.started");
     }
 
-    @Override public Counter rollingUpdateCompleted() {
+    @Override
+    public Counter rollingUpdateCompleted() {
         return registry.counter("aether.rolling_update.completed");
     }
 
-    @Override public Counter rollingUpdateRolledBack() {
+    @Override
+    public Counter rollingUpdateRolledBack() {
         return registry.counter("aether.rolling_update.rolled_back");
     }
 }

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.governor;
 
 import org.pragmatica.consensus.NodeId;
@@ -14,21 +18,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Relays committed Decisions within the worker group.
-///
-/// When this node IS the governor:
-/// - Receives Decisions from core via PassiveNode
-/// - Fans them out to all group followers via cluster network
-///
-/// When this node IS a follower:
-/// - Receives relayed Decisions from the governor via cluster network
-///
-/// Maintains a bounded buffer for gap recovery (configurable size).
-@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) public interface DecisionRelay {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+public interface DecisionRelay {
     Logger LOG = LoggerFactory.getLogger(DecisionRelay.class);
-
     int DEFAULT_BUFFER_SIZE = 1000;
-
     void onDecisionFromCore(Decision<?> decision, List<NodeId> followers);
     void onDecisionFromGovernor(Decision<?> decision);
     long lastSequence();
@@ -45,7 +38,8 @@ import org.slf4j.LoggerFactory;
                              int bufferSize,
                              ConcurrentLinkedDeque<Decision<?>> decisionBuffer,
                              AtomicLong lastSequenceHolder) implements DecisionRelay {
-            @Override public void onDecisionFromCore(Decision<?> decision, List<NodeId> followers) {
+            @Override
+            public void onDecisionFromCore(Decision<?> decision, List<NodeId> followers) {
                 bufferDecision(decision);
                 followers.forEach(followerId -> delegateRouter.route(new NetworkServiceMessage.Send(followerId, decision)));
                 LOG.trace("Relayed decision seq={} to {} followers",
@@ -53,23 +47,27 @@ import org.slf4j.LoggerFactory;
                           followers.size());
             }
 
-            @Override public void onDecisionFromGovernor(Decision<?> decision) {
+            @Override
+            public void onDecisionFromGovernor(Decision<?> decision) {
                 bufferDecision(decision);
                 LOG.trace("Received relayed decision seq={}",
                           decision.phase().value());
             }
 
-            @Override public long lastSequence() {
+            @Override
+            public long lastSequence() {
                 return lastSequenceHolder.get();
             }
 
-            @Override public List<Decision<?>> bufferedDecisions() {
+            @Override
+            public List<Decision<?>> bufferedDecisions() {
                 return List.copyOf(decisionBuffer);
             }
 
-            @Override public Option<Decision<?>> decisionAt(long sequence) {
-                return Option.from(decisionBuffer.stream().filter(d -> d.phase().value() == sequence)
-                                                        .findFirst());
+            @Override
+            public Option<Decision<?>> decisionAt(long sequence) {
+                return Option.from(decisionBuffer.stream().filter(d -> d.phase()
+                                                                        .value() == sequence).findFirst());
             }
 
             private void bufferDecision(Decision<?> decision) {
@@ -79,9 +77,12 @@ import org.slf4j.LoggerFactory;
             }
 
             private void trimBuffer() {
-                while (decisionBuffer.size() > bufferSize) {decisionBuffer.pollFirst();}
+                while (decisionBuffer.size() > bufferSize) {
+                    decisionBuffer.pollFirst();
+                }
             }
         }
-        return new decisionRelay(selfId, delegateRouter, bufferSize, new ConcurrentLinkedDeque<>(), new AtomicLong(- 1));
+
+        return new decisionRelay(selfId, delegateRouter, bufferSize, new ConcurrentLinkedDeque<>(), new AtomicLong(-1));
     }
 }

@@ -1,15 +1,15 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.security;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Dedicated audit logger for security events.
-///
-/// Uses a separate logger name (org.pragmatica.aether.audit) so security events
-/// can be routed to a dedicated log file/sink via logback configuration.
-/// Never logs raw API key values — only principals and paths.
-@SuppressWarnings("JBCT-RET-01") public final class AuditLog {
+@SuppressWarnings("JBCT-RET-01")
+public final class AuditLog {
     private static final Logger AUDIT = LoggerFactory.getLogger("org.pragmatica.aether.audit");
 
     private AuditLog() {}

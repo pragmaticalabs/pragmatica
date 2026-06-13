@@ -6,11 +6,16 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>1.0.0-alpha</version>
+        <version>1.0.0-rc1</version>
     </parent>
 
     <artifactId>node</artifactId>
     <name>Aether Node</name>
+
+    <properties>
+        <maven.build.timestamp.format>yyyy-MM-dd'T'HH:mm:ss'Z'</maven.build.timestamp.format>
+        <build.timestamp>${maven.build.timestamp}</build.timestamp>
+    </properties>
 
     <dependencies>
         <!-- Internal -->
@@ -25,6 +30,18 @@
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>utility</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>statemachine</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>statemachine</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
@@ -112,6 +129,38 @@
             <artifactId>environment-docker</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!--
+            Cloud-provider environment integrations are bundled into the runtime image so
+            any deployment can auto-heal regardless of which provider bootstrapped it. Each
+            module ships a META-INF/services entry for `EnvironmentIntegrationFactory`; the
+            shaded jar's `ServicesResourceTransformer` merges them at package time, and
+            `Main.resolveEnvironment` selects the right one at boot via `[cloud] provider =
+            "..."`. Without these dependencies the ServiceLoader sees only the Docker
+            factory at runtime, `lifecycleManager.isCloudManaged()` returns false on every
+            cloud cluster, and CTM silently falls into the "no ComputeProvider" branch —
+            CTM will never auto-provision a replacement for a failed core node, breaking
+            12-network suite-2 (`No NODE_JOINED for replacement`) on every cloud target.
+        -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>environment-hetzner</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>environment-aws</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>environment-gcp</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>environment-azure</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
@@ -157,6 +206,10 @@
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>aether-invoke</artifactId>
             <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-management-api</artifactId>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
@@ -244,7 +297,32 @@
     </dependencies>
 
     <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>build-info.properties</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>build-info.properties</exclude>
+                </excludes>
+            </resource>
+        </resources>
         <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <compilerArgs combine.children="append">
+                        <arg>-Acodec.registry.suffix=Node</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
@@ -266,6 +344,10 @@
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>org.pragmatica.aether.Main</mainClass>
+                                    <manifestEntries>
+                                        <Implementation-Version>${project.version}</Implementation-Version>
+                                        <Implementation-Build-Date>${maven.build.timestamp}</Implementation-Build-Date>
+                                    </manifestEntries>
                                 </transformer>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                                 <transformer implementation="org.apache.logging.log4j.maven.plugins.shade.transformer.Log4j2PluginCacheFileTransformer"/>

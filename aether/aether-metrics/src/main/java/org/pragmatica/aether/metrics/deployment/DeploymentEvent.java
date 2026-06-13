@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.deployment;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -6,22 +10,8 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
 
 
-/// Events emitted during slice deployment lifecycle for metrics collection.
-///
-///
-/// These events are dispatched locally via MessageRouter to track deployment progress.
-/// This is a sealed hierarchy validated at route-building time via SealedBuilder.
-///
-///
-/// Lifecycle flow:
-/// ```
-/// DeploymentStarted → StateTransition* → DeploymentCompleted
-///                                      → DeploymentFailed
-/// ```
-///
-/// @see org.pragmatica.messaging.MessageRouter.Entry.SealedBuilder
 public sealed interface DeploymentEvent extends Message.Local {
-    record unused() implements DeploymentEvent{}
+    record unused() implements DeploymentEvent {}
 
     record DeploymentStarted(Artifact artifact, NodeId targetNode, long timestamp) implements DeploymentEvent {
         public static DeploymentStarted deploymentStarted(Artifact artifact, NodeId targetNode, long timestamp) {

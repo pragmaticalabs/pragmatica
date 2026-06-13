@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.security;
 
 import org.pragmatica.lang.Result;
@@ -9,10 +13,8 @@ import java.security.Signature;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Verifies JWT signatures using JDK crypto APIs.
-///
-/// Supports RS256 (RSA with SHA-256) and ES256 (ECDSA with SHA-256).
-@SuppressWarnings("JBCT-RET-03") final class JwtSignatureVerifier {
+@SuppressWarnings("JBCT-RET-03")
+final class JwtSignatureVerifier {
     private JwtSignatureVerifier() {}
 
     static Result<JwtTokenParser.ParsedJwt> verify(JwtTokenParser.ParsedJwt jwt, PublicKey key) {
@@ -20,7 +22,7 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static Result<String> resolveAlgorithm(String jwtAlg) {
-        return switch (jwtAlg){
+        return switch (jwtAlg) {
             case "RS256" -> success("SHA256withRSA");
             case "RS384" -> success("SHA384withRSA");
             case "RS512" -> success("SHA512withRSA");
@@ -31,20 +33,27 @@ import static org.pragmatica.lang.Result.success;
         };
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Result<JwtTokenParser.ParsedJwt> performVerification(JwtTokenParser.ParsedJwt jwt,
-                                                                                                        PublicKey key,
-                                                                                                        String jdkAlg) {
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<JwtTokenParser.ParsedJwt> performVerification(JwtTokenParser.ParsedJwt jwt,
+                                                                        PublicKey key,
+                                                                        String jdkAlg) {
         return Result.lift(JwtSignatureVerifier::verificationFailed, () -> verifySignatureRaw(jwt, key, jdkAlg));
     }
 
-    @SuppressWarnings({"JBCT-EX-01"}) private static JwtTokenParser.ParsedJwt verifySignatureRaw(JwtTokenParser.ParsedJwt jwt,
-                                                                                                 PublicKey key,
-                                                                                                 String jdkAlg) throws Exception {
+    @SuppressWarnings({"JBCT-EX-01"})
+    private static JwtTokenParser.ParsedJwt verifySignatureRaw(JwtTokenParser.ParsedJwt jwt,
+                                                               PublicKey key,
+                                                               String jdkAlg) throws Exception {
         var sig = Signature.getInstance(jdkAlg);
+
         sig.initVerify(key);
         sig.update(jwt.signedContent().getBytes(StandardCharsets.US_ASCII));
         var signatureBytes = maybeConvertEcSignature(jwt.signature(), jdkAlg);
-        if (!sig.verify(signatureBytes)) {throw new SecurityException("Signature verification failed");}
+
+        if (!sig.verify(signatureBytes)) {
+            throw new SecurityException("Signature verification failed");
+        }
+
         return jwt;
     }
 
@@ -52,44 +61,61 @@ import static org.pragmatica.lang.Result.success;
         return new SecurityError.SignatureInvalid("Signature verification failed: " + t.getMessage());
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static byte[] maybeConvertEcSignature(byte[] signature, String jdkAlg) {
-        if (!jdkAlg.contains("ECDSA")) {return signature;}
+    @SuppressWarnings("JBCT-PAT-01")
+    private static byte[] maybeConvertEcSignature(byte[] signature, String jdkAlg) {
+        if (!jdkAlg.contains("ECDSA")) {
+            return signature;
+        }
+
         return convertRawToDer(signature);
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static byte[] convertRawToDer(byte[] raw) {
+    @SuppressWarnings("JBCT-PAT-01")
+    private static byte[] convertRawToDer(byte[] raw) {
         var half = raw.length / 2;
         var r = trimLeadingZeros(raw, 0, half);
         var s = trimLeadingZeros(raw, half, raw.length);
-        var rLen = r.length + (r[0]<0
+        var rLen = r.length + (r[0]< 0
                                ? 1
                                : 0);
-        var sLen = s.length + (s[0]<0
+        var sLen = s.length + (s[0]< 0
                                ? 1
                                : 0);
         var totalLen = 2 + rLen + 2 + sLen;
         var der = new byte[2 + totalLen];
         var pos = 0;
+
         der[pos++] = 0x30;
         der[pos++] = (byte) totalLen;
         pos = writeInteger(der, pos, r, rLen);
         writeInteger(der, pos, s, sLen);
+
         return der;
     }
 
     private static int writeInteger(byte[] der, int pos, byte[] value, int fieldLen) {
         der[pos++] = 0x02;
         der[pos++] = (byte) fieldLen;
-        if (fieldLen > value.length) {der[pos++] = 0x00;}
+        if (fieldLen > value.length) {
+            der[pos++] = 0x00;
+        }
+
         System.arraycopy(value, 0, der, pos, value.length);
+
         return pos + value.length;
     }
 
     private static byte[] trimLeadingZeros(byte[] data, int start, int end) {
         var idx = start;
-        while (idx <end - 1 && data[idx] == 0) {idx++;}
+
+        while (idx < end - 1 && data[idx] == 0) {
+            idx++;
+        }
+
         var result = new byte[end - idx];
+
         System.arraycopy(data, idx, result, 0, result.length);
+
         return result;
     }
 }

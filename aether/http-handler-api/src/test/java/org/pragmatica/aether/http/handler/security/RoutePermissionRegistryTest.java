@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.http.handler.security;
 
 import org.junit.jupiter.api.Nested;
@@ -14,7 +19,7 @@ class RoutePermissionRegistryTest {
     class GetRequests {
         @Test
         void resolve_allAuthenticated_forGetStatus() {
-            assertThat(RoutePermissionRegistry.resolve("GET", "/api/status")).isEqualTo(ALL_AUTHENTICATED);
+            assertThat(RoutePermissionRegistry.resolve("GET", "/api/nodes/status")).isEqualTo(ALL_AUTHENTICATED);
         }
 
         @Test
@@ -54,17 +59,17 @@ class RoutePermissionRegistryTest {
 
         @Test
         void resolve_allAuthenticated_forHeadMethod() {
-            assertThat(RoutePermissionRegistry.resolve("HEAD", "/api/status")).isEqualTo(ALL_AUTHENTICATED);
+            assertThat(RoutePermissionRegistry.resolve("HEAD", "/api/nodes/status")).isEqualTo(ALL_AUTHENTICATED);
         }
 
         @Test
         void resolve_allAuthenticated_forOptionsMethod() {
-            assertThat(RoutePermissionRegistry.resolve("OPTIONS", "/api/status")).isEqualTo(ALL_AUTHENTICATED);
+            assertThat(RoutePermissionRegistry.resolve("OPTIONS", "/api/nodes/status")).isEqualTo(ALL_AUTHENTICATED);
         }
 
         @Test
         void resolve_allAuthenticated_forCaseInsensitiveGet() {
-            assertThat(RoutePermissionRegistry.resolve("get", "/api/status")).isEqualTo(ALL_AUTHENTICATED);
+            assertThat(RoutePermissionRegistry.resolve("get", "/api/nodes/status")).isEqualTo(ALL_AUTHENTICATED);
         }
     }
 
@@ -72,22 +77,22 @@ class RoutePermissionRegistryTest {
     class AdminOnlyMutations {
         @Test
         void resolve_adminOnly_forBlueprintPost() {
-            assertThat(RoutePermissionRegistry.resolve("POST", "/api/blueprint")).isEqualTo(ADMIN_ONLY);
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/blueprints")).isEqualTo(ADMIN_ONLY);
         }
 
         @Test
         void resolve_adminOnly_forBlueprintDelete() {
-            assertThat(RoutePermissionRegistry.resolve("DELETE", "/api/blueprint/some-id")).isEqualTo(ADMIN_ONLY);
+            assertThat(RoutePermissionRegistry.resolve("DELETE", "/api/blueprints/some-id")).isEqualTo(ADMIN_ONLY);
         }
 
         @Test
         void resolve_adminOnly_forNodeShutdown() {
-            assertThat(RoutePermissionRegistry.resolve("POST", "/api/node/shutdown/node-1")).isEqualTo(ADMIN_ONLY);
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/nodes/shutdown/node-1")).isEqualTo(ADMIN_ONLY);
         }
 
         @Test
         void resolve_adminOnly_forBackupRestore() {
-            assertThat(RoutePermissionRegistry.resolve("POST", "/api/backup/restore")).isEqualTo(ADMIN_ONLY);
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/backups/restore")).isEqualTo(ADMIN_ONLY);
         }
 
         @Test
@@ -120,12 +125,12 @@ class RoutePermissionRegistryTest {
     class OperatorMutations {
         @Test
         void resolve_operatorAndAbove_forNodeDrain() {
-            assertThat(RoutePermissionRegistry.resolve("POST", "/api/node/drain/node-1")).isEqualTo(OPERATOR_AND_ABOVE);
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/nodes/drain/node-1")).isEqualTo(OPERATOR_AND_ABOVE);
         }
 
         @Test
         void resolve_operatorAndAbove_forNodeActivate() {
-            assertThat(RoutePermissionRegistry.resolve("POST", "/api/node/activate/node-1")).isEqualTo(OPERATOR_AND_ABOVE);
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/nodes/activate/node-1")).isEqualTo(OPERATOR_AND_ABOVE);
         }
 
         @Test
@@ -170,12 +175,12 @@ class RoutePermissionRegistryTest {
 
         @Test
         void resolve_operatorAndAbove_forAbTestCreate() {
-            assertThat(RoutePermissionRegistry.resolve("POST", "/api/ab-test/create")).isEqualTo(OPERATOR_AND_ABOVE);
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/ab-tests/create")).isEqualTo(OPERATOR_AND_ABOVE);
         }
 
         @Test
         void resolve_operatorAndAbove_forBackupCreate() {
-            assertThat(RoutePermissionRegistry.resolve("POST", "/api/backup")).isEqualTo(OPERATOR_AND_ABOVE);
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/backups")).isEqualTo(OPERATOR_AND_ABOVE);
         }
 
         @Test
@@ -185,7 +190,7 @@ class RoutePermissionRegistryTest {
 
         @Test
         void resolve_operatorAndAbove_forScheduledTaskAction() {
-            assertThat(RoutePermissionRegistry.resolve("POST", "/api/scheduled-tasks/section/artifact/method/trigger")).isEqualTo(OPERATOR_AND_ABOVE);
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/scheduled-tasks/trigger/section/artifact/method")).isEqualTo(OPERATOR_AND_ABOVE);
         }
 
         @Test
@@ -233,12 +238,12 @@ class RoutePermissionRegistryTest {
     class AdminOverrides {
         @Test
         void resolve_operatorAndAbove_forBlueprintDeploy() {
-            assertThat(RoutePermissionRegistry.resolve("POST", "/api/blueprint/deploy")).isEqualTo(OPERATOR_AND_ABOVE);
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/blueprints/deploy")).isEqualTo(OPERATOR_AND_ABOVE);
         }
 
         @Test
         void resolve_allAuthenticated_forBlueprintValidate() {
-            assertThat(RoutePermissionRegistry.resolve("POST", "/api/blueprint/validate")).isEqualTo(ALL_AUTHENTICATED);
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/blueprints/validate")).isEqualTo(ALL_AUTHENTICATED);
         }
     }
 

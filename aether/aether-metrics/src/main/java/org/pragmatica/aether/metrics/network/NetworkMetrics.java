@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.network;
 
 public record NetworkMetrics(long bytesRead,
@@ -18,17 +22,26 @@ public record NetworkMetrics(long bytesRead,
     }
 
     public double avgReadMessageSize() {
-        if (messagesRead == 0) {return 0.0;}
+        if (messagesRead == 0) {
+            return 0.0;
+        }
+
         return bytesRead / (double) messagesRead;
     }
 
     public double avgWriteMessageSize() {
-        if (messagesWritten == 0) {return 0.0;}
+        if (messagesWritten == 0) {
+            return 0.0;
+        }
+
         return bytesWritten / (double) messagesWritten;
     }
 
     public boolean isUnderBackpressure(long windowMs) {
-        if (lastBackpressureTimestamp == 0) {return false;}
-        return System.currentTimeMillis() - lastBackpressureTimestamp <windowMs;
+        if (lastBackpressureTimestamp == 0) {
+            return false;
+        }
+
+        return System.currentTimeMillis() - lastBackpressureTimestamp < windowMs;
     }
 }

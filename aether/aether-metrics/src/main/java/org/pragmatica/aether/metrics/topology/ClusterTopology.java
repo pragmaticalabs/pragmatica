@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.topology;
 
 import org.pragmatica.lang.Option;
@@ -6,15 +10,6 @@ import java.util.List;
 import java.util.Map;
 
 
-/// Snapshot of cluster topology for observability.
-///
-/// @param totalNodes    Total number of nodes in cluster
-/// @param healthyNodes  Number of healthy nodes
-/// @param quorumSize    Required quorum size
-/// @param hasQuorum     Whether cluster has quorum
-/// @param leaderId      Current leader node ID
-/// @param nodes         Node information list
-/// @param slices        Slice deployment information
 public record ClusterTopology(int totalNodes,
                               int healthyNodes,
                               int quorumSize,
@@ -47,29 +42,38 @@ public record ClusterTopology(int totalNodes,
         }
 
         public double availability() {
-            if (desiredInstances <= 0) {return 1.0;}
+            if (desiredInstances <= 0) {
+                return 1.0;
+            }
+
             return Math.min(1.0, (double) activeInstances / desiredInstances);
         }
     }
 
     public double healthScore() {
-        if (totalNodes == 0) {return 0.0;}
+        if (totalNodes == 0) {
+            return 0.0;
+        }
+
         double nodeHealth = (double) healthyNodes / totalNodes;
         double quorumHealth = hasQuorum
-                             ? 1.0
-                             : 0.0;
+                              ? 1.0
+                              : 0.0;
         double leaderHealth = leaderId.isPresent()
-                             ? 1.0
-                             : 0.0;
+                              ? 1.0
+                              : 0.0;
+
         return (nodeHealth * 0.4 + quorumHealth * 0.4 + leaderHealth * 0.2);
     }
 
     public boolean healthy() {
-        return hasQuorum && leaderId.isPresent() && healthyNodes == totalNodes;
+        return hasQuorum
+               && leaderId.isPresent()
+               && healthyNodes == totalNodes;
     }
 
     public boolean degraded() {
-        return hasQuorum && (healthyNodes <totalNodes || leaderId.isEmpty());
+        return hasQuorum && (healthyNodes < totalNodes || leaderId.isEmpty());
     }
 
     public boolean critical() {

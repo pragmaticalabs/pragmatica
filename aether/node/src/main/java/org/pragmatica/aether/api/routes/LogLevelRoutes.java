@@ -1,8 +1,13 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementApiResponses.LogLevelResetResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.LogLevelSetResponse;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -15,7 +20,6 @@ import java.util.stream.Stream;
 import static org.pragmatica.http.routing.PathParameter.aString;
 
 
-/// Routes for runtime log level management: set, reset, list log levels.
 public final class LogLevelRoutes implements RouteSource {
     private static final Set<String> VALID_LEVELS = Set.of("TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "OFF");
 
@@ -29,38 +33,53 @@ public final class LogLevelRoutes implements RouteSource {
         return new LogLevelRoutes(logLevelRegistry);
     }
 
-    record SetLogLevelRequest(String logger, String level){}
+    record SetLogLevelRequest(String logger, String level) {}
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<Object>get("/api/logging/levels").toJson(logLevelRegistry::allLevels),
-                         Route.<LogLevelSetResponse>post("/api/logging/levels")
-                              .withBody(SetLogLevelRequest.class)
-                              .toJson(this::handleSetLevel),
-                         Route.<LogLevelResetResponse>delete("/api/logging/levels")
-                              .withPath(aString())
-                              .to(this::handleResetLevel)
-                              .asJson());
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<Object> route(ManagementRoute.LOG_LEVELS_LIST).toJson(logLevelRegistry::allLevels),
+                         ManagementRoutes.<LogLevelSetResponse> route(ManagementRoute.LOG_LEVEL_SET)
+                                         .withBody(SetLogLevelRequest.class)
+                                         .toJson(this::handleSetLevel),
+                         ManagementRoutes.<LogLevelResetResponse> route(ManagementRoute.LOG_LEVEL_RESET)
+                                         .withPath(aString())
+                                         .to(this::handleResetLevel)
+                                         .asJson());
     }
 
     private Promise<LogLevelSetResponse> handleSetLevel(SetLogLevelRequest req) {
         return validateSetRequest(req).async()
                                  .flatMap(valid -> logLevelRegistry.setLevel(valid.logger(),
                                                                              valid.level().toUpperCase())
-        .map(_ -> new LogLevelSetResponse("level_set",
-                                          valid.logger(),
-                                          valid.level().toUpperCase())));
+                                                                   .map(_ -> new LogLevelSetResponse("level_set",
+                                                                                                     valid.logger(),
+                                                                                                     valid.level()
+                                                                                                          .toUpperCase())));
     }
 
     private Result<SetLogLevelRequest> validateSetRequest(SetLogLevelRequest req) {
-        if (req.logger() == null || req.logger().isEmpty()) {return LogLevelError.MISSING_FIELDS.result();}
-        if (req.level() == null || req.level().isEmpty()) {return LogLevelError.MISSING_FIELDS.result();}
-        if (!VALID_LEVELS.contains(req.level().toUpperCase())) {return LogLevelError.INVALID_LEVEL.result();}
+        if (req.logger() == null || req.logger().isEmpty()) {
+            return LogLevelError.MISSING_FIELDS.result();
+        }
+
+        if (req.level() == null || req.level().isEmpty()) {
+            return LogLevelError.MISSING_FIELDS.result();
+        }
+
+        if (!VALID_LEVELS.contains(req.level().toUpperCase())) {
+            return LogLevelError.INVALID_LEVEL.result();
+        }
+
         return Result.success(req);
     }
 
     private Promise<LogLevelResetResponse> handleResetLevel(String loggerName) {
-        if (loggerName.isEmpty()) {return LogLevelError.LOGGER_REQUIRED.promise();}
-        return logLevelRegistry.resetLevel(loggerName).map(_ -> new LogLevelResetResponse("level_reset", loggerName));
+        if (loggerName.isEmpty()) {
+            return LogLevelError.LOGGER_REQUIRED.promise();
+        }
+
+        return logLevelRegistry.resetLevel(loggerName)
+                               .map(_ -> new LogLevelResetResponse("level_reset", loggerName));
     }
 
     private enum LogLevelError implements Cause {
@@ -71,7 +90,8 @@ public final class LogLevelRoutes implements RouteSource {
         LogLevelError(String message) {
             this.message = message;
         }
-        @Override public String message() {
+        @Override
+        public String message() {
             return message;
         }
     }

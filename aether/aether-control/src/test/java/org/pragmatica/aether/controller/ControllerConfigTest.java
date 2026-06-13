@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.controller;
 
 import org.junit.jupiter.api.Nested;
@@ -16,9 +21,9 @@ class ControllerConfigTest {
             assertThat(config.cpuScaleUpThreshold()).isEqualTo(0.8);
             assertThat(config.cpuScaleDownThreshold()).isEqualTo(0.2);
             assertThat(config.callRateScaleUpThreshold()).isEqualTo(2000.0);
-            assertThat(config.evaluationIntervalMs()).isEqualTo(1000);
-            assertThat(config.warmUpPeriodMs()).isEqualTo(30000);
-            assertThat(config.sliceCooldownMs()).isEqualTo(10000);
+            assertThat(config.evaluationInterval().millis()).isEqualTo(1000);
+            assertThat(config.warmUpPeriod().millis()).isEqualTo(30000);
+            assertThat(config.sliceCooldown().millis()).isEqualTo(10000);
             assertThat(config.scalingConfig()).isNotNull();
         }
     }
@@ -119,37 +124,6 @@ class ControllerConfigTest {
             assertThat(updated.cpuScaleUpThreshold()).isEqualTo(original.cpuScaleUpThreshold());
         }
 
-        @Test
-        void withCallRateScaleUpThreshold_createsCorrectCopy() {
-            var original = ControllerConfig.DEFAULT;
-            var updated = original.withCallRateScaleUpThreshold(999);
-
-            assertThat(updated.callRateScaleUpThreshold()).isEqualTo(999);
-        }
-
-        @Test
-        void withEvaluationIntervalMs_createsCorrectCopy() {
-            var original = ControllerConfig.DEFAULT;
-            var updated = original.withEvaluationIntervalMs(5000);
-
-            assertThat(updated.evaluationIntervalMs()).isEqualTo(5000);
-        }
-
-        @Test
-        void withWarmUpPeriodMs_createsCorrectCopy() {
-            var original = ControllerConfig.DEFAULT;
-            var updated = original.withWarmUpPeriodMs(60000);
-
-            assertThat(updated.warmUpPeriodMs()).isEqualTo(60000);
-        }
-
-        @Test
-        void withSliceCooldownMs_createsCorrectCopy() {
-            var original = ControllerConfig.DEFAULT;
-            var updated = original.withSliceCooldownMs(20000);
-
-            assertThat(updated.sliceCooldownMs()).isEqualTo(20000);
-        }
     }
 
     @Nested

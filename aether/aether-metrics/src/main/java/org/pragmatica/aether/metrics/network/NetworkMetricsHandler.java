@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.network;
 
 import org.pragmatica.lang.Contract;
@@ -13,25 +17,14 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 
 
-/// Sharable Netty handler that tracks network I/O metrics.
-///
-/// Thread-safe: uses atomic operations for all counters.
-///
-/// Add to pipeline after codec handlers to track application-level messages,
-/// or before codec handlers to track raw bytes.
-@Sharable public final class NetworkMetricsHandler extends ChannelDuplexHandler {
+@Sharable
+public final class NetworkMetricsHandler extends ChannelDuplexHandler {
     private final LongAdder bytesRead = new LongAdder();
-
     private final LongAdder bytesWritten = new LongAdder();
-
     private final LongAdder messagesRead = new LongAdder();
-
     private final LongAdder messagesWritten = new LongAdder();
-
     private final AtomicInteger activeConnections = new AtomicInteger(0);
-
     private final AtomicInteger backpressureEvents = new AtomicInteger(0);
-
     private final AtomicLong lastBackpressureTimestamp = new AtomicLong(0);
 
     private NetworkMetricsHandler() {}
@@ -40,35 +33,55 @@ import io.netty.channel.ChannelPromise;
         return new NetworkMetricsHandler();
     }
 
-    @Override@Contract@SuppressWarnings("JBCT-EX-01") public void channelActive(ChannelHandlerContext ctx) throws Exception {
+    @Override
+    @Contract
+    @SuppressWarnings("JBCT-EX-01")
+    public void channelActive(ChannelHandlerContext ctx) throws Exception {
         activeConnections.incrementAndGet();
         super.channelActive(ctx);
     }
 
-    @Override@Contract@SuppressWarnings("JBCT-EX-01") public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+    @Override
+    @Contract
+    @SuppressWarnings("JBCT-EX-01")
+    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
         activeConnections.decrementAndGet();
         super.channelInactive(ctx);
     }
 
-    @Override@Contract@SuppressWarnings("JBCT-EX-01") public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+    @Override
+    @Contract
+    @SuppressWarnings("JBCT-EX-01")
+    public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         messagesRead.increment();
-        if (msg instanceof ByteBuf buf) {bytesRead.add(buf.readableBytes());}
+        if (msg instanceof ByteBuf buf) {
+            bytesRead.add(buf.readableBytes());
+        }
+
         super.channelRead(ctx, msg);
     }
 
-    @Override@Contract@SuppressWarnings("JBCT-EX-01") public void write(ChannelHandlerContext ctx,
-                                                                        Object msg,
-                                                                        ChannelPromise promise) throws Exception {
+    @Override
+    @Contract
+    @SuppressWarnings("JBCT-EX-01")
+    public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
         messagesWritten.increment();
-        if (msg instanceof ByteBuf buf) {bytesWritten.add(buf.readableBytes());}
+        if (msg instanceof ByteBuf buf) {
+            bytesWritten.add(buf.readableBytes());
+        }
+
         super.write(ctx, msg, promise);
     }
 
-    @Override@Contract@SuppressWarnings("JBCT-EX-01") public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
+    @Override
+    @Contract
+    @SuppressWarnings("JBCT-EX-01")
+    public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
         if (!ctx.channel().isWritable()) {
             backpressureEvents.incrementAndGet();
             lastBackpressureTimestamp.set(System.currentTimeMillis());
         }
+
         super.channelWritabilityChanged(ctx);
     }
 

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.handler;
 
 import org.pragmatica.lang.Result;
@@ -10,13 +14,8 @@ import java.util.Objects;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Raw HTTP response data returned through SliceInvoker.
-///
-///
-/// @param statusCode HTTP status code (e.g., 200, 404, 500)
-/// @param headers    response headers
-/// @param body       response body bytes
-@Codec public record HttpResponseData(int statusCode, Map<String, String> headers, byte[] body) {
+@Codec
+public record HttpResponseData(int statusCode, Map<String, String> headers, byte[] body) {
     private static final byte[] EMPTY_BODY = new byte[0];
 
     private static final Map<String, String> JSON_HEADERS = Map.of("Content-Type", "application/json; charset=UTF-8");
@@ -25,7 +24,9 @@ import static org.pragmatica.lang.Result.success;
 
     public HttpResponseData {
         Objects.requireNonNull(headers, "headers");
-        if (body == null || body.length == 0) {body = EMPTY_BODY;}
+        if (body == null || body.length == 0) {
+            body = EMPTY_BODY;
+        }
     }
 
     public static Result<HttpResponseData> httpResponseData(Result<Integer> statusCode,

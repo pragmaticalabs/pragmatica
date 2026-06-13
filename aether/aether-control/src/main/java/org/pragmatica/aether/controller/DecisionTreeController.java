@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.controller;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.metrics.MetricsCollector;
+import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -19,18 +23,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Simple rule-based controller for MVP.
-///
-///
-/// Rules (evaluated in order):
-/// <ol>
-///   - IF avg(cpu) > 0.8 → scale up by 1
-///   - IF avg(cpu) < 0.2 AND instances > 1 → scale down by 1
-///   - IF method call rate > threshold → scale up
-/// </ol>
-///
-///
-/// Future versions will support configurable rules via YAML.
 public interface DecisionTreeController extends ClusterController {
     static DecisionTreeController decisionTreeController() {
         return decisionTreeController(ControllerConfig.DEFAULT);
@@ -42,8 +34,7 @@ public interface DecisionTreeController extends ClusterController {
         return ControllerConfig.controllerConfig(cpuScaleUpThreshold,
                                                  cpuScaleDownThreshold,
                                                  callRateScaleUpThreshold,
-                                                 1000)
-        .map(config -> decisionTreeController(config));
+                                                 1000).map(config -> decisionTreeController(config));
     }
 
     static DecisionTreeController decisionTreeController(ControllerConfig config) {
@@ -66,46 +57,48 @@ public interface DecisionTreeController extends ClusterController {
             this.lastEvaluationTime = new AtomicLong(lastEvaluationTime);
         }
 
-        @Override public ControllerConfig configuration() {
+        @Override
+        public ControllerConfig configuration() {
             return config;
         }
 
-        @Override public Unit updateConfiguration(ControllerConfig config) {
+        @Override
+        public Unit updateConfiguration(ControllerConfig config) {
             log.info("Controller configuration updated: {}", config);
             this.config = config;
+
             return unit();
         }
 
-        @Override public Promise<ControlDecisions> evaluate(ControlContext context) {
+        @Override
+        public Promise<ControlDecisions> evaluate(ControlContext context) {
             var currentConfig = this.config;
-            var avgCpu = context.avgMetric(MetricsCollector.CPU_USAGE);
+            var avgCpu = context.avgMetric(ClusterSyncCollector.CPU_USAGE);
+
             log.debug("Evaluating: avgCpu={}, blueprints={}",
                       avgCpu,
                       context.blueprints().size());
             var currentTime = System.currentTimeMillis();
             long previousTime;
             long expected;
+
             do {
                 expected = lastEvaluationTime.get();
                 previousTime = expected;
             } while (!lastEvaluationTime.compareAndSet(expected, currentTime));
+
             var elapsedSeconds = Math.max(1.0, (currentTime - previousTime) / 1000.0);
-            var currentMetricKeys = context.metrics().values()
-                                                   .stream()
-                                                   .flatMap(nodeMetrics -> nodeMetrics.keySet().stream())
-                                                   .filter(this::isCallMetric)
-                                                   .collect(java.util.stream.Collectors.toSet());
+            var currentMetricKeys = context.metrics().values().stream().flatMap(nodeMetrics -> nodeMetrics.keySet()
+                                                                                                          .stream()).filter(this::isCallMetric).collect(java.util.stream.Collectors.toSet());
+
             previousCallCounts.keySet().retainAll(currentMetricKeys);
-            var changes = context.blueprints().entrySet()
-                                            .stream()
-                                            .map(entry -> evaluateBlueprint(entry.getKey(),
-                                                                            entry.getValue(),
-                                                                            avgCpu,
-                                                                            context.metrics(),
-                                                                            currentConfig,
-                                                                            elapsedSeconds))
-                                            .flatMap(List::stream)
-                                            .toList();
+            var changes = context.blueprints().entrySet().stream().map(entry -> evaluateBlueprint(entry.getKey(),
+                                                                                                  entry.getValue(),
+                                                                                                  avgCpu,
+                                                                                                  context.metrics(),
+                                                                                                  currentConfig,
+                                                                                                  elapsedSeconds)).flatMap(List::stream).toList();
+
             return Promise.success(new ControlDecisions(changes));
         }
 
@@ -126,22 +119,28 @@ public interface DecisionTreeController extends ClusterController {
                                                                Blueprint blueprint,
                                                                double avgCpu,
                                                                ControllerConfig currentConfig) {
-            if (currentConfig.scalingConfig().weights()
-                                           .getOrDefault(ScalingMetric.CPU, 0.0) == 0.0) {return Option.none();}
+            if (currentConfig.scalingConfig().weights().getOrDefault(ScalingMetric.CPU, 0.0) == 0.0) {
+                return Option.none();
+            }
+
             if (avgCpu > currentConfig.cpuScaleUpThreshold()) {
                 log.info("Rule triggered: High CPU ({} > {}), scaling up {}",
                          avgCpu,
                          currentConfig.cpuScaleUpThreshold(),
                          artifact);
+
                 return Option.some(List.of(new BlueprintChange.ScaleUp(artifact, 1)));
             }
-            if (avgCpu <currentConfig.cpuScaleDownThreshold() && blueprint.instances() > blueprint.minInstances()) {
+
+            if (avgCpu < currentConfig.cpuScaleDownThreshold() && blueprint.instances() > blueprint.minInstances()) {
                 log.debug("Rule triggered: Low CPU ({} < {}), scaling down {}",
                           avgCpu,
                           currentConfig.cpuScaleDownThreshold(),
                           artifact);
+
                 return Option.some(List.of(new BlueprintChange.ScaleDown(artifact, 1)));
             }
+
             return Option.none();
         }
 
@@ -149,15 +148,16 @@ public interface DecisionTreeController extends ClusterController {
                                                                    Map<NodeId, Map<String, Double>> metrics,
                                                                    ControllerConfig currentConfig,
                                                                    double elapsedSeconds) {
-            var callMetricEntries = metrics.values().stream()
-                                                  .flatMap(nodeMetrics -> nodeMetrics.entrySet().stream())
-                                                  .filter(entry -> isCallMetric(entry.getKey()))
-                                                  .toList();
+            var callMetricEntries = metrics.values().stream().flatMap(nodeMetrics -> nodeMetrics.entrySet()
+                                                                                                .stream()).filter(entry -> isCallMetric(entry.getKey())).toList();
             var hasHighCallRate = checkAndUpdateCallRates(callMetricEntries, elapsedSeconds, currentConfig);
+
             if (hasHighCallRate) {
                 log.info("Rule triggered: High call rate, scaling up {}", artifact);
+
                 return Option.some(List.of(new BlueprintChange.ScaleUp(artifact, 1)));
             }
+
             return Option.none();
         }
 
@@ -165,17 +165,22 @@ public interface DecisionTreeController extends ClusterController {
                                                 double elapsedSeconds,
                                                 ControllerConfig currentConfig) {
             var hasHighRate = false;
+
             for (var entry : callMetricEntries) {
                 var metricName = entry.getKey();
                 var currentCount = entry.getValue();
                 var previous = previousCallCounts.put(metricName, currentCount);
                 var previousCount = previous != null
-                                   ? previous
-                                   : 0.0;
+                                    ? previous
+                                    : 0.0;
                 var delta = currentCount - previousCount;
                 var callsPerSecond = delta / elapsedSeconds;
-                if (callsPerSecond > currentConfig.callRateScaleUpThreshold()) {hasHighRate = true;}
+
+                if (callsPerSecond > currentConfig.callRateScaleUpThreshold()) {
+                    hasHighRate = true;
+                }
             }
+
             return hasHighRate;
         }
 

@@ -1,29 +1,29 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.metrics;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 
-/// Request from a governor to the core cluster to scale a community.
-/// Only sent when the CommunityScalingEvaluator detects a sustained threshold breach.
-/// Zero traffic when community is healthy.
-///
-/// @param communityId       community identifier
-/// @param governorId        governor node ID
-/// @param artifact          the artifact to scale
-/// @param direction         "UP" or "DOWN"
-/// @param currentInstances  current instance count
-/// @param requestedInstances desired instance count
-/// @param evidence          scaling evidence from sliding window
-@Codec public record CommunityScalingRequest(String communityId,
-                                             NodeId governorId,
-                                             Artifact artifact,
-                                             String direction,
-                                             int currentInstances,
-                                             int requestedInstances,
-                                             ScalingEvidence evidence) implements Message.Wired {
+@Codec
+public record CommunityScalingRequest(String communityId,
+                                      NodeId governorId,
+                                      Artifact artifact,
+                                      String direction,
+                                      int currentInstances,
+                                      int requestedInstances,
+                                      ScalingEvidence evidence) implements Message.Wired {
+    @Override
+    public StreamType streamType() {
+        return StreamType.METRICS;
+    }
+
     public static CommunityScalingRequest communityScalingRequest(String communityId,
                                                                   NodeId governorId,
                                                                   Artifact artifact,
