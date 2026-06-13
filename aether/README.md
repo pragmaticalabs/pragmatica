@@ -8,12 +8,13 @@ Unified Application Runtime for Java -- scale horizontally without microservices
 > - **Single trust domain.** Aether assumes all cluster nodes and management clients are
 >   operated by one trusted party. It is **not** hardened for multi-tenant or hostile-network
 >   deployment.
-> - **Security is ON by default**, not off: the management API requires API-key auth with
->   role-based access (viewer / operator / admin), and inter-node transport uses TLS
->   (self-signed by default, or operator-supplied certificates). `AETHER_INSECURE_DEV_MODE`
->   is an explicit **opt-in** (off by default) that enables test-injection endpoints; it is
->   **refused at boot** when operator TLS certificates are configured, and logs a loud startup
->   warning whenever it is active.
+> - **Security is built in but OFF by default in this RC.** The management API supports
+>   API-key auth with role-based access (viewer / operator / admin), and inter-node transport
+>   runs over TLS (self-signed by default, or operator-supplied certificates) — but the default
+>   `SecurityMode` is `NONE`, so auth must be **explicitly enabled**. Making security default-on
+>   is a hard gate for RC2. Separately, `AETHER_INSECURE_DEV_MODE` is an explicit opt-in that
+>   enables test-injection endpoints; it is **refused at boot** when operator TLS certificates
+>   are configured, and logs a loud startup warning whenever it is active.
 > - **Not yet production-hardened.** Some background reconcilers are tuned for settled clusters
 >   and can be transiently slower to converge under heavy churn; these are tracked for the next
 >   milestones. Use RC1 for evaluation and non-critical workloads.
