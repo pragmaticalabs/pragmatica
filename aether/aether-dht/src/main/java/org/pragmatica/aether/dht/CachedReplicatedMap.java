@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.dht;
 
 import org.pragmatica.lang.Contract;
@@ -14,18 +18,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// LRU cache with TTL wrapping a ReplicatedMap for point lookups.
-/// Cache invalidation via MapSubscription events ensures consistency.
-///
-/// @param <K> key type
-/// @param <V> value type
 public final class CachedReplicatedMap<K, V> implements MapSubscription<K, V> {
     private static final Logger log = LoggerFactory.getLogger(CachedReplicatedMap.class);
 
     private final ReplicatedMap<K, V> delegate;
-
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
-
     private final Map<K, CacheEntry<V>> cache;
     private final long ttlMs;
 
@@ -48,19 +45,28 @@ public final class CachedReplicatedMap<K, V> implements MapSubscription<K, V> {
 
     public Promise<Option<V>> get(K key) {
         var cached = readFromCache(key);
-        if (cached.isPresent()) {return Promise.success(cached);}
-        return delegate.get(key).onSuccess(opt -> opt.onPresent(value -> cacheValue(key, value)));
+
+        if (cached.isPresent()) {
+            return Promise.success(cached);
+        }
+
+        return delegate.get(key)
+                       .onSuccess(opt -> opt.onPresent(value -> cacheValue(key, value)));
     }
 
     public Promise<Boolean> remove(K key) {
         return delegate.remove(key);
     }
 
-    @Contract@Override public void onPut(K key, V value) {
+    @Contract
+    @Override
+    public void onPut(K key, V value) {
         cacheValue(key, value);
     }
 
-    @Contract@Override public void onRemove(K key) {
+    @Contract
+    @Override
+    public void onRemove(K key) {
         evictFromCache(key);
     }
 
@@ -76,14 +82,16 @@ public final class CachedReplicatedMap<K, V> implements MapSubscription<K, V> {
     private Option<V> readFromCache(K key) {
         lock.readLock().lock();
         try {
-            return Option.option(cache.get(key)).filter(entry -> !entry.isExpired(ttlMs))
-                                .map(CacheEntry::value);
+            return Option.option(cache.get(key))
+                         .filter(entry -> !entry.isExpired(ttlMs))
+                         .map(CacheEntry::value);
         } finally {
             lock.readLock().unlock();
         }
     }
 
-    @SuppressWarnings("JBCT-RET-01") private void cacheValue(K key, V value) {
+    @SuppressWarnings("JBCT-RET-01")
+    private void cacheValue(K key, V value) {
         lock.writeLock().lock();
         try {
             cache.put(key, new CacheEntry<>(value, System.currentTimeMillis()));
@@ -92,7 +100,8 @@ public final class CachedReplicatedMap<K, V> implements MapSubscription<K, V> {
         }
     }
 
-    @SuppressWarnings("JBCT-RET-01") private void evictFromCache(K key) {
+    @SuppressWarnings("JBCT-RET-01")
+    private void evictFromCache(K key) {
         lock.writeLock().lock();
         try {
             cache.remove(key);
@@ -103,7 +112,8 @@ public final class CachedReplicatedMap<K, V> implements MapSubscription<K, V> {
 
     private static <K, V> Map<K, CacheEntry<V>> newLruCache(int maxSize) {
         return new LinkedHashMap<>(maxSize, 0.75f, true) {
-            @Override protected boolean removeEldestEntry(Map.Entry<K, CacheEntry<V>> eldest) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<K, CacheEntry<V>> eldest) {
                 return size() > maxSize;
             }
         };

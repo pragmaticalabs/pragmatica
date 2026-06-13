@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.interceptor;
 
 import org.pragmatica.aether.resource.ResourceFactory;
@@ -15,28 +19,29 @@ import java.util.concurrent.ConcurrentHashMap;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Factory that provisions {@link CacheMethodInterceptor} instances from configuration.
-///
-/// Shared cache instances: configurations with the same {@link CacheConfig#cacheName()}
-/// share a single {@link CacheBackend} via {@code computeIfAbsent}.
 public final class CacheInterceptorFactory implements ResourceFactory<CacheMethodInterceptor, CacheConfig> {
     private final Map<String, CacheBackend> cacheRegistry = new ConcurrentHashMap<>();
 
-    @Override public Class<CacheMethodInterceptor> resourceType() {
+    @Override
+    public Class<CacheMethodInterceptor> resourceType() {
         return CacheMethodInterceptor.class;
     }
 
-    @Override public Class<CacheConfig> configType() {
+    @Override
+    public Class<CacheConfig> configType() {
         return CacheConfig.class;
     }
 
-    @Override public Promise<CacheMethodInterceptor> provision(CacheConfig config) {
+    @Override
+    public Promise<CacheMethodInterceptor> provision(CacheConfig config) {
         return provision(config, ProvisioningContext.provisioningContext());
     }
 
-    @Override@SuppressWarnings("unchecked") public Promise<CacheMethodInterceptor> provision(CacheConfig config,
-                                                                                             ProvisioningContext context) {
+    @Override
+    @SuppressWarnings("unchecked")
+    public Promise<CacheMethodInterceptor> provision(CacheConfig config, ProvisioningContext context) {
         var keyExtractor = (Fn1<Object, ?>) context.keyExtractor().or(Fn1.id());
+
         return createCache(config, context).map(cache -> cacheRegistry.computeIfAbsent(config.cacheName(),
                                                                                        _ -> cache))
                           .map(cache -> new CacheMethodInterceptor(cache,
@@ -46,7 +51,7 @@ public final class CacheInterceptorFactory implements ResourceFactory<CacheMetho
     }
 
     private Result<? extends CacheBackend> createCache(CacheConfig config, ProvisioningContext context) {
-        return switch (config.mode()){
+        return switch (config.mode()) {
             case LOCAL -> success(createInMemory(config));
             case DISTRIBUTED -> createDHTBackend(config, context);
             case TIERED -> createDHTBackend(config, context).map(dhtCache -> createTiered(config, dhtCache));
@@ -66,6 +71,6 @@ public final class CacheInterceptorFactory implements ResourceFactory<CacheMetho
                           context.extension(Serializer.class),
                           context.extension(Deserializer.class),
                           success(config.cacheName()))
-        .map(DHTCacheBackend::dhtCacheBackend);
+                     .map(DHTCacheBackend::dhtCacheBackend);
     }
 }

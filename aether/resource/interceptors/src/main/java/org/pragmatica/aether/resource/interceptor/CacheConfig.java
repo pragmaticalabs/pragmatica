@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.interceptor;
 
 import org.pragmatica.lang.Result;
@@ -6,19 +10,12 @@ import org.pragmatica.lang.Verify;
 import static org.pragmatica.lang.Verify.ensure;
 
 
-/// Configuration for cache interceptor.
-///
-/// @param cacheName  Logical cache name (configs sharing the same name share one cache instance)
-/// @param strategy   Caching strategy to apply
-/// @param ttlSeconds Time-to-live for cached entries in seconds
-/// @param maxEntries Maximum number of entries in the cache
-/// @param mode       Cache storage mode (local, distributed, or tiered)
 public record CacheConfig(String cacheName, CacheStrategy strategy, int ttlSeconds, int maxEntries, CacheMode mode) {
-    @SuppressWarnings("JBCT-VO-02") private static final CacheConfig DEFAULTS = new CacheConfig("default",
-                                                                                                CacheStrategy.CACHE_ASIDE,
-                                                                                                300,
-                                                                                                10_000,
-                                                                                                CacheMode.LOCAL);
+    private static final CacheConfig DEFAULTS = new CacheConfig("default",
+                                                                CacheStrategy.CACHE_ASIDE,
+                                                                300,
+                                                                10_000,
+                                                                CacheMode.LOCAL);
 
     public static CacheConfig cacheConfig() {
         return DEFAULTS;
@@ -33,8 +30,7 @@ public record CacheConfig(String cacheName, CacheStrategy strategy, int ttlSecon
                           ensure(strategy, Verify.Is::notNull),
                           ensure(ttlSeconds, Verify.Is::positive),
                           ensure(maxEntries, Verify.Is::positive),
-                          ensure(mode, Verify.Is::notNull))
-        .map(CacheConfig::new);
+                          ensure(mode, Verify.Is::notNull)).map(CacheConfig::new);
     }
 
     public static Result<CacheConfig> cacheConfig(String cacheName, CacheStrategy strategy) {

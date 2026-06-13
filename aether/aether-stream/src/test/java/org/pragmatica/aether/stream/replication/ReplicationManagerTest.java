@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.stream.replication;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -87,6 +92,22 @@ class ReplicationManagerTest {
             var replicas = registry.replicasFor(STREAM, PARTITION);
             assertThat(replicas.getFirst().confirmedOffset()).isEqualTo(10L);
             assertThat(replicas.getFirst().state()).isEqualTo(ReplicationState.CAUGHT_UP);
+        }
+
+        @Test
+        void awaitReplication_resolvedByHigherOffsetAck() {
+            // m1: a replica that has caught up PAST the awaited offset acks a HIGHER watermark.
+            // An exact (stream, partition, offset) match would miss it and only the timeout would
+            // resolve. The await for offset 5 must be satisfied by an ack at offset 10.
+            registry.registerReplica(STREAM, PARTITION, REPLICA_A);
+
+            var pending = manager.awaitReplication(STREAM, PARTITION, 5L, 1);
+            assertThat(pending.isResolved()).isFalse(); // not yet resolved
+
+            manager.handleAck(replicateAck(REPLICA_A, STREAM, PARTITION, 10L));
+
+            var result = pending.await();
+            assertThat(result.isSuccess()).isTrue();
         }
     }
 

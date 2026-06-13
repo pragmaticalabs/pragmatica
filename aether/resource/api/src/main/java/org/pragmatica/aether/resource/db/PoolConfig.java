@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.db;
 
 import org.pragmatica.lang.Option;
@@ -9,16 +13,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Connection pool configuration for database connectors.
-///
-/// @param minConnections       Minimum number of connections to maintain
-/// @param maxConnections       Maximum number of connections allowed
-/// @param connectionTimeout    Maximum time to wait for a connection
-/// @param idleTimeout          Maximum time a connection can be idle before being closed
-/// @param maxLifetime          Maximum lifetime of a connection
-/// @param validationQuery      SQL query to validate connections (optional)
-/// @param leakDetectionTimeout Time after which connection leak warnings are logged
-/// @param ioThreads            Number of Netty IO threads for async transport (0 = auto)
 public record PoolConfig(int minConnections,
                          int maxConnections,
                          TimeSpan connectionTimeout,
@@ -50,8 +44,8 @@ public record PoolConfig(int minConnections,
 
     public int effectiveIoThreads() {
         return ioThreads > 0
-              ? ioThreads
-              : DEFAULT_IO_THREADS;
+               ? ioThreads
+               : DEFAULT_IO_THREADS;
     }
 
     public static final PoolConfig DEFAULT = poolConfig(4,
@@ -69,60 +63,61 @@ public record PoolConfig(int minConnections,
 
     public static final class Builder {
         private int minConnections = DEFAULT.minConnections;
-
         private int maxConnections = DEFAULT.maxConnections;
-
         private TimeSpan connectionTimeout = DEFAULT.connectionTimeout;
-
         private TimeSpan idleTimeout = DEFAULT.idleTimeout;
-
         private TimeSpan maxLifetime = DEFAULT.maxLifetime;
-
         private Option<String> validationQuery = DEFAULT.validationQuery;
-
         private TimeSpan leakDetectionTimeout = DEFAULT.leakDetectionTimeout;
-
         private int ioThreads = DEFAULT.ioThreads;
 
         private Builder() {}
 
         public Builder withMinConnections(int value) {
             this.minConnections = value;
+
             return this;
         }
 
         public Builder withMaxConnections(int value) {
             this.maxConnections = value;
+
             return this;
         }
 
         public Builder withConnectionTimeout(TimeSpan value) {
             this.connectionTimeout = value;
+
             return this;
         }
 
         public Builder withIdleTimeout(TimeSpan value) {
             this.idleTimeout = value;
+
             return this;
         }
 
         public Builder withMaxLifetime(TimeSpan value) {
             this.maxLifetime = value;
+
             return this;
         }
 
         public Builder withValidationQuery(String value) {
             this.validationQuery = option(value);
+
             return this;
         }
 
         public Builder withLeakDetectionTimeout(TimeSpan value) {
             this.leakDetectionTimeout = value;
+
             return this;
         }
 
         public Builder withIoThreads(int value) {
             this.ioThreads = value;
+
             return this;
         }
 

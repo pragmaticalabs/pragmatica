@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.config;
 
 import org.junit.jupiter.api.Test;
@@ -102,13 +107,15 @@ class ConfigLoaderSecurityTest {
 
             [app-http]
             enabled = "true"
-            forward_timeout_ms = 10000
+
+            [timeouts.forwarding]
+            app_timeout = "10s"
             """;
 
         ConfigLoader.loadFromString(toml)
             .onFailure(cause -> fail(cause.message()))
             .onSuccess(config -> {
-                assertThat(config.appHttp().forwardTimeout().millis()).isEqualTo(10000);
+                assertThat(config.timeouts().forwarding().appTimeout().millis()).isEqualTo(10000);
             });
     }
 
@@ -163,7 +170,7 @@ class ConfigLoaderSecurityTest {
     }
 
     @Test
-    void loadFromString_defaultsAuthorizationRoleToAdminWhenOmitted() {
+    void loadFromString_defaultsAuthorizationRoleToViewerWhenOmitted() {
         var toml = MINIMAL_CLUSTER + """
 
             [app-http]
@@ -178,7 +185,7 @@ class ConfigLoaderSecurityTest {
             .onFailure(cause -> fail(cause.message()))
             .onSuccess(config -> {
                 var entry = config.appHttp().apiKeys().get("no-role-key");
-                assertThat(entry.authorizationRole()).isEqualTo("ADMIN");
+                assertThat(entry.authorizationRole()).isEqualTo("VIEWER");
             });
     }
 
@@ -204,7 +211,7 @@ class ConfigLoaderSecurityTest {
     }
 
     @Test
-    void loadFromString_simpleApiKeysDefaultToAdminAuthorizationRole() {
+    void loadFromString_simpleApiKeysDefaultToViewerAuthorizationRole() {
         var toml = MINIMAL_CLUSTER + """
 
             [app-http]
@@ -216,7 +223,7 @@ class ConfigLoaderSecurityTest {
             .onFailure(cause -> fail(cause.message()))
             .onSuccess(config -> {
                 var entry = config.appHttp().apiKeys().get("simple-key");
-                assertThat(entry.authorizationRole()).isEqualTo("ADMIN");
+                assertThat(entry.authorizationRole()).isEqualTo("VIEWER");
             });
     }
 

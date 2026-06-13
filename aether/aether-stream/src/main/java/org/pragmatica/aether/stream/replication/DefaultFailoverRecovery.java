@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
 import org.pragmatica.lang.Option;
@@ -11,8 +15,6 @@ import static org.pragmatica.aether.stream.replication.FailoverRecovery.Recovery
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupRequest.catchupRequest;
 
 
-/// Default implementation of governor failover recovery.
-/// Iterates partitions sequentially, requesting catch-up from the most advanced replica.
 final class DefaultFailoverRecovery implements FailoverRecovery {
     private final ReplicaRegistry registry;
     private final StreamPartitionRecovery partitionRecovery;
@@ -26,10 +28,11 @@ final class DefaultFailoverRecovery implements FailoverRecovery {
         this.transport = transport;
     }
 
-    @Override public Promise<RecoveryResult> recover(String streamName, int partitionCount) {
+    @Override
+    public Promise<RecoveryResult> recover(String streamName, int partitionCount) {
         var startMs = System.currentTimeMillis();
-        var partitionIndices = IntStream.range(0, partitionCount).boxed()
-                                              .toList();
+        var partitionIndices = IntStream.range(0, partitionCount).boxed().toList();
+
         return recoverPartitions(streamName, partitionIndices, 0, RecoveryProgress.EMPTY).map(progress -> progress.toResult(startMs));
     }
 
@@ -37,7 +40,10 @@ final class DefaultFailoverRecovery implements FailoverRecovery {
                                                         List<Integer> partitions,
                                                         int index,
                                                         RecoveryProgress progress) {
-        if (index >= partitions.size()) {return Promise.success(progress);}
+        if (index >= partitions.size()) {
+            return Promise.success(progress);
+        }
+
         return recoverSinglePartition(streamName,
                                       partitions.get(index)).map(progress::withEvents)
                                      .flatMap(updated -> recoverPartitions(streamName, partitions, index + 1, updated));
@@ -45,6 +51,7 @@ final class DefaultFailoverRecovery implements FailoverRecovery {
 
     private Promise<Long> recoverSinglePartition(String streamName, int partition) {
         var replicas = registry.replicasFor(streamName, partition);
+
         return findBestReplica(replicas).map(best -> requestCatchupFromReplica(streamName, partition, best))
                               .or(Promise.success(0L));
     }
@@ -52,20 +59,22 @@ final class DefaultFailoverRecovery implements FailoverRecovery {
     private Promise<Long> requestCatchupFromReplica(String streamName, int partition, ReplicaDescriptor bestReplica) {
         var fromOffset = bestReplica.confirmedOffset() + 1;
         var request = catchupRequest(bestReplica.nodeId(), streamName, partition, fromOffset);
+
         return transport.requestCatchup(bestReplica.nodeId(),
                                         request)
-        .map(response -> applyRecoveredEvents(streamName, partition, response));
+                        .map(response -> applyRecoveredEvents(streamName, partition, response));
     }
 
     private long applyRecoveredEvents(String streamName, int partition, ReplicationMessage.CatchupResponse response) {
         var payloads = response.payloads();
         var timestamps = response.timestamps();
         var count = Math.min(payloads.size(), timestamps.size());
-        IntStream.range(0, count)
-                       .forEach(i -> partitionRecovery.appendRecoveredEvent(streamName,
-                                                                            partition,
-                                                                            payloads.get(i),
-                                                                            timestamps.get(i)));
+
+        IntStream.range(0, count).forEach(i -> partitionRecovery.appendRecoveredEvent(streamName,
+                                                                                      partition,
+                                                                                      payloads.get(i),
+                                                                                      timestamps.get(i)));
+
         return count;
     }
 
@@ -78,8 +87,8 @@ final class DefaultFailoverRecovery implements FailoverRecovery {
 
         RecoveryProgress withEvents(long events) {
             return events > 0
-                  ? new RecoveryProgress(partitionsRecovered + 1, eventsReplayed + events)
-                  : this;
+                   ? new RecoveryProgress(partitionsRecovered + 1, eventsReplayed + events)
+                   : this;
         }
 
         RecoveryResult toResult(long startMs) {

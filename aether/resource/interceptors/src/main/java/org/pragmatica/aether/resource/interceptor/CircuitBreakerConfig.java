@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.interceptor;
 
 import org.pragmatica.lang.Result;
@@ -9,15 +13,8 @@ import static org.pragmatica.lang.Verify.ensure;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Configuration for circuit breaker interceptor.
-///
-/// @param failureThreshold Number of failures before opening the circuit
-/// @param resetTimeout     Time to wait before attempting to close the circuit
-/// @param testAttempts     Number of successful calls in half-open state before closing
 public record CircuitBreakerConfig(int failureThreshold, TimeSpan resetTimeout, int testAttempts) {
-    @SuppressWarnings("JBCT-VO-02") private static final CircuitBreakerConfig DEFAULTS = new CircuitBreakerConfig(5,
-                                                                                                                  timeSpan(30).seconds(),
-                                                                                                                  3);
+    private static final CircuitBreakerConfig DEFAULTS = new CircuitBreakerConfig(5, timeSpan(30).seconds(), 3);
 
     public static CircuitBreakerConfig circuitBreakerConfig() {
         return DEFAULTS;
@@ -35,6 +32,7 @@ public record CircuitBreakerConfig(int failureThreshold, TimeSpan resetTimeout, 
         var validThreshold = ensure(failureThreshold, Verify.Is::positive);
         var validTimeout = ensure(resetTimeout, Verify.Is::notNull);
         var validAttempts = ensure(testAttempts, Verify.Is::positive);
+
         return all(validThreshold, validTimeout, validAttempts).map(CircuitBreakerConfig::new);
     }
 }

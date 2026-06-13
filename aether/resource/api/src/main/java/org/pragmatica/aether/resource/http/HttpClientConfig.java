@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.http;
 
 import org.pragmatica.lang.Option;
@@ -12,14 +16,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Configuration for HTTP client infrastructure slice.
-///
-/// @param baseUrl         Optional base URL prepended to all requests
-/// @param connectTimeout  Connection timeout
-/// @param requestTimeout  Request timeout
-/// @param followRedirects Redirect policy
-/// @param json            Optional JSON serialization configuration
-/// @param defaultHeaders  Default headers added to every request
 public record HttpClientConfig(Option<String> baseUrl,
                                TimeSpan connectTimeout,
                                TimeSpan requestTimeout,
@@ -27,9 +23,7 @@ public record HttpClientConfig(Option<String> baseUrl,
                                Option<JsonConfig> json,
                                Map<String, String> defaultHeaders) {
     private static final TimeSpan DEFAULT_CONNECT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
-
     private static final TimeSpan DEFAULT_REQUEST_TIMEOUT = TimeSpan.timeSpan(30).seconds();
-
     private static final Redirect DEFAULT_REDIRECT = Redirect.NORMAL;
 
     public static Result<HttpClientConfig> httpClientConfig() {
@@ -80,34 +74,5 @@ public record HttpClientConfig(Option<String> baseUrl,
                                             followRedirects,
                                             json,
                                             defaultHeaders));
-    }
-
-    public HttpClientConfig withBaseUrl(String url) {
-        return httpClientConfig(option(url), connectTimeout, requestTimeout, followRedirects, json, defaultHeaders).unwrap();
-    }
-
-    public HttpClientConfig withConnectTimeout(TimeSpan timeout) {
-        return httpClientConfig(baseUrl, timeout, requestTimeout, followRedirects, json, defaultHeaders).unwrap();
-    }
-
-    public HttpClientConfig withRequestTimeout(TimeSpan timeout) {
-        return httpClientConfig(baseUrl, connectTimeout, timeout, followRedirects, json, defaultHeaders).unwrap();
-    }
-
-    public HttpClientConfig withFollowRedirects(Redirect policy) {
-        return httpClientConfig(baseUrl, connectTimeout, requestTimeout, policy, json, defaultHeaders).unwrap();
-    }
-
-    public HttpClientConfig withJson(JsonConfig jsonConfig) {
-        return httpClientConfig(baseUrl,
-                                connectTimeout,
-                                requestTimeout,
-                                followRedirects,
-                                option(jsonConfig),
-                                defaultHeaders).unwrap();
-    }
-
-    public HttpClientConfig withDefaultHeaders(Map<String, String> headers) {
-        return httpClientConfig(baseUrl, connectTimeout, requestTimeout, followRedirects, json, headers).unwrap();
     }
 }

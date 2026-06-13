@@ -1,42 +1,105 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.pragmatica.aether.stream.replication.ReplicationError.General.NOT_ENOUGH_REPLICAS;
+import static org.pragmatica.aether.stream.replication.ReplicationError.General.REPLICATION_TIMEOUT;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateEvents.replicateEvents;
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.Unit.unit;
 
 
-/// Default implementation of governor-push replication.
-/// Sends events to all registered replicas after each successful publish.
 final class DefaultReplicationManager implements ReplicationManager {
+    private static final TimeSpan DEFAULT_ACK_TIMEOUT = TimeSpan.timeSpan(5).seconds();
+
     private final NodeId governorId;
     private final ReplicaRegistry registry;
     private final ReplicationTransport transport;
+    private final Option<ReplicationBatcher> batcher;
+    private final ConcurrentHashMap<PendingAckKey, PendingAck> pendingAcks = new ConcurrentHashMap<>();
 
     DefaultReplicationManager(NodeId governorId, ReplicaRegistry registry, ReplicationTransport transport) {
         this.governorId = governorId;
         this.registry = registry;
         this.transport = transport;
+        this.batcher = none();
     }
 
-    @Contract@Override public void replicateEvent(String streamName,
-                                                  int partition,
-                                                  long offset,
-                                                  byte[] payload,
-                                                  long timestamp) {
+    DefaultReplicationManager(NodeId governorId,
+                              ReplicaRegistry registry,
+                              ReplicationTransport transport,
+                              ReplicationBatcher batcher) {
+        this.governorId = governorId;
+        this.registry = registry;
+        this.transport = transport;
+        this.batcher = some(batcher);
+    }
+
+    @Contract
+    @Override
+    public void replicateEvent(String streamName, int partition, long offset, byte[] payload, long timestamp) {
+        batcher.onPresent(b -> b.add(streamName, partition, offset, payload, timestamp)).onEmpty(() -> replicateImmediately(streamName,
+                                                                                                                            partition,
+                                                                                                                            offset,
+                                                                                                                            payload,
+                                                                                                                            timestamp));
+    }
+
+    @Contract
+    @Override
+    public void handleAck(ReplicationMessage.ReplicateAck ack) {
+        registry.updateWatermark(ack.streamName(), ack.partition(), ack.replicaId(), ack.confirmedOffset());
+        resolvePendingAck(ack.streamName(), ack.partition(), ack.confirmedOffset());
+    }
+
+    @Override
+    public ReplicaRegistry registry() {
+        return registry;
+    }
+
+    @Contract
+    @Override
+    public void close() {
+        batcher.onPresent(ReplicationBatcher::close);
+    }
+
+    private void replicateImmediately(String streamName, int partition, long offset, byte[] payload, long timestamp) {
         var replicas = registry.replicasFor(streamName, partition);
-        if (replicas.isEmpty()) {return;}
+
+        if (replicas.isEmpty()) {
+            return;
+        }
+
         sendToAllReplicas(replicas, streamName, partition, offset, payload, timestamp);
     }
 
-    @Contract@Override public void handleAck(ReplicationMessage.ReplicateAck ack) {
-        registry.updateWatermark(ack.streamName(), ack.partition(), ack.replicaId(), ack.confirmedOffset());
-    }
+    @Override
+    public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
+        var replicaCount = registry.replicasFor(streamName, partition).size();
 
-    @Override public ReplicaRegistry registry() {
-        return registry;
+        if (replicaCount < minAcks) {
+            return NOT_ENOUGH_REPLICAS.promise();
+        }
+
+        return registerPendingAck(streamName, partition, offset, minAcks);
     }
 
     private void sendToAllReplicas(List<ReplicaDescriptor> replicas,
@@ -45,16 +108,51 @@ final class DefaultReplicationManager implements ReplicationManager {
                                    long offset,
                                    byte[] payload,
                                    long timestamp) {
-        var message = buildReplicateMessage(governorId, streamName, partition, offset, payload, timestamp);
+        var message = replicateEvents(governorId, streamName, partition, offset, List.of(payload), List.of(timestamp));
+
         replicas.forEach(replica -> transport.send(replica.nodeId(), message));
     }
 
-    private static ReplicationMessage.ReplicateEvents buildReplicateMessage(NodeId governorId,
-                                                                            String streamName,
-                                                                            int partition,
-                                                                            long offset,
-                                                                            byte[] payload,
-                                                                            long timestamp) {
-        return replicateEvents(governorId, streamName, partition, offset, List.of(payload), List.of(timestamp));
+    private Promise<Unit> registerPendingAck(String streamName, int partition, long offset, int minAcks) {
+        Promise<Unit> promise = Promise.promise();
+        var key = new PendingAckKey(streamName, partition, offset);
+        var pending = new PendingAck(promise, new AtomicInteger(minAcks));
+
+        pendingAcks.put(key, pending);
+        SharedScheduler.schedule(() -> timeoutPendingAck(key), DEFAULT_ACK_TIMEOUT);
+
+        return promise;
     }
+
+    /// Resolve every pending await whose awaited offset is at or below `confirmedOffset` for this
+    /// `(stream, partition)`. A replica that has caught up PAST the awaited offset acks a higher
+    /// watermark; an exact `(stream, partition, offset)` match would miss it and only the timeout would
+    /// fire (m1). Iterating the pending keys and matching `offset <= confirmedOffset` makes a higher
+    /// ack correctly satisfy a lower-offset await.
+    private void resolvePendingAck(String streamName, int partition, long confirmedOffset) {
+        pendingAcks.forEach((key, pending) -> {
+            if (key.streamName()
+                   .equals(streamName)
+                && key.partition() == partition
+                && key.offset() <= confirmedOffset) {
+                decrementAndResolve(key, pending);
+            }
+        });
+    }
+
+    private void decrementAndResolve(PendingAckKey key, PendingAck pending) {
+        if (pending.remaining().decrementAndGet() <= 0) {
+            pendingAcks.remove(key);
+            pending.promise().resolve(success(unit()));
+        }
+    }
+
+    private void timeoutPendingAck(PendingAckKey key) {
+        option(pendingAcks.remove(key)).onPresent(pending -> pending.promise()
+                                                                    .resolve(REPLICATION_TIMEOUT.result()));
+    }
+
+    record PendingAckKey(String streamName, int partition, long offset) {}
+
+    record PendingAck(Promise<Unit> promise, AtomicInteger remaining) {}
 }

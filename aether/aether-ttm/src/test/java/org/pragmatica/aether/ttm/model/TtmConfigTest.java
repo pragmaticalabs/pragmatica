@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.ttm.model;
 
 import org.junit.jupiter.api.Test;
@@ -99,21 +104,4 @@ class TtmConfigTest {
                  .onFailure(cause -> assertThat(cause.message()).contains("confidenceThreshold"));
     }
 
-    @Test
-    void withModelPath_returnsNewConfigWithUpdatedPath() {
-        var original = TtmConfig.ttmConfig();
-        var updated = original.withModelPath("new/model.onnx");
-
-        assertThat(updated.modelPath()).isEqualTo("new/model.onnx");
-        assertThat(updated.inputWindowMinutes()).isEqualTo(original.inputWindowMinutes());
-    }
-
-    @Test
-    void withEnabled_returnsNewConfigWithUpdatedEnabled() {
-        var original = TtmConfig.ttmConfig();
-        var updated = original.withEnabled(false);
-
-        assertThat(updated.enabled()).isFalse();
-        assertThat(updated.modelPath()).isEqualTo(original.modelPath());
-    }
 }

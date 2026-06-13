@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.db.r2dbc;
 
 import org.pragmatica.aether.resource.ResourceFactory;
@@ -12,46 +16,43 @@ import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactoryOptions;
 
 
-/// SPI factory for creating R2DBC SqlConnector instances.
-///
-/// Creates R2dbcSqlConnector with R2DBC connection pooling.
-/// Priority 10 — preferred over JDBC when r2dbc_url is configured.
 public final class R2dbcSqlConnectorFactory implements ResourceFactory<SqlConnector, DatabaseConnectorConfig> {
-    @Override public Class<SqlConnector> resourceType() {
+    @Override
+    public Class<SqlConnector> resourceType() {
         return SqlConnector.class;
     }
 
-    @Override public Class<DatabaseConnectorConfig> configType() {
+    @Override
+    public Class<DatabaseConnectorConfig> configType() {
         return DatabaseConnectorConfig.class;
     }
 
-    @Override public int priority() {
+    @Override
+    public int priority() {
         return 10;
     }
 
-    @Override public boolean supports(DatabaseConnectorConfig config) {
-        return config.r2dbcUrl().isPresent();
+    @Override
+    public boolean supports(DatabaseConnectorConfig config) {
+        return config.r2dbcUrl()
+                     .isPresent();
     }
 
-    @Override public Promise<SqlConnector> provision(DatabaseConnectorConfig config) {
+    @Override
+    public Promise<SqlConnector> provision(DatabaseConnectorConfig config) {
         return Promise.lift(DatabaseConnectorError::databaseFailure, () -> connector(config));
     }
 
     private static SqlConnector connector(DatabaseConnectorConfig config) {
         var options = ConnectionFactoryOptions.parse(config.effectiveR2dbcUrl());
         var optionsBuilder = ConnectionFactoryOptions.builder().from(options);
+
         config.effectiveUsername().onPresent(u -> optionsBuilder.option(ConnectionFactoryOptions.USER, u));
         config.effectivePassword().onPresent(p -> optionsBuilder.option(ConnectionFactoryOptions.PASSWORD, p));
         var connectionFactory = ConnectionFactories.get(optionsBuilder.build());
-        var poolConfig = ConnectionPoolConfiguration.builder(connectionFactory).maxSize(config.poolConfig()
-                                                                                                         .maxConnections())
-                                                            .initialSize(config.poolConfig().minConnections())
-                                                            .maxIdleTime(config.poolConfig().idleTimeout()
-                                                                                          .duration())
-                                                            .maxLifeTime(config.poolConfig().maxLifetime()
-                                                                                          .duration())
-                                                            .build();
+        var poolConfig = ConnectionPoolConfiguration.builder(connectionFactory).maxSize(config.poolConfig().maxConnections()).initialSize(config.poolConfig().minConnections()).maxIdleTime(config.poolConfig().idleTimeout().duration()).maxLifeTime(config.poolConfig().maxLifetime().duration()).build();
         var pool = new ConnectionPool(poolConfig);
+
         return R2dbcSqlConnector.r2dbcSqlConnector(config, pool);
     }
 }

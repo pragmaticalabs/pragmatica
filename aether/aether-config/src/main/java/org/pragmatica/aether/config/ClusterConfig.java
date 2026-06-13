@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config;
 
 import org.pragmatica.lang.Result;
@@ -5,13 +9,6 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Cluster-level configuration.
-///
-/// @param environment Target deployment environment
-/// @param nodes       Number of nodes in the cluster (must be odd: 3, 5, 7)
-/// @param tls         Enable TLS for cluster communication
-/// @param ports       Port configuration
-/// @param coreMax     Maximum number of core consensus nodes (0 = unlimited)
 public record ClusterConfig(Environment environment, int nodes, boolean tls, PortsConfig ports, int coreMax) {
     public static Result<ClusterConfig> clusterConfig(Environment environment,
                                                       int nodes,

@@ -1,6 +1,13 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.config;
 
 import org.junit.jupiter.api.Test;
+
+import org.pragmatica.lang.Option;
 
 import java.util.Map;
 import java.util.Set;
@@ -52,10 +59,8 @@ class AppHttpConfigApiKeysTest {
     }
 
     @Test
-    void withApiKeys_wrapsSimpleKeys() {
-        var config = AppHttpConfig.appHttpConfig()
-                                  .withEnabled(true)
-                                  .withApiKeys(Set.of("my-key"));
+    void factoryWithKeys_wrapsSimpleKeys() {
+        var config = AppHttpConfig.appHttpConfig(8070, Set.of("my-key"));
 
         assertThat(config.securityEnabled()).isTrue();
         assertThat(config.apiKeys()).containsKey("my-key");
@@ -63,15 +68,14 @@ class AppHttpConfigApiKeysTest {
     }
 
     @Test
-    void withApiKeyMap_storesRichEntries() {
+    void fullFactory_storesRichEntries() {
         var entries = Map.of(
             "key-abc", ApiKeyEntry.apiKeyEntry("admin-svc", Set.of("admin")),
             "key-xyz", ApiKeyEntry.apiKeyEntry("reader-svc", Set.of("service"))
         );
 
-        var config = AppHttpConfig.appHttpConfig()
-                                  .withEnabled(true)
-                                  .withApiKeyMap(entries);
+        var config = AppHttpConfig.appHttpConfig(true, 8070, entries, AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE,
+                                                  SecurityMode.API_KEY, Option.none(), HttpProtocol.H1).unwrap();
 
         assertThat(config.securityEnabled()).isTrue();
         assertThat(config.apiKeys()).hasSize(2);
@@ -95,18 +99,4 @@ class AppHttpConfigApiKeysTest {
         assertThat(config.portFor(2)).isEqualTo(8072);
     }
 
-    @Test
-    void withForwardTimeout_overridesDefault() {
-        var config = AppHttpConfig.appHttpConfig()
-                                  .withForwardTimeout(org.pragmatica.lang.io.TimeSpan.timeSpan(10).seconds());
-
-        assertThat(config.forwardTimeout().millis()).isEqualTo(10_000);
-    }
-
-    @Test
-    void defaults_forwardTimeout() {
-        var config = AppHttpConfig.appHttpConfig();
-
-        assertThat(config.forwardTimeout()).isEqualTo(AppHttpConfig.DEFAULT_FORWARD_TIMEOUT);
-    }
 }

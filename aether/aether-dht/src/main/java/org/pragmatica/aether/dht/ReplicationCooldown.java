@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.dht;
 
 import org.pragmatica.lang.Contract;
@@ -15,15 +19,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Manages replication warmup after node startup.
-/// Starts with RF=1 for fast boot, then signals readiness to upgrade to RF=3.
 public interface ReplicationCooldown {
     long DEFAULT_COOLDOWN_DELAY_MS = 10_000L;
-
     int DEFAULT_RATE_PER_SECOND = 10_000;
-
     Promise<Unit> start();
-    @Contract void stop();
+
+    @Contract
+    void stop();
+
     boolean isComplete();
 
     static ReplicationCooldown replicationCooldown(long cooldownDelayMs, int ratePerSecond) {
@@ -35,13 +38,11 @@ public interface ReplicationCooldown {
     }
 }
 
-/// Package-private implementation of ReplicationCooldown.
 final class DefaultReplicationCooldown implements ReplicationCooldown {
     private static final Logger log = LoggerFactory.getLogger(ReplicationCooldown.class);
 
     private final long cooldownDelayMs;
     private final int ratePerSecond;
-
     private final AtomicBoolean complete = new AtomicBoolean(false);
 
     private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
@@ -51,22 +52,29 @@ final class DefaultReplicationCooldown implements ReplicationCooldown {
         this.ratePerSecond = ratePerSecond;
     }
 
-    @Override public Promise<Unit> start() {
-        var promise = Promise.<Unit>promise();
+    @Override
+    public Promise<Unit> start() {
+        var promise = Promise.<Unit> promise();
+
         scheduledTask.set(Option.some(SharedScheduler.schedule(() -> completeWarmup(promise),
                                                                TimeSpan.timeSpan(cooldownDelayMs).millis())));
+
         return promise;
     }
 
-    @Contract@Override public void stop() {
+    @Contract
+    @Override
+    public void stop() {
         scheduledTask.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
     }
 
-    @Override public boolean isComplete() {
+    @Override
+    public boolean isComplete() {
         return complete.get();
     }
 
-    @SuppressWarnings("JBCT-RET-01") private void completeWarmup(Promise<Unit> promise) {
+    @SuppressWarnings("JBCT-RET-01")
+    private void completeWarmup(Promise<Unit> promise) {
         log.info("Replication cooldown complete after {}ms delay, RF upgrade ready (rate limit: {}/s)",
                  cooldownDelayMs,
                  ratePerSecond);

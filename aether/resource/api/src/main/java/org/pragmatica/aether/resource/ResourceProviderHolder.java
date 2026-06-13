@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource;
 
 import org.pragmatica.lang.Option;
@@ -10,10 +14,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Thread-safe holder for the global ResourceProvider instance.
-///
-/// This is an internal implementation detail. Use {@link ResourceProvider#instance()}
-/// to access the global instance.
 sealed interface ResourceProviderHolder {
     AtomicReference<ResourceProvider> INSTANCE = new AtomicReference<>();
 
@@ -23,13 +23,15 @@ sealed interface ResourceProviderHolder {
 
     static Result<Unit> setInstance(ResourceProvider provider) {
         INSTANCE.set(provider);
+
         return unitResult();
     }
 
     static Result<Unit> clear() {
         INSTANCE.set(null);
+
         return unitResult();
     }
 
-    record unused() implements ResourceProviderHolder{}
+    record unused() implements ResourceProviderHolder {}
 }

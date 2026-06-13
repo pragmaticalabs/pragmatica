@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.config;
 
 import org.junit.jupiter.api.Test;
@@ -79,17 +84,17 @@ class ApiKeyEntryTest {
     }
 
     @Test
-    void constructor_defaultsNullAuthorizationRoleToAdmin() {
+    void constructor_defaultsNullAuthorizationRoleToViewer() {
         var entry = new ApiKeyEntry("my-key", Set.of("service"), null);
 
-        assertThat(entry.authorizationRole()).isEqualTo("ADMIN");
+        assertThat(entry.authorizationRole()).isEqualTo("VIEWER");
     }
 
     @Test
-    void constructor_defaultsBlankAuthorizationRoleToAdmin() {
+    void constructor_defaultsBlankAuthorizationRoleToViewer() {
         var entry = new ApiKeyEntry("my-key", Set.of("service"), "  ");
 
-        assertThat(entry.authorizationRole()).isEqualTo("ADMIN");
+        assertThat(entry.authorizationRole()).isEqualTo("VIEWER");
     }
 
     @Test

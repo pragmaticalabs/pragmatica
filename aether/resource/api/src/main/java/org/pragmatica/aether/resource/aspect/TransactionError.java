@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.aspect;
 
 import org.pragmatica.lang.Cause;
@@ -9,14 +13,14 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Error types for transaction operations.
 public sealed interface TransactionError extends Cause {
     record NoActiveTransaction(String operation) implements TransactionError {
         public static Result<NoActiveTransaction> noActiveTransaction(String operation) {
             return success(new NoActiveTransaction(operation));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "No active transaction for operation: " + operation;
         }
     }
@@ -26,7 +30,8 @@ public sealed interface TransactionError extends Cause {
             return success(new TransactionAlreadyActive(operation));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Transaction already active for operation: " + operation;
         }
     }
@@ -36,7 +41,8 @@ public sealed interface TransactionError extends Cause {
             return success(new TransactionTimedOut(transactionId));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Transaction timed out: " + transactionId;
         }
     }
@@ -47,7 +53,8 @@ public sealed interface TransactionError extends Cause {
             return success(new TransactionRolledBack(transactionId, cause));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Transaction rolled back: " + transactionId + cause.fold(() -> "", TransactionRolledBack::formatCause);
         }
 
@@ -61,7 +68,8 @@ public sealed interface TransactionError extends Cause {
             return success(new InvalidConfig(reason));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Invalid transaction configuration: " + reason;
         }
     }
@@ -71,7 +79,8 @@ public sealed interface TransactionError extends Cause {
             return success(new OperationFailed(operation, cause));
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Transaction operation failed: " + operation + cause.fold(() -> "", OperationFailed::formatCause);
         }
 
@@ -117,7 +126,8 @@ public sealed interface TransactionError extends Cause {
             return success(new unused());
         }
 
-        @Override public String message() {
+        @Override
+        public String message() {
             return "";
         }
     }
