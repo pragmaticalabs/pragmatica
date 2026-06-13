@@ -1,9 +1,15 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.jbct.slice.generator;
 
 import org.pragmatica.jbct.slice.model.DependencyModel;
 import org.pragmatica.jbct.slice.model.KeyExtractorInfo;
 import org.pragmatica.jbct.slice.model.MethodModel;
 import org.pragmatica.jbct.slice.model.MethodModel.MethodParameterInfo;
+import org.pragmatica.jbct.slice.model.PlainInterfaceModel;
 import org.pragmatica.jbct.slice.model.ResourceQualifierModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
 import org.pragmatica.lang.Option;
@@ -118,6 +124,14 @@ public class FactoryClassGenerator {
             importTracker.use("org.pragmatica.lang.Functions.Fn1");
         }
         importTracker.use("java.util.List");
+        if (allDeps.stream().anyMatch(DependencyModel::isConfigurationSection) || model.hasConfigUpdateSubscriptions()) {
+            importTracker.use("org.pragmatica.aether.slice.ConfigFacade");
+            importTracker.use("org.pragmatica.lang.Result");
+        }
+        if (model.hasConfigUpdateSubscriptions()) {
+            importTracker.use("org.slf4j.Logger");
+            importTracker.use("org.slf4j.LoggerFactory");
+        }
         // Register dependency imports
         for (var dep : allDeps) {
             if (!dep.interfacePackage().equals(basePackage)) {
@@ -139,6 +153,11 @@ public class FactoryClassGenerator {
         bodyOut.println();
         // createSlice() method
         generateCreateSliceMethod(bodyOut, model, proxyMethodsCache, importTracker);
+        // notifyConfigUpdate() method (only if config update methods exist)
+        if (model.hasConfigUpdateSubscriptions()) {
+            bodyOut.println();
+            generateNotifyConfigUpdateMethod(bodyOut, model, importTracker);
+        }
         bodyOut.println("}");
         bodyOut.flush();
         // Phase 2: Assemble output — package, imports, body
@@ -674,7 +693,7 @@ public class FactoryClassGenerator {
                     }
                     // Check multi-param key resolution — use simple record name (inner record of factory class)
                     if (method.multiParamKeyParam().isPresent()) {
-                        var keyParam = method.multiParamKeyParam().unwrap();
+                        var keyParam = method.multiParamKeyParam().expect("checked with isPresent above");
                         var requestRecordName = capitalize(method.name()) + "Request";
                         return KeyExtractorInfo.single(keyParam.type().toString(), keyParam.name(), requestRecordName)
                                                .fold(_ -> Option.none(), Option::some);
@@ -852,44 +871,48 @@ public class FactoryClassGenerator {
         var methodName = lowercaseFirst(sliceName);
         var sliceRecordName = methodName + "Slice";
         var sliceArtifactCoordinate = computeSliceArtifactCoordinate(sliceName);
+        var hasTransitive = model.hasTransitiveAnnotatedMethods();
+        // Collect plain interfaces with annotated methods for step field generation
+        var transitiveSteps = hasTransitive
+                              ? model.plainInterfaceModels().stream()
+                                     .filter(PlainInterfaceModel::hasAnnotatedMethods)
+                                     .toList()
+                              : List.<PlainInterfaceModel>of();
         out.println("    public static Promise<Slice> " + methodName + "Slice(Aspect<" + sliceName + "> aspect,");
         out.println("                                              SliceCreationContext ctx) {");
-        // Generate local adapter record
-        out.println("        record " + sliceRecordName + "(" + sliceName + " delegate, ResourceProviderFacade resources) implements Slice, " + sliceName
+        // Generate local adapter record — add step fields when transitive methods exist
+        var recordComponents = sliceName + " delegate, ResourceProviderFacade resources";
+        for (var step : transitiveSteps) {
+            var stepDep = findDependencyByParamName(model, step.parameterName());
+            if (stepDep != null) {
+                var stepType = importTracker.use(stepDep.interfaceQualifiedName());
+                recordComponents += ", " + stepType + " " + step.parameterName();
+            }
+        }
+        out.println("        record " + sliceRecordName + "(" + recordComponents + ") implements Slice, " + sliceName
                     + " {");
         out.println("            @Override");
         out.println("            public List<SliceMethod<?, ?>> methods() {");
         out.println("                return List.of(");
-        // Generate SliceMethod entries for each method
+        // Generate SliceMethod entries for each direct method
         var methods = model.methods();
+        var totalEntries = methods.size() + countTransitiveMethods(transitiveSteps);
+        var entryIndex = 0;
         for (int i = 0; i < methods.size(); i++) {
             var method = methods.get(i);
-            var comma = (i < methods.size() - 1)
-                        ? ","
-                        : "";
-            var escapedMethodName = escapeJavaString(method.name());
-            var responseType = importTracker.use(method.responseType().toString());
-            out.println("                    new SliceMethod<>(");
-            out.println("                        MethodName.methodName(\"" + escapedMethodName + "\").unwrap(),");
-            if (method.hasNoParams()) {
-                out.println("                        _unit -> delegate." + method.name() + "(),");
-                out.println("                        new TypeToken<" + responseType + ">() {},");
-                out.println("                        new TypeToken<Unit>() {}");
-            } else if (method.hasSingleParam()) {
-                out.println("                        delegate::" + method.name() + ",");
-                out.println("                        new TypeToken<" + responseType + ">() {},");
-                out.println("                        new TypeToken<" + importTracker.use(method.parameters().getFirst().type().toString()) + ">() {}");
-            } else {
-                var requestRecordName = capitalize(method.name()) + "Request";
-                var argList = method.parameters()
-                                    .stream()
-                                    .map(p -> "request." + p.name() + "()")
-                                    .collect(Collectors.joining(", "));
-                out.println("                        request -> delegate." + method.name() + "(" + argList + "),");
-                out.println("                        new TypeToken<" + responseType + ">() {},");
-                out.println("                        new TypeToken<" + requestRecordName + ">() {}");
-            }
+            entryIndex++;
+            var comma = (entryIndex < totalEntries) ? "," : "";
+            generateSliceMethodEntry(out, method, "delegate", null, importTracker);
             out.println("                    )" + comma);
+        }
+        // Generate SliceMethod entries for transitive methods
+        for (var step : transitiveSteps) {
+            for (var method : step.annotatedMethods()) {
+                entryIndex++;
+                var comma = (entryIndex < totalEntries) ? "," : "";
+                generateSliceMethodEntry(out, method, step.parameterName(), step.parameterName(), importTracker);
+                out.println("                    )" + comma);
+            }
         }
         out.println("                );");
         out.println("            }");
@@ -931,9 +954,150 @@ public class FactoryClassGenerator {
         out.println("        }");
         out.println();
         out.println("        var resources = ctx.resources();");
-        out.println("        return " + methodName + "(aspect, ctx)");
-        out.println("                   .map(impl -> new " + sliceRecordName + "(impl, resources));");
+        if (hasTransitive) {
+            // Construct plain interface steps independently for transitive method exposure.
+            // Steps with resource params need those resources provisioned first.
+            var stepResourceEntries = new ArrayList<AllEntry>();
+            var stepResourceParams = new LinkedHashMap<String, List<PlainInterfaceFactoryParam>>();
+            for (var step : transitiveSteps) {
+                var stepDep = findDependencyByParamName(model, step.parameterName());
+                if (stepDep != null) {
+                    var params = analyzePlainInterfaceResourceParams(stepDep);
+                    if (!params.isEmpty()) {
+                        stepResourceParams.put(step.parameterName(), params);
+                        for (var param : params) {
+                            stepResourceEntries.add(new AllEntry(param.varName(),
+                                "ctx.resources().provide(" + importTracker.use(param.qualifiedResourceTypeName())
+                                + ".class, \"" + escapeJavaString(param.qualifier().configSection()) + "\")"));
+                        }
+                    }
+                }
+            }
+            if (stepResourceEntries.isEmpty()) {
+                // No async provisioning needed for steps — construct them synchronously in map closure
+                generateTransitiveMapClosure(out, model, methodName, sliceRecordName, transitiveSteps,
+                                             stepResourceParams, importTracker);
+            } else {
+                // Need to provision step resources in parallel with create()
+                generateTransitiveWithResources(out, model, methodName, sliceRecordName, transitiveSteps,
+                                                stepResourceEntries, stepResourceParams, importTracker);
+            }
+        } else {
+            out.println("        return " + methodName + "(aspect, ctx)");
+            out.println("                   .map(impl -> new " + sliceRecordName + "(impl, resources));");
+        }
         out.println("    }");
+    }
+
+    private void generateTransitiveMapClosure(PrintWriter out, SliceModel model, String methodName,
+                                               String sliceRecordName, List<PlainInterfaceModel> transitiveSteps,
+                                               Map<String, List<PlainInterfaceFactoryParam>> stepResourceParams,
+                                               ImportTracker importTracker) {
+        out.println("        return " + methodName + "(aspect, ctx)");
+        out.println("                   .map(impl -> {");
+        for (var step : transitiveSteps) {
+            var stepDep = findDependencyByParamName(model, step.parameterName());
+            if (stepDep != null) {
+                var factoryMethodName = lowercaseFirst(stepDep.interfaceSimpleName());
+                var params = stepResourceParams.getOrDefault(step.parameterName(), List.of());
+                var argList = params.stream()
+                                    .map(PlainInterfaceFactoryParam::varName)
+                                    .collect(Collectors.joining(", "));
+                out.println("                       var " + step.parameterName() + " = "
+                            + importTracker.use(stepDep.interfaceQualifiedName()) + "." + factoryMethodName
+                            + "(" + argList + ");");
+            }
+        }
+        var ctorArgs = "impl, resources";
+        for (var step : transitiveSteps) {
+            ctorArgs += ", " + step.parameterName();
+        }
+        out.println("                       return new " + sliceRecordName + "(" + ctorArgs + ");");
+        out.println("                   });");
+    }
+
+    private void generateTransitiveWithResources(PrintWriter out, SliceModel model, String methodName,
+                                                  String sliceRecordName, List<PlainInterfaceModel> transitiveSteps,
+                                                  List<AllEntry> stepResourceEntries,
+                                                  Map<String, List<PlainInterfaceFactoryParam>> stepResourceParams,
+                                                  ImportTracker importTracker) {
+        // Use Promise.all to provision step resources in parallel with create()
+        out.println("        return Promise.all(");
+        out.println("            " + methodName + "(aspect, ctx),");
+        for (int i = 0; i < stepResourceEntries.size(); i++) {
+            var entry = stepResourceEntries.get(i);
+            var comma = (i < stepResourceEntries.size() - 1) ? "," : "";
+            out.println("            " + entry.promiseExpression() + comma);
+        }
+        out.println("        )");
+        var varNames = new ArrayList<String>();
+        varNames.add("impl");
+        stepResourceEntries.forEach(e -> varNames.add(e.varName()));
+        out.println("        .map((" + String.join(", ", varNames) + ") -> {");
+        for (var step : transitiveSteps) {
+            var stepDep = findDependencyByParamName(model, step.parameterName());
+            if (stepDep != null) {
+                var factoryMethodName = lowercaseFirst(stepDep.interfaceSimpleName());
+                var params = stepResourceParams.getOrDefault(step.parameterName(), List.of());
+                var argList = params.stream()
+                                    .map(PlainInterfaceFactoryParam::varName)
+                                    .collect(Collectors.joining(", "));
+                out.println("            var " + step.parameterName() + " = "
+                            + importTracker.use(stepDep.interfaceQualifiedName()) + "." + factoryMethodName
+                            + "(" + argList + ");");
+            }
+        }
+        var ctorArgs = "impl, resources";
+        for (var step : transitiveSteps) {
+            ctorArgs += ", " + step.parameterName();
+        }
+        out.println("            return new " + sliceRecordName + "(" + ctorArgs + ");");
+        out.println("        });");
+    }
+
+    /// Generate a single SliceMethod entry for the methods() list.
+    /// When stepPrefix is non-null, the method name is qualified with the step parameter name.
+    private void generateSliceMethodEntry(PrintWriter out, MethodModel method,
+                                           String delegateExpr, String stepPrefix,
+                                           ImportTracker importTracker) {
+        var qualifiedName = (stepPrefix != null)
+                            ? stepPrefix + capitalize(method.name())
+                            : method.name();
+        var escapedMethodName = escapeJavaString(qualifiedName);
+        var responseType = importTracker.use(method.responseType().toString());
+        out.println("                    new SliceMethod<>(");
+        out.println("                        MethodName.methodName(\"" + escapedMethodName + "\").expect(\"method name literal: " + escapedMethodName + "\"),");
+        if (method.hasNoParams()) {
+            out.println("                        _unit -> " + delegateExpr + "." + method.name() + "(),");
+            out.println("                        new TypeToken<" + responseType + ">() {},");
+            out.println("                        new TypeToken<Unit>() {}");
+        } else if (method.hasSingleParam()) {
+            out.println("                        " + delegateExpr + "::" + method.name() + ",");
+            out.println("                        new TypeToken<" + responseType + ">() {},");
+            out.println("                        new TypeToken<" + importTracker.use(method.parameters().getFirst().type().toString()) + ">() {}");
+        } else {
+            var requestRecordName = capitalize(method.name()) + "Request";
+            var argList = method.parameters()
+                                .stream()
+                                .map(p -> "request." + p.name() + "()")
+                                .collect(Collectors.joining(", "));
+            out.println("                        request -> " + delegateExpr + "." + method.name() + "(" + argList + "),");
+            out.println("                        new TypeToken<" + responseType + ">() {},");
+            out.println("                        new TypeToken<" + requestRecordName + ">() {}");
+        }
+    }
+
+    private int countTransitiveMethods(List<PlainInterfaceModel> transitiveSteps) {
+        return transitiveSteps.stream()
+                              .mapToInt(step -> step.annotatedMethods().size())
+                              .sum();
+    }
+
+    private DependencyModel findDependencyByParamName(SliceModel model, String parameterName) {
+        return model.dependencies().stream()
+                    .filter(dep -> dep.parameterName().equals(parameterName))
+                    .findFirst()
+                    .orElse(null);
     }
 
     /// Returns the effective parameter type string for a method.
@@ -1044,24 +1208,291 @@ public class FactoryClassGenerator {
     /// wraps the connector in a factory call: InterfaceFactory.interface(connector).
     private String generateResourceProvideCall(DependencyModel resource, ImportTracker importTracker) {
         return resource.resourceQualifier()
-                       .map(qualifier -> {
-                           var qualifiedTypeName = qualifier.resourceType().toString();
-                           var typeName = importTracker.use(qualifiedTypeName);
-                           var configSection = escapeJavaString(qualifier.configSection());
-                           var provideCall = resource.isPublisher() || resource.isStreamResource()
-                               ? "ctx.resources().provide(" + typeName + ".class, \""
-                                 + configSection + "\", ProvisioningContext.provisioningContext())"
-                               : "ctx.resources().provide(" + typeName + ".class, \"" + configSection + "\")";
-                           // If resource type differs from parameter type, wrap in factory call
-                           // e.g., @PgSql AnalyticsPersistence -> provide PgSqlConnector, wrap via factory
-                           if (!qualifiedTypeName.equals(resource.interfaceQualifiedName())) {
-                               var factoryClass = importTracker.use(resource.interfaceQualifiedName() + "Factory");
-                               var factoryMethod = lowercaseFirst(resource.interfaceSimpleName());
-                               return provideCall + ".map(" + factoryClass + "::" + factoryMethod + ")";
-                           }
-                           return provideCall;
-                       })
+                       .map(qualifier -> qualifier.isConfigurationSection()
+                                         ? generateConfigSectionCall(resource, qualifier, importTracker)
+                                         : generateStandardProvideCall(resource, qualifier, importTracker))
                        .or("ctx.resources().provide(Object.class, \"unknown\")");
+    }
+
+    private String generateStandardProvideCall(DependencyModel resource,
+                                                ResourceQualifierModel qualifier,
+                                                ImportTracker importTracker) {
+        var qualifiedTypeName = qualifier.resourceType().toString();
+        var typeName = importTracker.use(qualifiedTypeName);
+        var configSection = escapeJavaString(qualifier.configSection());
+        var provideCall = resource.isPublisher() || resource.isStreamResource()
+                          ? "ctx.resources().provide(" + typeName + ".class, \""
+                            + configSection + "\", ProvisioningContext.provisioningContext())"
+                          : "ctx.resources().provide(" + typeName + ".class, \"" + configSection + "\")";
+        // If resource type differs from parameter type, wrap in factory call
+        // e.g., @PgSql AnalyticsPersistence -> provide PgSqlConnector, wrap via factory
+        if (!qualifiedTypeName.equals(resource.interfaceQualifiedName())) {
+            var factoryClass = importTracker.use(resource.interfaceQualifiedName() + "Factory");
+            var factoryMethod = lowercaseFirst(resource.interfaceSimpleName());
+            return provideCall + ".map(" + factoryClass + "::" + factoryMethod + ")";
+        }
+        return provideCall;
+    }
+
+    /// Generate config section parsing code for ConfigurationSection resources.
+    ///
+    /// Introspects the config record's factory method to find parameter names and types,
+    /// then generates Result.all() calls that read each field from the config facade.
+    ///
+    /// Supported parameter types:
+    ///   - Primitives: String, int, long, double, boolean → require* methods
+    ///   - Optional primitives: Option<String>, Option<Integer>, etc. → get* wrapped in Result.success
+    ///   - Collections: List<String> → requireStringList
+    ///   - Value objects: any type with a JBCT factory `typeName(String) → Result<T>` → requireString + flatMap
+    ///   - Optional value objects: Option<T> where T has a factory → getString + map with unwrap
+    private String generateConfigSectionCall(DependencyModel resource,
+                                              ResourceQualifierModel qualifier,
+                                              ImportTracker importTracker) {
+        var configSection = escapeJavaString(qualifier.configSection());
+        var configTypeName = importTracker.use(resource.interfaceQualifiedName());
+        var factoryParams = analyzeConfigRecordFactory(resource, importTracker);
+        if (factoryParams.isEmpty()) {
+            // No factory method found or no params — fall back to no-arg constructor via Result
+            importTracker.use("org.pragmatica.lang.Result");
+            return "Result.success(new " + configTypeName + "()).async()";
+        }
+        importTracker.use("org.pragmatica.lang.Result");
+        var sb = new StringBuilder();
+        sb.append("Result.all(\n");
+        for (int i = 0; i < factoryParams.size(); i++) {
+            var param = factoryParams.get(i);
+            var comma = (i < factoryParams.size() - 1) ? "," : "";
+            var tomlKey = camelToSnakeCase(param.name());
+            sb.append("                ")
+              .append(param.configAccessExpression("ctx.config()", configSection, tomlKey))
+              .append(comma).append("\n");
+        }
+        var factoryMethod = lowercaseFirst(resource.interfaceSimpleName());
+        sb.append("            ).flatMap(").append(configTypeName).append("::").append(factoryMethod).append(").async()");
+        return sb.toString();
+    }
+
+    /// Analyze a config record's factory method to extract parameter names and types.
+    private List<ConfigFieldParam> analyzeConfigRecordFactory(DependencyModel dep, ImportTracker importTracker) {
+        var typeElement = elements.getTypeElement(dep.interfaceQualifiedName());
+        if (typeElement == null) {
+            return List.of();
+        }
+        var factoryMethodName = lowercaseFirst(dep.interfaceSimpleName());
+        for (var enclosed : typeElement.getEnclosedElements()) {
+            if (enclosed.getKind() != ElementKind.METHOD) {
+                continue;
+            }
+            var method = (ExecutableElement) enclosed;
+            if (!method.getModifiers().contains(Modifier.STATIC)
+                || !method.getSimpleName().toString().equals(factoryMethodName)) {
+                continue;
+            }
+            return method.getParameters()
+                         .stream()
+                         .map(p -> ConfigFieldParam.fromParameter(p, elements, types, importTracker))
+                         .toList();
+        }
+        return List.of();
+    }
+
+    /// Determines config access strategy for a parameter type.
+    private enum ConfigAccessKind {
+        /// Primitive types: String, int, long, double, boolean → requireX(section, key)
+        REQUIRED_PRIMITIVE,
+        /// Optional primitives: Option<String>, Option<Integer>, etc. → Result.success(getX(section, key))
+        OPTIONAL_PRIMITIVE,
+        /// String list: List<String> → requireStringList(section, key)
+        REQUIRED_STRING_LIST,
+        /// Value object with JBCT factory: requireString(section, key).flatMap(Type::factory)
+        REQUIRED_VALUE_OBJECT,
+        /// Optional value object: Result.success(getString(section, key).map(s -> Type.factory(s).expect(...)))
+        OPTIONAL_VALUE_OBJECT,
+    }
+
+    /// Represents a config record factory method parameter with full type analysis.
+    private record ConfigFieldParam(String name, ConfigAccessKind kind, String facadeMethod,
+                                     String valueObjectType, String valueObjectFactory) {
+
+        static ConfigFieldParam fromParameter(javax.lang.model.element.VariableElement param,
+                                               Elements elements, Types types, ImportTracker importTracker) {
+            var paramName = param.getSimpleName().toString();
+            var typeMirror = param.asType();
+            var typeName = typeMirror.toString();
+            return analyzeType(paramName, typeName, typeMirror, elements, types, importTracker);
+        }
+
+        private static ConfigFieldParam analyzeType(String paramName, String typeName, TypeMirror typeMirror,
+                                                      Elements elements, Types types, ImportTracker importTracker) {
+            // Check for Option<X> wrapper
+            if (typeName.startsWith("org.pragmatica.lang.Option<")) {
+                return analyzeOptionType(paramName, typeName, typeMirror, elements, types, importTracker);
+            }
+            // Check for List<String>
+            if (typeName.equals("java.util.List<java.lang.String>")) {
+                return new ConfigFieldParam(paramName, ConfigAccessKind.REQUIRED_STRING_LIST,
+                                            "requireStringList", "", "");
+            }
+            // Check for primitive/boxed types
+            var primitiveMethod = primitiveAccessMethod(typeName);
+            if (primitiveMethod != null) {
+                return new ConfigFieldParam(paramName, ConfigAccessKind.REQUIRED_PRIMITIVE,
+                                            primitiveMethod, "", "");
+            }
+            // Check for value object with JBCT factory
+            return analyzeValueObjectType(paramName, typeName, elements, importTracker);
+        }
+
+        private static ConfigFieldParam analyzeOptionType(String paramName, String typeName, TypeMirror typeMirror,
+                                                            Elements elements, Types types,
+                                                            ImportTracker importTracker) {
+            var innerTypeName = extractOptionInnerType(typeName);
+            var optionalPrimitiveMethod = optionalPrimitiveAccessMethod(innerTypeName);
+            if (optionalPrimitiveMethod != null) {
+                return new ConfigFieldParam(paramName, ConfigAccessKind.OPTIONAL_PRIMITIVE,
+                                            optionalPrimitiveMethod, "", "");
+            }
+            // Optional value object: Option<Url> → getString + map with factory unwrap
+            var voInfo = findValueObjectFactory(innerTypeName, elements);
+            if (voInfo != null) {
+                var voType = importTracker.use(innerTypeName);
+                return new ConfigFieldParam(paramName, ConfigAccessKind.OPTIONAL_VALUE_OBJECT,
+                                            "getString", voType, voInfo.factoryMethodName());
+            }
+            // Unknown optional type — fall back to optional string
+            return new ConfigFieldParam(paramName, ConfigAccessKind.OPTIONAL_PRIMITIVE, "getString", "", "");
+        }
+
+        private static ConfigFieldParam analyzeValueObjectType(String paramName, String typeName,
+                                                                 Elements elements, ImportTracker importTracker) {
+            var voInfo = findValueObjectFactory(typeName, elements);
+            if (voInfo != null) {
+                var voType = importTracker.use(typeName);
+                return new ConfigFieldParam(paramName, ConfigAccessKind.REQUIRED_VALUE_OBJECT,
+                                            "requireString", voType, voInfo.factoryMethodName());
+            }
+            // Unknown type without factory — fall back to requireString
+            return new ConfigFieldParam(paramName, ConfigAccessKind.REQUIRED_PRIMITIVE, "requireString", "", "");
+        }
+
+        /// Extract inner type name from Option<X> type string.
+        private static String extractOptionInnerType(String optionTypeName) {
+            var prefix = "org.pragmatica.lang.Option<";
+            if (optionTypeName.startsWith(prefix) && optionTypeName.endsWith(">")) {
+                return optionTypeName.substring(prefix.length(), optionTypeName.length() - 1);
+            }
+            return optionTypeName;
+        }
+
+        /// Returns ConfigFacade require* method for primitive/boxed types, or null if not a primitive.
+        private static String primitiveAccessMethod(String typeName) {
+            return switch (typeName) {
+                case "java.lang.String" -> "requireString";
+                case "int", "java.lang.Integer" -> "requireInt";
+                case "long", "java.lang.Long" -> "requireLong";
+                case "double", "java.lang.Double" -> "requireDouble";
+                case "boolean", "java.lang.Boolean" -> "requireBoolean";
+                default -> null;
+            };
+        }
+
+        /// Returns ConfigFacade get* method for optional primitive types, or null if not a primitive.
+        private static String optionalPrimitiveAccessMethod(String innerTypeName) {
+            return switch (innerTypeName) {
+                case "java.lang.String" -> "getString";
+                case "java.lang.Integer" -> "getInt";
+                case "java.lang.Long" -> "getLong";
+                case "java.lang.Double" -> "getDouble";
+                case "java.lang.Boolean" -> "getBoolean";
+                default -> null;
+            };
+        }
+
+        /// Check if a type has a JBCT factory method: static typeName(String) returning Result<T>.
+        private static ValueObjectInfo findValueObjectFactory(String qualifiedName, Elements elements) {
+            var typeElement = elements.getTypeElement(qualifiedName);
+            if (typeElement == null) {
+                return null;
+            }
+            var simpleName = typeElement.getSimpleName().toString();
+            var factoryName = lowercaseFirstStatic(simpleName);
+            for (var enclosed : typeElement.getEnclosedElements()) {
+                if (enclosed.getKind() != ElementKind.METHOD) {
+                    continue;
+                }
+                var method = (ExecutableElement) enclosed;
+                if (!method.getModifiers().contains(Modifier.STATIC)
+                    || !method.getSimpleName().toString().equals(factoryName)
+                    || method.getParameters().size() != 1) {
+                    continue;
+                }
+                var paramType = method.getParameters().getFirst().asType().toString();
+                if (!"java.lang.String".equals(paramType)) {
+                    continue;
+                }
+                var returnType = method.getReturnType().toString();
+                if (returnType.startsWith("org.pragmatica.lang.Result<")) {
+                    return new ValueObjectInfo(factoryName);
+                }
+            }
+            return null;
+        }
+
+        private static String lowercaseFirstStatic(String name) {
+            if (name == null || name.isEmpty()) {
+                return "";
+            }
+            int i = 0;
+            while (i < name.length() && Character.isUpperCase(name.charAt(i))) {
+                i++;
+            }
+            if (i == 0) {
+                return name;
+            }
+            if (i == name.length() || i == 1) {
+                return name.substring(0, i).toLowerCase() + name.substring(i);
+            }
+            return name.substring(0, i - 1).toLowerCase() + name.substring(i - 1);
+        }
+
+        /// Generates the full config access expression for use inside Result.all().
+        ///
+        /// @param configPrefix the config facade access expression (e.g. "ctx.config()" or "config")
+        String configAccessExpression(String configPrefix, String section, String tomlKey) {
+            var configCall = configPrefix + "." + facadeMethod + "(\"" + section + "\", \"" + tomlKey + "\")";
+            return switch (kind) {
+                case REQUIRED_PRIMITIVE, REQUIRED_STRING_LIST -> configCall;
+                case OPTIONAL_PRIMITIVE -> "Result.success(" + configCall + ")";
+                case REQUIRED_VALUE_OBJECT -> configCall + ".flatMap(" + valueObjectType + "::" + valueObjectFactory + ")";
+                case OPTIONAL_VALUE_OBJECT -> "Result.success(" + configCall
+                    + ".map(s -> " + valueObjectType + "." + valueObjectFactory
+                    + "(s).expect(\"optional " + valueObjectType + " value validated at config load time\")))";
+            };
+        }
+    }
+
+    /// Info about a detected JBCT value object factory method.
+    private record ValueObjectInfo(String factoryMethodName) {}
+
+
+    /// Convert camelCase to snake_case for TOML key mapping.
+    /// Examples: enableTls -> enable_tls, maxRetries -> max_retries
+    private static String camelToSnakeCase(String camelCase) {
+        if (camelCase == null || camelCase.isEmpty()) {
+            return "";
+        }
+        var sb = new StringBuilder();
+        sb.append(Character.toLowerCase(camelCase.charAt(0)));
+        for (int i = 1; i < camelCase.length(); i++) {
+            char c = camelCase.charAt(i);
+            if (Character.isUpperCase(c)) {
+                sb.append('_');
+                sb.append(Character.toLowerCase(c));
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
     }
 
     /// Holds info needed to generate a TypeCodec entry for a single serializable type.
@@ -1311,6 +1742,82 @@ public class FactoryClassGenerator {
                || typeName.equals("boolean")
                || typeName.equals("double")
                || typeName.equals("float");
+    }
+
+    /// Generate the notifyConfigUpdate static method for config runtime notification.
+    ///
+    /// Generates a method that parses config sections and calls update methods on the slice
+    /// only when the parsed config differs from the previous value (diff detection at call site).
+    private void generateNotifyConfigUpdateMethod(PrintWriter out, SliceModel model, ImportTracker importTracker) {
+        var sliceName = model.simpleName();
+        var factoryName = sliceName + "Factory";
+        out.println("    private static final Logger configLog = LoggerFactory.getLogger(" + factoryName + ".class);");
+        out.println();
+        out.println("    public static void notifyConfigUpdate(Object sliceInstance, String section, ConfigFacade config) {");
+        for (var method : model.configUpdateMethods()) {
+            for (var configSub : method.reactiveOfCategory("config-update")) {
+                var configSection = escapeJavaString(configSub.qualifier().configSection());
+                generateConfigUpdateBranch(out, model, method, configSection, sliceName, importTracker);
+            }
+        }
+        out.println("    }");
+    }
+
+    private void generateConfigUpdateBranch(PrintWriter out,
+                                             SliceModel model,
+                                             MethodModel method,
+                                             String configSection,
+                                             String sliceName,
+                                             ImportTracker importTracker) {
+        var paramType = method.parameters().getFirst().type().toString();
+        var configTypeName = importTracker.use(paramType);
+        var configDep = findConfigDependencyForType(model, paramType);
+        out.println("        if (\"" + configSection + "\".equals(section)) {");
+        out.println("            var parsed = " + generateConfigParseExpression(configDep, configSection, configTypeName, importTracker) + ";");
+        out.println("            parsed.onSuccess(c -> ((" + sliceName + ") sliceInstance)." + method.name() + "(c));");
+        out.println("            parsed.onFailure(cause -> configLog.warn(\"Config parse failed for section {}: {}\", section, cause.message()));");
+        out.println("        }");
+    }
+
+    private String generateConfigParseExpression(Option<DependencyModel> configDep,
+                                                  String configSection,
+                                                  String configTypeName,
+                                                  ImportTracker importTracker) {
+        return configDep.fold(
+            () -> "Result.success(new " + configTypeName + "())",
+            dep -> generateConfigParseFromDep(dep, configSection, configTypeName, importTracker)
+        );
+    }
+
+    private String generateConfigParseFromDep(DependencyModel dep,
+                                               String configSection,
+                                               String configTypeName,
+                                               ImportTracker importTracker) {
+        var factoryParams = analyzeConfigRecordFactory(dep, importTracker);
+        if (factoryParams.isEmpty()) {
+            return "Result.success(new " + configTypeName + "())";
+        }
+        var sb = new StringBuilder();
+        sb.append("Result.all(\n");
+        for (int i = 0; i < factoryParams.size(); i++) {
+            var param = factoryParams.get(i);
+            var comma = (i < factoryParams.size() - 1) ? "," : "";
+            var tomlKey = camelToSnakeCase(param.name());
+            sb.append("                ")
+              .append(param.configAccessExpression("config", configSection, tomlKey))
+              .append(comma).append("\n");
+        }
+        var factoryMethod = lowercaseFirst(dep.interfaceSimpleName());
+        sb.append("            ).flatMap(").append(configTypeName).append("::").append(factoryMethod).append(")");
+        return sb.toString();
+    }
+
+    private Option<DependencyModel> findConfigDependencyForType(SliceModel model, String paramType) {
+        return Option.from(model.dependencies()
+                                .stream()
+                                .filter(DependencyModel::isConfigurationSection)
+                                .filter(dep -> dep.interfaceQualifiedName().equals(paramType))
+                                .findFirst());
     }
 
     /// Tracks imports during two-phase code generation.
