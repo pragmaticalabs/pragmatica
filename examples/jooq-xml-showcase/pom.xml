@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.pragmatica-lite</groupId>
+        <artifactId>examples</artifactId>
+        <version>1.0.0-rc1</version>
+    </parent>
+
+    <groupId>org.pragmatica.aether.example</groupId>
+    <artifactId>jooq-xml-showcase</artifactId>
+    <packaging>pom</packaging>
+
+    <name>jOOQ XML Export Showcase</name>
+    <description>Demonstrates hermetic jOOQ XMLDatabase schema export from PostgreSQL migrations via pg-maven-plugin.</description>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <jbct.skip>true</jbct.skip>
+    </properties>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>pg-maven-plugin</artifactId>
+                <version>${project.version}</version>
+                <executions>
+                    <execution>
+                        <id>export-jooq-xml</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>export-jooq-xml</goal>
+                        </goals>
+                        <configuration>
+                            <schemaDir>${project.basedir}/schema</schemaDir>
+                            <outputFile>${project.build.directory}/jooq-schema.xml</outputFile>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>check-jooq-xml</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check-jooq-xml</goal>
+                        </goals>
+                        <configuration>
+                            <schemaDir>${project.basedir}/schema</schemaDir>
+                            <outputFile>${project.basedir}/expected-jooq-schema.xml</outputFile>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

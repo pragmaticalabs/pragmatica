@@ -18,3 +18,11 @@ connection_timeout = "5s"
 max_lifetime = "30m"
 leak_detection_timeout = "0s"
 io_threads = 0
+
+# Membership v2 (spec §14). A single split_timeout (T) governs the minority self-drain and
+# majority re-provision deadlines, the DEPARTING terminalization window, the join-grace reaper,
+# and the #131 terminal-eviction backstop. Production-safe default applies when the section is
+# absent.
+#
+# [membership]
+# split_timeout = "15s"   # single membership timing constant T (default 15s)

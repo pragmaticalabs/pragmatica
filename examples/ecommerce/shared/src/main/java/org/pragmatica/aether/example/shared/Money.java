@@ -14,43 +14,45 @@ import java.util.Currency;
 public record Money(BigDecimal amount, Currency currency) {
     public sealed interface MoneyError extends Cause {
         record NegativeAmount(BigDecimal amount) implements MoneyError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Amount cannot be negative: " + amount;
             }
         }
 
         record CurrencyMismatch(Currency expected, Currency actual) implements MoneyError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Currency mismatch: " + expected + " vs " + actual;
             }
         }
 
         record InvalidCurrency(String code) implements MoneyError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Invalid currency: " + code;
             }
         }
 
         record InvalidAmount(String raw) implements MoneyError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Invalid amount: " + raw;
             }
         }
     }
 
     private static final Fn1<Cause, BigDecimal> NEGATIVE_AMOUNT = MoneyError.NegativeAmount::new;
-
     public static final Currency USD = Currency.getInstance("USD");
-
     public static final Currency EUR = Currency.getInstance("EUR");
-
     public static final Money ZERO_USD = money(BigDecimal.ZERO, USD).expect("Money.ZERO_USD");
 
     public static Result<Money> money(BigDecimal amount, Currency currency) {
         return Verify.ensure(amount,
                              a -> a.compareTo(BigDecimal.ZERO) >= 0,
-                             NEGATIVE_AMOUNT).map(a -> a.setScale(2, RoundingMode.HALF_UP))
-                            .map(a -> new Money(a, currency));
+                             NEGATIVE_AMOUNT)
+                     .map(a -> a.setScale(2, RoundingMode.HALF_UP))
+                     .map(a -> new Money(a, currency));
     }
 
     public static Result<Money> money(String amount, String currencyCode) {
@@ -76,11 +78,13 @@ public record Money(BigDecimal amount, Currency currency) {
 
     public Result<Money> multiply(BigDecimal factor) {
         var result = amount.multiply(factor).setScale(2, RoundingMode.HALF_UP);
+
         return money(result, currency);
     }
 
     public Result<Money> percentage(int percent) {
         var factor = BigDecimal.valueOf(percent).divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP);
+
         return multiply(factor);
     }
 
@@ -94,8 +98,8 @@ public record Money(BigDecimal amount, Currency currency) {
 
     private Result<Money> verifySameCurrency(Money other) {
         return currency.equals(other.currency)
-              ? Result.success(this)
-              : new MoneyError.CurrencyMismatch(currency, other.currency).result();
+               ? Result.success(this)
+               : new MoneyError.CurrencyMismatch(currency, other.currency).result();
     }
 
     private static Result<BigDecimal> parseAmount(String raw) {
@@ -106,7 +110,8 @@ public record Money(BigDecimal amount, Currency currency) {
         return Result.lift(_ -> new MoneyError.InvalidCurrency(code), () -> Currency.getInstance(code));
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return currency.getSymbol() + amount.toPlainString();
     }
 }
