@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.schema;
 
 import org.pragmatica.aether.deployment.schema.ParsedMigration.MigrationType;
@@ -13,7 +17,6 @@ import java.util.List;
 import static org.pragmatica.lang.Result.all;
 
 
-/// Repository for the `aether_schema_history` table tracking applied migrations.
 public interface SchemaHistoryRepository {
     Promise<Unit> bootstrap(SqlConnector connector);
     Promise<List<AppliedMigration>> queryApplied(SqlConnector connector);
@@ -46,7 +49,6 @@ public interface SchemaHistoryRepository {
     }
 }
 
-/// Default implementation of SchemaHistoryRepository using SqlConnector.
 final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
     private static final String BOOTSTRAP_SQL = """
         CREATE TABLE IF NOT EXISTS aether_schema_history (
@@ -61,9 +63,11 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
             PRIMARY KEY (version, type)
         )""";
 
-    private static final String QUERY_APPLIED_SQL = "SELECT version, type, description, script, checksum, applied_by, applied_at, execution_ms " + "FROM aether_schema_history ORDER BY version";
+    private static final String QUERY_APPLIED_SQL = "SELECT version, type, description, script, checksum, applied_by, applied_at, execution_ms "
+                                                  + "FROM aether_schema_history ORDER BY version";
 
-    private static final String INSERT_SQL = "INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms) " + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+    private static final String INSERT_SQL = "INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms) "
+                                           + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
 
     private static final String DELETE_SQL = "DELETE FROM aether_schema_history WHERE version = ? AND type = ?";
 
@@ -71,7 +75,7 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
 
     private static final RowMapper<SchemaHistoryRepository.AppliedMigration> APPLIED_MIGRATION_MAPPER = row -> all(row.getInt("version"),
                                                                                                                    row.getString("type")
-                                                                                                                                .map(MigrationType::valueOf),
+                                                                                                                      .map(MigrationType::valueOf),
                                                                                                                    row.getString("description"),
                                                                                                                    row.getString("script"),
                                                                                                                    row.getLong("checksum"),
@@ -81,16 +85,19 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
 
     private static final RowMapper<Long> CHECKSUM_MAPPER = row -> row.getLong("checksum");
 
-    @Override public Promise<Unit> bootstrap(SqlConnector connector) {
-        return connector.update(BOOTSTRAP_SQL).mapToUnit();
+    @Override
+    public Promise<Unit> bootstrap(SqlConnector connector) {
+        return connector.update(BOOTSTRAP_SQL)
+                        .mapToUnit();
     }
 
-    @Override public Promise<List<SchemaHistoryRepository.AppliedMigration>> queryApplied(SqlConnector connector) {
+    @Override
+    public Promise<List<SchemaHistoryRepository.AppliedMigration>> queryApplied(SqlConnector connector) {
         return connector.queryList(QUERY_APPLIED_SQL, APPLIED_MIGRATION_MAPPER);
     }
 
-    @Override public Promise<Unit> recordMigration(SqlConnector connector,
-                                                   SchemaHistoryRepository.AppliedMigration migration) {
+    @Override
+    public Promise<Unit> recordMigration(SqlConnector connector, SchemaHistoryRepository.AppliedMigration migration) {
         return connector.update(INSERT_SQL,
                                 migration.version(),
                                 migration.type().name(),
@@ -100,14 +107,19 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
                                 migration.appliedBy(),
                                 migration.appliedAt(),
                                 migration.executionMs())
-        .mapToUnit();
+                        .mapToUnit();
     }
 
-    @Override public Promise<Unit> removeMigration(SqlConnector connector, int version, MigrationType type) {
-        return connector.update(DELETE_SQL, version, type.name()).mapToUnit();
+    @Override
+    public Promise<Unit> removeMigration(SqlConnector connector, int version, MigrationType type) {
+        return connector.update(DELETE_SQL,
+                                version,
+                                type.name())
+                        .mapToUnit();
     }
 
-    @Override public Promise<Option<Long>> queryRepeatableChecksum(SqlConnector connector, String description) {
+    @Override
+    public Promise<Option<Long>> queryRepeatableChecksum(SqlConnector connector, String description) {
         return connector.queryOptional(QUERY_REPEATABLE_SQL, CHECKSUM_MAPPER, description);
     }
 }

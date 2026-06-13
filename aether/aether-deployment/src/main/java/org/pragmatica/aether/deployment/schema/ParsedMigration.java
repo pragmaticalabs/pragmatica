@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.schema;
 
 import org.pragmatica.aether.slice.blueprint.MigrationEntry;
@@ -7,18 +11,6 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.aether.deployment.schema.SchemaError.InvalidMigrationFormat.invalidMigrationFormat;
 
 
-/// A migration entry enriched with metadata parsed from its filename.
-///
-/// Supported filename patterns:
-///   V001__description.sql — versioned migration
-///   R__description.sql    — repeatable migration
-///   U001__description.sql — undo migration
-///   B001__description.sql — baseline migration
-///
-/// @param entry       the original migration entry
-/// @param type        migration type derived from filename prefix
-/// @param version     version number (0 for repeatable migrations)
-/// @param description human-readable description extracted from filename
 public record ParsedMigration(MigrationEntry entry, MigrationType type, int version, String description) {
     public enum MigrationType {
         VERSIONED,
@@ -30,15 +22,20 @@ public record ParsedMigration(MigrationEntry entry, MigrationType type, int vers
     private static final int SEPARATOR_LENGTH = 2;
 
     public static Result<ParsedMigration> parsedMigration(MigrationEntry entry) {
-        return Option.option(entry.filename()).filter(f -> !f.isEmpty())
-                            .toResult(invalidMigrationFormat("", "filename is empty"))
-                            .flatMap(filename -> parseFilename(entry, filename));
+        return Option.option(entry.filename())
+                     .filter(f -> !f.isEmpty())
+                     .toResult(invalidMigrationFormat("", "filename is empty"))
+                     .flatMap(filename -> parseFilename(entry, filename));
     }
 
     private static Result<ParsedMigration> parseFilename(MigrationEntry entry, String filename) {
-        if (!filename.endsWith(".sql")) {return invalidMigrationFormat(filename, "must end with .sql").result();}
+        if (!filename.endsWith(".sql")) {
+            return invalidMigrationFormat(filename, "must end with .sql").result();
+        }
+
         var prefix = filename.charAt(0);
-        return switch (prefix){
+
+        return switch (prefix) {
             case 'R' -> parseRepeatable(entry, filename);
             case 'V' -> parseVersioned(entry, filename, MigrationType.VERSIONED);
             case 'U' -> parseVersioned(entry, filename, MigrationType.UNDO);
@@ -49,16 +46,29 @@ public record ParsedMigration(MigrationEntry entry, MigrationType type, int vers
 
     private static Result<ParsedMigration> parseRepeatable(MigrationEntry entry, String filename) {
         var separatorIndex = filename.indexOf("__");
-        if (separatorIndex <0) {return invalidMigrationFormat(filename, "missing '__' separator").result();}
+
+        if (separatorIndex < 0) {
+            return invalidMigrationFormat(filename, "missing '__' separator").result();
+        }
+
         var description = filename.substring(separatorIndex + SEPARATOR_LENGTH, filename.length() - 4);
-        if (description.isEmpty()) {return invalidMigrationFormat(filename, "description is empty").result();}
+
+        if (description.isEmpty()) {
+            return invalidMigrationFormat(filename, "description is empty").result();
+        }
+
         return Result.success(new ParsedMigration(entry, MigrationType.REPEATABLE, 0, description));
     }
 
     private static Result<ParsedMigration> parseVersioned(MigrationEntry entry, String filename, MigrationType type) {
         var separatorIndex = filename.indexOf("__");
-        if (separatorIndex <1) {return invalidMigrationFormat(filename, "missing '__' separator or version number").result();}
+
+        if (separatorIndex < 1) {
+            return invalidMigrationFormat(filename, "missing '__' separator or version number").result();
+        }
+
         var versionStr = filename.substring(1, separatorIndex);
+
         return parseVersion(filename, versionStr).map(version -> extractDescription(filename, separatorIndex))
                            .flatMap(desc -> validateDescription(filename, desc))
                            .map(desc -> new ParsedMigration(entry,
@@ -68,7 +78,10 @@ public record ParsedMigration(MigrationEntry entry, MigrationType type, int vers
     }
 
     private static Result<Integer> parseVersion(String filename, String versionStr) {
-        if (versionStr.isEmpty()) {return invalidMigrationFormat(filename, "version number is empty").result();}
+        if (versionStr.isEmpty()) {
+            return invalidMigrationFormat(filename, "version number is empty").result();
+        }
+
         return Result.lift(cause -> invalidMigrationFormat(filename, "invalid version number '" + versionStr + "'"),
                            () -> Integer.parseInt(versionStr));
     }
@@ -78,7 +91,10 @@ public record ParsedMigration(MigrationEntry entry, MigrationType type, int vers
     }
 
     private static Result<String> validateDescription(String filename, String description) {
-        if (description.isEmpty()) {return invalidMigrationFormat(filename, "description is empty").result();}
+        if (description.isEmpty()) {
+            return invalidMigrationFormat(filename, "description is empty").result();
+        }
+
         return Result.success(description);
     }
 

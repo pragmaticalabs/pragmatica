@@ -1,19 +1,7 @@
-/*
- *  Copyright (c) 2025 Sergiy Yevtushenko.
- *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
- *
- */
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
 import org.pragmatica.aether.environment.ComputeProvider;
@@ -21,6 +9,7 @@ import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -32,9 +21,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Encapsulates cloud instance lifecycle operations (provision, terminate, restart).
-/// CDM delegates cloud operations through this interface instead of calling ComputeProvider directly.
-/// This enables uniform handling across all cloud providers and future NodeAction extensions.
 public interface NodeLifecycleManager {
     Promise<ActionResult> executeAction(NodeAction action);
     Promise<InstanceInfo> provisionNode(ProvisionSpec spec);
@@ -42,20 +28,28 @@ public interface NodeLifecycleManager {
     Promise<Unit> restartNode(NodeId nodeId);
     boolean isCloudManaged();
 
+    @Contract
+    default void resetProvisionerState(String clusterName) {}
+
     static NodeLifecycleManager nodeLifecycleManager(Option<ComputeProvider> computeProvider) {
         return new NodeLifecycleManagerRecord(computeProvider);
     }
 }
 
-/// Implementation that delegates to an optional ComputeProvider.
-/// Uses tag-based instance lookup (aether-node-id) for terminate and restart operations.
 record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) implements NodeLifecycleManager {
     private static final Logger log = LoggerFactory.getLogger(NodeLifecycleManagerRecord.class);
+    // Upper-layer canonical tag key for binding a cloud instance to its assigned NodeId.
+    // Each ComputeProvider translates this dotted key to its native label/tag convention
+    // at the boundary: DockerComputeProvider sets `aether.node-id` as a Docker label
+    // (dotted form is valid in Docker), HetznerComputeProvider translates to
+    // `aether-node-id` (Hetzner labels use kebab-case per HCloud API). Do not re-introduce
+    // direct hyphenated lookups here — provider translation lives inside each provider's
+    // listInstances/labelsFor pair so this layer stays provider-agnostic.
+    private static final String NODE_ID_TAG = "aether.node-id";
 
-    private static final String NODE_ID_TAG = "aether-node-id";
-
-    @Override public Promise<ActionResult> executeAction(NodeAction action) {
-        return switch (action){
+    @Override
+    public Promise<ActionResult> executeAction(NodeAction action) {
+        return switch (action) {
             case NodeAction.StartNode startNode -> provisionNode(startNode.spec()).map(ActionResult.NodeStarted::new);
             case NodeAction.StopNode stopNode -> terminateNode(stopNode.nodeId()).map(_ -> new ActionResult.NodeStopped(stopNode.nodeId()));
             case NodeAction.RestartNode restartNode -> restartNode(restartNode.nodeId()).map(_ -> new ActionResult.NodeRestarted(restartNode.nodeId()));
@@ -63,31 +57,39 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) imple
         };
     }
 
-    @Override public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
-        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("provisionNode: no ComputeProvider")
-                                                                                .promise(),
+    @Override
+    public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
+        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("provisionNode: no ComputeProvider").promise(),
                                     provider -> {
                                         log.info("Provisioning new instance: size={}, pool={}",
                                                  spec.instanceSize(),
                                                  spec.pool());
+
                                         return provider.provision(spec);
                                     });
     }
 
-    @Override public Promise<Unit> terminateNode(NodeId nodeId) {
-        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("terminateNode: no ComputeProvider")
-                                                                                .promise(),
+    @Override
+    public Promise<Unit> terminateNode(NodeId nodeId) {
+        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("terminateNode: no ComputeProvider").promise(),
                                     provider -> lookupAndTerminate(provider, nodeId));
     }
 
-    @Override public Promise<Unit> restartNode(NodeId nodeId) {
-        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("restartNode: no ComputeProvider")
-                                                                                .promise(),
+    @Override
+    public Promise<Unit> restartNode(NodeId nodeId) {
+        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("restartNode: no ComputeProvider").promise(),
                                     provider -> lookupAndRestart(provider, nodeId));
     }
 
-    @Override public boolean isCloudManaged() {
+    @Override
+    public boolean isCloudManaged() {
         return computeProvider.isPresent();
+    }
+
+    @Contract
+    @Override
+    public void resetProvisionerState(String clusterName) {
+        computeProvider.onPresent(provider -> provider.resetProvisionerState(clusterName));
     }
 
     private Promise<Unit> lookupAndTerminate(ComputeProvider provider, NodeId nodeId) {
@@ -115,11 +117,14 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) imple
                                                    List<InstanceInfo> instances) {
         if (instances.size() == 1) {
             var instanceId = instances.getFirst().id();
+
             log.info("Terminating cloud instance {} for node {}", instanceId.value(), nodeId);
+
             return provider.terminate(instanceId)
-                                     .onSuccess(_ -> log.info("Cloud instance {} terminated successfully",
-                                                              instanceId.value()));
+                           .onSuccess(_ -> log.info("Cloud instance {} terminated successfully",
+                                                    instanceId.value()));
         }
+
         return logMismatch("terminate", nodeId, instances.size());
     }
 
@@ -128,23 +133,24 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) imple
                                                  List<InstanceInfo> instances) {
         if (instances.size() == 1) {
             var instanceId = instances.getFirst().id();
+
             log.info("Restarting cloud instance {} for node {}", instanceId.value(), nodeId);
+
             return provider.restart(instanceId)
-                                   .onSuccess(_ -> log.info("Cloud instance {} restarted successfully",
-                                                            instanceId.value()));
+                           .onSuccess(_ -> log.info("Cloud instance {} restarted successfully",
+                                                    instanceId.value()));
         }
+
         return logMismatch("restart", nodeId, instances.size());
     }
 
     private static Promise<Unit> logMismatch(String operation, NodeId nodeId, int count) {
-        if (count == 0) {log.warn("No cloud instance found with tag {}={} — skipping {}",
-                                  NODE_ID_TAG,
-                                  nodeId.id(),
-                                  operation);} else {log.warn("Found {} cloud instances with tag {}={} — expected 1, skipping {}",
-                                                              count,
-                                                              NODE_ID_TAG,
-                                                              nodeId.id(),
-                                                              operation);}
-        return Promise.success(Unit.unit());
+        var reason = count == 0
+                     ? "no cloud instance with tag " + NODE_ID_TAG + "=" + nodeId.id()
+                     : "found " + count + " instances with tag " + NODE_ID_TAG + "=" + nodeId.id() + " (expected 1)";
+
+        log.warn("{} of {} skipped: {}", operation, nodeId.id(), reason);
+
+        return EnvironmentError.operationNotSupported(operation + ": " + reason).promise();
     }
 }

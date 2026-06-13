@@ -1,10 +1,14 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.deployment.node;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.deployment.node.NodeDeploymentManager.NodeDeploymentState.DormantNodeDeploymentState;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SliceDeployment;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SuspendedSlice;
 import org.pragmatica.aether.slice.SliceState;
@@ -89,38 +93,11 @@ class NodeDeploymentManagerTest {
         }
     }
 
-    @Nested
-    class DormantState {
-        @Test
-        void dormantState_defaultConstructor_hasEmptySuspendedSlices() {
-            var dormant = new DormantNodeDeploymentState();
-
-            assertThat(dormant.suspendedSlices()).isEmpty();
-        }
-
-        @Test
-        void dormantState_withSuspendedSlices_retainsList() {
-            var key = new SliceNodeKey(artifact1, selfNode);
-            var deployment = new SliceDeployment(key, SliceState.ACTIVE, 1000L);
-            var suspended = new SuspendedSlice(key, deployment);
-            var dormant = new DormantNodeDeploymentState(List.of(suspended));
-
-            assertThat(dormant.suspendedSlices()).hasSize(1);
-            assertThat(dormant.suspendedSlices().getFirst().key()).isEqualTo(key);
-        }
-
-        @Test
-        void dormantState_withMultipleSuspendedSlices_retainsAll() {
-            var key1 = new SliceNodeKey(artifact1, selfNode);
-            var key2 = new SliceNodeKey(artifact2, selfNode);
-            var d1 = new SliceDeployment(key1, SliceState.ACTIVE, 1000L);
-            var d2 = new SliceDeployment(key2, SliceState.ACTIVE, 2000L);
-            var suspended = List.of(new SuspendedSlice(key1, d1), new SuspendedSlice(key2, d2));
-            var dormant = new DormantNodeDeploymentState(suspended);
-
-            assertThat(dormant.suspendedSlices()).hasSize(2);
-        }
-    }
+    // DormantState record-construction tests were removed: the legacy
+    // NodeDeploymentManager.NodeDeploymentState.DormantNodeDeploymentState has been replaced by
+    // org.pragmatica.aether.deployment.node.fsm.NodeDeploymentState.Dormant which requires a
+    // NodeDeploymentContext. FSM-level coverage lives in
+    // org.pragmatica.aether.deployment.node.fsm.NodeDeploymentFsmTest.
 
     @Nested
     class SliceNodeKeyFiltering {

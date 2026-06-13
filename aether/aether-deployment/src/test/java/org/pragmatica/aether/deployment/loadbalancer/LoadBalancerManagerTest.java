@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.deployment.loadbalancer;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -17,9 +22,8 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -59,7 +63,7 @@ class LoadBalancerManagerTest {
         topologyManager = new RecordingTopologyManager();
         var router = MessageRouter.DelegateRouter.delegate();
         router.quiesce();
-        kvStore = new KVStore<>(router, null, null);
+        kvStore = new KVStore<>(router, noopSerializer(), null);
         manager = LoadBalancerManager.loadBalancerManager(selfNode, kvStore, topologyManager, provider, 8080);
     }
 
@@ -81,8 +85,8 @@ class LoadBalancerManagerTest {
         }
 
         @Test
-        void dormantState_onTopologyChange_doesNothing() {
-            manager.onTopologyChange(TopologyChangeNotification.nodeRemoved(node1, List.of()));
+        void dormantState_onMembershipDecision_doesNothing() {
+            manager.onMembershipDecision(MembershipDecision.nodeRemoved(node1, List.of()));
 
             assertThat(provider.nodeRemovals).isEmpty();
         }
@@ -96,7 +100,7 @@ class LoadBalancerManagerTest {
             var routeKey = NodeRoutesKey.nodeRoutesKey(node1, TEST_ARTIFACT);
             var routeValue = NodeRoutesValue.nodeRoutesValue(List.of(
                 RouteEntry.activeRoute("GET", "/api/users/", "list")));
-            kvStore.process(new KVCommand.Put<>(routeKey, routeValue));
+            kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<>(routeKey, routeValue))));
 
             // Register node1 in topology so IP resolution works
             topologyManager.register(node1, "10.0.0.1", 8080);
@@ -117,7 +121,7 @@ class LoadBalancerManagerTest {
             provider.clear();
 
             // Lose leadership
-            manager.onLeaderChange(LeaderNotification.leaderChange(Option.some(node2), false));
+            manager.deactivate().await();
 
             // Subsequent events should be no-ops
             fireNodeRoutesPut("GET", "/api/test", node1);
@@ -156,7 +160,7 @@ class LoadBalancerManagerTest {
             provider.clear();
 
             // Remove node1
-            manager.onTopologyChange(TopologyChangeNotification.nodeRemoved(node1, List.of(node2)));
+            manager.onMembershipDecision(MembershipDecision.nodeRemoved(node1, List.of(node2)));
 
             assertThat(provider.nodeRemovals).containsExactly("10.0.0.1");
         }
@@ -194,10 +198,98 @@ class LoadBalancerManagerTest {
         }
     }
 
+    /// Theme F drain-and-subscribe race fix — the receiver path must buffer events
+    /// fired during `reconcile()`'s `forEach` drain and replay them exactly once.
+    @Nested
+    class DrainAndSubscribeRace {
+        @Test
+        void midDrainPut_isAppliedExactlyOnceAfterReconcile() {
+            topologyManager.register(node1, "10.0.0.1", 8080);
+            topologyManager.register(node2, "10.0.0.2", 8080);
+
+            // Pre-seed kvStore with node1's route. node2's route will be injected
+            // mid-drain via a stub kvStore wrapper.
+            var routeKey1 = NodeRoutesKey.nodeRoutesKey(node1, TEST_ARTIFACT);
+            var routeValue1 = NodeRoutesValue.nodeRoutesValue(List.of(
+                RouteEntry.activeRoute("GET", "/api/v1/", "list")));
+            kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<>(routeKey1, routeValue1))));
+
+            var midDrainKvStore = new MidDrainKvStore(kvStore);
+            var midDrainManager = LoadBalancerManager.loadBalancerManager(selfNode,
+                                                                           midDrainKvStore,
+                                                                           topologyManager,
+                                                                           provider,
+                                                                           8080);
+            midDrainKvStore.armMidDrainEvent(midDrainManager,
+                                              putEvent(node2, "GET", "/api/v1/"));
+            midDrainManager.activate().await();
+
+            // The mid-drain event must be visible in the final state. node1 came from
+            // forEach, node2 came from the buffered receiver event.
+            assertThat(provider.reconcileCalls).hasSize(1);
+            var finalState = provider.reconcileCalls.getFirst();
+            assertThat(finalState.activeNodeIps())
+                .containsExactlyInAnyOrder("10.0.0.1", "10.0.0.2");
+
+            // The buffered event was applied during replay, not lost.
+            assertThat(midDrainKvStore.midDrainFired).isTrue();
+        }
+
+        private ValuePut<NodeRoutesKey, NodeRoutesValue> putEvent(NodeId nodeId,
+                                                                  String method,
+                                                                  String path) {
+            var key = NodeRoutesKey.nodeRoutesKey(nodeId, TEST_ARTIFACT);
+            var route = RouteEntry.activeRoute(method, path, "list");
+            var value = NodeRoutesValue.nodeRoutesValue(List.of(route));
+            return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
+        }
+    }
+
+    /// KVStore wrapper that fires a receiver event during `forEach`, simulating a
+    /// notification arriving mid-snapshot-drain.
+    private static final class MidDrainKvStore extends KVStore<AetherKey, AetherValue> {
+        private final KVStore<AetherKey, AetherValue> delegate;
+        private LoadBalancerManager manager;
+        private ValuePut<NodeRoutesKey, NodeRoutesValue> midDrainEvent;
+        boolean midDrainFired;
+
+        MidDrainKvStore(KVStore<AetherKey, AetherValue> delegate) {
+            super(null, null, null);
+            this.delegate = delegate;
+        }
+
+        void armMidDrainEvent(LoadBalancerManager manager,
+                              ValuePut<NodeRoutesKey, NodeRoutesValue> event) {
+            this.manager = manager;
+            this.midDrainEvent = event;
+        }
+
+        @Override
+        public <KK, VV> void forEach(Class<KK> keyClass,
+                                      Class<VV> valueClass,
+                                      java.util.function.BiConsumer<KK, VV> consumer) {
+            delegate.forEach(keyClass, valueClass, consumer);
+            if (manager != null && midDrainEvent != null && !midDrainFired) {
+                midDrainFired = true;
+                manager.onNodeRoutesPut(midDrainEvent);
+            }
+        }
+    }
+
     // === Helpers ===
 
+    /// No-op serializer: these tests apply commands to the KV store directly (not via the
+    /// consensus dedup path), so the content-based batch id is irrelevant — an empty encoding
+    /// is sufficient to satisfy `StateMachine.createBatch`.
+    private static org.pragmatica.serialization.Serializer noopSerializer() {
+        return new org.pragmatica.serialization.Serializer() {
+            @Override
+            public <T> void write(io.netty.buffer.ByteBuf byteBuf, T object) {}
+        };
+    }
+
     private void activateAsLeader() {
-        manager.onLeaderChange(LeaderNotification.leaderChange(Option.some(selfNode), true));
+        manager.activate().await();
     }
 
     private void fireNodeRoutesPut(String method, String path, NodeId nodeId) {
