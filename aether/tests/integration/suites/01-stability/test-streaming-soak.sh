@@ -10,6 +10,8 @@ source "${SCRIPT_DIR}/../../lib/load.sh"
 STREAM_DURATION="${STREAM_DURATION:-3600}"  # 1 hour default
 STREAM_RPS="${STREAM_RPS:-5}"
 STREAM_NAME="${STREAM_NAME:-notifications}"
+# Operational event tier — see aether/docs/specs/test-readiness-contract.md §4 (2.0%).
+# 1h stream publish soak; small percentage of in-flight requests lost during reconfigurations.
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-2.0}"
 
 test_stream_exists() {
@@ -27,19 +29,20 @@ test_sustained_publish() {
 
     local end_time=$(($(now_epoch) + STREAM_DURATION))
     local interval
-    interval=$(python3 -c "print(1.0 / ${STREAM_RPS})" 2>/dev/null || echo "0.2")
+    interval=$(awk "BEGIN {printf \"%.4f\", 1.0/${STREAM_RPS}}" 2>/dev/null || echo "0.2")
     local success=0 failure=0 count=0
 
     while [ "$(now_epoch)" -lt "$end_time" ]; do
         local payload="{\"message\":\"soak-test-${count}\",\"timestamp\":$(now_epoch)}"
         local status
-        status=$(http_status "${CLUSTER_ENDPOINT}/api/streams/${STREAM_NAME}/publish" \
+        status=$(http_status "${CLUSTER_ENDPOINT}/api/streams/publish/${STREAM_NAME}" \
             -X POST \
             -H "X-API-Key: ${API_KEY}" \
             -H "Content-Type: application/json" \
             -d "$payload")
 
-        if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
+        # Strict 2xx only — 3xx (redirects) is not a successful publish.
+        if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
             success=$((success + 1))
         else
             failure=$((failure + 1))
@@ -60,7 +63,7 @@ test_sustained_publish() {
 
 test_cluster_stable_after_stream() {
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "5" "Cluster stable: 5 nodes after streaming soak"
 }
 

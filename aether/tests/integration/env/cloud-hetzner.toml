@@ -1,0 +1,71 @@
+# Cluster A -- Hetzner Cloud (non-destructive test suites)
+#
+# 5-node cluster on Hetzner cx33 instances (4 vCPU, 8 GB RAM).
+# Requires HCLOUD_TOKEN and PG_URL environment variables.
+
+config_version = "1.0.0"
+
+[cluster]
+name = "cloud-test-a"
+version = "1.0.0"
+
+[cluster.core]
+min = 3
+max = 9
+max_unavailable = 1
+
+[source.hetzner-eu]
+type = "cloud"
+provider = "hetzner"
+zone = "fsn1"             # Hetzner location code (Hetzner's API distinguishes `location` (fsn1) from `datacenter` (fsn1-dc14); the cloud-provider integration uses the location form). When CloudProviderSupport adds a ZoneHint, this value is sent as the `location` field to Hetzner.
+region = "fsn1"           # Same value as zone for now; aether's HetznerComputeProvider uses config.region() as the location fallback when no placement hint is set.
+credentials = "${env:HCLOUD_TOKEN}"
+load_balancer = "none"
+databases.forge = "${env:PG_URL}"
+
+[source.hetzner-eu.core]
+count = 5
+instance_type = "cx33"
+image = "ubuntu-22.04"
+
+[infrastructure.networking]
+# Option A — direct public-IP addressing.
+# Each provisioned VM receives a public IP (Hetzner default); the integration
+# test harness reads those IPs from ~/.aether/clusters/cloud-test-a/bootstrap-state.json
+# (BOOTSTRAP_CLUSTER_NAME) and SSHs to nodes directly. No private network, no
+# bastion. Option B (private network + bastion) is deferred to Phase 4.
+type = "manual"
+
+[operations]
+
+[operations.tls]
+# Disabled for integration testing — mgmt API uses plain HTTP for curl/wget health
+# checks. Cluster QUIC transport still uses TLS via auto-generated [tls].cluster_secret.
+auto_generate = false
+
+[operations.ports]
+cluster = 6000
+management = 8080
+app_http = 8070
+swim = 6100
+
+[operations.auto_heal]
+enabled = true
+retry_interval = "30s"
+startup_cooldown = "15s"
+
+[source.hetzner-eu.node_config.app-http]
+# Integration test config: app-http server enabled, security disabled.
+# - `enabled = true` starts the slice's app-HTTP server (port 8070).
+# - `security_mode = "NONE"` opens both app-http AND mgmt-api to unauthenticated requests
+#   (mgmt validator uses noOpValidator when securityEnabled() returns false).
+#   This avoids the bootstrap chicken-and-egg: with API_KEY mode, the bootstrap's
+#   storeClusterConfig POST is rejected because the bootstrap-generated key isn't in KV
+#   yet and the static key isn't in this composed config either.
+# Production deployments must set security_mode = "API_KEY" with a configured key list.
+enabled = true
+security_mode = "NONE"
+
+[runtime.default]
+type = "container"
+image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1-candidate"

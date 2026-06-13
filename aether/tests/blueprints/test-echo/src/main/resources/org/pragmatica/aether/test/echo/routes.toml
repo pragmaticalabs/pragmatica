@@ -1,0 +1,8 @@
+prefix = "/api/echo"
+
+[security]
+default = "public"
+
+[routes]
+health = "GET /health"
+echo = "POST /echo"

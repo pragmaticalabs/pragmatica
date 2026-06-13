@@ -6,32 +6,84 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/load.sh"
+source "${SCRIPT_DIR}/../../lib/topology.sh"
+source "${SCRIPT_DIR}/../../lib/generation.sh"
 
 LOAD_DURATION="${LOAD_DURATION:-60}"
 LOAD_RPS="${LOAD_RPS:-5}"
+# Simultaneous chaos tier — see aether/docs/specs/test-readiness-contract.md §4 (10.0%).
+# Nodes killed during sustained load; in-flight requests on killed nodes are lost outright
+# until LB drops them; replacement provisioning + failover takes seconds.
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-10.0}"
+# APP_ENDPOINT defaults to the (now-removed) LB port 9090; the test-echo slice is
+# host-mapped on cluster B's app ports 8080..8084. Without retargeting to the live
+# slice owner, every request hits a dead port and the test measures 100% error against
+# nothing (false FAIL). Coords match slice_owner_for's group:artifact prefix.
+ECHO_BLUEPRINT="${ECHO_BLUEPRINT:-org.pragmatica.aether.test:test-echo:1.0.0}"
 
 test_initial_state() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
+    # Wait for phase=NORMAL to bypass SWIM cold-boot suppression of NODE_FAILED events.
+    wait_for_phase "NORMAL" 180 || log_warn "Cluster phase still COLD_BOOT; chaos kill may produce UnknownObserved (no NODE_FAILED event)"
+    wait_for_leader 60
     local count
-    count=$(cluster_node_count)
-    assert_eq "$count" "5" "Initial: 5 nodes"
+    count=$(cluster_member_count)
+    assert_ge "$count" "5" "Initial: at least 5 nodes (${count})"
 }
 
 test_kill_during_load() {
-    # Start background load against management health endpoint
-    start_mgmt_load "$LOAD_RPS" "$LOAD_DURATION" "/health/live"
+    # Production-like load: hit an app-port slice endpoint instead of the
+    # management /health/live. This exercises the full request path (HTTP →
+    # slice routing table → slice invocation → response) which is what
+    # chaos actually affects during a kill. Management /health/live is a
+    # node-local synthetic and doesn't traverse the routing table that
+    # gets republished on every cluster generation change.
+    # Point APP_ENDPOINT at the node hosting the ACTIVE echo slice (cluster B base app
+    # port 8080), probing /api/echo/health until routed. Mirrors 08-resources; without
+    # it the load hits the dead LB port 9090 and every request fails.
+    retarget_app_endpoint_to_active_slice "$ECHO_BLUEPRINT" 8080 "/api/echo/health" 90 \
+        || log_warn "kill-under-load: could not retarget APP_ENDPOINT to echo owner; load will probe ${APP_ENDPOINT}"
 
-    # Wait for load to establish
+    start_load "$LOAD_RPS" "$LOAD_DURATION" GET "/api/echo/health"
+
+    # Load establishment is genuinely time-based (load.sh ramps RPS via sleep);
+    # this is not a chaos-timing sleep, so it stays.
     sleep 5
 
-    # Kill a non-leader node
+    # Kill a non-leader node — wait for a leader before capture so a transient
+    # chaos-tail flake doesn't make `leader=$(cluster_leader)` return 1 under
+    # set -e and abort the script silently.
+    if ! wait_for_leader 60; then
+        log_fail "Pre-kill: cluster has no leader within 60s"
+        return 1
+    fi
     local leader
     leader=$(cluster_leader)
     local victim
-    victim=$(pick_non_leader "$leader")
+    # Exclude the slice owner the load is pinned to (retarget above): the harness
+    # has no LB, so killing the pinned owner makes every in-flight request fail by
+    # construction — that measures the missing LB, not the product (2026-06-11
+    # Wave-9 gate, verdict V1: 100% "error rate" was the harness killing its own
+    # load target).
+    victim=$(PICK_EXCLUDE="${RETARGETED_SLICE_OWNER:-}" pick_non_leader "$leader")
+    KILLED_VICTIM="$victim"
+
+    # Capture topology baseline BEFORE the kill so the event-driven barrier
+    # below scopes its event search correctly.
+    local baseline
+    baseline=$(topology_now)
+
     log_info "Killing ${victim} under load"
     kill_node "$victim"
+
+    # Event-driven barrier: assert SWIM detected the failure mid-load. Without
+    # this we'd silently pass even if SWIM detection broke entirely (load
+    # finishes, error rate happens to be acceptable, no one notices).
+    if ! wait_for_node_departure "$victim" "$baseline" 60; then
+        log_fail "No NODE_LEFT/NODE_FAILED event for ${victim} within 60s under load"
+        return 1
+    fi
+    log_pass "Departure of ${victim} observed under load"
 
     # Let load continue through the disruption
     log_info "Waiting for load to complete"
@@ -50,15 +102,35 @@ test_cluster_survives() {
     assert_eq "$health" "healthy" "Cluster healthy after kill-under-load"
 }
 
-cleanup() {
-    log_info "Restoring all containers for clean state..."
-    restart_all_nodes
-    sleep 15
-    wait_for_cluster 60 || true
+test_auto_heal() {
+    log_info "Waiting for CTM auto-heal to quiesce at the post-replacement generation..."
+    wait_for_node_count 5 180 || {
+        log_fail "Cluster did not quiesce after auto-heal"
+        return 1
+    }
+    local count
+    count=$(cluster_member_count)
+    assert_eq "$count" "5" "Auto-heal restored cluster to exactly 5 nodes"
 }
+
+cleanup() {
+    # Semantic baseline restore — see test-kill-leader.sh:cleanup() for the
+    # rationale. `restore_cluster_baseline` consumes the same operator-visible
+    # signals (lifecycle, generation, phase) the next suite will read.
+    restore_cluster_baseline || \
+        log_warn "cleanup: restore_cluster_baseline reported non-zero; subsequent suites may inherit cluster churn"
+}
+
+# Run cleanup on ANY exit path — including a `return 1` from inside a test
+# function that propagates up through `set -e` and aborts the script. Without
+# this trap, a failed kill-under-load assertion left the cluster in a degraded
+# state, which then broke every subsequent test-*.sh in 02-chaos.
+trap 'cleanup' EXIT
 
 run_test "Initial 5 nodes" test_initial_state
 run_test "Kill node during active load" test_kill_during_load
 run_test "Cluster survives" test_cluster_survives
-cleanup
+run_test "Auto-heal restores to 5" test_auto_heal
+# cleanup runs via EXIT trap — guarantees baseline restore even if a run_test
+# above triggers `set -e` abort via `return 1` from inside a test function.
 print_summary

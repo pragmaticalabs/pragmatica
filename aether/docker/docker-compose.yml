@@ -9,6 +9,13 @@ version: "3.9"
 # Usage:
 #   docker-compose up --build                    # Start 3-node cluster
 #   docker-compose --profile forge up --build   # Start with Forge simulator
+#
+# NOTE — do NOT add `restart: unless-stopped`/`always` to aether-node services.
+# Aether uses a TERMINAL-REMOVAL membership model: a dead NodeId never returns under
+# the same identity; crash recovery is a brand-new node with a new ULID NodeId minted
+# by auto-heal. Auto-restarting a crashed node under the same identity resurrects a
+# terminally-removed NodeId and corrupts membership. These services rely on Compose's
+# default (`restart: "no"`); keep it that way. See aether/docs/operator/deployment-recovery.md
 
 services:
   # Three-node Aether cluster

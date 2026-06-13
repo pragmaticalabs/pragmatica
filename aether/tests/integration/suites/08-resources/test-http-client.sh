@@ -7,7 +7,8 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
+    wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
     log_pass "Cluster ready"
 }
 
@@ -18,42 +19,43 @@ test_mgmt_health_endpoint() {
 test_mgmt_status_json() {
     local status
     status=$(cluster_status)
-    assert_ne "$status" "" "Management /api/status returns JSON"
+    assert_ne "$status" "" "Management /api/nodes/status returns JSON"
+    # Use CLI --field which supports nested dot-path navigation
     local node_id
-    node_id=$(json_field "$status" "['cluster']['nodes'][0]['id']")
+    node_id=$(aether_field status "cluster.nodes.0.id")
     assert_ne "$node_id" "" "Status contains node id in cluster.nodes"
 }
 
 test_mgmt_nodes_json() {
-    local nodes
-    nodes=$(cluster_node_list)
+    # Query directly via CLI which knows how to count nodes.
+    # `aether topology` moved under `aether cluster topology` in T2.6; aether_field
+    # only takes single-word commands, so call aether_failover directly here.
     local count
-    count=$(json_len "$nodes")
-    assert_gt "$count" "0" "Management /api/nodes returns non-empty list"
+    count=$(aether_failover cluster topology --format value --field coreCount 2>/dev/null || echo 0)
+    assert_gt "$count" "0" "Management cluster topology returns coreCount > 0"
 }
 
 test_mgmt_content_type() {
     local headers
-    headers=$(curl -sf -D - -o /dev/null -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/api/status")
+    headers=$(curl -sf -D - -o /dev/null -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/api/nodes/status")
     assert_contains "$headers" "application/json" "Status response has JSON content-type"
 }
 
 test_mgmt_invalid_path() {
-    local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/nonexistent-endpoint-xyz")
-    # Expect 404 or similar non-5xx
-    if [ "$status" -lt 500 ] 2>/dev/null; then
-        log_pass "Invalid path returns non-5xx status: ${status}"
-        return 0
-    fi
-    log_fail "Invalid path returns 5xx: ${status}"
-    return 1
+    # The contract: an AUTHENTICATED request to an unknown management path must return
+    # 404. Without auth, the security middleware returns 401 BEFORE route lookup runs
+    # (intentional: don't leak which paths exist to unauthenticated callers). Pass the
+    # API key so the request reaches the router and surfaces the genuine "no such route"
+    # 404 we're asserting against.
+    assert_http_status "${CLUSTER_ENDPOINT}/api/nonexistent-endpoint-xyz" "404" \
+        "Invalid management path returns 404" \
+        -H "X-API-Key: ${API_KEY}"
 }
 
 test_mgmt_concurrent_requests() {
     local success=0 failure=0
     for i in $(seq 1 20); do
-        if api_get "/api/status" > /dev/null 2>&1; then
+        if api_get "/api/nodes/status" > /dev/null 2>&1; then
             success=$((success + 1))
         else
             failure=$((failure + 1))

@@ -12,8 +12,12 @@ source "${SCRIPT_DIR}/../../lib/load.sh"
 SOAK_DURATION="${SOAK_DURATION:-14400}"  # 4 hours default
 SOAK_RPS="${SOAK_RPS:-100}"             # 100 rps default
 SOAK_LOG="/tmp/sustained_load_soak.log"
+# Soak baseline — see aether/docs/specs/test-readiness-contract.md §4 (Soak tier, 1.0%).
+# Long-running steady-state load with no disruption; threshold is the measurement noise floor.
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-1.0}"
-BLUEPRINT="${SOAK_BLUEPRINT:-org.pragmatica.aether.example:url-shortener:1.0.0}"
+BLUEPRINT="${SOAK_BLUEPRINT:-org.pragmatica.aether.test:test-persistence:1.0.0}"
+SOAK_KEY="${SOAK_KEY:-soak-test}"
+SOAK_PATH="/api/kv/${SOAK_KEY}"
 
 STATS_FILE="/tmp/soak_stats.txt"
 
@@ -29,18 +33,19 @@ collect_stats() {
         local node_name="node-$((port_offset + 1))"
         # Collect via management metrics endpoint (no SSH needed)
         local status_json
-        status_json=$(curl -s -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${mgmt_port}/api/status" 2>/dev/null)
+        status_json=$(curl -s -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${mgmt_port}/api/nodes/status" 2>/dev/null)
         local uptime
-        uptime=$(echo "$status_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('uptimeSeconds',0))" 2>/dev/null)
+        uptime=$(json_value "$status_json" "uptimeSeconds")
+        uptime="${uptime:-0}"
         log_info "  ${node_name} (port ${mgmt_port}): uptime=${uptime}s"
         echo "  ${node_name}: uptime=${uptime}s" >> "$STATS_FILE"
     done
 }
 
 test_cluster_baseline() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_ge "$count" "${NODE_COUNT:-5}" "Baseline: ${count} nodes (>= ${NODE_COUNT:-5})"
 }
 
@@ -52,12 +57,18 @@ test_deploy_app() {
 }
 
 test_app_reachable() {
-    local status
-    status=$(http_status "${APP_ENDPOINT}/api/v1/urls/test" -H "X-API-Key: ${API_KEY}")
-    if [ "$status" -gt 0 ] 2>/dev/null; then
-        log_pass "App endpoint reachable (status: ${status})"
+    # Seed the soak key so subsequent GETs return 200 (not 404) under sustained load
+    local seed_status
+    seed_status=$(http_status "${APP_ENDPOINT}${SOAK_PATH}" \
+        -X PUT \
+        -H "X-API-Key: ${API_KEY}" \
+        -H "Content-Type: application/json" \
+        -d '{"value":"soak-baseline"}')
+    # Strict 2xx only — 3xx (redirects) is not a successful PUT here.
+    if [ "$seed_status" -ge 200 ] && [ "$seed_status" -lt 300 ] 2>/dev/null; then
+        log_pass "Soak key seeded (status: ${seed_status})"
     else
-        log_fail "App endpoint not reachable"
+        log_fail "Failed to seed soak key (status: ${seed_status})"
         return 1
     fi
 }
@@ -70,13 +81,13 @@ test_collect_pre_stats() {
 
 test_soak_load() {
     local start_nodes
-    start_nodes=$(cluster_node_count)
+    start_nodes=$(cluster_member_count)
 
     log_info "Starting ${SOAK_DURATION}s soak at ${SOAK_RPS} rps against app endpoint"
     rm -f "$SOAK_LOG"
 
     # Dual load: app endpoint (full pipeline) + management health (cluster stability)
-    start_sustained_load "$SOAK_RPS" "$SOAK_DURATION" "GET" "/api/v1/urls/soak-test" "" "$SOAK_LOG"
+    start_sustained_load "$SOAK_RPS" "$SOAK_DURATION" "GET" "$SOAK_PATH" "" "$SOAK_LOG"
     APP_ENDPOINT="${CLUSTER_ENDPOINT}" start_sustained_load "10" "$SOAK_DURATION" "GET" "/health/live" "" "/tmp/sustained_health_soak.log"
 
     log_info "Soak running — ${SOAK_DURATION}s ($(( SOAK_DURATION / 60 ))min)"
@@ -98,7 +109,7 @@ test_collect_post_stats() {
 
 test_no_node_drift() {
     local end_nodes
-    end_nodes=$(cluster_node_count)
+    end_nodes=$(cluster_member_count)
     assert_ge "$end_nodes" "${NODE_COUNT:-5}" "No node drift: ${end_nodes} nodes (>= ${NODE_COUNT:-5})"
 }
 

@@ -7,22 +7,42 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_nodes_formed() {
-    wait_for_cluster 120
+    wait_for_cluster_ready 120
+    local expected="${NODE_COUNT:-5}"
     local count
-    count=$(cluster_node_count)
-    assert_ge "$count" "${NODE_COUNT:-5}" "Cluster has >= ${NODE_COUNT:-5} nodes (got ${count}, may include passive LB)"
+    count=$(cluster_member_count)
+    # Strict equality: the seed-node lifecycle write bug is fixed (every node — including
+    # the initial leader — appears in the generation snapshot). See
+    # aether/docs/specs/test-readiness-contract.md §6.
+    if [ "$count" -ne "$expected" ]; then
+        log_fail "Cluster has ${count} members, expected ${expected}"
+        return 1
+    fi
+    log_pass "Cluster has ${count} members"
 }
 
 test_leader_elected() {
     local leader
     leader=$(cluster_leader)
-    assert_ne "$leader" "" "Leader elected: ${leader}"
+    # Reject empty AND the literal "none" — the management API returns "none"
+    # when no leader is elected, which `assert_ne "" ""` previously accepted.
+    if [ -z "$leader" ] || [ "$leader" = "none" ] || [ "$leader" = "null" ]; then
+        log_fail "Leader elected: got '${leader:-<empty>}' — expected a real node id"
+        return 1
+    fi
+    log_pass "Leader elected: ${leader}"
 }
 
 test_quorum_established() {
     local node_count
-    node_count=$(cluster_node_count)
-    assert_ge "$node_count" "3" "Quorum established (${node_count} nodes >= 3)"
+    node_count=$(cluster_member_count)
+    local expected="${NODE_COUNT:-5}"
+    # Strict equality (seed-node bug fixed; see test-readiness-contract §6).
+    if [ "$node_count" -ne "$expected" ]; then
+        log_fail "Quorum mismatch (${node_count} != ${expected})"
+        return 1
+    fi
+    log_pass "Quorum established (${node_count})"
 }
 
 test_liveness_probe() {
@@ -31,8 +51,14 @@ test_liveness_probe() {
 
 test_all_nodes_visible() {
     local count
-    count=$(cluster_node_count)
-    assert_ge "$count" "${NODE_COUNT:-5}" "All nodes visible (${count} >= ${NODE_COUNT:-5})"
+    count=$(cluster_member_count)
+    local expected="${NODE_COUNT:-5}"
+    # Strict equality (seed-node bug fixed; see test-readiness-contract §6).
+    if [ "$count" -ne "$expected" ]; then
+        log_fail "Expected ${expected} nodes visible, got ${count}"
+        return 1
+    fi
+    log_pass "All ${count} nodes visible"
 }
 
 test_status_endpoint() {

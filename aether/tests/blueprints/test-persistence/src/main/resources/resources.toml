@@ -1,0 +1,41 @@
+# Application-level (blueprint) resources for test-persistence.
+#
+# Packaged into the blueprint JAR as META-INF/resources.toml by the JBCT
+# maven-plugin (GenerateBlueprintMojo / PackageBlueprintMojo). At deploy
+# time, BlueprintService stores this content in the KV-Store under
+# BlueprintResourcesKey(blueprintId); each node's slice loader then
+# resolves @ResourceQualifier(config = "streams.test-events") lookups
+# against this content.
+#
+# See @EventStreamPublisher and @EventStreamReader qualifiers in this
+# project: both declare config = "streams.test-events".
+
+[streams.test-events]
+partitions = 4
+retention = "time"
+retention-value = "5m"
+max-event-size = "64KB"
+
+[database]
+# Required by PersistenceSlice's PgSqlConnector qualifier.
+# Values are overridden at deploy time from the node's aether.toml / environment.
+username = "forge"
+password = "forge"
+async_url = "postgresql://forge-postgres:5432/forge"
+
+[scheduling.heartbeat]
+# Fixed-rate interval — leader-only (default). Short period so suite 08's
+# `test_task_last_execution_advances` observes a >0 lastExecutionAt soon
+# after slice activation. Resolved by @Heartbeat (Scheduled qualifier).
+# The slice processor emits a reactive manifest entry with category=scheduled,
+# config=scheduling.heartbeat, method=heartbeat; the runtime publishes a
+# ScheduledTaskKey to the cluster KV-Store on slice activation so the
+# /api/scheduled-tasks Management API enumerates the task.
+# `cron` must be present (even empty) because ProviderBasedConfigService's
+# record-binding requires every component to be resolvable from TOML
+# (it has no DEFAULT-field fallback for ScheduleConfig). Key naming is
+# snake_case — the binder calls `toSnakeCase` on Java record component
+# names before lookup, so `executionMode` becomes `execution_mode`.
+interval = "10s"
+cron = ""
+execution_mode = "SINGLE"

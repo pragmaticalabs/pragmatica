@@ -15,10 +15,13 @@ max_rps=100
 if [ "$STREAM_RPS" -gt "$max_rps" ] 2>/dev/null; then
     STREAM_RPS="$max_rps"
 fi
+# Mid-flight ops tier — see aether/docs/specs/test-readiness-contract.md §4 (5.0%).
+# Streaming reconfiguration during concurrent load; partition reassignment + retries.
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-5.0}"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
+    wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
     log_pass "Cluster ready"
 }
 
@@ -26,20 +29,21 @@ test_sustained_stream_publish() {
     log_info "Sustained stream publish: ${STREAM_RPS} rps for ${STREAM_DURATION}s"
 
     local interval
-    interval=$(python3 -c "print(1.0 / ${STREAM_RPS})" 2>/dev/null || echo "0.05")
+    interval=$(awk "BEGIN {printf \"%.4f\", 1.0/${STREAM_RPS}}" 2>/dev/null || echo "0.05")
     local end_time=$(($(now_epoch) + $STREAM_DURATION))
     local success=0 failure=0 count=0
 
     while [ "$(now_epoch)" -lt "$end_time" ]; do
         local payload="{\"key\":\"load-${count}\",\"data\":\"sustained-publish-${count}\",\"timestamp\":$(now_epoch)}"
         local status
-        status=$(http_status "${CLUSTER_ENDPOINT}/api/streams/${STREAM_NAME}/publish" \
+        status=$(http_status "${CLUSTER_ENDPOINT}/api/streams/publish/${STREAM_NAME}" \
             -X POST \
             -H "X-API-Key: ${API_KEY}" \
             -H "Content-Type: application/json" \
             -d "$payload")
 
-        if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
+        # Strict 2xx only — 3xx (redirects) is not a successful publish.
+        if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
             success=$((success + 1))
         else
             failure=$((failure + 1))
@@ -66,7 +70,7 @@ test_stream_info_after_load() {
 
 test_cluster_stable() {
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "5" "Cluster stable: 5 nodes after stream load"
     assert_cluster_healthy "Cluster healthy after stream load"
 }

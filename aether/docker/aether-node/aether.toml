@@ -15,7 +15,18 @@ repositories = ["builtin"]
 
 [app-http]
 enabled = true
-api_keys = ["aether-integration-test-key"]
+
+# Rich-syntax key entry — ADMIN role to match cloud's formation-time test key
+# (cloud-hetzner-b.toml uses ADMIN since formation POSTs hit /api/cluster/config,
+# /api/cluster/keys, /api/cluster/await-quiesced — all default-gated to ADMIN by
+# RoutePermissionRegistry's catch-all for non-OPERATOR-listed mutations). Simple
+# `api_keys = ["..."]` defaults to VIEWER per `ApiKeyEntry.DEFAULT_ROLE`, which
+# 403s on every mutation endpoint. Cloud bootstrap composes its own runtime TOML
+# via BootstrapOverlayGenerator and is unaffected by this file; this default is
+# consumed only by docker-compose / Forge / direct-image deployments where
+# there's no bootstrap-time composition.
+[app-http.api-keys.aether-integration-test-key]
+authorization_role = "ADMIN"
 
 [messaging.click-events]
 topic_name = "click-events"
@@ -26,10 +37,21 @@ provider = "docker"
 [cloud.compute]
 image_name = "aether-node:local"
 network_name = "aether-network"
-management_port_base = "5150"
-app_port_base = "8070"
+# Port bases are env-overridable so multiple clusters sharing a Docker host (e.g.
+# integration-test clusters A and B) can pick distinct host-port ranges without
+# rebuilding the image. Resolved by ConfigLoader.resolveEnvVars(); falls back to
+# the literal placeholder string if unset — DockerEnvironmentIntegrationFactory
+# then applies its own numeric defaults (5150 / 8070).
+management_port_base = "${env:AETHER_MGMT_PORT_BASE}"
+app_port_base = "${env:AETHER_APP_PORT_BASE}"
+api_key = "aether-integration-test-key"
+docker_gid = "${env:DOCKER_GID}"
 cluster_port = "6000"
 socket_path = "/var/run/docker.sock"
+# Dev/integration convenience: publish each CTM-provisioned container's management
+# port to the host (managementPortBase + nodeIndex). Production keeps overlay-only
+# behavior by setting this to false (default).
+expose_host_ports = "true"
 
 [database]
 username = "forge"
@@ -44,3 +66,14 @@ connection_timeout = "5s"
 max_lifetime = "30m"
 leak_detection_timeout = "0s"
 io_threads = 0
+
+# Belt-and-suspenders: DHT operation timeout pinned explicitly to 30s.
+# The deploy chain (/api/blueprints/deploy → BlueprintService →
+# BuiltinRepository → ArtifactStore → dht.get) bottlenecks on this value;
+# 10s breached under parallel-suite-load + still-settling QUIC links during
+# cluster bootstrap, surfacing as "Promise timed out after 10000ms" HTTP 500.
+# Code default in DHTConfig.DEFAULT_TIMEOUT is also 30s — this stanza just
+# pins it for docker-compose / integration-test deployments so any future
+# regression in the code default does not silently leak back in.
+[timeouts.dht]
+operation = "30s"

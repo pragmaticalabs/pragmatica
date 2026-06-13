@@ -1,5 +1,5 @@
 #!/bin/bash
-# test-sql-connector.sh — Deploy url-shortener (@Sql + PostgreSQL), verify SQL operations
+# test-sql-connector.sh — Deploy test-persistence (@PgSql + PostgreSQL), verify SQL operations
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -7,55 +7,91 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/load.sh"
 
-BLUEPRINT="${SQL_BLUEPRINT:-org.pragmatica.aether.example:url-shortener:1.0.0}"
+BLUEPRINT="${SQL_BLUEPRINT:-org.pragmatica.aether.test:test-persistence:1.0.0}"
 POOL_BURST="${POOL_BURST:-50}"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     log_pass "Cluster ready"
 }
 
 test_deploy_sql_app() {
     push_blueprint "$BLUEPRINT" || log_warn "Artifact push returned non-zero (may already exist)"
     deploy_blueprint "$BLUEPRINT" || log_warn "Blueprint deploy returned non-zero (may already exist)"
+    # Wait for ≥1 active instance of test-persistence. Earlier tests in 08-resources may
+    # leave 06-deployment's url-shortener slices in non-ACTIVE states (FAILED/TERMINATING),
+    # which would make wait_for_all_target_instances_active hang because target_total counts
+    # those non-active targets too. ≥1 active is sufficient: we re-target APP_ENDPOINT below.
     wait_for_slices_active 1 120
+    # Cloud: the test-persistence slice has 3 instances spread across 5 nodes — node-1
+    # (the default APP_ENDPOINT host) may not host the slice. Retarget to an owner and
+    # probe the route to catch the post-ACTIVE window where the chosen node's route
+    # table hasn't yet picked up the freshly-published route entry.
+    # 90s timeout: on docker-remote, slice route propagation to node-1 can take 30-60s
+    # under cluster A+B concurrent load. Earlier 30s + GET-probe passed spuriously
+    # (404 from missing route reads same as 404 from missing key); PUT-probe surfaces
+    # the real readiness window.
+    retarget_app_endpoint_to_active_slice "$BLUEPRINT" 8070 "/api/kv/route-probe" 90 || true
     log_pass "SQL-backed app deployed"
 }
 
-test_create_short_url() {
-    local payload='{"url":"https://example.com/integration-test"}'
+test_put_kv_pair() {
+    local payload='{"value":"integration-test-value"}'
     local result
-    result=$(app_post "/api/v1/urls/" "$payload")
-    assert_ne "$result" "" "POST /api/v1/urls/ returns response"
-}
-
-test_resolve_short_url() {
-    local payload='{"url":"https://example.com/resolve-test"}'
-    local create_result
-    create_result=$(app_post "/api/v1/urls/" "$payload")
-    local short_code
-    short_code=$(echo "$create_result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('shortCode',''))" 2>/dev/null)
-    if [ -z "$short_code" ]; then
-        log_fail "Could not extract shortCode from create response"
-        return 1
-    fi
-    local status
-    status=$(http_status "${APP_ENDPOINT}/api/v1/urls/${short_code}" -H "X-API-Key: ${API_KEY}")
-    if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
-        log_pass "GET /api/v1/urls/${short_code} returns ${status} (success)"
+    # PUT route propagation can lag the GET-based route-probe used in Deploy_SQL_app
+    # readiness — GET-404 (missing key) vs PUT-404 (missing route) look identical to
+    # the probe. Retry up to 60s to absorb the PUT-route post-publish window.
+    wait_for "PUT /api/kv/test-key route live" \
+             "[ \"\$(http_status \"${APP_ENDPOINT}/api/kv/wait-probe\" -X PUT -H \"X-API-Key: ${API_KEY}\" -H \"Content-Type: application/json\" -d '{}' 2>/dev/null)\" != \"404\" ]" \
+             60 || true
+    # http_status_with_body so a 5xx surfaces the response body (problem+json detail
+    # or stack-trace head) — without it the test logs an opaque "500" and the cloud
+    # vs docker root cause distinction (DB pool unreachable vs route-table churn)
+    # is invisible to investigators.
+    result=$(http_status_with_body "${APP_ENDPOINT}/api/kv/test-key" \
+        -X PUT \
+        -H "X-API-Key: ${API_KEY}" \
+        -H "Content-Type: application/json" \
+        -d "$payload")
+    if [ "$result" -ge 200 ] && [ "$result" -lt 400 ] 2>/dev/null; then
+        log_pass "PUT /api/kv/test-key returns ${result} (success)"
         return 0
     fi
-    log_fail "GET /api/v1/urls/${short_code} returns ${status} (expected 2xx or 3xx)"
+    log_fail "PUT /api/kv/test-key returns ${result} (expected 2xx) at ${APP_ENDPOINT}"
+    return 1
+}
+
+test_get_kv_pair() {
+    local payload='{"value":"resolve-test-value"}'
+    local put_status
+    put_status=$(http_status_with_body "${APP_ENDPOINT}/api/kv/resolve-key" \
+        -X PUT \
+        -H "X-API-Key: ${API_KEY}" \
+        -H "Content-Type: application/json" \
+        -d "$payload")
+    if [ "$put_status" -lt 200 ] || [ "$put_status" -ge 400 ] 2>/dev/null; then
+        log_fail "PUT failed before GET test (status: ${put_status})"
+        return 1
+    fi
+    local get_result
+    get_result=$(curl -s -H "X-API-Key: ${API_KEY}" "${APP_ENDPOINT}/api/kv/resolve-key" 2>/dev/null)
+    local value
+    value=$(json_value "$get_result" "value")
+    if [ "$value" = "resolve-test-value" ]; then
+        log_pass "GET /api/kv/resolve-key returns expected value"
+        return 0
+    fi
+    log_fail "GET /api/kv/resolve-key value mismatch: got '${value}', expected 'resolve-test-value'"
     return 1
 }
 
 test_connection_pooling_rapid_requests() {
     local success=0 failure=0
     for i in $(seq 1 "$POOL_BURST"); do
-        local payload="{\"url\":\"https://example.com/pool-test-${i}\"}"
+        local payload="{\"value\":\"pool-test-value-${i}\"}"
         local status
-        status=$(http_status "${APP_ENDPOINT}/api/v1/urls/" \
-            -X POST \
+        status=$(http_status "${APP_ENDPOINT}/api/kv/pool-key-${i}" \
+            -X PUT \
             -H "X-API-Key: ${API_KEY}" \
             -H "Content-Type: application/json" \
             -d "$payload")
@@ -77,8 +113,8 @@ test_cluster_healthy_after_sql_load() {
 
 run_test "Cluster ready" test_cluster_ready
 run_test "Deploy SQL app" test_deploy_sql_app
-run_test "Create short URL" test_create_short_url
-run_test "Resolve short URL" test_resolve_short_url
+run_test "Put KV pair" test_put_kv_pair
+run_test "Get KV pair" test_get_kv_pair
 run_test "Connection pooling under rapid requests" test_connection_pooling_rapid_requests
 run_test "Healthy after SQL load" test_cluster_healthy_after_sql_load
 print_summary
