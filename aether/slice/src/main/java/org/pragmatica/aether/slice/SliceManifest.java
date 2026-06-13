@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -17,27 +21,12 @@ import java.util.jar.Manifest;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Reads slice artifact metadata from JAR manifest.
-///
-///
-/// Expected manifest attributes:
-/// ```
-/// Manifest-Version: 1.0
-/// Slice-Artifact: org.example:my-slice:1.0.0
-/// Slice-Class: org.example.MySlice
-/// ```
-///
-///
-/// A valid slice JAR MUST contain these manifest attributes.
-/// Loading will fail if manifest is missing or invalid.
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-03"}) public interface SliceManifest {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-03"})
+public interface SliceManifest {
     String SLICE_ARTIFACT_ATTR = "Slice-Artifact";
-
     String SLICE_CLASS_ATTR = "Slice-Class";
-
     String ENVELOPE_VERSION_ATTR = "Envelope-Version";
-
-    Set<Integer> SUPPORTED_ENVELOPE_VERSIONS = Set.of(1, 2, 3, 4, 5, 6, 7);
+    Set<Integer> SUPPORTED_ENVELOPE_VERSIONS = Set.of(1000);
 
     static Result<SliceManifestInfo> read(URL jarUrl) {
         return readManifest(jarUrl).flatMap(SliceManifest::parseManifest);
@@ -45,31 +34,39 @@ import static org.pragmatica.lang.Option.option;
 
     static Result<SliceManifestInfo> readFromClassLoader(ClassLoader classLoader) {
         return Result.lift(Causes::fromThrowable,
-                           () -> classLoader.getResource(JarFile.MANIFEST_NAME)).flatMap(SliceManifest::resolveManifestUrl)
-                          .flatMap(SliceManifest::parseManifest);
+                           () -> classLoader.getResource(JarFile.MANIFEST_NAME))
+                     .flatMap(SliceManifest::resolveManifestUrl)
+                     .flatMap(SliceManifest::parseManifest);
     }
 
     private static Result<Manifest> resolveManifestUrl(URL url) {
-        return option(url).toResult(MANIFEST_NOT_FOUND).flatMap(SliceManifest::readManifestFromUrl);
+        return option(url).toResult(MANIFEST_NOT_FOUND)
+                     .flatMap(SliceManifest::readManifestFromUrl);
     }
 
     private static Result<Manifest> readManifest(URL jarUrl) {
         var path = jarUrl.getPath();
-        if (path.startsWith("file:")) {path = path.substring(5);}
-        if (path.contains("!")) {path = path.substring(0, path.indexOf("!"));}
+
+        if (path.startsWith("file:")) {
+            path = path.substring(5);
+        }
+
+        if (path.contains("!")) {
+            path = path.substring(0, path.indexOf("!"));
+        }
+
         var jarPath = path;
-        return Result.lift(Causes::fromThrowable,
-                           () -> new JarFile(jarPath))
-        .flatMap(jarFile -> extractManifest(jarFile, jarUrl));
+
+        return Result.lift(Causes::fromThrowable, () -> new JarFile(jarPath)).flatMap(jarFile -> extractManifest(jarFile,
+                                                                                                                 jarUrl));
     }
 
     private static Result<Manifest> extractManifest(JarFile jarFile, URL jarUrl) {
-        return Result.lift(Causes::fromThrowable,
-                           () -> extractManifestFromJar(jarFile))
-        .flatMap(opt -> opt.toResult(MANIFEST_NOT_FOUND_FN.apply(jarUrl.toString())));
+        return Result.lift(Causes::fromThrowable, () -> extractManifestFromJar(jarFile)).flatMap(opt -> opt.toResult(MANIFEST_NOT_FOUND_FN.apply(jarUrl.toString())));
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Option<Manifest> extractManifestFromJar(JarFile jarFile) throws IOException {
+    @SuppressWarnings("JBCT-EX-01")
+    private static Option<Manifest> extractManifestFromJar(JarFile jarFile) throws IOException {
         try (jarFile) {
             return option(jarFile.getManifest());
         }
@@ -79,45 +76,51 @@ import static org.pragmatica.lang.Option.option;
         return Result.lift(Causes::fromThrowable,
                            () -> {
                                try (var is = manifestUrl.openStream()) {
-                                   return new Manifest(is);
-                               }
+                               return new Manifest(is);
+                           }
                            });
     }
 
     private static Result<SliceManifestInfo> parseManifest(Manifest manifest) {
         var mainAttrs = manifest.getMainAttributes();
         var envelopeVersion = option(mainAttrs.getValue(ENVELOPE_VERSION_ATTR)).filter(s -> !s.isBlank());
+
         return option(mainAttrs.getValue(SLICE_ARTIFACT_ATTR)).filter(s -> !s.isBlank())
                      .toResult(MISSING_ARTIFACT_ATTR)
                      .flatMap(artifactStr -> option(mainAttrs.getValue(SLICE_CLASS_ATTR)).filter(s -> !s.isBlank())
                                                    .toResult(MISSING_CLASS_ATTR)
-                                                   .flatMap(sliceClass -> Artifact.artifact(artifactStr)
-                                                                                           .map(artifact -> new SliceManifestInfo(artifact,
-                                                                                                                                  sliceClass,
-                                                                                                                                  envelopeVersion))));
+                                                   .flatMap(sliceClass -> Artifact.artifact(artifactStr).map(artifact -> new SliceManifestInfo(artifact,
+                                                                                                                                               sliceClass,
+                                                                                                                                               envelopeVersion))));
     }
 
-    record SliceManifestInfo(Artifact artifact, String sliceClassName, Option<String> envelopeVersion){}
+    record SliceManifestInfo(Artifact artifact, String sliceClassName, Option<String> envelopeVersion) {}
 
     static Result<Unit> checkEnvelopeCompatibility(Option<String> envelopeVersion) {
-        return envelopeVersion.map(SliceManifest::validateEnvelopeVersion).or(Result::unitResult);
+        return envelopeVersion.map(SliceManifest::validateEnvelopeVersion)
+                              .or(Result::unitResult);
     }
 
     private static Result<Unit> validateEnvelopeVersion(String version) {
-        if ("dev".equals(version)) {return Result.unitResult();}
-        return Result.lift1(Integer::parseInt, version)
-                           .flatMap(v -> SUPPORTED_ENVELOPE_VERSIONS.contains(v)
-                                        ? Result.unitResult()
-                                        : UNSUPPORTED_ENVELOPE_VERSION.apply(version).result());
+        if ("dev".equals(version)) {
+            return Result.unitResult();
+        }
+
+        return Result.lift1(Integer::parseInt, version).flatMap(v -> SUPPORTED_ENVELOPE_VERSIONS.contains(v)
+                                                                     ? Result.unitResult()
+                                                                     : UNSUPPORTED_ENVELOPE_VERSION.apply(version).result());
     }
 
     Fn1<Cause, String> MANIFEST_NOT_FOUND_FN = Causes.forOneValue("Manifest not found in JAR: %s");
 
-    Fn1<Cause, String> UNSUPPORTED_ENVELOPE_VERSION = Causes.forOneValue("Envelope format version %s not supported by this runtime (supported: " + SUPPORTED_ENVELOPE_VERSIONS + ")");
+    Fn1<Cause, String> UNSUPPORTED_ENVELOPE_VERSION = Causes.forOneValue("Envelope format version %s not supported by this runtime (supported: " + SUPPORTED_ENVELOPE_VERSIONS
+                                                                        + ")");
 
     Cause MANIFEST_NOT_FOUND = Causes.cause("Manifest not found in ClassLoader resources");
 
-    Cause MISSING_ARTIFACT_ATTR = Causes.cause("Missing required manifest attribute: " + SLICE_ARTIFACT_ATTR + ". Slice JARs must declare artifact coordinates in manifest.");
+    Cause MISSING_ARTIFACT_ATTR = Causes.cause("Missing required manifest attribute: " + SLICE_ARTIFACT_ATTR
+                                              + ". Slice JARs must declare artifact coordinates in manifest.");
 
-    Cause MISSING_CLASS_ATTR = Causes.cause("Missing required manifest attribute: " + SLICE_CLASS_ATTR + ". Slice JARs must declare the main slice class in manifest.");
+    Cause MISSING_CLASS_ATTR = Causes.cause("Missing required manifest attribute: " + SLICE_CLASS_ATTR
+                                           + ". Slice JARs must declare the main slice class in manifest.");
 }

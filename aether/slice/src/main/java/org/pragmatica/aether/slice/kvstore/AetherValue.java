@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -6,9 +10,14 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
@@ -21,8 +30,10 @@ import java.util.Set;
 import static org.pragmatica.lang.Option.none;
 
 
-/// Value type stored in the consensus KVStore
-@Codec@CodecFor(ExecutionMode.class) @SuppressWarnings("JBCT-NAM-01") public sealed interface AetherValue {
+@Codec
+@CodecFor(ExecutionMode.class)
+@SuppressWarnings("JBCT-NAM-01")
+public sealed interface AetherValue {
     record SliceTargetValue(Version currentVersion,
                             int targetInstances,
                             int minInstances,
@@ -32,7 +43,9 @@ import static org.pragmatica.lang.Option.none;
         private static final String DEFAULT_PLACEMENT = "CORE_ONLY";
 
         public SliceTargetValue {
-            if (placement == null || placement.isEmpty()) {placement = DEFAULT_PLACEMENT;}
+            if (placement == null || placement.isEmpty()) {
+                placement = DEFAULT_PLACEMENT;
+            }
         }
 
         public static SliceTargetValue sliceTargetValue(Version version, int instances, Option<BlueprintId> owner) {
@@ -117,22 +130,50 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
-    record AppBlueprintValue(ExpandedBlueprint blueprint) implements AetherValue {
+    /// `registerOnly` semantically signals that this blueprint was registered via
+    /// `/api/blueprints/publish` (not `/api/blueprints/deploy`). The publish endpoint
+    /// stores the blueprint definition for use by a future strategy-based deploy upgrade
+    /// without immediately making it the active version. Consumed by
+    /// `ClusterDeploymentState.handleAppBlueprintChange`, which suppresses the
+    /// `SliceTargetValue` Put when `registerOnly && existing SliceTargetValue present`.
+    record AppBlueprintValue(ExpandedBlueprint blueprint, boolean registerOnly) implements AetherValue {
+        /// Backward-compat constructor — pre-existing call sites pass blueprint only;
+        /// `registerOnly` defaults to `false` (the historical deploy-on-publish semantics).
+        public AppBlueprintValue(ExpandedBlueprint blueprint) {
+            this(blueprint, false);
+        }
+
         public static AppBlueprintValue appBlueprintValue(ExpandedBlueprint blueprint) {
-            return new AppBlueprintValue(blueprint);
+            return new AppBlueprintValue(blueprint, false);
+        }
+
+        public static AppBlueprintValue appBlueprintValue(ExpandedBlueprint blueprint, boolean registerOnly) {
+            return new AppBlueprintValue(blueprint, registerOnly);
         }
     }
 
-    record SliceNodeValue(SliceState state, Option<String> failureReason, boolean fatal) implements AetherValue {
+    record SliceNodeValue(SliceState state, Option<String> failureReason, boolean fatal, long transitionedAt) implements AetherValue {
         public static SliceNodeValue sliceNodeValue(SliceState state) {
-            return new SliceNodeValue(state, none(), false);
+            return new SliceNodeValue(state, none(), false, defaultTransitionedAt(state));
+        }
+
+        public static SliceNodeValue sliceNodeValue(SliceState state, long transitionedAt) {
+            return new SliceNodeValue(state, none(), false, transitionedAt);
         }
 
         public static SliceNodeValue failedSliceNodeValue(Cause cause) {
             var classified = SliceLoadingFailure.classify(cause);
+
             return new SliceNodeValue(SliceState.FAILED,
                                       Option.option(classified.message()),
-                                      classified.isFatal());
+                                      classified.isFatal(),
+                                      0L);
+        }
+
+        private static long defaultTransitionedAt(SliceState state) {
+            return state.isTransitional()
+                   ? System.currentTimeMillis()
+                   : 0L;
         }
     }
 
@@ -374,7 +415,6 @@ import static org.pragmatica.lang.Option.none;
 
     record ActivationDirectiveValue(String role) implements AetherValue {
         public static final String CORE = "CORE";
-
         public static final String WORKER = "WORKER";
 
         public static ActivationDirectiveValue core() {
@@ -415,15 +455,59 @@ import static org.pragmatica.lang.Option.none;
                                      int memberCount,
                                      List<NodeId> members,
                                      String tcpAddress,
-                                     long announcedAt) implements AetherValue {
+                                     long announcedAt,
+                                     long communityTerm,
+                                     Epoch communityEpoch,
+                                     Epoch observedCoreEpoch,
+                                     HlcTimestamp transitionedAt,
+                                     boolean dissolved) implements AetherValue {
+        public GovernorAnnouncementValue {
+            members = members == null
+                      ? List.of()
+                      : List.copyOf(members);
+            if (tcpAddress == null) {
+                tcpAddress = "";
+            }
+
+            if (communityEpoch == null) {
+                communityEpoch = Epoch.ZERO;
+            }
+
+            if (observedCoreEpoch == null) {
+                observedCoreEpoch = Epoch.ZERO;
+            }
+
+            if (transitionedAt == null) {
+                transitionedAt = HlcTimestamp.ZERO;
+            }
+        }
+
         public static GovernorAnnouncementValue governorAnnouncementValue(NodeId governorId, int memberCount) {
-            return new GovernorAnnouncementValue(governorId, memberCount, List.of(), "", System.currentTimeMillis());
+            return new GovernorAnnouncementValue(governorId,
+                                                 memberCount,
+                                                 List.of(),
+                                                 "",
+                                                 System.currentTimeMillis(),
+                                                 0L,
+                                                 Epoch.ZERO,
+                                                 Epoch.ZERO,
+                                                 HlcTimestamp.ZERO,
+                                                 false);
         }
 
         public static GovernorAnnouncementValue governorAnnouncementValue(NodeId governorId,
                                                                           int memberCount,
                                                                           long announcedAt) {
-            return new GovernorAnnouncementValue(governorId, memberCount, List.of(), "", announcedAt);
+            return new GovernorAnnouncementValue(governorId,
+                                                 memberCount,
+                                                 List.of(),
+                                                 "",
+                                                 announcedAt,
+                                                 0L,
+                                                 Epoch.ZERO,
+                                                 Epoch.ZERO,
+                                                 HlcTimestamp.ZERO,
+                                                 false);
         }
 
         public static GovernorAnnouncementValue governorAnnouncementValue(NodeId governorId,
@@ -433,11 +517,63 @@ import static org.pragmatica.lang.Option.none;
                                                  members.size(),
                                                  List.copyOf(members),
                                                  tcpAddress,
-                                                 System.currentTimeMillis());
+                                                 System.currentTimeMillis(),
+                                                 0L,
+                                                 Epoch.ZERO,
+                                                 Epoch.ZERO,
+                                                 HlcTimestamp.ZERO,
+                                                 false);
+        }
+
+        public static GovernorAnnouncementValue governorAnnouncementValue(NodeId governorId,
+                                                                          int memberCount,
+                                                                          List<NodeId> members,
+                                                                          String tcpAddress,
+                                                                          long announcedAt) {
+            return new GovernorAnnouncementValue(governorId,
+                                                 memberCount,
+                                                 members,
+                                                 tcpAddress,
+                                                 announcedAt,
+                                                 0L,
+                                                 Epoch.ZERO,
+                                                 Epoch.ZERO,
+                                                 HlcTimestamp.ZERO,
+                                                 false);
+        }
+
+        public static GovernorAnnouncementValue governorAnnouncementValue(NodeId governorId,
+                                                                          List<NodeId> members,
+                                                                          String tcpAddress,
+                                                                          long announcedAt,
+                                                                          long communityTerm,
+                                                                          Epoch communityEpoch,
+                                                                          Epoch observedCoreEpoch,
+                                                                          HlcTimestamp transitionedAt,
+                                                                          boolean dissolved) {
+            return new GovernorAnnouncementValue(governorId,
+                                                 members.size(),
+                                                 members,
+                                                 tcpAddress,
+                                                 announcedAt,
+                                                 communityTerm,
+                                                 communityEpoch,
+                                                 observedCoreEpoch,
+                                                 transitionedAt,
+                                                 dissolved);
         }
 
         public GovernorAnnouncementValue withMemberCount(int newCount) {
-            return new GovernorAnnouncementValue(governorId, newCount, members, tcpAddress, System.currentTimeMillis());
+            return new GovernorAnnouncementValue(governorId,
+                                                 newCount,
+                                                 members,
+                                                 tcpAddress,
+                                                 System.currentTimeMillis(),
+                                                 communityTerm,
+                                                 communityEpoch,
+                                                 observedCoreEpoch,
+                                                 transitionedAt,
+                                                 dissolved);
         }
 
         public GovernorAnnouncementValue withMembers(List<NodeId> newMembers, String newTcpAddress) {
@@ -445,41 +581,121 @@ import static org.pragmatica.lang.Option.none;
                                                  newMembers.size(),
                                                  List.copyOf(newMembers),
                                                  newTcpAddress,
-                                                 System.currentTimeMillis());
+                                                 System.currentTimeMillis(),
+                                                 communityTerm,
+                                                 communityEpoch,
+                                                 observedCoreEpoch,
+                                                 transitionedAt,
+                                                 dissolved);
+        }
+
+        public GovernorAnnouncementValue withGovernorChange(NodeId newGovernor,
+                                                            List<NodeId> newMembers,
+                                                            String newTcpAddress,
+                                                            Epoch newObservedCoreEpoch,
+                                                            HlcTimestamp newTransitionedAt) {
+            var nextTerm = communityTerm + 1;
+
+            return new GovernorAnnouncementValue(newGovernor,
+                                                 newMembers.size(),
+                                                 List.copyOf(newMembers),
+                                                 newTcpAddress,
+                                                 System.currentTimeMillis(),
+                                                 nextTerm,
+                                                 Epoch.epoch(nextTerm, 0L),
+                                                 newObservedCoreEpoch,
+                                                 newTransitionedAt,
+                                                 false);
+        }
+
+        public GovernorAnnouncementValue withDissolved() {
+            return new GovernorAnnouncementValue(governorId,
+                                                 memberCount,
+                                                 members,
+                                                 tcpAddress,
+                                                 System.currentTimeMillis(),
+                                                 communityTerm,
+                                                 communityEpoch,
+                                                 observedCoreEpoch,
+                                                 transitionedAt,
+                                                 true);
         }
     }
 
-    @Codec enum NodeLifecycleState {
-        JOINING,
-        ON_DUTY,
-        DRAINING,
-        DECOMMISSIONED,
-        SHUTTING_DOWN
+    /// Three-phase model (D.3, 2026-05-11):
+    /// - `COLD_BOOT` — cluster never had quorum. SWIM suppresses `FaultyObserved` for
+    ///   never-healthy peers (preserves the cold-boot-during-formation invariant).
+    ///   MembershipFsm structural bootstrap-safety suppresses STOPPED/DRAINING writes.
+    ///   CTM auto-heal is suspended. Transition out: first time the cluster reaches a
+    ///   quorum of present peers AND a leader is elected, sustained for `stableWindowMs`.
+    /// - `NORMAL` — full failure semantics. No suppression anywhere.
+    /// - `RECOVERING` — cluster previously reached NORMAL but lost quorum (e.g.,
+    ///   compose-restart, network partition, sustained chaos). SWIM emits FaultyObserved
+    ///   with NORMAL semantics — `everSeenHealthy` gate is bypassed because the peer was
+    ///   visible-and-healthy in the prior NORMAL period. the leader FSM writes lifecycle
+    ///   transitions normally. CTM auto-heal stays suspended (operator-free recovery is
+    ///   the goal; provisioning resumes only after stability). Transition back to NORMAL:
+    ///   quorum-stable for `recoveryStableWindowMs`.
+    @Codec
+    enum ClusterPhase {
+        COLD_BOOT,
+        NORMAL,
+        RECOVERING
     }
 
-    record NodeLifecycleValue(NodeLifecycleState state, long updatedAt, String host, int port) implements AetherValue {
-        public NodeLifecycleValue {
-            if (host == null) {host = "";}
+    record ClusterPhaseValue(ClusterPhase phase, long updatedAt) implements AetherValue {
+        public ClusterPhaseValue {
+            if (phase == null) {
+                phase = ClusterPhase.COLD_BOOT;
+            }
         }
 
-        public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state) {
-            return new NodeLifecycleValue(state, System.currentTimeMillis(), "", 0);
+        public static ClusterPhaseValue clusterPhaseValue(ClusterPhase phase) {
+            return new ClusterPhaseValue(phase, System.currentTimeMillis());
         }
 
-        public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, long updatedAt) {
-            return new NodeLifecycleValue(state, updatedAt, "", 0);
+        public static ClusterPhaseValue clusterPhaseValue(ClusterPhase phase, long updatedAt) {
+            return new ClusterPhaseValue(phase, updatedAt);
+        }
+    }
+
+    @Codec
+    enum ProvisioningSource {
+        CTM,
+        MANUAL,
+        UNKNOWN
+    }
+
+    /// Phase 1 step J — replicated mirror of the in-process `JOIN_DEADLINE` scheduler
+    /// entry. `deadlineMs` is wall-clock millis (epoch) when the join deadline fires;
+    /// `setAt` is the HLC stamp of the originating JOINING-entry transition (provides
+    /// causal ordering across leader takeover for observers reconstructing the deadline).
+    /// Pure observability atom — see [AetherKey.JoinDeadlineKey] for trigger semantics.
+    record JoinDeadlineValue(long deadlineMs, HlcTimestamp setAt) implements AetherValue {
+        public JoinDeadlineValue {
+            if (setAt == null) {
+                setAt = HlcTimestamp.ZERO;
+            }
         }
 
-        public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, String host, int port) {
-            return new NodeLifecycleValue(state, System.currentTimeMillis(), host, port);
+        public static JoinDeadlineValue joinDeadlineValue(long deadlineMs, HlcTimestamp setAt) {
+            return new JoinDeadlineValue(deadlineMs, setAt);
+        }
+    }
+
+    /// Phase 1 step J — replicated mirror of the in-process `DRAIN_DEADLINE` scheduler
+    /// entry. `deadlineMs` is wall-clock millis (epoch) when the drain hard-deadline
+    /// fires; `setAt` is the HLC stamp of the DRAINING-entry transition. Pure
+    /// observability atom — see [AetherKey.DrainDeadlineKey] for trigger semantics.
+    record DrainDeadlineValue(long deadlineMs, HlcTimestamp setAt) implements AetherValue {
+        public DrainDeadlineValue {
+            if (setAt == null) {
+                setAt = HlcTimestamp.ZERO;
+            }
         }
 
-        public boolean hasAddress() {
-            return ! host.isEmpty() && port > 0;
-        }
-
-        public NodeLifecycleValue withState(NodeLifecycleState newState) {
-            return new NodeLifecycleValue(newState, System.currentTimeMillis(), host, port);
+        public static DrainDeadlineValue drainDeadlineValue(long deadlineMs, HlcTimestamp setAt) {
+            return new DrainDeadlineValue(deadlineMs, setAt);
         }
     }
 
@@ -487,39 +703,65 @@ import static org.pragmatica.lang.Option.none;
                              Option<String> failureReason,
                              boolean fatal,
                              int instanceNumber,
-                             List<String> methods) implements AetherValue {
+                             List<String> methods,
+                             long transitionedAt) implements AetherValue {
         public static NodeArtifactValue nodeArtifactValue(SliceState state) {
-            return new NodeArtifactValue(state, Option.none(), false, 0, List.of());
+            return new NodeArtifactValue(state, Option.none(), false, 0, List.of(), defaultTransitionedAt(state));
+        }
+
+        public static NodeArtifactValue nodeArtifactValue(SliceState state, long transitionedAt) {
+            return new NodeArtifactValue(state, Option.none(), false, 0, List.of(), transitionedAt);
         }
 
         public static NodeArtifactValue failedNodeArtifactValue(Cause cause) {
             var classified = SliceLoadingFailure.classify(cause);
+
             return new NodeArtifactValue(SliceState.FAILED,
                                          Option.option(classified.message()),
                                          classified.isFatal(),
                                          0,
-                                         List.of());
+                                         List.of(),
+                                         0L);
         }
 
         public static NodeArtifactValue activeNodeArtifactValue(int instanceNumber, List<String> methods) {
-            return new NodeArtifactValue(SliceState.ACTIVE, Option.none(), false, instanceNumber, List.copyOf(methods));
+            return new NodeArtifactValue(SliceState.ACTIVE,
+                                         Option.none(),
+                                         false,
+                                         instanceNumber,
+                                         List.copyOf(methods),
+                                         0L);
         }
 
         public NodeArtifactValue withState(SliceState newState) {
-            if (newState == SliceState.ACTIVE) {return new NodeArtifactValue(newState,
-                                                                             Option.none(),
-                                                                             false,
-                                                                             instanceNumber,
-                                                                             methods);}
-            return new NodeArtifactValue(newState, Option.none(), false, 0, List.of());
+            if (newState == SliceState.ACTIVE) {
+                return new NodeArtifactValue(newState, Option.none(), false, instanceNumber, methods, 0L);
+            }
+
+            return new NodeArtifactValue(newState, Option.none(), false, 0, List.of(), defaultTransitionedAt(newState));
         }
 
         public boolean hasEndpoints() {
             return state == SliceState.ACTIVE && !methods.isEmpty();
         }
+
+        private static long defaultTransitionedAt(SliceState state) {
+            return state.isTransitional()
+                   ? System.currentTimeMillis()
+                   : 0L;
+        }
     }
 
-    record NodeRoutesValue(List<RouteEntry> routes) implements AetherValue {
+    record NodeRoutesValue(List<RouteEntry> routes, Epoch observedCoreEpoch) implements AetherValue {
+        public NodeRoutesValue {
+            routes = routes == null
+                     ? List.of()
+                     : List.copyOf(routes);
+            if (observedCoreEpoch == null) {
+                observedCoreEpoch = Epoch.ZERO;
+            }
+        }
+
         public record RouteEntry(String httpMethod,
                                  String pathPrefix,
                                  String sliceMethod,
@@ -550,17 +792,19 @@ import static org.pragmatica.lang.Option.none;
         }
 
         public static NodeRoutesValue empty() {
-            return new NodeRoutesValue(List.of());
+            return new NodeRoutesValue(List.of(), Epoch.ZERO);
         }
 
         public static NodeRoutesValue nodeRoutesValue(List<RouteEntry> routes) {
-            return new NodeRoutesValue(List.copyOf(routes));
+            return new NodeRoutesValue(List.copyOf(routes), Epoch.ZERO);
         }
-    }
 
-    record BlueprintResourcesValue(String tomlContent) implements AetherValue {
-        public static BlueprintResourcesValue blueprintResourcesValue(String tomlContent) {
-            return new BlueprintResourcesValue(tomlContent);
+        public static NodeRoutesValue nodeRoutesValue(List<RouteEntry> routes, Epoch observedCoreEpoch) {
+            return new NodeRoutesValue(List.copyOf(routes), observedCoreEpoch);
+        }
+
+        public NodeRoutesValue withObservedCoreEpoch(Epoch newEpoch) {
+            return new NodeRoutesValue(routes, newEpoch);
         }
     }
 
@@ -619,6 +863,7 @@ import static org.pragmatica.lang.Option.none;
                                                                         NodeId heldBy,
                                                                         long ttlMs) {
             var now = System.currentTimeMillis();
+
             return new SchemaMigrationLockValue(datasourceName, heldBy, now, now + ttlMs);
         }
 
@@ -627,7 +872,8 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
-    @Codec enum SchemaStatus {
+    @Codec
+    enum SchemaStatus {
         PENDING,
         MIGRATING,
         COMPLETED,
@@ -753,7 +999,9 @@ import static org.pragmatica.lang.Option.none;
 
         public StorageBlockValue withTierAdded(String tier) {
             var tiers = new HashSet<>(presentIn);
+
             tiers.add(tier);
+
             return new StorageBlockValue(blockIdHex, Set.copyOf(tiers), refCount, lastAccessedAt, createdAt, accessCount);
         }
 
@@ -876,6 +1124,346 @@ import static org.pragmatica.lang.Option.none;
                                           deploymentType,
                                           configVersion + 1,
                                           System.currentTimeMillis());
+        }
+    }
+
+    record ApiKeyValue(String keyId,
+                       String keyHash,
+                       long createdAt,
+                       long expiresAt,
+                       String status,
+                       long revokedAt,
+                       long gracePeriodMs,
+                       String authorizationRole) implements AetherValue {
+        static final String ACTIVE = "ACTIVE";
+        static final String REVOKED = "REVOKED";
+        static final String EXPIRED = "EXPIRED";
+        public static final String DEFAULT_ROLE = "VIEWER";
+
+        public static ApiKeyValue apiKeyValue(String keyId, String keyHash, long gracePeriodMs) {
+            return new ApiKeyValue(keyId,
+                                   keyHash,
+                                   System.currentTimeMillis(),
+                                   - 1,
+                                   ACTIVE,
+                                   - 1,
+                                   gracePeriodMs,
+                                   DEFAULT_ROLE);
+        }
+
+        public static ApiKeyValue apiKeyValue(String keyId,
+                                              String keyHash,
+                                              long gracePeriodMs,
+                                              String authorizationRole) {
+            return new ApiKeyValue(keyId,
+                                   keyHash,
+                                   System.currentTimeMillis(),
+                                   - 1,
+                                   ACTIVE,
+                                   - 1,
+                                   gracePeriodMs,
+                                   authorizationRole);
+        }
+
+        public static ApiKeyValue apiKeyValue(String keyId,
+                                              String keyHash,
+                                              long createdAt,
+                                              long expiresAt,
+                                              String status,
+                                              long revokedAt,
+                                              long gracePeriodMs,
+                                              String authorizationRole) {
+            return new ApiKeyValue(keyId,
+                                   keyHash,
+                                   createdAt,
+                                   expiresAt,
+                                   status,
+                                   revokedAt,
+                                   gracePeriodMs,
+                                   authorizationRole);
+        }
+
+        public boolean isActive() {
+            return ACTIVE.equals(status);
+        }
+
+        public boolean isRevoked() {
+            return REVOKED.equals(status);
+        }
+
+        public boolean isInGracePeriod() {
+            return isRevoked()
+                   && revokedAt > 0
+                   && System.currentTimeMillis() < revokedAt + gracePeriodMs;
+        }
+
+        public boolean isValidForAuth() {
+            return isActive() || isInGracePeriod();
+        }
+
+        public ApiKeyValue withRevoked(long gracePeriod) {
+            return new ApiKeyValue(keyId,
+                                   keyHash,
+                                   createdAt,
+                                   expiresAt,
+                                   REVOKED,
+                                   System.currentTimeMillis(),
+                                   gracePeriod,
+                                   authorizationRole);
+        }
+
+        public ApiKeyValue withExpired() {
+            return new ApiKeyValue(keyId,
+                                   keyHash,
+                                   createdAt,
+                                   expiresAt,
+                                   EXPIRED,
+                                   revokedAt,
+                                   gracePeriodMs,
+                                   authorizationRole);
+        }
+    }
+
+    record ApiKeyAuditValue(String keyId, String action, long timestamp, String operatorHint) implements AetherValue {
+        public static final String ACTION_CREATED = "CREATED";
+        public static final String ACTION_ROTATED = "ROTATED";
+        public static final String ACTION_REVOKED = "REVOKED";
+        public static final String ACTION_EXPIRED = "EXPIRED";
+
+        public static ApiKeyAuditValue apiKeyAuditValue(String keyId, String action, String operatorHint) {
+            return new ApiKeyAuditValue(keyId, action, System.currentTimeMillis(), operatorHint);
+        }
+
+        public static ApiKeyAuditValue apiKeyAuditValue(String keyId,
+                                                        String action,
+                                                        long timestamp,
+                                                        String operatorHint) {
+            return new ApiKeyAuditValue(keyId, action, timestamp, operatorHint);
+        }
+    }
+
+    record CloudCredentialsValue(byte[] encryptedToken, String provider, long storedAt) implements AetherValue {
+        public static CloudCredentialsValue cloudCredentialsValue(byte[] encryptedToken, String provider) {
+            return new CloudCredentialsValue(encryptedToken.clone(), provider, System.currentTimeMillis());
+        }
+
+        @Override
+        public byte[] encryptedToken() {
+            return encryptedToken.clone();
+        }
+    }
+
+    record ConsumerGroupValue(NodeId assignedTo, String consumerId, long assignedAt) implements AetherValue {
+        public static ConsumerGroupValue consumerGroupValue(NodeId assignedTo, String consumerId) {
+            return new ConsumerGroupValue(assignedTo, consumerId, System.currentTimeMillis());
+        }
+    }
+
+    record StreamConfigValue(StreamConfig config, long createdAt) implements AetherValue {
+        public static StreamConfigValue streamConfigValue(StreamConfig config) {
+            return new StreamConfigValue(config, System.currentTimeMillis());
+        }
+
+        public static StreamConfigValue streamConfigValue(StreamConfig config, long createdAt) {
+            return new StreamConfigValue(config, createdAt);
+        }
+    }
+
+    record DhtPartitionOwnershipValue(NodeId ownerNodeId,
+                                      String ownerCommunityId,
+                                      Epoch ownerEpoch,
+                                      long ownershipTerm,
+                                      HlcTimestamp transferredAt) implements AetherValue {
+        public DhtPartitionOwnershipValue {
+            if (ownerCommunityId == null) {
+                ownerCommunityId = "";
+            }
+
+            if (ownerEpoch == null) {
+                ownerEpoch = Epoch.ZERO;
+            }
+
+            if (transferredAt == null) {
+                transferredAt = HlcTimestamp.ZERO;
+            }
+        }
+
+        public static DhtPartitionOwnershipValue dhtPartitionOwnershipValue(NodeId ownerNodeId,
+                                                                            String ownerCommunityId,
+                                                                            Epoch ownerEpoch,
+                                                                            long ownershipTerm,
+                                                                            HlcTimestamp transferredAt) {
+            return new DhtPartitionOwnershipValue(ownerNodeId,
+                                                  ownerCommunityId,
+                                                  ownerEpoch,
+                                                  ownershipTerm,
+                                                  transferredAt);
+        }
+    }
+
+    @Codec
+    enum SpokesmanStatus {
+        ASSIGNED,
+        ACTIVE,
+        FAILED
+    }
+
+    /// Canonical field order: `(spawnedAtMs, assignedNodeId, occupantEpoch, supersededNodeId)`.
+    ///
+    /// `spawnedAtMs` is the wall-clock instant (epoch millis) the slot's current FILLING/occupied
+    /// generation was stamped; `0` means EMPTY/never-stamped. The FILLING-marker EXPIRY is NOT
+    /// stored — it is derived at check time as `spawnedAtMs + autoHealConfig.provisioningTimeout()`
+    /// (the single source of truth for the timeout is the shared auto-heal `TimeSpan`; per the
+    /// project rule, derived deadline instants are not persisted). `occupantEpoch` is a monotonic,
+    /// slot-local generation counter; `0` means empty/never-occupied. `supersededNodeId` records the
+    /// predecessor occupant this assignment replaced; `none()` on first fill.
+    ///
+    /// Backward compatibility (legacy slot-based-membership convergence, §4.2; spec removed, see git history): the legacy
+    /// construction sites that passed a `deadlineMs` argument still compile via the deadline-arg
+    /// constructors and `provisioningSlotValue(..)` factories below, which discard the now-derived
+    /// deadline. Mirrors the trailing-field backward-compat pattern used across `AetherValue`.
+    record ProvisioningSlotValue(long spawnedAtMs,
+                                 Option<NodeId> assignedNodeId,
+                                 long occupantEpoch,
+                                 Option<NodeId> supersededNodeId) implements AetherValue {
+        public ProvisioningSlotValue {
+            if (assignedNodeId == null) {
+                assignedNodeId = Option.none();
+            }
+
+            if (supersededNodeId == null) {
+                supersededNodeId = Option.none();
+            }
+        }
+
+        /// Backward-compatible constructor — preserves call sites that passed the now-derived
+        /// `deadlineMs` (discarded). Defaults `occupantEpoch = 0`, `supersededNodeId = none()`.
+        public ProvisioningSlotValue(long spawnedAtMs, long deadlineMs, Option<NodeId> assignedNodeId) {
+            this(spawnedAtMs, assignedNodeId, 0L, Option.none());
+        }
+
+        /// Backward-compatible 5-arg constructor — preserves the pre-remodel fenced-form call sites
+        /// that passed `deadlineMs` at position 1 (discarded; expiry is derived now).
+        public ProvisioningSlotValue(long spawnedAtMs,
+                                     long deadlineMs,
+                                     Option<NodeId> assignedNodeId,
+                                     long occupantEpoch,
+                                     Option<NodeId> supersededNodeId) {
+            this(spawnedAtMs, assignedNodeId, occupantEpoch, supersededNodeId);
+        }
+
+        public static ProvisioningSlotValue provisioningSlotValue(long spawnedAtMs) {
+            return new ProvisioningSlotValue(spawnedAtMs, Option.none(), 0L, Option.none());
+        }
+
+        /// Backward-compatible factory — `deadlineMs` discarded (derived).
+        public static ProvisioningSlotValue provisioningSlotValue(long spawnedAtMs, long deadlineMs) {
+            return new ProvisioningSlotValue(spawnedAtMs, Option.none(), 0L, Option.none());
+        }
+
+        public static ProvisioningSlotValue provisioningSlotValue(long spawnedAtMs, NodeId assignedNodeId) {
+            return new ProvisioningSlotValue(spawnedAtMs, Option.option(assignedNodeId), 0L, Option.none());
+        }
+
+        /// Backward-compatible factory — `deadlineMs` discarded (derived).
+        public static ProvisioningSlotValue provisioningSlotValue(long spawnedAtMs,
+                                                                  long deadlineMs,
+                                                                  NodeId assignedNodeId) {
+            return new ProvisioningSlotValue(spawnedAtMs, Option.option(assignedNodeId), 0L, Option.none());
+        }
+
+        public ProvisioningSlotValue withAssignedNode(NodeId nodeId) {
+            return new ProvisioningSlotValue(spawnedAtMs, Option.option(nodeId), occupantEpoch, supersededNodeId);
+        }
+    }
+
+    record SpokesmanValue(List<String> communities,
+                          Epoch assignedEpoch,
+                          HlcTimestamp assignedAt,
+                          long version,
+                          SpokesmanStatus status,
+                          String failureReason) implements AetherValue {
+        public SpokesmanValue {
+            communities = communities == null
+                          ? List.of()
+                          : List.copyOf(communities);
+            if (assignedEpoch == null) {
+                assignedEpoch = Epoch.ZERO;
+            }
+
+            if (assignedAt == null) {
+                assignedAt = HlcTimestamp.ZERO;
+            }
+
+            if (status == null) {
+                status = SpokesmanStatus.ASSIGNED;
+            }
+
+            if (failureReason == null) {
+                failureReason = "";
+            }
+        }
+
+        public static SpokesmanValue spokesmanValue(List<String> communities,
+                                                    Epoch assignedEpoch,
+                                                    HlcTimestamp assignedAt,
+                                                    long version) {
+            return new SpokesmanValue(communities, assignedEpoch, assignedAt, version, SpokesmanStatus.ASSIGNED, "");
+        }
+
+        public SpokesmanValue withStatus(SpokesmanStatus newStatus) {
+            return new SpokesmanValue(communities, assignedEpoch, assignedAt, version, newStatus, failureReason);
+        }
+
+        public SpokesmanValue withFailure(String reason) {
+            return new SpokesmanValue(communities, assignedEpoch, assignedAt, version, SpokesmanStatus.FAILED, reason);
+        }
+    }
+
+    // Stage 1 (stream-namespaces) additive graft: stream-registry value. Added alongside the
+    // retained ClusterEventValue (cluster-events replacement is a later stage).
+    /// Consensus-replicated form of [StreamRegistryEntry].
+    ///
+    /// Single-key collapse of the spec's `stream-meta:{addr}` and `stream-refs:{addr}` (§7.1, §7.2)
+    /// — implementation choice for atomic refcount mutation in the same consensus round as the
+    /// SliceNodeValue update (§8.5). The conceptual separation in the spec is preserved at the
+    /// reader/writer API but the wire form is one record.
+    record StreamRegistryValue(StreamRegistryEntry entry) implements AetherValue {
+        public static StreamRegistryValue streamRegistryValue(StreamRegistryEntry entry) {
+            return new StreamRegistryValue(entry);
+        }
+    }
+
+    // Stage 2 (stream-namespaces) additive graft: per-blueprint resolved alias->ResourceAddress map.
+    /// Per-blueprint resolved alias→`ResourceAddress` map persisted at deploy time.
+    ///
+    /// Kept as `List<NamedAddress>` instead of `Map<String, ResourceAddress>` so the compile-time
+    /// codec processor doesn't have to handle a `Map<K, V>` where `V` is a record-typed codec
+    /// element (only `Map<String, String>` is exercised by the processor today; List-of-record
+    /// is explicitly tested).
+    ///
+    /// Spec reference: event-stream-namespaces §8.5 (resolved address required for slice-time
+    /// refcount accounting).
+    record BlueprintStreamBindingsValue(List<NamedAddress> bindings) implements AetherValue {
+        public BlueprintStreamBindingsValue {
+            bindings = bindings == null
+                       ? List.of()
+                       : List.copyOf(bindings);
+        }
+
+        public static BlueprintStreamBindingsValue blueprintStreamBindingsValue(List<NamedAddress> bindings) {
+            return new BlueprintStreamBindingsValue(bindings);
+        }
+
+        public Option<ResourceAddress> addressFor(String alias) {
+            return Option.option(bindings.stream().filter(b -> b.alias()
+                                                                .equals(alias)).findFirst().orElse(null)).map(NamedAddress::address);
+        }
+
+        public record NamedAddress(String alias, ResourceAddress address) {
+            public static NamedAddress namedAddress(String alias, ResourceAddress address) {
+                return new NamedAddress(alias, address);
+            }
         }
     }
 }

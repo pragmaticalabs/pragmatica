@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+package org.pragmatica.aether.slice;
+
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+
+import java.util.List;
+
+
+enum NoOpConfigFacade implements ConfigFacade {
+    INSTANCE;
+    private static final Cause NO_CONFIG = Causes.cause("Config service not available");
+    @Override
+    public Result<String> requireString(String section, String key) {
+        return NO_CONFIG.result();
+    }
+    @Override
+    public Result<Integer> requireInt(String section, String key) {
+        return NO_CONFIG.result();
+    }
+    @Override
+    public Result<Long> requireLong(String section, String key) {
+        return NO_CONFIG.result();
+    }
+    @Override
+    public Result<Double> requireDouble(String section, String key) {
+        return NO_CONFIG.result();
+    }
+    @Override
+    public Result<Boolean> requireBoolean(String section, String key) {
+        return NO_CONFIG.result();
+    }
+    @Override
+    public Result<List<String>> requireStringList(String section, String key) {
+        return NO_CONFIG.result();
+    }
+    @Override
+    public Option<String> getString(String section, String key) {
+        return Option.none();
+    }
+    @Override
+    public Option<Integer> getInt(String section, String key) {
+        return Option.none();
+    }
+    @Override
+    public Option<Long> getLong(String section, String key) {
+        return Option.none();
+    }
+    @Override
+    public Option<Double> getDouble(String section, String key) {
+        return Option.none();
+    }
+    @Override
+    public Option<Boolean> getBoolean(String section, String key) {
+        return Option.none();
+    }
+}

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.artifact;
 
 import org.pragmatica.lang.Cause;
@@ -7,25 +11,28 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public record Artifact(GroupId groupId, ArtifactId artifactId, Version version) {
+@Codec
+public record Artifact(GroupId groupId, ArtifactId artifactId, Version version) {
     private static final Fn1<Cause, String> INVALID_FORMAT = Causes.forOneValue("Invalid artifact format %s");
 
     public static Result<Artifact> artifact(String artifactString) {
         var parts = artifactString.split(":", 3);
-        if (parts.length != 3) {return INVALID_FORMAT.apply(artifactString).result();}
+
+        if (parts.length != 3) {
+            return INVALID_FORMAT.apply(artifactString).result();
+        }
+
         return Result.all(GroupId.groupId(parts[0]),
                           ArtifactId.artifactId(parts[1]),
                           Version.version(parts[2]))
-        .map(Artifact::new);
+                     .map(Artifact::new);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public static Artifact artifact(GroupId groupId,
-                                                                    ArtifactId artifactId,
-                                                                    Version version) {
+    public static Artifact artifact(GroupId groupId, ArtifactId artifactId, Version version) {
         return new Artifact(groupId, artifactId, version);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public static Artifact artifact(ArtifactBase base, Version version) {
+    public static Artifact artifact(ArtifactBase base, Version version) {
         return new Artifact(base.groupId(), base.artifactId(), version);
     }
 
@@ -33,7 +40,8 @@ import org.pragmatica.serialization.Codec;
         return ArtifactBase.artifactBase(this);
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return asString();
     }
 

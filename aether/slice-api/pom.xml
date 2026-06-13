@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>1.0.0-alpha</version>
+        <version>1.0.0-rc1</version>
     </parent>
 
     <artifactId>slice-api</artifactId>
@@ -32,6 +32,10 @@
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
+            <artifactId>config-service</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
             <artifactId>serialization-codec-processor</artifactId>
             <scope>provided</scope>
         </dependency>
@@ -46,5 +50,19 @@
             <artifactId>assertj-core</artifactId>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <compilerArgs combine.children="append">
+                        <arg>-Acodec.registry.suffix=SliceApi</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 
 </project>

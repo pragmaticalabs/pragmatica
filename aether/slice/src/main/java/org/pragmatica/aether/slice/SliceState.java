@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
 import org.pragmatica.lang.Cause;
@@ -17,14 +21,15 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-// Note: Enum timeouts are default values. SliceActionConfig is the single source of truth
-// for actual timeout configuration and can override these defaults.
-@Codec@SuppressWarnings("JBCT-SEQ-01") public enum SliceState {
+@Codec
+@SuppressWarnings("JBCT-SEQ-01")
+public enum SliceState {
     LOAD,
     LOADING(timeSpan(2).minutes()),
     LOADED,
     ACTIVATE,
     ACTIVATING(timeSpan(90).seconds()),
+    ROUTING(timeSpan(30).seconds()),
     ACTIVE,
     DEACTIVATE,
     DEACTIVATING(timeSpan(30).seconds()),
@@ -51,18 +56,19 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
         return hasTimeout();
     }
     public boolean isInProgress() {
-        return switch (this){
-            case LOAD, LOADING, ACTIVATE, ACTIVATING, DEACTIVATE, DEACTIVATING, UNLOAD, UNLOADING -> true;
+        return switch (this) {
+            case LOAD, LOADING, ACTIVATE, ACTIVATING, ROUTING, DEACTIVATE, DEACTIVATING, UNLOAD, UNLOADING -> true;
             case LOADED, ACTIVE, FAILED -> false;
         };
     }
     public Set<SliceState> validTransitions() {
-        return switch (this){
+        return switch (this) {
             case LOAD -> Set.of(LOADING);
             case LOADING, DEACTIVATING -> Set.of(LOADED, FAILED);
             case LOADED -> Set.of(ACTIVATE, UNLOAD);
             case ACTIVATE -> Set.of(ACTIVATING);
-            case ACTIVATING -> Set.of(ACTIVE, FAILED);
+            case ACTIVATING -> Set.of(ROUTING, ACTIVE, FAILED);
+            case ROUTING -> Set.of(ACTIVE, FAILED);
             case ACTIVE -> Set.of(DEACTIVATE);
             case DEACTIVATE -> Set.of(DEACTIVATING);
             case FAILED -> Set.of(UNLOAD);
@@ -74,12 +80,13 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
         return validTransitions().contains(target);
     }
     public Result<SliceState> nextState() {
-        return switch (this){
+        return switch (this) {
             case LOAD -> success(LOADING);
             case LOADING, DEACTIVATING -> success(LOADED);
             case LOADED -> success(ACTIVATE);
             case ACTIVATE -> success(ACTIVATING);
-            case ACTIVATING -> success(ACTIVE);
+            case ACTIVATING -> success(ROUTING);
+            case ROUTING -> success(ACTIVE);
             case ACTIVE -> success(DEACTIVATE);
             case DEACTIVATE -> success(DEACTIVATING);
             case FAILED -> success(UNLOAD);
@@ -90,11 +97,13 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
     private static final Map<String, SliceState> STRING_TO_STATE;
     static {
         var map = new HashMap<String, SliceState>();
+
         map.put("LOAD", LOAD);
         map.put("LOADING", LOADING);
         map.put("LOADED", LOADED);
         map.put("ACTIVATE", ACTIVATE);
         map.put("ACTIVATING", ACTIVATING);
+        map.put("ROUTING", ROUTING);
         map.put("ACTIVE", ACTIVE);
         map.put("DEACTIVATE", DEACTIVATE);
         map.put("DEACTIVATING", DEACTIVATING);

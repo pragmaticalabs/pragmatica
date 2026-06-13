@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.slice;
 
 import org.junit.jupiter.api.Assertions;
@@ -16,6 +21,9 @@ class SliceStateTest {
 
         assertThat(SliceState.ACTIVATING.hasTimeout()).isTrue();
         assertThat(SliceState.ACTIVATING.timeout()).isEqualTo(some(timeSpan(90).seconds()));
+
+        assertThat(SliceState.ROUTING.hasTimeout()).isTrue();
+        assertThat(SliceState.ROUTING.timeout()).isEqualTo(some(timeSpan(30).seconds()));
 
         assertThat(SliceState.DEACTIVATING.hasTimeout()).isTrue();
         assertThat(SliceState.DEACTIVATING.timeout()).isEqualTo(some(timeSpan(30).seconds()));
@@ -39,6 +47,7 @@ class SliceStateTest {
     void transitional_states_are_identified_correctly() {
         assertThat(SliceState.LOADING.isTransitional()).isTrue();
         assertThat(SliceState.ACTIVATING.isTransitional()).isTrue();
+        assertThat(SliceState.ROUTING.isTransitional()).isTrue();
         assertThat(SliceState.DEACTIVATING.isTransitional()).isTrue();
         assertThat(SliceState.UNLOADING.isTransitional()).isTrue();
 
@@ -57,7 +66,9 @@ class SliceStateTest {
         assertThat(SliceState.LOADING.canTransitionTo(SliceState.LOADED)).isTrue();
         assertThat(SliceState.LOADED.canTransitionTo(SliceState.ACTIVATE)).isTrue();
         assertThat(SliceState.ACTIVATE.canTransitionTo(SliceState.ACTIVATING)).isTrue();
+        assertThat(SliceState.ACTIVATING.canTransitionTo(SliceState.ROUTING)).isTrue();
         assertThat(SliceState.ACTIVATING.canTransitionTo(SliceState.ACTIVE)).isTrue();
+        assertThat(SliceState.ROUTING.canTransitionTo(SliceState.ACTIVE)).isTrue();
         assertThat(SliceState.ACTIVE.canTransitionTo(SliceState.DEACTIVATE)).isTrue();
         assertThat(SliceState.DEACTIVATE.canTransitionTo(SliceState.DEACTIVATING)).isTrue();
         assertThat(SliceState.DEACTIVATING.canTransitionTo(SliceState.LOADED)).isTrue();
@@ -79,7 +90,8 @@ class SliceStateTest {
         assertThat(SliceState.LOADING.nextState().unwrap()).isEqualTo(SliceState.LOADED);
         assertThat(SliceState.LOADED.nextState().unwrap()).isEqualTo(SliceState.ACTIVATE);
         assertThat(SliceState.ACTIVATE.nextState().unwrap()).isEqualTo(SliceState.ACTIVATING);
-        assertThat(SliceState.ACTIVATING.nextState().unwrap()).isEqualTo(SliceState.ACTIVE);
+        assertThat(SliceState.ACTIVATING.nextState().unwrap()).isEqualTo(SliceState.ROUTING);
+        assertThat(SliceState.ROUTING.nextState().unwrap()).isEqualTo(SliceState.ACTIVE);
         assertThat(SliceState.ACTIVE.nextState().unwrap()).isEqualTo(SliceState.DEACTIVATE);
         assertThat(SliceState.DEACTIVATE.nextState().unwrap()).isEqualTo(SliceState.DEACTIVATING);
         assertThat(SliceState.DEACTIVATING.nextState().unwrap()).isEqualTo(SliceState.LOADED);

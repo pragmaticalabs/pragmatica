@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
 import org.pragmatica.aether.slice.repository.Repository;
@@ -17,25 +21,14 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Configuration for slice loading and lifecycle management.
-///
-/// @param loadingTimeout      Timeout for slice loading
-/// @param activatingTimeout   Timeout for slice activation
-/// @param deactivatingTimeout Timeout for slice deactivation
-/// @param unloadingTimeout    Timeout for slice unloading
-/// @param startStopTimeout    Timeout for start/stop operations
-/// @param repositories        List of repositories to search for slices
-/// @param frameworkJarsPath   Optional path to framework JARs for classloader isolation.
-///                            If provided, creates a FrameworkClassLoader with isolated
-///                            pragmatica-lite, slice-api, and serialization classes.
-///                            If empty, uses Application ClassLoader (no isolation).
-@SuppressWarnings("JBCT-SEQ-01") public record SliceActionConfig(TimeSpan loadingTimeout,
-                                                                 TimeSpan activatingTimeout,
-                                                                 TimeSpan deactivatingTimeout,
-                                                                 TimeSpan unloadingTimeout,
-                                                                 TimeSpan startStopTimeout,
-                                                                 List<Repository> repositories,
-                                                                 Option<Path> frameworkJarsPath) {
+@SuppressWarnings("JBCT-SEQ-01")
+public record SliceActionConfig(TimeSpan loadingTimeout,
+                                TimeSpan activatingTimeout,
+                                TimeSpan deactivatingTimeout,
+                                TimeSpan unloadingTimeout,
+                                TimeSpan startStopTimeout,
+                                List<Repository> repositories,
+                                Option<Path> frameworkJarsPath) {
     public static SliceActionConfig sliceActionConfig() {
         return new SliceActionConfig(timeSpan(2).minutes(),
                                      timeSpan(1).minutes(),
@@ -57,7 +50,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
     }
 
     public Result<TimeSpan> timeoutFor(SliceState state) {
-        return switch (state){
+        return switch (state) {
             case SliceState.LOADING -> success(loadingTimeout);
             case SliceState.ACTIVATING -> success(activatingTimeout);
             case SliceState.DEACTIVATING -> success(deactivatingTimeout);

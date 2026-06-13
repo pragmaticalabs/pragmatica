@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.artifact;
 
 import org.pragmatica.lang.Cause;
@@ -17,14 +21,20 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Verify.ensure;
 
 
-@Codec@SuppressWarnings({"JBCT-NAM-01", "JBCT-UTIL-02"}) public record Version(int major,
-                                                                               int minor,
-                                                                               int patch,
-                                                                               String qualifier) {
+@Codec
+@SuppressWarnings({"JBCT-NAM-01", "JBCT-UTIL-02"})
+public record Version(int major, int minor, int patch, String qualifier) {
     public static Result<Version> version(String versionString) {
         var parts = versionString.split("\\.");
-        if (parts.length <3 || parts.length > 4) {return FORMAT_ERROR.apply(versionString).result();}
-        if (parts.length == 4) {return parseFourPartVersion(parts);}
+
+        if (parts.length < 3 || parts.length > 4) {
+            return FORMAT_ERROR.apply(versionString).result();
+        }
+
+        if (parts.length == 4) {
+            return parseFourPartVersion(parts);
+        }
+
         return parseThreePartVersion(parts, versionString);
     }
 
@@ -33,32 +43,37 @@ import static org.pragmatica.lang.Verify.ensure;
                           Number.parseInt(parts[1]),
                           Number.parseInt(parts[2]),
                           success(option(parts[3])))
-        .flatMap(Version::version);
+                     .flatMap(Version::version);
     }
 
     private static Result<Version> parseThreePartVersion(String[] parts, String versionString) {
         int dashIndex = parts[2].indexOf('-');
-        if (dashIndex > 0 && (dashIndex + 1) == parts[2].length()) {return FORMAT_ERROR.apply(versionString).result();}
+
+        if (dashIndex > 0 && (dashIndex + 1) == parts[2].length()) {
+            return FORMAT_ERROR.apply(versionString).result();
+        }
+
         var qualifier = (dashIndex > 0)
-                       ? option(parts[2].substring(dashIndex + 1))
-                       : Option.<String>none();
+                        ? option(parts[2].substring(dashIndex + 1))
+                        : Option.<String> none();
         var patchStr = dashIndex > 0
-                      ? parts[2].substring(0, dashIndex)
-                      : parts[2];
+                       ? parts[2].substring(0, dashIndex)
+                       : parts[2];
+
         return Result.all(Number.parseInt(parts[0]),
                           Number.parseInt(parts[1]),
                           Number.parseInt(patchStr),
                           success(qualifier))
-        .flatMap(Version::version);
+                     .flatMap(Version::version);
     }
 
     public static Result<Version> version(int major, int minor, int patch, Option<String> qualifier) {
         var innerQualifier = qualifier.or("");
+
         return Result.all(ensure(major, Is::greaterThanOrEqualTo, 0),
                           ensure(minor, Is::greaterThanOrEqualTo, 0),
                           ensure(patch, Is::greaterThanOrEqualTo, 0),
-                          ensure(innerQualifier, Is::matches, QUALIFIER_PATTERN))
-        .map(Version::new);
+                          ensure(innerQualifier, Is::matches, QUALIFIER_PATTERN)).map(Version::new);
     }
 
     public String bareVersion() {
@@ -67,8 +82,8 @@ import static org.pragmatica.lang.Verify.ensure;
 
     public String withQualifier() {
         return qualifier.isEmpty()
-              ? bareVersion()
-              : bareVersion() + "-" + qualifier;
+               ? bareVersion()
+               : bareVersion() + "-" + qualifier;
     }
 
     private static final Pattern QUALIFIER_PATTERN = Pattern.compile("^[\\-a-zA-Z0-9-_.]*$");
