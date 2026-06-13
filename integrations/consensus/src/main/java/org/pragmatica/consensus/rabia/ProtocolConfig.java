@@ -29,20 +29,41 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param syncRetryInterval    Interval for retrying synchronization attempts
 /// @param removeOlderThanPhases Number of phases to retain before cleanup
 /// @param maxPendingBatches    Maximum number of pending batches before rejecting proposals
+/// @param applyTimeout         Upper bound on how long [org.pragmatica.consensus.rabia.RabiaEngine#apply]
+///                             waits for a submitted batch to reach consensus and be answered.
+///                             Without it the returned promise has no timeout and a batch that
+///                             is never answered (e.g. the engine pauses mid-flight, or the
+///                             correlation answer is dropped) hangs the caller forever.
 public record ProtocolConfig(TimeSpan cleanupInterval,
                              TimeSpan syncRetryInterval,
                              long removeOlderThanPhases,
-                             int maxPendingBatches) {
+                             int maxPendingBatches,
+                             TimeSpan applyTimeout) {
     /// Validates and creates a ProtocolConfig.
     public static Result<ProtocolConfig> protocolConfig(TimeSpan cleanupInterval,
                                                         TimeSpan syncRetryInterval,
                                                         long removeOlderThanPhases,
                                                         int maxPendingBatches) {
+        return protocolConfig(cleanupInterval,
+                              syncRetryInterval,
+                              removeOlderThanPhases,
+                              maxPendingBatches,
+                              DEFAULT_APPLY_TIMEOUT);
+    }
+
+    /// Validates and creates a ProtocolConfig with an explicit apply timeout.
+    public static Result<ProtocolConfig> protocolConfig(TimeSpan cleanupInterval,
+                                                        TimeSpan syncRetryInterval,
+                                                        long removeOlderThanPhases,
+                                                        int maxPendingBatches,
+                                                        TimeSpan applyTimeout) {
         return Result.all(validatePositive(cleanupInterval, "cleanupInterval"),
                           validatePositive(syncRetryInterval, "syncRetryInterval"),
                           validatePositive(removeOlderThanPhases, "removeOlderThanPhases"),
-                          validatePositive(maxPendingBatches, "maxPendingBatches"))
-                     .map((cleanup, sync, phases, maxPending) -> new ProtocolConfig(cleanup, sync, phases, maxPending.intValue()));
+                          validatePositive(maxPendingBatches, "maxPendingBatches"),
+                          validatePositive(applyTimeout, "applyTimeout"))
+                     .map((cleanup, sync, phases, maxPending, apply) ->
+                              new ProtocolConfig(cleanup, sync, phases, maxPending.intValue(), apply));
     }
 
     private static Result<TimeSpan> validatePositive(TimeSpan value, String name) {
@@ -70,23 +91,45 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
     /// Default maximum pending batches before backpressure kicks in.
     public static final int DEFAULT_MAX_PENDING_BATCHES = 1000;
 
+    /// Default upper bound on `RabiaEngine.apply`.
+    ///
+    /// Set to 30s, aligned with `DHTConfig.DEFAULT_TIMEOUT` and the rest of the deploy
+    /// pipeline. Consensus commit under bootstrap + parallel-suite load can be slow
+    /// (sync phase, leader settling, QUIC connection establishment), so this is a
+    /// deliberately GENEROUS upper bound: its purpose is to convert a permanently-stuck
+    /// batch (never answered) into a clear `ConsensusError.ApplyTimeout` failure rather
+    /// than a forever-pending promise, NOT to enforce a tight latency SLA.
+    public static final TimeSpan DEFAULT_APPLY_TIMEOUT = timeSpan(30).seconds();
+
     /// Creates a default (production) configuration.
     /// Supports `SYNC_RETRY_INTERVAL_MS` environment variable override for E2E testing.
     public static ProtocolConfig defaultConfig() {
         var syncRetryMs = System.getenv("SYNC_RETRY_INTERVAL_MS");
         var syncRetry = syncRetryMs != null ? timeSpan(Long.parseLong(syncRetryMs)).millis() : DEFAULT_SYNC_RETRY_INTERVAL;
-        return new ProtocolConfig(DEFAULT_CLEANUP_INTERVAL, syncRetry, DEFAULT_REMOVE_OLDER_THAN_PHASES, DEFAULT_MAX_PENDING_BATCHES);
+        return new ProtocolConfig(DEFAULT_CLEANUP_INTERVAL,
+                                  syncRetry,
+                                  DEFAULT_REMOVE_OLDER_THAN_PHASES,
+                                  DEFAULT_MAX_PENDING_BATCHES,
+                                  DEFAULT_APPLY_TIMEOUT);
     }
 
     /// Creates a configuration from explicit values, with defaults for unspecified parameters.
     /// Intended for wiring from external configuration (e.g., TOML).
     public static ProtocolConfig consensusConfig(TimeSpan cleanupInterval, TimeSpan syncRetryInterval) {
-        return new ProtocolConfig(cleanupInterval, syncRetryInterval, DEFAULT_REMOVE_OLDER_THAN_PHASES, DEFAULT_MAX_PENDING_BATCHES);
+        return new ProtocolConfig(cleanupInterval,
+                                  syncRetryInterval,
+                                  DEFAULT_REMOVE_OLDER_THAN_PHASES,
+                                  DEFAULT_MAX_PENDING_BATCHES,
+                                  DEFAULT_APPLY_TIMEOUT);
     }
 
     /// Creates a test configuration with faster intervals.
     public static ProtocolConfig testConfig() {
-        return new ProtocolConfig(timeSpan(60).seconds(), timeSpan(100).millis(), 100, DEFAULT_MAX_PENDING_BATCHES);
+        return new ProtocolConfig(timeSpan(60).seconds(),
+                                  timeSpan(100).millis(),
+                                  100,
+                                  DEFAULT_MAX_PENDING_BATCHES,
+                                  DEFAULT_APPLY_TIMEOUT);
     }
 
     /// Configuration validation errors.

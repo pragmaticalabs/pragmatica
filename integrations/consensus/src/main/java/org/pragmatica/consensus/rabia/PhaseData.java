@@ -18,8 +18,11 @@ package org.pragmatica.consensus.rabia;
 
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.StateMachine.Batch;
+import org.pragmatica.consensus.StateMachine.Batch.Id;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound1;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
 import java.util.Comparator;
@@ -29,7 +32,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
-import static org.pragmatica.consensus.rabia.Batch.emptyBatch;
+import static org.pragmatica.consensus.StateMachine.Batch.emptyBatch;
 
 /// Represents the outcome of Round 2 completion per Rabia specification.
 /// Three possible outcomes:
@@ -74,6 +77,7 @@ final class PhaseData<C extends Command> {
 
     // ==================== Intent-Revealing API ====================
     /// Registers a proposal from a node. Idempotent - first proposal wins.
+    @Contract
     void registerProposal(NodeId node, Batch<C> batch) {
         proposals.putIfAbsent(node, batch);
     }
@@ -94,8 +98,14 @@ final class PhaseData<C extends Command> {
     }
 
     /// Registers a round 1 vote from a node.
+    @Contract
     void registerRound1Vote(NodeId node, StateValue value) {
         round1Votes.put(node, value);
+    }
+
+    /// Returns this node's round 1 vote value, or null if not cast.
+    StateValue getRound1Vote(NodeId node) {
+        return round1Votes.get(node);
     }
 
     /// Checks if a node has already voted in round 2.
@@ -103,7 +113,13 @@ final class PhaseData<C extends Command> {
         return round2Votes.containsKey(node);
     }
 
+    /// Returns this node's round 2 vote value, or null if not cast.
+    StateValue getRound2Vote(NodeId node) {
+        return round2Votes.get(node);
+    }
+
     /// Registers a round 2 vote from a node.
+    @Contract
     void registerRound2Vote(NodeId node, StateValue value) {
         round2Votes.put(node, value);
     }
@@ -156,7 +172,7 @@ final class PhaseData<C extends Command> {
         // Use BatchId as tiebreaker for determinism across nodes
         return batchesById.entrySet()
                           .stream()
-                          .max(Comparator.<Map.Entry<BatchId, List<Batch<C>>>> comparingInt(e -> e.getValue()
+                          .max(Comparator.<Map.Entry<Id, List<Batch<C>>>> comparingInt(e -> e.getValue()
                                                                                                   .size())
                                          .thenComparing(e -> e.getKey()
                                                               .id()))

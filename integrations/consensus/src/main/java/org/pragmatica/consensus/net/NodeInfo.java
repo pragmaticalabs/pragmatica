@@ -20,16 +20,89 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Codec;
 
-/// Node information: ID, address, and role.
+import java.util.Map;
+import java.util.Objects;
+
+/// Node information: ID, address, and metadata labels.
+///
+/// Labels are key-value metadata describing the node's environment (hostname, zone,
+/// instance type, pool, role). They propagate through the Hello handshake so all cluster
+/// members can see them. The node's CORE/WORKER/SPOT role is carried in the `role` label
+/// ({@link #LABEL_ROLE}) — the transport-layer ACTIVE/PASSIVE `NodeRole` enum was retired in
+/// the cluster-topology-overhaul Wave 9 (it was never produced; the cluster standardizes on
+/// the config CORE/WORKER/SPOT vocabulary carried in the aether `MemberDescriptor`).
+///
+/// `resolvedAddress` is the dial-preferred address: the SWIM-observed source IP of the
+/// peer's ANNOUNCE datagram combined with the peer's advertised QUIC port. It lets the
+/// transport dial a concrete IP instead of synchronously re-resolving a gossiped
+/// hostname on the connect path (membership v2 §5). It defaults to `address` when no
+/// SWIM resolution has occurred, so non-SWIM-discovered peers behave exactly as before.
+///
+/// `resolvedAddress` is deliberately EXCLUDED from `equals`/`hashCode`: node identity is
+/// (id, address, labels). The resolved address is a transient transport dial-hint
+/// that must not split a peer into two distinct identities when only its observed IP
+/// differs from its advertised host.
 @Codec
-public record NodeInfo(NodeId id, NodeAddress address, NodeRole role) {
-    /// Factory method for creating NodeInfo (backward-compatible, defaults to ACTIVE).
-    public static NodeInfo nodeInfo(NodeId id, NodeAddress address) {
-        return new NodeInfo(id, address, NodeRole.ACTIVE);
+public record NodeInfo(NodeId id, NodeAddress address, Map<String, String> labels,
+                       NodeAddress resolvedAddress) {
+    /// Standard label key for the node's hostname.
+    public static final String LABEL_HOSTNAME = "hostname";
+
+    /// Standard label key for the availability zone.
+    public static final String LABEL_ZONE = "zone";
+
+    /// Standard label key for the compute instance type.
+    public static final String LABEL_INSTANCE_TYPE = "instance-type";
+
+    /// Standard label key for the node pool name.
+    public static final String LABEL_POOL = "pool";
+
+    /// Standard label key for the node's provisioning source (e.g. seed, replacement).
+    public static final String LABEL_SOURCE = "source";
+
+    /// Standard label key for the node's self-described role label.
+    public static final String LABEL_ROLE = "role";
+
+    /// Compact constructor ensures labels are an immutable copy.
+    public NodeInfo {
+        labels = Map.copyOf(labels);
     }
 
-    /// Factory method for creating NodeInfo with explicit role.
-    public static NodeInfo nodeInfo(NodeId id, NodeAddress address, NodeRole role) {
-        return new NodeInfo(id, address, role);
+    /// Factory method for creating NodeInfo (no labels).
+    public static NodeInfo nodeInfo(NodeId id, NodeAddress address) {
+        return new NodeInfo(id, address, Map.of(), address);
+    }
+
+    /// Factory method for creating NodeInfo with labels.
+    public static NodeInfo nodeInfo(NodeId id, NodeAddress address, Map<String, String> labels) {
+        return new NodeInfo(id, address, labels, address);
+    }
+
+    /// Factory method for creating NodeInfo with an explicit resolved (dial-preferred) address.
+    public static NodeInfo nodeInfo(NodeId id, NodeAddress address,
+                                    Map<String, String> labels, NodeAddress resolvedAddress) {
+        return new NodeInfo(id, address, labels, resolvedAddress);
+    }
+
+    /// Return a copy with the dial-preferred address replaced, preserving identity
+    /// (id, address, labels). Used by the SWIM ANNOUNCE path to attach the
+    /// observed source IP : advertised QUIC port to a discovered peer.
+    public NodeInfo withResolvedAddress(NodeAddress resolved) {
+        return new NodeInfo(id, address, labels, resolved);
+    }
+
+    /// Identity is (id, address, labels). `resolvedAddress` is a transient dial-hint
+    /// and is intentionally excluded so SWIM resolution never forks a peer into two identities.
+    @Override
+    public boolean equals(Object o) {
+        return o instanceof NodeInfo(var oid, var oaddress, var olabels, var ignored)
+               && id.equals(oid)
+               && address.equals(oaddress)
+               && labels.equals(olabels);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(id, address, labels);
     }
 }

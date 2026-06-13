@@ -20,6 +20,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.Command;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.NodeId;
 
 import java.util.List;
@@ -30,6 +31,9 @@ import static org.pragmatica.consensus.NodeId.nodeId;
 class PhaseDataTest {
 
     record TestCommand(String value) implements Command {}
+
+    private static final org.pragmatica.serialization.SliceCodec SERIALIZER =
+        TestSerializers.stringCommandSerializer(TestCommand.class, TestCommand::value, TestCommand::new);
 
     // 5-node cluster: quorum = 3, f = 2, f+1 = 3
     private static final int QUORUM_SIZE = 3;
@@ -52,7 +56,7 @@ class PhaseDataTest {
         var commands = java.util.Arrays.stream(values)
                                        .map(TestCommand::new)
                                        .toList();
-        return Batch.batch(commands);
+        return Batch.create(SERIALIZER, commands);
     }
 
     @Nested

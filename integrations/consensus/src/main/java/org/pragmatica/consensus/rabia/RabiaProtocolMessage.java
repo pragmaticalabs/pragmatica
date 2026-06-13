@@ -19,12 +19,19 @@ package org.pragmatica.consensus.rabia;
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.rabia.RabiaPersistence.SavedState;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
 /// Message types for the Rabia consensus protocol.
 @Codec
 public sealed interface RabiaProtocolMessage extends ProtocolMessage {
+    @Override
+    default StreamType streamType() {
+        return StreamType.CONSENSUS;
+    }
+
     /// Synchronous protocol messages (part of the consensus rounds).
     sealed interface Synchronous extends RabiaProtocolMessage {
         /// Initial proposal from a node.
@@ -44,21 +51,28 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
                                            Phase phase,
                                            StateValue stateValue,
                                            Batch<C> value)
-        implements Synchronous {
+        implements Synchronous {}
+
+        /// State synchronization response. Travels on the dedicated SYNC lane (not CONSENSUS) so
+        /// it is not head-of-line-blocked by consensus round traffic during a joiner's catch-up.
+        record SyncResponse<C extends Command>(NodeId sender, SavedState<C> state) implements Synchronous {
             @Override
-            public boolean deliverToPassive() {
-                return true;
+            public StreamType streamType() {
+                return StreamType.SYNC;
             }
         }
-
-        /// State synchronization response.
-        record SyncResponse<C extends Command>(NodeId sender, SavedState<C> state) implements Synchronous {}
     }
 
     /// Asynchronous protocol messages (outside consensus rounds).
     sealed interface Asynchronous extends RabiaProtocolMessage {
-        /// State synchronization request.
-        record SyncRequest(NodeId sender) implements Asynchronous {}
+        /// State synchronization request. Travels on the dedicated SYNC lane (not CONSENSUS) so a
+        /// far-behind joiner's SyncRequest retries do not flood the consensus round traffic.
+        record SyncRequest(NodeId sender) implements Asynchronous {
+            @Override
+            public StreamType streamType() {
+                return StreamType.SYNC;
+            }
+        }
 
         /// Distribute a new batch to all nodes.
         record NewBatch<C extends Command>(NodeId sender, Batch<C> batch) implements Asynchronous {}

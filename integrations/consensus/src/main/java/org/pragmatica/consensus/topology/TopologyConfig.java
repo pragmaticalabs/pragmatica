@@ -32,6 +32,9 @@ public record TopologyConfig(NodeId self,
                              BackoffConfig backoff,
                              int coreMax,
                              int coreMin) {
+    @SuppressWarnings("JBCT-EX-01") // TODO(RC2): clusterSize < 1 is a constructor invariant
+    // (programming error, not business validation). Converting to a Result factory removes the
+    // throwing constructor and ripples into ~20 `new TopologyConfig(...)` call sites across aether.
     public TopologyConfig {
         if (clusterSize < 1) {
             throw new IllegalArgumentException("Cluster size must be at least 1");

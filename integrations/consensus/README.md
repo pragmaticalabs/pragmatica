@@ -38,7 +38,9 @@ var topologyConfig = new TopologyConfig(
 var router = MessageRouter.mutable();
 var topologyManager = TopologyObserver.topologyObserver(topologyConfig, router)
     .expect("valid topology config");
-var network = new NettyClusterNetwork(topologyManager, router);
+// QuicClusterNetwork additionally takes serializers + QUIC SSL contexts — see its constructors.
+var network = new QuicClusterNetwork(topologyManager, serializer, deserializer, router,
+                                     serverSslContext, clientSslContext);
 var engine = new RabiaEngine<>(topologyManager, network, stateMachine, ProtocolConfig.defaultConfig());
 engine.configure(router);
 engine.start().await();

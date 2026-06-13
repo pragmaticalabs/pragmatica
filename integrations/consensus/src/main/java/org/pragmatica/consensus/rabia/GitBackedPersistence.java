@@ -18,14 +18,19 @@ package org.pragmatica.consensus.rabia;
 
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.StateMachine;
+import org.pragmatica.consensus.StateMachine.Batch;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import org.pragmatica.lang.io.TimeSpan;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
+
+import static org.pragmatica.lang.io.FileOps.exists;
+import static org.pragmatica.lang.io.FileOps.readString;
+import static org.pragmatica.lang.io.FileOps.writeString;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
@@ -84,12 +89,13 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     public Option<SavedState<C>> load() {
         var stateFile = backupDir.resolve(STATE_FILE);
 
-        return Option.option(Files.exists(stateFile) ? stateFile : null)
+        return Option.option(exists(stateFile) ? stateFile : null)
                      .flatMap(this::readTomlContent);
     }
 
     private Option<SavedState<C>> readTomlContent(Path stateFile) {
-        return Result.lift(PersistenceError::ioFailure, () -> Files.readString(stateFile))
+        return readString(stateFile)
+                     .mapError(e -> PersistenceError.ioFailure(new RuntimeException(e.message())))
                      .flatMap(this::parseTomlContent)
                      .option();
     }
@@ -114,14 +120,14 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     }
 
     private Result<Unit> writeTomlFile(String toml) {
-        return Result.lift(PersistenceError::ioFailure, () -> Files.writeString(backupDir.resolve(STATE_FILE), toml))
-                     .mapToUnit();
+        return writeString(backupDir.resolve(STATE_FILE), toml)
+                     .mapError(e -> PersistenceError.ioFailure(new RuntimeException(e.message())));
     }
 
     private Result<Unit> ensureGitInitialized() {
         var gitDir = backupDir.resolve(".git");
 
-        return Files.exists(gitDir)
+        return exists(gitDir)
                ? Result.unitResult()
                : runGit("init").flatMap(_ -> configureGitUser())
                                .mapToUnit();
@@ -154,6 +160,7 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
                      .flatMap(this::validateExitCode);
     }
 
+    @Contract
     private ProcessResult executeProcess(String[] command) throws Exception {
         var process = new ProcessBuilder(command)
             .directory(backupDir.toFile())

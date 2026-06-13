@@ -18,16 +18,15 @@ package org.pragmatica.consensus.topology;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
 
 import java.net.SocketAddress;
 import java.util.List;
+import java.util.Set;
 
 /// Representation of our knowledge about the cluster structure: known nodes and cluster/quorum size.
 /// Note that this is not a representation of the actual cluster topology.
@@ -87,10 +86,14 @@ public interface TopologyManager {
     /// Returns the list of all node IDs in the topology.
     List<NodeId> topology();
 
-    /// Check if a node has the PASSIVE role (load balancer, observer).
+    /// Whether a node has the transport PASSIVE role. The transport ACTIVE/PASSIVE `NodeRole`
+    /// vocabulary was retired in the cluster-topology-overhaul Wave 9 (it was never produced),
+    /// so this is now structurally `false` — the worker classification lives in the config
+    /// CORE/WORKER/SPOT vocabulary carried in the aether `MemberDescriptor`. Retained as a
+    /// default so the `activeNode*`/`coreNodes` projections and external callers compile
+    /// unchanged; they now (correctly) count every node.
     default boolean isPassive(NodeId nodeId) {
-        return get(nodeId).filter(info -> info.role() == NodeRole.PASSIVE)
-                          .isPresent();
+        return false;
     }
 
     /// Returns the count of active (non-passive) nodes in the topology.
@@ -101,19 +104,22 @@ public interface TopologyManager {
                                .count();
     }
 
-    /// Mark a node as ready (ON_DUTY). Called when a node registers its lifecycle state.
-    /// The observer tracks ready nodes independently of QUIC connections.
-    default void markReady(NodeId nodeId) {}
-
-    /// Mark a node as ready (ON_DUTY) with its cluster address.
-    /// When the node is not yet in the local topology, it will be added automatically.
-    /// This enables dynamically provisioned nodes to become visible after leader failover.
-    default void markReady(NodeId nodeId, NodeAddress address) {
-        markReady(nodeId);
+    /// Returns the count of currently-healthy active (non-passive) nodes.
+    /// Used by reconciliation decisions that must distinguish "reachable right now" from
+    /// "present in topology but possibly unreachable" — e.g. CTM deficit/surplus checks must
+    /// not count a killed-but-not-yet-evicted peer as live.
+    default int healthyActiveNodeCount() {
+        return (int) topology().stream()
+                               .filter(id -> !isPassive(id))
+                               .filter(id -> getState(id).map(state -> state.health() == NodeHealth.HEALTHY).or(false))
+                               .count();
     }
 
-    /// Mark a node as departed (lifecycle removed or node dead).
-    default void markDeparted(NodeId nodeId) {}
+    /// Returns the set of core (non-passive) node IDs in the topology.
+    /// Used by the passive LB to select forwarding targets for management API requests.
+    default Set<NodeId> coreNodes() {
+        return Set.copyOf(topology().stream().filter(id -> !isPassive(id)).toList());
+    }
 
     /// Returns the count of nodes that have reached ON_DUTY state.
     /// More authoritative than activeNodeCount() for detecting dynamically provisioned nodes

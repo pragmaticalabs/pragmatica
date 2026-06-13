@@ -21,7 +21,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.pragmatica.consensus.Command;
-import org.pragmatica.consensus.rabia.Batch;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.consensus.rabia.StateValue;
 import org.pragmatica.consensus.rabia.helper.ClusterConfiguration;
@@ -48,6 +48,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RabiaWrapperInvariantTest {
 
     record TestCommand(String value) implements Command {}
+
+    private static final org.pragmatica.serialization.SliceCodec SERIALIZER =
+        org.pragmatica.consensus.rabia.TestSerializers.stringCommandSerializer(TestCommand.class, TestCommand::value, TestCommand::new);
 
     static Stream<Arguments> clusterSizes() {
         return Stream.of(
@@ -124,7 +127,7 @@ class RabiaWrapperInvariantTest {
         void good_succ_good(int size) {
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             // Start phase 0 with all nodes voting V1
             for (var node : config.nodeIds()) {
@@ -153,7 +156,7 @@ class RabiaWrapperInvariantTest {
         void good_zero(int size) {
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             // Phase ZERO is not started initially
             assertThat(isStarted(state, Phase.ZERO)).isFalse();
@@ -182,7 +185,7 @@ class RabiaWrapperInvariantTest {
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
             var phase = Phase.ZERO;
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             // To make a valid decision_bc, we need the phase to be started first
             // Start phase by having nodes vote in round 1
@@ -218,7 +221,7 @@ class RabiaWrapperInvariantTest {
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
             var phase = Phase.ZERO;
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             // Have majority vote V1 in round 1
             for (int i = 0; i < config.quorumSize(); i++) {
@@ -247,7 +250,7 @@ class RabiaWrapperInvariantTest {
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
             var phase = Phase.ZERO;
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             // Split vote: some V0, some V1 - neither has majority
             int half = config.clusterSize() / 2;
@@ -279,7 +282,7 @@ class RabiaWrapperInvariantTest {
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
             var phase = Phase.ZERO;
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             // All nodes vote V1 in round 1
             for (var node : config.nodeIds()) {
@@ -310,7 +313,7 @@ class RabiaWrapperInvariantTest {
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
             var phase = Phase.ZERO;
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             // All nodes vote V0 in round 1
             for (var node : config.nodeIds()) {
@@ -345,7 +348,7 @@ class RabiaWrapperInvariantTest {
         void good_phases_sequential(int size) {
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             // Start phases 0, 1, 2 in sequence
             for (int phaseNum = 0; phaseNum <= 2; phaseNum++) {
@@ -368,7 +371,7 @@ class RabiaWrapperInvariantTest {
         void skipped_phase_breaks_good(int size) {
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             // Start phase 0
             for (var node : config.nodeIds()) {
@@ -403,7 +406,7 @@ class RabiaWrapperInvariantTest {
         void value_locked_propagates(int size) {
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             // Phase 0: all nodes vote V1 - V1 is locked
             for (var node : config.nodeIds()) {
@@ -430,7 +433,7 @@ class RabiaWrapperInvariantTest {
         void decision_in_prior_phase_affects_goodness(int size) {
             var config = ClusterConfiguration.of(size);
             var state = new ClusterState<TestCommand>(config.nodeIds());
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             // Phase 0: decide V1
             for (var node : config.nodeIds()) {

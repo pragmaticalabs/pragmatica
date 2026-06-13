@@ -7,35 +7,35 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class QuorumStateNotificationTest {
+class ClusterStateNotificationTest {
 
     @Test
     void established_incrementsSequence() {
-        var first = QuorumStateNotification.established();
-        var second = QuorumStateNotification.established();
+        var first = ClusterStateNotification.active();
+        var second = ClusterStateNotification.active();
 
         assertThat(second.sequence()).isGreaterThan(first.sequence());
-        assertThat(first.state()).isEqualTo(QuorumStateNotification.State.ESTABLISHED);
-        assertThat(second.state()).isEqualTo(QuorumStateNotification.State.ESTABLISHED);
+        assertThat(first.state()).isEqualTo(ClusterStateNotification.State.ACTIVE);
+        assertThat(second.state()).isEqualTo(ClusterStateNotification.State.ACTIVE);
     }
 
     @Test
     void disappeared_incrementsSequence() {
-        var first = QuorumStateNotification.disappeared();
-        var second = QuorumStateNotification.disappeared();
+        var first = ClusterStateNotification.passive();
+        var second = ClusterStateNotification.passive();
 
         assertThat(second.sequence()).isGreaterThan(first.sequence());
-        assertThat(first.state()).isEqualTo(QuorumStateNotification.State.DISAPPEARED);
-        assertThat(second.state()).isEqualTo(QuorumStateNotification.State.DISAPPEARED);
+        assertThat(first.state()).isEqualTo(ClusterStateNotification.State.PASSIVE);
+        assertThat(second.state()).isEqualTo(ClusterStateNotification.State.PASSIVE);
     }
 
     @Test
     void advanceSequence_acceptsNewer_rejectsStale() {
         var tracker = new AtomicLong(0);
 
-        var first = QuorumStateNotification.established();
-        var second = QuorumStateNotification.disappeared();
-        var third = QuorumStateNotification.established();
+        var first = ClusterStateNotification.active();
+        var second = ClusterStateNotification.passive();
+        var third = ClusterStateNotification.active();
 
         // First should be accepted
         assertThat(first.advanceSequence(tracker)).isTrue();
@@ -58,11 +58,11 @@ class QuorumStateNotificationTest {
         var acceptedCount = new AtomicLong(0);
 
         // Create notifications with increasing sequences
-        var notifications = new QuorumStateNotification[threadCount];
+        var notifications = new ClusterStateNotification[threadCount];
         for (var i = 0; i < threadCount; i++) {
             notifications[i] = i % 2 == 0
-                               ? QuorumStateNotification.established()
-                               : QuorumStateNotification.disappeared();
+                               ? ClusterStateNotification.active()
+                               : ClusterStateNotification.passive();
         }
 
         // All threads try to advance the same tracker concurrently

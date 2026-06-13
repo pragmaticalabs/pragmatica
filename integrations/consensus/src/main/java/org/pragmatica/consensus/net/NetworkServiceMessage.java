@@ -18,9 +18,13 @@ package org.pragmatica.consensus.net;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.Message;
 
 import java.util.List;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
 
 public sealed interface NetworkServiceMessage extends Message.Local {
     record ConnectNode(NodeId node) implements NetworkServiceMessage {}
@@ -35,7 +39,25 @@ public sealed interface NetworkServiceMessage extends Message.Local {
     record ConnectionFailed(NodeId nodeId, Cause cause) implements NetworkServiceMessage {}
 
     /// Notification that a connection to a node has been established.
-    record ConnectionEstablished(NodeId nodeId) implements NetworkServiceMessage {}
+    ///
+    /// `nodeInfo` carries the peer's full identity (id + address + role + labels) as
+    /// learned from the QUIC/Netty Hello handshake when available. Downstream consumers
+    /// (notably SWIM health detection in `AetherNode`) MUST prefer this transport-supplied
+    /// `NodeInfo` over a static-topology lookup so that CTM-replaced or topology-forgotten
+    /// peers can be probed at their true SWIM address (fixes P1: QUIC eviction storm after
+    /// topology-forgot-peer reconnect).
+    record ConnectionEstablished(NodeId nodeId, Option<NodeInfo> nodeInfo) implements NetworkServiceMessage {
+        /// Factory for transport sites that have learned the peer's `NodeInfo` from a
+        /// Hello handshake.
+        public static ConnectionEstablished connectionEstablished(NodeId nodeId, NodeInfo nodeInfo) {
+            return new ConnectionEstablished(nodeId, option(nodeInfo));
+        }
+
+        /// Factory for transport sites that do not (yet) have the peer's `NodeInfo`.
+        public static ConnectionEstablished connectionEstablished(NodeId nodeId) {
+            return new ConnectionEstablished(nodeId, none());
+        }
+    }
 
     /// Send a wired message to a specific target node
     record Send(NodeId target, Message.Wired payload) implements NetworkServiceMessage {}

@@ -24,6 +24,7 @@ import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.StateMachine;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -33,7 +34,7 @@ import org.pragmatica.consensus.rabia.RabiaPersistence.SavedState;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.*;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.*;
 import org.pragmatica.consensus.topology.NodeState;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -64,6 +65,9 @@ class RabiaConsensusIntegrationTest {
 
     record TestCommand(String value) implements Command {}
 
+    private static final org.pragmatica.serialization.SliceCodec SERIALIZER =
+        TestSerializers.stringCommandSerializer(TestCommand.class, TestCommand::value, TestCommand::new);
+
     private static final NodeId NODE_1 = nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = nodeId("node-2").unwrap();
     private static final NodeId NODE_3 = nodeId("node-3").unwrap();
@@ -88,7 +92,7 @@ class RabiaConsensusIntegrationTest {
         void all_nodes_agree_on_same_proposal() throws InterruptedException {
             cluster.activateAll();
 
-            var batch = Batch.batch(List.of(new TestCommand("test-cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("test-cmd")));
 
             // All nodes propose the same batch
             cluster.simulateProposal(NODE_1, batch);
@@ -110,9 +114,9 @@ class RabiaConsensusIntegrationTest {
         void conflicting_proposals_lead_to_v0_votes() throws InterruptedException {
             cluster.activateAll();
 
-            var batch1 = Batch.batch(List.of(new TestCommand("cmd1")));
-            var batch2 = Batch.batch(List.of(new TestCommand("cmd2")));
-            var batch3 = Batch.batch(List.of(new TestCommand("cmd3")));
+            var batch1 = Batch.create(SERIALIZER, List.of(new TestCommand("cmd1")));
+            var batch2 = Batch.create(SERIALIZER, List.of(new TestCommand("cmd2")));
+            var batch3 = Batch.create(SERIALIZER, List.of(new TestCommand("cmd3")));
 
             // All nodes propose different batches
             cluster.simulateProposal(NODE_1, batch1);
@@ -133,8 +137,8 @@ class RabiaConsensusIntegrationTest {
         void majority_proposal_leads_to_v1_decision() throws InterruptedException {
             cluster.activateAll();
 
-            var majorityBatch = Batch.batch(List.of(new TestCommand("majority")));
-            var minorityBatch = Batch.batch(List.of(new TestCommand("minority")));
+            var majorityBatch = Batch.create(SERIALIZER, List.of(new TestCommand("majority")));
+            var minorityBatch = Batch.create(SERIALIZER, List.of(new TestCommand("minority")));
 
             // 2/3 nodes propose the same batch
             cluster.simulateProposal(NODE_1, majorityBatch);
@@ -164,7 +168,7 @@ class RabiaConsensusIntegrationTest {
         @Test
         void v1_decision_returns_batch_with_quorum_support() {
             var phaseData = new PhaseData<TestCommand>(new Phase(1));
-            var batch = Batch.batch(List.of(new TestCommand("test")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("test")));
 
             // Register quorum proposals for same batch
             phaseData.registerProposal(NODE_1, batch);
@@ -243,8 +247,8 @@ class RabiaConsensusIntegrationTest {
             var phaseData1 = new PhaseData<TestCommand>(new Phase(1));
             var phaseData2 = new PhaseData<TestCommand>(new Phase(1));
 
-            var batch1 = Batch.batch(List.of(new TestCommand("a")));
-            var batch2 = Batch.batch(List.of(new TestCommand("b")));
+            var batch1 = Batch.create(SERIALIZER, List.of(new TestCommand("a")));
+            var batch2 = Batch.create(SERIALIZER, List.of(new TestCommand("b")));
 
             // Same proposals in different order
             phaseData1.registerProposal(NODE_1, batch1);
@@ -279,7 +283,7 @@ class RabiaConsensusIntegrationTest {
         void state_machine_receives_commands_on_v1_decision() throws InterruptedException {
             cluster.activateAll();
 
-            var batch = Batch.batch(List.of(new TestCommand("execute-me")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("execute-me")));
 
             // All nodes propose same batch
             cluster.simulateProposal(NODE_1, batch);
@@ -305,7 +309,7 @@ class RabiaConsensusIntegrationTest {
             // when V1 decision is made
             cluster.activateAll();
 
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             // Simulate complete consensus
             cluster.simulateProposal(NODE_1, batch);
@@ -330,7 +334,7 @@ class RabiaConsensusIntegrationTest {
             cluster.activateAll();
 
             for (int i = 0; i < 3; i++) {
-                var batch = Batch.batch(List.of(new TestCommand("cmd-" + i)));
+                var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd-" + i)));
                 var phase = new Phase(i);
 
                 // Simulate complete consensus for each phase
@@ -364,7 +368,7 @@ class RabiaConsensusIntegrationTest {
             cluster.activateAll();
 
             // Phase 0: V1 decision
-            var batch = Batch.batch(List.of(new TestCommand("locked")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("locked")));
             cluster.simulateProposal(NODE_1, batch);
             cluster.simulateProposal(NODE_2, batch);
             cluster.simulateProposal(NODE_3, batch);
@@ -384,7 +388,7 @@ class RabiaConsensusIntegrationTest {
 
             // Phase 1: locked value should propagate
             // (engines should vote V1 in round 1 due to locked value)
-            var batch2 = Batch.batch(List.of(new TestCommand("cmd2")));
+            var batch2 = Batch.create(SERIALIZER, List.of(new TestCommand("cmd2")));
             cluster.simulateProposalForPhase(NODE_1, new Phase(1), batch2);
             cluster.simulateProposalForPhase(NODE_2, new Phase(1), batch2);
             cluster.simulateProposalForPhase(NODE_3, new Phase(1), batch2);
@@ -412,7 +416,7 @@ class RabiaConsensusIntegrationTest {
             assertThat(cluster.engines.get(NODE_3).isActive()).isFalse();
 
             // Step 2: Node-1 broadcasts a batch (simulates leader proposal)
-            var batch = Batch.batch(List.of(new TestCommand("leader-proposal")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("leader-proposal")));
             cluster.engines.get(NODE_1).handleNewBatch(new NewBatch<>(NODE_1, batch));
             // Deliver to dormant nodes (simulates network delivering NewBatch)
             cluster.engines.get(NODE_2).handleNewBatch(new NewBatch<>(NODE_1, batch));
@@ -454,8 +458,8 @@ class RabiaConsensusIntegrationTest {
             cluster.activateNode(NODE_1);
 
             // Send multiple batches to dormant nodes
-            var batch1 = Batch.batch(List.of(new TestCommand("batch-1")));
-            var batch2 = Batch.batch(List.of(new TestCommand("batch-2")));
+            var batch1 = Batch.create(SERIALIZER, List.of(new TestCommand("batch-1")));
+            var batch2 = Batch.create(SERIALIZER, List.of(new TestCommand("batch-2")));
             cluster.engines.get(NODE_2).handleNewBatch(new NewBatch<>(NODE_1, batch1));
             cluster.engines.get(NODE_2).handleNewBatch(new NewBatch<>(NODE_1, batch2));
             Thread.sleep(50);
@@ -504,7 +508,7 @@ class RabiaConsensusIntegrationTest {
 
         void activateNode(NodeId nodeId) throws InterruptedException {
             var engine = engines.get(nodeId);
-            engine.quorumState(QuorumStateNotification.established());
+            engine.clusterState(ClusterStateNotification.active());
             Thread.sleep(150); // Allow sync request to be sent
 
             // Send sync responses from other nodes to trigger activation
@@ -518,7 +522,7 @@ class RabiaConsensusIntegrationTest {
 
         void activateAll() throws InterruptedException {
             for (var engine : engines.values()) {
-                engine.quorumState(QuorumStateNotification.established());
+                engine.clusterState(ClusterStateNotification.active());
             }
             Thread.sleep(150);
 
@@ -745,9 +749,21 @@ class RabiaConsensusIntegrationTest {
 
         @Override
         @SuppressWarnings("unchecked")
-        public <R> R process(TestCommand command) {
+        public <R> List<R> process(Batch<TestCommand> batch) {
+            return batch.commands()
+                        .stream()
+                        .map(command -> (R) processOne(command))
+                        .toList();
+        }
+
+        private String processOne(TestCommand command) {
             processedCommands.add(command);
-            return (R) ("result:" + command.value());
+            return "result:" + command.value();
+        }
+
+        @Override
+        public org.pragmatica.serialization.Serializer serializer() {
+            return SERIALIZER;
         }
 
         @Override

@@ -25,12 +25,13 @@ import org.pragmatica.consensus.ConsensusError;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.StateMachine;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.*;
 import org.pragmatica.consensus.topology.NodeState;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.net.tcp.Server;
@@ -45,6 +46,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -53,6 +55,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class RabiaEngineTest {
 
     record TestCommand(String value) implements Command {}
+
+    private static final org.pragmatica.serialization.SliceCodec SERIALIZER =
+        TestSerializers.stringCommandSerializer(TestCommand.class, TestCommand::value, TestCommand::new);
 
     private static final NodeId NODE_1 = nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = nodeId("node-2").unwrap();
@@ -78,7 +83,7 @@ class RabiaEngineTest {
     }
 
     private void activateEngine() throws InterruptedException {
-        engine.quorumState(QuorumStateNotification.established());
+        engine.clusterState(ClusterStateNotification.active());
         // Wait for sync to occur and send quorum sync responses
         Thread.sleep(150); // Allow sync request to be sent
         // Send sync responses from other nodes
@@ -111,20 +116,99 @@ class RabiaEngineTest {
                 assertThat(cause).isInstanceOf(ConsensusError.CommandBatchIsEmpty.class)
             );
         }
+
+        @Test
+        void apply_fails_with_ApplyTimeout_when_batch_never_answered() throws InterruptedException {
+            // The test network records broadcasts but never drives consensus to completion,
+            // so the submitted batch is never answered. Before the fix, apply()'s returned
+            // promise had no timeout and hung forever. With a short applyTimeout the engine
+            // converts the stuck batch into a domain ConsensusError.ApplyTimeout.
+            var shortTimeout = new RabiaEngine<>(topologyManager,
+                                                 network,
+                                                 stateMachine,
+                                                 shortApplyTimeoutConfig());
+            activate(shortTimeout);
+
+            var result = shortTimeout.apply(List.of(new TestCommand("never-answered"))).await();
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause ->
+                assertThat(cause).isInstanceOf(ConsensusError.ApplyTimeout.class)
+            );
+            shortTimeout.stop().await();
+        }
+
+        @Test
+        void apply_succeeds_when_batch_is_answered_by_v1_decision() throws InterruptedException {
+            // A normally-answered apply must still succeed through the new
+            // timeout().mapError() wrapping. Submit via apply(), capture the broadcast
+            // batch (with its real correlation IDs), then drive a full V1 decision for it.
+            activateEngine();
+            network.clearMessages();
+
+            var pending = engine.<Unit>apply(List.of(new TestCommand("answered")));
+            Thread.sleep(50);
+
+            var batch = network.getMessages().stream()
+                               .filter(m -> m instanceof RabiaProtocolMessage.Asynchronous.NewBatch<?>)
+                               .map(m -> ((RabiaProtocolMessage.Asynchronous.NewBatch<TestCommand>) m).batch())
+                               .findFirst()
+                               .orElseThrow();
+
+            engine.processPropose(new Propose<>(NODE_2, Phase.ZERO, batch));
+            Thread.sleep(50);
+            engine.processVoteRound1(new VoteRound1(NODE_2, Phase.ZERO, StateValue.V1));
+            engine.processVoteRound1(new VoteRound1(NODE_3, Phase.ZERO, StateValue.V1));
+            Thread.sleep(50);
+            engine.processVoteRound2(new VoteRound2(NODE_2, Phase.ZERO, StateValue.V1));
+            engine.processVoteRound2(new VoteRound2(NODE_3, Phase.ZERO, StateValue.V1));
+
+            var result = pending.await(timeSpan(5).seconds());
+
+            assertThat(result.isSuccess())
+                    .as("answered apply must succeed, not time out")
+                    .isTrue();
+        }
+
+        private ProtocolConfig shortApplyTimeoutConfig() {
+            return ProtocolConfig.protocolConfig(timeSpan(60).seconds(),
+                                                 timeSpan(100).millis(),
+                                                 100,
+                                                 ProtocolConfig.DEFAULT_MAX_PENDING_BATCHES,
+                                                 timeSpan(200).millis())
+                                 .unwrap();
+        }
+
+        private void activate(RabiaEngine<TestCommand> target) throws InterruptedException {
+            target.clusterState(ClusterStateNotification.active());
+            Thread.sleep(150);
+            target.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
+            target.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
+            Thread.sleep(50);
+        }
     }
 
     @Nested
     class QuorumHandling {
 
         @Test
-        void disconnection_resets_engine_state() throws InterruptedException {
+        void disconnection_pauses_engine_and_rejects_submissions() throws InterruptedException {
+            // Membership-architecture-spec §4.5 / §7.3: quorum-loss transitions Active → Paused
+            // (not a reset). New apply() submissions are rejected with QuorumPaused while the
+            // engine retains all in-memory state ready for resume on the next ESTABLISHED.
             activateEngine();
 
-            engine.quorumState(QuorumStateNotification.disappeared());
+            engine.clusterState(ClusterStateNotification.passive());
             Thread.sleep(50);
+
+            assertThat(engine.isPaused()).as("engine should be paused after DISAPPEARED").isTrue();
+            assertThat(engine.isActive()).as("engine must not appear active while paused").isFalse();
 
             var result = engine.apply(List.of(new TestCommand("test"))).await();
             assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause ->
+                assertThat(cause).isInstanceOf(ConsensusError.QuorumPaused.class)
+            );
         }
     }
 
@@ -133,7 +217,7 @@ class RabiaEngineTest {
 
         @Test
         void sync_request_broadcast_on_quorum_established() throws InterruptedException {
-            engine.quorumState(QuorumStateNotification.established());
+            engine.clusterState(ClusterStateNotification.active());
             Thread.sleep(150);
 
             var hasSyncRequest = network.getMessages().stream()
@@ -143,7 +227,7 @@ class RabiaEngineTest {
 
         @Test
         void ignores_proposals_when_inactive() {
-            var batch = Batch.batch(List.of(new TestCommand("test")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("test")));
             var propose = new Propose<>(NODE_2, new Phase(1), batch);
 
             engine.processPropose(propose);
@@ -175,7 +259,7 @@ class RabiaEngineTest {
             activateEngine();
             network.clearMessages();
 
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
 
             // Complete phase 0 with V1 decision
             engine.processPropose(new Propose<>(NODE_1, Phase.ZERO, batch));
@@ -245,7 +329,7 @@ class RabiaEngineTest {
             network.clearMessages();
 
             var command = new TestCommand("cmd");
-            var batch = Batch.batch(List.of(command));
+            var batch = Batch.create(SERIALIZER, List.of(command));
 
             // Simulate a complete V1 decision flow with a non-empty batch
             engine.processPropose(new Propose<>(NODE_1, Phase.ZERO, batch));
@@ -276,7 +360,7 @@ class RabiaEngineTest {
             activateEngine();
 
             // Complete phase 0
-            var batch = Batch.batch(List.of(new TestCommand("cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
             engine.processPropose(new Propose<>(NODE_1, Phase.ZERO, batch));
             engine.processPropose(new Propose<>(NODE_2, Phase.ZERO, batch));
             Thread.sleep(50);
@@ -316,7 +400,7 @@ class RabiaEngineTest {
             for (int phase = 0; phase < 3; phase++) {
                 network.clearMessages();
                 var p = new Phase(phase);
-                var batch = Batch.batch(List.of(new TestCommand("cmd-" + phase)));
+                var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd-" + phase)));
 
                 engine.processPropose(new Propose<>(NODE_1, p, batch));
                 engine.processPropose(new Propose<>(NODE_2, p, batch));
@@ -344,7 +428,7 @@ class RabiaEngineTest {
             // Complete multiple phases to accumulate phase data
             for (int phase = 0; phase < 5; phase++) {
                 var p = new Phase(phase);
-                var batch = Batch.batch(List.of(new TestCommand("cmd-" + phase)));
+                var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd-" + phase)));
 
                 engine.processPropose(new Propose<>(NODE_1, p, batch));
                 engine.processPropose(new Propose<>(NODE_2, p, batch));
@@ -382,7 +466,7 @@ class RabiaEngineTest {
             // Verify engine accepts commands after sync restoration (doesn't fail immediately)
             // The apply returns a Promise that won't complete without full protocol execution,
             // so we verify the engine state is correct rather than waiting for the result
-            var batch = Batch.batch(List.of(new TestCommand("test-after-sync")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("test-after-sync")));
             engine.processPropose(new Propose<>(NODE_1, Phase.ZERO, batch));
             Thread.sleep(50);
 
@@ -392,12 +476,45 @@ class RabiaEngineTest {
         }
 
         @Test
+        void onStateRestored_fires_after_empty_snapshot_restore() throws InterruptedException {
+            // The listener captures engine.isActive() at fire time, proving the callback runs
+            // AFTER the restored state is applied and the engine has activated.
+            var activeAtFire = new AtomicBoolean(false);
+            engine.onStateRestored(() -> activeAtFire.set(engine.isActive()));
+
+            activateEngine();
+
+            assertThat(activeAtFire.get())
+                .as("onStateRestored must fire after restore completes and the engine activates")
+                .isTrue();
+        }
+
+        @Test
+        void onStateRestored_fires_after_nonempty_snapshot_restore() throws InterruptedException {
+            // Non-empty snapshot path: restore goes through stateMachine.restoreSnapshot's
+            // success continuation, so the state-machine content is queryable when it fires.
+            var activeAtFire = new AtomicBoolean(false);
+            engine.onStateRestored(() -> activeAtFire.set(engine.isActive()));
+
+            engine.clusterState(ClusterStateNotification.active());
+            Thread.sleep(150); // Allow sync request to be sent
+            var state = RabiaPersistence.SavedState.<TestCommand>savedState(new byte[]{42}, Phase.ZERO, List.of());
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, state));
+            engine.processSyncResponse(new SyncResponse<>(NODE_3, state));
+            Thread.sleep(50); // Allow activation to complete
+
+            assertThat(activeAtFire.get())
+                .as("onStateRestored must fire after a non-empty snapshot restore")
+                .isTrue();
+        }
+
+        @Test
         void round1_votes_never_vquestion() throws InterruptedException {
             // Invariant 14: round1 votes never VQUESTION
             activateEngine();
             network.clearMessages();
 
-            var batch = Batch.batch(List.of(new TestCommand("test")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("test")));
 
             // Simulate receiving proposals from all nodes
             engine.processPropose(new Propose<>(NODE_1, Phase.ZERO, batch));
@@ -421,7 +538,7 @@ class RabiaEngineTest {
             activateEngine();
             network.clearMessages();
 
-            var batch = Batch.batch(List.of(new TestCommand("test-cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("test-cmd")));
 
             // Simulate receiving proposals from all nodes (same batch)
             engine.processPropose(new Propose<>(NODE_1, Phase.ZERO, batch));
@@ -454,8 +571,8 @@ class RabiaEngineTest {
             activateEngine();
             network.clearMessages();
 
-            var batch1 = Batch.batch(List.of(new TestCommand("cmd1")));
-            var batch2 = Batch.batch(List.of(new TestCommand("cmd2")));
+            var batch1 = Batch.create(SERIALIZER, List.of(new TestCommand("cmd1")));
+            var batch2 = Batch.create(SERIALIZER, List.of(new TestCommand("cmd2")));
 
             // Simulate conflicting proposals
             engine.processPropose(new Propose<>(NODE_1, Phase.ZERO, batch1));
@@ -477,7 +594,7 @@ class RabiaEngineTest {
             activateEngine();
             network.clearMessages();
 
-            var batch = Batch.batch(List.of(new TestCommand("fast-path-cmd")));
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("fast-path-cmd")));
 
             // Simulate receiving proposals from all nodes (same batch)
             engine.processPropose(new Propose<>(NODE_1, Phase.ZERO, batch));
@@ -510,7 +627,7 @@ class RabiaEngineTest {
         void gated_engine_stays_stopped_on_quorum_established() throws InterruptedException {
             var gatedEngine = new RabiaEngine<>(topologyManager, network, stateMachine,
                                                  ProtocolConfig.testConfig(), ConsensusMetrics.noop(), true);
-            gatedEngine.quorumState(QuorumStateNotification.established());
+            gatedEngine.clusterState(ClusterStateNotification.active());
             Thread.sleep(100);
 
             assertThat(gatedEngine.isActive()).as("Gated engine should stay inactive").isFalse();
@@ -521,7 +638,7 @@ class RabiaEngineTest {
         void gated_engine_activates_after_authorize() throws InterruptedException {
             var gatedEngine = new RabiaEngine<>(topologyManager, network, stateMachine,
                                                  ProtocolConfig.testConfig(), ConsensusMetrics.noop(), true);
-            gatedEngine.quorumState(QuorumStateNotification.established());
+            gatedEngine.clusterState(ClusterStateNotification.active());
             Thread.sleep(100);
 
             assertThat(gatedEngine.isActive()).isFalse();
@@ -542,7 +659,7 @@ class RabiaEngineTest {
         void ungated_engine_activates_normally() throws InterruptedException {
             var ungatedEngine = new RabiaEngine<>(topologyManager, network, stateMachine,
                                                    ProtocolConfig.testConfig(), ConsensusMetrics.noop(), false);
-            ungatedEngine.quorumState(QuorumStateNotification.established());
+            ungatedEngine.clusterState(ClusterStateNotification.active());
             Thread.sleep(200);
 
             ungatedEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
@@ -558,9 +675,9 @@ class RabiaEngineTest {
             var gatedEngine = new RabiaEngine<>(topologyManager, network, stateMachine,
                                                  ProtocolConfig.testConfig(), ConsensusMetrics.noop(), true);
             // Even when gated, DISAPPEARED should propagate normally
-            gatedEngine.quorumState(QuorumStateNotification.established());
+            gatedEngine.clusterState(ClusterStateNotification.active());
             Thread.sleep(50);
-            gatedEngine.quorumState(QuorumStateNotification.disappeared());
+            gatedEngine.clusterState(ClusterStateNotification.passive());
             Thread.sleep(50);
 
             assertThat(gatedEngine.isActive()).isFalse();
@@ -699,9 +816,21 @@ class RabiaEngineTest {
 
         @Override
         @SuppressWarnings("unchecked")
-        public <R> R process(TestCommand command) {
+        public <R> List<R> process(Batch<TestCommand> batch) {
+            return batch.commands()
+                        .stream()
+                        .map(command -> (R) processOne(command))
+                        .toList();
+        }
+
+        private String processOne(TestCommand command) {
             processedCommands.add(command);
-            return (R) ("result:" + command.value());
+            return "result:" + command.value();
+        }
+
+        @Override
+        public org.pragmatica.serialization.Serializer serializer() {
+            return SERIALIZER;
         }
 
         @Override

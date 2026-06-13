@@ -18,6 +18,7 @@ package org.pragmatica.consensus.net.quic;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -29,10 +30,10 @@ import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetCodecs;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
+import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -75,8 +76,8 @@ class QuicClusterServerTest {
 
         @Test
         void connect_helloExchanged_peerConnectionEstablished() throws Exception {
-            var serverSslResult = QuicTlsProvider.serverContext(Option.empty());
-            var clientSslResult = QuicTlsProvider.clientContext(Option.empty());
+            var serverSslResult = QuicTlsProvider.serverContext(TlsConfig.selfSignedServer());
+            var clientSslResult = QuicTlsProvider.clientContext(TlsConfig.insecureClient());
 
             serverSslResult.onFailure(_ -> fail("Server SSL context creation failed"));
             clientSslResult.onFailure(_ -> fail("Client SSL context creation failed"));
@@ -87,7 +88,7 @@ class QuicClusterServerTest {
             server = serverSslResult.fold(
                 _ -> fail("unreachable"),
                 ssl -> QuicClusterServer.quicClusterServer(
-                    SERVER_NODE, NodeRole.ACTIVE, SERVER_ADDRESS, codec, codec, ssl, Option.empty(),
+                    SERVER_NODE, SERVER_ADDRESS, Map.of(), codec, codec, ssl, Option.empty(),
                     (conn, _, _) -> {
                         connections.add(conn);
                         latch.countDown();
@@ -105,7 +106,7 @@ class QuicClusterServerTest {
             client = clientSslResult.fold(
                 _ -> fail("unreachable"),
                 ssl -> QuicClusterClient.quicClusterClient(
-                    CLIENT_NODE, NodeRole.ACTIVE, CLIENT_ADDRESS, codec, codec, ssl, Option.empty(),
+                    CLIENT_NODE, CLIENT_ADDRESS, Map.of(), codec, codec, ssl, Option.empty(),
                     (_, _) -> {}
                 )
             );
@@ -133,12 +134,12 @@ class QuicClusterServerTest {
 
         @Test
         void start_bindSucceeds_promiseResolves() {
-            var sslResult = QuicTlsProvider.serverContext(Option.empty());
+            var sslResult = QuicTlsProvider.serverContext(TlsConfig.selfSignedServer());
 
             server = sslResult.fold(
                 _ -> fail("unreachable"),
                 ssl -> QuicClusterServer.quicClusterServer(
-                    SERVER_NODE, NodeRole.ACTIVE, SERVER_ADDRESS, codec, codec, ssl, Option.empty(),
+                    SERVER_NODE, SERVER_ADDRESS, Map.of(), codec, codec, ssl, Option.empty(),
                     (_, _, _) -> {}, (_, _) -> {}
                 )
             );
@@ -153,12 +154,12 @@ class QuicClusterServerTest {
 
         @Test
         void stop_afterStart_releasesResources() {
-            var sslResult = QuicTlsProvider.serverContext(Option.empty());
+            var sslResult = QuicTlsProvider.serverContext(TlsConfig.selfSignedServer());
 
             server = sslResult.fold(
                 _ -> fail("unreachable"),
                 ssl -> QuicClusterServer.quicClusterServer(
-                    SERVER_NODE, NodeRole.ACTIVE, SERVER_ADDRESS, codec, codec, ssl, Option.empty(),
+                    SERVER_NODE, SERVER_ADDRESS, Map.of(), codec, codec, ssl, Option.empty(),
                     (_, _, _) -> {}, (_, _) -> {}
                 )
             );

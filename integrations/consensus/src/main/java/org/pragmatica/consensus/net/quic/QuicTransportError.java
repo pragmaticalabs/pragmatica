@@ -16,6 +16,7 @@
 
 package org.pragmatica.consensus.net.quic;
 
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 
@@ -26,7 +27,8 @@ public sealed interface QuicTransportError extends Cause {
     enum General implements QuicTransportError {
         HELLO_TIMEOUT("Hello handshake timed out"),
         UNEXPECTED_MESSAGE("Expected Hello message but received different type"),
-        SERVER_NOT_STARTED("QUIC server is not started");
+        SERVER_NOT_STARTED("QUIC server is not started"),
+        NO_TLS_CONFIGURATION("No TLS configuration provided. Set AETHER_INSECURE_DEV_MODE=true for development without TLS verification");
 
         private final String text;
 
@@ -69,6 +71,33 @@ public sealed interface QuicTransportError extends Cause {
         @Override
         public String message() {
             return "Failed to connect to QUIC peer at " + address + ": " + Causes.fromThrowable(cause);
+        }
+    }
+
+    /// Peer address could not be resolved to an IP (e.g. stale/unknown DNS name).
+    /// Clean, retryable dial failure — distinct from a Netty-level connect failure.
+    record UnresolvedAddress(String address) implements QuicTransportError {
+        @Override
+        public String message() {
+            return "Cannot connect to QUIC peer: address is unresolved or missing: " + address;
+        }
+    }
+
+    /// Dialer-side Hello identity verification failed (cluster-topology-overhaul spec, Wave 3):
+    /// the Hello sender's claimed identity did not match the dialed identity. The connection is
+    /// closed un-attached and the dial fails down the normal connect-failure path (backoff and
+    /// eviction engage as for any failed dial). A misdirected dial (e.g. DNS re-resolution
+    /// landing on whatever answers) can no longer attach under the wrong identity.
+    ///
+    /// @param expected the NodeId the dial targeted
+    /// @param actual   the NodeId the Hello response claimed
+    /// @param address  the remote address the dial actually resolved to
+    record IdentityMismatch(NodeId expected, NodeId actual, String address) implements QuicTransportError {
+        @Override
+        public String message() {
+            return "QUIC dialer Hello identity mismatch: dialed=" + expected.id()
+                   + " helloSender=" + actual.id()
+                   + " address=" + address + " — connection rejected";
         }
     }
 

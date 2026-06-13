@@ -18,6 +18,9 @@ package org.pragmatica.consensus.net;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.net.quic.PeerTransitionRecord;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -26,6 +29,10 @@ import org.pragmatica.net.tcp.Server;
 
 import java.util.Map;
 import java.util.Set;
+import java.util.Collection;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 import static org.pragmatica.consensus.net.NetworkServiceMessage.*;
 
@@ -44,18 +51,72 @@ public interface ClusterNetwork {
     /// logged and silently ignored - the protocol handles message loss.
     <M extends ProtocolMessage> Unit broadcast(M message);
 
+    @Contract
     @MessageReceiver
     void connect(ConnectNode connectNode);
 
+    @Contract
     @MessageReceiver
     void disconnect(DisconnectNode disconnectNode);
 
+    /// Permanently remove a decommissioned peer. Unlike [#disconnect(DisconnectNode)],
+    /// which soft-evicts to EVICTED state (allowing future reconnect), this removes the
+    /// peer entry entirely (REMOVED state) and closes the datagram channel, preventing
+    /// WARN flood from broadcast attempts to a dead node.
+    @Contract
+    default void departurePermanent(NodeId nodeId) {}
+
+    /// Connect to a newly-announced peer using its full NodeInfo (address + id).
+    /// Called by the SWIM JoinAnnounced listener for peers not in the static topology.
+    @Contract
+    default void connect(NodeInfo nodeInfo) {}
+
+    /// Gate the missing-peer reconciler: peers for which the supplier returns false
+    /// (FAULTY or UNKNOWN in SWIM) are skipped during reconnect attempts.
+    @Contract
+    default void setSwimHealthGate(Function<NodeId, Boolean> gate) {}
+
+    /// Gate the INBOUND tombstone-readmit path (Fix A): a REMOVED peer presenting a completed
+    /// authenticated Hello is readmitted only when this raw-SWIM proof-of-life predicate reports
+    /// it recently ALIVE (HEALTHY or SUSPECTED) — independent of the FSM's terminal-DEAD verdict.
+    /// Covers the lowest-id node that nobody dials (so the dial-path readmit can never run for it).
+    /// Default no-op: transports without a tombstone phase keep the legacy behaviour.
+    @Contract
+    default void setSwimLivenessGate(Function<NodeId, Boolean> gate) {}
+
+    /// Publish the FSM-authoritative desired core-member connection set. When present, the
+    /// missing-peer reconciler reconciles live connections against THIS set (MEMBER + SUSPECT,
+    /// non-worker, address-known) instead of static topology, dropping the legacy SWIM
+    /// membership/health dial gates (the set already encodes them). Default no-op: transports
+    /// without a reconciler keep the legacy topology-driven behaviour.
+    @Contract
+    default void setDesiredConnections(Supplier<Collection<NodeInfo>> supplier) {}
+
+    /// Wave-1 transition journal feed (cluster-topology-overhaul spec, Enrichment A): install a
+    /// listener invoked with one [org.pragmatica.consensus.net.quic.PeerTransitionRecord] per
+    /// peer-lifecycle phase mutation (and per dialer expected-vs-actual Hello diagnostic).
+    /// Diagnostic-only — emitting has no control-flow effect. Default no-op: transports without
+    /// per-peer phase machines (or without journal wiring) are unaffected. A `null` argument
+    /// resets to the no-op.
+    @Contract
+    default void setPeerTransitionListener(Consumer<PeerTransitionRecord> listener) {}
+
+    /// Register a callback fired once the transport is bound and ready to dial/accept
+    /// connections — i.e. transport-ready, NOT consensus-quorum-ready. If the transport is
+    /// already ready when this is called, the hook runs immediately. Default best-effort for
+    /// impls without an explicit ready signal: run immediately.
+    @Contract
+    default void whenReady(Runnable hook) { hook.run(); }
+
+    @Contract
     @MessageReceiver
     void listNodes(ListConnectedNodes listConnectedNodes);
 
+    @Contract
     @MessageReceiver
     void handleSend(Send send);
 
+    @Contract
     @MessageReceiver
     void handleBroadcast(Broadcast broadcast);
 
@@ -64,6 +125,25 @@ public interface ClusterNetwork {
     /// Implementations must not throw exceptions. Failed sends should be
     /// logged and silently ignored - the protocol handles message loss.
     <M extends ProtocolMessage> Unit send(NodeId nodeId, M message);
+
+    /// Send a message to a specific node and return the synchronous local-transport
+    /// outcome.
+    ///
+    /// Where [#send(NodeId, ProtocolMessage)] is fire-and-forget (failures handled
+    /// upstream via protocol retransmits / timeouts), this overload reports back
+    /// immediately whether the message was enqueued ([WriteOutcome.Sent]) or refused
+    /// (backpressure / dead connection / unknown peer). Callers that need to react
+    /// faster than per-operation timeouts — currently only the DHT quorum path — use
+    /// this to short-circuit waiting on a clearly-unreachable replica.
+    ///
+    /// Default implementation falls back to `send` and returns [WriteOutcome.Sent] —
+    /// transports without per-write outcome tracking remain backward-compatible.
+    ///
+    /// See `aether/docs/specs/dht-resilience-spec.md` Layer 1.
+    default <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId nodeId, M message) {
+        send(nodeId, message);
+        return Promise.success(new WriteOutcome.Sent(nodeId));
+    }
 
     /// Start the network.
     Promise<Unit> start();
@@ -79,9 +159,25 @@ public interface ClusterNetwork {
     /// This set does NOT include self - only remote peers with active connections.
     Set<NodeId> connectedPeers();
 
+    /// Peers locally reachable for quorum purposes — includes CONNECTED and EVICTED
+    /// (transient stale-link awaiting reconcile). Mirrors `activeConnectedCount`
+    /// semantics so externally-visible counts do not flicker on momentary evictions.
+    /// Default falls back to `connectedPeers` for transports without an EVICTED state.
+    default Set<NodeId> activePeers() {
+        return connectedPeers();
+    }
+
     /// Get the underlying server instance for metrics collection.
     /// Returns empty if the network has not been started yet.
     Option<Server> server();
+
+    /// Test-only fault injection: when enabled, the transport silently drops ALL application
+    /// traffic (outbound sends/broadcasts become no-ops; inbound frames are dropped before
+    /// routing) WITHOUT closing any connection — peers continue to see the link as connected.
+    /// Reproduces a hard process kill with idle-timeout disabled (silent death). Default no-op
+    /// for transports that do not support fault injection.
+    @Contract
+    default void blackhole(boolean enabled) {}
 
     /// Get transport-level metrics as a name-to-value map.
     /// Returns an empty map by default; QUIC transport overrides with connection/handshake/message stats.

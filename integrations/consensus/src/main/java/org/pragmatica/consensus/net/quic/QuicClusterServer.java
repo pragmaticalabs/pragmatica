@@ -17,6 +17,7 @@
 package org.pragmatica.consensus.net.quic;
 
 import java.net.InetSocketAddress;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import io.netty.bootstrap.Bootstrap;
@@ -25,6 +26,7 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
@@ -35,12 +37,14 @@ import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicServerCodecBuilder;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
+import io.netty.util.AttributeKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
-import org.pragmatica.consensus.net.NodeRole;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -73,19 +77,22 @@ public sealed interface QuicClusterServer {
     /// Callback for new peer connections after Hello handshake completes.
     @FunctionalInterface
     interface PeerConnectionHandler {
-        void onPeerConnected(QuicPeerConnection connection, NodeRole peerRole, NodeAddress peerAddress);
+        @Contract
+        void onPeerConnected(QuicPeerConnection connection, NodeAddress peerAddress, Map<String, String> peerLabels);
     }
 
     /// Callback for incoming messages after Hello handshake completes.
     @FunctionalInterface
     interface MessageReceiver {
+        @Contract
         void onMessage(NodeId sender, Object message);
     }
 
     /// Create a new QUIC cluster server.
     ///
     /// @param selfId            this node's identity
-    /// @param selfRole          this node's role in the cluster
+    /// @param selfAddress       this node's cluster address
+    /// @param selfLabels        this node's metadata labels
     /// @param serializer        message serializer
     /// @param deserializer      message deserializer
     /// @param sslContext        QUIC server SSL context (TLS 1.3)
@@ -93,15 +100,15 @@ public sealed interface QuicClusterServer {
     /// @param connectionHandler callback invoked when a peer completes Hello handshake
     /// @param messageReceiver   callback invoked for each message received after Hello
     static QuicClusterServer quicClusterServer(NodeId selfId,
-                                               NodeRole selfRole,
                                                NodeAddress selfAddress,
+                                               Map<String, String> selfLabels,
                                                Serializer serializer,
                                                Deserializer deserializer,
                                                QuicSslContext sslContext,
                                                Option<EventLoopGroup> sharedEventLoop,
                                                PeerConnectionHandler connectionHandler,
                                                MessageReceiver messageReceiver) {
-        return new QuicClusterServerInstance(selfId, selfRole, selfAddress, serializer, deserializer,
+        return new QuicClusterServerInstance(selfId, selfAddress, selfLabels, serializer, deserializer,
                                             sslContext, sharedEventLoop, connectionHandler,
                                             messageReceiver);
     }
@@ -126,16 +133,20 @@ public sealed interface QuicClusterServer {
 
 final class QuicClusterServerInstance implements QuicClusterServer {
     private static final Logger log = LoggerFactory.getLogger(QuicClusterServerInstance.class);
+    /// Parent-QuicChannel attribute carrying the per-peer connection, stamped by the CONTROL
+    /// (Hello) stream and read by each subsequently-accepted data-lane stream so it can attach
+    /// itself to the right [QuicPeerConnection]. Package-visible: stamped + read here.
+    static final AttributeKey<QuicPeerConnection> PEER_CONNECTION = AttributeKey.valueOf("aether.quic.peerConnection");
     private static final long HELLO_TIMEOUT_MS = 15_000;
-    private static final int WRITE_TIMEOUT_SECONDS = 10;
     private static final long MAX_IDLE_TIMEOUT_MS = 0; // Disabled per QUIC RFC 9000 §10.1 — cluster connections are persistent
-    private static final long INITIAL_MAX_DATA = 16_000_000;
-    private static final long INITIAL_MAX_STREAM_DATA = 4_000_000;
+    private static final long INITIAL_MAX_DATA = 64_000_000;
+    private static final long INITIAL_MAX_STREAM_DATA = 32_000_000;
     private static final long INITIAL_MAX_STREAMS = 64;
+    private static final int MAX_FRAME_LENGTH = 32 * 1024 * 1024;
 
     private final NodeId selfId;
-    private final NodeRole selfRole;
     private final NodeAddress selfAddress;
+    private final Map<String, String> selfLabels;
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final QuicSslContext sslContext;
@@ -148,8 +159,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     private volatile boolean ownsEventLoop;
 
     QuicClusterServerInstance(NodeId selfId,
-                              NodeRole selfRole,
                               NodeAddress selfAddress,
+                              Map<String, String> selfLabels,
                               Serializer serializer,
                               Deserializer deserializer,
                               QuicSslContext sslContext,
@@ -157,8 +168,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                               PeerConnectionHandler connectionHandler,
                               MessageReceiver messageReceiver) {
         this.selfId = selfId;
-        this.selfRole = selfRole;
         this.selfAddress = selfAddress;
+        this.selfLabels = Map.copyOf(selfLabels);
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.sslContext = sslContext;
@@ -195,6 +206,10 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         var bootstrap = new Bootstrap()
             .group(group)
             .channel(NioDatagramChannel.class)
+            // SO_REUSEADDR enables fast rebind when a node restarts and the kernel still holds
+            // the cluster UDP port in TIME_WAIT — without it `BindException: Address already in
+            // use` cascades through chaos tests every time a node is killed and restarted.
+            .option(ChannelOption.SO_REUSEADDR, true)
             .handler(codec);
 
         bootstrap.bind(new InetSocketAddress(port))
@@ -224,6 +239,9 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             .initialMaxStreamDataBidirectionalLocal(INITIAL_MAX_STREAM_DATA)
             .initialMaxStreamDataBidirectionalRemote(INITIAL_MAX_STREAM_DATA)
             .initialMaxStreamsBidirectional(INITIAL_MAX_STREAMS)
+            // Enables QUIC connection migration so a path change (not a socket teardown)
+            // survives without a reconnect.
+            .activeMigration(true)
             .tokenHandler(InsecureQuicTokenHandler.INSTANCE)
             .handler(new ServerConnectionInitializer())
             .streamHandler(new ServerStreamInitializer())
@@ -271,50 +289,63 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     /// Per-connection initializer: logs connection events.
     private class ServerConnectionInitializer extends ChannelInitializer<QuicChannel> {
         @Override
+        @Contract
         protected void initChannel(QuicChannel ch) {
             log.debug("New QUIC connection from {}", ch.remoteAddress());
         }
     }
 
-    /// Per-stream initializer: installs framing + Hello handshake handler on each new stream.
+    /// Per-stream initializer: installs framing + preamble/Hello handler on each new stream.
     /// QUIC streams are byte-oriented (like TCP) — LengthFieldBasedFrameDecoder is needed
     /// to delimit individual messages within the stream.
     private class ServerStreamInitializer extends ChannelInitializer<QuicStreamChannel> {
         @Override
+        @Contract
         protected void initChannel(QuicStreamChannel ch) {
             ch.pipeline()
-              .addLast(new io.netty.handler.timeout.WriteTimeoutHandler(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS))
-              .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(1_048_576, 0, 4, 0, 4))
+              .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
               .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
-              .addLast(new ServerHelloHandler());
+              .addLast(new ServerStreamHandler());
         }
     }
 
-    /// Handles the Hello handshake on the server side.
+    /// Reads each accepted stream's 1-byte lane preamble and routes by lane.
     ///
-    /// Reads the first message on a new stream, validates it as a Hello,
-    /// sends Hello response, then notifies the connection handler.
-    private class ServerHelloHandler extends SimpleChannelInboundHandler<ByteBuf> {
-        private volatile boolean helloReceived;
+    /// Phase machine:
+    ///   - AWAITING_PREAMBLE: first framed message is the 1-byte lane index.
+    ///       * CONTROL → transition to AWAITING_HELLO (the handshake rides CONTROL).
+    ///       * any data lane → resolve the per-peer connection from the parent QuicChannel
+    ///         attribute, register this stream under the lane, swap to the shared data handler.
+    ///   - AWAITING_HELLO: decode the Hello, send the Hello response, build + register the
+    ///       peer connection, stamp the parent-channel attribute, swap to the shared data
+    ///       handler (CONTROL lane), then notify the connection handler.
+    ///
+    /// Installed at stream init so it receives `channelActive` for the handshake/preamble timeout.
+    private class ServerStreamHandler extends SimpleChannelInboundHandler<ByteBuf> {
+        private Phase phase = Phase.AWAITING_PREAMBLE;
+
+        private enum Phase {AWAITING_PREAMBLE, AWAITING_HELLO}
 
         @Override
+        @Contract
         protected void channelRead0(ChannelHandlerContext ctx, ByteBuf buf) {
-            if (helloReceived) {
-                return;
+            switch (phase) {
+                case AWAITING_PREAMBLE -> handlePreamble(ctx, buf);
+                case AWAITING_HELLO -> handleHello(ctx, buf);
             }
-            helloReceived = true;
-            processHello(ctx, buf);
         }
 
         @Override
+        @Contract
         public void channelActive(ChannelHandlerContext ctx) throws Exception {
             super.channelActive(ctx);
             scheduleHelloTimeout(ctx);
         }
 
         @Override
+        @Contract
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            log.error("Error in QUIC server Hello handler", cause);
+            log.error("Error in QUIC server stream handler", cause);
             ctx.close();
         }
 
@@ -327,14 +358,58 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         }
 
         private void onHelloTimeout(ChannelHandlerContext ctx) {
-            if (!helloReceived && ctx.channel().isActive()) {
-                log.warn("Hello timeout for connection {}", ctx.channel().remoteAddress());
+            // Timeout only matters while we are still awaiting the preamble or Hello; once the
+            // handler is swapped to the data handler the pipeline no longer contains this handler.
+            if (ctx.channel().isActive() && ctx.pipeline().context(this) != null) {
+                log.warn("Stream preamble/Hello timeout for connection {}", ctx.channel().remoteAddress());
                 ctx.close();
             }
         }
 
+        private void handlePreamble(ChannelHandlerContext ctx, ByteBuf buf) {
+            if (buf.readableBytes() < 1) {
+                log.warn("Empty stream preamble from {} — closing", ctx.channel().remoteAddress());
+                ctx.close();
+                return;
+            }
+            var idx = buf.readByte();
+            StreamType.fromIndex(idx)
+                      .fold(() -> onInvalidPreamble(ctx, idx),
+                            lane -> routePreamble(ctx, lane));
+        }
+
+        private Unit onInvalidPreamble(ChannelHandlerContext ctx, byte idx) {
+            log.warn("Invalid stream preamble index {} from {} — closing", idx, ctx.channel().remoteAddress());
+            ctx.close();
+            return unit();
+        }
+
+        private Unit routePreamble(ChannelHandlerContext ctx, StreamType lane) {
+            if (lane == StreamType.CONTROL) {
+                phase = Phase.AWAITING_HELLO;
+                return unit();
+            }
+            return attachDataLane(ctx, lane);
+        }
+
+        private Unit attachDataLane(ChannelHandlerContext ctx, StreamType lane) {
+            var parentQuicChannel = (QuicChannel) ctx.channel().parent();
+            var peerConnection = parentQuicChannel.attr(PEER_CONNECTION).get();
+            if (peerConnection == null) {
+                log.warn("No peer connection on parent channel for {} lane from {} — closing (handshake-first ordering violated)",
+                         lane, ctx.channel().remoteAddress());
+                ctx.close();
+                return unit();
+            }
+            peerConnection.registerStream(lane, (QuicStreamChannel) ctx.channel());
+            ctx.pipeline().replace(this, "data-handler",
+                                   new QuicLaneDataHandler(peerConnection.peerId(), lane, deserializer, messageReceiver, log));
+            log.debug("Attached {} lane stream from peer {}", lane, peerConnection.peerId());
+            return unit();
+        }
+
         @SuppressWarnings("JBCT-PAT-01") // Adapter boundary: catch deserialization errors from external input
-        private void processHello(ChannelHandlerContext ctx, ByteBuf buf) {
+        private void handleHello(ChannelHandlerContext ctx, ByteBuf buf) {
             Object message;
             try {
                 message = decodeMessage(buf);
@@ -359,65 +434,86 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         }
 
         private void sendHelloResponse(ChannelHandlerContext ctx) {
-            var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfRole, selfAddress));
+            // Responses flowing back from the acceptor carry NO preamble.
+            var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfAddress, selfLabels));
             ctx.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
         }
 
         private void registerPeerConnection(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
             var quicChannel = (QuicChannel) ctx.channel().parent();
             var peerConnection = quicPeerConnection(hello.sender(), quicChannel);
-            peerConnection.registerStream(StreamType.CONSENSUS, (QuicStreamChannel) ctx.channel());
+            // The handshake stream is the CONTROL lane.
+            peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());
+            // Install the lazy lane-opener so a write that races the data-lane preamble window can
+            // (re)open the missing lane on this live channel instead of failing "No stream available".
+            // The acceptor formerly populated its stream table ONLY passively (as the dialer's
+            // preamble frames arrived via attachDataLane), so onPeerConnected published the peer
+            // CONNECTED with only CONTROL present — the QUIC reconnect stream-zombie.
+            peerConnection.laneOpener(laneOpenerFor(quicChannel, hello.sender(), peerConnection));
+            // Stamp the parent QuicChannel so subsequently-accepted data-lane streams can find
+            // the peer connection by reading this attribute.
+            quicChannel.attr(PEER_CONNECTION).set(peerConnection);
 
-            // Replace Hello handler with data handler for ongoing messages
-            ctx.pipeline().replace(this, "data-handler", new DataHandler(hello.sender()));
+            // Replace the preamble/Hello handler with the shared data handler (CONTROL lane).
+            ctx.pipeline().replace(this, "data-handler",
+                                   new QuicLaneDataHandler(hello.sender(), StreamType.CONTROL, deserializer, messageReceiver, log));
 
-            log.info("QUIC Hello handshake complete with peer {} (role={}, address={})", hello.sender(), hello.role(), hello.address());
-            connectionHandler.onPeerConnected(peerConnection, hello.role(), hello.address());
-        }
-    }
-
-    /// Handles ongoing data messages after Hello handshake completes.
-    /// Deserializes incoming bytes and routes them via the message receiver callback.
-    /// Also monitors channel writability to drain backpressure queues.
-    private class DataHandler extends SimpleChannelInboundHandler<ByteBuf> {
-        private final NodeId peerId;
-        private final Runnable onWritable;
-
-        DataHandler(NodeId peerId) {
-            this(peerId, () -> {});
-        }
-
-        DataHandler(NodeId peerId, Runnable onWritable) {
-            this.peerId = peerId;
-            this.onWritable = onWritable;
+            log.info("QUIC Hello handshake complete with peer {} (address={})", hello.sender(), hello.address());
+            connectionHandler.onPeerConnected(peerConnection, hello.address(), hello.labels());
         }
 
-        @Override
-        @SuppressWarnings("JBCT-PAT-01") // Adapter boundary: catch deserialization errors from external input
-        protected void channelRead0(ChannelHandlerContext ctx, ByteBuf buf) {
-            var bytes = new byte[buf.readableBytes()];
-            buf.readBytes(bytes);
+        /// Build a [QuicPeerConnection.LaneOpener] that opens a fresh bidirectional stream on
+        /// `quicChannel` for the requested lane, writes the lane preamble (so the dialer attributes
+        /// the reverse-direction stream correctly), installs the shared framing + data handler,
+        /// registers the stream on `peerConnection`, and reports the registered stream. Mirrors the
+        /// dialer's `openDataLane` so a lazily-opened acceptor lane is byte-identical to a normally
+        /// negotiated one.
+        private QuicPeerConnection.LaneOpener laneOpenerFor(QuicChannel quicChannel,
+                                                            NodeId peerNodeId,
+                                                            QuicPeerConnection peerConnection) {
+            return (lane, onResult) -> openLaneStream(quicChannel, peerNodeId, peerConnection, lane, onResult);
+        }
 
-            try {
-                var message = deserializer.decode(bytes);
-                messageReceiver.onMessage(peerId, message);
-            } catch (Exception e) {
-                log.error("Failed to deserialize message from peer {}", peerId, e);
+        @SuppressWarnings({"JBCT-PAT-01", "unchecked"}) // Netty stream creation for lazy lane re-open
+        private void openLaneStream(QuicChannel quicChannel,
+                                    NodeId peerNodeId,
+                                    QuicPeerConnection peerConnection,
+                                    StreamType lane,
+                                    java.util.function.Consumer<Option<QuicStreamChannel>> onResult) {
+            if (!quicChannel.isActive()) {
+                onResult.accept(Option.empty());
+                return;
             }
+            var initializer = new ChannelInitializer<QuicStreamChannel>() {
+                @Override
+                @Contract
+                protected void initChannel(QuicStreamChannel ch) {
+                    ch.pipeline()
+                      .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
+                      .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
+                      .addLast(new QuicLaneDataHandler(peerNodeId, lane, deserializer, messageReceiver, log));
+                }
+            };
+            quicChannel.createStream(io.netty.handler.codec.quic.QuicStreamType.BIDIRECTIONAL, initializer)
+                       .addListener(future -> completeLaneOpen(peerConnection, peerNodeId, lane, onResult, future));
         }
 
-        @Override
-        public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
-            if (ctx.channel().isWritable()) {
-                onWritable.run();
+        @SuppressWarnings({"JBCT-PAT-01", "unchecked"}) // Netty future callback for lazy lane re-open
+        private void completeLaneOpen(QuicPeerConnection peerConnection,
+                                      NodeId peerNodeId,
+                                      StreamType lane,
+                                      java.util.function.Consumer<Option<QuicStreamChannel>> onResult,
+                                      io.netty.util.concurrent.Future<?> future) {
+            if (!future.isSuccess()) {
+                log.warn("Lazy re-open of {} lane to peer {} failed", lane, peerNodeId, future.cause());
+                onResult.accept(Option.empty());
+                return;
             }
-            super.channelWritabilityChanged(ctx);
-        }
-
-        @Override
-        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            log.error("Error processing message from peer {}", peerId, cause);
-            ctx.close();
+            var streamChannel = (QuicStreamChannel) future.getNow();
+            streamChannel.writeAndFlush(Unpooled.wrappedBuffer(new byte[]{(byte) lane.streamIndex()}));
+            peerConnection.registerStream(lane, streamChannel);
+            log.info("Lazily (re)opened {} lane to peer {} — stream-zombie healed without re-dial", lane, peerNodeId);
+            onResult.accept(option(streamChannel));
         }
     }
 }

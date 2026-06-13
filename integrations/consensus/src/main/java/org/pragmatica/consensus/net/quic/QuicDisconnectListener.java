@@ -14,10 +14,21 @@
  *  limitations under the License.
  */
 
-package org.pragmatica.consensus.net;
+package org.pragmatica.consensus.net.quic;
 
-import org.pragmatica.serialization.Codec;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
 
-/// Role of a node in the cluster.
-@Codec
-public enum NodeRole { ACTIVE, PASSIVE }
+
+/// Listener fired whenever `QuicClusterNetwork` tears down a peer connection.
+///
+/// Kept intentionally minimal — consensus has no awareness of cluster-generation
+/// typing (that lives in `aether-slice`). Higher layers adapt these callbacks
+/// into richer domain events (e.g. `HealthSignal.QuicDisconnect`).
+@Contract public interface QuicDisconnectListener {
+    void onDisconnect(NodeId nodeId);
+
+    static QuicDisconnectListener noop() {
+        return nodeId -> { };
+    }
+}
