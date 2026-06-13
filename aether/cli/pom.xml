@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>1.0.0-alpha</version>
+        <version>1.0.0-rc1</version>
     </parent>
 
     <artifactId>cli</artifactId>
@@ -36,6 +36,51 @@
             <version>${project.version}</version>
         </dependency>
 
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-management-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>environment-integration</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Cloud + container provider integrations.
+             SPI-loaded via META-INF/services/org.pragmatica.aether.environment.EnvironmentIntegrationFactory.
+             Required so `aether cluster bootstrap` against cloud-* configs can resolve providers. -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>environment-docker</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>environment-hetzner</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>environment-aws</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>environment-gcp</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>environment-azure</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Suppress SLF4J "no provider" warnings at runtime -->
         <dependency>
             <groupId>org.slf4j</groupId>
@@ -50,7 +95,16 @@
             <artifactId>junit-jupiter-api</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
+
+    <properties>
+        <maven.build.timestamp.format>yyyy-MM-dd'T'HH:mm:ss'Z'</maven.build.timestamp.format>
+    </properties>
 
     <build>
         <plugins>
@@ -62,7 +116,11 @@
                     <archive>
                         <manifest>
                             <mainClass>org.pragmatica.aether.cli.AetherCli</mainClass>
+                            <addDefaultImplementationEntries>true</addDefaultImplementationEntries>
                         </manifest>
+                        <manifestEntries>
+                            <Implementation-Build-Date>${maven.build.timestamp}</Implementation-Build-Date>
+                        </manifestEntries>
                     </archive>
                 </configuration>
             </plugin>
@@ -80,7 +138,16 @@
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>org.pragmatica.aether.cli.AetherCli</mainClass>
+                                    <manifestEntries>
+                                        <Implementation-Version>${project.version}</Implementation-Version>
+                                        <Implementation-Build-Date>${maven.build.timestamp}</Implementation-Build-Date>
+                                    </manifestEntries>
                                 </transformer>
+                                <!-- Concatenate META-INF/services/* across all shaded jars so SPI-loaded
+                                     EnvironmentIntegrationFactory implementations (docker/hetzner/aws/gcp/azure)
+                                     all register at runtime. Without this, only the last-shaded jar's service
+                                     file survives and the others are silently dropped. -->
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                             </transformers>
                             <filters>
                                 <filter>

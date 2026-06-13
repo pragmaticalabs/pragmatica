@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.cli.cluster;
 
 import org.junit.jupiter.api.Nested;
@@ -37,7 +42,9 @@ class SystemdUnitTemplateTest {
             assertTrue(unit.contains("[Service]"), "Should have [Service] section");
             assertTrue(unit.contains("[Install]"), "Should have [Install] section");
             assertTrue(unit.contains("After=network-online.target"), "Should wait for network");
-            assertTrue(unit.contains("Restart=on-failure"), "Should restart on failure");
+            assertTrue(unit.contains("Restart=no"),
+                       "Aether nodes use terminal-removal membership: a crashed node must NOT "
+                       + "restart under the same identity (recovery is a new-ULID replacement via auto-heal)");
             assertTrue(unit.contains("WantedBy=multi-user.target"), "Should be multi-user target");
         }
     }

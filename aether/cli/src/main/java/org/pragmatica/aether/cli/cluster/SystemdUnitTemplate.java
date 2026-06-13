@@ -1,20 +1,21 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 sealed interface SystemdUnitTemplate {
-    record unused() implements SystemdUnitTemplate{}
+    record unused() implements SystemdUnitTemplate {}
 
     String DEFAULT_JAVA_OPTS = "-Xmx4g -XX:+UseZGC";
-
     String DEFAULT_JAR_PATH = "/opt/aether/aether-node.jar";
-
     String DEFAULT_CONFIG_PATH = "/opt/aether/config/aether.toml";
-
     String DEFAULT_USER = "aether";
-
     String DEFAULT_GROUP = "aether";
 
     static String generate(String javaOpts, String jarPath, String configPath, String user, String group) {
         var sb = new StringBuilder();
+
         sb.append("[Unit]\n");
         sb.append("Description=Aether Node %i\n");
         sb.append("After=network-online.target\n");
@@ -22,25 +23,22 @@ sealed interface SystemdUnitTemplate {
         sb.append('\n');
         sb.append("[Service]\n");
         sb.append("Type=simple\n");
-        sb.append("User=").append(user)
-                 .append('\n');
-        sb.append("Group=").append(group)
-                 .append('\n');
-        sb.append("ExecStart=/usr/bin/java ").append(javaOpts)
-                 .append(" -jar ")
-                 .append(jarPath)
-                 .append(" --config=")
-                 .append(configPath)
-                 .append('\n');
-        sb.append("Restart=on-failure\n");
-        sb.append("RestartSec=5s\n");
+        sb.append("User=").append(user).append('\n');
+        sb.append("Group=").append(group).append('\n');
+        sb.append("ExecStart=/usr/bin/java ").append(javaOpts).append(" -jar ").append(jarPath).append(" --config=").append(configPath).append('\n');
+        // TERMINAL-REMOVAL membership model: a dead NodeId NEVER returns under the same id.
+        // Recovery is always a brand-new node with a new ULID NodeId, minted by cluster
+        // auto-heal. systemd restarting the crashed node under the SAME identity would
+        // resurrect a NodeId the cluster has already terminally removed and corrupt
+        // membership. The node MUST stay down so auto-heal can provision a replacement.
+        sb.append("Restart=no\n");
         sb.append("StandardOutput=journal\n");
         sb.append("StandardError=journal\n");
-        sb.append("Environment=JAVA_OPTS=").append(javaOpts)
-                 .append('\n');
+        sb.append("Environment=JAVA_OPTS=").append(javaOpts).append('\n');
         sb.append('\n');
         sb.append("[Install]\n");
         sb.append("WantedBy=multi-user.target\n");
+
         return sb.toString();
     }
 

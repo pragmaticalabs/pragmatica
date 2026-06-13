@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.ExitCode;
@@ -10,42 +14,108 @@ import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
+import picocli.CommandLine.Parameters;
+
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_GET;
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_SCALE;
 
 
-/// Scales the cluster core node count via the management API.
-///
-/// Thin wrapper around `POST /api/cluster/scale`. Validates quorum safety
-/// (N >= 3, odd) on the CLI side before sending the request.
-@Command(name = "scale", description = "Scale cluster core node count") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterScaleCommand implements Callable<Integer> {
+@Command(name = "scale", description = "Scale cluster node count")
+@SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"})
+class ClusterScaleCommand implements Callable<Integer> {
     private static final int MINIMUM_CORE_COUNT = 3;
-
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
-    @Option(names = "--core", required = true, description = "Target core node count (minimum 3, must be odd)") private int coreCount;
+    @Parameters(index = "0", description = "Source name", defaultValue = "")
+    private String sourceName;
 
-    @CommandLine.ParentCommand private ClusterCommand parent;
+    @Parameters(index = "1", description = "Role (core, worker, spot)", defaultValue = "core")
+    private String roleName;
 
-    @Override public Integer call() {
-        return validateCoreCount().flatMap(this::fetchConfigVersion)
-                                .flatMap(this::sendScaleRequest)
-                                .fold(ClusterScaleCommand::onFailure, this::onSuccess);
+    @Option(names = "--count", description = "Target node count")
+    private int count;
+
+    @Option(names = "--core", description = "Legacy shortcut: scale core nodes across all sources")
+    private int coreCount;
+
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
+
+    @Mixin
+    ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+
+    @Override
+    public Integer call() {
+        return clusterTarget.applyOverrides()
+                            .flatMap(_ -> resolveEffective())
+                            .flatMap(pair -> validateCount(pair.count(),
+                                                           pair.role()).flatMap(this::fetchConfigVersion)
+                                                          .flatMap(version -> sendScaleRequest(version,
+                                                                                               pair.count(),
+                                                                                               pair.role())))
+                            .fold(ClusterScaleCommand::onFailure, this::onSuccess);
     }
 
-    private Result<Integer> validateCoreCount() {
-        if (coreCount <MINIMUM_CORE_COUNT) {return new ScaleError.QuorumSafety(coreCount, MINIMUM_CORE_COUNT).result();}
-        if (coreCount % 2 == 0) {return new ScaleError.MustBeOdd(coreCount).result();}
-        return Result.success(coreCount);
+    private Result<EffectiveScale> resolveEffective() {
+        if (coreCount > 0) {
+            return Result.success(new EffectiveScale(coreCount, "core"));
+        }
+
+        if (count > 0) {
+            return Result.success(new EffectiveScale(count, roleName));
+        }
+
+        return new ScaleError.MissingCount().result();
     }
 
-    private Result<Long> fetchConfigVersion(int count) {
-        return ClusterHttpClient.fetchFromCluster("/api/cluster/config")
-                                                 .flatMap(ClusterScaleCommand::extractConfigVersion);
+    private record EffectiveScale(int count, String role) {}
+
+    private static Result<Integer> validateCount(int targetCount, String role) {
+        if ("core".equals(role)) {
+            return validateCoreCount(targetCount);
+        }
+
+        return validateNonCoreCount(targetCount);
     }
 
-    private Result<String> sendScaleRequest(long expectedVersion) {
-        var jsonBody = "{\"coreCount\":" + coreCount + ",\"expectedVersion\":" + expectedVersion + "}";
-        return ClusterHttpClient.postToCluster("/api/cluster/scale", jsonBody);
+    private static Result<Integer> validateCoreCount(int targetCount) {
+        if (targetCount < MINIMUM_CORE_COUNT) {
+            return new ScaleError.QuorumSafety(targetCount, MINIMUM_CORE_COUNT).result();
+        }
+
+        if (targetCount % 2 == 0) {
+            return new ScaleError.MustBeOdd(targetCount).result();
+        }
+
+        return Result.success(targetCount);
+    }
+
+    private static Result<Integer> validateNonCoreCount(int targetCount) {
+        if (targetCount < 1) {
+            return new ScaleError.MinimumCount(targetCount).result();
+        }
+
+        return Result.success(targetCount);
+    }
+
+    private Result<Long> fetchConfigVersion(int validatedCount) {
+        return ClusterHttpClient.fetch(CLUSTER_CONFIG_GET).flatMap(ClusterScaleCommand::extractConfigVersion);
+    }
+
+    private Result<String> sendScaleRequest(long expectedVersion, int targetCount, String role) {
+        var jsonBody = buildScaleJson(targetCount, role, sourceName, expectedVersion);
+
+        return ClusterHttpClient.post(CLUSTER_SCALE, jsonBody);
+    }
+
+    private static String buildScaleJson(int targetCount, String role, String source, long expectedVersion) {
+        return "{\"count\":" + targetCount
+             + ",\"role\":\"" + role
+             + "\",\"source\":\"" + source
+             + "\",\"expectedVersion\":" + expectedVersion
+             + "}";
     }
 
     private int onSuccess(String json) {
@@ -53,24 +123,42 @@ import picocli.CommandLine.Option;
     }
 
     private static Result<Long> extractConfigVersion(String responseJson) {
-        return MAPPER.readTree(responseJson).map(node -> node.path("configVersion").asLong(0));
+        return MAPPER.readTree(responseJson).map(node -> node.path("configVersion")
+                                                             .asLong(0));
     }
 
     private static int onFailure(Cause cause) {
         System.err.println("Error: " + cause.message());
+
         return ExitCode.ERROR;
     }
 
     sealed interface ScaleError extends Cause {
         record QuorumSafety(int requested, int minimum) implements ScaleError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Core count " + requested + " is below quorum minimum of " + minimum;
             }
         }
 
         record MustBeOdd(int requested) implements ScaleError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Core count must be odd for quorum safety, got " + requested;
+            }
+        }
+
+        record MinimumCount(int requested) implements ScaleError {
+            @Override
+            public String message() {
+                return "Node count must be at least 1, got " + requested;
+            }
+        }
+
+        record MissingCount() implements ScaleError {
+            @Override
+            public String message() {
+                return "Either --count or --core must be specified";
             }
         }
     }
