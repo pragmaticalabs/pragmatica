@@ -2,6 +2,12 @@ package org.pragmatica.storage;
 
 import java.util.List;
 
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
+import static org.pragmatica.lang.Unit.unit;
+
 /// Manages cross-node block prefetching via SWIM piggyback hints.
 ///
 /// Nodes record local block access frequencies. When gossip rounds occur,
@@ -14,19 +20,21 @@ import java.util.List;
 public interface PrefetchManager {
 
     /// Record a local block access (called on every get hit).
+    @Contract
     void recordAccess(BlockId blockId);
 
     /// Collect hints to piggyback on SWIM gossip. Resets access counters for collected hints.
     List<PrefetchHint> collectHints();
 
     /// Process hints received from another node. Triggers background prefetch for missing blocks.
+    @Contract
     void processHints(List<PrefetchHint> hints);
 
     /// Activate the prefetch manager, allowing hint collection and prefetch.
-    void activate();
+    Result<Unit> activate();
 
     /// Deactivate the prefetch manager. All operations become no-ops.
-    void deactivate();
+    Result<Unit> deactivate();
 
     /// Whether the prefetch manager is currently active.
     boolean isActive();
@@ -43,6 +51,7 @@ public interface PrefetchManager {
 final class NoOpPrefetchManager implements PrefetchManager {
 
     @Override
+    @Contract
     public void recordAccess(BlockId blockId) {
         // no-op
     }
@@ -53,18 +62,19 @@ final class NoOpPrefetchManager implements PrefetchManager {
     }
 
     @Override
+    @Contract
     public void processHints(List<PrefetchHint> hints) {
         // no-op
     }
 
     @Override
-    public void activate() {
-        // no-op
+    public Result<Unit> activate() {
+        return Result.success(unit());
     }
 
     @Override
-    public void deactivate() {
-        // no-op
+    public Result<Unit> deactivate() {
+        return Result.success(unit());
     }
 
     @Override

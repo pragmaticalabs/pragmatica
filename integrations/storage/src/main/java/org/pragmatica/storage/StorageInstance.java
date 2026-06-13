@@ -2,6 +2,7 @@ package org.pragmatica.storage;
 
 import java.util.List;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -53,6 +54,7 @@ public interface StorageInstance {
     }
 
     /// Graceful shutdown — drains pending writes (write-behind) and releases resources.
+    @Contract
     void shutdown();
 
     /// Create a storage instance with write-through policy and in-memory metadata store.
@@ -150,6 +152,7 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     @Override
+    @Contract
     public void shutdown() {
         writeBehindQueue.onPresent(WriteBehindQueue::deactivate);
         log.info("Storage instance '{}' shut down", name);
@@ -170,8 +173,10 @@ final class DefaultStorageInstance implements StorageInstance {
     // --- Write flow ---
 
     private Promise<BlockId> handlePut(BlockId id, byte[] content) {
-        return metadataStore.claimBlock(id, sentinelFor(id))
-               ? writeThroughTiers(id, content)
+        var sentinel = sentinelFor(id);
+
+        return metadataStore.claimBlock(id, sentinel)
+               ? writeThroughTiers(id, content).onFailure(_ -> metadataStore.releaseClaim(id, sentinel))
                : deduplicateBlock(id);
     }
 

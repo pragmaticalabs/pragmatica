@@ -5,6 +5,7 @@ import java.util.Arrays;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.slf4j.Logger;
@@ -35,6 +36,7 @@ final class WriteBehindQueue {
     }
 
     /// Start the drain thread. No-op if already active.
+    @Contract
     void activate() {
         if (running.compareAndSet(false, true)) {
             drainThread = Thread.ofVirtual()
@@ -45,6 +47,7 @@ final class WriteBehindQueue {
     }
 
     /// Stop drain thread, flush remaining writes. No-op if already inactive.
+    @Contract
     void deactivate() {
         if (!running.compareAndSet(true, false)) {
             return;

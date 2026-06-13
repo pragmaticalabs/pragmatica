@@ -5,6 +5,10 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -12,6 +16,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Unit.unit;
 
 final class DefaultPrefetchManager implements PrefetchManager {
     private static final Logger log = LoggerFactory.getLogger(DefaultPrefetchManager.class);
@@ -28,6 +33,7 @@ final class DefaultPrefetchManager implements PrefetchManager {
     }
 
     @Override
+    @Contract
     public void recordAccess(BlockId blockId) {
         if (!active) {
             return;
@@ -52,6 +58,7 @@ final class DefaultPrefetchManager implements PrefetchManager {
     }
 
     @Override
+    @Contract
     public void processHints(List<PrefetchHint> hints) {
         if (!active) {
             return;
@@ -64,17 +71,19 @@ final class DefaultPrefetchManager implements PrefetchManager {
     }
 
     @Override
-    public void activate() {
+    public Result<Unit> activate() {
         active = true;
         log.info("PrefetchManager activated for storage '{}'", storage.name());
+        return Result.success(unit());
     }
 
     @Override
-    public void deactivate() {
+    public Result<Unit> deactivate() {
         active = false;
         accessCounts.clear();
         cooldowns.clear();
         log.info("PrefetchManager deactivated for storage '{}'", storage.name());
+        return Result.success(unit());
     }
 
     @Override

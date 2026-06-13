@@ -3,14 +3,23 @@ package org.pragmatica.storage;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.CoreError;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class LocalDiskTierTest {
 
@@ -190,6 +199,76 @@ class LocalDiskTierTest {
         @Test
         void maxBytes_returnsConfiguredValue() {
             assertThat(tier.maxBytes()).isEqualTo(MAX_BYTES);
+        }
+    }
+
+    @Nested
+    class ReadDeadlineTests {
+
+        private static final TimeSpan SHORT_READ_TIMEOUT = timeSpan(150).millis();
+
+        /// A read that wedges at the filesystem layer (modeled by an injected reader that
+        /// blocks indefinitely) must NOT leave the lifted promise unresolved forever. The
+        /// per-read deadline forcibly resolves it with CoreError.Timeout.
+        @Test
+        void get_blockingRead_firesReadDeadline() {
+            var release = new CountDownLatch(1);
+            var entered = new AtomicBoolean(false);
+            Fn1<Result<Option<byte[]>>, BlockId> blockingReader = _ -> blockUntilReleased(release, entered);
+
+            var tier = LocalDiskTier.localDiskTier(tempDir.resolve("blocking"),
+                                                   MAX_BYTES,
+                                                   SHORT_READ_TIMEOUT,
+                                                   Option.some(blockingReader))
+                                    .fold(c -> { fail("Tier creation failed: " + c.message()); return null; },
+                                          t -> t);
+            var id = blockIdOf(CONTENT_A);
+
+            tier.get(id)
+                .await(timeSpan(5).seconds())
+                .onSuccessRun(() -> fail("Expected read deadline to fire"))
+                .onFailure(c -> assertThat(c).isInstanceOf(CoreError.Timeout.class));
+
+            assertThat(entered.get()).isTrue();
+            release.countDown();
+        }
+
+        /// A healthy default disk read completes well within the deadline (default reader,
+        /// short timeout) — proving the deadline does not regress normal reads.
+        @Test
+        void get_healthyRead_succeedsWithinDeadline() {
+            var tier = LocalDiskTier.localDiskTier(tempDir.resolve("healthy"),
+                                                   MAX_BYTES,
+                                                   SHORT_READ_TIMEOUT,
+                                                   Option.none())
+                                    .fold(c -> { fail("Tier creation failed: " + c.message()); return null; },
+                                          t -> t);
+            var id = blockIdOf(CONTENT_A);
+
+            tier.put(id, CONTENT_A).await(timeSpan(5).seconds())
+                .onFailure(c -> fail("put failed: " + c.message()));
+
+            tier.get(id).await(timeSpan(5).seconds())
+                .onFailure(c -> fail("get failed: " + c.message()))
+                .onSuccess(opt -> {
+                    assertThat(opt.isPresent()).isTrue();
+                    opt.onPresent(data -> assertThat(data).isEqualTo(CONTENT_A));
+                });
+        }
+
+        private static Result<Option<byte[]>> blockUntilReleased(CountDownLatch release, AtomicBoolean entered) {
+            entered.set(true);
+            awaitQuietly(release);
+
+            return Result.success(Option.none());
+        }
+
+        private static void awaitQuietly(CountDownLatch release) {
+            try {
+                release.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 }

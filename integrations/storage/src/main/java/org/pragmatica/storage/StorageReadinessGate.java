@@ -1,5 +1,6 @@
 package org.pragmatica.storage;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -23,9 +24,11 @@ public interface StorageReadinessGate {
     ReadinessState state();
 
     /// Signal that snapshot loading is complete.
+    @Contract
     void snapshotLoaded();
 
     /// Signal that consensus sync is complete.
+    @Contract
     void consensusSynced();
 
     /// Factory.

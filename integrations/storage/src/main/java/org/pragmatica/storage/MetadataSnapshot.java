@@ -47,7 +47,7 @@ public record MetadataSnapshot(long epoch,
         return Arrays.equals(contentHash, computeHash(lifecycles, refs));
     }
 
-    @SuppressWarnings("JBCT-EXC-01") // Static initializer — SHA-256 is JVM-guaranteed
+    @SuppressWarnings("JBCT-EX-01") // SHA-256 is mandated by the Java platform spec; absence is a JVM defect, not a business failure
     private static MessageDigest createSha256() {
         try { return MessageDigest.getInstance("SHA-256"); }
         catch (NoSuchAlgorithmException e) { throw new ExceptionInInitializerError(e); }

@@ -2,6 +2,7 @@ package org.pragmatica.storage;
 
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.slf4j.Logger;
@@ -49,6 +50,7 @@ final class DefaultStorageReadinessGate implements StorageReadinessGate {
     }
 
     @Override
+    @Contract
     public void snapshotLoaded() {
         if (!state.compareAndSet(ReadinessState.LOADING_SNAPSHOT, ReadinessState.SNAPSHOT_LOADED)) {
             log.warn("snapshotLoaded() called in unexpected state: {}", state.get());
@@ -60,6 +62,7 @@ final class DefaultStorageReadinessGate implements StorageReadinessGate {
     }
 
     @Override
+    @Contract
     public void consensusSynced() {
         if (!state.compareAndSet(ReadinessState.SNAPSHOT_LOADED, ReadinessState.READY)) {
             log.warn("consensusSynced() called in unexpected state: {}", state.get());

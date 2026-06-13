@@ -6,6 +6,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.UnaryOperator;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
 import static org.pragmatica.lang.Option.option;
@@ -32,6 +33,7 @@ final class InMemoryMetadataStore implements MetadataStore {
     }
 
     @Override
+    @Contract
     public void createLifecycle(BlockLifecycle blockLifecycle) {
         lifecycle.put(blockLifecycle.blockId(), blockLifecycle);
         epoch.incrementAndGet();
@@ -49,6 +51,17 @@ final class InMemoryMetadataStore implements MetadataStore {
     }
 
     @Override
+    public boolean releaseClaim(BlockId blockId, BlockLifecycle sentinel) {
+        var released = lifecycle.remove(blockId, sentinel);
+
+        if (released) {
+            epoch.incrementAndGet();
+        }
+
+        return released;
+    }
+
+    @Override
     public Option<BlockLifecycle> computeLifecycle(BlockId blockId, UnaryOperator<BlockLifecycle> updater) {
         var result = option(lifecycle.computeIfPresent(blockId, (_, lc) -> updater.apply(lc)));
         result.onPresent(_ -> epoch.incrementAndGet());
@@ -56,12 +69,14 @@ final class InMemoryMetadataStore implements MetadataStore {
     }
 
     @Override
+    @Contract
     public void removeLifecycle(BlockId blockId) {
         lifecycle.remove(blockId);
         epoch.incrementAndGet();
     }
 
     @Override
+    @Contract
     public void putRef(String refName, BlockId blockId) {
         refs.put(refName, blockId);
         epoch.incrementAndGet();
@@ -112,6 +127,7 @@ final class InMemoryMetadataStore implements MetadataStore {
     }
 
     @Override
+    @Contract
     public void restoreLifecycles(List<BlockLifecycle> entries) {
         lifecycle.clear();
         entries.forEach(lc -> lifecycle.put(lc.blockId(), lc));
@@ -119,6 +135,7 @@ final class InMemoryMetadataStore implements MetadataStore {
     }
 
     @Override
+    @Contract
     public void restoreRefs(Map<String, BlockId> newRefs) {
         refs.clear();
         refs.putAll(newRefs);

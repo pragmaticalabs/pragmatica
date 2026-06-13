@@ -1,5 +1,10 @@
 package org.pragmatica.storage;
 
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
+import static org.pragmatica.lang.Unit.unit;
+
 /// Garbage collector for orphaned storage blocks.
 /// Scans metadata for blocks with zero references past their grace period
 /// and deletes them from all tiers.
@@ -19,10 +24,10 @@ public interface StorageGarbageCollector {
     GCStats stats();
 
     /// Activate the garbage collector, allowing collectGarbage() to process blocks.
-    void activate();
+    Result<Unit> activate();
 
     /// Deactivate the garbage collector. Subsequent collectGarbage() calls will no-op.
-    void deactivate();
+    Result<Unit> deactivate();
 
     /// Whether the garbage collector is currently active.
     boolean isActive();

@@ -109,7 +109,7 @@ class CompressionCodecTest {
             var codec = Compression.LZ4.codec();
 
             assertSuccess(codec.compress(SAMPLE_DATA), compressed ->
-                codec.decompress(compressed, SAMPLE_DATA.length + 100)
+                codec.decompress(compressed, SAMPLE_DATA.length / 2)
                      .onSuccess(_ -> fail("Expected failure for wrong original size"))
                      .onFailure(cause -> assertThat(cause.message()).contains("Decompression failed"))
             );
