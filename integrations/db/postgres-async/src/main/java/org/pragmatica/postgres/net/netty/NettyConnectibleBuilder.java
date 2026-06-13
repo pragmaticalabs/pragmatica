@@ -64,7 +64,7 @@ public class NettyConnectibleBuilder extends ConnectibleBuilder {
             var address = InetAddress.getByName(properties.hostname());
             var sockAddr = new InetSocketAddress(address, properties.port());
             return Promise.success(
-                new NettyPgProtocolStream(sockAddr, properties.useSsl(),
+                new NettyPgProtocolStream(sockAddr, properties.hostname(), properties.sslConfig(),
                     Charset.forName(properties.encoding()), resolveEventLoopGroup()));
         } catch (Exception e) {
             return Promise.failure(SqlError.fromThrowable(e));

@@ -212,7 +212,6 @@ public class PgRow implements Row, KeyToValue {
         return getArray(getColumn(column).index(), arrayType);
     }
 
-    //TODO: does not work for known types, only for custom ones.
     @Override
     public <T> T get(int index, Class<T> type) {
         return dataConverter.toObject(columns[index].type(), data.getValue(index), type);
@@ -224,14 +223,14 @@ public class PgRow implements Row, KeyToValue {
     }
 
     public Object get(int index) {
-        return dataConverter.toObject(columns[index].type(), data.getValue(index), null);
+        var col = columns[index];
+        return dataConverter.toObject(col.type(), data.getValue(index), null, col.isBinary());
     }
 
     public Object get(String column) {
         return get(getColumn(column).index());
     }
 
-    //TODO: arrays are not supported yet
     @SuppressWarnings("unchecked")
     @Override
     public <T> Result<T> get(String prefix, String key, TypeToken<T> typeToken) {
@@ -242,13 +241,17 @@ public class PgRow implements Row, KeyToValue {
             return new SqlError.ColumnNotFound("Unknown column '" + key + "'").result();
         }
 
-        if (typeToken.rawType().equals(Option.class)) {
+        var rawType = typeToken.rawType();
+
+        if (rawType.equals(Option.class)) {
             var value = typeToken.typeArgument(0)
                                  .map(cls -> get(column.index(), cls));
             return Result.success((T) option(value));
-        } else {
-            return Result.success(get(column.index(), (Class<T>) typeToken.rawType()));
         }
+        if (rawType.isArray()) {
+            return Result.success(getArray(column.index(), (Class<T>) rawType));
+        }
+        return Result.success(get(column.index(), (Class<T>) rawType));
     }
 
     private PgColumn getColumn(String name) {

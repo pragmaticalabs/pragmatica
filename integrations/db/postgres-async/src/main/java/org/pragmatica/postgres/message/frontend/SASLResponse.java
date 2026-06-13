@@ -23,6 +23,7 @@ public final class SASLResponse implements FrontendMessage {
     private final String serverSalt;
     private final int i;
     private final String serverNonce;
+    private final byte[] channelBindingData;
 
     private SASLResponse(String password,
                          String serverSalt,
@@ -30,7 +31,8 @@ public final class SASLResponse implements FrontendMessage {
                          String serverNonce,
                          String gs2Header,
                          String clientFirstMessageBare,
-                         String serverFirstMessage) {
+                         String serverFirstMessage,
+                         byte[] channelBindingData) {
         this.password = password;
         this.serverSalt = serverSalt;
         this.i = i;
@@ -38,6 +40,7 @@ public final class SASLResponse implements FrontendMessage {
         this.gs2Header = gs2Header;
         this.clientFirstMessageBare = clientFirstMessageBare;
         this.serverFirstMessage = serverFirstMessage;
+        this.channelBindingData = channelBindingData;
     }
 
     public String password() {
@@ -69,7 +72,19 @@ public final class SASLResponse implements FrontendMessage {
     }
 
     public String clientFinalMessage(String hMacName, String digestName) {
-        var encoded = new String(Base64.getEncoder().withoutPadding().encode(gs2Header.getBytes(StandardCharsets.US_ASCII)),
+        // c-bind-input = gs2-header || cbind-data (RFC 5802 §5.1).
+        // For non-PLUS mechanisms, cbind-data is empty; for PLUS with tls-server-end-point,
+        // cbind-data is the server certificate digest.
+        var gs2Bytes = gs2Header.getBytes(StandardCharsets.US_ASCII);
+        byte[] cbindInput;
+        if (channelBindingData != null && channelBindingData.length > 0) {
+            cbindInput = new byte[gs2Bytes.length + channelBindingData.length];
+            System.arraycopy(gs2Bytes, 0, cbindInput, 0, gs2Bytes.length);
+            System.arraycopy(channelBindingData, 0, cbindInput, gs2Bytes.length, channelBindingData.length);
+        } else {
+            cbindInput = gs2Bytes;
+        }
+        var encoded = new String(Base64.getEncoder().withoutPadding().encode(cbindInput),
                                  StandardCharsets.UTF_8);
         var clientFinalMessageWithoutProof = "c=" + encoded + ",r=" + serverNonce;
         var clientProof = saslClientProof(password,
@@ -185,7 +200,8 @@ public final class SASLResponse implements FrontendMessage {
         }
     }
 
-    public static SASLResponse of(String password, String serverFirstMessage, String clientNonce, String gs2Header, String clientFirstMessageBare) {
+    public static SASLResponse of(String password, String serverFirstMessage, String clientNonce, String gs2Header,
+                                   String clientFirstMessageBare, byte[] channelBindingData) {
         var continueData = Authentication.SaslContinueServerFirstMessage.parse(serverFirstMessage);
         var serverNonce = continueData.augmentedNonce();
 
@@ -198,7 +214,8 @@ public final class SASLResponse implements FrontendMessage {
                                     serverNonce,
                                     gs2Header,
                                     clientFirstMessageBare,
-                                    serverFirstMessage);
+                                    serverFirstMessage,
+                                    channelBindingData);
         } else {
             throw new IllegalStateException("Bad server nonce detected on 'server-first-message' step");
         }
