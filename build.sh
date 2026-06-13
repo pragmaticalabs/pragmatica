@@ -39,7 +39,7 @@ echo "=== Pragmatica Build ==="
 # Step 1: Bootstrap annotation processors and Maven plugins
 echo ""
 echo "Step 1/6: Bootstrap annotation processors and Maven plugins..."
-mvn_quiet install -DskipTests -Djbct.skip=true -pl jbct,jbct/slice-processor,aether/pg-tools/pg-codegen -am
+mvn_quiet install -DskipTests -Djbct.skip=true -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
 
 # Step 2: Format + lint all non-jbct modules — the JBCT gate.
 # Format RE-ENABLED 2026-06-10 (PR #243): orphan-trivia sweep eliminated the
