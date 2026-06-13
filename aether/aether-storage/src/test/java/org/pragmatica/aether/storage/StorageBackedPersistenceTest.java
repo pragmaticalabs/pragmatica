@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.storage;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -5,6 +10,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.StateMachine;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.consensus.rabia.RabiaPersistence;
 import org.pragmatica.lang.Result;
@@ -195,14 +201,27 @@ class StorageBackedPersistenceTest {
 
     static class TestStateMachine implements StateMachine<TestCommand> {
         private byte[] currentSnapshot = new byte[0];
+        private final org.pragmatica.serialization.SliceCodec serializer =
+            org.pragmatica.serialization.SliceCodec.sliceCodec(
+                org.pragmatica.serialization.FrameworkCodecs.frameworkCodecs(),
+                List.of(new org.pragmatica.serialization.SliceCodec.TypeCodec<>(
+                    TestCommand.class,
+                    org.pragmatica.serialization.SliceCodec.deterministicTag(TestCommand.class.getName()),
+                    (sc, buf, value) -> sc.write(buf, value.value()),
+                    (sc, buf) -> new TestCommand(sc.read(buf)))));
 
         void setSnapshot(byte[] data) {
             this.currentSnapshot = data.clone();
         }
 
         @Override
-        public <R> R process(TestCommand command) {
-            return null;
+        public <R> List<R> process(Batch<TestCommand> batch) {
+            return List.of();
+        }
+
+        @Override
+        public org.pragmatica.serialization.Serializer serializer() {
+            return serializer;
         }
 
         @Override

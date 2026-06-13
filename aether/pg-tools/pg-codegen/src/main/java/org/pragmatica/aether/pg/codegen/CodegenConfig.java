@@ -1,9 +1,12 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.codegen;
 
 import java.nio.file.Path;
 
 
-/// Configuration for Java code generation from PostgreSQL schema.
 public record CodegenConfig(String targetPackage,
                             Path outputDirectory,
                             NullableStyle nullableStyle,
@@ -39,6 +42,8 @@ public record CodegenConfig(String targetPackage,
 
     public Path resolveOutputFile(String className) {
         var packagePath = targetPackage.replace('.', '/');
-        return outputDirectory.resolve(packagePath).resolve(className + ".java");
+
+        return outputDirectory.resolve(packagePath)
+                              .resolve(className + ".java");
     }
 }

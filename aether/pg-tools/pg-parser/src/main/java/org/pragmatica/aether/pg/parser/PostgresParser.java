@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.parser;
 
 import org.pragmatica.lang.Result;
@@ -5,21 +9,20 @@ import org.pragmatica.lang.Result;
 import java.util.List;
 
 
-/// PostgreSQL SQL parser using the generated standalone PEG parser.
-/// Peglib is NOT a runtime dependency — only pragmatica-lite:core.
 public final class PostgresParser {
     public sealed interface CstNode permits CstNode.Terminal, CstNode.NonTerminal, CstNode.Token, CstNode.Error {
         SourceSpan span();
         String ruleName();
 
-        record Terminal(SourceSpan span, String ruleName, String text) implements CstNode{}
+        record Terminal(SourceSpan span, String ruleName, String text) implements CstNode {}
 
-        record NonTerminal(SourceSpan span, String ruleName, List<CstNode> children) implements CstNode{}
+        record NonTerminal(SourceSpan span, String ruleName, List<CstNode> children) implements CstNode {}
 
-        record Token(SourceSpan span, String ruleName, String text) implements CstNode{}
+        record Token(SourceSpan span, String ruleName, String text) implements CstNode {}
 
         record Error(SourceSpan span, String skippedText, String expected) implements CstNode {
-            @Override public String ruleName() {
+            @Override
+            public String ruleName() {
                 return "<error>";
             }
         }
@@ -34,7 +37,8 @@ public final class PostgresParser {
             return new SourceSpan(start, end);
         }
 
-        @Override public String toString() {
+        @Override
+        public String toString() {
             return start.line() + ":" + start.column() + "-" + end.line() + ":" + end.column();
         }
     }
@@ -50,7 +54,8 @@ public final class PostgresParser {
     }
 
     public Result<CstNode> parseCst(String sql) {
-        return parser.parse(sql).map(PostgresParser::convert);
+        return parser.parse(sql)
+                     .map(PostgresParser::convert);
     }
 
     public Result<List<CstNode>> parseScript(String sql) {
@@ -58,12 +63,10 @@ public final class PostgresParser {
     }
 
     private static CstNode convert(PgSqlParser.CstNode node) {
-        return switch (node){
+        return switch (node) {
             case PgSqlParser.CstNode.NonTerminal nt -> new CstNode.NonTerminal(convertSpan(nt.span()),
                                                                                ruleName(nt.rule()),
-                                                                               nt.children().stream()
-                                                                                          .map(PostgresParser::convert)
-                                                                                          .toList());
+                                                                               nt.children().stream().map(PostgresParser::convert).toList());
             case PgSqlParser.CstNode.Token tok -> new CstNode.Token(convertSpan(tok.span()),
                                                                     ruleName(tok.rule()),
                                                                     tok.text());
@@ -87,18 +90,16 @@ public final class PostgresParser {
 
     private static String ruleName(PgSqlParser.RuleId rule) {
         return rule != null
-              ? rule.name()
-              : "";
+               ? rule.name()
+               : "";
     }
 
     private static List<CstNode> extractStatements(CstNode root) {
-        return switch (root){
-            case CstNode.NonTerminal nt -> nt.children().stream()
-                                                      .filter(child -> switch (child){
+        return switch (root) {
+            case CstNode.NonTerminal nt -> nt.children().stream().filter(child -> switch (child) {
                 case CstNode.NonTerminal c -> !c.ruleName().equals("EmptyStatement");
                 default -> false;
-            })
-                                                      .toList();
+            }).toList();
             default -> List.of(root);
         };
     }

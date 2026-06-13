@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.codegen.processor;
 
 import org.pragmatica.aether.pg.schema.builder.MigrationProcessor;
@@ -15,14 +19,8 @@ import java.util.List;
 import java.util.Map;
 
 
-/// Loads migration SQL files from the classpath and builds a Schema model.
-///
-/// Convention: `config = "database"` maps to `schema/`, `config = "database.analytics"` maps to `schema/analytics/`.
-/// Migration files are processed in Flyway order (`V001__`, `V002__`, etc.).
-/// Schemas are cached per config path within a compilation unit.
 public final class SchemaLoader {
     private final ProcessingEnvironment processingEnv;
-
     private final Map<String, Schema> cache = new HashMap<>();
 
     public SchemaLoader(ProcessingEnvironment processingEnv) {
@@ -30,31 +28,49 @@ public final class SchemaLoader {
     }
 
     public static String configToSchemaPath(String configPath) {
-        if (configPath.equals("database")) {return "schema/";}
-        if (configPath.startsWith("database.")) {return "schema/" + configPath.substring("database.".length()) + "/";}
+        if (configPath.equals("database")) {
+            return "schema/";
+        }
+
+        if (configPath.startsWith("database.")) {
+            return "schema/" + configPath.substring("database.".length()) + "/";
+        }
+
         return "schema/";
     }
 
     public Option<Schema> loadSchema(String configPath) {
         var cached = cache.get(configPath);
-        if (cached != null) {return Option.present(cached);}
+
+        if (cached != null) {
+            return Option.present(cached);
+        }
+
         var schemaPath = configToSchemaPath(configPath);
         var scripts = loadMigrationScripts(schemaPath);
+
         if (scripts.isEmpty()) {
-            processingEnv.getMessager()
-                                     .printMessage(Diagnostic.Kind.WARNING,
-                                                   ProcessorError.schemaLoadFailed(schemaPath,
-                                                                                   "No migration files found"));
+            processingEnv.getMessager().printMessage(Diagnostic.Kind.WARNING,
+                                                     ProcessorError.schemaLoadFailed(schemaPath,
+                                                                                     "No migration files found"));
+
             return Option.empty();
         }
+
         var result = MigrationProcessor.create().processAll(scripts);
+
         result.onFailure(cause -> processingEnv.getMessager()
-                                                           .printMessage(Diagnostic.Kind.ERROR,
-                                                                         ProcessorError.schemaLoadFailed(schemaPath,
-                                                                                                         cause.message())));
-        if (result.isFailure()) {return Option.empty();}
-        var schema = result.unwrap();
+                                               .printMessage(Diagnostic.Kind.ERROR,
+                                                             ProcessorError.schemaLoadFailed(schemaPath,
+                                                                                             cause.message())));
+        if (result.isFailure()) {
+            return Option.empty();
+        }
+
+        var schema = result.expect("checked with isFailure above");
+
         cache.put(configPath, schema);
+
         return Option.present(schema);
     }
 
@@ -62,33 +78,51 @@ public final class SchemaLoader {
         return cache.containsKey(configPath);
     }
 
+    public List<String> loadMigrations(String configPath) {
+        var schemaPath = configToSchemaPath(configPath);
+
+        return loadMigrationScripts(schemaPath);
+    }
+
     private List<String> loadMigrationScripts(String schemaPath) {
         var scripts = new ArrayList<String>();
         var fileNames = discoverMigrationFiles(schemaPath);
+
         fileNames.sort(String::compareTo);
         for (var fileName : fileNames) {
             var content = readResource(schemaPath + fileName);
+
             content.onPresent(scripts::add);
         }
+
         return scripts;
     }
 
     private List<String> discoverMigrationFiles(String schemaPath) {
         var manifest = readResource(schemaPath + "migrations.list");
-        if (manifest.isPresent()) {return new ArrayList<>(List.of(manifest.unwrap().split("\n")));}
+
+        if (manifest.isPresent()) {
+            return new ArrayList<>(List.of(manifest.expect("checked with isPresent above").split("\n")));
+        }
+
         var files = new ArrayList<String>();
         int consecutiveMisses = 0;
-        for (int i = 1;i <= 100;i++) {
+
+        for (int i = 1; i <= 100; i++) {
             var prefix = String.format("V%03d__", i);
             var probeResult = probeResourcePrefix(schemaPath, prefix);
+
             if (probeResult.isPresent()) {
-                files.add(probeResult.unwrap());
+                files.add(probeResult.expect("checked with isPresent above"));
                 consecutiveMisses = 0;
             } else {
                 consecutiveMisses++;
-                if (consecutiveMisses >= 3) {break;}
+                if (consecutiveMisses >= 3) {
+                    break;
+                }
             }
         }
+
         return files;
     }
 
@@ -96,8 +130,12 @@ public final class SchemaLoader {
         for (var description : MIGRATION_DESCRIPTIONS) {
             var fileName = prefix + description + ".sql";
             var resource = readResource(schemaPath + fileName);
-            if (resource.isPresent()) {return Option.present(fileName);}
+
+            if (resource.isPresent()) {
+                return Option.present(fileName);
+            }
         }
+
         return Option.empty();
     }
 
@@ -136,11 +174,16 @@ public final class SchemaLoader {
     private Option<String> readResource(String path) {
         try {
             var fileObject = processingEnv.getFiler().getResource(StandardLocation.CLASS_PATH, "", path);
+
             try (var reader = fileObject.openReader(true)) {
                 var content = new StringBuilder();
                 var buf = new char[4096];
                 int read;
-                while ((read = reader.read(buf)) >= 0) {content.append(buf, 0, read);}
+
+                while ((read = reader.read(buf)) >= 0) {
+                    content.append(buf, 0, read);
+                }
+
                 return Option.present(content.toString());
             }
         } catch (IOException e) {

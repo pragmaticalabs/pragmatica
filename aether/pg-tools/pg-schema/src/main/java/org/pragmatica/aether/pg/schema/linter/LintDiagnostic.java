@@ -1,10 +1,13 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.linter;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
 
 
-/// A single lint finding.
 public record LintDiagnostic(String ruleId,
                              Severity severity,
                              String message,
@@ -32,14 +35,15 @@ public record LintDiagnostic(String ruleId,
         return new LintDiagnostic(ruleId, Severity.INFO, message, span, Option.empty());
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         var sb = new StringBuilder();
-        sb.append(severity).append(" [")
-                 .append(ruleId)
-                 .append("] ")
-                 .append(message);
+
+        sb.append(severity).append(" [").append(ruleId).append("] ").append(message);
         sb.append(" at ").append(span);
-        suggestion.onPresent(s -> sb.append("\n  Suggestion: ").append(s));
+        suggestion.onPresent(s -> sb.append("\n  Suggestion: ")
+                                    .append(s));
+
         return sb.toString();
     }
 }

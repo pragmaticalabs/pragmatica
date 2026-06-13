@@ -1,9 +1,12 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.model;
 
 import org.pragmatica.lang.Option;
 
 
-/// A table column definition.
 public record Column(String name,
                      PgType type,
                      boolean nullable,
@@ -11,7 +14,7 @@ public record Column(String name,
                      Option<String> generatedExpr,
                      Option<IdentitySpec> identity,
                      Option<String> comment) {
-    public record IdentitySpec(IdentityKind kind){}
+    public record IdentitySpec(IdentityKind kind) {}
 
     public enum IdentityKind {
         ALWAYS,

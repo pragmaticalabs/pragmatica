@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.model;
 
 import org.pragmatica.lang.Option;
@@ -6,7 +10,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 
-/// A table definition with columns, constraints, and metadata.
 public record Table(String name,
                     String schema,
                     List<Column> columns,
@@ -14,7 +17,7 @@ public record Table(String name,
                     List<Index> indexes,
                     Option<PartitionBy> partitioning,
                     Option<String> comment) {
-    public record PartitionBy(PartitionStrategy strategy, List<String> columns){}
+    public record PartitionBy(PartitionStrategy strategy, List<String> columns) {}
 
     public enum PartitionStrategy {
         RANGE,
@@ -27,48 +30,60 @@ public record Table(String name,
     }
 
     public Option<Column> column(String columnName) {
-        return columns.stream().filter(c -> c.name().equals(columnName))
-                             .findFirst()
-                             .map(Option::present)
-                             .orElse(Option.empty());
+        return columns.stream()
+                      .filter(c -> c.name()
+                                    .equals(columnName))
+                      .findFirst()
+                      .map(Option::present)
+                      .orElse(Option.empty());
     }
 
     public Table withColumn(Column col) {
         var newCols = new ArrayList<>(columns);
+
         newCols.add(col);
+
         return new Table(name, schema, List.copyOf(newCols), constraints, indexes, partitioning, comment);
     }
 
     public Table withoutColumn(String colName) {
-        var newCols = columns.stream().filter(c -> !c.name().equals(colName))
-                                    .toList();
+        var newCols = columns.stream().filter(c -> !c.name()
+                                                     .equals(colName)).toList();
+
         return new Table(name, schema, newCols, constraints, indexes, partitioning, comment);
     }
 
     public Table withColumnReplaced(String colName, Column newCol) {
-        var newCols = columns.stream().map(c -> c.name().equals(colName)
-                                               ? newCol
-                                               : c)
-                                    .toList();
+        var newCols = columns.stream().map(c -> c.name()
+                                                 .equals(colName)
+                                                ? newCol
+                                                : c).toList();
+
         return new Table(name, schema, newCols, constraints, indexes, partitioning, comment);
     }
 
     public Table withConstraint(Constraint constraint) {
         var newConstraints = new ArrayList<>(constraints);
+
         newConstraints.add(constraint);
+
         return new Table(name, schema, columns, List.copyOf(newConstraints), indexes, partitioning, comment);
     }
 
     public Table withoutConstraint(String constraintName) {
-        var newConstraints = constraints.stream().filter(c -> !c.name().isPresent() || !c.name().unwrap()
-                                                                                              .equals(constraintName))
-                                               .toList();
+        var newConstraints = constraints.stream().filter(c -> !c.name()
+                                                                .isPresent() || !c.name()
+                                                                                  .unwrap()
+                                                                                  .equals(constraintName)).toList();
+
         return new Table(name, schema, columns, newConstraints, indexes, partitioning, comment);
     }
 
     public Table withIndex(Index index) {
         var newIndexes = new ArrayList<>(indexes);
+
         newIndexes.add(index);
+
         return new Table(name, schema, columns, constraints, List.copyOf(newIndexes), partitioning, comment);
     }
 

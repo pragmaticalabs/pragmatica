@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.linter.rules;
 
 import org.pragmatica.aether.pg.schema.event.SchemaEvent;
@@ -12,7 +16,6 @@ import java.util.List;
 import static org.pragmatica.aether.pg.schema.linter.LintDiagnostic.Severity.WARNING;
 
 
-/// Rules detecting migration practice issues.
 public final class MigrationPracticeRules {
     private MigrationPracticeRules() {}
 
@@ -41,10 +44,14 @@ public final class MigrationPracticeRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if (event instanceof SchemaEvent.TableDropped e && schema.table(e.name()).isEmpty()) {return List.of(LintDiagnostic.warning(id(),
-                                                                                                                                        "DROP TABLE '" + e.name() + "' — table does not exist in schema. Use IF EXISTS to avoid runtime errors.",
-                                                                                                                                        e.span(),
-                                                                                                                                        "Add IF EXISTS clause"));}
+            if (event instanceof SchemaEvent.TableDropped e && schema.table(e.name()).isEmpty()) {
+                return List.of(LintDiagnostic.warning(id(),
+                                                      "DROP TABLE '" + e.name()
+                                                     + "' — table does not exist in schema. Use IF EXISTS to avoid runtime errors.",
+                                                      e.span(),
+                                                      "Add IF EXISTS clause"));
+            }
+
             return List.of();
         }
     }
@@ -65,20 +72,23 @@ public final class MigrationPracticeRules {
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
             if (event instanceof SchemaEvent.ColumnDropped e) {
                 var table = schema.table(e.table());
+
                 if (table.isPresent()) {
-                    var isReferenced = schema.tables().values()
-                                                    .stream()
-                                                    .flatMap(t -> t.constraints().stream())
-                                                    .filter(c -> c instanceof Constraint.ForeignKey)
-                                                    .map(c -> (Constraint.ForeignKey) c)
-                                                    .anyMatch(fk -> fk.refTable().equals(e.table()) && fk.refColumns()
-                                                                                                                    .contains(e.columnName()));
-                    if (isReferenced) {return List.of(LintDiagnostic.warning(id(),
-                                                                             "Dropping column '" + e.columnName() + "' which is referenced by foreign keys",
-                                                                             e.span(),
-                                                                             "Drop dependent foreign keys first"));}
+                    var isReferenced = schema.tables().values().stream().flatMap(t -> t.constraints()
+                                                                                       .stream()).filter(c -> c instanceof Constraint.ForeignKey).map(c -> (Constraint.ForeignKey) c).anyMatch(fk -> fk.refTable()
+                                                                                                                                                                                                       .equals(e.table()) && fk.refColumns()
+                                                                                                                                                                                                                               .contains(e.columnName()));
+
+                    if (isReferenced) {
+                        return List.of(LintDiagnostic.warning(id(),
+                                                              "Dropping column '" + e.columnName()
+                                                             + "' which is referenced by foreign keys",
+                                                              e.span(),
+                                                              "Drop dependent foreign keys first"));
+                    }
                 }
             }
+
             return List.of();
         }
     }
@@ -99,13 +109,20 @@ public final class MigrationPracticeRules {
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
             if (event instanceof SchemaEvent.TableCreated e) {
                 var results = new java.util.ArrayList<LintDiagnostic>();
-                for (var c : e.constraints()) {if (c instanceof Constraint.ForeignKey fk) {results.add(LintDiagnostic.warning(id(),
-                                                                                                                              "FK on (" + String.join(", ",
-                                                                                                                                                      fk.columns()) + ") — ensure an index exists on these columns",
-                                                                                                                              e.span(),
-                                                                                                                              "CREATE INDEX on the FK columns if not already present"));}}
+
+                for (var c : e.constraints()) {
+                    if (c instanceof Constraint.ForeignKey fk) {
+                        results.add(LintDiagnostic.warning(id(),
+                                                           "FK on (" + String.join(", ", fk.columns())
+                                                          + ") — ensure an index exists on these columns",
+                                                           e.span(),
+                                                           "CREATE INDEX on the FK columns if not already present"));
+                    }
+                }
+
                 return results;
             }
+
             return List.of();
         }
     }
@@ -131,17 +148,22 @@ public final class MigrationPracticeRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if (event instanceof SchemaEvent.ColumnAdded e && e.column().defaultExpr()
-                                                                      .isPresent()) {
-                var expr = e.column().defaultExpr()
-                                   .unwrap()
-                                   .toLowerCase();
-                for (var vf : VOLATILE_FUNCTIONS) {if (expr.contains(vf)) {return List.of(LintDiagnostic.warning(id(),
-                                                                                                                 "Column '" + e.column()
-                                                                                                                                      .name() + "' has volatile DEFAULT '" + expr + "' — causes table rewrite",
-                                                                                                                 e.span(),
-                                                                                                                 "Add column without DEFAULT, set DEFAULT separately, backfill in batches"));}}
+            if (event instanceof SchemaEvent.ColumnAdded e && e.column().defaultExpr().isPresent()) {
+                var expr = e.column().defaultExpr().unwrap().toLowerCase();
+
+                for (var vf : VOLATILE_FUNCTIONS) {
+                    if (expr.contains(vf)) {
+                        return List.of(LintDiagnostic.warning(id(),
+                                                              "Column '" + e.column()
+                                                                            .name()
+                                                             + "' has volatile DEFAULT '" + expr
+                                                             + "' — causes table rewrite",
+                                                              e.span(),
+                                                              "Add column without DEFAULT, set DEFAULT separately, backfill in batches"));
+                    }
+                }
             }
+
             return List.of();
         }
     }
@@ -160,10 +182,14 @@ public final class MigrationPracticeRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if (event instanceof SchemaEvent.EnumValueAdded e) {return List.of(LintDiagnostic.warning(id(),
-                                                                                                      "ALTER TYPE ADD VALUE '" + e.value() + "' — cannot run inside a transaction (PG < 12), new value not usable in same transaction (PG 12+)",
-                                                                                                      e.span(),
-                                                                                                      "Run ADD VALUE in its own migration file, not combined with other DDL"));}
+            if (event instanceof SchemaEvent.EnumValueAdded e) {
+                return List.of(LintDiagnostic.warning(id(),
+                                                      "ALTER TYPE ADD VALUE '" + e.value()
+                                                     + "' — cannot run inside a transaction (PG < 12), new value not usable in same transaction (PG 12+)",
+                                                      e.span(),
+                                                      "Run ADD VALUE in its own migration file, not combined with other DDL"));
+            }
+
             return List.of();
         }
     }
@@ -183,14 +209,17 @@ public final class MigrationPracticeRules {
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
             if (event instanceof SchemaEvent.SchemaDropped e) {
-                var hasObjects = schema.tables().keySet()
-                                              .stream()
-                                              .anyMatch(t -> t.startsWith(e.schemaName() + "."));
-                if (hasObjects) {return List.of(LintDiagnostic.warning(id(),
-                                                                       "DROP SCHEMA '" + e.schemaName() + "' — schema contains tables that will be dropped",
-                                                                       e.span(),
-                                                                       "Drop contained objects explicitly first"));}
+                var hasObjects = schema.tables().keySet().stream().anyMatch(t -> t.startsWith(e.schemaName() + "."));
+
+                if (hasObjects) {
+                    return List.of(LintDiagnostic.warning(id(),
+                                                          "DROP SCHEMA '" + e.schemaName()
+                                                         + "' — schema contains tables that will be dropped",
+                                                          e.span(),
+                                                          "Drop contained objects explicitly first"));
+                }
             }
+
             return List.of();
         }
     }
@@ -229,15 +258,20 @@ public final class MigrationPracticeRules {
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
             if (event instanceof SchemaEvent.ColumnNullabilityChanged e && !e.nullable()) {
                 var table = schema.table(e.table());
+
                 if (table.isPresent()) {
                     var col = table.unwrap().column(e.column());
-                    if (col.isPresent() && col.unwrap().defaultExpr()
-                                                     .isPresent() && col.unwrap().nullable()) {return List.of(LintDiagnostic.warning(id(),
-                                                                                                                                     "Setting NOT NULL on '" + e.column() + "' after adding with DEFAULT — if backfilling, do it in batches outside the migration transaction",
-                                                                                                                                     e.span(),
-                                                                                                                                     "Add column, deploy, backfill in app code, then SET NOT NULL in next migration"));}
+
+                    if (col.isPresent() && col.unwrap().defaultExpr().isPresent() && col.unwrap().nullable()) {
+                        return List.of(LintDiagnostic.warning(id(),
+                                                              "Setting NOT NULL on '" + e.column()
+                                                             + "' after adding with DEFAULT — if backfilling, do it in batches outside the migration transaction",
+                                                              e.span(),
+                                                              "Add column, deploy, backfill in app code, then SET NOT NULL in next migration"));
+                    }
                 }
             }
+
             return List.of();
         }
     }
