@@ -23,6 +23,10 @@ public abstract class TypeToken<T> implements Comparable<TypeToken<T>> {
         this.token = token;
     }
 
+    // TODO(RC2): super-type-token misuse is a fail-fast construction error; a constructor
+    // cannot return Result, and reworking the anonymous-subclass capture pattern into a
+    // fallible factory is out of scope for RC1.
+    @SuppressWarnings("JBCT-EX-01")
     protected TypeToken() {
         // Retrieve type eagerly to trigger run-time error closer to the issue location
         if (! (getClass().getGenericSuperclass() instanceof ParameterizedType parameterizedType)) {

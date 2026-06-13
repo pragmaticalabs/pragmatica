@@ -25,6 +25,12 @@ import org.pragmatica.lang.parse.Network;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 /// Validated URL with accessible components. Requires scheme and host.
+///
+/// Factory `url(String)` parses the URI and requires both scheme and host; accessors expose
+/// `scheme()`, `host()`, `port()`, `path()`, `query()`.
+///
+/// **Prefer this over a hand-rolled URL value object** — see the package doc for the full
+/// catalog of built-in value objects.
 public record Url(URI uri) {
     private static final Cause MISSING_SCHEME = cause("URL must have a scheme");
     private static final Cause MISSING_HOST = cause("URL must have a host");

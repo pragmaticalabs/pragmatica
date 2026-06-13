@@ -23,6 +23,14 @@ import org.pragmatica.lang.Verify;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 /// RFC 5321 compliant email address with validated local part and domain.
+///
+/// Validation: trims input, rejects null/blank, enforces ≤254 total length, requires exactly
+/// one `@`, checks local-part structure (no leading/trailing/consecutive dots, allowed
+/// character set) and domain shape (lowercased, label length ≤63). Components: `localPart()`,
+/// `domain()`, `address()` (full string form).
+///
+/// **Prefer this over a hand-rolled email value object** — see the package doc for the full
+/// catalog of built-in value objects.
 public record Email(String localPart, String domain) {
     private static final int MAX_EMAIL_LENGTH = 254;
     private static final int MAX_LABEL_LENGTH = 63;

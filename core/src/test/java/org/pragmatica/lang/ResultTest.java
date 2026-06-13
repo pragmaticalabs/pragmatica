@@ -684,6 +684,56 @@ class ResultTest {
     }
 
     @Test
+    void firstFailureOfReturnsListOfValuesForSuccessInputs() {
+        Result.firstFailureOf(List.of(Result.success(321),
+                                      Result.success(123),
+                                      Result.success(456)))
+              .onSuccess(values -> {
+                  assertEquals(3, values.size());
+                  assertEquals(321, values.get(0));
+                  assertEquals(123, values.get(1));
+                  assertEquals(456, values.get(2));
+              })
+              .onFailureRun(Assertions::fail);
+    }
+
+    @Test
+    void firstFailureOfReturnsEmptyListForEmptyInput() {
+        Result.<Integer>firstFailureOf(List.of())
+              .onSuccess(values -> assertEquals(0, values.size()))
+              .onFailureRun(Assertions::fail);
+    }
+
+    @Test
+    void firstFailureOfReturnsFirstFailureUnwrapped() {
+        var firstFailure = Causes.cause("first failure");
+        var secondFailure = Causes.cause("second failure");
+
+        Result.firstFailureOf(List.of(Result.success(321),
+                                      Result.failure(firstFailure),
+                                      Result.failure(secondFailure)))
+              .onSuccessRun(Assertions::fail)
+              .onFailure(cause -> assertEquals(firstFailure, cause));
+    }
+
+    @Test
+    void firstFailureOfShortCircuitsAndDoesNotAggregate() {
+        // Contrast with allOf, which would yield a composite of all failures.
+        var earlyFailure = Causes.cause("early");
+        var laterFailure = Causes.cause("later");
+
+        Result.firstFailureOf(List.of(Result.failure(earlyFailure),
+                                      Result.failure(laterFailure),
+                                      Result.failure(Causes.cause("ignored"))))
+              .onSuccessRun(Assertions::fail)
+              .onFailure(cause -> {
+                  assertEquals(earlyFailure, cause);
+                  assertEquals(1, cause.stream().count(),
+                               "failure must not be composite — should carry only the first cause");
+              });
+    }
+
+    @Test
     void allReturnsSuccessFor1SuccessInput() {
         Result.all(Result.success(321))
               .map(value -> {
@@ -1654,5 +1704,181 @@ class ResultTest {
 
         assertTrue(result.isFailure());
         assertFalse(ninthSupplierCalled.get(), "Ninth supplier should not be called when eighth fails");
+    }
+
+    //------------------------------------------------------------------------------------------------------------------
+    // mapWith / flatMapWith / ensureWith combinators
+    //------------------------------------------------------------------------------------------------------------------
+    record ValidRequest(String userId) {}
+
+    record UserProfile<T>(T request, String profile) {}
+
+    record UserArticles<T>(T request, List<String> articles) {}
+
+    private Result<String> fetchProfile(String userId) {
+        return Result.success("profile-of-" + userId);
+    }
+
+    private Result<Boolean> checkEntitlement(String userId) {
+        return Result.success(Boolean.TRUE);
+    }
+
+    private Result<List<String>> fetchArticles(String profile) {
+        return Result.success(List.of("a-" + profile, "b-" + profile));
+    }
+
+    @Test
+    void mapWithCombinesOriginalValueWithOperationResult() {
+        Result.success("user")
+              .mapWith(v -> Result.success(v.length()), (v, len) -> v + ":" + len)
+              .onFailureRun(Assertions::fail)
+              .onSuccess(value -> assertEquals("user:4", value));
+    }
+
+    @Test
+    void mapWithShortCircuitsWhenOperationFailsAndFactoryNotInvoked() {
+        var factoryCalled = new AtomicBoolean(false);
+
+        Result.<String>success("user")
+              .mapWith(_ -> Result.<Integer>failure(Causes.cause("op failed")),
+                       (v, len) -> {
+                           factoryCalled.set(true);
+                           return v + ":" + len;
+                       })
+              .onSuccessRun(Assertions::fail)
+              .onFailure(cause -> assertEquals(Causes.cause("op failed"), cause));
+
+        assertFalse(factoryCalled.get(), "Factory must not be invoked when operation fails");
+    }
+
+    @Test
+    void mapWithFieldFormProjectsForOperationButPassesOriginalToFactory() {
+        Result.success(new ValidRequest("u1"))
+              .mapWith(ValidRequest::userId, this::fetchProfile, UserProfile::new)
+              .onFailureRun(Assertions::fail)
+              .onSuccess(profile -> {
+                  assertEquals(new ValidRequest("u1"), profile.request());
+                  assertEquals("profile-of-u1", profile.profile());
+              });
+    }
+
+    @Test
+    void flatMapWithPropagatesFactorySuccess() {
+        Result.success("user")
+              .flatMapWith(v -> Result.success(v.length()), (v, len) -> Result.success(v + ":" + len))
+              .onFailureRun(Assertions::fail)
+              .onSuccess(value -> assertEquals("user:4", value));
+    }
+
+    @Test
+    void flatMapWithPropagatesFactoryFailure() {
+        Result.success("user")
+              .flatMapWith(v -> Result.success(v.length()),
+                           (_, _) -> Result.<String>failure(Causes.cause("factory failed")))
+              .onSuccessRun(Assertions::fail)
+              .onFailure(cause -> assertEquals(Causes.cause("factory failed"), cause));
+    }
+
+    @Test
+    void flatMapWithShortCircuitsBeforeFactoryWhenOperationFails() {
+        var factoryCalled = new AtomicBoolean(false);
+
+        Result.<String>success("user")
+              .flatMapWith(_ -> Result.<Integer>failure(Causes.cause("op failed")),
+                           (v, len) -> {
+                               factoryCalled.set(true);
+                               return Result.success(v + ":" + len);
+                           })
+              .onSuccessRun(Assertions::fail)
+              .onFailure(cause -> assertEquals(Causes.cause("op failed"), cause));
+
+        assertFalse(factoryCalled.get(), "Factory must not be invoked when operation fails");
+    }
+
+    @Test
+    void flatMapWithFieldFormProjectsForOperationButPassesOriginalToFactory() {
+        Result.success(new ValidRequest("u1"))
+              .flatMapWith(ValidRequest::userId, this::fetchProfile, (request, profile) -> Result.success(new UserProfile<>(request, profile)))
+              .onFailureRun(Assertions::fail)
+              .onSuccess(profile -> {
+                  assertEquals(new ValidRequest("u1"), profile.request());
+                  assertEquals("profile-of-u1", profile.profile());
+              });
+    }
+
+    @Test
+    void flatMapWithFieldFormPropagatesFactoryFailure() {
+        Result.success(new ValidRequest("u1"))
+              .flatMapWith(ValidRequest::userId,
+                           this::fetchProfile,
+                           (_, _) -> Result.<UserProfile<ValidRequest>>failure(Causes.cause("factory failed")))
+              .onSuccessRun(Assertions::fail)
+              .onFailure(cause -> assertEquals(Causes.cause("factory failed"), cause));
+    }
+
+    @Test
+    void ensureWithContinuesWithOriginalValueDiscardingOperationResult() {
+        var original = new ValidRequest("u1");
+
+        Result.success(original)
+              .ensureWith(_ -> Result.success("a different type"))
+              .onFailureRun(Assertions::fail)
+              .onSuccess(value -> assertSame(original, value));
+    }
+
+    @Test
+    void ensureWithPropagatesOperationFailure() {
+        Result.success(new ValidRequest("u1"))
+              .ensureWith(_ -> Result.<Boolean>failure(Causes.cause("not entitled")))
+              .onSuccessRun(Assertions::fail)
+              .onFailure(cause -> assertEquals(Causes.cause("not entitled"), cause));
+    }
+
+    @Test
+    void ensureWithFieldFormContinuesWithOriginalValueDiscardingOperationResult() {
+        var original = new ValidRequest("u1");
+
+        Result.success(original)
+              .ensureWith(ValidRequest::userId, _ -> Result.success(123L))
+              .onFailureRun(Assertions::fail)
+              .onSuccess(value -> assertSame(original, value));
+    }
+
+    @Test
+    void ensureWithFieldFormPropagatesOperationFailure() {
+        Result.success(new ValidRequest("u1"))
+              .ensureWith(ValidRequest::userId, _ -> Result.<Boolean>failure(Causes.cause("not entitled")))
+              .onSuccessRun(Assertions::fail)
+              .onFailure(cause -> assertEquals(Causes.cause("not entitled"), cause));
+    }
+
+    @Test
+    void mapWithDoesNotInvokeOperationWhenSourceIsFailed() {
+        var operationCalled = new AtomicBoolean(false);
+
+        var result = Result.<String>failure(Causes.cause("source failed"))
+                           .mapWith(v -> {
+                                        operationCalled.set(true);
+                                        return Result.success(v.length());
+                                    },
+                                    (v, len) -> v + ":" + len);
+
+        assertTrue(result.isFailure());
+        assertFalse(operationCalled.get(), "Operation must not be invoked when source is failed");
+    }
+
+    @Test
+    void combinatorsAccreteContextWithMethodReferencesAndImplicitLambdas() {
+        var result = Result.success(new ValidRequest("u1"))
+                           .mapWith(ValidRequest::userId, this::fetchProfile, UserProfile::new)
+                           .ensureWith(p -> checkEntitlement(p.request().userId()))
+                           .mapWith(UserProfile::profile, this::fetchArticles, UserArticles::new);
+
+        result.onFailureRun(Assertions::fail)
+              .onSuccess(articles -> {
+                  assertEquals(new ValidRequest("u1"), articles.request().request());
+                  assertEquals("profile-of-u1", articles.request().profile());
+                  assertEquals(List.of("a-profile-of-u1", "b-profile-of-u1"), articles.articles());
+              });
     }
 }

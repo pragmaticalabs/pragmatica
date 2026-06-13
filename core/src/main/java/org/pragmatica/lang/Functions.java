@@ -214,62 +214,74 @@ public interface Functions {
     }
 
     @FunctionalInterface
+    @Contract
     interface ThrowingRunnable {
         void run() throws Throwable;
     }
 
     /// Supplier which can throw an exception.
     @FunctionalInterface
+    @Contract
     interface ThrowingFn0<T> {
         T apply() throws Throwable;
     }
 
     @FunctionalInterface
+    @Contract
     interface ThrowingFn1<R, T1> {
         R apply(T1 v1) throws Throwable;
     }
 
     @FunctionalInterface
+    @Contract
     interface ThrowingFn2<R, T1, T2> {
         R apply(T1 v1, T2 v2) throws Throwable;
     }
 
     @FunctionalInterface
+    @Contract
     interface ThrowingFn3<R, T1, T2, T3> {
         R apply(T1 param1, T2 param2, T3 param3) throws Throwable;
     }
 
     @FunctionalInterface
+    @Contract
     interface ThrowingFn4<R, T1, T2, T3, T4> {
         R apply(T1 param1, T2 param2, T3 param3, T4 param4) throws Throwable;
     }
 
     @FunctionalInterface
+    @Contract
     interface ThrowingFn5<R, T1, T2, T3, T4, T5> {
         R apply(T1 param1, T2 param2, T3 param3, T4 param4, T5 param5) throws Throwable;
     }
 
     @FunctionalInterface
+    @Contract
     interface ThrowingFn6<R, T1, T2, T3, T4, T5, T6> {
         R apply(T1 param1, T2 param2, T3 param3, T4 param4, T5 param5, T6 param6) throws Throwable;
     }
 
     @FunctionalInterface
+    @Contract
     interface ThrowingFn7<R, T1, T2, T3, T4, T5, T6, T7> {
         R apply(T1 param1, T2 param2, T3 param3, T4 param4, T5 param5, T6 param6, T7 param7) throws Throwable;
     }
 
     @FunctionalInterface
+    @Contract
     interface ThrowingFn8<R, T1, T2, T3, T4, T5, T6, T7, T8> {
         R apply(T1 param1, T2 param2, T3 param3, T4 param4, T5 param5, T6 param6, T7 param7, T8 param8) throws Throwable;
     }
 
     @FunctionalInterface
+    @Contract
     interface ThrowingFn9<R, T1, T2, T3, T4, T5, T6, T7, T8, T9> {
         R apply(T1 param1, T2 param2, T3 param3, T4 param4, T5 param5, T6 param6, T7 param7, T8 param8, T9 param9) throws Throwable;
     }
 
     @FunctionalInterface
+    @Contract
     interface ThrowingFn10<R, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> {
         R apply(T1 param1,
                 T2 param2,
@@ -284,6 +296,7 @@ public interface Functions {
     }
 
     @FunctionalInterface
+    @Contract
     interface ThrowingFn11<R, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11> {
         R apply(T1 param1,
                 T2 param2,
@@ -299,6 +312,7 @@ public interface Functions {
     }
 
     @FunctionalInterface
+    @Contract
     interface ThrowingFn12<R, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12> {
         R apply(T1 param1,
                 T2 param2,
@@ -315,6 +329,7 @@ public interface Functions {
     }
 
     @FunctionalInterface
+    @Contract
     interface ThrowingFn13<R, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13> {
         R apply(T1 param1,
                 T2 param2,
@@ -332,6 +347,7 @@ public interface Functions {
     }
 
     @FunctionalInterface
+    @Contract
     interface ThrowingFn14<R, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14> {
         R apply(T1 param1,
                 T2 param2,
@@ -350,6 +366,7 @@ public interface Functions {
     }
 
     @FunctionalInterface
+    @Contract
     interface ThrowingFn15<R, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15> {
         R apply(T1 param1,
                 T2 param2,
@@ -376,23 +393,31 @@ public interface Functions {
 
     /// Universal consumers of values which do nothing with input values. Useful for cases when the API
     /// requires a function, but there is no need to do anything with the received values.
+    @Contract
     static <T1> void unitFn() {}
 
     /// No-operation function that accepts one parameter and returns nothing. Used when API requires a function, but there is no need to do anything with the received value.
     ///
     /// @param value Input value (ignored)
+    @Contract
     static <T1> void unitFn(T1 value) {}
 
+    @Contract
     static <T1, T2> void unitFn(T1 param1, T2 param2) {}
 
+    @Contract
     static <T1, T2, T3> void unitFn(T1 param1, T2 param2, T3 param3) {}
 
+    @Contract
     static <T1, T2, T3, T4> void unitFn(T1 param1, T2 param2, T3 param3, T4 param4) {}
 
+    @Contract
     static <T1, T2, T3, T4, T5> void unitFn(T1 param1, T2 param2, T3 param3, T4 param4, T5 param5) {}
 
+    @Contract
     static <T1, T2, T3, T4, T5, T6> void unitFn(T1 param1, T2 param2, T3 param3, T4 param4, T5 param5, T6 param6) {}
 
+    @Contract
     static <T1, T2, T3, T4, T5, T6, T7> void unitFn(T1 param1,
                                                     T2 param2,
                                                     T3 param3,
@@ -401,6 +426,7 @@ public interface Functions {
                                                     T6 param6,
                                                     T7 param7) {}
 
+    @Contract
     static <T1, T2, T3, T4, T5, T6, T7, T8> void unitFn(T1 param1,
                                                         T2 param2,
                                                         T3 param3,
@@ -410,6 +436,7 @@ public interface Functions {
                                                         T7 param7,
                                                         T8 param8) {}
 
+    @Contract
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9> void unitFn(T1 param1,
                                                             T2 param2,
                                                             T3 param3,
@@ -420,6 +447,7 @@ public interface Functions {
                                                             T8 param8,
                                                             T9 param9) {}
 
+    @Contract
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> void unitFn(T1 param1,
                                                                  T2 param2,
                                                                  T3 param3,
@@ -431,6 +459,7 @@ public interface Functions {
                                                                  T9 param9,
                                                                  T10 param10) {}
 
+    @Contract
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11> void unitFn(T1 param1,
                                                                       T2 param2,
                                                                       T3 param3,
@@ -443,6 +472,7 @@ public interface Functions {
                                                                       T10 param10,
                                                                       T11 param11) {}
 
+    @Contract
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12> void unitFn(T1 param1,
                                                                            T2 param2,
                                                                            T3 param3,
@@ -456,6 +486,7 @@ public interface Functions {
                                                                            T11 param11,
                                                                            T12 param12) {}
 
+    @Contract
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13> void unitFn(T1 param1,
                                                                                 T2 param2,
                                                                                 T3 param3,
@@ -470,6 +501,7 @@ public interface Functions {
                                                                                 T12 param12,
                                                                                 T13 param13) {}
 
+    @Contract
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14> void unitFn(T1 param1,
                                                                                      T2 param2,
                                                                                      T3 param3,
@@ -485,6 +517,7 @@ public interface Functions {
                                                                                      T13 param13,
                                                                                      T14 param14) {}
 
+    @Contract
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15> void unitFn(T1 param1,
                                                                                           T2 param2,
                                                                                           T3 param3,
@@ -506,7 +539,7 @@ public interface Functions {
     /// @param value Input value (ignored)
     ///
     /// @return null
-    @SuppressWarnings("JBCT-RET-03")
+    @NullReturn
     static <R, T1> R toNull(T1 value) {
         return null;
     }

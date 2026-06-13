@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Timeout;
 import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.utils.Causes;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -1276,5 +1277,197 @@ public class PromiseTest {
                 .await();
 
         assertTrue(result.isFailure());
+    }
+
+    //------------------------------------------------------------------------------------------------------------------
+    // mapWith / flatMapWith / ensureWith combinators
+    //------------------------------------------------------------------------------------------------------------------
+    record ValidRequest(String userId) {}
+
+    record UserProfile<T>(T request, String profile) {}
+
+    record UserArticles<T>(T request, List<String> articles) {}
+
+    private Promise<String> fetchProfileAsync(String userId) {
+        return Promise.<String>promise().succeedAsync(() -> "profile-of-" + userId);
+    }
+
+    private Promise<Boolean> checkEntitlementAsync(String userId) {
+        return Promise.<Boolean>promise().succeedAsync(() -> Boolean.TRUE);
+    }
+
+    private Promise<List<String>> fetchArticlesAsync(String profile) {
+        return Promise.<List<String>>promise()
+                      .succeedAsync(() -> List.of("a-" + profile, "b-" + profile));
+    }
+
+    @Test
+    void mapWithCombinesOriginalValueWithAsyncOperationResult() {
+        Promise.success("user")
+               .mapWith(v -> Promise.<Integer>promise().succeedAsync(v::length), (v, len) -> v + ":" + len)
+               .await()
+               .onFailureRun(Assertions::fail)
+               .onSuccess(value -> assertEquals("user:4", value));
+    }
+
+    @Test
+    void mapWithShortCircuitsWhenAsyncOperationFailsAndFactoryNotInvoked() {
+        var factoryCalled = new AtomicBoolean(false);
+
+        Promise.<String>success("user")
+               .mapWith(_ -> Promise.<Integer>promise().failAsync(() -> FAULT_CAUSE),
+                        (v, len) -> {
+                            factoryCalled.set(true);
+                            return v + ":" + len;
+                        })
+               .await()
+               .onSuccessRun(Assertions::fail)
+               .onFailure(cause -> assertEquals(FAULT_CAUSE, cause));
+
+        assertFalse(factoryCalled.get(), "Factory must not be invoked when operation fails");
+    }
+
+    @Test
+    void mapWithFieldFormProjectsForOperationButPassesOriginalToFactory() {
+        Promise.success(new ValidRequest("u1"))
+               .mapWith(ValidRequest::userId, this::fetchProfileAsync, UserProfile::new)
+               .await()
+               .onFailureRun(Assertions::fail)
+               .onSuccess(profile -> {
+                   assertEquals(new ValidRequest("u1"), profile.request());
+                   assertEquals("profile-of-u1", profile.profile());
+               });
+    }
+
+    @Test
+    void flatMapWithPropagatesFactorySuccess() {
+        Promise.success("user")
+               .flatMapWith(v -> Promise.<Integer>promise().succeedAsync(v::length),
+                            (v, len) -> Promise.success(v + ":" + len))
+               .await()
+               .onFailureRun(Assertions::fail)
+               .onSuccess(value -> assertEquals("user:4", value));
+    }
+
+    @Test
+    void flatMapWithPropagatesFactoryFailure() {
+        Promise.success("user")
+               .flatMapWith(v -> Promise.<Integer>promise().succeedAsync(v::length),
+                            (_, _) -> Promise.<String>failure(FAULT_CAUSE))
+               .await()
+               .onSuccessRun(Assertions::fail)
+               .onFailure(cause -> assertEquals(FAULT_CAUSE, cause));
+    }
+
+    @Test
+    void flatMapWithShortCircuitsBeforeFactoryWhenOperationFails() {
+        var factoryCalled = new AtomicBoolean(false);
+
+        Promise.<String>success("user")
+               .flatMapWith(_ -> Promise.<Integer>promise().failAsync(() -> FAULT_CAUSE),
+                            (v, len) -> {
+                                factoryCalled.set(true);
+                                return Promise.success(v + ":" + len);
+                            })
+               .await()
+               .onSuccessRun(Assertions::fail)
+               .onFailure(cause -> assertEquals(FAULT_CAUSE, cause));
+
+        assertFalse(factoryCalled.get(), "Factory must not be invoked when operation fails");
+    }
+
+    @Test
+    void flatMapWithFieldFormProjectsForOperationButPassesOriginalToFactory() {
+        Promise.success(new ValidRequest("u1"))
+               .flatMapWith(ValidRequest::userId, this::fetchProfileAsync, (request, profile) -> Promise.success(new UserProfile<>(request, profile)))
+               .await()
+               .onFailureRun(Assertions::fail)
+               .onSuccess(profile -> {
+                   assertEquals(new ValidRequest("u1"), profile.request());
+                   assertEquals("profile-of-u1", profile.profile());
+               });
+    }
+
+    @Test
+    void flatMapWithFieldFormPropagatesFactoryFailure() {
+        Promise.success(new ValidRequest("u1"))
+               .flatMapWith(ValidRequest::userId,
+                            this::fetchProfileAsync,
+                            (_, _) -> Promise.<UserProfile<ValidRequest>>failure(FAULT_CAUSE))
+               .await()
+               .onSuccessRun(Assertions::fail)
+               .onFailure(cause -> assertEquals(FAULT_CAUSE, cause));
+    }
+
+    @Test
+    void ensureWithContinuesWithOriginalValueDiscardingAsyncOperationResult() {
+        var original = new ValidRequest("u1");
+
+        Promise.success(original)
+               .ensureWith(_ -> Promise.<String>promise().succeedAsync(() -> "a different type"))
+               .await()
+               .onFailureRun(Assertions::fail)
+               .onSuccess(value -> assertSame(original, value));
+    }
+
+    @Test
+    void ensureWithPropagatesAsyncOperationFailure() {
+        Promise.success(new ValidRequest("u1"))
+               .ensureWith(_ -> Promise.<Boolean>promise().failAsync(() -> FAULT_CAUSE))
+               .await()
+               .onSuccessRun(Assertions::fail)
+               .onFailure(cause -> assertEquals(FAULT_CAUSE, cause));
+    }
+
+    @Test
+    void ensureWithFieldFormContinuesWithOriginalValueDiscardingAsyncOperationResult() {
+        var original = new ValidRequest("u1");
+
+        Promise.success(original)
+               .ensureWith(ValidRequest::userId, _ -> Promise.<Long>promise().succeedAsync(() -> 123L))
+               .await()
+               .onFailureRun(Assertions::fail)
+               .onSuccess(value -> assertSame(original, value));
+    }
+
+    @Test
+    void ensureWithFieldFormPropagatesAsyncOperationFailure() {
+        Promise.success(new ValidRequest("u1"))
+               .ensureWith(ValidRequest::userId, _ -> Promise.<Boolean>promise().failAsync(() -> FAULT_CAUSE))
+               .await()
+               .onSuccessRun(Assertions::fail)
+               .onFailure(cause -> assertEquals(FAULT_CAUSE, cause));
+    }
+
+    @Test
+    void mapWithDoesNotInvokeOperationWhenSourceIsFailed() {
+        var operationCalled = new AtomicBoolean(false);
+
+        var result = Promise.<String>failure(FAULT_CAUSE)
+                            .mapWith(v -> {
+                                         operationCalled.set(true);
+                                         return Promise.<Integer>promise().succeedAsync(v::length);
+                                     },
+                                     (v, len) -> v + ":" + len)
+                            .await();
+
+        assertTrue(result.isFailure());
+        assertFalse(operationCalled.get(), "Operation must not be invoked when source is failed");
+    }
+
+    @Test
+    void combinatorsAccreteContextWithMethodReferencesAndImplicitLambdas() {
+        var result = Promise.success(new ValidRequest("u1"))
+                            .mapWith(ValidRequest::userId, this::fetchProfileAsync, UserProfile::new)
+                            .ensureWith(p -> checkEntitlementAsync(p.request().userId()))
+                            .mapWith(UserProfile::profile, this::fetchArticlesAsync, UserArticles::new)
+                            .await();
+
+        result.onFailureRun(Assertions::fail)
+              .onSuccess(articles -> {
+                  assertEquals(new ValidRequest("u1"), articles.request().request());
+                  assertEquals("profile-of-u1", articles.request().profile());
+                  assertEquals(List.of("a-profile-of-u1", "b-profile-of-u1"), articles.articles());
+              });
     }
 }

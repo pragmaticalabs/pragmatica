@@ -225,11 +225,4 @@ public sealed interface TimeSpan {
                    : builder.toString();
         }
     }
-
-    record unused() implements TimeSpan {
-        @Override
-        public Duration duration() {
-            throw new UnsupportedOperationException();
-        }
-    }
 }

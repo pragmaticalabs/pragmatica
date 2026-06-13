@@ -33,6 +33,29 @@ import static org.pragmatica.lang.Tuple.tuple;
 
 /// Implementation of the basic immutable container for value which may or may not be present.
 ///
+/// `Option` is the presence carrier among the three core monads: `Option` — presence,
+/// [Result] — synchronous fallibility, [Promise] — asynchronous fallibility (the JBCT
+/// four-return-kinds rule). Business logic never returns or checks `null` — nullable values
+/// from external APIs are wrapped at the boundary via `option(nullable)`.
+///
+/// ## Combinator map
+///
+/// | Purpose | Combinators |
+/// |---------|-------------|
+/// | Construct | `some(value)`, `none()`, `option(nullable)` (boundary adapter) |
+/// | Transform | `map(fn)`, `flatMap(fn)` |
+/// | Context-preserving stages | `mapWith(op, factory)` / `flatMapWith(op, factory)` / `ensureWith(op)` + field-scoped getter forms — empty propagates at every stage; `ensureWith` discards the operation result and continues with the original value when present |
+/// | Absence handling | `or(...)` / `orElse(...)` family, `filter(predicate)` |
+/// | Multi-projection | instance `all(fn1..fnN)` → `MapperN.map/flatMap` |
+/// | Convert | `toResult(cause)`, `async()` / `async(cause)` (→ [Promise]) |
+/// | Side effects | `onPresent(consumer)` family — observation only |
+///
+/// Tuple-valued options additionally provide arity overloads of `map`/`flatMap` (`Fn2`..`Fn15`).
+///
+/// Validation of optional values follows the `Result<Option<T>>` contract — see
+/// [Verify]`.ensureOption`: empty → `Success(None)`, present and valid → `Success(Some)`,
+/// present and invalid → `Failure(cause)`.
+///
 /// @param <T> Type of contained value
 @SuppressWarnings("unused")
 public sealed interface Option<T> permits Some, None {
@@ -77,6 +100,98 @@ public sealed interface Option<T> permits Some, None {
     /// @return current instance if it is empty or the instance with the replacement value if the current instance is present.
     default <U> Option<U> flatMap(Supplier<Option<U>> supplier) {
         return fold(Option::empty, _ -> supplier.get());
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to the value, then combine the ORIGINAL value with the operation's result via a pure factory.
+    /// Operation absence short-circuits; the factory always receives the full original value.
+    ///
+    /// @param operation Effectful operation applied to the value
+    /// @param factory   Pure combiner receiving the original value and the operation's result
+    /// @param <U>       Type of the combined value
+    /// @param <B>       Type of the operation's result
+    ///
+    /// @return combined value (if present) or empty
+    default <U, B> Option<U> mapWith(Fn1<Option<B>, ? super T> operation, Fn2<U, ? super T, ? super B> factory) {
+        return flatMap(t -> operation.apply(t)
+                                     .map(b -> factory.apply(t, b)));
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to the value, then combine the ORIGINAL value with the operation's result via a factory.
+    /// Operation absence short-circuits; the factory always receives the full original value and itself may be absent, in which case the result is empty.
+    ///
+    /// @param operation Effectful operation applied to the value
+    /// @param factory   Combiner receiving the original value and the operation's result, itself returning an [Option]
+    /// @param <U>       Type of the combined value
+    /// @param <B>       Type of the operation's result
+    ///
+    /// @return combined value (if present) or empty
+    default <U, B> Option<U> flatMapWith(Fn1<Option<B>, ? super T> operation, Fn2<Option<U>, ? super T, ? super B> factory) {
+        return flatMap(t -> operation.apply(t)
+                                     .flatMap(b -> factory.apply(t, b)));
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to the value; when present CONTINUE WITH THE ORIGINAL VALUE UNCHANGED — the operation's result is discarded; when
+    /// empty (none) the result is empty. Operation absence gates the chain (unlike [#onPresent(Consumer)]).
+    /// Use for TRANSIENT gates whose outcome no later step reads. The moment a later step needs the outcome, the operation should
+    /// return evidence and be accreted via [#mapWith(Fn1, Fn1, Fn2)] instead — a load-bearing check that yields only a boolean is the
+    /// parse-don't-validate anti-pattern. See `core/docs/knowledge-gathering-pipelines.md`.
+    ///
+    /// @param operation Effectful operation applied to the value
+    /// @param <B>       Type of the operation's (discarded) result
+    ///
+    /// @return the original value (if present) or empty
+    default <B> Option<T> ensureWith(Fn1<Option<B>, ? super T> operation) {
+        return flatMap(t -> operation.apply(t)
+                                     .map(_ -> t));
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to a projection of the value, then combine the ORIGINAL value with the operation's result via a pure factory.
+    /// Operation absence short-circuits; the factory always receives the full original value.
+    ///
+    /// @param getter    Projection extracting the input for the operation
+    /// @param operation Effectful operation applied to the projection
+    /// @param factory   Pure combiner receiving the original value and the operation's result
+    /// @param <U>       Type of the combined value
+    /// @param <A>       Type of the projection
+    /// @param <B>       Type of the operation's result
+    ///
+    /// @return combined value (if present) or empty
+    default <U, A, B> Option<U> mapWith(Fn1<A, ? super T> getter, Fn1<Option<B>, ? super A> operation, Fn2<U, ? super T, ? super B> factory) {
+        return mapWith(t -> operation.apply(getter.apply(t)), factory);
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to a projection of the value, then combine the ORIGINAL value with the operation's result via a factory.
+    /// Operation absence short-circuits; the factory always receives the full original value and itself may be absent, in which case the result is empty.
+    ///
+    /// @param getter    Projection extracting the input for the operation
+    /// @param operation Effectful operation applied to the projection
+    /// @param factory   Combiner receiving the original value and the operation's result, itself returning an [Option]
+    /// @param <U>       Type of the combined value
+    /// @param <A>       Type of the projection
+    /// @param <B>       Type of the operation's result
+    ///
+    /// @return combined value (if present) or empty
+    default <U, A, B> Option<U> flatMapWith(Fn1<A, ? super T> getter, Fn1<Option<B>, ? super A> operation, Fn2<Option<U>, ? super T, ? super B> factory) {
+        return flatMapWith(t -> operation.apply(getter.apply(t)), factory);
+    }
+
+    /// **[Pure Transform]**
+    /// Apply an effectful operation to a projection of the value; when present CONTINUE WITH THE ORIGINAL VALUE UNCHANGED — the operation's result is
+    /// discarded; when empty (none) the result is empty. Operation absence gates the chain (unlike [#onPresent(Consumer)]).
+    ///
+    /// @param getter    Projection extracting the input for the operation
+    /// @param operation Effectful operation applied to the projection
+    /// @param <A>       Type of the projection
+    /// @param <B>       Type of the operation's (discarded) result
+    ///
+    /// @return the original value (if present) or empty
+    default <A, B> Option<T> ensureWith(Fn1<A, ? super T> getter, Fn1<Option<B>, ? super A> operation) {
+        return ensureWith(t -> operation.apply(getter.apply(t)));
     }
 
     /// **[Pure Transform]**
@@ -145,6 +260,7 @@ public sealed interface Option<T> permits Some, None {
     /// @param nonEmptyValConsumer Action to perform on the present instance value
     ///
     /// @return this instance for fluent call chaining
+    @NullReturn
     default Option<T> apply(Runnable emptyValConsumer, Consumer<? super T> nonEmptyValConsumer) {
         fold(() -> {
                  emptyValConsumer.run();
@@ -322,6 +438,7 @@ public sealed interface Option<T> permits Some, None {
     /// empty instance is converted into an empty instance of [Optional].
     ///
     /// @return created instance
+    @Contract
     default Optional<T> toOptional() {
         return fold(Optional::empty, Optional::of);
     }
@@ -910,6 +1027,7 @@ public sealed interface Option<T> permits Some, None {
     ///
     /// @return the value if this Option is present
     /// @throws RuntimeException created by the factory if this Option is empty
+    @Contract
     default T getOrThrow(Fn1<RuntimeException, String> exceptionFactory, String message) {
         return fold(() -> {
                         throw exceptionFactory.apply(message);

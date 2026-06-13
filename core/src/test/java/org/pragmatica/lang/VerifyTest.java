@@ -444,12 +444,12 @@ class VerifyTest {
             Fn1<Cause, Integer> customCauseProvider = value -> Causes.cause("Custom error for value: " + value);
 
             // Success case
-            Verify.ensure(customCauseProvider, 10, value -> value > 5)
+            Verify.ensure(10, value -> value > 5, customCauseProvider)
                   .onSuccess(value -> assertEquals(10, value))
                   .onFailureRun(() -> fail("Should succeed"));
 
             // Failure case with custom cause
-            Verify.ensure(customCauseProvider, 3, value -> value > 5)
+            Verify.ensure(3, value -> value > 5, customCauseProvider)
                   .onSuccessRun(() -> fail("Should fail"))
                   .onFailure(cause -> assertEquals("Custom error for value: 3", cause.message()));
         }
@@ -490,11 +490,11 @@ class VerifyTest {
         void ensureWithBinaryPredicateAndCustomCauseProviderShouldWork() {
             Fn1<Cause, Integer> causeProvider = value -> Causes.cause("Custom: " + value + " failed check");
 
-            Verify.ensure(causeProvider, 10, Verify.Is::greaterThan, 5)
+            Verify.ensure(10, Verify.Is::greaterThan, 5, causeProvider)
                   .onSuccess(value -> assertEquals(10, value))
                   .onFailureRun(() -> fail("Should succeed"));
 
-            Verify.ensure(causeProvider, 3, Verify.Is::greaterThan, 5)
+            Verify.ensure(3, Verify.Is::greaterThan, 5, causeProvider)
                   .onSuccessRun(() -> fail("Should fail"))
                   .onFailure(cause -> assertEquals("Custom: 3 failed check", cause.message()));
         }
@@ -504,11 +504,11 @@ class VerifyTest {
         void ensureWithTernaryPredicateAndCustomCauseProviderShouldWork() {
             Fn1<Cause, Integer> causeProvider = value -> Causes.cause("Custom: " + value + " out of range");
 
-            Verify.ensure(causeProvider, 7, Verify.Is::between, 5, 10)
+            Verify.ensure(7, Verify.Is::between, 5, 10, causeProvider)
                   .onSuccess(value -> assertEquals(7, value))
                   .onFailureRun(() -> fail("Should succeed"));
 
-            Verify.ensure(causeProvider, 12, Verify.Is::between, 5, 10)
+            Verify.ensure(12, Verify.Is::between, 5, 10, causeProvider)
                   .onSuccessRun(() -> fail("Should fail"))
                   .onFailure(cause -> assertEquals("Custom: 12 out of range", cause.message()));
         }
