@@ -56,11 +56,28 @@ class TopicSubscriptionRegistryTest {
         return ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, topicName, ResourceVersion.defaultVersion()).unwrap();
     }
 
+    /// Full routing identity (`namespace:name:version`) for a bare topic name in the default namespace.
+    private static String routingKey(String topicName) {
+        return resourceAddress(topicName).asString();
+    }
+
+    /// Register a subscription at an explicit, fully-qualified address (`namespace:name:version`).
+    private void registerSubscriptionAt(ResourceAddress address, Artifact artifact, MethodName method, NodeId nodeId) {
+        var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, method);
+        var value = TopicSubscriptionValue.topicSubscriptionValue(nodeId);
+        var put = new KVCommand.Put<>(key, value);
+        registry.onSubscriptionPut(new ValuePut<>(put, Option.none()));
+    }
+
+    private static ResourceAddress addressOf(String namespace, String name, String version) {
+        return ResourceAddress.resourceAddress(namespace, name, version).unwrap();
+    }
+
     @Nested
     class FindSubscribers {
         @Test
         void findSubscribers_emptyRegistry_returnsEmptyList() {
-            var subscribers = registry.findSubscribers("orders");
+            var subscribers = registry.findSubscribers(routingKey("orders"));
 
             assertTrue(subscribers.isEmpty());
         }
@@ -73,7 +90,7 @@ class TopicSubscriptionRegistryTest {
             registerSubscription("orders", artifact, method, nodeA);
             registerSubscription("orders", artifact2, method2, nodeB);
 
-            var subscribers = registry.findSubscribers("orders");
+            var subscribers = registry.findSubscribers(routingKey("orders"));
 
             assertEquals(2, subscribers.size());
         }
@@ -85,7 +102,7 @@ class TopicSubscriptionRegistryTest {
             registerSubscription("orders", artifact, method, nodeA);
             registerSubscription("orders", artifact2, method, nodeB);
 
-            var subscribers = registry.findSubscribers("orders");
+            var subscribers = registry.findSubscribers(routingKey("orders"));
 
             assertEquals(2, subscribers.size());
             var nodeIds = subscribers.stream()
@@ -105,8 +122,8 @@ class TopicSubscriptionRegistryTest {
             registerSubscription("orders", artifact2, method, nodeB);
 
             // Each artifact+method is a separate group, so both should be returned
-            var first = registry.findSubscribers("orders");
-            var second = registry.findSubscribers("orders");
+            var first = registry.findSubscribers(routingKey("orders"));
+            var second = registry.findSubscribers(routingKey("orders"));
 
             assertEquals(2, first.size());
             assertEquals(2, second.size());
@@ -119,7 +136,7 @@ class TopicSubscriptionRegistryTest {
         void onSubscriptionPut_singleSubscription_findReturnsIt() {
             registerSubscription("orders", artifact, method, nodeA);
 
-            var subscribers = registry.findSubscribers("orders");
+            var subscribers = registry.findSubscribers(routingKey("orders"));
 
             assertEquals(1, subscribers.size());
             var subscriber = subscribers.getFirst();
@@ -134,8 +151,8 @@ class TopicSubscriptionRegistryTest {
             var artifact2 = Artifact.artifact("org.example:billing:1.0.0").unwrap();
             registerSubscription("payments", artifact2, method, nodeB);
 
-            var orderSubscribers = registry.findSubscribers("orders");
-            var paymentSubscribers = registry.findSubscribers("payments");
+            var orderSubscribers = registry.findSubscribers(routingKey("orders"));
+            var paymentSubscribers = registry.findSubscribers(routingKey("payments"));
 
             assertEquals(1, orderSubscribers.size());
             assertEquals(nodeA, orderSubscribers.getFirst().nodeId());
@@ -148,7 +165,7 @@ class TopicSubscriptionRegistryTest {
             registerSubscription("orders", artifact, method, nodeA);
             registerSubscription("orders", artifact, method, nodeB);
 
-            var subscribers = registry.findSubscribers("orders");
+            var subscribers = registry.findSubscribers(routingKey("orders"));
 
             assertEquals(1, subscribers.size());
             assertEquals(nodeB, subscribers.getFirst().nodeId());
@@ -163,7 +180,7 @@ class TopicSubscriptionRegistryTest {
 
             removeSubscription("orders", artifact, method);
 
-            var subscribers = registry.findSubscribers("orders");
+            var subscribers = registry.findSubscribers(routingKey("orders"));
             assertTrue(subscribers.isEmpty());
         }
 
@@ -171,7 +188,7 @@ class TopicSubscriptionRegistryTest {
         void onSubscriptionRemove_nonExistentKey_noError() {
             removeSubscription("orders", artifact, method);
 
-            var subscribers = registry.findSubscribers("orders");
+            var subscribers = registry.findSubscribers(routingKey("orders"));
             assertTrue(subscribers.isEmpty());
         }
     }
@@ -187,6 +204,65 @@ class TopicSubscriptionRegistryTest {
             var all = registry.allSubscriptions();
 
             assertEquals(2, all.size());
+        }
+    }
+
+    /// RC2 #274 — routing must be namespace- and version-aware so the same bare topic name in
+    /// different blueprints/namespaces (or different versions) never cross-delivers.
+    @Nested
+    class NamespaceIsolation {
+        @Test
+        void findSubscribers_sameBareNameDifferentNamespaces_selectsOnlyMatchingNamespace() {
+            var nsA = addressOf("ns-a", "events", "1.0.0");
+            var nsB = addressOf("ns-b", "events", "1.0.0");
+
+            registerSubscriptionAt(nsA, artifact, method, nodeA);
+            registerSubscriptionAt(nsB, artifact, method, nodeB);
+
+            var subscribers = registry.findSubscribers(nsA.asString());
+
+            assertEquals(1, subscribers.size());
+            assertEquals(nodeA, subscribers.getFirst().nodeId());
+        }
+
+        @Test
+        void findSubscribers_sameBareNameDifferentNamespaces_otherNamespaceNotReached() {
+            var nsA = addressOf("ns-a", "events", "1.0.0");
+            var nsB = addressOf("ns-b", "events", "1.0.0");
+
+            registerSubscriptionAt(nsA, artifact, method, nodeA);
+            registerSubscriptionAt(nsB, artifact, method, nodeB);
+
+            var subscribers = registry.findSubscribers(nsB.asString());
+
+            assertEquals(1, subscribers.size());
+            assertEquals(nodeB, subscribers.getFirst().nodeId());
+        }
+
+        @Test
+        void findSubscribers_matchingNamespace_isSelected() {
+            var nsA = addressOf("ns-a", "events", "1.0.0");
+
+            registerSubscriptionAt(nsA, artifact, method, nodeA);
+
+            var subscribers = registry.findSubscribers(nsA.asString());
+
+            assertEquals(1, subscribers.size());
+            assertEquals(nodeA, subscribers.getFirst().nodeId());
+        }
+
+        @Test
+        void findSubscribers_sameNamespaceAndNameDifferentVersions_noCrossVersionBleed() {
+            var v1 = addressOf("ns-a", "events", "1.0.0");
+            var v2 = addressOf("ns-a", "events", "2.0.0");
+
+            registerSubscriptionAt(v1, artifact, method, nodeA);
+            registerSubscriptionAt(v2, artifact, method, nodeB);
+
+            var subscribers = registry.findSubscribers(v1.asString());
+
+            assertEquals(1, subscribers.size());
+            assertEquals(nodeA, subscribers.getFirst().nodeId());
         }
     }
 }

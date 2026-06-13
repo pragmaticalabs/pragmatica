@@ -55,18 +55,30 @@ class TopicPublisherTest {
     }
 
     private void registerSubscription(String topicName, Artifact artifact, MethodName method, NodeId nodeId) {
-        var address = ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, topicName, ResourceVersion.defaultVersion()).unwrap();
+        registerSubscriptionAt(resourceAddress(topicName), artifact, method, nodeId);
+    }
+
+    private void registerSubscriptionAt(ResourceAddress address, Artifact artifact, MethodName method, NodeId nodeId) {
         var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, method);
         var value = TopicSubscriptionValue.topicSubscriptionValue(nodeId);
         var put = new KVCommand.Put<>(key, value);
         registry.onSubscriptionPut(new ValuePut<>(put, Option.none()));
     }
 
+    private static ResourceAddress resourceAddress(String topicName) {
+        return ResourceAddress.resourceAddress(ResourceAddress.DEFAULT_NAMESPACE, topicName, ResourceVersion.defaultVersion()).unwrap();
+    }
+
+    /// Full routing identity (`namespace:name:version`) for a bare topic name in the default namespace.
+    private static String routingKey(String topicName) {
+        return resourceAddress(topicName).asString();
+    }
+
     @Nested
     class Publish {
         @Test
         void publish_noSubscribers_returnsUnitPromise() {
-            var publisher = new TopicPublisher<>("orders", registry, stubInvoker);
+            var publisher = new TopicPublisher<>(routingKey("orders"), registry, stubInvoker);
 
             var result = publisher.publish("test-message").await();
 
@@ -77,7 +89,7 @@ class TopicPublisherTest {
         @Test
         void publish_singleSubscriber_invokesSliceInvoker() {
             registerSubscription("orders", artifact, method, nodeA);
-            var publisher = new TopicPublisher<>("orders", registry, stubInvoker);
+            var publisher = new TopicPublisher<>(routingKey("orders"), registry, stubInvoker);
 
             var result = publisher.publish("order-123").await();
 
@@ -96,7 +108,7 @@ class TopicPublisherTest {
             registerSubscription("orders", artifact, method, nodeA);
             registerSubscription("orders", artifact2, method2, nodeB);
 
-            var publisher = new TopicPublisher<>("orders", registry, stubInvoker);
+            var publisher = new TopicPublisher<>(routingKey("orders"), registry, stubInvoker);
 
             var result = publisher.publish("order-456").await();
 
@@ -109,12 +121,31 @@ class TopicPublisherTest {
             // allOf collects results without propagating individual failures
             registerSubscription("orders", artifact, method, nodeA);
             var failingInvoker = new StubSliceInvoker(invocations, Option.some(SUBSCRIBER_FAILED));
-            var publisher = new TopicPublisher<>("orders", registry, failingInvoker);
+            var publisher = new TopicPublisher<>(routingKey("orders"), registry, failingInvoker);
 
             var result = publisher.publish("order-789").await();
 
             result.onFailure(_ -> fail("Expected success — allOf does not propagate subscriber failures"));
             assertEquals(1, invocations.size());
+        }
+
+        @Test
+        void publish_sameBareNameDifferentNamespace_doesNotCrossDeliver() {
+            var nsA = ResourceAddress.resourceAddress("ns-a", "events", "1.0.0").unwrap();
+            var nsB = ResourceAddress.resourceAddress("ns-b", "events", "1.0.0").unwrap();
+            var artifactA = Artifact.artifact("org.example:slice-a:1.0.0").unwrap();
+            var artifactB = Artifact.artifact("org.example:slice-b:1.0.0").unwrap();
+
+            registerSubscriptionAt(nsA, artifactA, method, nodeA);
+            registerSubscriptionAt(nsB, artifactB, method, nodeB);
+
+            var publisher = new TopicPublisher<>(nsA.asString(), registry, stubInvoker);
+
+            var result = publisher.publish("event-1").await();
+
+            result.onFailure(_ -> fail("Expected success"));
+            assertEquals(1, invocations.size());
+            assertEquals(artifactA, invocations.getFirst().artifact());
         }
     }
 

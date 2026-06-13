@@ -27,7 +27,7 @@ import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
-import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
+import org.pragmatica.aether.slice.blueprint.TopicAddressResolver;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
@@ -53,7 +53,6 @@ import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.resource.ScheduleConfig;
 import org.pragmatica.aether.resource.StreamNameConfig;
 import org.pragmatica.aether.resource.TopicConfig;
-import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -842,12 +841,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         /// Resolve a subscription's declared topic config to a canonical [ResourceAddress].
         ///
-        /// Back-compat derivation rule (mirrors streams):
-        ///  - read the declared `topicName` via [TopicConfig];
-        ///  - if the declaration is already fully namespaced (`namespace:topic:version`), keep it;
-        ///  - otherwise (bare/legacy name) derive the namespace from the slice's blueprint Maven
-        ///    coordinates via [BlueprintNamespace] and default the version to
-        ///    [ResourceVersion#defaultVersion] (`1.0.0`).
+        /// Reads the declared `topicName` via [TopicConfig] and delegates the namespace derivation
+        /// to [TopicAddressResolver] — the single source of truth shared with the publisher side
+        /// ([org.pragmatica.aether.invoke.PublisherFactory]) so a co-deployed pub/sub pair always
+        /// resolves the same declared topic to the same address.
         private Result<ResourceAddress> resolveTopicAddress(Artifact artifact, String configSection) {
             return sliceConfigService(artifact).orElse(ConfigService::instance)
                                      .toResult(Causes.cause("ConfigService not available for topic resolution"))
@@ -856,15 +853,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private Result<ResourceAddress> resolveTopicAddress(Artifact artifact, TopicConfig config) {
-            var declared = config.topicName();
-
-            if (declared != null && declared.contains(":")) {
-                return config.address();
-            }
-
-            return BlueprintNamespace.deriveNamespace(artifact).flatMap(namespace -> ResourceAddress.resourceAddress(namespace,
-                                                                                                                     declared,
-                                                                                                                     ResourceVersion.defaultVersion()));
+            return TopicAddressResolver.resolve(artifact, config.topicName());
         }
 
         private Promise<SliceNodeKey> publishScheduledTasks(SliceNodeKey sliceKey) {
