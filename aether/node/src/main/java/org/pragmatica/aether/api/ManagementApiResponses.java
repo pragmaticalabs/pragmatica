@@ -463,7 +463,13 @@ public sealed interface ManagementApiResponses {
                                          String mode,
                                          List<FsmMemberDetail> fsmMembers) {}
 
-    record TopologyNodeDetail(String nodeId, String role, String assignedRole, String health, String hostname, String zone, String address) {}
+    record TopologyNodeDetail(String nodeId,
+                              String role,
+                              String assignedRole,
+                              String health,
+                              String hostname,
+                              String zone,
+                              String address) {}
 
     /// Wave-1 item 6 (cluster-topology-overhaul spec): per-member `MembershipFsm` truth —
     /// lifecycle state name (`Observed`/`Member`/`Suspect`/`Departing`/`Dead`), the SWIM
@@ -472,7 +478,12 @@ public sealed interface ManagementApiResponses {
     /// `assignedRole` (#259) is the CDM-assigned role from the KV-Store `ActivationDirective`
     /// (`UNASSIGNED` when none); it diverges from the self-asserted descriptor `role` for
     /// worker-demoted nodes, which previously made a demoted node look like a core.
-    record FsmMemberDetail(String nodeId, String fsmState, long incarnation, String role, String assignedRole, String source) {}
+    record FsmMemberDetail(String nodeId,
+                           String fsmState,
+                           long incarnation,
+                           String role,
+                           String assignedRole,
+                           String source) {}
 
     record ClusterGenerationResponse(Option<EpochInfo> epoch,
                                      long rabiaTerm,

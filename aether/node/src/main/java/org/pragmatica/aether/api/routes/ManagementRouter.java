@@ -104,7 +104,10 @@ public final class ManagementRouter {
         ProblemResponses.writeProblem(response, cause, serverCtx.path(), serverCtx.requestId());
     }
 
-    private void writeSuccess(Object value, ContentType contentType, ResponseWriter response, RequestContext serverCtx) {
+    private void writeSuccess(Object value,
+                              ContentType contentType,
+                              ResponseWriter response,
+                              RequestContext serverCtx) {
         if (value instanceof Option<?> opt && opt.isEmpty()) {
             response.noContent();
 
@@ -128,7 +131,7 @@ public final class ManagementRouter {
 
     private void writeJson(Object value, ResponseWriter response, RequestContext serverCtx) {
         jsonCodec.serialize(value).onFailure(cause -> writeError(response, cause, serverCtx)).onSuccess(byteBuf -> extractAndRelease(byteBuf,
-                                                                                                                                    response));
+                                                                                                                                     response));
     }
 
     private void extractAndRelease(io.netty.buffer.ByteBuf byteBuf, ResponseWriter response) {

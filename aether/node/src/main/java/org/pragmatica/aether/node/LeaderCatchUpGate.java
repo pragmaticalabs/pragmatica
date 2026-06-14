@@ -16,6 +16,7 @@ import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
+
 /// Timeout-bounded gate for leader-pinned task-group ownership (#329).
 ///
 /// Every control-plane task group is leader-pinned: the owner of any group is the current
@@ -41,7 +42,6 @@ public final class LeaderCatchUpGate {
     /// converges within a single management request when catch-up completes quickly, yet the
     /// gate self-releases long before any operation could wedge.
     public static final TimeSpan DEFAULT_SUPPRESSION_WINDOW = TimeSpan.timeSpan(2).seconds();
-
     private static final long WINDOW_INACTIVE = Long.MIN_VALUE;
 
     private final NodeId self;
@@ -52,10 +52,10 @@ public final class LeaderCatchUpGate {
     private final AtomicLong windowStartMillis = new AtomicLong(WINDOW_INACTIVE);
 
     private LeaderCatchUpGate(NodeId self,
-                             Supplier<Option<NodeId>> leaderSupplier,
-                             BooleanSupplier pendingCatchUp,
-                             TimeSpan suppressionWindow,
-                             LongSupplier clock) {
+                              Supplier<Option<NodeId>> leaderSupplier,
+                              BooleanSupplier pendingCatchUp,
+                              TimeSpan suppressionWindow,
+                              LongSupplier clock) {
         this.self = self;
         this.leaderSupplier = leaderSupplier;
         this.pendingCatchUp = pendingCatchUp;
@@ -67,7 +67,11 @@ public final class LeaderCatchUpGate {
     public static LeaderCatchUpGate leaderCatchUpGate(NodeId self,
                                                       Supplier<Option<NodeId>> leaderSupplier,
                                                       BooleanSupplier pendingCatchUp) {
-        return leaderCatchUpGate(self, leaderSupplier, pendingCatchUp, DEFAULT_SUPPRESSION_WINDOW, System::currentTimeMillis);
+        return leaderCatchUpGate(self,
+                                 leaderSupplier,
+                                 pendingCatchUp,
+                                 DEFAULT_SUPPRESSION_WINDOW,
+                                 System::currentTimeMillis);
     }
 
     /// Creates a gate with an explicit suppression window and clock (testing seam).
@@ -91,12 +95,16 @@ public final class LeaderCatchUpGate {
     private Result<NodeId> gate(TaskGroup group, NodeId leader) {
         if (!leader.equals(self)) {
             windowStartMillis.set(WINDOW_INACTIVE);
+
             return Result.success(leader);
         }
+
         if (!pendingCatchUp.getAsBoolean()) {
             windowStartMillis.set(WINDOW_INACTIVE);
+
             return Result.success(leader);
         }
+
         return suppressionWindowExpired()
                ? Result.success(leader)
                : TaskAssignmentError.notAssigned(group).result();
@@ -109,7 +117,10 @@ public final class LeaderCatchUpGate {
     private boolean suppressionWindowExpired() {
         var now = clock.getAsLong();
         var started = windowStartMillis.compareAndExchange(WINDOW_INACTIVE, now);
-        var effectiveStart = started == WINDOW_INACTIVE ? now : started;
+        var effectiveStart = started == WINDOW_INACTIVE
+                             ? now
+                             : started;
+
         return now - effectiveStart >= suppressionWindowMillis;
     }
 }

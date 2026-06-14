@@ -51,7 +51,9 @@ public class DashboardWebSocketHandler implements WebSocketHandler {
     private void onText(WebSocketSession session, String message) {
         // #293: on a secured cluster onOpen does NOT push INITIAL_STATE (the session is pending auth);
         // deliver it on the authenticated path instead, so panels populate after a successful login.
-        if (authenticator.onMessage(session, message, () -> session.send(metricsPublisher.buildInitialState()))) {
+        if (authenticator.onMessage(session,
+                                    message,
+                                    () -> session.send(metricsPublisher.buildInitialState()))) {
             return;
         }
 

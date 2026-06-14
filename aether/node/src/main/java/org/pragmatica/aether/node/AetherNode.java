@@ -731,7 +731,8 @@ public interface AetherNode extends ManageableNode {
         // Shared by both taskGroupOwnerResolver sites below (the AppHttpServer wiring var and the
         // ManageableNode.taskGroupOwnerResolver() override).
         var leaderCatchUpGate = LeaderCatchUpGate.leaderCatchUpGate(config.self(),
-                                                                    () -> clusterNode.leaderManager().leader(),
+                                                                    () -> clusterNode.leaderManager()
+                                                                                     .leader(),
                                                                     clusterNode::isPendingCatchUp);
         // Concrete adapter (not a lambda) so we can override `sendOutcome` and forward
         // it to the QUIC transport's tracked-write API. The default DHTNetwork impl
@@ -2351,12 +2352,14 @@ public interface AetherNode extends ManageableNode {
                                                                              streamReplicaRegistry,
                                                                              streamReplicationTransport,
                                                                              (streamName, partition) -> Option.option(streamPartitionManagerRef.get())
-                                                                                                              .map(spm -> spm.earliestRetainedOffset(streamName, partition))
+                                                                                                              .map(spm -> spm.earliestRetainedOffset(streamName,
+                                                                                                                                                     partition))
                                                                                                               .or(-1L));
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
                                                                                    EvictionListener.NOOP,
                                                                                    streamReplicationManager,
                                                                                    clusterNode);
+
         streamPartitionManagerRef.set(streamPartitionManager);
         // stream-offheap-budget-spec §4.5c / reconciliation #14: route off-heap budget exhaustion
         // (create-floor + growth) OUT of aether-stream via the injected Consumer<Exhaustion> sink and
@@ -2553,8 +2556,8 @@ public interface AetherNode extends ManageableNode {
         // and idempotent (mirrors SystemStreamRegistrar); the leg uses the same clusterNode.apply
         // consensus path as the API-key routes and the same KV store the validator reads.
         var bootstrapAdminKeyRegistrar = BootstrapAdminKeyRegistrar.bootstrapAdminKeyRegistrar(BootstrapAdminKeyLeg.bootstrapAdminKeyLeg(() -> kvStore,
-                                                                                                                                        isLeaderSupplier::getAsBoolean,
-                                                                                                                                        clusterCommandApplier));
+                                                                                                                                         isLeaderSupplier::getAsBoolean,
+                                                                                                                                         clusterCommandApplier));
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  bootstrapAdminKeyRegistrar::onLeaderChange));
@@ -3508,11 +3511,12 @@ public interface AetherNode extends ManageableNode {
     private static Option<GossipEncryptor> buildEncryptorFromKeys(org.pragmatica.net.tcp.security.GossipKey current,
                                                                   Option<org.pragmatica.net.tcp.security.GossipKey> previous,
                                                                   Option<org.pragmatica.net.tcp.security.GossipKey> next) {
-        var additional = java.util.stream.Stream.of(previous, next)
-                                                .flatMap(Option::stream)
-                                                .map(key -> new AesGcmGossipEncryptor.AcceptedKey(key.keyId(), key.key()))
-                                                .toList();
-        return AesGcmGossipEncryptor.aesGcmGossipEncryptor(current.key(), current.keyId(), additional)
+        var additional = java.util.stream.Stream.of(previous, next).flatMap(Option::stream).map(key -> new AesGcmGossipEncryptor.AcceptedKey(key.keyId(),
+                                                                                                                                             key.key())).toList();
+
+        return AesGcmGossipEncryptor.aesGcmGossipEncryptor(current.key(),
+                                                           current.keyId(),
+                                                           additional)
                                     .option();
     }
 

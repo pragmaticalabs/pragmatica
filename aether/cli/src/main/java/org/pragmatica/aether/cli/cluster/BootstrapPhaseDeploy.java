@@ -566,10 +566,13 @@ sealed interface BootstrapPhaseDeploy {
     private static Result<Path> writeNodeConfigToTemp(String nodeId, String content) {
         // #287: the temp aether.toml carries cluster_secret before it is scp'd to the node — create
         // it owner-only (0600) on the CLI host.
-        return Result.lift(e -> tempConfigFailure(nodeId, e.getMessage()), () -> Files.createTempFile("aether-" + nodeId, ".toml"))
+        return Result.lift(e -> tempConfigFailure(nodeId,
+                                                  e.getMessage()),
+                           () -> Files.createTempFile("aether-" + nodeId, ".toml"))
                      .flatMap(tempFile -> SecureFiles.writeSecure(tempFile, content)
                                                      .map(_ -> tempFile)
-                                                     .mapError(cause -> tempConfigFailure(nodeId, cause.message())));
+                                                     .mapError(cause -> tempConfigFailure(nodeId,
+                                                                                          cause.message())));
     }
 
     private static BootstrapError.DeploymentFailed tempConfigFailure(String nodeId, String message) {

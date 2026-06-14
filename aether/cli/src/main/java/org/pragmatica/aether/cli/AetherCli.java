@@ -3387,10 +3387,9 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                if (!DestructiveAction.destructiveAction()
-                                      .confirm(skipConfirmation,
-                                               "This will restore cluster state from backup " + commitId
-                                               + ", overwriting current state.")) {
+                if (!DestructiveAction.destructiveAction().confirm(skipConfirmation,
+                                                                   "This will restore cluster state from backup " + commitId
+                                                                  + ", overwriting current state.")) {
                     System.out.println("Aborted.");
 
                     return ExitCode.SUCCESS;
@@ -3526,10 +3525,9 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                if (!DestructiveAction.destructiveAction()
-                                      .confirm(skipConfirmation,
-                                               "This will restore cluster state from backup " + commitId
-                                               + ", overwriting current state.")) {
+                if (!DestructiveAction.destructiveAction().confirm(skipConfirmation,
+                                                                   "This will restore cluster state from backup " + commitId
+                                                                  + ", overwriting current state.")) {
                     System.out.println("Aborted.");
 
                     return ExitCode.SUCCESS;

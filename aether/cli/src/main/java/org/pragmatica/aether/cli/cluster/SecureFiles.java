@@ -8,7 +8,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
-import java.io.IOException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -27,26 +26,31 @@ public sealed interface SecureFiles {
 
     /// Write `content` to `path`, then restrict it to owner read/write (`0600`).
     static Result<Unit> writeSecure(Path path, String content) {
-        return Result.lift(Causes::fromThrowable, () -> doWriteSecure(path, content));
+        return Result.lift(Causes::fromThrowable,
+                           () -> {
+                               Files.writeString(path, content);
+                               if (FileSystems.getDefault()
+                                              .supportedFileAttributeViews()
+                                              .contains("posix")) {
+                               Files.setPosixFilePermissions(path, OWNER_ONLY);
+                           }
+
+                               return Unit.unit();
+                           });
     }
 
     /// Restrict an existing file to owner read/write (`0600`). Best-effort no-op on non-POSIX systems.
     static Result<Unit> restrictToOwner(Path path) {
-        return Result.lift(Causes::fromThrowable, () -> doRestrict(path));
-    }
+        return Result.lift(Causes::fromThrowable,
+                           () -> {
+                               if (FileSystems.getDefault()
+                                              .supportedFileAttributeViews()
+                                              .contains("posix")) {
+                               Files.setPosixFilePermissions(path, OWNER_ONLY);
+                           }
 
-    private static Unit doWriteSecure(Path path, String content) throws IOException {
-        Files.writeString(path, content);
-
-        return doRestrict(path);
-    }
-
-    private static Unit doRestrict(Path path) throws IOException {
-        if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
-            Files.setPosixFilePermissions(path, OWNER_ONLY);
-        }
-
-        return Unit.unit();
+                               return Unit.unit();
+                           });
     }
 
     record unused() implements SecureFiles {}

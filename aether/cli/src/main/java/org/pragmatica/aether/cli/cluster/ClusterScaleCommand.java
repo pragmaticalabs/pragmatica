@@ -63,16 +63,18 @@ class ClusterScaleCommand implements Callable<Integer> {
             return new ScaleError.Aborted().result();
         }
 
-        return validateCount(pair.count(), pair.role())
-            .flatMap(this::fetchConfigVersion)
-            .flatMap(version -> sendScaleRequest(version, pair.count(), pair.role()));
+        return validateCount(pair.count(),
+                             pair.role()).flatMap(this::fetchConfigVersion)
+                            .flatMap(version -> sendScaleRequest(version,
+                                                                 pair.count(),
+                                                                 pair.role()));
     }
 
     private boolean confirmScale(EffectiveScale pair) {
-        return DestructiveAction.destructiveAction()
-                                .confirm(skipConfirmation,
-                                         "This will scale " + pair.role() + " nodes to " + pair.count()
-                                         + " (a scale-down terminates nodes).");
+        return DestructiveAction.destructiveAction().confirm(skipConfirmation,
+                                                             "This will scale " + pair.role()
+                                                            + " nodes to " + pair.count()
+                                                            + " (a scale-down terminates nodes).");
     }
 
     private Result<EffectiveScale> resolveEffective() {

@@ -44,15 +44,13 @@ public sealed interface BootstrapAdminKeyLeg {
     /// command applier. The applier is the same `clusterNode.apply` path used by the API-key routes.
     static Supplier<Promise<Option<String>>> bootstrapAdminKeyLeg(Supplier<KVStore<AetherKey, AetherValue>> kvStoreSupplier,
                                                                   Supplier<Boolean> isLeader,
-                                                                  java.util.function.Function<List<KVCommand<AetherKey>>,
-                                                                                              Promise<List<Object>>> applier) {
+                                                                  java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
         return () -> attempt(kvStoreSupplier.get(), isLeader.get(), applier);
     }
 
     private static Promise<Option<String>> attempt(KVStore<AetherKey, AetherValue> kvStore,
                                                    boolean isLeader,
-                                                   java.util.function.Function<List<KVCommand<AetherKey>>,
-                                                                               Promise<List<Object>>> applier) {
+                                                   java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
         if (!isLeader) {
             return LegError.notLeader().promise();
         }
@@ -65,9 +63,7 @@ public sealed interface BootstrapAdminKeyLeg {
     private static boolean hasActiveAdminKey(KVStore<AetherKey, AetherValue> kvStore) {
         var found = new AtomicBoolean(false);
 
-        kvStore.forEach(ApiKeyKey.class,
-                        ApiKeyValue.class,
-                        (_, value) -> markIfActiveAdmin(found, value));
+        kvStore.forEach(ApiKeyKey.class, ApiKeyValue.class, (_, value) -> markIfActiveAdmin(found, value));
 
         return found.get();
     }
@@ -78,15 +74,15 @@ public sealed interface BootstrapAdminKeyLeg {
         }
     }
 
-    private static Promise<Option<String>> generateAndCommit(java.util.function.Function<List<KVCommand<AetherKey>>,
-                                                                                         Promise<List<Object>>> applier) {
+    private static Promise<Option<String>> generateAndCommit(java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
         var plaintext = generateKey();
         var keyValue = ApiKeyValue.apiKeyValue(KEY_ID, hashKey(plaintext), 0L, AuthorizationRole.ADMIN.name());
         var auditValue = ApiKeyAuditValue.apiKeyAuditValue(KEY_ID,
                                                            ApiKeyAuditValue.ACTION_CREATED,
                                                            "cluster-formation-bootstrap");
 
-        return applier.apply(List.of(putKey(keyValue), putAudit(auditValue)))
+        return applier.apply(List.of(putKey(keyValue),
+                                     putAudit(auditValue)))
                       .map(_ -> Option.some(plaintext));
     }
 
@@ -110,7 +106,9 @@ public sealed interface BootstrapAdminKeyLeg {
 
         RANDOM.nextBytes(bytes);
 
-        return KEY_PREFIX + Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        return KEY_PREFIX + Base64.getUrlEncoder()
+                                  .withoutPadding()
+                                  .encodeToString(bytes);
     }
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-EX-01"})
@@ -129,17 +127,13 @@ public sealed interface BootstrapAdminKeyLeg {
 
     enum LegError implements org.pragmatica.lang.Cause {
         NOT_LEADER("Bootstrap admin key: node is not leader");
-
         private final String message;
-
         LegError(String message) {
             this.message = message;
         }
-
         static LegError notLeader() {
             return NOT_LEADER;
         }
-
         @Override
         public String message() {
             return message;

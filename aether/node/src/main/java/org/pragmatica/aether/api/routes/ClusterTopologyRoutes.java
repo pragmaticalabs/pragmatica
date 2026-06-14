@@ -197,7 +197,8 @@ public final class ClusterTopologyRoutes implements RouteSource {
     /// authoritative `MembershipFsm` snapshots (`memberStates` / `memberIncarnations` /
     /// `memberDescriptors`). Includes DEAD members (retained for incarnation-fenced rejoin),
     /// so a remote run sees the full membership picture without `docker logs`.
-    private static List<FsmMemberDetail> buildFsmMembers(MembershipFsm membershipFsm, Map<NodeId, String> assignedRoles) {
+    private static List<FsmMemberDetail> buildFsmMembers(MembershipFsm membershipFsm,
+                                                         Map<NodeId, String> assignedRoles) {
         var incarnations = membershipFsm.memberIncarnations();
         var descriptors = membershipFsm.memberDescriptors();
 
@@ -294,7 +295,10 @@ public final class ClusterTopologyRoutes implements RouteSource {
         return membershipView.isPresent(id);
     }
 
-    private static TopologyNodeDetail buildNodeDetail(TopologyManager tm, NodeId nodeId, boolean connected, Map<NodeId, String> assignedRoles) {
+    private static TopologyNodeDetail buildNodeDetail(TopologyManager tm,
+                                                      NodeId nodeId,
+                                                      boolean connected,
+                                                      Map<NodeId, String> assignedRoles) {
         var info = tm.get(nodeId);
         var state = tm.getState(nodeId);
         var role = info.flatMap(i -> Option.option(i.labels().get(NodeInfo.LABEL_ROLE))).or("UNKNOWN");

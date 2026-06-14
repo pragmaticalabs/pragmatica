@@ -321,10 +321,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// notification side effect of the membership-decision handler.
     @Contract
     private void reapDepartedNode(NodeId departedNodeId) {
-        lifecycleManager.terminateNode(departedNodeId)
-                        .onFailure(cause -> log.debug("CTM: reap of departed node {} not actioned: {}",
-                                                      departedNodeId,
-                                                      cause.message()));
+        lifecycleManager.terminateNode(departedNodeId).onFailure(cause -> log.debug("CTM: reap of departed node {} not actioned: {}",
+                                                                                    departedNodeId,
+                                                                                    cause.message()));
     }
 
     @Contract
@@ -463,8 +462,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// single probe provision is allowed; a fresh failure re-arms the window, a success (node
     /// joins → `onNodeReady` → `resetProvisioningCircuit`) clears it.
     private boolean provisioningCircuitOpen() {
-        return consecutiveProvisioningFailures.get() >= MAX_CONSECUTIVE_PROVISIONING_FAILURES
-               && nowMs() < nextProvisioningAllowedMs.get();
+        return consecutiveProvisioningFailures.get() >= MAX_CONSECUTIVE_PROVISIONING_FAILURES && nowMs() < nextProvisioningAllowedMs.get();
     }
 
     /// #148 — record a provisioning failure: bump the consecutive-failure counter and, once the

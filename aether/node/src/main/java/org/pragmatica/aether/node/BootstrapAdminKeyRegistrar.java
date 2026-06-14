@@ -132,8 +132,7 @@ public final class BootstrapAdminKeyRegistrar {
     private void latchSuccess(Option<String> plaintext) {
         cancelPendingRetry();
         if (done.compareAndSet(false, true)) {
-            plaintext.onPresent(this::printBootstrapKey)
-                     .onEmpty(() -> LOG.info("Bootstrap admin key: an admin API key already exists; not generating one"));
+            plaintext.onPresent(this::printBootstrapKey).onEmpty(() -> LOG.info("Bootstrap admin key: an admin API key already exists; not generating one"));
         }
     }
 

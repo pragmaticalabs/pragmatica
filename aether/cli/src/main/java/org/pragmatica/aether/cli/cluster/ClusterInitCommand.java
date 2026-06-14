@@ -395,13 +395,13 @@ class ClusterInitCommand implements Callable<Integer> {
 
         try {
             var toml = ClusterConfigGenerator.generate(answers);
-
             // #287: aether.toml carries cluster_secret — write it owner-only (0600), not 0644.
             Files.writeString(output, toml);
 
             return SecureFiles.restrictToOwner(output)
                               .map(_ -> output)
-                              .mapError(cause -> new ClusterInitError.IoFailure(output.toString(), cause.message()));
+                              .mapError(cause -> new ClusterInitError.IoFailure(output.toString(),
+                                                                                cause.message()));
         } catch (IOException e) {
             return new ClusterInitError.IoFailure(output.toString(), e.getMessage()).result();
         }

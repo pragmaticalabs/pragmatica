@@ -65,7 +65,9 @@ public final class WebSocketAuthenticator {
     }
 
     public boolean onMessage(WebSocketSession session, String text) {
-        return onMessage(session, text, () -> {});
+        return onMessage(session,
+                         text,
+                         () -> {});
     }
 
     /// Variant that runs `onAuthSuccess` immediately after a session authenticates (used by the

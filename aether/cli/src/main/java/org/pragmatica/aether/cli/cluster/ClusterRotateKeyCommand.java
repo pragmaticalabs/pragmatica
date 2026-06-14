@@ -125,11 +125,11 @@ class ClusterRotateKeyCommand implements Callable<Integer> {
 
         try {
             Files.createDirectories(keyFile.getParent());
-
             // #287: rotated admin api-key file must be owner-only (0600).
             return SecureFiles.writeSecure(keyFile, newKey)
                               .map(_ -> "ok")
-                              .mapError(cause -> new RotateKeyError.FilePersistFailed(keyFile.toString(), cause.message()));
+                              .mapError(cause -> new RotateKeyError.FilePersistFailed(keyFile.toString(),
+                                                                                      cause.message()));
         } catch (IOException e) {
             return new RotateKeyError.FilePersistFailed(keyFile.toString(), e.getMessage()).result();
         }

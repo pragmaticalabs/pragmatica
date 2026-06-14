@@ -7,6 +7,7 @@ package org.pragmatica.aether.cli;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
+
 /// Shared interactive-confirmation guard for destructive CLI commands (#301): `drain`, `scale`,
 /// `migrate`, and `restore`. Mirrors the `cluster destroy` model — a `--yes`/`--force` flag
 /// bypasses confirmation for scripts, an interactive TTY prompts for explicit consent, and a

@@ -870,9 +870,7 @@ public final class LeaderReconciler {
                                          boolean quorumSafe,
                                          boolean provisioningPermitted) {
         var hasDeficit = effective < configuredCoreCount;
-        var alwaysLoggedTrigger = trigger == ReconcileTrigger.CONFIG_CHANGE
-                                  || trigger == ReconcileTrigger.DEFICIT_FOLLOW_UP
-                                  || trigger == ReconcileTrigger.SURPLUS_FOLLOW_UP;
+        var alwaysLoggedTrigger = trigger == ReconcileTrigger.CONFIG_CHANGE || trigger == ReconcileTrigger.DEFICIT_FOLLOW_UP || trigger == ReconcileTrigger.SURPLUS_FOLLOW_UP;
 
         if (!hasDeficit && !provisioningPermitted && !alwaysLoggedTrigger) {
             return;

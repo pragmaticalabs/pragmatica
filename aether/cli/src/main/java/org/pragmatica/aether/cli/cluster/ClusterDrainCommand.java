@@ -51,9 +51,9 @@ class ClusterDrainCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
-        if (!DestructiveAction.destructiveAction()
-                              .confirm(skipConfirmation,
-                                       "This will drain node " + nodeId + " (evacuate all its slices).")) {
+        if (!DestructiveAction.destructiveAction().confirm(skipConfirmation,
+                                                           "This will drain node " + nodeId
+                                                          + " (evacuate all its slices).")) {
             System.out.println("Aborted.");
 
             return ExitCode.SUCCESS;

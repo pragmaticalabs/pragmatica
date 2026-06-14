@@ -76,16 +76,16 @@ sealed interface BootstrapPhaseFormation {
     @Contract
     private static void persistApiKeyFile(String clusterName, String apiKey) {
         var keyFile = Path.of(System.getProperty("user.home"), ".aether", "clusters", clusterName, "api-key");
-
         // #287: the persisted admin api-key file must be owner-only (0600). Replaces the deprecated
         // File.setReadable/setWritable dance with POSIX permissions via SecureFiles.
-        ensureParentDir(keyFile).flatMap(_ -> SecureFiles.writeSecure(keyFile, apiKey))
-                                .onSuccessRun(() -> System.out.printf("  API key persisted to %s%n", keyFile))
-                                .onFailure(cause -> System.err.println("  Warning: failed to persist API key file: " + cause.message()));
+        ensureParentDir(keyFile).flatMap(_ -> SecureFiles.writeSecure(keyFile, apiKey)).onSuccessRun(() -> System.out.printf("  API key persisted to %s%n",
+                                                                                                                             keyFile)).onFailure(cause -> System.err.println("  Warning: failed to persist API key file: " + cause.message()));
     }
 
     private static Result<Unit> ensureParentDir(Path keyFile) {
-        return Result.lift(Causes::fromThrowable, () -> Files.createDirectories(keyFile.getParent())).mapToUnit();
+        return Result.lift(Causes::fromThrowable,
+                           () -> Files.createDirectories(keyFile.getParent()))
+                     .mapToUnit();
     }
 
     @SuppressWarnings("JBCT-EX-01")

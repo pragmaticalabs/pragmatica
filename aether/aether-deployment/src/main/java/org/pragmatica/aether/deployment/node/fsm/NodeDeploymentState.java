@@ -440,8 +440,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// later timeout no-ops.
         @Contract
         private void scheduleRoutingRemediation(SliceNodeKey sliceKey) {
-            SliceState.ROUTING.timeout()
-                              .onPresent(timeout -> SharedScheduler.schedule(() -> remediateStuckRouting(sliceKey), timeout));
+            SliceState.ROUTING.timeout().onPresent(timeout -> SharedScheduler.schedule(() -> remediateStuckRouting(sliceKey),
+                                                                                       timeout));
         }
 
         /// ROUTING-timeout fire: if the slice is still ROUTING (no ack-driven transition happened),
@@ -458,7 +458,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             }
 
             log.warn("Slice {} still ROUTING after the routing timeout — cross-node acks not received; "
-                     + "force-transitioning ROUTING → ACTIVE (routes are published and serving locally)",
+                    + "force-transitioning ROUTING → ACTIVE (routes are published and serving locally)",
                      sliceKey.artifact());
             routingEpochAckTracker.clear(sliceKey);
             transitionTo(sliceKey, SliceState.ACTIVE);

@@ -63,10 +63,11 @@ class ClusterMigrateCommand implements Callable<Integer> {
     }
 
     private boolean confirmMigration() {
-        return DestructiveAction.destructiveAction()
-                                .confirm(skipConfirmation,
-                                         "This will migrate the cluster to " + targetProvider + "/" + targetZone
-                                         + " (strategy: " + strategy + ").");
+        return DestructiveAction.destructiveAction().confirm(skipConfirmation,
+                                                             "This will migrate the cluster to " + targetProvider
+                                                            + "/" + targetZone
+                                                            + " (strategy: " + strategy
+                                                            + ").");
     }
 
     private Result<String> validateStrategy() {
