@@ -535,6 +535,17 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                  timestamp));
     }
 
+    /// The offset the NEXT contiguous append would be assigned for `(streamName, partition)` — the
+    /// local ring head + 1, or 0 when the partition is empty/absent (the ring's head is `-1` before the
+    /// first append). Used by {@link org.pragmatica.aether.stream.replication.ReplicationReceiveHandler}
+    /// to verify an incoming replicated batch's owner-frame `fromOffset` against the replica's own
+    /// position (S1 / #260), so a dropped/reordered batch is detected instead of silently shifting every
+    /// subsequent local offset.
+    public long nextExpectedOffset(String streamName, int partition) {
+        return resolvePartitionBuffer(streamName, partition).map(buffer -> buffer.headOffset() + 1)
+                                     .or(0L);
+    }
+
     private Result<Long> appendToPartition(StreamEntry entry,
                                            String streamName,
                                            int partition,

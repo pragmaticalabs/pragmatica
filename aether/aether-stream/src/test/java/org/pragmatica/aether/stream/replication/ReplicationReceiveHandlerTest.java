@@ -98,6 +98,159 @@ class ReplicationReceiveHandlerTest {
         assertThat(gapFires.get()).isEqualTo(1);
     }
 
+    // S1 / #260: offset verification against the local head — the verifying factory rejects gaps,
+    // skips duplicates, and never silently shifts local offsets when a batch is dropped/reordered.
+
+    /// A successful append that tracks a local ring so the local-head seam advances as events land.
+    private static final class TrackingAppender implements ReplicationReceiveHandler.RecoveredAppender {
+        private long head = -1L; // empty ring: next-expected offset is 0
+
+        @Override
+        public Result<Long> appendRecovered(String streamName, int partition, byte[] payload, long timestamp) {
+            head++;
+
+            return Result.success(head);
+        }
+
+        long nextExpected(String streamName, int partition) {
+            return head + 1;
+        }
+    }
+
+    @Test
+    void contiguousBatch_appliesAndAcks_whenFromOffsetMatchesLocalHead() {
+        var appender = new TrackingAppender();
+        var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
+        var gapFires = new AtomicInteger(0);
+        var handler = replicationReceiveHandler(SELF,
+                                                appender,
+                                                appender::nextExpected,
+                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                (_, _) -> gapFires.incrementAndGet());
+
+        // Local head empty (next-expected 0); batch starts at 0 — contiguous.
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3)));
+
+        assertThat(acks).hasSize(1);
+        assertThat(acks.getFirst().confirmedOffset()).isEqualTo(2L);
+        assertThat(gapFires.get()).isZero();
+        assertThat(appender.nextExpected(STREAM, PARTITION)).isEqualTo(3L);
+    }
+
+    @Test
+    void gapAhead_droppedEarlierBatch_isRejected_triggersBackfill_noAppendNoAck() {
+        var appender = new TrackingAppender();
+        var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
+        var gapFires = new AtomicInteger(0);
+        var handler = replicationReceiveHandler(SELF,
+                                                appender,
+                                                appender::nextExpected,
+                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                (_, _) -> gapFires.incrementAndGet());
+
+        // Local head empty (next-expected 0) but the batch starts at 5: offsets [0,4] were dropped.
+        // Applying now would land owner-offset-5 at local offset 0 — divergence. Reject + repair.
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 5L, payloads(3), timestamps(3)));
+
+        assertThat(acks).isEmpty();
+        assertThat(gapFires.get()).isEqualTo(1);
+        // Nothing applied — local head unchanged, no silent corruption.
+        assertThat(appender.nextExpected(STREAM, PARTITION)).isEqualTo(0L);
+    }
+
+    @Test
+    void reorderedThenInOrder_gapRejected_thenContiguousApplies() {
+        var appender = new TrackingAppender();
+        var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
+        var gapFires = new AtomicInteger(0);
+        var handler = replicationReceiveHandler(SELF,
+                                                appender,
+                                                appender::nextExpected,
+                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                (_, _) -> gapFires.incrementAndGet());
+
+        // Reordered: the [3,5] batch arrives first while local head is empty (next-expected 0) — gap.
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 3L, payloads(3), timestamps(3)));
+        assertThat(gapFires.get()).isEqualTo(1);
+        assertThat(acks).isEmpty();
+
+        // The missing prefix [0,2] arrives — contiguous, applies, acks 2.
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3)));
+        assertThat(acks).hasSize(1);
+        assertThat(acks.getLast().confirmedOffset()).isEqualTo(2L);
+        assertThat(appender.nextExpected(STREAM, PARTITION)).isEqualTo(3L);
+    }
+
+    @Test
+    void duplicateBatch_fullyBelowLocalHead_reAcksWithoutAppendingOrRepairing() {
+        var appender = new TrackingAppender();
+        var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
+        var gapFires = new AtomicInteger(0);
+        var handler = replicationReceiveHandler(SELF,
+                                                appender,
+                                                appender::nextExpected,
+                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                (_, _) -> gapFires.incrementAndGet());
+
+        // Apply [0,2] so local next-expected becomes 3.
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3)));
+        assertThat(appender.nextExpected(STREAM, PARTITION)).isEqualTo(3L);
+
+        // Re-delivery of [0,2]: entirely below local head — nothing to append, no gap, re-ack the end.
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3)));
+
+        assertThat(gapFires.get()).isZero();
+        assertThat(appender.nextExpected(STREAM, PARTITION)).isEqualTo(3L); // no extra appends
+        assertThat(acks).hasSize(2);
+        assertThat(acks.getLast().confirmedOffset()).isEqualTo(2L);
+    }
+
+    @Test
+    void overlappingBatch_skipsAppliedPrefix_appliesTailOnly() {
+        var appender = new TrackingAppender();
+        var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
+        var gapFires = new AtomicInteger(0);
+        var handler = replicationReceiveHandler(SELF,
+                                                appender,
+                                                appender::nextExpected,
+                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                (_, _) -> gapFires.incrementAndGet());
+
+        // Apply [0,2] → local next-expected 3.
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3)));
+
+        // Overlapping re-delivery [1,4]: prefix [1,2] already present (skip 2), tail [3,4] applies.
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 1L, payloads(4), timestamps(4)));
+
+        assertThat(gapFires.get()).isZero();
+        assertThat(appender.nextExpected(STREAM, PARTITION)).isEqualTo(5L); // applied 3 then 2 more
+        assertThat(acks).hasSize(2);
+        assertThat(acks.getLast().confirmedOffset()).isEqualTo(4L);
+    }
+
+    @Test
+    void verifyingFactory_midBatchApplyFailure_acksContiguousPrefix_andTriggersBackfill() {
+        var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
+        var gapFires = new AtomicInteger(0);
+        // Local next-expected fixed at 10; appender fails on the 3rd new append.
+        var calls = new AtomicInteger(0);
+        ReplicationReceiveHandler.RecoveredAppender appender =
+                (_, _, _, _) -> calls.getAndIncrement() < 2 ? Result.success(0L) : TestError.APPEND_FAILED.result();
+        ReplicationReceiveHandler.LocalHead localHead = (_, _) -> 10L;
+        var handler = replicationReceiveHandler(SELF,
+                                                appender,
+                                                localHead,
+                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                (_, _) -> gapFires.incrementAndGet());
+
+        // Contiguous from 10; only [10,11] land before the failure at index 2.
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(4), timestamps(4)));
+
+        assertThat(acks).hasSize(1);
+        assertThat(acks.getFirst().confirmedOffset()).isEqualTo(11L);
+        assertThat(gapFires.get()).isEqualTo(1);
+    }
+
     private static List<byte[]> payloads(int count) {
         var list = new ArrayList<byte[]>(count);
         for (var i = 0; i < count; i++) {
