@@ -160,6 +160,93 @@ class ReplicationManagerTest {
     }
 
     @Nested
+    class AckAccountingTests {
+
+        @Test
+        void duplicateAcksFromOneReplica_doNotSatisfyMinAcks() {
+            // #262.1: minAcks=2 must require TWO DISTINCT replicas. Two acks from REPLICA_A alone must
+            // NOT resolve the await — only the timeout would, never a single-replica double-count.
+            registry.registerReplica(STREAM, PARTITION, REPLICA_A);
+            registry.registerReplica(STREAM, PARTITION, REPLICA_B);
+
+            var pending = manager.awaitReplication(STREAM, PARTITION, 5L, 2);
+
+            manager.handleAck(replicateAck(REPLICA_A, STREAM, PARTITION, 5L));
+            manager.handleAck(replicateAck(REPLICA_A, STREAM, PARTITION, 6L)); // same replica again
+
+            assertThat(pending.isResolved()).isFalse();
+
+            // A distinct second replica resolves it.
+            manager.handleAck(replicateAck(REPLICA_B, STREAM, PARTITION, 5L));
+            assertThat(pending.await().isSuccess()).isTrue();
+        }
+
+        @Test
+        void distinctReplicaAcks_satisfyMinAcks() {
+            registry.registerReplica(STREAM, PARTITION, REPLICA_A);
+            registry.registerReplica(STREAM, PARTITION, REPLICA_B);
+
+            var pending = manager.awaitReplication(STREAM, PARTITION, 5L, 2);
+
+            manager.handleAck(replicateAck(REPLICA_A, STREAM, PARTITION, 5L));
+            assertThat(pending.isResolved()).isFalse();
+            manager.handleAck(replicateAck(REPLICA_B, STREAM, PARTITION, 5L));
+
+            assertThat(pending.await().isSuccess()).isTrue();
+        }
+
+        @Test
+        void selfInReplicaSet_isNotCounted_norReplicatedTo() {
+            // #262.2/.5: the HRW set is owner-first so it contains GOVERNOR (self). Self must not be a
+            // replication target, nor count toward minAcks. With self + one peer registered and
+            // minAcks=2, only ONE real peer exists → NOT_ENOUGH_REPLICAS, and replicate sends only to
+            // the peer.
+            registry.registerReplica(STREAM, PARTITION, GOVERNOR); // self, owner-first
+            registry.registerReplica(STREAM, PARTITION, REPLICA_A);
+
+            var result = manager.awaitReplication(STREAM, PARTITION, 0L, 2).await();
+            assertThat(result.isFailure()).isTrue();
+
+            manager.replicateEvent(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP);
+            assertThat(sentMessages).hasSize(1);
+            assertThat(sentMessages.getFirst().target()).isEqualTo(REPLICA_A);
+        }
+
+        @Test
+        void selfAck_doesNotCountTowardMinAcks() {
+            registry.registerReplica(STREAM, PARTITION, GOVERNOR); // self
+            registry.registerReplica(STREAM, PARTITION, REPLICA_A);
+
+            var pending = manager.awaitReplication(STREAM, PARTITION, 5L, 1);
+
+            manager.handleAck(replicateAck(GOVERNOR, STREAM, PARTITION, 5L)); // self-ack: ignored
+            assertThat(pending.isResolved()).isFalse();
+
+            manager.handleAck(replicateAck(REPLICA_A, STREAM, PARTITION, 5L));
+            assertThat(pending.await().isSuccess()).isTrue();
+        }
+
+        @Test
+        void ackBeforeRegister_race_isHonoredViaRegistrySeed() {
+            // #262.3: replication fires (and a peer acks) BEFORE the caller awaits. The ack already
+            // advanced the registry watermark; awaitReplication seeds the pending set from the registry,
+            // so the already-won ack resolves the await immediately instead of timing out.
+            registry.registerReplica(STREAM, PARTITION, REPLICA_A);
+            registry.registerReplica(STREAM, PARTITION, REPLICA_B);
+
+            // Acks land first (race won).
+            manager.handleAck(replicateAck(REPLICA_A, STREAM, PARTITION, 5L));
+            manager.handleAck(replicateAck(REPLICA_B, STREAM, PARTITION, 5L));
+
+            // Await registered afterwards — must resolve from the already-recorded watermarks.
+            var pending = manager.awaitReplication(STREAM, PARTITION, 5L, 2);
+
+            assertThat(pending.isResolved()).isTrue();
+            assertThat(pending.await().isSuccess()).isTrue();
+        }
+    }
+
+    @Nested
     class MetricsTests {
 
         @Test

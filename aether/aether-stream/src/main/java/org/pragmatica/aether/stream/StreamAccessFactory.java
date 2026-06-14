@@ -115,7 +115,8 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
                                                     forwardClient,
                                                     self,
                                                     ownerResolver,
-                                                    partitionOwnerResolver);
+                                                    partitionOwnerResolver,
+                                                    config.minSyncReplicas());
     }
 
     @SuppressWarnings("unchecked")

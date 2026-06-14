@@ -95,7 +95,8 @@ class StreamReplicationActivationTest {
                                                     forwardClient,
                                                     OWNER,
                                                     ownerResolver,
-                                                    noHrwResolver);
+                                                    noHrwResolver,
+                                                    0);
     }
 
     @Test
@@ -152,7 +153,8 @@ class StreamReplicationActivationTest {
                                                           Option.some(forwardClient),
                                                           OWNER,
                                                           resolver(REPLICA),
-                                                          noHrwResolver);
+                                                          noHrwResolver,
+                                                          0);
 
         var result = access.publish("forwarded".getBytes()).await();
 
@@ -232,6 +234,65 @@ class StreamReplicationActivationTest {
         assertThat(local).hasSize(1);
     }
 
+    // #262.4: an app stream created with minSyncReplicas>0 must AWAIT a replica ack before the
+    // publish promise resolves. Here the owner's transport loops ReplicateEvents into the replica AND
+    // routes the replica's ack back into the owner's replication manager, so a single-replica
+    // min-sync publish resolves once the replica acks (durability honored on the app path).
+    @Test
+    void minSyncPublish_awaitsReplicaAck_beforeResolving() {
+        var acksBack = new AtomicInteger(0);
+        var minSyncOwnerReplication = replicationManager(OWNER, ownerRegistry, loopbackWithAckBack(acksBack));
+        minSyncOwnerReplicationRef = minSyncOwnerReplication; // bind for the ack-back router (set after construction)
+        var minSyncOwnerManager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE,
+                                                                                EvictionListener.NOOP,
+                                                                                minSyncOwnerReplication);
+        minSyncOwnerManager.createStream(StreamConfig.streamConfig(STREAM));
+        var access = minSyncAccess(minSyncOwnerManager);
+
+        var result = access.publish("durable".getBytes()).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        // The replica acked back into the owner's manager, resolving the min-sync await.
+        assertThat(acksBack.get()).isEqualTo(1);
+        // The event landed on the replica partition.
+        assertThat(replicaManager.readLocal(STREAM, PARTITION, 0L, 10).unwrap()).hasSize(1);
+
+        minSyncOwnerManager.close();
+    }
+
+    private ReplicationManager minSyncOwnerReplicationRef;
+
+    private ReplicationTransport loopbackWithAckBack(AtomicInteger acksBack) {
+        ReplicationTransport ackRouter = (target, message) -> {
+            if (message instanceof ReplicationMessage.ReplicateAck ack) {
+                acksBack.incrementAndGet();
+                minSyncOwnerReplicationRef.handleAck(ack);
+            }
+        };
+        var receiveHandler = replicationReceiveHandler(REPLICA, replicaManager::appendRecovered, ackRouter);
+
+        return (target, message) -> {
+            if (message instanceof ReplicationMessage.ReplicateEvents events) {
+                receiveHandler.onReplicateEvents(events);
+            }
+        };
+    }
+
+    private PartitionedStreamAccess<byte[]> minSyncAccess(StreamPartitionManager manager) {
+        Option<Function<Integer, Option<NodeId>>> noHrwResolver = Option.none();
+        return PartitionedStreamAccess.streamAccess(manager,
+                                                    BytePassthrough.SER,
+                                                    BytePassthrough.DESER,
+                                                    STREAM,
+                                                    1,
+                                                    Option.none(),
+                                                    Option.none(),
+                                                    OWNER,
+                                                    resolver(OWNER),
+                                                    noHrwResolver,
+                                                    1);
+    }
+
     private PartitionedStreamAccess<byte[]> hrwAccess(Function<Integer, Option<NodeId>> partitionOwnerResolver,
                                                       Option<StreamForwardClient> forwardClient) {
         return PartitionedStreamAccess.streamAccess(ownerManager,
@@ -243,7 +304,8 @@ class StreamReplicationActivationTest {
                                                     forwardClient,
                                                     OWNER,
                                                     Option.none(),
-                                                    Option.some(partitionOwnerResolver));
+                                                    Option.some(partitionOwnerResolver),
+                                                    0);
     }
 
     private static Function<Integer, Option<NodeId>> hrwResolver(NodeId owner) {

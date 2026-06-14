@@ -90,7 +90,13 @@ public final class ReplicationBatcher implements AutoCloseable {
     }
 
     private void sendBatch(PartitionKey key, BatchSnapshot snapshot) {
-        var replicas = registry.replicasFor(key.streamName(), key.partition());
+        // #262.2/.5: the HRW replica set is owner-first, so it contains self — exclude it. Replicating
+        // a batch to self would loop it back through onReplicateEvents (double-append).
+        var replicas = registry.replicasFor(key.streamName(), key.partition())
+                               .stream()
+                               .map(ReplicaDescriptor::nodeId)
+                               .filter(nodeId -> !nodeId.equals(governorId))
+                               .toList();
 
         if (replicas.isEmpty()) {
             return;
@@ -103,7 +109,7 @@ public final class ReplicationBatcher implements AutoCloseable {
                                       snapshot.payloads(),
                                       snapshot.timestamps());
 
-        replicas.forEach(replica -> transport.send(replica.nodeId(), message));
+        replicas.forEach(replica -> transport.send(replica, message));
     }
 
     static final class BatchAccumulator {
