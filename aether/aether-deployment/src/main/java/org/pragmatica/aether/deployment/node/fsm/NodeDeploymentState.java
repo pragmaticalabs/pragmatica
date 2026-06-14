@@ -422,6 +422,46 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             }
 
             routingEpochAckTracker.registerExpectation(sliceKey, Epoch.ZERO, targets);
+            scheduleRoutingRemediation(sliceKey);
+        }
+
+        /// #325 — node-local ROUTING-timeout remediation arm. A slice that has published its routes
+        /// locally and entered ROUTING transitions to ACTIVE only on cross-node epoch-acks
+        /// ([#fastTransitionToActive]). On a freshly reformed cluster (post-wipe S20 redeploy,
+        /// leadership just handed off, route-table ownership in flux) those acks can be dropped or
+        /// arrive epoch-stale, and the `case ROUTING -> {}` observer is a no-op — so the slice wedges
+        /// in ROUTING indefinitely (the 2/3-active signature). This arm schedules a single one-shot
+        /// at [`SliceState#ROUTING`]'s own timeout; if the slice is STILL ROUTING when it fires, the
+        /// routes are already published and serving locally, so the cross-node ack is a confirmation
+        /// optimization — NOT a local-serving correctness gate. Force ROUTING → ACTIVE rather than
+        /// leaving the cluster-side stuck-remediator to UNLOAD-and-redeploy (which re-enters the same
+        /// ack wait and can wedge again). Idempotent: the fire is guarded on the slice still being in
+        /// ROUTING, and an ack that lands first clears the tracker and transitions to ACTIVE, so the
+        /// later timeout no-ops.
+        @Contract
+        private void scheduleRoutingRemediation(SliceNodeKey sliceKey) {
+            SliceState.ROUTING.timeout()
+                              .onPresent(timeout -> SharedScheduler.schedule(() -> remediateStuckRouting(sliceKey), timeout));
+        }
+
+        /// ROUTING-timeout fire: if the slice is still ROUTING (no ack-driven transition happened),
+        /// force it to ACTIVE and clear the now-moot ack expectation. No-op when the slice already
+        /// left ROUTING (acked through, failed, or was removed). Package-private so the
+        /// remediation contract is unit-testable without waiting out the real routing timeout
+        /// (mirrors the package-private [#routingEpochAckTracker] test accessor on this record).
+        @Contract
+        void remediateStuckRouting(SliceNodeKey sliceKey) {
+            var current = Option.option(deployments.get(sliceKey)).map(SliceDeployment::state);
+
+            if (!current.map(state -> state == SliceState.ROUTING).or(false)) {
+                return;
+            }
+
+            log.warn("Slice {} still ROUTING after the routing timeout — cross-node acks not received; "
+                     + "force-transitioning ROUTING → ACTIVE (routes are published and serving locally)",
+                     sliceKey.artifact());
+            routingEpochAckTracker.clear(sliceKey);
+            transitionTo(sliceKey, SliceState.ACTIVE);
         }
 
         private Set<NodeId> collectTargetNodesForArtifact(SliceNodeKey sliceKey) {
@@ -476,6 +516,12 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             // STRICTER than live (an acker whose KV lags fails the tracker's isAtLeast check and the
             // seeded slice wedges in ROUTING until the stuck-remediator unloads it).
             routingEpochAckTracker.registerExpectation(sliceKey, Epoch.ZERO, targets);
+            // #325 — arm the node-local ROUTING timeout on the rejoin/boot seed path too: this is the
+            // exact path the comment above flagged as wedge-prone (a lagging or already-moved-on acker
+            // never satisfies the expectation). The arm force-progresses the slice to ACTIVE instead
+            // of leaving it stuck for the cluster-side unload-and-redeploy loop. Guarded on the slice
+            // being in ROUTING when the timeout fires, so a seed for an already-ACTIVE route no-ops.
+            scheduleRoutingRemediation(sliceKey);
         }
 
         private boolean sliceHasHttpRoutes(Artifact artifact) {
