@@ -2459,21 +2459,34 @@ public interface AetherNode extends ManageableNode {
                                                                           streamingConfig.publishForwardTimeout(),
                                                                           streamingConfig.readForwardTimeout(),
                                                                           streamReadForwardMetrics);
-        // cluster-events CONSUMER: LOCAL read (governor/local preference). `/api/events` is a LEADER-bound
-        // route, and NODE_FAILED/NODE_LEFT are emitted leader-gated (ClusterEventAggregator.emitAsLeader),
-        // so reader and writer are the SAME node (the leader) by construction. The leader-gated emit
-        // publishes to the leader's LOCAL partition-0 buffer (DefaultStreamPublisher local-buffer branch);
-        // this local-read consumer reads that same buffer, so a leader-emitted event is immediately
-        // visible. The prior ANY_REPLICA forward-capable consumer forwarded the read AWAY to a remote HRW
-        // replica while deriving the fetch offset from leader-local metadata — mismatching the leader-local
-        // publish and returning 200 [] (the lost-NODE_FAILED root, #94/B5). Replica-forwarding was only
-        // needed in the OWNER-gated emit world (writer != reader); leader-gated emit makes it wrong.
+        // cluster-events CONSUMER: forward-capable (ANY_REPLICA). `/api/events` is now an ANY-target
+        // route (#267) — served from any core node, not leader-bound — so the endpoint stays available
+        // during leader churn/election (the prior LEADER binding 503'd exactly when operators most need
+        // events). A node that is NOT a cluster-events replica read-forwards to a CAUGHT_UP replica via
+        // the StreamForwardClient instead of reading its own empty partition (returning 200 []); a node
+        // that IS a caught-up replica reads locally; during the bootstrap window (no caught-up replica
+        // visible yet) it fails soft to the local partition. NODE_FAILED/NODE_LEFT are still emitted
+        // leader-gated to the leader's local partition-0 buffer, then replicated to the replica set.
+        //
+        // HISTORY (#94/B5): forward-capable reads were previously reverted to LOCAL because a fresh
+        // replica did not actually hold the partition's history (no real backfill) and offsets were
+        // unverified, so a forwarded fetch derived from leader-local metadata mismatched the replica and
+        // returned 200 []. Wave-1 #260 (receiver verifies fromOffset, rejects gaps) + #261 (backfill
+        // fires on becoming a replica; CAUGHT_UP only after history coverage) fixed that root: a
+        // CAUGHT_UP replica now genuinely holds [earliest..N], so a forwarded fetch from the retained
+        // tail returns the full window. Staleness: a forwarded read reflects the replica's CAUGHT_UP
+        // watermark, which may trail the owner by the in-flight replication window (sub-second under
+        // steady load) — acceptable for observability and far preferable to a 503.
         org.pragmatica.aether.stream.SystemStreamFactories.<ClusterEvent> systemStreamConsumer(org.pragmatica.aether.slice.stream.SystemStreams.CLUSTER_EVENTS,
                                                                                                streamPartitionManager,
                                                                                                serializer,
                                                                                                deserializer,
-                                                                                               clusterEventsStreamConfig).onSuccess(clusterEventsConsumerRef::set).onFailure(cause -> LOG.warn("cluster-events stream consumer wiring failed: {} — events reads return empty",
-                                                                                                                                                                                               cause.message()));
+                                                                                               clusterEventsStreamConfig,
+                                                                                               streamReplicaRegistry,
+                                                                                               Option.some(streamForwardClient),
+                                                                                               config.self(),
+                                                                                               streamReadForwardMetrics).onSuccess(clusterEventsConsumerRef::set).onFailure(cause -> LOG.warn("cluster-events stream consumer wiring failed: {} — events reads return empty",
+                                                                                                                                                                                              cause.message()));
         var streamCatchupTransport = ForwardCatchupTransport.forwardCatchupTransport(streamForwardClient,
                                                                                      STREAM_CATCHUP_BATCH_SIZE);
         // Cold-start deadlock-break: a watermark+reachability probe over the same forward-read transport.

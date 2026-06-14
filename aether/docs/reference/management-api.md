@@ -276,7 +276,9 @@ Route is `LOCAL` (no forwarding) — the answer is per-request, not per-cluster.
 
 Get cluster events from the event aggregator. Returns structured events including topology changes, leader elections, deployments, slice failures, and network events.
 
-**Routing:** LEADER — the event aggregator is part of the leader-only control plane, so a request received by a follower is forwarded to the current leader.
+**Routing:** ANY — served from any core node, not leader-bound (#267). cluster-events is a replicated single-partition stream; a node that is not a cluster-events replica read-forwards to a CAUGHT_UP replica, so the endpoint stays available during leader churn/election (it previously returned 503 when no leader was present — exactly when operators most need events).
+
+**Staleness:** a read served from a replica reflects that replica's CAUGHT_UP watermark, which may trail the owner by the in-flight replication window (typically sub-second under steady load). This is acceptable for observability and is preferable to a 503 during re-election. Reads are not linearizable across the partition.
 
 **Query Parameters:**
 - `sinceEpoch` (optional) -- Rabia term epoch for cursor-based pagination (default: 0).

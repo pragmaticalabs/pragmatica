@@ -11,6 +11,7 @@ import org.pragmatica.lang.Result;
 import java.util.Arrays;
 import java.util.List;
 
+import static org.pragmatica.aether.management.route.RouteTarget.ANY;
 import static org.pragmatica.aether.management.route.RouteTarget.LEADER;
 import static org.pragmatica.aether.management.route.RouteTarget.LOCAL;
 import static org.pragmatica.aether.management.route.RouteTarget.taskGroup;
@@ -35,7 +36,13 @@ public enum ManagementRoute {
     NODES_LIST(GET, "/api/nodes", List.of(), LEADER),
     WHOAMI(GET, "/api/whoami", List.of(), LOCAL),
     CLUSTER_HEALTH(GET, "/api/health", List.of(), LEADER),
-    EVENTS(GET, "/api/events", List.of(), LEADER),
+    // #267: served from ANY core node, not leader-bound. cluster-events is a replicated single-partition
+    // stream; a non-replica core node read-forwards to a CAUGHT_UP replica (forward-capable consumer),
+    // so `/api/events` stays available during leader churn/election instead of returning 503 — exactly
+    // when operators most need events. Replica-read correctness rests on #260 (offset verification) and
+    // #261 (real backfill). Staleness: a forwarded read reflects the replica's CAUGHT_UP watermark,
+    // which may trail the owner by the in-flight replication window (sub-second under steady load).
+    EVENTS(GET, "/api/events", List.of(), ANY),
     CERTIFICATES_LIST(GET, "/api/certificates", List.of(), LOCAL),
     CLUSTER_TOPOLOGY(GET, "/api/cluster/topology", List.of(), LEADER),
     CLUSTER_GENERATION(GET, "/api/cluster/generation", List.of(), LEADER),
