@@ -1246,7 +1246,7 @@ class ManagementServerImpl implements ManagementServer {
         var httpContext = toManagementRequestContext(ctx, path);
         var policy = SecurityPolicy.apiKeyRequired();
         var methodName = method.name();
-        var permission = RoutePermissionRegistry.resolve(methodName, path);
+        var permission = resolvePermission(methodName, path);
 
         return securityValidator.validate(httpContext, policy)
                                 .flatMap(sc -> enforceAndAuditDenial(sc, permission, methodName, path))
@@ -1256,6 +1256,16 @@ class ManagementServerImpl implements ManagementServer {
                                                                                     methodName,
                                                                                     ctx.requestId()))
                                 .onSuccess(sc -> logManagementAccess(sc, methodName, path));
+    }
+
+    /// #299: per-operation authorization. Resolve the minimum role by EXACT route match
+    /// ([ManagementRoute#match]) against the per-operation table, rather than coarse path-prefix
+    /// containment. A path with no matching ManagementRoute (e.g. an unknown or future route) falls
+    /// back to the prefix registry, which itself denies-by-default (ADMIN) for unrecognized mutations.
+    private static RoutePermission resolvePermission(String methodName, String path) {
+        return parseRoutingMethod(methodName).flatMap(m -> ManagementRoute.match(m, path).option())
+                                             .map(matched -> ManagementRoutePermissions.permissionFor(matched.route()))
+                                             .or(RoutePermissionRegistry.resolve(methodName, path));
     }
 
     private Result<SecurityContext> enforceAndAuditDenial(SecurityContext sc,
