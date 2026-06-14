@@ -102,6 +102,17 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// Check if the consensus engine is active and ready for commands.
     boolean isActive();
 
+    /// Check if the consensus engine is still draining the consensus log — i.e. its
+    /// locally-applied frontier trails the cluster's observed committed frontier. True for a
+    /// freshly-elected replacement leader whose Rabia log has not yet caught up (distinct from
+    /// [#isActive], which only reports protocol participation). Used by the leader-pinned
+    /// task-group owner resolver (#329) to withhold ownership from a lagging leader so
+    /// synchronous leader-local commits do not stall and 503. Default false for implementations
+    /// without a Rabia engine.
+    default boolean isPendingCatchUp() {
+        return false;
+    }
+
     /// Authorize a gated consensus engine to start participating.
     /// Only meaningful for non-seed nodes with activation gating enabled.
     @Contract
@@ -522,6 +533,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public boolean isActive() {
                 return consensus().isActive();
+            }
+
+            @Override
+            public boolean isPendingCatchUp() {
+                return consensus().isPendingCatchUp();
             }
 
             @Override

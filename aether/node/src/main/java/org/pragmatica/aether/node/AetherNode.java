@@ -52,7 +52,6 @@ import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.deployment.schema.SchemaPolicy;
 import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
-import org.pragmatica.aether.slice.delegation.TaskAssignmentError;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.dht.AetherMaps;
@@ -723,6 +722,17 @@ public interface AetherNode extends ManageableNode {
                                                    AtomicReference<ClusterSyncCollector> metricsCollectorRef,
                                                    org.pragmatica.cluster.node.rabia.SyncHoldRegistry syncHoldRegistry,
                                                    Runnable jvmExit) {
+        // #329: leader-pinned task-group ownership is gated on consensus catch-up. A freshly
+        // elected replacement leader whose Rabia log is still draining (isPendingCatchUp) is
+        // isActive but not caught up; granting it ownership funnels every leader-pinned op
+        // through a wedged node (synchronous node.apply().await stalls -> 503). The gate withholds
+        // ownership (notAssigned -> HttpForwarder 3x200ms re-resolution retry) only while lagging
+        // and only for a bounded window, so it can never become a permanent no-owner wedge.
+        // Shared by both taskGroupOwnerResolver sites below (the AppHttpServer wiring var and the
+        // ManageableNode.taskGroupOwnerResolver() override).
+        var leaderCatchUpGate = LeaderCatchUpGate.leaderCatchUpGate(config.self(),
+                                                                    () -> clusterNode.leaderManager().leader(),
+                                                                    clusterNode::isPendingCatchUp);
         // Concrete adapter (not a lambda) so we can override `sendOutcome` and forward
         // it to the QUIC transport's tracked-write API. The default DHTNetwork impl
         // just calls `send` and reports Sent — but the DHT quorum collectors need the
@@ -805,6 +815,7 @@ public interface AetherNode extends ManageableNode {
                           SliceRegistry sliceRegistry,
                           SliceStore sliceStore,
                           RabiaNode<KVCommand<AetherKey>> clusterNode,
+                          Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver,
                           SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
                           NodeDeploymentManager nodeDeploymentManager,
                           ClusterDeploymentManager clusterDeploymentManager,
@@ -884,13 +895,6 @@ public interface AetherNode extends ManageableNode {
             @Override
             public TopologyManager topologyManager() {
                 return clusterNode.topologyManager();
-            }
-
-            @Override
-            public Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver() {
-                return group -> clusterNode.leaderManager()
-                                           .leader()
-                                           .toResult(TaskAssignmentError.notAssigned(group));
             }
 
             @Override
@@ -1647,11 +1651,10 @@ public interface AetherNode extends ManageableNode {
         var serverBossGroup = clusterNode.network().server().map(Server::bossGroup);
         var serverWorkerGroup = clusterNode.network().server().map(Server::workerGroup);
         // #231 Step 3: every control-plane TaskGroup is leader-pinned, so the owner of any group is
-        // the current leader. Resolver mirrors the former registry's no-owner failure (notAssigned)
-        // when no leader is committed, using the same leaderManager source as the toggle*OnLeaderChange routes.
-        Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver = group -> clusterNode.leaderManager()
-                                                                                    .leader()
-                                                                                    .toResult(TaskAssignmentError.notAssigned(group));
+        // the current leader. #329: gated on consensus catch-up via leaderCatchUpGate (shared with the
+        // ManageableNode.taskGroupOwnerResolver() override) — a lagging replacement leader is withheld
+        // ownership (notAssigned) for a bounded window so leader-local commits do not stall and 503.
+        Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver = leaderCatchUpGate::resolve;
         // Silent-death fix: the data-path forwarder narrows candidates to currently-reachable nodes so
         // a hard-killed peer (QUIC still CONNECTED until eviction) is dropped from selection/retry long
         // before the forward timeout would otherwise burn. Membership-FSM unification (Wave D, consumer
@@ -2601,6 +2604,7 @@ public interface AetherNode extends ManageableNode {
                                   sliceRegistry,
                                   sliceStore,
                                   clusterNode,
+                                  taskGroupOwnerResolver,
                                   switchableCluster,
                                   nodeDeploymentManager,
                                   clusterDeploymentManager,
@@ -2708,6 +2712,7 @@ public interface AetherNode extends ManageableNode {
                                       sliceRegistry,
                                       sliceStore,
                                       clusterNode,
+                                      taskGroupOwnerResolver,
                                       switchableCluster,
                                       nodeDeploymentManager,
                                       clusterDeploymentManager,

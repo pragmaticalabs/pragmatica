@@ -213,6 +213,74 @@ class RabiaEngineTest {
     }
 
     @Nested
+    class PendingCatchUp {
+
+        @Test
+        void isPendingCatchUp_false_when_caught_up() throws InterruptedException {
+            // A node that activated with no higher cluster phase observed is caught up:
+            // highestObservedClusterPhase == currentPhase == ZERO.
+            activateEngine();
+
+            assertThat(engine.isActive()).as("engine should be active after activation").isTrue();
+            assertThat(engine.isPendingCatchUp())
+                .as("caught-up active node must not report pending catch-up")
+                .isFalse();
+        }
+
+        @Test
+        void isPendingCatchUp_true_when_cluster_phase_exceeds_applied_phase() throws InterruptedException {
+            // Observing a peer message for a phase ahead of the locally-applied currentPhase
+            // (within MAX_PHASE_AHEAD, so no resync) advances the committed frontier above the
+            // applied frontier — the lagging-replacement-leader condition.
+            activateEngine();
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("ahead")));
+
+            engine.processPropose(new Propose<>(NODE_2, new Phase(5), batch));
+            Thread.sleep(50);
+
+            assertThat(engine.highestObservedClusterPhaseForTesting())
+                .as("observed cluster phase should track the far-ahead proposal")
+                .isEqualTo(new Phase(5));
+            assertThat(engine.currentPhaseForTesting())
+                .as("applied phase must not have advanced to the unentered future phase")
+                .isEqualTo(Phase.ZERO);
+            assertThat(engine.isPendingCatchUp())
+                .as("a node whose committed frontier exceeds its applied frontier is lagging")
+                .isTrue();
+        }
+
+        @Test
+        void isPendingCatchUp_clears_once_applied_phase_reaches_observed_phase() throws InterruptedException {
+            // Once the engine applies up to the observed frontier, it is caught up again.
+            activateEngine();
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
+
+            // Observe phase 1 as the cluster frontier, then drive a full decision for phase 0
+            // which advances currentPhase to 1 — closing the gap.
+            engine.processVoteRound1(new VoteRound1(NODE_2, new Phase(1), StateValue.V1));
+            Thread.sleep(50);
+            assertThat(engine.isPendingCatchUp()).as("gap open while applied < observed").isTrue();
+
+            engine.processPropose(new Propose<>(NODE_1, Phase.ZERO, batch));
+            engine.processPropose(new Propose<>(NODE_2, Phase.ZERO, batch));
+            Thread.sleep(50);
+            engine.processVoteRound1(new VoteRound1(NODE_2, Phase.ZERO, StateValue.V1));
+            engine.processVoteRound1(new VoteRound1(NODE_3, Phase.ZERO, StateValue.V1));
+            Thread.sleep(50);
+            engine.processVoteRound2(new VoteRound2(NODE_2, Phase.ZERO, StateValue.V1));
+            engine.processVoteRound2(new VoteRound2(NODE_3, Phase.ZERO, StateValue.V1));
+            Thread.sleep(100);
+
+            assertThat(engine.currentPhaseForTesting())
+                .as("applied phase should have advanced to phase 1 after the phase-0 decision")
+                .isEqualTo(new Phase(1));
+            assertThat(engine.isPendingCatchUp())
+                .as("once applied frontier reaches observed frontier, node is caught up")
+                .isFalse();
+        }
+    }
+
+    @Nested
     class MessageHandling {
 
         @Test
