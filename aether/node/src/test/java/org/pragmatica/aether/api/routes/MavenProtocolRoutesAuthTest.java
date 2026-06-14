@@ -34,7 +34,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// `ArtifactStore` that the cluster resolves and loads as code, so an unauthenticated push is an RCE.
 /// This verifies the in-route guard rejects pushes that lack an authenticated OPERATOR+ context —
 /// including the case where management security is disabled and no context is bound at all — while
-/// permitting an authenticated OPERATOR/ADMIN push.
+/// permitting an authenticated OPERATOR/ADMIN push. Insecure dev mode
+/// (`AETHER_INSECURE_DEV_MODE=true`) is the one relaxation: the operator has explicitly opted out of
+/// management security, so the push gate allows pushes with no bound context (integration-test
+/// harness posture). The injectable `BooleanSupplier` exercises both dev-mode states without
+/// touching the real process environment.
 class MavenProtocolRoutesAuthTest {
     private static final TimeSpan SHORT_TIMEOUT = timeSpan(2).seconds();
     private static final String PUT_PATH = ManagementRoute.ARTIFACT_GET.prefix()
@@ -49,6 +53,32 @@ class MavenProtocolRoutesAuthTest {
 
         assertThat(handled).isTrue();
         assertThat(response.awaitStatus()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
+    void handle_putWithDevModeOffAndNoSecurityContext_rejectedUnauthorized() {
+        var routes = MavenProtocolRoutes.mavenProtocolRoutes(() -> nodeWith(resolvingHandler()),
+                                                             SHORT_TIMEOUT,
+                                                             () -> false);
+        var response = new CapturingResponseWriter();
+
+        var handled = routes.handle(putRequest(), response);
+
+        assertThat(handled).isTrue();
+        assertThat(response.awaitStatus()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
+    void handle_putWithDevModeOnAndNoSecurityContext_allowsPush() {
+        var routes = MavenProtocolRoutes.mavenProtocolRoutes(() -> nodeWith(resolvingHandler()),
+                                                             SHORT_TIMEOUT,
+                                                             () -> true);
+        var response = new CapturingResponseWriter();
+
+        var handled = routes.handle(putRequest(), response);
+
+        assertThat(handled).isTrue();
+        assertThat(response.awaitStatus()).isEqualTo(HttpStatus.OK);
     }
 
     @Test

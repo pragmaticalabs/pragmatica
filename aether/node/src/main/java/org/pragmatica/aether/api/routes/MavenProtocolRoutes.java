@@ -22,6 +22,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.io.TimeSpan;
 
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 import static org.pragmatica.http.HttpMethod.GET;
@@ -31,6 +32,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 public final class MavenProtocolRoutes implements RouteHandler {
+    private static final String DEV_MODE_ENV = "AETHER_INSECURE_DEV_MODE";
     private static final String REPOSITORY_PREFIX = ManagementRoute.ARTIFACT_GET.prefix() + "/";
     private static final String REPOSITORY_INFO_PREFIX = ManagementRoute.ARTIFACT_INFO.prefix() + "/";
     /// Per-request deadline (HTTP backstop). The maven protocol handler delegates to the
@@ -44,21 +46,37 @@ public final class MavenProtocolRoutes implements RouteHandler {
 
     private final Supplier<ManageableNode> nodeSupplier;
     private final TimeSpan requestTimeout;
+    private final BooleanSupplier devModeEnabled;
 
-    private MavenProtocolRoutes(Supplier<ManageableNode> nodeSupplier, TimeSpan requestTimeout) {
+    private MavenProtocolRoutes(Supplier<ManageableNode> nodeSupplier,
+                               TimeSpan requestTimeout,
+                               BooleanSupplier devModeEnabled) {
         this.nodeSupplier = nodeSupplier;
         this.requestTimeout = requestTimeout;
+        this.devModeEnabled = devModeEnabled;
     }
 
     public static MavenProtocolRoutes mavenProtocolRoutes(Supplier<ManageableNode> nodeSupplier) {
-        return new MavenProtocolRoutes(nodeSupplier, REQUEST_TIMEOUT);
+        return new MavenProtocolRoutes(nodeSupplier, REQUEST_TIMEOUT, MavenProtocolRoutes::devModeFromEnv);
     }
 
     /// Variant with an explicit per-request deadline. Used by tests that drive the 504-on-expiry
     /// path with a short `TimeSpan` against a never-resolving handler promise.
     public static MavenProtocolRoutes mavenProtocolRoutes(Supplier<ManageableNode> nodeSupplier,
                                                           TimeSpan requestTimeout) {
-        return new MavenProtocolRoutes(nodeSupplier, requestTimeout);
+        return new MavenProtocolRoutes(nodeSupplier, requestTimeout, MavenProtocolRoutes::devModeFromEnv);
+    }
+
+    /// Test-friendly factory: callers (unit tests) inject the dev-mode flag directly rather than
+    /// mutating the JVM-wide environment. Mirrors the pattern used by `CertificateRoutes`.
+    public static MavenProtocolRoutes mavenProtocolRoutes(Supplier<ManageableNode> nodeSupplier,
+                                                          TimeSpan requestTimeout,
+                                                          BooleanSupplier devModeEnabled) {
+        return new MavenProtocolRoutes(nodeSupplier, requestTimeout, devModeEnabled);
+    }
+
+    private static boolean devModeFromEnv() {
+        return "true".equalsIgnoreCase(System.getenv(DEV_MODE_ENV));
     }
 
     @Override
@@ -96,9 +114,18 @@ public final class MavenProtocolRoutes implements RouteHandler {
     /// `ManagementServer.handleRequest` already enforces OPERATOR+ on `/repository/` mutations when
     /// management security is enabled; this in-route check guarantees the same posture even if an
     /// operator has explicitly disabled management security (`SecurityMode.NONE`) — in that case no
-    /// `SecurityContext` is bound and the push is rejected rather than silently accepted. Reads (GET)
-    /// are intentionally not gated here: artifact resolution is also driven by internal cluster paths.
-    private static boolean isAuthorizedForPush() {
+    /// `SecurityContext` is bound and the push is rejected rather than silently accepted.
+    ///
+    /// Insecure dev mode (`AETHER_INSECURE_DEV_MODE=true`) is the one exception: the operator has
+    /// explicitly opted out of all management security, so the push gate relaxes consistently with
+    /// that posture (the integration-test harness runs `security_mode=NONE`). Outside dev mode the
+    /// behavior is unchanged — an authenticated OPERATOR+ context is required. Reads (GET) are
+    /// intentionally not gated here: artifact resolution is also driven by internal cluster paths.
+    private boolean isAuthorizedForPush() {
+        return devModeEnabled.getAsBoolean() || hasAuthenticatedOperator();
+    }
+
+    private static boolean hasAuthenticatedOperator() {
         return SecurityContextHolder.currentContext()
                                     .filter(SecurityContext::isAuthenticated)
                                     .map(MavenProtocolRoutes::hasOperatorRole)
