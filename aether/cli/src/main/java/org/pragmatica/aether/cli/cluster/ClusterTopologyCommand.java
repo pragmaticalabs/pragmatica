@@ -32,6 +32,7 @@ class ClusterTopologyCommand implements Callable<Integer> {
     private static final TableSpec TOPOLOGY_TABLE = new TableSpec("Cluster Topology",
                                                                   List.of(new Column("NODE", "nodeId", 16),
                                                                           new Column("ROLE", "role", 10),
+                                                                          new Column("ASSIGNED", "assignedRole", 10),
                                                                           new Column("HEALTH", "health", 12),
                                                                           new Column("HOSTNAME", "hostname", 20),
                                                                           new Column("ZONE", "zone", 14),

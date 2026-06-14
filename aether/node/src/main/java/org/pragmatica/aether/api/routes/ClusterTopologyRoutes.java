@@ -20,8 +20,10 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.consensus.NodeId;
@@ -37,6 +39,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -143,6 +146,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var connectedPeers = node.connectedPeerIds();
         var allNodeIds = topologyManager.topology();
         var membershipView = node.membershipView();
+        var assignedRoles = assignedRoles(node);
         var coreNodeIds = allNodeIds.stream().filter(id -> !topologyManager.isPassive(id)).filter(id -> isHealthy(topologyManager,
                                                                                                                   id)).filter(id -> isLiveLifecycle(membershipView,
                                                                                                                                                     id)).map(NodeId::id).toList();
@@ -157,7 +161,8 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var workerCount = Math.max(0, connectedPeers.size() - coreCount);
         var nodeDetails = allNodeIds.stream().filter(id -> isLiveLifecycle(membershipView, id)).map(id -> buildNodeDetail(topologyManager,
                                                                                                                           id,
-                                                                                                                          connectedPeers.contains(id))).toList();
+                                                                                                                          connectedPeers.contains(id),
+                                                                                                                          assignedRoles)).toList();
 
         return new ClusterTopologyStatusResponse(coreCount,
                                                  topologyConfig.coreMax(),
@@ -169,15 +174,30 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                                  nodeDetails,
                                                  epoch,
                                                  topologyMode(topologyManager),
-                                                 buildFsmMembers(node.membershipFsm()));
+                                                 buildFsmMembers(node.membershipFsm(), assignedRoles));
     }
+
+    /// #259: per-node CDM-assigned role from the KV-Store `ActivationDirective` — the authority
+    /// that demotes a self-asserted core to worker. Surfaced alongside the descriptor role so a
+    /// worker-demoted node is visible as such (it previously read as `core`, hiding the demotion).
+    static Map<NodeId, String> assignedRoles(ManageableNode node) {
+        var roles = new HashMap<NodeId, String>();
+
+        node.kvStore().forEach(ActivationDirectiveKey.class,
+                               ActivationDirectiveValue.class,
+                               (key, value) -> roles.put(key.nodeId(), value.role()));
+
+        return Map.copyOf(roles);
+    }
+
+    private static final String UNASSIGNED_ROLE = "UNASSIGNED";
 
     /// Wave-1 item 6 (cluster-topology-overhaul spec): per-member FSM truth — lifecycle state,
     /// incarnation high-water mark, descriptor role/source — read straight off the node's
     /// authoritative `MembershipFsm` snapshots (`memberStates` / `memberIncarnations` /
     /// `memberDescriptors`). Includes DEAD members (retained for incarnation-fenced rejoin),
     /// so a remote run sees the full membership picture without `docker logs`.
-    private static List<FsmMemberDetail> buildFsmMembers(MembershipFsm membershipFsm) {
+    private static List<FsmMemberDetail> buildFsmMembers(MembershipFsm membershipFsm, Map<NodeId, String> assignedRoles) {
         var incarnations = membershipFsm.memberIncarnations();
         var descriptors = membershipFsm.memberDescriptors();
 
@@ -187,20 +207,23 @@ public final class ClusterTopologyRoutes implements RouteSource {
                             .map(entry -> toFsmMemberDetail(entry.getKey(),
                                                             entry.getValue(),
                                                             incarnations,
-                                                            descriptors))
+                                                            descriptors,
+                                                            assignedRoles))
                             .toList();
     }
 
     private static FsmMemberDetail toFsmMemberDetail(NodeId id,
                                                      String fsmState,
                                                      Map<NodeId, Long> incarnations,
-                                                     Map<NodeId, MemberDescriptor> descriptors) {
+                                                     Map<NodeId, MemberDescriptor> descriptors,
+                                                     Map<NodeId, String> assignedRoles) {
         var descriptor = descriptors.getOrDefault(id, MemberDescriptor.UNKNOWN);
 
         return new FsmMemberDetail(id.id(),
                                    fsmState,
                                    incarnations.getOrDefault(id, 0L),
                                    descriptor.role(),
+                                   assignedRoles.getOrDefault(id, UNASSIGNED_ROLE),
                                    descriptor.source());
     }
 
@@ -271,10 +294,11 @@ public final class ClusterTopologyRoutes implements RouteSource {
         return membershipView.isPresent(id);
     }
 
-    private static TopologyNodeDetail buildNodeDetail(TopologyManager tm, NodeId nodeId, boolean connected) {
+    private static TopologyNodeDetail buildNodeDetail(TopologyManager tm, NodeId nodeId, boolean connected, Map<NodeId, String> assignedRoles) {
         var info = tm.get(nodeId);
         var state = tm.getState(nodeId);
         var role = info.flatMap(i -> Option.option(i.labels().get(NodeInfo.LABEL_ROLE))).or("UNKNOWN");
+        var assignedRole = assignedRoles.getOrDefault(nodeId, UNASSIGNED_ROLE);
         var health = state.map(NodeState::health).map(Enum::name).or(connected
                                                                      ? "CONNECTED"
                                                                      : "UNKNOWN");
@@ -283,6 +307,6 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var address = info.map(i -> i.address()
                                      .asString()).or("");
 
-        return new TopologyNodeDetail(nodeId.id(), role, health, hostname, zone, address);
+        return new TopologyNodeDetail(nodeId.id(), role, assignedRole, health, hostname, zone, address);
     }
 }

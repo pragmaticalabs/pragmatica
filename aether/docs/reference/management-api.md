@@ -1960,6 +1960,8 @@ When a cluster generation snapshot is available the `coreCount` field is derived
 
 The `fsmMembers` array (Wave-1 diagnostic extension, cluster-topology-overhaul spec item 6) exposes the queried node's authoritative per-member `MembershipFsm` truth: lifecycle state (`Observed` / `Member` / `Suspect` / `Departing` / `Dead`), the SWIM incarnation high-water mark, and the last-known descriptor `role` / `source` labels. DEAD members are included (retained for incarnation-fenced rejoin), so a remote run reads membership truth without `docker logs`.
 
+Each `nodeDetails` and `fsmMembers` entry carries BOTH `role` (the self-asserted descriptor role from `AETHER_ROLE`) and `assignedRole` (#259 — the CDM-assigned role from the KV-Store `ActivationDirective`, or `UNASSIGNED` when none). The two diverge for worker-demoted nodes: a node still reporting descriptor `role: "core"` but `assignedRole: "WORKER"` is running in observer mode under a CDM demotion. The CLI `cluster topology` table surfaces this as the `ASSIGNED` column.
+
 **Response:**
 ```json
 {
@@ -1974,6 +1976,7 @@ The `fsmMembers` array (Wave-1 diagnostic extension, cluster-topology-overhaul s
     {
       "nodeId": "node-1",
       "role": "ACTIVE",
+      "assignedRole": "CORE",
       "health": "HEALTHY",
       "hostname": "aether-node-1",
       "zone": "",
@@ -1982,6 +1985,7 @@ The `fsmMembers` array (Wave-1 diagnostic extension, cluster-topology-overhaul s
     {
       "nodeId": "lb-passive",
       "role": "PASSIVE",
+      "assignedRole": "UNASSIGNED",
       "health": "HEALTHY",
       "hostname": "aether-lb",
       "zone": "",
@@ -1995,6 +1999,7 @@ The `fsmMembers` array (Wave-1 diagnostic extension, cluster-topology-overhaul s
       "fsmState": "Member",
       "incarnation": 3,
       "role": "core",
+      "assignedRole": "CORE",
       "source": "docker"
     },
     {
@@ -2002,6 +2007,7 @@ The `fsmMembers` array (Wave-1 diagnostic extension, cluster-topology-overhaul s
       "fsmState": "Dead",
       "incarnation": 1,
       "role": "core",
+      "assignedRole": "WORKER",
       "source": "docker"
     }
   ]
