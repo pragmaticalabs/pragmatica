@@ -86,6 +86,21 @@ public final class StorageFactory {
                                                             List.of(memoryTier)));
     }
 
+    /// Default `StorageInstance` backing slice-facing `ContentStore` resources (#251). Registered as
+    /// the SPI `StorageInstance` extension so `ContentStoreFactory.provision(config, context)` can
+    /// resolve a tiered store — without this, ContentStore provisioning fails at runtime with
+    /// "requires ProvisioningContext with StorageInstance extension". Mirrors `defaultArtifactStorage`:
+    /// memory cache tier over a DHT durable tier (memory-only when no DHT client is wired).
+    static StorageInstance defaultContentStorage(Option<DHTClient> dhtClient) {
+        var memoryTier = MemoryTier.memoryTier(DEFAULT_MEMORY_BYTES);
+
+        return dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "content-blocks"))
+                        .map(dht -> StorageInstance.storageInstance("content",
+                                                                    List.of(memoryTier, dht)))
+                        .or(StorageInstance.storageInstance("content",
+                                                            List.of(memoryTier)));
+    }
+
     private static Result<StorageSetup> createOne(String name,
                                                   StorageConfig config,
                                                   String nodeId,

@@ -1627,7 +1627,8 @@ public interface AetherNode extends ManageableNode {
         resourceProviderSetup.spiProvider().onPresent(spi -> registerRuntimeExtensions(spi,
                                                                                        topicSubscriptionRegistry,
                                                                                        sliceInvoker,
-                                                                                       cacheDhtClient));
+                                                                                       cacheDhtClient,
+                                                                                       StorageFactory.defaultContentStorage(dhtClientOption)));
         var selfAddress = findSelfAddress(config);
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
                                                                                             selfAddress,
@@ -4173,10 +4174,14 @@ public interface AetherNode extends ManageableNode {
     private static void registerRuntimeExtensions(SpiResourceProvider spi,
                                                   TopicSubscriptionRegistry topicSubscriptionRegistry,
                                                   SliceInvoker sliceInvoker,
-                                                  DHTClient cacheDhtClient) {
+                                                  DHTClient cacheDhtClient,
+                                                  StorageInstance contentStorage) {
         spi.registerExtension(TopicSubscriptionRegistry.class, topicSubscriptionRegistry);
         spi.registerExtension(SliceInvoker.class, sliceInvoker);
         spi.registerExtension(DHTClient.class, cacheDhtClient);
+        // #251 (#99 regression): ContentStoreFactory.provision() requires a StorageInstance extension.
+        // Register a tiered content store so slice-facing ContentStore resources can provision.
+        spi.registerExtension(StorageInstance.class, contentStorage);
     }
 
     private static StreamForwardTransport createStreamForwardTransport(ClusterNetwork network) {
