@@ -31,10 +31,8 @@
 
         init: function() {
             this.overlay = document.getElementById('auth-overlay');
-            // Check URL param first
-            var params = new URLSearchParams(window.location.search);
-            var paramKey = params.get('apiKey');
-            if (paramKey) sessionStorage.setItem('aether-api-key', paramKey);
+            // #293/G7: the API key is never read from the URL (keys in URLs leak into logs/proxies/
+            // history). It is supplied via the auth overlay and sent as the X-API-Key header.
             // Show overlay if no key
             if (!this.hasValidKey()) this.show();
         },
