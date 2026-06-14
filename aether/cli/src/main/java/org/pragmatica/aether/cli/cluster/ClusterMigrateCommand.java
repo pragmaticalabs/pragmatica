@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import org.pragmatica.aether.cli.DestructiveAction;
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.lang.Cause;
@@ -38,6 +39,9 @@ class ClusterMigrateCommand implements Callable<Integer> {
     @Option(names = "--dry-run", description = "Show migration plan without executing")
     private boolean dryRun;
 
+    @Option(names = {"--yes", "--force"}, description = "Skip interactive confirmation")
+    private boolean skipConfirmation;
+
     @CommandLine.ParentCommand
     private ClusterCommand parent;
 
@@ -46,10 +50,23 @@ class ClusterMigrateCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
+        if (!dryRun && !confirmMigration()) {
+            System.out.println("Aborted.");
+
+            return ExitCode.SUCCESS;
+        }
+
         return clusterTarget.applyOverrides()
                             .flatMap(_ -> validateStrategy())
                             .flatMap(this::sendMigrateRequest)
                             .fold(ClusterMigrateCommand::onFailure, this::onSuccess);
+    }
+
+    private boolean confirmMigration() {
+        return DestructiveAction.destructiveAction()
+                                .confirm(skipConfirmation,
+                                         "This will migrate the cluster to " + targetProvider + "/" + targetZone
+                                         + " (strategy: " + strategy + ").");
     }
 
     private Result<String> validateStrategy() {

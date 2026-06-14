@@ -3382,8 +3382,20 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Git commit ID to restore from")
             private String commitId;
 
+            @CommandLine.Option(names = {"--yes", "--force"}, description = "Skip interactive confirmation")
+            private boolean skipConfirmation;
+
             @Override
             public Integer call() {
+                if (!DestructiveAction.destructiveAction()
+                                      .confirm(skipConfirmation,
+                                               "This will restore cluster state from backup " + commitId
+                                               + ", overwriting current state.")) {
+                    System.out.println("Aborted.");
+
+                    return ExitCode.SUCCESS;
+                }
+
                 var response = backupParent.parent.post(BACKUP_RESTORE, "{\"commit\":\"" + commitId + "\"}");
 
                 return OutputFormatter.printAction(response,
@@ -3509,8 +3521,20 @@ public class AetherCli implements Runnable {
             @CommandLine.Option(names = "--wait", description = "Reserved for future async-restore support (currently a no-op — restore is synchronous server-side)")
             private boolean waitForCompletion;
 
+            @CommandLine.Option(names = {"--yes", "--force"}, description = "Skip interactive confirmation")
+            private boolean skipConfirmation;
+
             @Override
             public Integer call() {
+                if (!DestructiveAction.destructiveAction()
+                                      .confirm(skipConfirmation,
+                                               "This will restore cluster state from backup " + commitId
+                                               + ", overwriting current state.")) {
+                    System.out.println("Aborted.");
+
+                    return ExitCode.SUCCESS;
+                }
+
                 var response = backupParent.parent.post(BACKUP_RESTORE, buildRestoreBody());
 
                 return OutputFormatter.printAction(response,

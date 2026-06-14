@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import org.pragmatica.aether.cli.DestructiveAction;
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
@@ -38,6 +39,9 @@ class ClusterDrainCommand implements Callable<Integer> {
     @Option(names = "--timeout", description = "Timeout in seconds when waiting (default: 120)")
     private int timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
 
+    @Option(names = {"--yes", "--force"}, description = "Skip interactive confirmation")
+    private boolean skipConfirmation;
+
     @CommandLine.ParentCommand
     private ClusterCommand parent;
 
@@ -46,6 +50,14 @@ class ClusterDrainCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
+        if (!DestructiveAction.destructiveAction()
+                              .confirm(skipConfirmation,
+                                       "This will drain node " + nodeId + " (evacuate all its slices).")) {
+            System.out.println("Aborted.");
+
+            return ExitCode.SUCCESS;
+        }
+
         return clusterTarget.applyOverrides()
                             .flatMap(_ -> ClusterHttpClient.post(NODE_DRAIN,
                                                                  List.of(nodeId),

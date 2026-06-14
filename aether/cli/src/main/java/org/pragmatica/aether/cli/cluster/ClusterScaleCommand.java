@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import org.pragmatica.aether.cli.DestructiveAction;
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.json.JsonMapper;
@@ -40,6 +41,9 @@ class ClusterScaleCommand implements Callable<Integer> {
     @Option(names = "--core", description = "Legacy shortcut: scale core nodes across all sources")
     private int coreCount;
 
+    @Option(names = {"--yes", "--force"}, description = "Skip interactive confirmation")
+    private boolean skipConfirmation;
+
     @CommandLine.ParentCommand
     private ClusterCommand parent;
 
@@ -50,12 +54,25 @@ class ClusterScaleCommand implements Callable<Integer> {
     public Integer call() {
         return clusterTarget.applyOverrides()
                             .flatMap(_ -> resolveEffective())
-                            .flatMap(pair -> validateCount(pair.count(),
-                                                           pair.role()).flatMap(this::fetchConfigVersion)
-                                                          .flatMap(version -> sendScaleRequest(version,
-                                                                                               pair.count(),
-                                                                                               pair.role())))
+                            .flatMap(this::confirmAndScale)
                             .fold(ClusterScaleCommand::onFailure, this::onSuccess);
+    }
+
+    private Result<String> confirmAndScale(EffectiveScale pair) {
+        if (!confirmScale(pair)) {
+            return new ScaleError.Aborted().result();
+        }
+
+        return validateCount(pair.count(), pair.role())
+            .flatMap(this::fetchConfigVersion)
+            .flatMap(version -> sendScaleRequest(version, pair.count(), pair.role()));
+    }
+
+    private boolean confirmScale(EffectiveScale pair) {
+        return DestructiveAction.destructiveAction()
+                                .confirm(skipConfirmation,
+                                         "This will scale " + pair.role() + " nodes to " + pair.count()
+                                         + " (a scale-down terminates nodes).");
     }
 
     private Result<EffectiveScale> resolveEffective() {
@@ -128,6 +145,12 @@ class ClusterScaleCommand implements Callable<Integer> {
     }
 
     private static int onFailure(Cause cause) {
+        if (cause instanceof ScaleError.Aborted) {
+            System.out.println("Aborted.");
+
+            return ExitCode.SUCCESS;
+        }
+
         System.err.println("Error: " + cause.message());
 
         return ExitCode.ERROR;
@@ -159,6 +182,13 @@ class ClusterScaleCommand implements Callable<Integer> {
             @Override
             public String message() {
                 return "Either --count or --core must be specified";
+            }
+        }
+
+        record Aborted() implements ScaleError {
+            @Override
+            public String message() {
+                return "Scale aborted by operator";
             }
         }
     }

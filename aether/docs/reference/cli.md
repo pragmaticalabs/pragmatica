@@ -1252,7 +1252,8 @@ reads more naturally for your scripts.
 aether backup create                   # create a new backup (synchronous)
 aether backup create --wait            # create + poll /api/backups until the new entry appears
 aether backup create --wait --timeout 120
-aether backup restore <commit-id>      # restore from a specific backup commit
+aether backup restore <commit-id>      # restore from a specific backup commit (prompts for confirmation)
+aether backup restore <commit-id> --yes  # skip confirmation (required in non-interactive shells)
 aether backup list                     # list available backups
 
 # Plural surface (legacy alias, identical routes)
@@ -1266,7 +1267,7 @@ aether backups restore <commit-id>
 | Subcommand | Description |
 |------------|-------------|
 | `create [--wait] [--timeout N]` | Create a new backup (`POST /api/backups`). With `--wait`, polls `GET /api/backups` until the new entry appears or `--timeout` (default 60s) elapses. |
-| `restore <commit>` | Restore the cluster KV-Store from the named backup commit (`POST /api/backups/restore`). |
+| `restore <commit> [--yes\|--force]` | Restore the cluster KV-Store from the named backup commit (`POST /api/backups/restore`). Destructive — overwrites current state, so it prompts for confirmation; `--yes`/`--force` skips the prompt (required in non-interactive shells). |
 | `list` | List available backups (`GET /api/backups`). |
 
 #### `aether backups` subcommands (legacy)
@@ -1611,6 +1612,7 @@ aether cluster scale --core <N>
 | Option | Description |
 |--------|-------------|
 | `--core` | Target core node count (minimum 3, must be odd) |
+| `--yes`, `--force` | Skip interactive confirmation (required in non-interactive shells) |
 | `--json` | Output raw JSON |
 
 Example:
@@ -1623,6 +1625,10 @@ aether cluster scale --core 7
 # Core nodes: 5 -> 7
 # Config version: 8
 ```
+
+Scaling is destructive (a scale-down terminates nodes), so it prompts for confirmation in an
+interactive shell. Pass `--yes` (or `--force`) to skip the prompt; a non-interactive shell without
+`--yes` refuses to proceed.
 
 Scaling down displays a warning:
 ```
@@ -1641,15 +1647,19 @@ aether cluster topology
 |--------|-------------|
 | `--format` | Output format: `table` (default), `json`, `value`, `csv` |
 
+The `ASSIGNED` column shows the CDM-assigned role (from the KV-Store `ActivationDirective`),
+distinct from the `ROLE` (self-asserted descriptor) column. When they diverge — e.g. `ROLE=core`
+but `ASSIGNED=WORKER` — the node was demoted by the controller and runs in observer mode.
+
 Example:
 ```bash
 aether cluster topology
 
 # Output (table):
-# NODE              ROLE        HEALTH        HOSTNAME              ZONE            ADDRESS
-# node-1            ACTIVE      HEALTHY       aether-node-1                         aether-node-1:6000
-# node-2            ACTIVE      HEALTHY       aether-node-2                         aether-node-2:6000
-# lb-passive        PASSIVE     HEALTHY       aether-lb                             0.0.0.0:7000
+# NODE              ROLE        ASSIGNED    HEALTH        HOSTNAME              ZONE            ADDRESS
+# node-1            ACTIVE      CORE        HEALTHY       aether-node-1                         aether-node-1:6000
+# node-2            ACTIVE      CORE        HEALTHY       aether-node-2                         aether-node-2:6000
+# lb-passive        PASSIVE     UNASSIGNED  HEALTHY       aether-lb                             0.0.0.0:7000
 ```
 
 ### `aether cluster topology circuit-breaker status`
