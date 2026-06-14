@@ -140,6 +140,71 @@ class AesGcmGossipEncryptorTest {
     }
 
     @Nested
+    class MultiAcceptKey {
+        // #256: a node encrypts under its current (day-N) key but accepts current + previous +
+        // next so a peer booted on the adjacent day (which encrypts under day-(N+1)) is decryptable.
+        private byte[] keyC;
+        private int keyIdC;
+
+        @org.junit.jupiter.api.BeforeEach
+        void setUpThirdKey() {
+            keyC = randomKey();
+            keyIdC = 3;
+        }
+
+        @Test
+        void accepts_nextDayKey_encryptedByAdjacentDayPeer() {
+            // Peer booted on day N+1 encrypts under keyC (the next-day key). A day-N node that
+            // accepts {current=keyA, previous=keyB, next=keyC} must decrypt it.
+            var plaintext = "datagram from next-day joiner".getBytes();
+
+            aesGcmGossipEncryptor(keyC, keyIdC)
+                .flatMap(peer -> peer.encrypt(plaintext)
+                    .flatMap(ciphertext -> aesGcmGossipEncryptor(keyA,
+                                                                 keyIdA,
+                                                                 java.util.List.of(new AesGcmGossipEncryptor.AcceptedKey(keyIdB, keyB),
+                                                                                   new AesGcmGossipEncryptor.AcceptedKey(keyIdC, keyC)))
+                        .flatMap(node -> node.decrypt(ciphertext))))
+                .onFailure(cause -> assertThat(cause).as("next-day key must be accepted: " + cause.message()).isNull())
+                .onSuccess(decrypted -> assertThat(decrypted).isEqualTo(plaintext));
+        }
+
+        @Test
+        void encrypts_underCurrentKey_only() {
+            // Even with multiple accepted keys, encryption always uses the current key, so a
+            // node that holds ONLY the current key can decrypt this node's output.
+            var plaintext = "outbound uses current key".getBytes();
+
+            aesGcmGossipEncryptor(keyA,
+                                  keyIdA,
+                                  java.util.List.of(new AesGcmGossipEncryptor.AcceptedKey(keyIdB, keyB),
+                                                    new AesGcmGossipEncryptor.AcceptedKey(keyIdC, keyC)))
+                .flatMap(node -> node.encrypt(plaintext)
+                    .flatMap(ciphertext -> aesGcmGossipEncryptor(keyA, keyIdA)
+                        .flatMap(peer -> peer.decrypt(ciphertext))))
+                .onFailure(cause -> assertThat(cause).as("current-only peer must decrypt: " + cause.message()).isNull())
+                .onSuccess(decrypted -> assertThat(decrypted).isEqualTo(plaintext));
+        }
+
+        @Test
+        void rejects_keyOutsideAcceptedSet() {
+            var plaintext = "key not in window".getBytes();
+            var keyD = randomKey();
+            var keyIdD = 4;
+
+            aesGcmGossipEncryptor(keyD, keyIdD)
+                .flatMap(peer -> peer.encrypt(plaintext)
+                    .flatMap(ciphertext -> aesGcmGossipEncryptor(keyA,
+                                                                 keyIdA,
+                                                                 java.util.List.of(new AesGcmGossipEncryptor.AcceptedKey(keyIdB, keyB),
+                                                                                   new AesGcmGossipEncryptor.AcceptedKey(keyIdC, keyC)))
+                        .flatMap(node -> node.decrypt(ciphertext))))
+                .onSuccess(v -> assertThat(v).as("key outside the accepted set must fail").isNull())
+                .onFailure(cause -> assertThat(cause).isInstanceOf(GossipEncryptionError.UnknownKeyId.class));
+        }
+    }
+
+    @Nested
     class NoOp {
         @Test
         void noOpEncryptor_passthrough() {

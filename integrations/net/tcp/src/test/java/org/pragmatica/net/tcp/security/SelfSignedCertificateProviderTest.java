@@ -89,6 +89,24 @@ class SelfSignedCertificateProviderTest {
                     .onSuccess(current -> provider.previousGossipKey()
                                                   .onPresent(previous -> assertKeysDiffer(current, previous)));
         }
+
+        @Test
+        void nextGossipKey_present_and_distinct() {
+            // #256: the provider pre-derives the next-day key so a node still on day N can accept
+            // datagrams from a peer booted on day N+1.
+            assertThat(provider.nextGossipKey().isPresent()).isTrue();
+            provider.nextGossipKey().onPresent(SelfSignedCertificateProviderTest::assertValidGossipKey);
+            provider.currentGossipKey()
+                    .onSuccess(current -> provider.nextGossipKey()
+                                                  .onPresent(next -> assertKeysDiffer(current, next)));
+        }
+
+        @Test
+        void nextGossipKey_distinctFrom_previousGossipKey() {
+            provider.previousGossipKey()
+                    .onPresent(previous -> provider.nextGossipKey()
+                                                   .onPresent(next -> assertKeysDiffer(previous, next)));
+        }
     }
 
     @Nested

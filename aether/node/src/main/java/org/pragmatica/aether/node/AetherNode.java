@@ -3487,28 +3487,22 @@ public interface AetherNode extends ManageableNode {
         return provider.currentGossipKey()
                        .option()
                        .flatMap(current -> buildEncryptorFromKeys(current,
-                                                                  provider.previousGossipKey()));
+                                                                  provider.previousGossipKey(),
+                                                                  provider.nextGossipKey()));
     }
 
-    @SuppressWarnings("JBCT-RET-01")
+    /// Builds the gossip encryptor: encrypts under `current`, accepts `current` plus the
+    /// previous-day and next-day keys when present. The next-day key widens the accept window
+    /// across the UTC-midnight boundary so a peer already on the next day's key is decryptable
+    /// here (#256).
     private static Option<GossipEncryptor> buildEncryptorFromKeys(org.pragmatica.net.tcp.security.GossipKey current,
-                                                                  Option<org.pragmatica.net.tcp.security.GossipKey> previous) {
-        return previous.flatMap(prev -> buildDualKeyAesEncryptor(current, prev))
-                       .orElse(() -> buildSingleKeyAesEncryptor(current));
-    }
-
-    private static Option<GossipEncryptor> buildDualKeyAesEncryptor(org.pragmatica.net.tcp.security.GossipKey current,
-                                                                    org.pragmatica.net.tcp.security.GossipKey prev) {
-        return AesGcmGossipEncryptor.aesGcmGossipEncryptor(current.key(),
-                                                           current.keyId(),
-                                                           prev.key(),
-                                                           prev.keyId())
-                                    .option();
-    }
-
-    private static Option<GossipEncryptor> buildSingleKeyAesEncryptor(org.pragmatica.net.tcp.security.GossipKey current) {
-        return AesGcmGossipEncryptor.aesGcmGossipEncryptor(current.key(),
-                                                           current.keyId())
+                                                                  Option<org.pragmatica.net.tcp.security.GossipKey> previous,
+                                                                  Option<org.pragmatica.net.tcp.security.GossipKey> next) {
+        var additional = java.util.stream.Stream.of(previous, next)
+                                                .flatMap(Option::stream)
+                                                .map(key -> new AesGcmGossipEncryptor.AcceptedKey(key.keyId(), key.key()))
+                                                .toList();
+        return AesGcmGossipEncryptor.aesGcmGossipEncryptor(current.key(), current.keyId(), additional)
                                     .option();
     }
 

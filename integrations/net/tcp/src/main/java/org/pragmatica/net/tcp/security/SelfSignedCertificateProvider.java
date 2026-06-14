@@ -71,6 +71,7 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
     private final byte[] caCertPem;
     private final GossipKey currentKey;
     private final GossipKey previousKey;
+    private final GossipKey nextKey;
     private final byte[] clusterSecret;
 
     private SelfSignedCertificateProvider(KeyPair caKeyPair,
@@ -78,12 +79,14 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
                                           byte[] caCertPem,
                                           GossipKey currentKey,
                                           GossipKey previousKey,
+                                          GossipKey nextKey,
                                           byte[] clusterSecret) {
         this.caKeyPair = caKeyPair;
         this.caCert = caCert;
         this.caCertPem = caCertPem;
         this.currentKey = currentKey;
         this.previousKey = previousKey;
+        this.nextKey = nextKey;
         this.clusterSecret = clusterSecret;
     }
 
@@ -122,6 +125,11 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
         return some(previousKey);
     }
 
+    @Override
+    public Option<GossipKey> nextGossipKey() {
+        return some(nextKey);
+    }
+
     /// Derive a gossip key for an arbitrary version label.
     /// Used by gossip key rotation to generate new keys from the cluster secret.
     ///
@@ -143,8 +151,12 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
         var today = LocalDate.now().toEpochDay();
         var currentKey = deriveGossipKeyWithLabel(clusterSecret, GOSSIP_KEY_PREFIX + today);
         var previousKey = deriveGossipKeyWithLabel(clusterSecret, GOSSIP_KEY_PREFIX + (today - 1));
+        // #256: also pre-derive the NEXT day's key and accept it (without encrypting under it), so a
+        // node booted just after UTC midnight on day N+1 — which encrypts under the day-(N+1) key —
+        // is decryptable by this day-N node. Closes the asymmetric midnight-rollover lockout.
+        var nextKey = deriveGossipKeyWithLabel(clusterSecret, GOSSIP_KEY_PREFIX + (today + 1));
 
-        return new SelfSignedCertificateProvider(caKeyPair, caCert, caCertPem, currentKey, previousKey, clusterSecret);
+        return new SelfSignedCertificateProvider(caKeyPair, caCert, caCertPem, currentKey, previousKey, nextKey, clusterSecret);
     }
 
     // ===== Certificate Generation =====
