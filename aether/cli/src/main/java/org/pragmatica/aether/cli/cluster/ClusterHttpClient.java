@@ -60,9 +60,7 @@ public sealed interface ClusterHttpClient {
     /// to trust-all.
     @Contract
     static void enableClusterTrust(String clusterSecret) {
-        ClusterTrust.sslContextFor(clusterSecret)
-                    .onSuccess(ClusterHttpClient::installSslContext)
-                    .onFailure(cause -> System.err.println("Warning: failed to derive cluster CA trust: " + cause.message()));
+        ClusterTrust.sslContextFor(clusterSecret).onSuccess(ClusterHttpClient::installSslContext).onFailure(cause -> System.err.println("Warning: failed to derive cluster CA trust: " + cause.message()));
     }
 
     @Contract
@@ -293,7 +291,8 @@ public sealed interface ClusterHttpClient {
     /// lets the operational helpers below target a TLS-on cluster without each caller threading a
     /// scheme parameter.
     static String registryScheme() {
-        return resolveEndpoint().map(ClusterHttpClient::schemeOf).or("http");
+        return resolveEndpoint().map(ClusterHttpClient::schemeOf)
+                              .or("http");
     }
 
     /// Pure scheme extraction from an endpoint URL — package-visible for unit testing. Anything not

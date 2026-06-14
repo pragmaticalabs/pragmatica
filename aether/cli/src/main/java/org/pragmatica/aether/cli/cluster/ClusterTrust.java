@@ -37,13 +37,15 @@ public sealed interface ClusterTrust {
     }
 
     private static Result<byte[]> caPem(CertificateProvider provider) {
-        return provider.caCertificate().map(bundle -> bundle.caCertificatePem());
+        return provider.caCertificate()
+                       .map(bundle -> bundle.caCertificatePem());
     }
 
     private static Result<SSLContext> sslContextFromCaPem(byte[] caPem) {
         return Result.lift(Causes::fromThrowable, () -> buildSslContext(caPem));
     }
 
+    @SuppressWarnings("JBCT-EX-01")
     private static SSLContext buildSslContext(byte[] caPem) throws Exception {
         var factory = CertificateFactory.getInstance("X.509");
         var caCert = (X509Certificate) factory.generateCertificate(new ByteArrayInputStream(caPem));

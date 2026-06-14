@@ -294,10 +294,7 @@ public final class ClusterConfigRoutes implements RouteSource {
                                          ApplyConfigRequest request) {
         return checkVersionAsync(stored.configVersion(),
                                  request.expectedVersion()).flatMap(_ -> rebuildStoredConfigAsync(stored))
-                                .flatMap(storedConfig -> executeDiff(stored,
-                                                                     storedConfig,
-                                                                     desired,
-                                                                     request));
+                                .flatMap(storedConfig -> executeDiff(stored, storedConfig, desired, request));
     }
 
     /// Pure decision for the #289 fence — package-visible so it can be unit-tested without standing up
@@ -326,7 +323,6 @@ public final class ClusterConfigRoutes implements RouteSource {
             // idempotent; only a real mutation is fenced below.
             return buildDryRunResponse(stored, plan);
         }
-
         // #289: a real mutation against an already-populated config must carry a real expectedVersion;
         // reject the unfenced `expectedVersion=0` push that would blind-overwrite mutable config.
         if (isUnfencedOverwrite(stored.configVersion(), request.expectedVersion())) {

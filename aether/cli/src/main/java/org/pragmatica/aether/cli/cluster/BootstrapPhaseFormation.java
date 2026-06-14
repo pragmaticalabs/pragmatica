@@ -16,11 +16,11 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
-import tools.jackson.databind.JsonNode;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+
+import tools.jackson.databind.JsonNode;
 
 import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION;
 

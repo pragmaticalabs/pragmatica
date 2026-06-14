@@ -1264,8 +1264,8 @@ class ManagementServerImpl implements ManagementServer {
     /// back to the prefix registry, which itself denies-by-default (ADMIN) for unrecognized mutations.
     private static RoutePermission resolvePermission(String methodName, String path) {
         return parseRoutingMethod(methodName).flatMap(m -> ManagementRoute.match(m, path).option())
-                                             .map(matched -> ManagementRoutePermissions.permissionFor(matched.route()))
-                                             .or(RoutePermissionRegistry.resolve(methodName, path));
+                                 .map(matched -> ManagementRoutePermissions.permissionFor(matched.route()))
+                                 .or(RoutePermissionRegistry.resolve(methodName, path));
     }
 
     private Result<SecurityContext> enforceAndAuditDenial(SecurityContext sc,

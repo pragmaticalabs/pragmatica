@@ -88,7 +88,10 @@ sealed interface BootstrapPhasePost {
     }
 
     private static String managementScheme(BootstrapContext ctx) {
-        return ctx.config().operations().tls().autoGenerate()
+        return ctx.config()
+                  .operations()
+                  .tls()
+                  .autoGenerate()
                ? "https"
                : "http";
     }
