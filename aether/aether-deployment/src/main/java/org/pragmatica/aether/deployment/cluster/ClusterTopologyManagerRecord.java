@@ -30,6 +30,7 @@ import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -418,6 +419,23 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                  failedPeer,
                  clusterMembers.size(),
                  intendedRole.value());
+        // #148 — runaway-provisioning cap. If a provisioned node crash-loops (boots, fails to
+        // become a member, the LeaderReconciler re-derives the same deficit and calls back here),
+        // the consecutive-failure counter trips this breaker and provisioning is suspended for a
+        // backoff window. Without the gate the auto-heal loop creates containers endlessly (the
+        // crash-loop container storm). Return success (not a failure) so the reconciler treats the
+        // suspended pass as a deferral and retries after the window — symmetric with the
+        // "no healthy peers" deferral below. `onNodeReady`/`activate`/phase→NORMAL/`setDesiredSize`
+        // reset the breaker the moment a replacement actually joins or an operator intervenes.
+        if (provisioningCircuitOpen()) {
+            log.warn("CTM v2: provisionReplacement suppressed — provisioning circuit OPEN ({} consecutive failures, backoff until {}ms); "
+                    + "deferring until the backoff window clears or a node joins.",
+                     consecutiveProvisioningFailures.get(),
+                     nextProvisioningAllowedMs.get());
+
+            return Promise.success(unit());
+        }
+
         var contextBase = buildProvisionContext(newNodeId, intendedRole);
         var memberPeers = liveMemberPeers(clusterMembers);
         var contextSeeded = memberPeers.isEmpty()
@@ -435,7 +453,40 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var spec = computePlacementHint().map(baseSpec::withPlacement).or(baseSpec);
 
         return lifecycleManager.provisionNode(spec)
+                               .onFailure(this::recordProvisioningFailure)
                                .mapToUnit();
+    }
+
+    /// #148 — the provisioning circuit is OPEN when the consecutive-failure count has reached the
+    /// cap AND the backoff window has not yet elapsed. A `0` backoff stamp (never-tripped / reset)
+    /// can never gate. The window is `nowMs() < nextProvisioningAllowedMs`, so once it elapses a
+    /// single probe provision is allowed; a fresh failure re-arms the window, a success (node
+    /// joins → `onNodeReady` → `resetProvisioningCircuit`) clears it.
+    private boolean provisioningCircuitOpen() {
+        return consecutiveProvisioningFailures.get() >= MAX_CONSECUTIVE_PROVISIONING_FAILURES
+               && nowMs() < nextProvisioningAllowedMs.get();
+    }
+
+    /// #148 — record a provisioning failure: bump the consecutive-failure counter and, once the
+    /// cap is reached, arm the backoff window (`provisioningTimeout`) during which further
+    /// provisioning is suppressed. The counter is reset on the next real node-join / activation /
+    /// phase-NORMAL / operator reset via [#resetProvisioningCircuit].
+    @Contract
+    private void recordProvisioningFailure(Cause cause) {
+        var failures = consecutiveProvisioningFailures.incrementAndGet();
+
+        if (failures >= MAX_CONSECUTIVE_PROVISIONING_FAILURES) {
+            nextProvisioningAllowedMs.set(nowMs() + autoHealConfig.provisioningTimeout().millis());
+            log.warn("CTM v2: provisioning circuit TRIPPED after {} consecutive failures — suspending provisioning for {}ms (last: {})",
+                     failures,
+                     autoHealConfig.provisioningTimeout().millis(),
+                     cause.message());
+        } else {
+            log.warn("CTM v2: provisioning failure {}/{} (last: {})",
+                     failures,
+                     MAX_CONSECUTIVE_PROVISIONING_FAILURES,
+                     cause.message());
+        }
     }
 
     /// Build the PEERS string from the LIVE member set: `self` first (always present — the

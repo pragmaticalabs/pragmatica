@@ -174,6 +174,93 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(lifecycleManager.terminateCount.get()).isZero();
     }
 
+    /// #148 — runaway-provisioning cap. After MAX consecutive provision failures the circuit
+    /// trips and further `provisionReplacement` calls are suppressed (no new `provisionNode`),
+    /// preventing the crash-loop container storm. The cap is 3 (MAX_CONSECUTIVE_PROVISIONING_FAILURES).
+    @Test
+    void provisionReplacement_consecutiveFailures_tripCircuit_andSuppressFurtherProvisioning() {
+        ctm.activate();
+        lifecycleManager.failProvisions();
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        for (var i = 0; i < 3; i++) {
+            ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        }
+        var countAfterTrip = lifecycleManager.provisionCount.get();
+        // Further calls while the circuit is open must NOT reach provisionNode.
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+
+        assertThat(countAfterTrip)
+                .as("three failing provisions each reach provisionNode before the cap trips")
+                .isEqualTo(3);
+        assertThat(lifecycleManager.provisionCount.get())
+                .as("once the circuit is open, no further provisionNode calls are made")
+                .isEqualTo(3);
+        assertThat(ctm.circuitBreakerState().tripped())
+                .as("the circuit breaker is reported tripped after the cap")
+                .isTrue();
+    }
+
+    /// #148 — operator reset clears the tripped circuit so provisioning resumes.
+    @Test
+    void resetCircuitBreaker_afterTrip_allowsProvisioningAgain() {
+        ctm.activate();
+        lifecycleManager.failProvisions();
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        for (var i = 0; i < 3; i++) {
+            ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        }
+        assertThat(ctm.circuitBreakerState().tripped()).isTrue();
+
+        ctm.resetCircuitBreaker("test-reset");
+
+        assertThat(ctm.circuitBreakerState().tripped())
+                .as("operator reset clears the tripped circuit")
+                .isFalse();
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        assertThat(lifecycleManager.provisionCount.get())
+                .as("provisioning resumes after the reset (4th provisionNode reached)")
+                .isEqualTo(4);
+    }
+
+    /// #148 — a node becoming ready resets the failure run (the crash-loop ended), re-opening
+    /// provisioning.
+    @Test
+    void onNodeReady_afterTrip_resetsCircuit() {
+        ctm.activate();
+        lifecycleManager.failProvisions();
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        for (var i = 0; i < 3; i++) {
+            ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        }
+        assertThat(ctm.circuitBreakerState().tripped()).isTrue();
+
+        ctm.onNodeReady(PEER_A);
+
+        assertThat(ctm.circuitBreakerState().tripped())
+                .as("a node becoming ready resets the provisioning circuit")
+                .isFalse();
+    }
+
+    /// #148 — a successful provision keeps the circuit closed (no false trip).
+    @Test
+    void provisionReplacement_success_keepsCircuitClosed() {
+        ctm.activate();
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+
+        assertThat(ctm.circuitBreakerState().tripped())
+                .as("a successful provision never trips the circuit")
+                .isFalse();
+        assertThat(ctm.circuitBreakerState().consecutiveFailures())
+                .as("a successful provision records no failures")
+                .isZero();
+    }
+
     /// #166 — a confirmed `NodeRemoved` membership decision on the active (leader) CTM reaps the
     /// departed node's container so a phantom that would otherwise restart-loop back into
     /// SWIM-HEALTHY cannot resurrect. The reap is idempotent: `terminateNode` is a no-op on an
@@ -309,6 +396,7 @@ class ClusterTopologyManagerActuatorTest {
         final AtomicInteger terminateCount = new AtomicInteger();
         private final CopyOnWriteArrayList<NodeId> terminatedIds = new CopyOnWriteArrayList<>();
         private final AtomicReference<ProvisionSpec> lastSpec = new AtomicReference<>();
+        private final java.util.concurrent.atomic.AtomicBoolean failProvision = new java.util.concurrent.atomic.AtomicBoolean(false);
 
         List<NodeId> terminatedNodeIds() {
             return List.copyOf(terminatedIds);
@@ -316,6 +404,10 @@ class ClusterTopologyManagerActuatorTest {
 
         ProvisionSpec lastSpec() {
             return lastSpec.get();
+        }
+
+        void failProvisions() {
+            failProvision.set(true);
         }
 
         @Override public Promise<ActionResult> executeAction(NodeAction action) {
@@ -328,6 +420,9 @@ class ClusterTopologyManagerActuatorTest {
         @Override public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
             var count = provisionCount.incrementAndGet();
             lastSpec.set(spec);
+            if (failProvision.get()) {
+                return org.pragmatica.lang.utils.Causes.cause("stub provision failure").promise();
+            }
             return Promise.success(InstanceInfo.instanceInfo(InstanceId.instanceId("stub-" + count).unwrap(),
                                                              InstanceStatus.RUNNING,
                                                              List.of("127.0.0.1"),
