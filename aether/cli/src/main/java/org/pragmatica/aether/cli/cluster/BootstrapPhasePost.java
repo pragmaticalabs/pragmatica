@@ -76,11 +76,21 @@ sealed interface BootstrapPhasePost {
     private static void registerClusterLocally(BootstrapContext ctx) {
         var clusterName = ctx.config().cluster().name();
         var apiKeyEnvName = ClusterBootstrapOrchestrator.deriveApiKeyEnvName(clusterName);
+        // #209: register the endpoint with the scheme the cluster actually serves. When TLS is
+        // auto-generated the management plane is HTTPS, so the persisted endpoint (the single source of
+        // truth operational commands read) must be `https://`, not a hardcoded `http://`.
+        var scheme = managementScheme(ctx);
         var endpoint = ctx.addresses().isEmpty()
-                       ? "http://localhost:9090"
-                       : "http://" + ctx.addresses().getFirst().publicIp();
+                       ? scheme + "://localhost:9090"
+                       : scheme + "://" + ctx.addresses().getFirst().publicIp();
 
         ClusterRegistry.load().map(registry -> registry.add(clusterName, endpoint, Option.some(apiKeyEnvName))).flatMap(ClusterRegistry::save).onFailure(cause -> System.err.println("Warning: failed to register cluster locally: " + cause.message()));
+    }
+
+    private static String managementScheme(BootstrapContext ctx) {
+        return ctx.config().operations().tls().autoGenerate()
+               ? "https"
+               : "http";
     }
 
     @Contract
@@ -98,9 +108,11 @@ sealed interface BootstrapPhasePost {
     private static BootstrapResult buildResult(BootstrapContext ctx) {
         var clusterName = ctx.config().cluster().name();
         var mgmtPort = ctx.config().operations().ports().management();
+        // #209: surface the actual scheme (HTTPS under auto-generated TLS) in the result endpoint too.
+        var scheme = managementScheme(ctx);
         var endpoint = ctx.addresses().isEmpty()
-                       ? "http://localhost:" + mgmtPort
-                       : "http://" + ctx.addresses().getFirst().publicIp() + ":" + mgmtPort;
+                       ? scheme + "://localhost:" + mgmtPort
+                       : scheme + "://" + ctx.addresses().getFirst().publicIp() + ":" + mgmtPort;
         var apiKey = ctx.apiKey().or("");
         var apiKeyEnvName = ClusterBootstrapOrchestrator.deriveApiKeyEnvName(clusterName);
 

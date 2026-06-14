@@ -77,7 +77,6 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                              List<SshPublicKey> sshPublicKeys,
                                              boolean keepOnFailure,
                                              String rawTomlContent) {
-        configureClusterHttpClient(config);
         if (resume) {
             return resumeBootstrap(config, fullCheck, sshPublicKeys, keepOnFailure, rawTomlContent);
         }
@@ -85,10 +84,14 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         return freshBootstrap(config, fullCheck, sshPublicKeys, keepOnFailure, rawTomlContent);
     }
 
+    /// #209: once the cluster secret is known (post-Validate for fresh, post-resume otherwise),
+    /// install a trust store containing ONLY the CA derived from it, so all subsequent bootstrap HTTPS
+    /// calls (node health, formation POSTs carrying the operator API key) verify the cluster's own
+    /// auto-generated certificates and reject any other — a real MITM defense rather than trust-all.
     @Contract
-    private static void configureClusterHttpClient(ClusterBootstrapConfig config) {
+    private static void configureClusterHttpClient(ClusterBootstrapConfig config, String clusterSecret) {
         if (config.operations().tls().autoGenerate()) {
-            ClusterHttpClient.enableTlsSkipVerify();
+            ClusterHttpClient.enableClusterTrust(clusterSecret);
         }
     }
 
@@ -154,6 +157,8 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
     }
 
     private static Result<BootstrapResult> runPhaseChain(BootstrapContext ctx) {
+        configureClusterHttpClient(ctx.config(), ctx.clusterSecret());
+
         return executePhase(ctx, BootstrapPhase.UPLOAD_SSH_KEYS, BootstrapPhaseSshKey::execute).flatMap(c -> executePhase(c,
                                                                                                                           BootstrapPhase.PROVISION,
                                                                                                                           BootstrapPhaseProvision::execute))

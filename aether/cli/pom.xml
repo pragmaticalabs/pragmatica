@@ -27,6 +27,11 @@
 
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
+            <artifactId>tcp</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
             <artifactId>jackson</artifactId>
         </dependency>
 
