@@ -67,6 +67,18 @@ public final class ReplicaRegistry {
 
     @Contract
     public void updateWatermark(String streamName, int partition, NodeId nodeId, long confirmedOffset) {
+        updateWatermark(streamName, partition, nodeId, confirmedOffset, ReplicationState.CAUGHT_UP);
+    }
+
+    /// Advance a replica's confirmed watermark, transitioning it to `state`. The watermark is ALWAYS
+    /// persisted+advanced; the state is what distinguishes a live-replication ack from a replica that has
+    /// genuinely covered the partition's retained history (#261). Callers that have proven full coverage
+    /// (backfill completion, watermark rebuild) pass {@link ReplicationState#CAUGHT_UP}; the owner's
+    /// live-ack path passes {@link ReplicationState#SYNCING} until the ack reaches back to the partition's
+    /// earliest retained offset, so a replica holding only the post-join suffix is NOT a read/backfill
+    /// source until backfill confirms coverage.
+    @Contract
+    public void updateWatermark(String streamName, int partition, NodeId nodeId, long confirmedOffset, ReplicationState state) {
         var key = partitionKey(streamName, partition);
 
         option(replicas.get(key)).onPresent(nodeMap -> nodeMap.computeIfPresent(nodeId,
@@ -74,7 +86,7 @@ public final class ReplicaRegistry {
                                                                                                             streamName,
                                                                                                             partition,
                                                                                                             confirmedOffset,
-                                                                                                            ReplicationState.CAUGHT_UP)));
+                                                                                                            state)));
         watermarkStore.persistWatermark(streamName, partition, nodeId, confirmedOffset);
     }
 

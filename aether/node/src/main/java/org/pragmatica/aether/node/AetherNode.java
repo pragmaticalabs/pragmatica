@@ -2342,13 +2342,22 @@ public interface AetherNode extends ManageableNode {
         // lands replicated events offset-preserving WITHOUT re-replicating (appendRecovered).
         var streamReplicaRegistry = ReplicaRegistry.replicaRegistry();
         org.pragmatica.aether.stream.replication.ReplicationTransport streamReplicationTransport = clusterNode.network()::send;
+        // #261: the live-ack path promotes a replica to CAUGHT_UP only when its confirmed offset
+        // reaches back to the owner's earliest retained offset. The partition manager is constructed
+        // just below (it needs this manager), so the earliest-retained seam reads through a holder set
+        // immediately after.
+        var streamPartitionManagerRef = new AtomicReference<StreamPartitionManager>();
         var streamReplicationManager = ReplicationManager.replicationManager(config.self(),
                                                                              streamReplicaRegistry,
-                                                                             streamReplicationTransport);
+                                                                             streamReplicationTransport,
+                                                                             (streamName, partition) -> Option.option(streamPartitionManagerRef.get())
+                                                                                                              .map(spm -> spm.earliestRetainedOffset(streamName, partition))
+                                                                                                              .or(-1L));
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
                                                                                    EvictionListener.NOOP,
                                                                                    streamReplicationManager,
                                                                                    clusterNode);
+        streamPartitionManagerRef.set(streamPartitionManager);
         // stream-offheap-budget-spec §4.5c / reconciliation #14: route off-heap budget exhaustion
         // (create-floor + growth) OUT of aether-stream via the injected Consumer<Exhaustion> sink and
         // INTO the cluster-event aggregator, which stamps this node's id and emits a

@@ -34,23 +34,45 @@ final class DefaultReplicationManager implements ReplicationManager {
     private final ReplicaRegistry registry;
     private final ReplicationTransport transport;
     private final Option<ReplicationBatcher> batcher;
+    private final EarliestRetainedOffset earliestRetained;
     private final ConcurrentHashMap<PendingAckKey, PendingAck> pendingAcks = new ConcurrentHashMap<>();
 
     DefaultReplicationManager(NodeId governorId, ReplicaRegistry registry, ReplicationTransport transport) {
-        this.governorId = governorId;
-        this.registry = registry;
-        this.transport = transport;
-        this.batcher = none();
+        this(governorId, registry, transport, none(), ALWAYS_PROMOTE);
+    }
+
+    DefaultReplicationManager(NodeId governorId,
+                              ReplicaRegistry registry,
+                              ReplicationTransport transport,
+                              EarliestRetainedOffset earliestRetained) {
+        this(governorId, registry, transport, none(), earliestRetained);
     }
 
     DefaultReplicationManager(NodeId governorId,
                               ReplicaRegistry registry,
                               ReplicationTransport transport,
                               ReplicationBatcher batcher) {
+        this(governorId, registry, transport, some(batcher), ALWAYS_PROMOTE);
+    }
+
+    DefaultReplicationManager(NodeId governorId,
+                              ReplicaRegistry registry,
+                              ReplicationTransport transport,
+                              ReplicationBatcher batcher,
+                              EarliestRetainedOffset earliestRetained) {
+        this(governorId, registry, transport, some(batcher), earliestRetained);
+    }
+
+    private DefaultReplicationManager(NodeId governorId,
+                                      ReplicaRegistry registry,
+                                      ReplicationTransport transport,
+                                      Option<ReplicationBatcher> batcher,
+                                      EarliestRetainedOffset earliestRetained) {
         this.governorId = governorId;
         this.registry = registry;
         this.transport = transport;
-        this.batcher = some(batcher);
+        this.batcher = batcher;
+        this.earliestRetained = earliestRetained;
     }
 
     @Contract
@@ -66,8 +88,25 @@ final class DefaultReplicationManager implements ReplicationManager {
     @Contract
     @Override
     public void handleAck(ReplicationMessage.ReplicateAck ack) {
-        registry.updateWatermark(ack.streamName(), ack.partition(), ack.replicaId(), ack.confirmedOffset());
+        registry.updateWatermark(ack.streamName(),
+                                 ack.partition(),
+                                 ack.replicaId(),
+                                 ack.confirmedOffset(),
+                                 promotionState(ack));
         resolvePendingAck(ack.streamName(), ack.partition(), ack.confirmedOffset());
+    }
+
+    /// A live ack promotes the replica to CAUGHT_UP only when its confirmed offset reaches back to the
+    /// owner's earliest retained offset — i.e. the replica's contiguous run (guaranteed by the receiver's
+    /// offset verification, #260) covers the partition's retained history. A replica still below that
+    /// floor (e.g. holding only the post-join suffix) stays SYNCING and is excluded from the read path
+    /// and from being a backfill source until its backfill confirms coverage (#261).
+    private ReplicationState promotionState(ReplicationMessage.ReplicateAck ack) {
+        var floor = earliestRetained.earliestRetainedOffset(ack.streamName(), ack.partition());
+
+        return ack.confirmedOffset() >= floor
+               ? ReplicationState.CAUGHT_UP
+               : ReplicationState.SYNCING;
     }
 
     @Override

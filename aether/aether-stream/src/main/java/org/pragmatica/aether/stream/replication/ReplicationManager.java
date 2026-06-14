@@ -16,6 +16,18 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 public interface ReplicationManager extends AutoCloseable {
+    /// Owner-side view of a partition's earliest retained offset (its local ring tail). The owner's
+    /// live-ack path consults it to promote an acking replica to CAUGHT_UP only when its confirmed
+    /// offset reaches back to the partition's retained history, instead of on any ack (#261). The
+    /// default ({@link #ALWAYS_PROMOTE}) reports `-1`, preserving the promote-on-any-ack behavior where
+    /// no partition view is wired (tests, minimal runtimes).
+    @FunctionalInterface
+    interface EarliestRetainedOffset {
+        long earliestRetainedOffset(String streamName, int partition);
+    }
+
+    EarliestRetainedOffset ALWAYS_PROMOTE = (_, _) -> -1L;
+
     @Contract
     void replicateEvent(String streamName, int partition, long offset, byte[] payload, long timestamp);
 
@@ -35,6 +47,15 @@ public interface ReplicationManager extends AutoCloseable {
                                                  ReplicaRegistry registry,
                                                  ReplicationTransport transport) {
         return new DefaultReplicationManager(governorId, registry, transport);
+    }
+
+    /// Owner-aware factory: `earliestRetained` lets the live-ack path gate the SYNCING→CAUGHT_UP
+    /// promotion on genuine history coverage (#261).
+    static ReplicationManager replicationManager(NodeId governorId,
+                                                 ReplicaRegistry registry,
+                                                 ReplicationTransport transport,
+                                                 EarliestRetainedOffset earliestRetained) {
+        return new DefaultReplicationManager(governorId, registry, transport, earliestRetained);
     }
 
     static ReplicationManager replicationManager(NodeId governorId, ReplicaRegistry registry) {

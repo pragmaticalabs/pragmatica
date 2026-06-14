@@ -262,8 +262,12 @@ public final class ReplicaSetController implements AutoCloseable {
         for (var node : desired) {
             if (!current.contains(node)) {
                 registry.registerReplica(streamName, partition, node);
-                if (node.equals(self) && catalog.partitionHasData(streamName, partition)) {
-                    // A4 seam: this node newly became a replica for a non-empty partition.
+                if (node.equals(self)) {
+                    // A4 seam: this node newly became a replica. Always attempt backfill — the source
+                    // partition's history is on the OWNER/peers, NOT in this node's (empty) local ring,
+                    // so gating on the LOCAL buffer's eventCount (partitionHasData) inverted the intent
+                    // and skipped backfill for exactly the fresh replicas that need it (#261). Backfill
+                    // is a no-op when the best caught-up source is genuinely empty.
                     onBecameReplica.accept(streamName, partition);
                 }
             }

@@ -20,8 +20,4 @@ public interface StreamCatalog {
     record StreamSpec(String name, int partitions, int minSyncReplicas) {}
 
     List<StreamSpec> streams();
-    /// True when the given `(stream, partition)` holds at least one event locally. Used solely to
-    /// decide whether a newly-assigned self-replica needs catch-up (A4 seam); an empty partition
-    /// needs no backfill.
-    boolean partitionHasData(String streamName, int partition);
 }

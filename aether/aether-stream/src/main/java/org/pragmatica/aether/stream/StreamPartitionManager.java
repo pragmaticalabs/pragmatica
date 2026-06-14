@@ -546,6 +546,15 @@ public final class StreamPartitionManager implements AutoCloseable {
                                      .or(0L);
     }
 
+    /// The earliest offset still retained locally for `(streamName, partition)` — the ring tail, or
+    /// `-1` when the partition is absent. Used owner-side by the replication manager to decide whether
+    /// an acking replica's confirmed offset actually reaches back to the partition's retained history
+    /// (promotes to CAUGHT_UP) or only covers a post-join suffix (stays SYNCING) — #261.
+    public long earliestRetainedOffset(String streamName, int partition) {
+        return resolvePartitionBuffer(streamName, partition).map(OffHeapRingBuffer::tailOffset)
+                                     .or(-1L);
+    }
+
     private Result<Long> appendToPartition(StreamEntry entry,
                                            String streamName,
                                            int partition,
@@ -594,12 +603,6 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                            config.partitions(),
                                                                            config.minSyncReplicas()))
                                              .toList();
-            }
-
-            @Override
-            public boolean partitionHasData(String streamName, int partition) {
-                return resolvePartitionBuffer(streamName, partition).map(buffer -> buffer.eventCount() > 0)
-                                             .or(false);
             }
         };
     }

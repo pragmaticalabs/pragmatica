@@ -112,6 +112,54 @@ class ReplicationManagerTest {
     }
 
     @Nested
+    class PromotionGateTests {
+
+        @Test
+        void handleAck_belowEarliestRetained_advancesWatermark_butStaysSyncing() {
+            // #261: the owner's earliest retained offset is 20 (history starts at 20). A replica that
+            // acks offset 5 holds only a sub-range below the retained floor — it has NOT covered the
+            // partition's history, so it must stay SYNCING (excluded from reads / backfill source).
+            ReplicationManager.EarliestRetainedOffset floor20 = (_, _) -> 20L;
+            var gatedManager = replicationManager(GOVERNOR, registry, capturing(), floor20);
+            registry.registerReplica(STREAM, PARTITION, REPLICA_A);
+
+            gatedManager.handleAck(replicateAck(REPLICA_A, STREAM, PARTITION, 5L));
+
+            var replica = registry.replicasFor(STREAM, PARTITION).getFirst();
+            assertThat(replica.confirmedOffset()).isEqualTo(5L); // watermark always advances
+            assertThat(replica.state()).isEqualTo(ReplicationState.SYNCING); // but no premature promotion
+        }
+
+        @Test
+        void handleAck_atOrAboveEarliestRetained_promotesToCaughtUp() {
+            ReplicationManager.EarliestRetainedOffset floor20 = (_, _) -> 20L;
+            var gatedManager = replicationManager(GOVERNOR, registry, capturing(), floor20);
+            registry.registerReplica(STREAM, PARTITION, REPLICA_A);
+
+            gatedManager.handleAck(replicateAck(REPLICA_A, STREAM, PARTITION, 20L));
+
+            var replica = registry.replicasFor(STREAM, PARTITION).getFirst();
+            assertThat(replica.confirmedOffset()).isEqualTo(20L);
+            assertThat(replica.state()).isEqualTo(ReplicationState.CAUGHT_UP);
+        }
+
+        @Test
+        void handleAck_defaultManager_promotesOnAnyAck() {
+            // No earliest-retained seam wired (the default factory) => floor -1 => any ack promotes,
+            // preserving pre-#261 behavior for minimal runtimes/tests.
+            registry.registerReplica(STREAM, PARTITION, REPLICA_A);
+
+            manager.handleAck(replicateAck(REPLICA_A, STREAM, PARTITION, 0L));
+
+            assertThat(registry.replicasFor(STREAM, PARTITION).getFirst().state()).isEqualTo(ReplicationState.CAUGHT_UP);
+        }
+
+        private ReplicationTransport capturing() {
+            return (target, message) -> sentMessages.add(new SentMessage(target, message));
+        }
+    }
+
+    @Nested
     class MetricsTests {
 
         @Test
