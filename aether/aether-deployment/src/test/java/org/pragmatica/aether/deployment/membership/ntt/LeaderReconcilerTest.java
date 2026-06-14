@@ -2332,6 +2332,148 @@ class LeaderReconcilerTest {
         }
     }
 
+    /// #331 — the surplus-convergence follow-up: the symmetric counterpart of [`DeficitFollowUp`]
+    /// for OVER-provisioning. Any reconcile pass that ends with `effective > configuredCoreCount`
+    /// (a drain was dispatched but the victims have not yet left membership) arms exactly one
+    /// [`ReconcileTrigger#SURPLUS_FOLLOW_UP`], self-rearming until the effective count converges
+    /// DOWN to the configured target; a converged pass arms nothing. A node sitting in surplus is
+    /// HEALTHY and fires no SWIM edge, so without this loop the leader drains one batch and never
+    /// re-checks — the 02-chaos 6-where-5-expected convergence gap.
+    @Nested
+    class SurplusFollowUp {
+        /// Follow-up delay band — the full deficit-debounce window plus the short scheduling
+        /// margin (same cadence as the deficit follow-up; a surplus has no per-run anchor).
+        private static final TimeSpan FOLLOW_UP_DELAY =
+            timeSpan(EXPECTED_DEBOUNCE_WINDOW.nanos() + DEBOUNCE_DELAY.nanos()).nanos();
+
+        /// A surplus pass that dispatches a drain (victims have not yet departed → surplus still
+        /// open) arms exactly one surplus follow-up.
+        @Test
+        void unresolvedSurplusPass_afterDrainDispatch_armsFollowUp() {
+            configuredCoreCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().cancel(false);
+            listener.clear();
+
+            reconciler.onSwimMemberHealthy(PEER_A, fsmIncarnation.getAndIncrement());
+            fireDebouncedReconcile();
+
+            assertThat(listener.events().getLast().drainCount())
+                .as("the surplus pass dispatches a drain")
+                .isEqualTo(2);
+            assertThat(scheduler.tasksByDelay(FOLLOW_UP_DELAY))
+                .as("an unresolved-surplus pass must arm exactly one surplus follow-up")
+                .hasSize(1);
+        }
+
+        /// The follow-up fires once its delay clears: it re-enters the reconcile path with
+        /// `trigger=SURPLUS_FOLLOW_UP` — no external membership event needed. While the surplus is
+        /// still open (drained victims have not departed in this fixture) it RE-ARMS, proving the
+        /// convergence loop keeps checking.
+        @Test
+        void followUp_firesWithSurplusTrigger_andRearmsWhileSurplusOpen() {
+            configuredCoreCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().cancel(false);
+            reconciler.onSwimMemberHealthy(PEER_A, fsmIncarnation.getAndIncrement());
+            fireDebouncedReconcile();
+            assertThat(scheduler.tasksByDelay(FOLLOW_UP_DELAY)).hasSize(1);
+            listener.clear();
+
+            scheduler.tasksByDelay(FOLLOW_UP_DELAY).getFirst().runIfLive();
+            fireDebouncedReconcile();
+
+            assertThat(listener.events().getLast().trigger())
+                .as("the follow-up pass must carry trigger=SURPLUS_FOLLOW_UP into the decision log")
+                .isEqualTo(ReconcileTrigger.SURPLUS_FOLLOW_UP);
+            assertThat(scheduler.tasksByDelay(FOLLOW_UP_DELAY))
+                .as("the still-surplus follow-up pass re-arms until the surplus closes")
+                .hasSize(2);
+        }
+
+        /// Convergence terminates the loop: once the drained victims actually leave membership and
+        /// the effective count returns to the configured target, the next follow-up pass arms
+        /// nothing.
+        @Test
+        void followUp_armsNothing_onceSurplusConvergesToTarget() {
+            configuredCoreCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().cancel(false);
+            reconciler.onSwimMemberHealthy(PEER_A, fsmIncarnation.getAndIncrement());
+            fireDebouncedReconcile();
+            assertThat(scheduler.tasksByDelay(FOLLOW_UP_DELAY)).hasSize(1);
+
+            // The drained victims now actually depart, closing the surplus (5 -> 3 = target).
+            removePeers(PEER_C, PEER_D);
+            listener.clear();
+            scheduler.tasksByDelay(FOLLOW_UP_DELAY).getFirst().runIfLive();
+            fireDebouncedReconcile();
+
+            assertThat(listener.events().getLast().drainCount())
+                .as("at target there is no further drain")
+                .isZero();
+            assertThat(scheduler.tasksByDelay(FOLLOW_UP_DELAY).stream().filter(task -> !task.isDone()).toList())
+                .as("a converged surplus pass arms no NEW (live) follow-up — the loop terminates")
+                .isEmpty();
+        }
+
+        /// A converged pass (members already at the configured target) never arms a surplus
+        /// follow-up in the first place.
+        @Test
+        void atTargetPass_armsNoSurplusFollowUp() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(scheduler.tasksByDelay(FOLLOW_UP_DELAY))
+                .as("an at-target pass must arm no surplus follow-up")
+                .isEmpty();
+        }
+
+        /// Hot-loop guard: a second surplus pass while a follow-up is already pending does NOT arm
+        /// a second one (single-ref dedupe — at most one outstanding).
+        @Test
+        void secondSurplusPass_whileFollowUpPending_isDeduped() {
+            configuredCoreCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().cancel(false);
+            reconciler.onSwimMemberHealthy(PEER_A, fsmIncarnation.getAndIncrement());
+            fireDebouncedReconcile();
+            assertThat(scheduler.tasksByDelay(FOLLOW_UP_DELAY)).hasSize(1);
+
+            reconciler.onSwimMemberHealthy(PEER_B, fsmIncarnation.getAndIncrement());
+            fireDebouncedReconcile();
+
+            assertThat(scheduler.tasksByDelay(FOLLOW_UP_DELAY))
+                .as("a pending surplus follow-up dedupes further arming")
+                .hasSize(1);
+        }
+
+        /// Deactivation cancels a pending surplus follow-up (a deposed leader must not keep
+        /// re-triggering drains).
+        @Test
+        void deactivate_cancelsPendingSurplusFollowUp() {
+            configuredCoreCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().cancel(false);
+            reconciler.onSwimMemberHealthy(PEER_A, fsmIncarnation.getAndIncrement());
+            fireDebouncedReconcile();
+            var followUp = scheduler.tasksByDelay(FOLLOW_UP_DELAY).getFirst();
+
+            reconciler.deactivate();
+
+            assertThat(followUp.cancelled())
+                .as("deactivation cancels the pending surplus follow-up")
+                .isTrue();
+        }
+    }
+
     private static final class TestTimeSource implements TimeSource {
         private volatile long nanos = 0L;
 

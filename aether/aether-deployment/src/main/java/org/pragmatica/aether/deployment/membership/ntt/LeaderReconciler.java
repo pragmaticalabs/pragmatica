@@ -247,6 +247,25 @@ public final class LeaderReconciler {
     /// membership sits unchanged in surplus), so without this the deferred drain would silently
     /// never re-evaluate. Same dedupe/CAS-arm discipline as [`#deficitFollowUpFutureRef`].
     private final AtomicReference<ScheduledFuture<?>> drainGraceReEvalFutureRef = new AtomicReference<>();
+    /// At most one pending surplus-convergence follow-up (#331 — the symmetric counterpart of
+    /// [`#deficitFollowUpFutureRef`] for OVER-provisioning). ANY reconcile pass that ends with an
+    /// UNRESOLVED surplus (`effectiveCapacity > configuredCoreCount` after the drain dispatch — a
+    /// drain was dispatched but the victims have not yet left membership, OR the per-pass quorum
+    /// floor capped the drainable count below the surplus) arms one follow-up reconcile
+    /// ([`ReconcileTrigger#SURPLUS_FOLLOW_UP`]), debounce-window-spaced. Self-rearming from each
+    /// still-surplus pass until the effective count converges DOWN to the configured target — a
+    /// BOUNDED convergence loop, not a periodic tick: it arms only while a surplus exists, stops
+    /// the moment membership converges, and is cancelled on deactivation. Live-gate motivation: a
+    /// node sitting in surplus is HEALTHY and fires no SWIM edge, and its eventual departure on
+    /// drain does not re-fire the surplus-detecting `MEMBER_APPEARED` ingress — so without this the
+    /// leader drains a single batch and then never re-checks, leaving the cluster over-provisioned
+    /// past the settle window (the 02-chaos 6-where-5-expected convergence gap). Distinct from
+    /// [`#drainGraceReEvalFutureRef`], which fires only when a drain was DEFERRED (young / shielded
+    /// candidates); this one fires whenever the surplus simply has not yet CLOSED, covering the
+    /// dispatched-but-not-yet-departed and floor-capped cases that the deferral path misses. Same
+    /// dedupe/CAS-arm discipline (a non-null ref short-circuits, CAS-arm cancels a lost race) with
+    /// a hard delay floor of [`#DEBOUNCE_DELAY`], so the arm path can never loop hot.
+    private final AtomicReference<ScheduledFuture<?>> surplusFollowUpFutureRef = new AtomicReference<>();
 
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
 
@@ -413,6 +432,7 @@ public final class LeaderReconciler {
         cancelPendingActivation();
         cancelInFlightSweep();
         cancelDeficitFollowUp();
+        cancelSurplusFollowUp();
         cancelDrainGraceReEval();
         inFlightProvisioning.clear();
         deficitSinceNanos = UNSET_NANOS;
@@ -768,6 +788,17 @@ public final class LeaderReconciler {
         // window, then healed in 13s once poked). Runs AFTER the anchor reset above so a
         // just-dispatched pass arms on the full-window branch.
         armDeficitFollowUpIfNeeded(now, currentMembers.size(), configuredCoreCount);
+        // Surplus-convergence follow-up (#331 — symmetric with the deficit follow-up above). Armed
+        // off the post-dispatch effective surplus: a pass that dispatched a drain is only
+        // PENDING-resolved (the victims leave membership asynchronously via the DRAIN command +
+        // grace-terminate backstop, and a drained node's departure fires no surplus-detecting SWIM
+        // edge), and a floor-capped pass could only drain part of the surplus. Either way the
+        // surplus is stable-state — nothing else re-pokes the reconciler — so this keeps
+        // re-checking at debounce spacing until the effective count converges DOWN to the
+        // configured target. Bounded: it arms only while a surplus persists and stops the moment it
+        // closes. Runs alongside the deficit follow-up; the two are mutually exclusive per pass
+        // (a cluster is either over- or under-target, never both).
+        armSurplusFollowUpIfNeeded(effective, configuredCoreCount);
         var intent = ReconcileIntent.reconcileIntent(now,
                                                      trigger,
                                                      clusterMembershipCount,
@@ -819,12 +850,12 @@ public final class LeaderReconciler {
     }
 
     /// Operator-facing INFO trace (one line per reconcile pass that has a deficit OR a permitted
-    /// provision OR a `CONFIG_CHANGE` / `DEFICIT_FOLLOW_UP` trigger; healthy at-target no-op
-    /// passes are NOT logged, bounding volume — `CONFIG_CHANGE` passes are operator-rate and
-    /// `DEFICIT_FOLLOW_UP` passes are debounce-window-spaced and deficit-bounded, both always
-    /// logged so a config-driven scale and the deficit-convergence loop leave `trigger=` evidence
-    /// even when the pass resolves as a surplus drain, an in-flight-masked wait, or a no-op
-    /// (H1 / #257). Records the full
+    /// provision OR a `CONFIG_CHANGE` / `DEFICIT_FOLLOW_UP` / `SURPLUS_FOLLOW_UP` trigger; healthy
+    /// at-target no-op passes are NOT logged, bounding volume — `CONFIG_CHANGE` passes are
+    /// operator-rate and the `DEFICIT_FOLLOW_UP` / `SURPLUS_FOLLOW_UP` convergence passes are
+    /// debounce-window-spaced and deficit-/surplus-bounded, all always logged so a config-driven
+    /// scale and the two convergence loops leave `trigger=` evidence even when the pass resolves as
+    /// a surplus drain, an in-flight-masked wait, or a no-op (H1 / #257, #331). Records the full
     /// provisioning-decision context so a Docker run can pin exactly why no replacement is
     /// provisioned after a kill: trigger, membership count + member ids, effective capacity,
     /// configured core count, the arm latch, the reached-full-membership latch, deficit age, quorum
@@ -839,7 +870,9 @@ public final class LeaderReconciler {
                                          boolean quorumSafe,
                                          boolean provisioningPermitted) {
         var hasDeficit = effective < configuredCoreCount;
-        var alwaysLoggedTrigger = trigger == ReconcileTrigger.CONFIG_CHANGE || trigger == ReconcileTrigger.DEFICIT_FOLLOW_UP;
+        var alwaysLoggedTrigger = trigger == ReconcileTrigger.CONFIG_CHANGE
+                                  || trigger == ReconcileTrigger.DEFICIT_FOLLOW_UP
+                                  || trigger == ReconcileTrigger.SURPLUS_FOLLOW_UP;
 
         if (!hasDeficit && !provisioningPermitted && !alwaysLoggedTrigger) {
             return;
@@ -1329,6 +1362,60 @@ public final class LeaderReconciler {
     @Contract
     private void cancelDeficitFollowUp() {
         var prev = deficitFollowUpFutureRef.getAndSet(null);
+
+        if (prev != null) {
+            prev.cancel(false);
+        }
+    }
+
+    /// Arm a single surplus-convergence follow-up (#331) iff a surplus is unresolved
+    /// (`effective > configuredCoreCount`). Deduped: a non-null [`#surplusFollowUpFutureRef`]
+    /// short-circuits (at most one pending), the CAS-arm cancels a lost race — the same discipline
+    /// as [`#armDeficitFollowUpIfNeeded`] / [`#armDrainGraceReEval`]; no new timer machinery, the
+    /// shared scheduler is reused. Spaced at the deficit-debounce window plus the short margin so
+    /// the loop never runs hot.
+    @Contract
+    private void armSurplusFollowUpIfNeeded(int effective, int configuredCoreCount) {
+        var unresolvedSurplus = effective - configuredCoreCount > 0;
+
+        if (!unresolvedSurplus || surplusFollowUpFutureRef.get() != null) {
+            return;
+        }
+
+        var future = scheduler.schedule(this::runSurplusFollowUp, surplusFollowUpDelay());
+
+        if (!surplusFollowUpFutureRef.compareAndSet(null, future)) {
+            future.cancel(false);
+        }
+    }
+
+    /// Delay for the surplus-convergence follow-up: the full deficit-debounce window plus the
+    /// short [`#DEBOUNCE_DELAY`] margin. A surplus has no per-run leading-edge anchor (unlike a
+    /// deficit), so the spacing is a fixed debounce-window cadence — slow enough that a transient
+    /// just-joined-then-leaving blip does not churn drains, fast enough that convergence lands well
+    /// inside the integration settle window.
+    private TimeSpan surplusFollowUpDelay() {
+        return timeSpan(deficitDebounceWindow.nanos() + DEBOUNCE_DELAY.nanos()).nanos();
+    }
+
+    /// Surplus-convergence follow-up tick: clear the pending ref and re-trigger a reconcile
+    /// ([`ReconcileTrigger#SURPLUS_FOLLOW_UP`]) so the unresolved surplus is re-evaluated. The pass
+    /// it triggers re-arms via [`#armSurplusFollowUpIfNeeded`] iff the surplus is STILL unresolved
+    /// — the loop terminates on convergence. Non-leader nodes no-op (a deposed leader's follow-up
+    /// must not act; [`#deactivate`] also cancels the pending future).
+    @Contract
+    private void runSurplusFollowUp() {
+        surplusFollowUpFutureRef.set(null);
+        if (!isLeader.get()) {
+            return;
+        }
+
+        triggerReconcile(ReconcileTrigger.SURPLUS_FOLLOW_UP);
+    }
+
+    @Contract
+    private void cancelSurplusFollowUp() {
+        var prev = surplusFollowUpFutureRef.getAndSet(null);
 
         if (prev != null) {
             prev.cancel(false);
