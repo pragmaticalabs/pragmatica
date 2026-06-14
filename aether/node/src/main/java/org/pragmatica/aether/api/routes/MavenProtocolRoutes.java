@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import org.pragmatica.aether.http.handler.security.AuthorizationRole;
+import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler.MavenResponse;
 import org.pragmatica.aether.node.ManageableNode;
@@ -14,6 +17,7 @@ import org.pragmatica.http.server.RequestContext;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.io.TimeSpan;
@@ -73,12 +77,42 @@ public final class MavenProtocolRoutes implements RouteHandler {
         }
 
         if (method == POST || method == PUT) {
+            if (!isAuthorizedForPush()) {
+                rejectUnauthorizedPush(response, path);
+
+                return true;
+            }
+
             handlePut(response, path, ctx.body());
 
             return true;
         }
 
         return false;
+    }
+
+    /// Defense-in-depth authorization for artifact publication (#282). Artifact PUT/POST place code
+    /// the cluster will resolve and load, so an unauthenticated push is an RCE. The management gate in
+    /// `ManagementServer.handleRequest` already enforces OPERATOR+ on `/repository/` mutations when
+    /// management security is enabled; this in-route check guarantees the same posture even if an
+    /// operator has explicitly disabled management security (`SecurityMode.NONE`) — in that case no
+    /// `SecurityContext` is bound and the push is rejected rather than silently accepted. Reads (GET)
+    /// are intentionally not gated here: artifact resolution is also driven by internal cluster paths.
+    private static boolean isAuthorizedForPush() {
+        return SecurityContextHolder.currentContext()
+                                    .filter(SecurityContext::isAuthenticated)
+                                    .map(MavenProtocolRoutes::hasOperatorRole)
+                                    .or(false);
+    }
+
+    private static boolean hasOperatorRole(SecurityContext context) {
+        return context.authorizationRole()
+                      .hasAccess(AuthorizationRole.OPERATOR);
+    }
+
+    private void rejectUnauthorizedPush(ResponseWriter response, String path) {
+        response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"");
+        response.error(HttpStatus.UNAUTHORIZED, "Artifact publication requires OPERATOR or ADMIN authentication");
     }
 
     @Contract
