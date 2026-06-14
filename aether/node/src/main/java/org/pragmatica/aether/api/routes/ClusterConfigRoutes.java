@@ -297,13 +297,23 @@ public final class ClusterConfigRoutes implements RouteSource {
                                 .flatMap(storedConfig -> executeDiff(stored,
                                                                      storedConfig,
                                                                      desired,
-                                                                     request.tomlContent()));
+                                                                     request));
+    }
+
+    /// Pure decision for the #289 fence — package-visible so it can be unit-tested without standing up
+    /// a node + KV store. True iff a populated config (`storedVersion >= 1`) is about to be overwritten
+    /// by an unfenced push (`expectedVersion == 0`). `expectedVersion=0` is the "fresh cluster"
+    /// sentinel that bypasses the CAS check in [#checkVersionAsync]; allowing it to mutate an existing
+    /// config would let a re-run of `aether cluster bootstrap` (which always posts `expectedVersion:0`)
+    /// or a concurrent bootstrap blind-overwrite mutable cluster config.
+    static boolean isUnfencedOverwrite(long storedVersion, long expectedVersion) {
+        return storedVersion >= 1 && expectedVersion == 0;
     }
 
     private Promise<Object> executeDiff(ClusterConfigValue stored,
                                         ClusterBootstrapConfig storedConfig,
                                         ClusterBootstrapConfig desired,
-                                        String tomlContent) {
+                                        ApplyConfigRequest request) {
         var plan = ClusterBootstrapConfigDiff.diff(storedConfig, desired);
 
         if (plan.hasImmutableChanges()) {
@@ -311,12 +321,21 @@ public final class ClusterConfigRoutes implements RouteSource {
         }
 
         if (plan.isEmpty()) {
+            // No-op (e.g. an idempotent bootstrap retry of the identical config) — return a dry-run.
+            // The #289 fence is intentionally NOT applied here so a benign retry-after-success stays
+            // idempotent; only a real mutation is fenced below.
             return buildDryRunResponse(stored, plan);
+        }
+
+        // #289: a real mutation against an already-populated config must carry a real expectedVersion;
+        // reject the unfenced `expectedVersion=0` push that would blind-overwrite mutable config.
+        if (isUnfencedOverwrite(stored.configVersion(), request.expectedVersion())) {
+            return new ClusterConfigError.UnfencedOverwrite(stored.configVersion()).promise();
         }
 
         return applier.apply(plan.allActions())
                       .flatMap(_ -> storeUpdatedConfig(desired,
-                                                       tomlContent,
+                                                       request.tomlContent(),
                                                        stored.configVersion() + 1));
     }
 
