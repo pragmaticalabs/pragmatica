@@ -69,17 +69,20 @@ class ConfigLoaderSecurityTest {
     }
 
     @Test
-    void loadFromString_emptyApiKeysResultsInSecurityDisabled() {
+    void loadFromString_emptyApiKeysSecuredByDefault() {
         var toml = MINIMAL_CLUSTER + """
 
             [app-http]
             enabled = "true"
             """;
 
+        // #290: secure by default — no api-keys and no explicit security_mode now yields API_KEY
+        // (the bootstrap admin key supplies a credential at cluster formation).
         ConfigLoader.loadFromString(toml)
             .onFailure(cause -> fail(cause.message()))
             .onSuccess(config -> {
-                assertThat(config.appHttp().securityEnabled()).isFalse();
+                assertThat(config.appHttp().securityEnabled()).isTrue();
+                assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.API_KEY);
                 assertThat(config.appHttp().apiKeys()).isEmpty();
             });
     }
@@ -123,11 +126,14 @@ class ConfigLoaderSecurityTest {
     void loadFromString_usesDefaultAppHttpWhenNotSpecified() {
         var toml = MINIMAL_CLUSTER;
 
+        // #290: with no [app-http] section the app plane stays OFF (enabled=false) but the management
+        // plane is secured by default (API_KEY), so the control plane is not served wide open.
         ConfigLoader.loadFromString(toml)
             .onFailure(cause -> fail(cause.message()))
             .onSuccess(config -> {
                 assertThat(config.appHttp().enabled()).isFalse();
-                assertThat(config.appHttp().securityEnabled()).isFalse();
+                assertThat(config.appHttp().securityEnabled()).isTrue();
+                assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.API_KEY);
                 assertThat(config.appHttp().port()).isEqualTo(AppHttpConfig.DEFAULT_APP_HTTP_PORT);
             });
     }
@@ -326,17 +332,18 @@ class ConfigLoaderSecurityTest {
     }
 
     @Test
-    void loadFromString_defaultsSecurityModeToNoneWhenNotSpecified() {
+    void loadFromString_defaultsSecurityModeToApiKeyWhenNotSpecified() {
         var toml = MINIMAL_CLUSTER + """
 
             [app-http]
             enabled = "true"
             """;
 
+        // #290: secure by default.
         ConfigLoader.loadFromString(toml)
             .onFailure(cause -> fail(cause.message()))
             .onSuccess(config -> {
-                assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.NONE);
+                assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.API_KEY);
             });
     }
 

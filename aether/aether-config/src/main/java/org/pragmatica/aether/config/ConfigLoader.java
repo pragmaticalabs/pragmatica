@@ -286,21 +286,22 @@ public final class ConfigLoader {
         var maxRequestSize = parseDataSize(doc, "app-http", "max_request_size", AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE);
         var explicitMode = doc.getString("app-http", "security_mode").flatMap(SecurityMode::securityMode);
         var apiKeys = resolveApiKeys(doc);
-        var securityMode = explicitMode.or(apiKeys.isEmpty()
-                                           ? SecurityMode.NONE
-                                           : SecurityMode.API_KEY);
+        // #290: secure by default. When `security_mode` is not configured the effective mode is
+        // API_KEY (was: NONE unless api-keys present), so a default-config node's management plane and
+        // dashboard require authentication rather than serving the control plane wide open. The
+        // cluster-wide bootstrap admin key (BootstrapAdminKeyRegistrar) supplies a credential when
+        // none was provisioned. An explicit `security_mode` (including "none") always wins.
+        var securityMode = explicitMode.or(SecurityMode.API_KEY);
         var jwtConfig = parseJwtConfig(doc);
         var httpProtocol = doc.getString("app-http", "protocol").flatMap(HttpProtocol::httpProtocol).or(HttpProtocol.H1);
 
-        if (enabled || !apiKeys.isEmpty()) {
-            builder.appHttp(AppHttpConfig.appHttpConfig(enabled,
-                                                        port,
-                                                        apiKeys,
-                                                        maxRequestSize,
-                                                        securityMode,
-                                                        jwtConfig,
-                                                        httpProtocol).unwrap());
-        }
+        builder.appHttp(AppHttpConfig.appHttpConfig(enabled,
+                                                    port,
+                                                    apiKeys,
+                                                    maxRequestSize,
+                                                    securityMode,
+                                                    jwtConfig,
+                                                    httpProtocol).unwrap());
     }
 
     private static Option<JwtConfig> parseJwtConfig(TomlDocument doc) {

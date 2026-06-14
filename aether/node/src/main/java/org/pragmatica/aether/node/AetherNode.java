@@ -2536,6 +2536,16 @@ public interface AetherNode extends ManageableNode {
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  systemStreamRegistrar::onLeaderChange));
+        // #290: cluster-formation bootstrap admin API key. On first leadership, if no admin key is yet
+        // present in the KV store, generate one cluster-wide and print the plaintext once. Self-healing
+        // and idempotent (mirrors SystemStreamRegistrar); the leg uses the same clusterNode.apply
+        // consensus path as the API-key routes and the same KV store the validator reads.
+        var bootstrapAdminKeyRegistrar = BootstrapAdminKeyRegistrar.bootstrapAdminKeyRegistrar(BootstrapAdminKeyLeg.bootstrapAdminKeyLeg(() -> kvStore,
+                                                                                                                                        isLeaderSupplier::getAsBoolean,
+                                                                                                                                        clusterCommandApplier));
+
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 bootstrapAdminKeyRegistrar::onLeaderChange));
         var streamForwardHandler = StreamForwardHandler.streamForwardHandler(config.self(),
                                                                              streamPartitionManager,
                                                                              streamForwardTransport,

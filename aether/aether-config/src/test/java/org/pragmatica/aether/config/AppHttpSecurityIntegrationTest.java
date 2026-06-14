@@ -21,20 +21,21 @@ class AppHttpSecurityIntegrationTest {
         """;
 
     @Nested
-    class SecurityModeNone {
+    class SecurityModeDefaults {
         @Test
-        void noSecurityMode_noApiKeys_defaultsToNone() {
+        void noSecurityMode_noApiKeys_defaultsToApiKey() {
             var toml = MINIMAL_CLUSTER + """
 
                 [app-http]
                 enabled = "true"
                 """;
 
+            // #290: secure by default.
             ConfigLoader.loadFromString(toml)
                 .onFailure(cause -> fail(cause.message()))
                 .onSuccess(config -> {
-                    assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.NONE);
-                    assertThat(config.appHttp().securityEnabled()).isFalse();
+                    assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.API_KEY);
+                    assertThat(config.appHttp().securityEnabled()).isTrue();
                     assertThat(config.appHttp().jwtConfig().isEmpty()).isTrue();
                 });
         }
@@ -57,13 +58,14 @@ class AppHttpSecurityIntegrationTest {
         }
 
         @Test
-        void noAppHttpSection_defaultsToDisabledNone() {
+        void noAppHttpSection_appPlaneOffButManagementSecured() {
+            // #290: app plane stays off (enabled=false) but the management plane is secured by default.
             ConfigLoader.loadFromString(MINIMAL_CLUSTER)
                 .onFailure(cause -> fail(cause.message()))
                 .onSuccess(config -> {
                     assertThat(config.appHttp().enabled()).isFalse();
-                    assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.NONE);
-                    assertThat(config.appHttp().securityEnabled()).isFalse();
+                    assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.API_KEY);
+                    assertThat(config.appHttp().securityEnabled()).isTrue();
                     assertThat(config.appHttp().jwtConfig().isEmpty()).isTrue();
                 });
         }
