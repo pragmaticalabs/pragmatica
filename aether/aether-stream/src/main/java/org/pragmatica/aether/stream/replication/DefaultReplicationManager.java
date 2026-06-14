@@ -12,7 +12,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -151,7 +150,6 @@ final class DefaultReplicationManager implements ReplicationManager {
         if (targets.size() < minAcks) {
             return NOT_ENOUGH_REPLICAS.promise();
         }
-
         // #262.3 (ack-before-register race): replication fires inside the publish onSuccess BEFORE the
         // caller awaits, so a fast peer ack can land in the registry before this await is registered.
         // The registry already records each replica's latest confirmed offset (updated in handleAck
@@ -168,20 +166,13 @@ final class DefaultReplicationManager implements ReplicationManager {
 
     /// Distinct non-self replicas whose registry-recorded confirmed offset already reaches `offset`.
     private Set<NodeId> peersAtOrAbove(List<NodeId> targets, String streamName, int partition, long offset) {
-        var byNode = registry.replicasFor(streamName, partition)
-                             .stream()
-                             .collect(Collectors.toMap(ReplicaDescriptor::nodeId,
-                                                       ReplicaDescriptor::confirmedOffset,
-                                                       Math::max));
-        var acked = new HashSet<NodeId>();
+        var byNode = registry.replicasFor(streamName, partition).stream().collect(Collectors.toMap(ReplicaDescriptor::nodeId,
+                                                                                                   ReplicaDescriptor::confirmedOffset,
+                                                                                                   Math::max));
 
-        targets.forEach(nodeId -> {
-            if (byNode.getOrDefault(nodeId, -1L) >= offset) {
-                acked.add(nodeId);
-            }
-        });
-
-        return acked;
+        return targets.stream()
+                      .filter(nodeId -> byNode.getOrDefault(nodeId, -1L) >= offset)
+                      .collect(Collectors.toSet());
     }
 
     private void sendToAllReplicas(List<NodeId> replicas,
@@ -202,7 +193,7 @@ final class DefaultReplicationManager implements ReplicationManager {
                                              Set<NodeId> alreadyAcked) {
         Promise<Unit> promise = Promise.promise();
         var key = new PendingAckKey(streamName, partition, offset);
-        var acked = ConcurrentHashMap.<NodeId>newKeySet();
+        var acked = ConcurrentHashMap.<NodeId> newKeySet();
 
         acked.addAll(alreadyAcked);
         var pending = new PendingAck(promise, acked, minAcks);
@@ -222,22 +213,26 @@ final class DefaultReplicationManager implements ReplicationManager {
     /// `minAcks` DISTINCT non-self replicas resolve the await.
     private void resolvePendingAck(String streamName, int partition, NodeId replicaId, long confirmedOffset) {
         if (replicaId.equals(governorId)) {
-            return; // a self-ack never counts toward minAcks (#262.2/.5)
+            return;  // a self-ack never counts toward minAcks (#262.2/.5)
         }
 
-        pendingAcks.forEach((key, pending) -> {
-            if (key.streamName()
-                   .equals(streamName)
-                && key.partition() == partition
-                && key.offset() <= confirmedOffset) {
-                recordAndResolve(key, pending, replicaId);
-            }
-        });
+        pendingAcks.entrySet().stream().filter(entry -> matchesAwait(entry.getKey(),
+                                                                     streamName,
+                                                                     partition,
+                                                                     confirmedOffset)).forEach(entry -> recordAndResolve(entry.getKey(),
+                                                                                                                         entry.getValue(),
+                                                                                                                         replicaId));
+    }
+
+    private static boolean matchesAwait(PendingAckKey key, String streamName, int partition, long confirmedOffset) {
+        return key.streamName()
+                  .equals(streamName)
+               && key.partition() == partition
+               && key.offset() <= confirmedOffset;
     }
 
     private void recordAndResolve(PendingAckKey key, PendingAck pending, NodeId replicaId) {
         pending.ackedReplicas().add(replicaId);
-
         if (pending.ackedReplicas().size() >= pending.minAcks()) {
             pendingAcks.remove(key);
             pending.promise().resolve(success(unit()));

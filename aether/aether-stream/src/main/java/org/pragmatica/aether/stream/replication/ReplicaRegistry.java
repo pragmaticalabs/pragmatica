@@ -78,7 +78,11 @@ public final class ReplicaRegistry {
     /// earliest retained offset, so a replica holding only the post-join suffix is NOT a read/backfill
     /// source until backfill confirms coverage.
     @Contract
-    public void updateWatermark(String streamName, int partition, NodeId nodeId, long confirmedOffset, ReplicationState state) {
+    public void updateWatermark(String streamName,
+                                int partition,
+                                NodeId nodeId,
+                                long confirmedOffset,
+                                ReplicationState state) {
         var key = partitionKey(streamName, partition);
 
         option(replicas.get(key)).onPresent(nodeMap -> nodeMap.computeIfPresent(nodeId,

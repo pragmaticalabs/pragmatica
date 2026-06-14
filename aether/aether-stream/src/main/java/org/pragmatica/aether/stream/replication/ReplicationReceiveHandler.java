@@ -177,7 +177,7 @@ public final class ReplicationReceiveHandler {
                                       long batchEnd,
                                       long localNext) {
         log.debug("ReplicationReceiveHandler: duplicate batch for {}[{}] — [{}, {}] already applied (next expected {}) "
-                + "— re-acking, no append",
+                 + "— re-acking, no append",
                   message.streamName(),
                   message.partition(),
                   fromOffset,
@@ -219,8 +219,7 @@ public final class ReplicationReceiveHandler {
 
         var highestApplied = localNext + applied - 1;
 
-        transport.send(message.governorId(),
-                       replicateAck(self, streamName, partition, highestApplied));
+        transport.send(message.governorId(), replicateAck(self, streamName, partition, highestApplied));
     }
 
     private int applyBatch(String streamName,

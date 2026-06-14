@@ -132,7 +132,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              Option.none(),
                                              Option.none(),
                                              StreamReadForwardMetrics.NOOP,
-                                             /* minSyncReplicas */ 0);
+                                             0);
     }
 
     /// A6: app-stream overload that wires owner-routed {@link #publish} (forward client + self +
@@ -205,7 +205,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              Option.none(),
                                              Option.none(),
                                              metrics,
-                                             /* minSyncReplicas */ 0);
+                                             0);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -231,7 +231,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              Option.none(),
                                              Option.none(),
                                              StreamReadForwardMetrics.NOOP,
-                                             /* minSyncReplicas */ 0);
+                                             0);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -258,7 +258,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              Option.none(),
                                              Option.none(),
                                              StreamReadForwardMetrics.NOOP,
-                                             /* minSyncReplicas */ 0);
+                                             0);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -286,7 +286,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              Option.none(),
                                              Option.none(),
                                              StreamReadForwardMetrics.NOOP,
-                                             /* minSyncReplicas */ 0);
+                                             0);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -316,7 +316,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              Option.none(),
                                              Option.none(),
                                              StreamReadForwardMetrics.NOOP,
-                                             /* minSyncReplicas */ 0);
+                                             0);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -349,7 +349,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              Option.none(),
                                              Option.none(),
                                              metrics,
-                                             /* minSyncReplicas */ 0);
+                                             0);
     }
 
     /// A6: full overload that also wires an owner-resolver so {@link #publish} routes writes to the
@@ -389,7 +389,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              ownerResolver,
                                              Option.none(),
                                              metrics,
-                                             /* minSyncReplicas */ 0);
+                                             0);
     }
 
     /// A6 owner-routed publish. Resolves the HRW owner of `(stream, partition)` via the injected

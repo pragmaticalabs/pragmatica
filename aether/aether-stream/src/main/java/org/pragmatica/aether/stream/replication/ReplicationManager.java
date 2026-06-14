@@ -26,7 +26,7 @@ public interface ReplicationManager extends AutoCloseable {
         long earliestRetainedOffset(String streamName, int partition);
     }
 
-    EarliestRetainedOffset ALWAYS_PROMOTE = (_, _) -> -1L;
+    EarliestRetainedOffset ALWAYS_PROMOTE = (_, _) -> - 1L;
 
     @Contract
     void replicateEvent(String streamName, int partition, long offset, byte[] payload, long timestamp);

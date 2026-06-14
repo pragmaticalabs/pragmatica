@@ -92,11 +92,7 @@ public final class ReplicationBatcher implements AutoCloseable {
     private void sendBatch(PartitionKey key, BatchSnapshot snapshot) {
         // #262.2/.5: the HRW replica set is owner-first, so it contains self — exclude it. Replicating
         // a batch to self would loop it back through onReplicateEvents (double-append).
-        var replicas = registry.replicasFor(key.streamName(), key.partition())
-                               .stream()
-                               .map(ReplicaDescriptor::nodeId)
-                               .filter(nodeId -> !nodeId.equals(governorId))
-                               .toList();
+        var replicas = registry.replicasFor(key.streamName(), key.partition()).stream().map(ReplicaDescriptor::nodeId).filter(nodeId -> !nodeId.equals(governorId)).toList();
 
         if (replicas.isEmpty()) {
             return;
