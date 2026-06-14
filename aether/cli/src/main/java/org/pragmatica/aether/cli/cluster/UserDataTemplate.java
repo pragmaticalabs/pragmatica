@@ -12,7 +12,10 @@ import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.environment.ClusterIdentityEnv;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlWriter;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Unit;
 
 import java.util.List;
 import java.util.regex.Pattern;
@@ -254,44 +257,79 @@ sealed interface UserDataTemplate {
     /// `dockerRun==true` emits `-e VAR="value" \` (a `docker run` line-continuation form);
     /// `false` emits `export VAR="value"` for the JVM-run path.
     private static void appendEnv(StringBuilder sb, String clusterName, NodeRole role, boolean dockerRun) {
-        for (var name : ClusterIdentityEnv.IDENTITY_VARS) {
-            appendEnvVar(sb, name, resolveEnvValue(name, clusterName, role), dockerRun);
-        }
-        // --- Dev-mode (ISOLATED — never part of IDENTITY_VARS) ---
-        // Emit AETHER_INSECURE_DEV_MODE only when present in the bootstrapping host's env so
-        // a healed node inherits its siblings' dev-mode posture. Standalone so dev-mode can
-        // never silently ride the identity allow-list into a production deploy.
-        appendEnvVar(sb,
-                     ClusterIdentityEnv.INSECURE_DEV_MODE,
-                     Option.option(System.getenv(ClusterIdentityEnv.INSECURE_DEV_MODE)),
-                     dockerRun);
+        Fn2<Unit, String, String> emit = dockerRun
+                                         ? (name, value) -> appendDockerRunEnvLine(sb, name, value)
+                                         : (name, value) -> appendExportEnvLine(sb, name, value);
+
+        emitIdentityEnv(emit, clusterName, role, Option.some("${AETHER_CLUSTER_SECRET}"), System::getenv);
     }
 
-    private static Option<String> resolveEnvValue(String name, String clusterName, NodeRole role) {
+    /// Single source of truth for the cluster-identity env allow-list emission, shared by the
+    /// cloud-init user-data start ([#appendEnv]) and the finalized-PEERS SSH re-launch
+    /// ([BootstrapPhaseDeploy#buildRestartCommand] / `buildJvmRestartCommand`). Without this the
+    /// re-launch dropped AETHER_INSECURE_DEV_MODE and the rest of the allow-list that the initial
+    /// start set, so the actually-running (re-launched) container lost its cluster identity and
+    /// dev-mode posture — the C2 security gate then refused to serve the management API and the
+    /// health poll never succeeded.
+    ///
+    /// `clusterSecretRef` controls whether AETHER_CLUSTER_SECRET is emitted from this pass:
+    /// `some(ref)` emits it (cloud-init uses the `${AETHER_CLUSTER_SECRET}` shell ref);
+    /// `none()` excludes it so the re-launch can emit the finalized secret explicitly without a
+    /// duplicate `-e AETHER_CLUSTER_SECRET`. `envLookup` is injectable so the re-launch can be
+    /// unit-tested without mutating the real process env (mirrors `buildCloudSshConfig`).
+    ///
+    /// AETHER_INSECURE_DEV_MODE is ISOLATED — it rides a standalone block, never the identity
+    /// allow-list, so dev-mode can never silently inherit into a production deploy. Every value is
+    /// emitted only when present (prod-safe: unset host env → not emitted).
+    static void emitIdentityEnv(Fn2<Unit, String, String> emit,
+                                String clusterName,
+                                NodeRole role,
+                                Option<String> clusterSecretRef,
+                                Fn1<String, String> envLookup) {
+        for (var name : ClusterIdentityEnv.IDENTITY_VARS) {
+            resolveEnvValue(name, clusterName, role, clusterSecretRef, envLookup).onPresent(v -> emit.apply(name, v));
+        }
+        // --- Dev-mode (ISOLATED — never part of IDENTITY_VARS) ---
+        // Emit AETHER_INSECURE_DEV_MODE only when present in the (injected) host env so a healed
+        // node inherits its siblings' dev-mode posture. Standalone so dev-mode can never silently
+        // ride the identity allow-list into a production deploy.
+        lookupNonEmpty(ClusterIdentityEnv.INSECURE_DEV_MODE, envLookup)
+            .onPresent(v -> emit.apply(ClusterIdentityEnv.INSECURE_DEV_MODE, v));
+    }
+
+    private static Option<String> resolveEnvValue(String name,
+                                                  String clusterName,
+                                                  NodeRole role,
+                                                  Option<String> clusterSecretRef,
+                                                  Fn1<String, String> envLookup) {
         return switch (name) {
             // Sourced from the threaded bootstrap cluster name, not host env.
             case "AETHER_CLUSTER_NAME" -> Option.option(clusterName).filter(s -> !s.isBlank());
             // Sourced from the threaded INTENDED role, not host env (Wave 2 / W4 — the
             // bootstrapping host's AETHER_ROLE is the host's own role, not this node's).
             case "AETHER_ROLE" -> Option.some(role.value());
-            // Sourced from the script's own AETHER_CLUSTER_SECRET shell variable (set in
-            // appendVariables from the clusterSecret param) — keep the shell-ref form so the
-            // operator-supplied secret flows in without leaking into the host env read.
-            case "AETHER_CLUSTER_SECRET" -> Option.some("${AETHER_CLUSTER_SECRET}");
-            default -> Option.option(System.getenv(name)).filter(s -> !s.isEmpty());
+            // Sourced from the supplied ref (cloud-init: the script's own
+            // ${AETHER_CLUSTER_SECRET} shell var); none() for the re-launch which emits the
+            // finalized secret explicitly to avoid a duplicate -e AETHER_CLUSTER_SECRET.
+            case "AETHER_CLUSTER_SECRET" -> clusterSecretRef;
+            default -> lookupNonEmpty(name, envLookup);
         };
     }
 
-    private static void appendEnvVar(StringBuilder sb, String name, Option<String> value, boolean dockerRun) {
-        value.onPresent(v -> appendEnvLine(sb, name, v, dockerRun));
+    private static Option<String> lookupNonEmpty(String name, Fn1<String, String> envLookup) {
+        return Option.option(envLookup.apply(name)).filter(s -> !s.isEmpty());
     }
 
-    private static void appendEnvLine(StringBuilder sb, String name, String value, boolean dockerRun) {
-        if (dockerRun) {
-            sb.append("    -e ").append(name).append("=\"").append(value).append("\" \\\n");
-        } else {
-            sb.append("export ").append(name).append("=\"").append(value).append("\"\n");
-        }
+    private static Unit appendDockerRunEnvLine(StringBuilder sb, String name, String value) {
+        sb.append("    -e ").append(name).append("=\"").append(value).append("\" \\\n");
+
+        return Unit.unit();
+    }
+
+    private static Unit appendExportEnvLine(StringBuilder sb, String name, String value) {
+        sb.append("export ").append(name).append("=\"").append(value).append("\"\n");
+
+        return Unit.unit();
     }
 
     private static void appendJvmInstall(StringBuilder sb, String jarUrl) {

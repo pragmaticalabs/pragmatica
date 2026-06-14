@@ -226,14 +226,21 @@ sealed interface BootstrapPhaseDeploy {
                           peers);
         for (var node : sourceNodes) {
             var command = isJvm
-                          ? buildJvmRestartCommand(node.nodeId(), clusterPort, managementPort, peers, clusterSecret)
+                          ? buildJvmRestartCommand(node.nodeId(),
+                                                   clusterPort,
+                                                   managementPort,
+                                                   peers,
+                                                   clusterSecret,
+                                                   clusterName,
+                                                   envLookup)
                           : buildRestartCommand(resolveContainerImage(ctx, source),
                                                 clusterName,
                                                 node.nodeId(),
                                                 clusterPort,
                                                 managementPort,
                                                 peers,
-                                                clusterSecret);
+                                                clusterSecret,
+                                                envLookup);
             var result = sshExec.apply(node.publicIp(), command, sshConfig);
 
             if (result.isFailure()) {
@@ -333,6 +340,31 @@ sealed interface BootstrapPhaseDeploy {
                                       int managementPort,
                                       String peers,
                                       String clusterSecret) {
+        return buildRestartCommand(image,
+                                   clusterName,
+                                   nodeId,
+                                   clusterPort,
+                                   managementPort,
+                                   peers,
+                                   clusterSecret,
+                                   System::getenv);
+    }
+
+    /// Re-launch the container with the finalized PEERS. CRITICAL: this re-launch RECREATES the
+    /// container that actually runs, so it MUST carry the SAME host-env-derived identity allow-list
+    /// the cloud-init start emitted ([UserDataTemplate#emitIdentityEnv]) — otherwise
+    /// AETHER_INSECURE_DEV_MODE and the rest of [ClusterIdentityEnv#IDENTITY_VARS] silently drop,
+    /// the C2 security gate fails, and the health poll never succeeds. AETHER_CLUSTER_SECRET is
+    /// emitted explicitly from the finalized `clusterSecret` param and EXCLUDED from the allow-list
+    /// pass (`none()` ref) so it never appears twice. `envLookup` is injectable for unit testing.
+    static String buildRestartCommand(String image,
+                                      String clusterName,
+                                      String nodeId,
+                                      int clusterPort,
+                                      int managementPort,
+                                      String peers,
+                                      String clusterSecret,
+                                      Fn1<String, String> envLookup) {
         return "docker rm -f aether-node 2>/dev/null || true"
              + " && docker run -d --name aether-node --restart no --network host"
              + " -l aether-cluster=" + clusterName
@@ -349,7 +381,30 @@ sealed interface BootstrapPhaseDeploy {
              + "\""
              + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret
              + "\""
+             + identityEnvFlags(clusterName, envLookup)
              + " " + image;
+    }
+
+    /// Single-line `-e VAR="value"` fragment for the cluster-identity allow-list (minus
+    /// AETHER_CLUSTER_SECRET, emitted explicitly by the caller). Mirrors the cloud-init start's
+    /// emission so the re-launch keeps full env parity. Empty when no allow-list var is present
+    /// (prod-safe: unset host env → nothing emitted).
+    private static String identityEnvFlags(String clusterName, Fn1<String, String> envLookup) {
+        var sb = new StringBuilder();
+
+        UserDataTemplate.emitIdentityEnv((name, value) -> appendRestartEnvFlag(sb, name, value),
+                                         clusterName,
+                                         NodeRole.CORE,
+                                         Option.empty(),
+                                         envLookup);
+
+        return sb.toString();
+    }
+
+    private static Unit appendRestartEnvFlag(StringBuilder sb, String name, String value) {
+        sb.append(" -e ").append(name).append("=\"").append(value).append("\"");
+
+        return Unit.unit();
     }
 
     static String JVM_JAR_PATH = "/opt/aether/aether-node.jar";
@@ -361,6 +416,27 @@ sealed interface BootstrapPhaseDeploy {
                                          int managementPort,
                                          String peers,
                                          String clusterSecret) {
+        return buildJvmRestartCommand(nodeId,
+                                      clusterPort,
+                                      managementPort,
+                                      peers,
+                                      clusterSecret,
+                                      "",
+                                      System::getenv);
+    }
+
+    /// JVM re-launch with finalized PEERS. Same env-parity requirement as the container path
+    /// ([#buildRestartCommand]): the cluster-identity allow-list (minus AETHER_CLUSTER_SECRET,
+    /// inlined explicitly) is prepended as inline `VAR="value"` env assignments before
+    /// `nohup java` so the relaunched JVM inherits the same identity + dev-mode posture the
+    /// cloud-init start exported. `envLookup` is injectable for unit testing.
+    static String buildJvmRestartCommand(String nodeId,
+                                         int clusterPort,
+                                         int managementPort,
+                                         String peers,
+                                         String clusterSecret,
+                                         String clusterName,
+                                         Fn1<String, String> envLookup) {
         return "pkill -f '" + JVM_PKILL_PATTERN
              + "' 2>/dev/null || true"
              + "; sleep 1"
@@ -368,7 +444,8 @@ sealed interface BootstrapPhaseDeploy {
              + "' 2>/dev/null || true"
              + "; sleep 1"
              + "; AETHER_CLUSTER_SECRET=\"" + clusterSecret
-             + "\" nohup java -jar " + JVM_JAR_PATH
+             + "\"" + identityEnvAssignments(clusterName, envLookup)
+             + " nohup java -jar " + JVM_JAR_PATH
              + " --config=/opt/aether/config/aether.toml"
              + " --node-id=\"" + nodeId
              + "\""
@@ -380,6 +457,27 @@ sealed interface BootstrapPhaseDeploy {
              + "\""
              + " > " + JVM_LOG_PATH
              + " 2>&1 & disown";
+    }
+
+    /// Inline `VAR="value"` assignments (space-prefixed) for the cluster-identity allow-list
+    /// (minus AETHER_CLUSTER_SECRET, inlined explicitly by the caller), suitable for prefixing a
+    /// `nohup java` invocation on a single SSH command line.
+    private static String identityEnvAssignments(String clusterName, Fn1<String, String> envLookup) {
+        var sb = new StringBuilder();
+
+        UserDataTemplate.emitIdentityEnv((name, value) -> appendJvmEnvAssignment(sb, name, value),
+                                         clusterName,
+                                         NodeRole.CORE,
+                                         Option.empty(),
+                                         envLookup);
+
+        return sb.toString();
+    }
+
+    private static Unit appendJvmEnvAssignment(StringBuilder sb, String name, String value) {
+        sb.append(" ").append(name).append("=\"").append(value).append("\"");
+
+        return Unit.unit();
     }
 
     static String resolveContainerImage(BootstrapContext ctx, SourceProfile source) {
