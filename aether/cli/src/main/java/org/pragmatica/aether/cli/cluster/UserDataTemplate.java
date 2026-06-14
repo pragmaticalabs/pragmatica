@@ -211,7 +211,12 @@ sealed interface UserDataTemplate {
         sb.append("cat > /opt/aether/config/aether.toml <<'AETHER_CONFIG'\n");
         sb.append(TomlWriter.toToml(composedConfig));
         sb.append("AETHER_CONFIG\n");
-        sb.append("chmod 644 /opt/aether/config/aether.toml\n\n");
+        // #287: aether.toml carries cluster_secret. Restrict it to owner-only (0600) rather than
+        // world-readable 0644, and chown it to the in-container aether user (uid 1000) so the
+        // read-only bind-mount stays readable to the node process without exposing the secret to
+        // every local user / on-box process.
+        sb.append("chown 1000:1000 /opt/aether/config/aether.toml\n");
+        sb.append("chmod 600 /opt/aether/config/aether.toml\n\n");
     }
 
     private static void appendContainerRun(StringBuilder sb, String clusterName, String nodeId, NodeRole role) {

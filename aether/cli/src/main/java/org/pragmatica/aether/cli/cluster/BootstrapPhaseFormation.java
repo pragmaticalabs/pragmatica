@@ -13,8 +13,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -77,19 +77,15 @@ sealed interface BootstrapPhaseFormation {
     private static void persistApiKeyFile(String clusterName, String apiKey) {
         var keyFile = Path.of(System.getProperty("user.home"), ".aether", "clusters", clusterName, "api-key");
 
-        try {
-            Files.createDirectories(keyFile.getParent());
-            Files.writeString(keyFile, apiKey);
-            var file = keyFile.toFile();
-            var _ = file.setReadable(false, false);
-            var _ = file.setReadable(true, true);
-            var _ = file.setWritable(false, false);
-            var _ = file.setWritable(true, true);
+        // #287: the persisted admin api-key file must be owner-only (0600). Replaces the deprecated
+        // File.setReadable/setWritable dance with POSIX permissions via SecureFiles.
+        ensureParentDir(keyFile).flatMap(_ -> SecureFiles.writeSecure(keyFile, apiKey))
+                                .onSuccessRun(() -> System.out.printf("  API key persisted to %s%n", keyFile))
+                                .onFailure(cause -> System.err.println("  Warning: failed to persist API key file: " + cause.message()));
+    }
 
-            System.out.printf("  API key persisted to %s%n", keyFile);
-        } catch (IOException e) {
-            System.err.println("  Warning: failed to persist API key file: " + e.getMessage());
-        }
+    private static Result<Unit> ensureParentDir(Path keyFile) {
+        return Result.lift(Causes::fromThrowable, () -> Files.createDirectories(keyFile.getParent())).mapToUnit();
     }
 
     @SuppressWarnings("JBCT-EX-01")

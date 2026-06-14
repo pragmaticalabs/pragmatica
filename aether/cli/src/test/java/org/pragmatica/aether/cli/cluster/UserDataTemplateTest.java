@@ -94,10 +94,10 @@ class UserDataTemplateTest {
     }
 
     @Test
-    void render_chmodsConfigSoInContainerAetherUserCanRead() {
-        // The aether-node Dockerfile runs as user `aether` (uid 1000). Bind-mounted files inherit
-        // the host file mode; without chmod the in-container user may be unable to read root-owned
-        // 0600 files written by cloud-init.
+    void render_securesConfigOwnerOnlyAndChownsToContainerUser() {
+        // #287: aether.toml carries cluster_secret so it must be owner-only (0600), not 0644. The
+        // aether-node Dockerfile runs as user `aether` (uid 1000); the file is chowned to uid 1000 so
+        // the read-only bind-mount stays readable to the node process without world-exposing the secret.
         var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
         var source = config.sources().get("eu-1");
         var script = UserDataTemplate.render(config,
@@ -110,14 +110,16 @@ class UserDataTemplateTest {
                                              TomlDocument.EMPTY);
 
         var configWriteIdx = script.indexOf("AETHER_CONFIG\n");
-        var chmodIdx = script.indexOf("chmod 644 /opt/aether/config/aether.toml");
+        var chownIdx = script.indexOf("chown 1000:1000 /opt/aether/config/aether.toml");
+        var chmodIdx = script.indexOf("chmod 600 /opt/aether/config/aether.toml");
         var dockerRunIdx = script.indexOf("docker run");
 
-        assertTrue(chmodIdx > 0, "Must chmod 644 the composed config so uid 1000 can read it");
-        assertTrue(configWriteIdx > 0 && chmodIdx > configWriteIdx,
-                   "chmod must happen after the heredoc write");
+        assertTrue(chmodIdx > 0, "Must chmod 600 the composed config (cluster_secret at rest)");
+        assertTrue(chownIdx > 0, "Must chown to uid 1000 so the in-container aether user can read it");
+        assertTrue(configWriteIdx > 0 && chownIdx > configWriteIdx && chmodIdx > configWriteIdx,
+                   "chown/chmod must happen after the heredoc write");
         assertTrue(dockerRunIdx > chmodIdx,
-                   "chmod must happen before docker run so the bind-mount sees readable file");
+                   "chmod must happen before docker run so the bind-mount sees the secured file");
     }
 
     @Test
