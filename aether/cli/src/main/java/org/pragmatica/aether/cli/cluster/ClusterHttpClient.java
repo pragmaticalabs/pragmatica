@@ -234,8 +234,14 @@ public sealed interface ClusterHttpClient {
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
     static Result<String> getDirect(String url) {
+        return getDirect(url, Option.empty());
+    }
+
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
+    static Result<String> getDirect(String url, Option<String> apiKey) {
         var builder = HttpRequest.newBuilder().uri(URI.create(url)).GET();
 
+        apiKey.onPresent(key -> builder.header("X-API-Key", key));
         applyTimeout(builder);
 
         return HTTP_OPS_REF.get()

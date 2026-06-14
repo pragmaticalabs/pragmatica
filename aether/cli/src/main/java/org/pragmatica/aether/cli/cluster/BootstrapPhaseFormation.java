@@ -8,12 +8,15 @@ import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapC
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.environment.NodeAddress;
+import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+
+import tools.jackson.databind.JsonNode;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -26,6 +29,7 @@ import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION
 sealed interface BootstrapPhaseFormation {
     record unused() implements BootstrapPhaseFormation {}
 
+    JsonMapper JSON = JsonMapper.defaultJsonMapper();
     long STORE_RETRY_BUDGET_MS = 60_000L;
     long STORE_RETRY_INTERVAL_MS = 2_000L;
 
@@ -40,6 +44,7 @@ sealed interface BootstrapPhaseFormation {
         var healthTimeoutMs = ClusterBootstrapOrchestrator.parseDurationMs(ctx.config().operations().timeouts().healthCheck());
         var quorumTimeoutMs = ClusterBootstrapOrchestrator.parseDurationMs(ctx.config().operations().timeouts().quorumFormation());
         var requiredCores = ctx.config().derivedCoreCount();
+        var configuredKey = extractConfiguredApiKey(ctx.config());
 
         return waitForHealth(ctx.addresses(),
                              managementPort,
@@ -48,7 +53,8 @@ sealed interface BootstrapPhaseFormation {
                                                                 managementPort,
                                                                 quorumTimeoutMs,
                                                                 requiredCores,
-                                                                scheme))
+                                                                scheme,
+                                                                configuredKey))
                             .flatMap(_ -> finalizeClusterFormation(ctx, apiKey));
     }
 
@@ -145,25 +151,27 @@ sealed interface BootstrapPhaseFormation {
                                               int managementPort,
                                               long timeoutMs,
                                               int requiredCores,
-                                              String scheme) {
+                                              String scheme,
+                                              Option<String> apiKey) {
         if (addresses.isEmpty()) {
             return Result.unitResult();
         }
 
         var endpoint = addresses.getFirst().publicIp();
-        var url = scheme + "://" + endpoint + ":" + managementPort + "/health/ready";
+        var quorumFloor = quorumFloor(requiredCores);
 
-        System.out.printf("  Waiting for quorum at %s (need %d core(s), timeout: %ds)%n",
-                          url,
+        System.out.printf("  Waiting for quorum at %s://%s:%d (need %d of %d core(s), timeout: %ds)%n",
+                          scheme,
+                          endpoint,
+                          managementPort,
+                          quorumFloor,
                           requiredCores,
                           timeoutMs / 1000);
         var deadline = System.currentTimeMillis() + timeoutMs;
 
         while (System.currentTimeMillis() < deadline) {
-            var response = ClusterBootstrapOrchestrator.httpGet(url);
-
-            if (response.isSuccess()) {
-                System.out.printf("  Quorum established (%d core(s) required)%n", requiredCores);
+            if (quorumReached(endpoint, managementPort, scheme, requiredCores, quorumFloor, apiKey)) {
+                System.out.printf("  Quorum established (>= %d of %d core(s))%n", quorumFloor, requiredCores);
 
                 return Result.unitResult();
             }
@@ -171,7 +179,53 @@ sealed interface BootstrapPhaseFormation {
             ClusterBootstrapOrchestrator.sleepQuietly(ClusterBootstrapOrchestrator.POLL_INTERVAL_MS);
         }
 
-        return new BootstrapError.QuorumNotEstablished(0, requiredCores).result();
+        return new BootstrapError.QuorumNotEstablished(0, quorumFloor).result();
+    }
+
+    /// Strict majority floor for a cluster of `requiredCores` (`n/2 + 1`), mirroring
+    /// `StatusRoutes.quorumOf`. For `requiredCores <= 1` the floor is 1 (a genuine single-node dev
+    /// cluster the operator explicitly configured).
+    private static int quorumFloor(int requiredCores) {
+        return requiredCores <= 1
+               ? 1
+               : requiredCores / 2 + 1;
+    }
+
+    /// #295: split-brain fence at formation. A 200 from a single endpoint's `/health/ready` is NOT
+    /// sufficient to declare quorum for a multi-node cluster — a lone node reports itself ready and two
+    /// concurrent bootstraps could each conclude they own the cluster. For `requiredCores > 1` we read
+    /// the leader-authoritative `/api/health` (forwarded to the leader; carries the cluster-wide
+    /// `nodeCount` + `quorum`) and require the reported member count to meet the strict-majority floor.
+    /// For a single-core cluster the lightweight readiness probe is sufficient.
+    private static boolean quorumReached(String endpoint,
+                                         int managementPort,
+                                         String scheme,
+                                         int requiredCores,
+                                         int quorumFloor,
+                                         Option<String> apiKey) {
+        if (requiredCores <= 1) {
+            var readyUrl = scheme + "://" + endpoint + ":" + managementPort + "/health/ready";
+
+            return ClusterBootstrapOrchestrator.httpGet(readyUrl).isSuccess();
+        }
+
+        var healthUrl = scheme + "://" + endpoint + ":" + managementPort + "/api/health";
+
+        return ClusterBootstrapOrchestrator.httpGet(healthUrl, apiKey)
+                                           .flatMap(JSON::readTree)
+                                           .map(node -> healthMeetsFloor(node, quorumFloor))
+                                           .or(false);
+    }
+
+    /// Decide whether the `/api/health` view has reached the quorum floor: the leader must report
+    /// `quorum:true` AND a member count (`nodeCount`) at or above the strict majority. A single-node
+    /// self-view (`nodeCount:1`) against an expected multi-core cluster fails this check — exactly the
+    /// split-brain case being fenced.
+    static boolean healthMeetsFloor(JsonNode health, int quorumFloor) {
+        var nodeCount = health.path("nodeCount").asInt(0);
+        var hasQuorum = health.path("quorum").asBoolean(false);
+
+        return hasQuorum && nodeCount >= quorumFloor;
     }
 
     @SuppressWarnings("JBCT-EX-01")

@@ -324,6 +324,10 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         return ClusterHttpClient.getDirect(url);
     }
 
+    static Result<String> httpGet(String url, Option<String> apiKey) {
+        return ClusterHttpClient.getDirect(url, apiKey);
+    }
+
     @SuppressWarnings("JBCT-EX-01")
     @Contract
     static void sleepQuietly(long millis) {
