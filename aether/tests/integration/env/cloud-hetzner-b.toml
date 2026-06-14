@@ -78,4 +78,4 @@ authorization_role = "ADMIN"
 
 [runtime.default]
 type = "container"
-image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1-candidate"
+image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc2-candidate"
