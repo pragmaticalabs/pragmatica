@@ -24,7 +24,7 @@ document.addEventListener('alpine:init', function() {
         },
 
         async forceSnapshot(name) {
-            var data = await RestClient.post('/api/storage/' + encodeURIComponent(name) + '/snapshot', {});
+            var data = await RestClient.post('/api/storage/snapshot/' + encodeURIComponent(name), {});
             if (data) {
                 Notifications.show('Snapshot triggered for ' + name, 'success');
                 this.refresh();
