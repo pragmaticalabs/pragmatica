@@ -289,14 +289,41 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         log.info("CTM: Node {} joined", joined.nodeId());
     }
 
+    /// #166 — on confirmed membership-view removal the leader actively reaps the departed node's
+    /// container/instance. `NodeRemoved` is emitted only on co-confirmed death (`swimFaulty ∧
+    /// livenessGone`) or graceful departure — never on a transient SWIM flap (which stays SUSPECT),
+    /// so the reap is safe. `terminateNode` is idempotent: a no-op on an already-exited node, and
+    /// the authoritative kill for a phantom whose container is restart-looping at an unreachable
+    /// address (e.g. `localhost:6000`) and would otherwise re-appear HEALTHY in SWIM. Without this
+    /// reap the phantom self-evicts only by SWIM's `suspectTimeout × 3` residency clock — and not at
+    /// all if its container keeps re-registering — leaving `coreCount > coreMax`. Pruning is
+    /// leader-owned: the `active.get()` guard in `onMembershipDecision` already gates this to the
+    /// active (leader) CTM, satisfying the single-writer rule.
     @Contract
     private void handleNodeRemoved(NodeRemoved removed) {
-        log.info("CTM: Node {} removed", removed.nodeId());
+        log.info("CTM: Node {} removed — reaping container to prevent phantom resurrection", removed.nodeId());
+        reapDepartedNode(removed.nodeId());
     }
 
+    /// #166 — a decommissioned node is permanently leaving; reap its container for the same
+    /// phantom-prevention reason as [#handleNodeRemoved].
     @Contract
     private void handleNodeDecommissioned(NodeDecommissioned decommissioned) {
-        log.warn("CTM: Node {} decommissioned", decommissioned.nodeId());
+        log.warn("CTM: Node {} decommissioned — reaping container", decommissioned.nodeId());
+        reapDepartedNode(decommissioned.nodeId());
+    }
+
+    /// Idempotent best-effort container reap for a departed node. The `NodeLifecycleManager`
+    /// routes through the active `ComputeProvider`; when no provider is configured (non-cloud /
+    /// test) the terminate resolves as an unsupported-operation failure that is logged and
+    /// swallowed — the failure channel is owned here, never propagated, so this stays a pure
+    /// notification side effect of the membership-decision handler.
+    @Contract
+    private void reapDepartedNode(NodeId departedNodeId) {
+        lifecycleManager.terminateNode(departedNodeId)
+                        .onFailure(cause -> log.debug("CTM: reap of departed node {} not actioned: {}",
+                                                      departedNodeId,
+                                                      cause.message()));
     }
 
     @Contract

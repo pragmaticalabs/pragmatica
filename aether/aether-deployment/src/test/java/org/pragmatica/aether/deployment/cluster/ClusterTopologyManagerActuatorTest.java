@@ -23,6 +23,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipView;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyObserver;
@@ -171,6 +172,40 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(result.isSuccess()).isTrue();
         assertThat(lifecycleManager.provisionCount.get()).isZero();
         assertThat(lifecycleManager.terminateCount.get()).isZero();
+    }
+
+    /// #166 — a confirmed `NodeRemoved` membership decision on the active (leader) CTM reaps the
+    /// departed node's container so a phantom that would otherwise restart-loop back into
+    /// SWIM-HEALTHY cannot resurrect. The reap is idempotent: `terminateNode` is a no-op on an
+    /// already-exited node.
+    @Test
+    void onMembershipDecision_nodeRemoved_whileActive_reapsDepartedContainer() {
+        ctm.activate();
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of(SELF, PEER_A, PEER_B)));
+        assertThat(lifecycleManager.terminatedNodeIds())
+                .as("confirmed removal reaps the departed node's container")
+                .containsExactly(PEER_C);
+    }
+
+    /// #166 — a `NodeDecommissioned` decision (permanent departure) reaps the container for the
+    /// same phantom-prevention reason as `NodeRemoved`.
+    @Test
+    void onMembershipDecision_nodeDecommissioned_whileActive_reapsDepartedContainer() {
+        ctm.activate();
+        ctm.onMembershipDecision(MembershipDecision.nodeDecommissioned(PEER_D, List.of(SELF, PEER_A, PEER_B)));
+        assertThat(lifecycleManager.terminatedNodeIds())
+                .as("confirmed decommission reaps the departed node's container")
+                .containsExactly(PEER_D);
+    }
+
+    /// #166 — the reap is leader-owned (single-writer rule). A non-active CTM (deactivated / not
+    /// leader) ignores membership decisions entirely, so no reap is issued.
+    @Test
+    void onMembershipDecision_nodeRemoved_whileInactive_doesNotReap() {
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of(SELF, PEER_A, PEER_B)));
+        assertThat(lifecycleManager.terminateCount.get())
+                .as("an inactive (non-leader) CTM never reaps — the active leader owns the prune")
+                .isZero();
     }
 
     @Test
