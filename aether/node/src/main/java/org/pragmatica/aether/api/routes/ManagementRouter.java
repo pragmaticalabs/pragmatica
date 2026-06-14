@@ -96,14 +96,15 @@ public final class ManagementRouter {
 
         route.handler().handle(routingCtx).onFailure(cause -> writeError(response, cause, serverCtx)).onSuccess(value -> writeSuccess(value,
                                                                                                                                       route.contentType(),
-                                                                                                                                      response));
+                                                                                                                                      response,
+                                                                                                                                      serverCtx));
     }
 
     private void writeError(ResponseWriter response, org.pragmatica.lang.Cause cause, RequestContext serverCtx) {
         ProblemResponses.writeProblem(response, cause, serverCtx.path(), serverCtx.requestId());
     }
 
-    private void writeSuccess(Object value, ContentType contentType, ResponseWriter response) {
+    private void writeSuccess(Object value, ContentType contentType, ResponseWriter response, RequestContext serverCtx) {
         if (value instanceof Option<?> opt && opt.isEmpty()) {
             response.noContent();
 
@@ -122,13 +123,12 @@ public final class ManagementRouter {
             return;
         }
 
-        writeJson(value, response);
+        writeJson(value, response, serverCtx);
     }
 
-    private void writeJson(Object value, ResponseWriter response) {
-        jsonCodec.serialize(value).onFailure(_ -> response.error(org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR,
-                                                                 "Serialization failed")).onSuccess(byteBuf -> extractAndRelease(byteBuf,
-                                                                                                                                 response));
+    private void writeJson(Object value, ResponseWriter response, RequestContext serverCtx) {
+        jsonCodec.serialize(value).onFailure(cause -> writeError(response, cause, serverCtx)).onSuccess(byteBuf -> extractAndRelease(byteBuf,
+                                                                                                                                    response));
     }
 
     private void extractAndRelease(io.netty.buffer.ByteBuf byteBuf, ResponseWriter response) {

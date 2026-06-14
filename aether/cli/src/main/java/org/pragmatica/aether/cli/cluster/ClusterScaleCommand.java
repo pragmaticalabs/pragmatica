@@ -55,7 +55,7 @@ class ClusterScaleCommand implements Callable<Integer> {
         return clusterTarget.applyOverrides()
                             .flatMap(_ -> resolveEffective())
                             .flatMap(this::confirmAndScale)
-                            .fold(ClusterScaleCommand::onFailure, this::onSuccess);
+                            .fold(this::onFailure, this::onSuccess);
     }
 
     private Result<String> confirmAndScale(EffectiveScale pair) {
@@ -144,16 +144,14 @@ class ClusterScaleCommand implements Callable<Integer> {
                                                              .asLong(0));
     }
 
-    private static int onFailure(Cause cause) {
+    private int onFailure(Cause cause) {
         if (cause instanceof ScaleError.Aborted) {
             System.out.println("Aborted.");
 
             return ExitCode.SUCCESS;
         }
 
-        System.err.println("Error: " + cause.message());
-
-        return ExitCode.ERROR;
+        return OutputFormatter.printError(cause, parent.outputOptions());
     }
 
     sealed interface ScaleError extends Cause {

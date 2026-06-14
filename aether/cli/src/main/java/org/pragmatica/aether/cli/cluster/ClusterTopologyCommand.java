@@ -49,17 +49,15 @@ class ClusterTopologyCommand implements Callable<Integer> {
     public Integer call() {
         return clusterTarget.applyOverrides()
                             .flatMap(_ -> ClusterHttpClient.fetch(CLUSTER_TOPOLOGY))
-                            .fold(ClusterTopologyCommand::onFailure, this::onSuccess);
+                            .fold(this::onFailure, this::onSuccess);
     }
 
     private int onSuccess(String json) {
         return OutputFormatter.printQuery(json, parent.outputOptions(), TOPOLOGY_TABLE);
     }
 
-    private static int onFailure(Cause cause) {
-        System.err.println("Error: " + cause.message());
-
-        return ExitCode.ERROR;
+    private int onFailure(Cause cause) {
+        return OutputFormatter.printError(cause, parent.outputOptions());
     }
 
     @Command(name = "circuit-breaker", description = "CTM provisioning circuit breaker", subcommands = {CircuitBreakerCommand.StatusCommand.class, CircuitBreakerCommand.ResetCommand.class})

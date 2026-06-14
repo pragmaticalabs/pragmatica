@@ -304,6 +304,14 @@ public sealed interface OutputFormatter {
         return ExitCode.ERROR;
     }
 
+    /// #308: render a transport/command failure honoring `--format`. With `--format json` the
+    /// error is emitted as a structured `{"error":"..."}` object on stderr so a scripted client
+    /// can parse it; otherwise the human-readable `Error: <message>` form is used. Returns
+    /// `ExitCode.ERROR` so command `onFailure` handlers can return it directly.
+    static int printError(Cause cause, OutputOptions options) {
+        return printError(cause.message(), options);
+    }
+
     static int printNotFound(String message, OutputOptions options) {
         if (options.format() == OutputFormat.JSON) {
             System.err.println("{\"error\":\"" + message.replace("\"", "\\\"") + "\"}");

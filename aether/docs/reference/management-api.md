@@ -3416,6 +3416,31 @@ Restore from a specific backup.
 
 ## Error Responses
 
+All management-plane failures share one wire shape: an RFC 9457 `application/problem+json`
+envelope with the standard `type` / `title` / `status` / `detail` / `instance` members plus a
+`requestId` extension for tracing.
+
+```json
+{
+  "type": "about:blank",
+  "title": "Internal Server Error",
+  "status": 500,
+  "detail": "<cause message>",
+  "instance": "/api/cluster/topology",
+  "requestId": "a1b2c3d4"
+}
+```
+
+Cause → status resolution: a cause implementing `HttpStatusAware` surfaces its `httpStatus()`
+(e.g. `ClusterConfigError.VersionConflict` → 409, `ClusterNotFound` → 404). Any other cause —
+including serialization failures and unmapped domain causes (#308) — falls back to HTTP `500`
+but STILL returns the structured `problem+json` body above, never a bare/empty 500. A scripted
+client can therefore always parse `status` and `detail`.
+
+The `aether` CLI honors `--format json` on error paths: with `--format json` a failure is
+emitted to stderr as a structured `{"error":"<message>"}` object; otherwise the human-readable
+`Error: <message>` form is used.
+
 ## Schema Management
 
 Manage datasource schema migrations across the cluster.

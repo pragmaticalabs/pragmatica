@@ -59,7 +59,7 @@ class ClusterMigrateCommand implements Callable<Integer> {
         return clusterTarget.applyOverrides()
                             .flatMap(_ -> validateStrategy())
                             .flatMap(this::sendMigrateRequest)
-                            .fold(ClusterMigrateCommand::onFailure, this::onSuccess);
+                            .fold(this::onFailure, this::onSuccess);
     }
 
     private boolean confirmMigration() {
@@ -113,10 +113,8 @@ class ClusterMigrateCommand implements Callable<Integer> {
         return OutputFormatter.printAction(json, parent.outputOptions(), label);
     }
 
-    private static int onFailure(Cause cause) {
-        System.err.println("Error: " + cause.message());
-
-        return ExitCode.ERROR;
+    private int onFailure(Cause cause) {
+        return OutputFormatter.printError(cause, parent.outputOptions());
     }
 
     sealed interface MigrateError extends Cause {

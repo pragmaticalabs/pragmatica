@@ -6,6 +6,7 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.DestructiveAction;
 import org.pragmatica.aether.cli.ExitCode;
+import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 
@@ -63,7 +64,7 @@ class ClusterDrainCommand implements Callable<Integer> {
                                                                  List.of(nodeId),
                                                                  "{}"))
                             .flatMap(MAPPER::readTree)
-                            .fold(ClusterDrainCommand::onFailure, this::onDrainInitiated);
+                            .fold(this::onFailure, this::onDrainInitiated);
     }
 
     private int onDrainInitiated(JsonNode root) {
@@ -139,9 +140,7 @@ class ClusterDrainCommand implements Callable<Integer> {
         }
     }
 
-    private static int onFailure(Cause cause) {
-        System.err.println("Error: " + cause.message());
-
-        return ExitCode.ERROR;
+    private int onFailure(Cause cause) {
+        return OutputFormatter.printError(cause, parent.outputOptions());
     }
 }
