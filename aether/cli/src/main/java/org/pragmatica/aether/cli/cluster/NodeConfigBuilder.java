@@ -5,6 +5,7 @@
 package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
+import org.pragmatica.aether.config.cluster.BootstrapOverlayGenerator;
 import org.pragmatica.aether.config.cluster.DefaultNodeConfig;
 import org.pragmatica.aether.config.cluster.NodeConfigComposer;
 import org.pragmatica.aether.config.cluster.SourceProfile;

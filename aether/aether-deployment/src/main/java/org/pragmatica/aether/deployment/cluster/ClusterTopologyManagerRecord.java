@@ -4,7 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
+import org.pragmatica.aether.config.cluster.ReplacementNodeConfigComposer;
+import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.InstanceType;
@@ -85,6 +91,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
+    private static final String AETHER_CLUSTER_SECRET_ENV = "AETHER_CLUSTER_SECRET";
 
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
@@ -449,11 +456,91 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", contextSeeded).unwrap();
-        var spec = computePlacementHint().map(baseSpec::withPlacement).or(baseSpec);
+        var placedSpec = computePlacementHint().map(baseSpec::withPlacement).or(baseSpec);
+        var spec = renderReplacementUserData(contextSeeded, intendedRole).map(placedSpec::withUserData).or(placedSpec);
 
         return lifecycleManager.provisionNode(spec)
                                .onFailure(this::recordProvisioningFailure)
                                .mapToUnit();
+    }
+
+    /// Render the replacement node's cloud-init user-data so a CTM-provisioned (cloud) replacement
+    /// boots with the SAME identity a bootstrap-minted node receives — the new node-id, the LIVE
+    /// PEERS list (not the dead seed peers baked into the static `[cloud...] user_data` blob), the
+    /// cluster name + secret, the [ClusterIdentityEnv] allow-list and dev-mode posture — and the
+    /// runtime payload for the node's runtime profile. WITHOUT this the Hetzner provider falls back
+    /// to the static bootstrap blob (now-dead seed PEERS + stale identity) and the replacement
+    /// never joins — the cloud-only auto-heal defect this method exists to close.
+    ///
+    /// Uses the SHARED [NodeUserDataRenderer] (also used by the CLI bootstrap path) so the two
+    /// scripts cannot drift. The renderer inputs are reconstructed from the persisted cluster
+    /// config (`ClusterConfigValue.tomlContent()`, re-parsed via [ClusterBootstrapConfigParser]):
+    /// the cloud [SourceProfile] backing `intendedRole` and the composed `aether.toml`. The
+    /// cluster secret rides the [ClusterIdentityEnv] allow-list from the running node's env exactly
+    /// as the renderer's `emitIdentityEnv` does, so it is not threaded here.
+    ///
+    /// Degrades to [Option#empty] (NO user-data → provider keeps its existing `config.userData()`
+    /// fallback) when the persisted TOML is blank/unparseable or no cloud source backs the role —
+    /// non-cloud (Docker/forge) providers inject identity from the [ProvisionContext] directly and
+    /// never consult user-data, so an absent render is correct there.
+    private Option<String> renderReplacementUserData(ProvisionContext context, NodeRole intendedRole) {
+        return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
+                     .filter(toml -> !toml.isBlank())
+                     .flatMap(toml -> renderFromToml(toml, context, intendedRole));
+    }
+
+    private Option<String> renderFromToml(String toml, ProvisionContext context, NodeRole intendedRole) {
+        return ClusterBootstrapConfigParser.parse(toml)
+                                           .option()
+                                           .flatMap(config -> renderFromConfig(config, context, intendedRole));
+    }
+
+    private Option<String> renderFromConfig(ClusterBootstrapConfig config, ProvisionContext context, NodeRole intendedRole) {
+        return cloudSourceFor(config, intendedRole).flatMap(source -> renderFromSource(config, source, context, intendedRole));
+    }
+
+    private Option<String> renderFromSource(ClusterBootstrapConfig config,
+                                            SourceProfile source,
+                                            ProvisionContext context,
+                                            NodeRole intendedRole) {
+        return ReplacementNodeConfigComposer.compose(config, source, clusterSecretFromEnv())
+                                            .option()
+                                            .map(composed -> NodeUserDataRenderer.render(config,
+                                                                                         source,
+                                                                                         intendedRole,
+                                                                                         context.nodeId().or(""),
+                                                                                         0,
+                                                                                         clusterSecretFromEnv().or(""),
+                                                                                         config.cluster().name(),
+                                                                                         composed,
+                                                                                         List.of(),
+                                                                                         peersList(context)));
+    }
+
+    /// The cloud [SourceProfile] backing the given role: the first `CLOUD`-type source whose role
+    /// table declares the role. Only cloud replacements consume user-data, so non-cloud sources are
+    /// skipped (the empty result degrades the render to a no-op above).
+    private static Option<SourceProfile> cloudSourceFor(ClusterBootstrapConfig config, NodeRole role) {
+        return Option.from(config.sources()
+                                 .values()
+                                 .stream()
+                                 .filter(source -> source.type() == SourceType.CLOUD)
+                                 .filter(source -> source.roles().containsKey(role))
+                                 .findFirst());
+    }
+
+    /// The cluster secret as the running (leader) node sees it in its own environment — the same
+    /// source the renderer's `emitIdentityEnv` reads it from, so the secret baked into the
+    /// replacement's `AETHER_CLUSTER_SECRET` matches the live cluster's.
+    private static Option<String> clusterSecretFromEnv() {
+        return Option.option(System.getenv(AETHER_CLUSTER_SECRET_ENV)).filter(s -> !s.isBlank());
+    }
+
+    private static List<String> peersList(ProvisionContext context) {
+        return context.peers()
+                      .filter(peers -> !peers.isBlank())
+                      .map(peers -> List.of(peers.split(",")))
+                      .or(List.<String>of());
     }
 
     /// #148 — the provisioning circuit is OPEN when the consecutive-failure count has reached the

@@ -6,6 +6,7 @@
 package org.pragmatica.aether.cli.cluster;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.config.cluster.BootstrapOverlayGenerator;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;

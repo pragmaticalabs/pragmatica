@@ -2,13 +2,8 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-package org.pragmatica.aether.cli.cluster;
+package org.pragmatica.aether.config.cluster;
 
-import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
-import org.pragmatica.aether.config.cluster.NodeRole;
-import org.pragmatica.aether.config.cluster.RoleSubTable;
-import org.pragmatica.aether.config.cluster.SourceProfile;
-import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Option;
 
@@ -18,6 +13,11 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 
+/// Builds the CLI/CTM overlay section of a node's composed `aether.toml`: the cluster name +
+/// ports, cloud provider/credentials/discovery, the source-specific compute section, the TLS
+/// cluster-secret and any database URLs. Lives in `aether-config` (moved from `cli`) so BOTH the
+/// CLI bootstrap and the CTM auto-heal replacement path compose node config from the SAME overlay
+/// generator and cannot drift — the CTM module (`aether-deployment`) cannot import `cli`.
 public interface BootstrapOverlayGenerator {
     record Section(String name, Map<String, Object> values) {
         static Section section(String name, Map<String, Object> values) {
