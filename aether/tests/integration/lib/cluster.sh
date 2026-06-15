@@ -572,7 +572,18 @@ wait_for_cluster_ready() {
     # different port (5156+/5166+). Without this, subsequent suites probe the dead pin
     # and fast-fail even though the cluster is operationally healthy.
     if ! _refresh_mgmt_entry_point; then
-        log_fail "cluster ready (${expected}+ members, canonical §1.1) — no live core in ${MGMT_PORT}..$((MGMT_PORT + NODE_COUNT - 1)) responds to /health/live; cluster appears down, fast-failing"
+        # Describe the probed address space accurately per env: docker/remote scan
+        # the fixed seed host-port range on TARGET_HOST; cloud scans the per-VM
+        # public IPs at the uniform CLOUD_MGMT_PORT (_resolve_live_endpoint handles
+        # both). Reporting the docker port range on cloud was misleading — cloud
+        # never probes those ports.
+        local probed
+        if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
+            probed="${NODE_COUNT} cloud VM(s) at port ${CLOUD_MGMT_PORT:-${MGMT_PORT:-8080}}"
+        else
+            probed="${MGMT_PORT}..$((MGMT_PORT + NODE_COUNT - 1)) on ${TARGET_HOST}"
+        fi
+        log_fail "cluster ready (${expected}+ members, canonical §1.1) — no live core in ${probed} responds to /health/live; cluster appears down, fast-failing"
         return 1
     fi
     # Slow path — cluster is reachable but not yet at full readiness; enter the polling loop.

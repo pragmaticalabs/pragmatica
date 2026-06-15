@@ -324,6 +324,28 @@ node_absent_from_status() {
     return 0  # absent
 }
 
+# Print the set of node-ids currently in /api/nodes/status cluster.nodes[], one
+# per line, sorted+deduped. Empty string (rc 1) on transport failure.
+#
+# This is the cloud-reliable identity source: every node (seed OR CTM replacement,
+# docker OR cloud VM) appears in the cluster's own membership projection by its
+# runtime NodeId. Used as the cloud substitute for the docker `aether.node-id`
+# container-label snapshot (S01 / test-joining-window-kill.sh) — on cloud each node
+# is a separate VM with no local container labels to inspect, so identity must come
+# from the API. The output format (sorted unique node-ids, one per line) matches
+# `snapshot_node_id_labels` so the same `comm -13` set-diff works unchanged.
+status_node_ids() {
+    local status_payload
+    status_payload=$(api_get "/api/nodes/status" 2>/dev/null || true)
+    if [ -z "$status_payload" ]; then
+        return 1  # couldn't read
+    fi
+    printf '%s' "$status_payload" \
+        | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | sed 's/"nodeId"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' \
+        | sort -u
+}
+
 # v2 "node was removed" poll, bounded by the spec budget. In v2 a killed node
 # simply leaves the SWIM-fed membership — there is NO DECOMMISSIONED lifecycle
 # state and NO decommission-reason domain event. The authoritative v2 removal

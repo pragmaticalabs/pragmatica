@@ -241,14 +241,45 @@ _discover_endpoint_by_label() {
 #
 # Resolution order:
 #   1. pinned CLUSTER_ENDPOINT (happy path — preserves forwarding-bug detection)
-#   2. fixed seed host-port range MGMT_PORT..MGMT_PORT+N-1 (surviving compose seeds)
-#   3. Docker label discovery (CTM KSUID replacements with ephemeral host ports) —
-#      the only path that survives full seed replacement; see
+#   2a. cloud: per-VM public-IP scan (each node is <publicIp>:CLOUD_MGMT_PORT,
+#       resolved via cloud_public_ip; there is NO local docker to inspect and no
+#       fixed host-port range on TARGET_HOST — see the cloud branch below)
+#   2b. docker/remote: fixed seed host-port range MGMT_PORT..MGMT_PORT+N-1
+#       (surviving compose seeds)
+#   3. docker/remote: label discovery (CTM KSUID replacements with ephemeral host
+#      ports) — the only path that survives full seed replacement; see
 #      _discover_endpoint_by_label.
 _resolve_live_endpoint() {
     if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/health/live" >/dev/null 2>&1; then
         echo "${CLUSTER_ENDPOINT}"
         return 0
+    fi
+    # Cloud: the pinned endpoint is dead. Each node lives on its OWN VM public IP at
+    # the uniform CLOUD_MGMT_PORT (8080) — there is no shared TARGET_HOST port range
+    # and no local/remote docker daemon to label-discover against. Resolve a live
+    # node by walking the provisioned VM IPs (cloud_public_ip reads bootstrap-state.json).
+    # Without this branch the resolver falls through to the docker-only TARGET_HOST
+    # port scan (which on cloud probes the cluster-B docker ports 5161..5165 — all
+    # dead) and then _discover_endpoint_by_label (which returns 1 immediately on
+    # cloud), so every read after the pinned node dies returns '' and the whole
+    # suite cascades into false failures.
+    if [ "${ENV_TYPE:-docker}" = "cloud" ] && command -v cloud_public_ip >/dev/null 2>&1; then
+        local mgmt_port="${CLOUD_MGMT_PORT:-${MGMT_PORT:-8080}}"
+        local n node_id node_ip endpoint
+        for n in $(seq 0 $((NODE_COUNT - 1))); do
+            node_id=$(to_node_id "node-$((n + 1))" 2>/dev/null || true)
+            [ -z "$node_id" ] && continue
+            node_ip=$(cloud_public_ip "$node_id" 2>/dev/null || true)
+            [ -z "$node_ip" ] && continue
+            endpoint="${MGMT_SCHEME:-http}://${node_ip}:${mgmt_port}"
+            if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
+                echo "${endpoint}"
+                return 0
+            fi
+        done
+        # No surviving VM responded; fall back so the caller surfaces a curl failure.
+        echo "${CLUSTER_ENDPOINT}"
+        return 1
     fi
     # Fast-path: a previously label-discovered replacement endpoint that is still
     # fresh and still answers. Skips the fixed-seed port scan (which costs ~2s/dead
@@ -360,17 +391,42 @@ api_delete() {
 # Example: "is METRICS task group ACTIVE on node-2 specifically?"
 # NOT a client-side failover mechanism. Management calls go through api_get/api_post → MGMT_ENTRY_POINT.
 #
-# Caller supplies the 0-based offset of the target core node (0 → MGMT_PORT, 1 → MGMT_PORT+1, ...).
+# Caller supplies the 0-based offset of the target core node (0 → first node, 1 → second, ...).
+
+# Resolve the management base URL for the core node at 0-based $offset.
+# docker/remote: nodes are collocated on TARGET_HOST with a host-mapped per-node
+#   port range, so node K is TARGET_HOST:(MGMT_PORT + K).
+# cloud: each node is its own VM with mgmt on the uniform CLOUD_MGMT_PORT; resolve
+#   the VM's public IP via to_node_id (offset → node-(K+1) → runtime id) → cloud_public_ip.
+# Prints the base URL (e.g. http://1.2.3.4:8080) on stdout; rc 1 if the cloud IP
+# lookup fails. Scheme honours MGMT_SCHEME (https on cloud-B with TLS auto-gen).
+node_base_url() {
+    local offset="$1"
+    if [ "${ENV_TYPE:-docker}" = "cloud" ] && command -v cloud_public_ip >/dev/null 2>&1; then
+        local mgmt_port="${CLOUD_MGMT_PORT:-${MGMT_PORT:-8080}}"
+        local node_id node_ip
+        node_id=$(to_node_id "node-$((offset + 1))" 2>/dev/null || true)
+        [ -z "$node_id" ] && return 1
+        node_ip=$(cloud_public_ip "$node_id" 2>/dev/null || true)
+        [ -z "$node_ip" ] && return 1
+        printf '%s://%s:%s\n' "${MGMT_SCHEME:-http}" "$node_ip" "$mgmt_port"
+        return 0
+    fi
+    printf 'http://%s:%s\n' "${TARGET_HOST}" "$((MGMT_PORT + offset))"
+}
+
 node_api_get() {
     local offset="$1" path="$2"
-    local port=$((MGMT_PORT + offset))
-    _api_call GET "http://${TARGET_HOST}:${port}${path}"
+    local base
+    base=$(node_base_url "$offset") || return 1
+    _api_call GET "${base}${path}"
 }
 
 node_api_post() {
     local offset="$1" path="$2" body="${3:-"{}"}"
-    local port=$((MGMT_PORT + offset))
-    _api_call POST "http://${TARGET_HOST}:${port}${path}" "$body"
+    local base
+    base=$(node_base_url "$offset") || return 1
+    _api_call POST "${base}${path}" "$body"
 }
 
 # Back-compat shims — forward to the MGMT_ENTRY_POINT, no client-side failover.
@@ -646,7 +702,28 @@ to_node_id() {
     echo "$node_id"
 }
 
-# cloud_public_ip <node-id> — print the public IP of <node-id> by reading the
+# Map a node's runtime id (as reported by the management API, e.g. in
+# scheduled-tasks `registeredBy` or a SliceNotLocal retry hint) to the 0-based core
+# offset that node_api_get/node_api_post / node_base_url expect.
+#
+#   docker/remote: `aether-{a|b}-node-N` or bare `node-N` (N is 1-based) → offset N-1
+#   cloud:         `<source>-core-K`     (K is already 0-based)          → offset K
+#
+# Prints the offset on stdout, rc 0 on success; rc 1 if the id matches no known form.
+_registered_by_to_offset() {
+    local id="$1"
+    if [[ "$id" =~ ^(aether-[ab]-)?node-([0-9]+)$ ]]; then
+        echo "$(( ${BASH_REMATCH[2]} - 1 ))"
+        return 0
+    fi
+    if [[ "$id" =~ ^[A-Za-z0-9-]+-core-([0-9]+)$ ]]; then
+        echo "${BASH_REMATCH[1]}"
+        return 0
+    fi
+    return 1
+}
+
+
 # bootstrap-state.json that `aether cluster bootstrap` writes under
 # ~/.aether/clusters/<BOOTSTRAP_CLUSTER_NAME>/.
 #
@@ -712,7 +789,35 @@ cloud_public_ip() {
         fi
     done <<< "$ids"
     if [ -z "$ip" ]; then
-        log_fail "cloud_public_ip: no entry for '${target}' (input='${node_id}') in ${state_file}"
+        # bootstrap-state.json only records the nodes provisioned at bootstrap. A
+        # CTM-provisioned REPLACEMENT VM (cloud auto-heal) is NOT in that file — its
+        # node-id reaches us from /api/nodes/status, not from bootstrap. Fall back to
+        # the Hetzner API, which is the authoritative live inventory: every Aether VM
+        # (bootstrap OR CTM replacement) carries an `aether-node-id` label (the same
+        # label cloud-reaper.sh keys on). Look the IP up by that label. Bounded,
+        # no-jq (grep/sed, per the harness no-extra-deps idiom), and only attempted
+        # when the static lookup missed AND a token is available — so the happy path
+        # (bootstrap nodes) never pays an API round-trip.
+        if [ -n "${HCLOUD_TOKEN:-}" ]; then
+            local hz_api="${HCLOUD_API:-https://api.hetzner.cloud/v1}"
+            local enc body
+            enc=$(printf 'aether-node-id=%s' "$target" | sed 's/=/%3D/')
+            body=$(curl -sS -m 10 -H "Authorization: Bearer ${HCLOUD_TOKEN}" \
+                        "${hz_api}/servers?label_selector=${enc}&per_page=50" 2>/dev/null || true)
+            if [ -n "$body" ]; then
+                # Extract the first server's primary IPv4: ...public_net":{"ipv4":{"ip":"1.2.3.4",...
+                # The response is one flat JSON document; grab the first ipv4 ip string.
+                ip=$(printf '%s' "$body" \
+                    | grep -o '"ipv4"[[:space:]]*:[[:space:]]*{[^}]*"ip"[[:space:]]*:[[:space:]]*"[^"]*"' \
+                    | head -1 \
+                    | sed 's/.*"ip"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+            fi
+            if [ -n "$ip" ]; then
+                printf '%s\n' "$ip"
+                return 0
+            fi
+        fi
+        log_fail "cloud_public_ip: no entry for '${target}' (input='${node_id}') in ${state_file}${HCLOUD_TOKEN:+ and no Hetzner server carries label aether-node-id=${target}}"
         return 1
     fi
     printf '%s\n' "$ip"

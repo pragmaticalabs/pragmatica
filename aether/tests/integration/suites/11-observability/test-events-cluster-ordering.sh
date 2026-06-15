@@ -28,8 +28,8 @@ test_cluster_ready() {
 test_inject_events_round_robin() {
     local injected=0
     for i in $(seq 0 $((NODE_COUNT - 1))); do
-        local port=$((MGMT_PORT + i))
-        local node_endpoint="http://${TARGET_HOST}:${port}"
+        local node_endpoint
+        node_endpoint=$(node_base_url "$i") || continue
         for j in $(seq 1 3); do
             local body
             body="{\"name\":\"${MARKER}-n${i}-e${j}\",\"severity\":\"WARNING\",\"message\":\"ordering-probe\",\"metric\":\"order.test\",\"value\":1.0}"
@@ -53,10 +53,11 @@ test_inject_events_round_robin() {
 test_wait_for_replication() {
     local deadline=$((SECONDS + 15))
     while [ $SECONDS -lt $deadline ]; do
-        local port=$((MGMT_PORT + 0))
+        local node0
+        node0=$(node_base_url 0) || { sleep 1; continue; }
         local events
         events=$(curl -sfk -m 5 -H "X-API-Key: ${API_KEY}" \
-                        "http://${TARGET_HOST}:${port}/api/events" 2>/dev/null || true)
+                        "${node0}/api/events" 2>/dev/null || true)
         if printf '%s' "${events}" | grep -q "${MARKER}"; then
             log_pass "Replication confirmed (marker visible on node 0)"
             return 0
@@ -74,9 +75,9 @@ test_wait_for_replication() {
 # the snapshot deterministic — the test then compares sequences taken under the same
 # fan-out completion state on every node.
 _count_marker_events() {
-    local port="$1"
+    local base="$1"
     curl -sfk -m 5 -H "X-API-Key: ${API_KEY}" \
-            "http://${TARGET_HOST}:${port}/api/events" 2>/dev/null \
+            "${base}/api/events" 2>/dev/null \
         | grep -oE "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*${MARKER}[^\"]*\"" \
         | wc -l \
         | tr -d ' '
@@ -88,9 +89,10 @@ test_wait_for_marker_count_convergence() {
     while [ $SECONDS -lt $deadline ]; do
         local first_count="" diverged=0
         for i in $(seq 0 $((NODE_COUNT - 1))); do
-            local port=$((MGMT_PORT + i))
+            local base
+            base=$(node_base_url "$i") || { diverged=1; break; }
             local count
-            count=$(_count_marker_events "$port")
+            count=$(_count_marker_events "$base")
             if [ -z "$first_count" ]; then
                 first_count="$count"
                 continue
@@ -120,12 +122,12 @@ test_wait_for_marker_count_convergence() {
 test_all_nodes_agree_on_order() {
     local reference=""
     for i in $(seq 0 $((NODE_COUNT - 1))); do
-        local port=$((MGMT_PORT + i))
-        local node_endpoint="http://${TARGET_HOST}:${port}"
+        local node_endpoint
+        node_endpoint=$(node_base_url "$i") || { log_fail "node_base_url failed for node ${i}"; return 1; }
         local events
         if ! events=$(curl -sfk -m 5 -H "X-API-Key: ${API_KEY}" \
                             "${node_endpoint}/api/events" 2>/dev/null); then
-            log_fail "GET /api/events failed on node ${i} (port=${port})"
+            log_fail "GET /api/events failed on node ${i} (${node_endpoint})"
             return 1
         fi
         # Extract marker-bearing event names from the details.name field (where the
