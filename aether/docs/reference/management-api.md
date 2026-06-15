@@ -122,6 +122,26 @@ A management request may land on any core node, but where it is ultimately serve
 
 ## Cluster Status
 
+### Schema stability contract
+
+A small set of response fields are consumed by automated tooling (the integration-test harness
+parses them with field-path extraction and grep). These fields are **frozen**: they MUST NOT be
+renamed or have their JSON type changed without a major version bump and a corresponding update to
+every consumer. Adding new fields alongside them is always allowed. The contract test
+`aether/tests/integration/lib/contract-test.sh` (driven by `lib/schema-contract.toml`) enforces
+this at push time: it fails if a harness lib references a status field outside the frozen list, or
+if a frozen field disappears from this document.
+
+| Endpoint | Frozen fields |
+|----------|--------------|
+| `GET /api/cluster/status` | `leaderId`, `coreCount`, `clusterPhase` |
+| `GET /api/nodes/status` | `nodeId`, `lifecycleState`, `isLeader` |
+| `GET /api/nodes/lifecycle` | array element `nodeId`, `derivedStatus` |
+| `GET /api/nodes/live` | `nodeId`, `swimAlive`, `reportedState` |
+
+The historical `id` vs `nodeId` rename — which silently broke harness field extraction until a
+cloud run failed — is the regression this contract exists to prevent.
+
 ### GET /api/nodes/status
 
 Get overall cluster status including uptime, cluster info, slice count, and metrics summary.
@@ -157,6 +177,58 @@ Get overall cluster status including uptime, cluster info, slice count, and metr
 `runtimeState` carries the JVM/process state machine (`NodeState`: `STARTING` / `JOINING` / `ACTIVE` / `DRAINING` / `STOPPED`) — "is the process up and serving".
 
 `lifecycleState` carries the node's heartbeat-reported readiness (`SYNCING` / `READY` / `DRAINING`) as cached by the leader from the leader↔node heartbeat. This state is node-authoritative and is **never** stored in or committed to the KV-Store. Empty string when the leader has not yet received a heartbeat from the node (cold-start transient). See `aether/docs/specs/membership-architecture-v2-spec.md`.
+
+### GET /api/nodes/endpoint/{id}
+
+Resolve a single node to its cluster-transport `host:port` and a best-effort reachability flag.
+The request lands on any node and is forwarded to the node identified by `{id}` (via the standard
+`nodeIdParam(0)` forwarding pattern shared with `/api/nodes/status/{id}`, `/health/live/{id}`,
+etc.), so the address returned is the target node's own view of its transport endpoint.
+
+**Response:**
+```json
+{
+  "nodeId": "node-1",
+  "address": "10.0.0.7:7100",
+  "reachable": true
+}
+```
+
+- `address`: the node's cluster-transport `host:port` (no scheme). Falls back to the node's own
+  advertised address during the cold-start window before it registers itself in its topology view.
+- `reachable`: result of a best-effort TCP connect probe (2 s timeout) against `address`. A connect
+  failure yields `false` without failing the request — the address is always reported so the caller
+  learns where to dial. Equivalent to the harness `_resolve_live_endpoint` connect check.
+
+### GET /api/nodes/live
+
+Unified live-node document served from **any** core node. Joins three sources into one view:
+consensus topology (`address` + `role`), the SWIM-derived membership view (`swimAlive`), and the
+node-reported work-state map (`reportedState`). The node universe is the union of topology and
+reported-state keys. A **zombie** — a node still present in the reported-state map but absent from
+both the topology and the SWIM membership view — surfaces with `swimAlive=false` and
+`address=null`, and is counted in `zombieCount`.
+
+**Response:**
+```json
+{
+  "nodes": [
+    {"nodeId": "node-1", "address": "10.0.0.7:7100", "role": "CORE", "swimAlive": true, "reportedState": "READY"},
+    {"nodeId": "node-2", "address": "10.0.0.8:7100", "role": "CORE", "swimAlive": true, "reportedState": "READY"},
+    {"nodeId": "node-3", "address": null, "role": "CORE", "swimAlive": false, "reportedState": "READY"}
+  ],
+  "liveCount": 2,
+  "zombieCount": 1
+}
+```
+
+- `swimAlive`: SWIM membership presence — the single source of truth for "is this node alive".
+- `address`: `null` for a node not present in the consensus topology (e.g. a zombie known only via a
+  stale reported-state entry).
+- `role`: `"CORE"` / `"WORKER"` / `"SPOT"` from the node's `role` label, defaulting to `"CORE"`.
+- `reportedState`: node-reported work-state (`SYNCING` / `READY` / `DRAINING`) from the metrics pong;
+  empty string when no pong has been observed.
+- `liveCount`: number of entries with `swimAlive=true`. `zombieCount`: the remainder.
 
 ### GET /api/health
 
