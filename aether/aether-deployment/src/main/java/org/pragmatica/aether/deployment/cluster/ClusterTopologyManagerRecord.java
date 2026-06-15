@@ -495,26 +495,32 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                            .flatMap(config -> renderFromConfig(config, context, intendedRole));
     }
 
-    private Option<String> renderFromConfig(ClusterBootstrapConfig config, ProvisionContext context, NodeRole intendedRole) {
-        return cloudSourceFor(config, intendedRole).flatMap(source -> renderFromSource(config, source, context, intendedRole));
+    private Option<String> renderFromConfig(ClusterBootstrapConfig config,
+                                            ProvisionContext context,
+                                            NodeRole intendedRole) {
+        return cloudSourceFor(config, intendedRole).flatMap(source -> renderFromSource(config,
+                                                                                       source,
+                                                                                       context,
+                                                                                       intendedRole));
     }
 
     private Option<String> renderFromSource(ClusterBootstrapConfig config,
                                             SourceProfile source,
                                             ProvisionContext context,
                                             NodeRole intendedRole) {
-        return ReplacementNodeConfigComposer.compose(config, source, clusterSecretFromEnv())
-                                            .option()
-                                            .map(composed -> NodeUserDataRenderer.render(config,
-                                                                                         source,
-                                                                                         intendedRole,
-                                                                                         context.nodeId().or(""),
-                                                                                         0,
-                                                                                         clusterSecretFromEnv().or(""),
-                                                                                         config.cluster().name(),
-                                                                                         composed,
-                                                                                         List.of(),
-                                                                                         peersList(context)));
+        return ReplacementNodeConfigComposer.compose(config,
+                                                     source,
+                                                     clusterSecretFromEnv()).option()
+                                                    .map(composed -> NodeUserDataRenderer.render(config,
+                                                                                                 source,
+                                                                                                 intendedRole,
+                                                                                                 context.nodeId().or(""),
+                                                                                                 0,
+                                                                                                 clusterSecretFromEnv().or(""),
+                                                                                                 config.cluster().name(),
+                                                                                                 composed,
+                                                                                                 List.of(),
+                                                                                                 peersList(context)));
     }
 
     /// The cloud [SourceProfile] backing the given role: the first `CLOUD`-type source whose role
@@ -525,7 +531,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                  .values()
                                  .stream()
                                  .filter(source -> source.type() == SourceType.CLOUD)
-                                 .filter(source -> source.roles().containsKey(role))
+                                 .filter(source -> source.roles()
+                                                         .containsKey(role))
                                  .findFirst());
     }
 
@@ -540,7 +547,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return context.peers()
                       .filter(peers -> !peers.isBlank())
                       .map(peers -> List.of(peers.split(",")))
-                      .or(List.<String>of());
+                      .or(List.<String> of());
     }
 
     /// #148 — the provisioning circuit is OPEN when the consecutive-failure count has reached the

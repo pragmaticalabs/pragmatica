@@ -681,16 +681,33 @@ public class AetherCli implements Runnable {
     @Command(name = "nodes", description = "Node management — list, lifecycle, per-node introspection", subcommands = {NodesCommand.LifecycleCommand.class, NodesCommand.LiveCommand.class, NodesCommand.ResolveCommand.class, NodesCommand.DrainCommand.class, NodesCommand.ShutdownCommand.class, NodesCommand.PromoteCommand.class, NodesCommand.SlicesCommand.class, NodesCommand.RoutesCommand.class, NodesCommand.InflightCommand.class, NodesCommand.MetricsCommand.class, NodesCommand.HealthCommand.class})
     static class NodesCommand implements Callable<Integer> {
         private static final OutputFormatter.TableSpec LIVE_NODES_TABLE = new OutputFormatter.TableSpec("Live Nodes",
-                                                                                                        List.of(new OutputFormatter.Column("NODE ID", "nodeId", 30),
-                                                                                                                new OutputFormatter.Column("ADDRESS", "address", 24),
-                                                                                                                new OutputFormatter.Column("ROLE", "role", 8),
-                                                                                                                new OutputFormatter.Column("SWIM ALIVE", "swimAlive", 12),
-                                                                                                                new OutputFormatter.Column("REPORTED STATE", "reportedState", 16)),
+                                                                                                        List.of(new OutputFormatter.Column("NODE ID",
+                                                                                                                                           "nodeId",
+                                                                                                                                           30),
+                                                                                                                new OutputFormatter.Column("ADDRESS",
+                                                                                                                                           "address",
+                                                                                                                                           24),
+                                                                                                                new OutputFormatter.Column("ROLE",
+                                                                                                                                           "role",
+                                                                                                                                           8),
+                                                                                                                new OutputFormatter.Column("SWIM ALIVE",
+                                                                                                                                           "swimAlive",
+                                                                                                                                           12),
+                                                                                                                new OutputFormatter.Column("REPORTED STATE",
+                                                                                                                                           "reportedState",
+                                                                                                                                           16)),
                                                                                                         "nodes");
+
         private static final OutputFormatter.TableSpec RESOLVE_TABLE = new OutputFormatter.TableSpec("Endpoint",
-                                                                                                     List.of(new OutputFormatter.Column("NODE ID", "nodeId", 30),
-                                                                                                             new OutputFormatter.Column("ADDRESS", "address", 24),
-                                                                                                             new OutputFormatter.Column("REACHABLE", "reachable", 12)),
+                                                                                                     List.of(new OutputFormatter.Column("NODE ID",
+                                                                                                                                        "nodeId",
+                                                                                                                                        30),
+                                                                                                             new OutputFormatter.Column("ADDRESS",
+                                                                                                                                        "address",
+                                                                                                                                        24),
+                                                                                                             new OutputFormatter.Column("REACHABLE",
+                                                                                                                                        "reachable",
+                                                                                                                                        12)),
                                                                                                      null);
 
         @CommandLine.ParentCommand
@@ -775,6 +792,7 @@ public class AetherCli implements Runnable {
                 if (errorCode >= 0) {
                     return errorCode;
                 }
+
                 OutputFormatter.printQuery(response, nodesParent.parent.outputOptions(), RESOLVE_TABLE);
 
                 return LiveNodesFilter.isReachable(response)

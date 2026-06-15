@@ -29,12 +29,7 @@ public sealed interface ReplacementNodeConfigComposer {
     static Result<TomlDocument> compose(ClusterBootstrapConfig config,
                                         SourceProfile source,
                                         Option<String> clusterSecret) {
-        var overlay = BootstrapOverlayGenerator.overlay(config,
-                                                        source,
-                                                        0,
-                                                        Option.empty(),
-                                                        Option.empty(),
-                                                        clusterSecret);
+        var overlay = BootstrapOverlayGenerator.overlay(config, source, 0, Option.empty(), Option.empty(), clusterSecret);
 
         return Result.all(DefaultNodeConfig.globalDefault(),
                           DefaultNodeConfig.sourceTypeDefault(source.type()))

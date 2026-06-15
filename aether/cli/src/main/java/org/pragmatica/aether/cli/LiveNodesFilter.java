@@ -35,7 +35,8 @@ public sealed interface LiveNodesFilter {
     /// fields read as `false` — a node we cannot confirm reachable is treated as not reachable.
     static boolean isReachable(String json) {
         return MAPPER.readTree(json)
-                     .map(node -> node.path("reachable").asBoolean(false))
+                     .map(node -> node.path("reachable")
+                                      .asBoolean(false))
                      .or(false);
     }
 

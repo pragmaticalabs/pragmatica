@@ -71,6 +71,7 @@ public final class StatusRoutes implements RouteSource {
     /// (mirrors `org.pragmatica.consensus.net.NodeInfo.LABEL_ROLE`; referenced by literal to avoid
     /// a type-name clash with the `ManagementApiResponses.NodeInfo` wire record imported here).
     private static final String ROLE_LABEL = "role";
+
     private final Supplier<ManageableNode> nodeSupplier;
     private final Supplier<AppHttpServer> appHttpServerSupplier;
 
@@ -279,31 +280,32 @@ public final class StatusRoutes implements RouteSource {
     private NodeEndpointResponse buildNodeEndpointResponse(String nodeId) {
         var node = nodeSupplier.get();
         var topology = node.topologyManager();
-        var address = NodeId.nodeId(nodeId)
-                            .option()
-                            .flatMap(topology::get)
-                            .map(info -> info.address())
-                            .or(topology.self().address());
+        var address = NodeId.nodeId(nodeId).option().flatMap(topology::get).map(info -> info.address()).or(topology.self().address());
 
-        return new NodeEndpointResponse(nodeId, address.asString(), probeReachable(address.host(), address.port()));
+        return new NodeEndpointResponse(nodeId,
+                                        address.asString(),
+                                        probeReachable(address.host(), address.port()));
     }
 
     /// Best-effort TCP connect probe (spec A1: "same probe `_resolve_live_endpoint` already
     /// performs"). A connect failure collapses to `reachable=false` rather than an error channel —
     /// the endpoint is reported regardless so the caller learns where to dial.
     private static boolean probeReachable(String host, int port) {
-        return Result.lift(Causes::fromThrowable, () -> tcpConnect(host, port)).isSuccess();
+        return tcpConnect(host, port).isSuccess();
     }
 
     /// Adapter leaf: opens a short-lived TCP socket to `host:port` and returns `Unit` on a
-    /// successful connect. A connect failure propagates as a thrown exception, lifted into a
-    /// `Result` failure by {@link #probeReachable}. The socket is always closed (try-with-resources).
-    private static Unit tcpConnect(String host, int port) throws Exception {
-        try (var socket = new Socket()) {
-            socket.connect(new InetSocketAddress(host, port), PROBE_TIMEOUT_MS);
+    /// successful connect. A connect failure is lifted into a `Result` failure (inspected by
+    /// {@link #probeReachable}). The socket is always closed (try-with-resources).
+    private static Result<Unit> tcpConnect(String host, int port) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> {
+                               try (var socket = new Socket()) {
+                               socket.connect(new InetSocketAddress(host, port), PROBE_TIMEOUT_MS);
 
-            return Unit.unit();
-        }
+                               return Unit.unit();
+                           }
+                           });
     }
 
     /// A2 (harness-resilience spec §5) — unified live-node document. Joins three sources:
@@ -321,9 +323,10 @@ public final class StatusRoutes implements RouteSource {
 
         topology.topology().forEach(universe::add);
         reportedStates.keySet().forEach(universe::add);
-        var entries = universe.stream()
-                              .map(id -> toLiveNodeEntry(view, topology, id, reportedStates.getOrDefault(id, "")))
-                              .toList();
+        var entries = universe.stream().map(id -> toLiveNodeEntry(view,
+                                                                  topology,
+                                                                  id,
+                                                                  reportedStates.getOrDefault(id, ""))).toList();
         var liveCount = (int) entries.stream().filter(LiveNodeEntry::swimAlive).count();
 
         return new LiveNodesResponse(entries, liveCount, entries.size() - liveCount);
@@ -335,9 +338,10 @@ public final class StatusRoutes implements RouteSource {
                                          String reportedState) {
         var info = topology.get(nodeId);
         var swimAlive = view.isPresent(nodeId);
-        var address = info.map(i -> i.address().asString());
-        var role = info.map(i -> i.labels().getOrDefault(ROLE_LABEL, ActivationDirectiveValue.CORE))
-                       .or(ActivationDirectiveValue.CORE);
+        var address = info.map(i -> i.address()
+                                     .asString());
+        var role = info.map(i -> i.labels()
+                                  .getOrDefault(ROLE_LABEL, ActivationDirectiveValue.CORE)).or(ActivationDirectiveValue.CORE);
 
         return new LiveNodeEntry(nodeId.id(), address, role, swimAlive, reportedState);
     }

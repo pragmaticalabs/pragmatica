@@ -380,8 +380,7 @@ sealed interface BootstrapPhaseDeploy {
              + " -e PEERS=\"" + peers
              + "\""
              + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret
-             + "\""
-             + identityEnvFlags(clusterName, envLookup)
+             + "\"" + identityEnvFlags(clusterName, envLookup)
              + " " + image;
     }
 
@@ -416,13 +415,7 @@ sealed interface BootstrapPhaseDeploy {
                                          int managementPort,
                                          String peers,
                                          String clusterSecret) {
-        return buildJvmRestartCommand(nodeId,
-                                      clusterPort,
-                                      managementPort,
-                                      peers,
-                                      clusterSecret,
-                                      "",
-                                      System::getenv);
+        return buildJvmRestartCommand(nodeId, clusterPort, managementPort, peers, clusterSecret, "", System::getenv);
     }
 
     /// JVM re-launch with finalized PEERS. Same env-parity requirement as the container path

@@ -49,8 +49,8 @@ public final class MavenProtocolRoutes implements RouteHandler {
     private final BooleanSupplier devModeEnabled;
 
     private MavenProtocolRoutes(Supplier<ManageableNode> nodeSupplier,
-                               TimeSpan requestTimeout,
-                               BooleanSupplier devModeEnabled) {
+                                TimeSpan requestTimeout,
+                                BooleanSupplier devModeEnabled) {
         this.nodeSupplier = nodeSupplier;
         this.requestTimeout = requestTimeout;
         this.devModeEnabled = devModeEnabled;

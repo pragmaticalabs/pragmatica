@@ -10,6 +10,7 @@ import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.RuntimeProfile;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
@@ -94,6 +95,7 @@ sealed interface UserDataTemplate {
                                            peers);
     }
 
+    @Contract
     static void emitIdentityEnv(Fn2<Unit, String, String> emit,
                                 String clusterName,
                                 NodeRole role,

@@ -7,6 +7,7 @@ package org.pragmatica.aether.config.cluster;
 import org.pragmatica.aether.environment.ClusterIdentityEnv;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlWriter;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
@@ -272,6 +273,7 @@ public sealed interface NodeUserDataRenderer {
     /// AETHER_INSECURE_DEV_MODE is ISOLATED — it rides a standalone block, never the identity
     /// allow-list, so dev-mode can never silently inherit into a production deploy. Every value is
     /// emitted only when present (prod-safe: unset host env → not emitted).
+    @Contract
     static void emitIdentityEnv(Fn2<Unit, String, String> emit,
                                 String clusterName,
                                 NodeRole role,
@@ -284,8 +286,8 @@ public sealed interface NodeUserDataRenderer {
         // Emit AETHER_INSECURE_DEV_MODE only when present in the (injected) host env so a healed
         // node inherits its siblings' dev-mode posture. Standalone so dev-mode can never silently
         // ride the identity allow-list into a production deploy.
-        lookupNonEmpty(ClusterIdentityEnv.INSECURE_DEV_MODE, envLookup)
-            .onPresent(v -> emit.apply(ClusterIdentityEnv.INSECURE_DEV_MODE, v));
+        lookupNonEmpty(ClusterIdentityEnv.INSECURE_DEV_MODE, envLookup).onPresent(v -> emit.apply(ClusterIdentityEnv.INSECURE_DEV_MODE,
+                                                                                                  v));
     }
 
     private static Option<String> resolveEnvValue(String name,
