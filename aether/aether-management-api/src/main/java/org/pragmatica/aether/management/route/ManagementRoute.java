@@ -33,6 +33,8 @@ public enum ManagementRoute {
     HEALTH_READY_GET(GET, "/health/ready", List.of("id"), RouteTarget.nodeIdParam(0)),
     NODE_STATUS(GET, "/api/nodes/status", List.of(), LEADER),
     NODE_STATUS_GET(GET, "/api/nodes/status", List.of("id"), RouteTarget.nodeIdParam(0)),
+    NODE_ENDPOINT_GET(GET, "/api/nodes/endpoint", List.of("id"), RouteTarget.nodeIdParam(0)),
+    NODES_LIVE(GET, "/api/nodes/live", List.of(), RouteTarget.ANY),
     NODES_LIST(GET, "/api/nodes", List.of(), LEADER),
     WHOAMI(GET, "/api/whoami", List.of(), LOCAL),
     CLUSTER_HEALTH(GET, "/api/health", List.of(), LEADER),

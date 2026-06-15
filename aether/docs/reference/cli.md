@@ -167,6 +167,57 @@ Nodes:
   node-3           localhost:8093  ACTIVE
 ```
 
+#### nodes resolve
+
+Resolve a single node to its cluster-transport `host:port` and probe its reachability. Wraps
+`GET /api/nodes/endpoint/{id}`. The address is printed regardless of reachability; the exit code
+reports the probe result, so the command doubles as a connectivity check in scripts.
+
+```bash
+aether nodes resolve node-2
+```
+
+Arguments:
+
+| Name | Description |
+|------|-------------|
+| `<nodeId>` | Node identifier to resolve |
+
+Output:
+```
+node-2  10.0.0.8:7100  reachable
+```
+
+Exit code: `0` when the node is reachable, `1` when it is not (the address is still printed).
+Use `--format value --field address` to extract just the `host:port` for piping.
+
+#### nodes live
+
+Show the unified live-node view — each known node's transport address, role, SWIM liveness, and
+reported work-state in one table. Wraps `GET /api/nodes/live` (served from any core node).
+
+```bash
+aether nodes live
+```
+
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--only-alive` | Restrict output to nodes with `swimAlive=true`; recomputes `liveCount` and zeroes `zombieCount`. |
+
+Output:
+```
+Live nodes (live: 2, zombie: 1):
+  node-1  10.0.0.7:7100  CORE  alive    READY
+  node-2  10.0.0.8:7100  CORE  alive    READY
+  node-3  -              CORE  dead     READY
+```
+
+A node listed with `dead` SWIM state and no address is a **zombie** — present in a stale
+reported-state map but absent from the SWIM membership view and consensus topology. Use
+`--format json` for the full structured document.
+
 #### slices
 
 Show all slices across the cluster with per-node instances, target counts, and version:

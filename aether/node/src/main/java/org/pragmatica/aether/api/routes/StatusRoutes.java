@@ -13,7 +13,10 @@ import org.pragmatica.aether.api.ManagementApiResponses.ComponentHealth;
 import org.pragmatica.aether.api.ManagementApiResponses.EnrichedNodeInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.HealthResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.LivenessResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.LiveNodeEntry;
+import org.pragmatica.aether.api.ManagementApiResponses.LiveNodesResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.MetricsSummary;
+import org.pragmatica.aether.api.ManagementApiResponses.NodeEndpointResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.NodeInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.NodesResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ReadinessResponse;
@@ -34,13 +37,19 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.http.routing.PathParameter;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -54,6 +63,14 @@ import java.util.stream.Stream;
 
 
 public final class StatusRoutes implements RouteSource {
+    /// A1 TCP reachability probe timeout (spec §8 Q2: A1 is scoped to single-node point queries,
+    /// so a short blocking probe per call is acceptable). Matches the harness `_resolve_live_endpoint`
+    /// connect budget.
+    private static final int PROBE_TIMEOUT_MS = 2000;
+    /// Standard label key carrying a node's CORE/WORKER/SPOT role in the consensus `NodeInfo`
+    /// (mirrors `org.pragmatica.consensus.net.NodeInfo.LABEL_ROLE`; referenced by literal to avoid
+    /// a type-name clash with the `ManagementApiResponses.NodeInfo` wire record imported here).
+    private static final String ROLE_LABEL = "role";
     private final Supplier<ManageableNode> nodeSupplier;
     private final Supplier<AppHttpServer> appHttpServerSupplier;
 
@@ -74,6 +91,11 @@ public final class StatusRoutes implements RouteSource {
                                          .withPath(PathParameter.aString())
                                          .to(__ -> Promise.success(buildStatusResponse()))
                                          .asJson(),
+                         ManagementRoutes.<NodeEndpointResponse> route(ManagementRoute.NODE_ENDPOINT_GET)
+                                         .withPath(PathParameter.aString())
+                                         .to(id -> Promise.success(buildNodeEndpointResponse(id)))
+                                         .asJson(),
+                         ManagementRoutes.<LiveNodesResponse> route(ManagementRoute.NODES_LIVE).toJson(this::buildLiveNodesResponse),
                          ManagementRoutes.<NodesResponse> route(ManagementRoute.NODES_LIST).toJson(this::buildNodesResponse),
                          ManagementRoutes.<HealthResponse> route(ManagementRoute.CLUSTER_HEALTH).toJson(this::buildHealthResponse),
                          ManagementRoutes.<LivenessResponse> route(ManagementRoute.HEALTH_LIVE).toJson(this::buildLivenessResponse),
@@ -246,6 +268,78 @@ public final class StatusRoutes implements RouteSource {
 
     private static int quorumOf(int n) {
         return n / 2 + 1;
+    }
+
+    /// A1 (harness-resilience spec §5) — resolves the requested nodeId to its cluster-transport
+    /// `host:port` and a best-effort TCP reachability probe. The `NODE_ENDPOINT_GET` route is
+    /// `nodeIdParam`-targeted, so the forwarder has already delivered the request to the named
+    /// node — `topologyManager().get(nodeId)` resolves the local node's own `NodeInfo`, falling
+    /// back to `self()` (covers the cold-start window before the node registers itself in its own
+    /// topology view).
+    private NodeEndpointResponse buildNodeEndpointResponse(String nodeId) {
+        var node = nodeSupplier.get();
+        var topology = node.topologyManager();
+        var address = NodeId.nodeId(nodeId)
+                            .option()
+                            .flatMap(topology::get)
+                            .map(info -> info.address())
+                            .or(topology.self().address());
+
+        return new NodeEndpointResponse(nodeId, address.asString(), probeReachable(address.host(), address.port()));
+    }
+
+    /// Best-effort TCP connect probe (spec A1: "same probe `_resolve_live_endpoint` already
+    /// performs"). A connect failure collapses to `reachable=false` rather than an error channel —
+    /// the endpoint is reported regardless so the caller learns where to dial.
+    private static boolean probeReachable(String host, int port) {
+        return Result.lift(Causes::fromThrowable, () -> tcpConnect(host, port)).isSuccess();
+    }
+
+    /// Adapter leaf: opens a short-lived TCP socket to `host:port` and returns `Unit` on a
+    /// successful connect. A connect failure propagates as a thrown exception, lifted into a
+    /// `Result` failure by {@link #probeReachable}. The socket is always closed (try-with-resources).
+    private static Unit tcpConnect(String host, int port) throws Exception {
+        try (var socket = new Socket()) {
+            socket.connect(new InetSocketAddress(host, port), PROBE_TIMEOUT_MS);
+
+            return Unit.unit();
+        }
+    }
+
+    /// A2 (harness-resilience spec §5) — unified live-node document. Joins three sources:
+    /// consensus topology (`address` + `role`), the SWIM-derived `MembershipView` (`swimAlive`),
+    /// and the node-reported work-state map (`reportedState`). The node universe is the union of
+    /// topology and reported-state keys, so a peer present in either appears. Zombies — present in
+    /// reported-state but absent from both topology and the SWIM view — surface with
+    /// `swimAlive=false` and `address=null`.
+    private LiveNodesResponse buildLiveNodesResponse() {
+        var node = nodeSupplier.get();
+        var view = node.membershipView();
+        var reportedStates = reportedStateMap(node);
+        var topology = node.topologyManager();
+        var universe = new LinkedHashSet<NodeId>();
+
+        topology.topology().forEach(universe::add);
+        reportedStates.keySet().forEach(universe::add);
+        var entries = universe.stream()
+                              .map(id -> toLiveNodeEntry(view, topology, id, reportedStates.getOrDefault(id, "")))
+                              .toList();
+        var liveCount = (int) entries.stream().filter(LiveNodeEntry::swimAlive).count();
+
+        return new LiveNodesResponse(entries, liveCount, entries.size() - liveCount);
+    }
+
+    static LiveNodeEntry toLiveNodeEntry(MembershipView view,
+                                         TopologyManager topology,
+                                         NodeId nodeId,
+                                         String reportedState) {
+        var info = topology.get(nodeId);
+        var swimAlive = view.isPresent(nodeId);
+        var address = info.map(i -> i.address().asString());
+        var role = info.map(i -> i.labels().getOrDefault(ROLE_LABEL, ActivationDirectiveValue.CORE))
+                       .or(ActivationDirectiveValue.CORE);
+
+        return new LiveNodeEntry(nodeId.id(), address, role, swimAlive, reportedState);
     }
 
     private NodesResponse buildNodesResponse() {

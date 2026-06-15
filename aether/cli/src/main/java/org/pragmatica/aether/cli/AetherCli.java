@@ -678,8 +678,21 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "nodes", description = "Node management — list, lifecycle, per-node introspection", subcommands = {NodesCommand.LifecycleCommand.class, NodesCommand.DrainCommand.class, NodesCommand.ShutdownCommand.class, NodesCommand.PromoteCommand.class, NodesCommand.SlicesCommand.class, NodesCommand.RoutesCommand.class, NodesCommand.InflightCommand.class, NodesCommand.MetricsCommand.class, NodesCommand.HealthCommand.class})
+    @Command(name = "nodes", description = "Node management — list, lifecycle, per-node introspection", subcommands = {NodesCommand.LifecycleCommand.class, NodesCommand.LiveCommand.class, NodesCommand.ResolveCommand.class, NodesCommand.DrainCommand.class, NodesCommand.ShutdownCommand.class, NodesCommand.PromoteCommand.class, NodesCommand.SlicesCommand.class, NodesCommand.RoutesCommand.class, NodesCommand.InflightCommand.class, NodesCommand.MetricsCommand.class, NodesCommand.HealthCommand.class})
     static class NodesCommand implements Callable<Integer> {
+        private static final OutputFormatter.TableSpec LIVE_NODES_TABLE = new OutputFormatter.TableSpec("Live Nodes",
+                                                                                                        List.of(new OutputFormatter.Column("NODE ID", "nodeId", 30),
+                                                                                                                new OutputFormatter.Column("ADDRESS", "address", 24),
+                                                                                                                new OutputFormatter.Column("ROLE", "role", 8),
+                                                                                                                new OutputFormatter.Column("SWIM ALIVE", "swimAlive", 12),
+                                                                                                                new OutputFormatter.Column("REPORTED STATE", "reportedState", 16)),
+                                                                                                        "nodes");
+        private static final OutputFormatter.TableSpec RESOLVE_TABLE = new OutputFormatter.TableSpec("Endpoint",
+                                                                                                     List.of(new OutputFormatter.Column("NODE ID", "nodeId", 30),
+                                                                                                             new OutputFormatter.Column("ADDRESS", "address", 24),
+                                                                                                             new OutputFormatter.Column("REACHABLE", "reachable", 12)),
+                                                                                                     null);
+
         @CommandLine.ParentCommand
         private AetherCli parent;
 
@@ -722,6 +735,51 @@ public class AetherCli implements Runnable {
                 var response = nodesParent.parent.fetch(NODE_LIFECYCLE_GET, List.of(id));
 
                 return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "live", description = "Show live nodes — unified identity/address/role/SWIM-liveness/reported-state document")
+        static class LiveCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private NodesCommand nodesParent;
+
+            @CommandLine.Option(names = {"--only-alive"}, description = "Filter to nodes with swimAlive=true (excludes the zombie class)")
+            private boolean onlyAlive;
+
+            @Override
+            public Integer call() {
+                var response = nodesParent.parent.fetch(NODES_LIVE);
+                var filtered = onlyAlive
+                               ? LiveNodesFilter.onlyAlive(response)
+                               : response;
+
+                return OutputFormatter.printQuery(filtered, nodesParent.parent.outputOptions(), LIVE_NODES_TABLE);
+            }
+        }
+
+        @Command(name = "resolve", description = "Resolve a nodeId to its cluster-transport endpoint (exit 0 if reachable, 1 if not)")
+        static class ResolveCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private NodesCommand nodesParent;
+
+            @Parameters(index = "0", description = "Node ID to resolve")
+            private String nodeId;
+
+            @Override
+            public Integer call() {
+                var response = nodesParent.parent.fetch(NODE_ENDPOINT_GET, List.of(nodeId));
+                var errorCode = OutputFormatter.checkResponseError(response,
+                                                                   nodesParent.parent.outputOptions(),
+                                                                   "Failed to resolve node " + nodeId);
+
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
+                OutputFormatter.printQuery(response, nodesParent.parent.outputOptions(), RESOLVE_TABLE);
+
+                return LiveNodesFilter.isReachable(response)
+                       ? ExitCode.SUCCESS
+                       : ExitCode.ERROR;
             }
         }
 

@@ -42,6 +42,29 @@ public sealed interface ManagementApiResponses {
 
     record EnrichedNodeInfo(String nodeId, String role, boolean isLeader) {}
 
+    /// Wire shape for `GET /api/nodes/{id}/endpoint` (harness-resilience spec A1). Resolves a
+    /// nodeId to its cluster-transport address so the integration harness can dial a node
+    /// without reconstructing addressing from `bootstrap-state.json` or the cloud API. `address`
+    /// is the `host:port` advertised in the consensus `NodeInfo`. `reachable` is a best-effort
+    /// TCP connect probe against that address — the endpoint is useful even when `reachable=false`
+    /// (it tells the caller where to try rather than forcing local reconstruction).
+    record NodeEndpointResponse(String nodeId, String address, boolean reachable) {}
+
+    /// Wire shape for `GET /api/nodes/live` (harness-resilience spec A2). Unifies a node's
+    /// cluster-identity, address, role, SWIM liveness, and node-reported work-state into one
+    /// document so the harness can distinguish "member the cluster knows about" from "node that
+    /// is actually alive" in a single call. Nodes present in the reported-state map but absent
+    /// from the SWIM-derived membership view are the zombie class: `swimAlive=false` and
+    /// `address=null` (`Option.none()`). `liveCount` counts `swimAlive=true` entries;
+    /// `zombieCount` counts the remainder.
+    record LiveNodesResponse(List<LiveNodeEntry> nodes, int liveCount, int zombieCount) {}
+
+    /// Per-node row of [LiveNodesResponse]. `address` is `Option.none()` (JSON `null`) for zombie
+    /// entries with no resolvable consensus address. `reportedState` is the node-authoritative
+    /// `NodeReportedState` (SYNCING / READY / DRAINING), empty when no metrics pong has been
+    /// observed yet.
+    record LiveNodeEntry(String nodeId, Option<String> address, String role, boolean swimAlive, String reportedState) {}
+
     record HealthResponse(String status,
                           boolean ready,
                           boolean quorum,
