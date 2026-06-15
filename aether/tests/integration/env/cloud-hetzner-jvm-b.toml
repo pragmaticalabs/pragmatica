@@ -79,6 +79,6 @@ authorization_role = "ADMIN"
 [runtime.default]
 type = "jvm"
 # Cluster version is 1.0.0 (strict semver); the JVM-mode URL deriver would
-# produce v1.0.0/aether-node.jar, but only v1.0.0-rc1-candidate is published
-# at the moment. Pin the candidate JAR explicitly.
-jar_url = "https://github.com/pragmaticalabs/pragmatica/releases/download/v1.0.0-rc1-candidate/aether-node.jar"
+# produce v1.0.0/aether-node.jar, but the rc2 candidate JAR is published under
+# v1.0.0-rc2-candidate. Pin the candidate JAR explicitly.
+jar_url = "https://github.com/pragmaticalabs/pragmatica/releases/download/v1.0.0-rc2-candidate/aether-node.jar"
