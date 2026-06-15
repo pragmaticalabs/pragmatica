@@ -55,43 +55,19 @@ NODE_COUNT="${NODE_COUNT:-5}"
 # so forwarding bugs still surface on the happy path.
 aether_failover() {
     local timeout="${AETHER_CLI_TIMEOUT:-30}"
-    local host_port="${MGMT_ENTRY_POINT#http://}"
+    local host_port="${MGMT_ENTRY_POINT#*://}"
     if ! curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${MGMT_ENTRY_POINT}/health/live" >/dev/null 2>&1; then
-        # Failover: probe alternate live core endpoints.
-        # docker/remote: nodes share TARGET_HOST with sequential mgmt ports (MGMT_PORT+0..N-1).
-        # cloud: each node has its own VM public IP; resolve via cloud_public_ip per node-id.
-        if [ "${ENV_TYPE:-docker}" = "cloud" ] && command -v cloud_public_ip >/dev/null 2>&1; then
-            for n in $(seq 0 $((NODE_COUNT - 1))); do
-                local node_ip
-                node_ip=$(cloud_public_ip "node-$((n+1))" 2>/dev/null || echo "")
-                [ -z "$node_ip" ] && continue
-                if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${MGMT_SCHEME}://${node_ip}:${MGMT_PORT}/health/live" >/dev/null 2>&1; then
-                    host_port="${node_ip}:${MGMT_PORT}"
-                    break
-                fi
-            done
-        else
-            local base_port="${MGMT_PORT}"
-            local found_port=""
-            for i in $(seq 0 $((NODE_COUNT - 1))); do
-                local port=$((base_port + i))
-                if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}/health/live" >/dev/null 2>&1; then
-                    host_port="${TARGET_HOST}:${port}"
-                    found_port="yes"
-                    break
-                fi
-            done
-            # Seed range exhausted — the seeds may all have been replaced by CTM
-            # KSUID containers on ephemeral host ports (destructive suites). Discover
-            # a live one via the Docker label index so the CLI keeps working through
-            # full seed replacement. _discover_endpoint_by_label prints an http:// URL;
-            # strip the scheme for the `aether -c host:port` form below.
-            if [ -z "$found_port" ]; then
-                local discovered
-                if discovered=$(_discover_endpoint_by_label); then
-                    host_port="${discovered#http://}"
-                fi
-            fi
+        # Pinned endpoint is dead (e.g. a chaos test killed it). Delegate the live-node
+        # scan to the SINGLE resolver rather than re-implementing it here. _resolve_live_endpoint
+        # is the one place cloud (per-VM <publicIp>:CLOUD_MGMT_PORT), docker seed-port, and
+        # label-discovery resolution lives, so the CLOUD_MGMT_PORT and #33 fixes apply
+        # automatically. This removes the latent bug where the old inline cloud scan used
+        # MGMT_PORT (the docker host-mapped range, always wrong on cloud) instead of
+        # CLOUD_MGMT_PORT. Per-call override only: MGMT_ENTRY_POINT stays pinned for the
+        # next invocation, so forwarding bugs still surface on the happy path.
+        local live
+        if live=$(_resolve_live_endpoint); then
+            host_port="${live#*://}"
         fi
     fi
     local cli_tls_flag=""
@@ -264,7 +240,14 @@ _resolve_live_endpoint() {
     # cloud), so every read after the pinned node dies returns '' and the whole
     # suite cascades into false failures.
     if [ "${ENV_TYPE:-docker}" = "cloud" ] && command -v cloud_public_ip >/dev/null 2>&1; then
-        local mgmt_port="${CLOUD_MGMT_PORT:-${MGMT_PORT:-8080}}"
+        # Cloud per-node mgmt port is uniform 8080 (operations.ports.management in
+        # cloud-hetzner*.toml; bootstrap emits mgmt=<publicIp>:8080). Do NOT fall back
+        # to MGMT_PORT — it is ALWAYS set to the docker host-mapped range (5151/5161)
+        # even on cloud (run-tests.sh exports it), so `${CLOUD_MGMT_PORT:-${MGMT_PORT:-8080}}`
+        # never reached the 8080 default and scanned the dead docker port → false
+        # "cluster appears down" after a chaos kill. run-tests.sh now exports
+        # CLOUD_MGMT_PORT=8080 in the cloud env case; this `:-8080` is the safety net.
+        local mgmt_port="${CLOUD_MGMT_PORT:-8080}"
         local n node_id node_ip endpoint
         for n in $(seq 0 $((NODE_COUNT - 1))); do
             node_id=$(to_node_id "node-$((n + 1))" 2>/dev/null || true)
@@ -403,7 +386,9 @@ api_delete() {
 node_base_url() {
     local offset="$1"
     if [ "${ENV_TYPE:-docker}" = "cloud" ] && command -v cloud_public_ip >/dev/null 2>&1; then
-        local mgmt_port="${CLOUD_MGMT_PORT:-${MGMT_PORT:-8080}}"
+        # Uniform cloud mgmt port 8080; never fall back to MGMT_PORT (always the
+        # docker host-mapped range even on cloud — see _resolve_live_endpoint).
+        local mgmt_port="${CLOUD_MGMT_PORT:-8080}"
         local node_id node_ip
         node_id=$(to_node_id "node-$((offset + 1))" 2>/dev/null || true)
         [ -z "$node_id" ] && return 1

@@ -219,11 +219,21 @@ observe_quorum_window() {
         return 1
     fi
     # Extract every clusterSize value from NODE_JOINED / NODE_LEFT events in order.
-    # These are the running cluster member counts as observed locally.
+    # These are the running cluster member counts as observed locally. Tolerate both
+    # quoted ("clusterSize":"5") and unquoted ("clusterSize":5) renderings so a Jackson
+    # serialization change does not silently empty `sizes` and green-sticker the check.
     local sizes
-    sizes=$(printf '%s' "$events" | \
-        grep -oE "\"clusterSize\":\"[0-9]+\"" | \
-        sed 's/"clusterSize":"\([0-9]*\)"/\1/')
+    sizes=$(printf '%s' "$events" \
+        | grep -oE "\"clusterSize\"[[:space:]]*:[[:space:]]*\"?[0-9]+\"?" \
+        | grep -oE '[0-9]+')
+    # Parse-integrity guard: if the window's events DO carry clusterSize but we parsed
+    # none, the field rendering drifted (quoted⇄unquoted, rename) — fail closed instead
+    # of passing with the optimistic min=expected default. (A window with only
+    # NODE_FAILED events legitimately carries no clusterSize; that is not drift.)
+    if [ -z "$sizes" ] && printf '%s' "$events" | grep -q '"clusterSize"'; then
+        echo "min=? quorum=$quorum FAIL (clusterSize present but unparseable — schema drift)"
+        return 1
+    fi
     local min=$expected_size
     if [ -n "$sizes" ]; then
         while IFS= read -r s; do
@@ -307,18 +317,19 @@ kv_lifecycle_state() {
 # than declaring removal off a failed read.
 node_absent_from_status() {
     local target="$1"
-    local status_payload
-    status_payload=$(api_get "/api/nodes/status" 2>/dev/null || true)
-    if [ -z "$status_payload" ]; then
+    local ids
+    # status_node_ids parses cluster.nodes[].id correctly (NodeInfo field is "id",
+    # not "nodeId" — see status_node_ids). The old inline `grep '"nodeId"'` here
+    # matched only THIS node's own top-level id, so every other node read as
+    # "absent" (rc 0) on a healthy cluster — a latent false-removal bug shared with
+    # the original status_node_ids parse. Route through the single corrected parser.
+    if ! ids=$(status_node_ids); then
         return 1  # couldn't read — assume still present, keep polling
     fi
-    # cluster.nodes[] entries carry a "nodeId":"<id>" field. Extract the set
-    # and look for an exact match (grep+sed, no jq — matches the project idiom
-    # used by pick_non_leader). Absence of the id == removed from membership.
-    if printf '%s' "$status_payload" \
-        | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
-        | sed 's/"nodeId"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' \
-        | grep -Fxq -- "$target"; then
+    if [ -z "$ids" ]; then
+        return 1  # empty membership read — assume still present, keep polling
+    fi
+    if printf '%s\n' "$ids" | grep -Fxq -- "$target"; then
         return 1  # present
     fi
     return 0  # absent
@@ -334,15 +345,27 @@ node_absent_from_status() {
 # is a separate VM with no local container labels to inspect, so identity must come
 # from the API. The output format (sorted unique node-ids, one per line) matches
 # `snapshot_node_id_labels` so the same `comm -13` set-diff works unchanged.
+#
+# PARSE: /api/nodes/status (StatusResponse) renders cluster.nodes[] as NodeInfo
+# records `{"id":"<nodeId>","isLeader":...,"kvState":...,"derivedStatus":...}` — the
+# per-node id field is `"id"`, NOT `"nodeId"`. The payload's only top-level "nodeId"
+# is THIS node's own id (and cluster.leaderId uses key "leaderId"), so the old
+# `grep '"nodeId"'` matched exactly one entry and collapsed to a single id after
+# `sort -u` (the "got 1, expected 5" cloud symptom). We isolate the cluster.nodes
+# array first (everything from `"nodes":[` to its closing `]` — NodeInfo has no
+# nested arrays/objects so the first `]` closes it) and extract each `"id":"..."`,
+# so unrelated future top-level `"id"` fields cannot leak in.
 status_node_ids() {
     local status_payload
     status_payload=$(api_get "/api/nodes/status" 2>/dev/null || true)
     if [ -z "$status_payload" ]; then
         return 1  # couldn't read
     fi
+    # Slice out the cluster.nodes[] array, then pull each element's "id".
     printf '%s' "$status_payload" \
-        | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
-        | sed 's/"nodeId"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' \
+        | grep -o '"nodes"[[:space:]]*:[[:space:]]*\[[^]]*\]' \
+        | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | sed 's/"id"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' \
         | sort -u
 }
 

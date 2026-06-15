@@ -139,6 +139,15 @@ case "$ENV_TYPE" in
         ;;
     cloud)
         : "${HCLOUD_TOKEN:?HCLOUD_TOKEN must be set for cloud env}"
+        # Per-node management port on cloud VMs. Each node is its own VM with mgmt on
+        # a fixed port (operations.ports.management in env/cloud-hetzner*.toml = 8080;
+        # `aether cluster bootstrap` emits mgmt endpoints as <publicIp>:8080). The
+        # harness's per-node addressing (node_base_url, _resolve_live_endpoint,
+        # status/topology helpers) reads CLOUD_MGMT_PORT — it MUST be set here because
+        # MGMT_PORT is always the docker host-mapped range (5151/5161) even on cloud,
+        # so any `:-MGMT_PORT` fallback would dial the wrong (dead) port. Override via
+        # env only if the cloud TOML's management port is ever changed from 8080.
+        export CLOUD_MGMT_PORT="${CLOUD_MGMT_PORT:-8080}"
         # Cloud has higher inter-node latency than docker-localhost: 04-streaming ran 2.7×
         # slower in the run-5 baseline, 09-artifacts ~9× slower. Scale every wait_for_*
         # / await_generation_quiesced timeout proportionally. Override via env if needed.
@@ -421,28 +430,40 @@ run_cluster_b_suites() {
 
         run_suite "$suite" "b" || true
 
-        # Between destructive suites: best-effort quiesce check. We do NOT abort on
-        # failure — chaos tests can leave residual CTM-provisioned replacements whose
-        # snapshots haven't propagated, and skipping subsequent destructive suites just
-        # turns one failure into five. Each suite is responsible for its own preconditions
-        # via the wait_for_cluster_ready / wait_for_leader helpers in run_test().
+        # Harness-level baseline restore + unrecoverability gate (Tier B4).
+        #
+        # The per-test `trap cleanup EXIT` already calls restore_cluster_baseline, but
+        # that trap can be omitted by a new test or fail mid-way; the loop repeats the
+        # (idempotent) restore as an authoritative backstop and — crucially — uses its
+        # outcome to decide whether the NEXT destructive suite may run.
+        #
+        # We still do NOT abort on transient churn: restore_cluster_baseline already
+        # tolerates lagging READY convergence (its step 5b is soft) and spends its full
+        # budget (<=600s presence + <=300s READY + <=180s quiesce, and it also runs the
+        # quiesce + phase=NORMAL barriers that used to live inline here). We abort ONLY
+        # when, after that budget, the cluster is GENUINELY degraded — restore hard-failed,
+        # OR it returned OK but the cluster still cannot muster a quorum-safe count of READY
+        # cores and a committed leader. In that state every remaining suite fails for this
+        # one root cause and its results are misattributed (observed 2026-06-15: a stuck
+        # 2-of-5-READY baseline silently failed 03/05/12/13). Quarantine the rest:
+        # skip-with-reason instead of run-and-misblame.
+        export CLUSTER_ENDPOINT="$CLUSTER_B_MGMT"
         local quiesce_start
         quiesce_start=$(date +%s)
-        # 60s base × TIMEOUT_SCALE: 60s docker / 180s cloud. Best-effort barrier;
-        # continue-on-fail because each suite's own `wait_for_cluster_ready` re-establishes
-        # preconditions if churn lingers.
-        await_generation_quiesced "$CLUSTER_B_MGMT" "current" 60 || \
-            log_warn "Cluster B did not quiesce within 60s after suite ${suite} — continuing"
-        # Phase=NORMAL barrier: addresses the documented 02-chaos→03-scaling
-        # regression (investigation 2026-05-11) where elevated quorum latency from
-        # cluster B's chaos-tail makes the next suite's consensus puts (e.g.
-        # /api/cluster/scale) hit their curl timeout. Wait up to 180s × TIMEOUT_SCALE
-        # for phase=NORMAL so the next suite enters a settled cluster. Soft on
-        # failure — the chaos-test recovery may genuinely need >540s on docker-remote
-        # and the next suite's own preconditions will surface that case.
-        export CLUSTER_ENDPOINT="$CLUSTER_B_MGMT"
-        wait_for_phase "NORMAL" 180 || \
-            log_warn "Cluster B did not reach phase=NORMAL within budget after suite ${suite} — next suite may inherit BOOTING state"
+        local _restore_rc=0
+        restore_cluster_baseline || _restore_rc=$?
+        local _ready _leader _floor=$((NODE_COUNT - 1))
+        # Read liveness via the curl/api_get path (NOT the aether CLI): a reliability
+        # gate must not false-quarantine when the CLI is unavailable for reasons
+        # unrelated to cluster health (e.g. macOS Local Network Privacy blocking the
+        # java CLI from a LAN cluster, where curl still works). restore_cluster_baseline's
+        # own hard barriers are already curl-based.
+        _ready=$(ready_core_count_http)
+        _leader=$(cluster_leader_http || true)
+        if [ "$_restore_rc" -ne 0 ] || [ "${_ready:-0}" -lt "$_floor" ] || [ -z "$_leader" ]; then
+            log_error "Cluster B unrecoverable after suite ${suite} (restore_rc=${_restore_rc}, ready=${_ready:-0}/${NODE_COUNT}, leader='${_leader}') — remaining destructive suites will be SKIPPED to avoid misattributed cascade failures"
+            aborted=true
+        fi
         local quiesce_elapsed=$(( $(date +%s) - quiesce_start ))
         printf 'quiesce_after_%s=%s\n' "$suite" "$quiesce_elapsed" >> "$TIMINGS_FILE"
     done

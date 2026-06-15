@@ -90,6 +90,37 @@ cluster_leader() {
     printf '%s\n' "$result"
 }
 
+# Raw-HTTP (api_get) counterparts to cluster_leader / ready_core_count, for use by
+# the cluster-B unrecoverability gate (run_cluster_b_suites). The CLI path
+# (aether_failover) can be unavailable for reasons unrelated to cluster health — e.g.
+# macOS Local Network Privacy blocking the java binary from a LAN-hosted cluster, where
+# curl/api_get still work. A RELIABILITY gate must not false-trigger on CLI degradation,
+# so it reads through the curl path (_resolve_live_endpoint) instead. These mirror the
+# semantics of their CLI siblings but never shell out to `aether`.
+cluster_leader_http() {
+    local body
+    body=$(api_get "/api/nodes/status" 2>/dev/null) || return 1
+    [ -z "$body" ] && return 1
+    local leader
+    leader=$(printf '%s' "$body" \
+        | grep -oE '"leaderId"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | head -1 \
+        | sed 's/.*"leaderId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    if [ -z "$leader" ] || [ "$leader" = "none" ]; then
+        return 1
+    fi
+    printf '%s\n' "$leader"
+}
+
+ready_core_count_http() {
+    local body
+    body=$(api_get "/api/nodes/lifecycle" 2>/dev/null) || { echo 0; return 0; }
+    [ -z "$body" ] && { echo 0; return 0; }
+    printf '%s' "$body" \
+        | grep -oE '"state"[[:space:]]*:[[:space:]]*"READY"' \
+        | wc -l | tr -d ' '
+}
+
 # Single-shot count assertion: blocks until the leader publishes a snapshot at the
 # current epoch (so KV writes that just landed are reflected), then reads count.
 #
@@ -451,57 +482,22 @@ wait_for_all_nodes_ready() {
 # Cloud: each node has its own public VM IP; mgmt port is uniform (8080 per
 # cloud-hetzner.toml). No gateway yet on cloud, so rotation still applies.
 rotate_mgmt_entry_point() {
-    # Short-circuit when the pinned endpoint still answers /health/live. The
-    # pinned endpoint is a direct node port (post-nginx-removal), so this is the
-    # node itself responding. If alive, no rotation needed.
+    # Short-circuit when the pinned endpoint still answers /health/live — the pinned
+    # endpoint is a direct node port (post-nginx-removal), so this is the node itself
+    # responding. If alive, no rotation needed.
     if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${MGMT_ENTRY_POINT}/health/live" >/dev/null 2>&1; then
         return 0
     fi
-    if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
-        # Cloud uses CLOUD_MGMT_PORT (default 8080); MGMT_PORT is docker's host-mapped
-        # port range (5150-5159) and not applicable to per-VM cloud nodes.
-        local mgmt_port="${CLOUD_MGMT_PORT:-8080}"
-        for i in $(seq 0 $((NODE_COUNT - 1))); do
-            local node_id ip
-            node_id=$(to_node_id "node-$((i + 1))" 2>/dev/null || true)
-            [ -z "$node_id" ] && continue
-            ip=$(cloud_public_ip "$node_id" 2>/dev/null || true)
-            [ -z "$ip" ] && continue
-            local endpoint="http://${ip}:${mgmt_port}"
-            if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
-                export MGMT_ENTRY_POINT="$endpoint"
-                export CLUSTER_ENDPOINT="$endpoint"
-                log_info "Rotated MGMT_ENTRY_POINT to ${endpoint} (cloud)" >&2
-                return 0
-            fi
-        done
-        log_warn "rotate_mgmt_entry_point: no surviving core node reachable on ${NODE_COUNT} cloud VMs at port ${mgmt_port}" >&2
-        return 1
-    fi
-    local base_port="${MGMT_PORT}"
-    for i in $(seq 0 $((NODE_COUNT - 1))); do
-        local port=$((base_port + i))
-        local endpoint="http://${TARGET_HOST}:${port}"
-        if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
-            export MGMT_ENTRY_POINT="$endpoint"
-            export CLUSTER_ENDPOINT="$endpoint"
-            log_info "Rotated MGMT_ENTRY_POINT to ${endpoint}" >&2
-            return 0
-        fi
-    done
-    # Seed host-port range exhausted: all five compose seeds may have been replaced
-    # by CTM KSUID containers (destructive suites), which publish their mgmt port to
-    # Docker-chosen ephemeral host ports outside MGMT_PORT..MGMT_PORT+N-1. Discover a
-    # live replacement via the Docker label index so management stays reachable
-    # through full seed replacement. See _discover_endpoint_by_label (lib/common.sh).
-    local discovered
-    if discovered=$(_discover_endpoint_by_label); then
-        export MGMT_ENTRY_POINT="$discovered"
-        export CLUSTER_ENDPOINT="$discovered"
-        log_info "Rotated MGMT_ENTRY_POINT to ${discovered} (via docker label discovery — seeds replaced)" >&2
+    # Pinned endpoint is dead. Delegate to the SINGLE resolver: _refresh_mgmt_entry_point
+    # wraps _resolve_live_endpoint (cloud per-VM scan / docker seed ports / label discovery
+    # — the one place that logic lives) and exports MGMT_ENTRY_POINT + CLUSTER_ENDPOINT to
+    # the resolved live endpoint. This replaces the cloud/docker/label scan that was
+    # duplicated here.
+    if _refresh_mgmt_entry_point; then
+        log_info "Rotated MGMT_ENTRY_POINT to ${MGMT_ENTRY_POINT}" >&2
         return 0
     fi
-    log_warn "rotate_mgmt_entry_point: no surviving core node on ports ${base_port}..${base_port}+$((NODE_COUNT - 1)) and no labeled container reachable" >&2
+    log_warn "rotate_mgmt_entry_point: no surviving core node reachable (cloud VMs / docker seeds / label discovery all exhausted)" >&2
     return 1
 }
 
@@ -579,7 +575,7 @@ wait_for_cluster_ready() {
         # never probes those ports.
         local probed
         if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
-            probed="${NODE_COUNT} cloud VM(s) at port ${CLOUD_MGMT_PORT:-${MGMT_PORT:-8080}}"
+            probed="${NODE_COUNT} cloud VM(s) at port ${CLOUD_MGMT_PORT:-8080}"
         else
             probed="${MGMT_PORT}..$((MGMT_PORT + NODE_COUNT - 1)) on ${TARGET_HOST}"
         fi
