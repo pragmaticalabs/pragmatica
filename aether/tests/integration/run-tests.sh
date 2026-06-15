@@ -692,6 +692,7 @@ START_TIME=$(date +%s)
 #     test-side regressions even when --skip-build is used) ---
 log_step "Lint integration tests"
 "${SCRIPT_DIR}/lint-tests.sh"
+"${SCRIPT_DIR}/lib/contract-test.sh"
 
 # --- Step 1: Build ---
 if [ "$SKIP_BUILD" = false ] && [ -x "${REPO_ROOT}/build.sh" ]; then
