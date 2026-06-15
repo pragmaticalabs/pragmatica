@@ -876,6 +876,39 @@ fi
 BLUEPRINT_ELAPSED=$(( $(date +%s) - BLUEPRINT_START ))
 printf 'blueprint_deploy=%s\n' "$BLUEPRINT_ELAPSED" >> "$TIMINGS_FILE"
 
+# --- Step 7.5: Connectivity preflight (C7) ---
+# After deploy + cluster-ready, before the first suite runs: probe each selected
+# cluster's management endpoint BOTH ways — raw HTTP (curl) and the `aether` CLI —
+# to distinguish "cluster down" from "this operator machine's CLI can't reach the
+# cluster" (macOS Local Network Privacy / proxy / IPv6). The curl-OK + CLI-fail
+# verdict returns non-zero; we STOP there rather than running 00-smoke and
+# misattributing the `No route to host` cascade to a dead cluster.
+# See aether/docs/specs/harness-resilience-spec.md §6 C7.
+log_step "Connectivity preflight (CLI vs curl reachability)"
+PREFLIGHT_STOP=false
+if [ ${#A_SUITES[@]} -gt 0 ]; then
+    connectivity_preflight "$CLUSTER_A_MGMT" "Cluster A" || PREFLIGHT_STOP=true
+fi
+if [ ${#B_SUITES[@]} -gt 0 ]; then
+    connectivity_preflight "$CLUSTER_B_MGMT" "Cluster B" || PREFLIGHT_STOP=true
+fi
+if [ "$PREFLIGHT_STOP" = true ]; then
+    log_error "Connectivity preflight verdict: raw HTTP reaches the cluster but the 'aether' CLI does not."
+    log_error "Aborting before any suite runs — the cluster is healthy; fix CLI/network access on this machine (see preflight message above) and re-run."
+    # This verdict is, by construction, "cluster is healthy (curl reached it), only
+    # THIS machine's CLI is blocked" — connectivity_preflight returns non-zero ONLY in
+    # that case. Tearing the cluster down here would destroy a healthy cluster and force
+    # a full re-bootstrap once the operator fixes Local Network access. So preserve it by
+    # reusing the existing skip-teardown mechanism: the EXIT trap (installed above,
+    # `trap '[ "$SKIP_TEARDOWN" = false ] && teardown' EXIT`) honours SKIP_TEARDOWN, the
+    # same flag `--skip-teardown` sets. No parallel teardown path.
+    SKIP_TEARDOWN=true
+    log_error "Cluster PRESERVED (not torn down): it is healthy and reachable via curl; only this machine's CLI is blocked."
+    log_error "After fixing access, re-run the suite to reuse it (add --skip-deploy to skip re-bootstrap)."
+    log_error "To tear it down manually: re-run ./run-tests.sh without --skip-teardown (its EXIT trap tears down on normal completion); on cloud use tools/cloud-reaper.sh --cluster <name> --destroy --force."
+    exit 2
+fi
+
 # --- Step 8: Gate -- run 00-smoke ---
 GATE_PASSED=true
 if [ ${#A_SUITES[@]} -gt 0 ] && printf '%s\n' "${A_SUITES[@]}" | grep -qx "00"; then

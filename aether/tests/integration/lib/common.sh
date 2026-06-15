@@ -370,6 +370,115 @@ api_delete() {
     _api_call DELETE "${CLUSTER_ENDPOINT}${path}"
 }
 
+# ---------------------------------------------------------------------------
+# Connectivity preflight (C7) — diagnose CLI-vs-curl reachability
+# ---------------------------------------------------------------------------
+# Probe the SAME management endpoint two independent ways — raw HTTP (curl, the
+# api_get transport) and the `aether` CLI (which execs `java`) — and emit a
+# diagnostic verdict BEFORE any suite runs. This converts the multi-hour
+# misdiagnosis observed 2026-06-15 (macOS Local Network Privacy / TCC silently
+# blocked the Homebrew java binary from the 192.168.x LAN cluster, so the CLI
+# failed with `java.net.ConnectException: No route to host` while curl and the
+# cluster were completely healthy — 00-smoke then failed and the aborted-all gate
+# misattributed it to a dead cluster) into a one-line preflight verdict. See
+# aether/docs/specs/harness-resilience-spec.md §6 C7.
+#
+# The four outcomes (curl × CLI):
+#   curl OK  + CLI OK   → both transports reach the cluster → proceed (rc 0).
+#   curl FAIL+ CLI FAIL → cluster genuinely unreachable both ways → let the
+#                         existing flow surface the real failure; do NOT mask it
+#                         (rc 0 — proceed so 00-smoke/the gate reports it normally).
+#   curl OK  + CLI FAIL → THIS operator machine's CLI cannot reach the cluster
+#                         while raw HTTP can (macOS Local Network Privacy for a LAN
+#                         cluster, an HTTP proxy honoured only by curl, or IPv6
+#                         preference in the JVM). Emit an actionable message and
+#                         STOP (rc 1) so the suites are not run and the cascade is
+#                         not misattributed.
+#   curl FAIL+ CLI OK   → unusual (curl-only proxy/cert quirk, or a transient curl
+#                         failure). Surface for investigation but do NOT stop
+#                         (rc 0) — the CLI proves the cluster is reachable.
+#
+# Args: $1 = management endpoint (http[s]://host:port). $2 = human label (e.g. "Cluster A").
+# Robustness: every probe is fully guarded so neither a curl failure nor a CLI
+# failure (nor a missing `aether` binary) can abort this function under
+# `set -euo pipefail` and hide its own verdict. Returns 1 ONLY for the
+# curl-OK/CLI-fail operator-machine case; 0 otherwise.
+connectivity_preflight() {
+    local endpoint="${1:-${CLUSTER_ENDPOINT}}"
+    local label="${2:-cluster}"
+    local timeout="${PREFLIGHT_TIMEOUT:-10}"
+
+    # --- Probe 1: raw HTTP via curl (the api_get transport). ---
+    # `/api/nodes/status` is a genuine management read (same endpoint cluster_leader_http
+    # uses), not a bare /health/live that a half-booted node answers — so a curl OK here
+    # means the management API is genuinely serving over plain HTTP from this machine.
+    local curl_ok=false
+    if curl -sfk -m "$timeout" -H "X-API-Key: ${API_KEY}" "${endpoint}/api/nodes/status" >/dev/null 2>&1; then
+        curl_ok=true
+    fi
+
+    # --- Probe 2: the `aether` CLI against the SAME endpoint. ---
+    # Mirrors aether_failover's invocation (scheme, --api-key, --request-timeout,
+    # optional --tls-skip-verify) so the comparison is apples-to-apples. The CLI execs
+    # `java`; if Local Network Privacy / a proxy / IPv6 blocks java from the cluster LAN,
+    # this fails while curl above succeeds — exactly the signal we want to surface.
+    local cli_ok=false
+    if command -v aether >/dev/null 2>&1; then
+        # Strip any scheme the caller passed, then re-attach MGMT_SCHEME so the CLI form
+        # matches the rest of the harness (aether -c <scheme>://host:port).
+        local host_port="${endpoint#http://}"
+        host_port="${host_port#https://}"
+        local cli_tls_flag=""
+        if [ "${MGMT_SCHEME}" = "https" ]; then
+            cli_tls_flag="--tls-skip-verify"
+        fi
+        # shellcheck disable=SC2086
+        if aether -c "${MGMT_SCHEME}://${host_port}" --api-key "${API_KEY}" \
+                "--request-timeout=${timeout}" ${cli_tls_flag} status >/dev/null 2>&1; then
+            cli_ok=true
+        fi
+    else
+        # No CLI on PATH — cannot make the CLI-vs-curl distinction. Treat as a
+        # non-blocking note rather than a verdict; the suites that need the CLI
+        # will fail loudly on their own.
+        log_warn "preflight [${label}]: 'aether' CLI not found on PATH — skipping CLI reachability probe"
+        return 0
+    fi
+
+    # --- Verdict ---
+    if [ "$curl_ok" = true ] && [ "$cli_ok" = true ]; then
+        log_info "preflight [${label}]: OK — curl and CLI both reach ${endpoint}"
+        return 0
+    fi
+
+    if [ "$curl_ok" = false ] && [ "$cli_ok" = false ]; then
+        # Both transports failed → genuinely unreachable. Do NOT mask: let the
+        # existing readiness/gate flow report it (00-smoke / the aborted-all gate).
+        log_warn "preflight [${label}]: curl AND CLI both fail to reach ${endpoint} — cluster appears genuinely unreachable; deferring to the normal failure path"
+        return 0
+    fi
+
+    if [ "$curl_ok" = true ] && [ "$cli_ok" = false ]; then
+        # The actionable case: raw HTTP reaches the cluster but the CLI (java) cannot.
+        log_error "preflight [${label}]: raw HTTP (curl) reaches ${endpoint} but the 'aether' CLI cannot."
+        log_error "  This is THIS machine's CLI, not the cluster: curl/api_get and the cluster are healthy,"
+        log_error "  but the java binary the CLI execs is being blocked from the cluster network."
+        log_error "  Common causes and fixes:"
+        log_error "    - macOS Local Network Privacy (TCC) blocking java on a LAN (192.168.x/10.x) cluster:"
+        log_error "      grant Local Network access to your terminal app (System Settings > Privacy & Security >"
+        log_error "      Local Network) and to the java binary the CLI runs."
+        log_error "    - run the CLI from inside the cluster network (e.g. on the docker/remote host itself)."
+        log_error "    - use public-IP / loopback-tunnelled endpoints the JVM is allowed to reach."
+        log_error "  Stopping before suites run so this is NOT misattributed to a dead cluster."
+        return 1
+    fi
+
+    # Remaining case: curl FAIL + CLI OK — unusual. The CLI proves the cluster is
+    # reachable, so do not stop; surface it for investigation.
+    log_warn "preflight [${label}]: the 'aether' CLI reaches ${endpoint} but raw HTTP (curl) does not — unusual (curl-only proxy/cert quirk or transient curl failure); proceeding, but investigate if suites that use api_get/curl fail"
+    return 0
+}
+
 # Per-node HTTP helpers — for legitimate per-node state queries.
 # Example: "is METRICS task group ACTIVE on node-2 specifically?"
 # NOT a client-side failover mechanism. Management calls go through api_get/api_post → MGMT_ENTRY_POINT.
