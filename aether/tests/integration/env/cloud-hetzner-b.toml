@@ -79,7 +79,9 @@ authorization_role = "ADMIN"
 # @PgSql slices read the FLAT [database] datasource (config="database"). databases.X
 # produces nested [database.X] the connector ignores; inject flat [database] via node_config.
 [source.hetzner-eu.node_config.database]
-async_url = "${env:PG_URL}"
+username = "${env:PG_USER}"
+password = "${env:PG_PASSWORD}"
+async_url = "postgresql://${env:PG_HOST}:5432/${env:PG_DB}"
 
 [runtime.default]
 type = "container"
