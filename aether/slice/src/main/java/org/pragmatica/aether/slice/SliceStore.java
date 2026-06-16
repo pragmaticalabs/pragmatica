@@ -232,7 +232,9 @@ public interface SliceStore {
                                                                                                                                                                composite)));
         }
 
-        private static ConfigurationProvider assembleSliceComposite(Artifact artifact,
+        // Package-private (not private) so SliceStoreTest can pin the override precedence
+        // directly — this ordering is load-bearing and was previously inverted.
+        static ConfigurationProvider assembleSliceComposite(Artifact artifact,
                                                                     ConfigurationProvider intrinsic,
                                                                     ConfigurationProvider composite) {
             logShadowedKeys(artifact, intrinsic, composite);

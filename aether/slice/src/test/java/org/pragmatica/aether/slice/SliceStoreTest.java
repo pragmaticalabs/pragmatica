@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.SliceStore.EntryState;
 import org.pragmatica.aether.slice.SliceStore.LoadedSliceEntry;
 import org.pragmatica.aether.slice.SliceStore.sliceStore;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
+import org.pragmatica.config.IntrinsicConfigProvider;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -22,6 +23,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.net.URL;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -45,6 +47,27 @@ class SliceStoreTest {
         registry = SliceRegistry.sliceRegistry();
         sharedLoader = new SharedLibraryClassLoader(getClass().getClassLoader());
         artifact = Artifact.artifact("org.example:test-slice:1.0.0").unwrap();
+    }
+
+    // === Slice config override precedence ===
+
+    @Test
+    void node_deployment_override_wins_over_slice_intrinsic_for_shared_keys() {
+        // The slice ships LOCAL defaults in resources.toml; each deployment overrides the
+        // same section/value via the node-composite. Regression guard for the previously
+        // inverted LayeredConfigProvider order (slice intrinsic was wrongly winning).
+        var intrinsic = IntrinsicConfigProvider.intrinsicConfigProvider("slice.toml",
+                                                                        Map.of("database.async_url", "postgresql://forge-postgres:5432/forge",
+                                                                               "streams.test-events.partitions", "4"));
+        var nodeComposite = IntrinsicConfigProvider.intrinsicConfigProvider("node",
+                                                                            Map.of("database.async_url", "postgresql://pg-vm:5432/aether_forge"));
+
+        var composite = SliceStore.sliceStore.assembleSliceComposite(artifact, intrinsic, nodeComposite);
+
+        // Deployment override wins for the shared key...
+        assertThat(composite.getString("database.async_url").unwrap()).isEqualTo("postgresql://pg-vm:5432/aether_forge");
+        // ...and slice-only keys fall through to the slice intrinsic.
+        assertThat(composite.getString("streams.test-events.partitions").unwrap()).isEqualTo("4");
     }
 
     // === LoadedSliceEntry Tests ===
