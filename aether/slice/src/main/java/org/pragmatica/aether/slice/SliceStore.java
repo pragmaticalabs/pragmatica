@@ -238,7 +238,16 @@ public interface SliceStore {
             logShadowedKeys(artifact, intrinsic, composite);
             var labelledIntrinsic = NamedConfigProvider.namedConfigProvider("slice.toml", intrinsic);
 
-            return LayeredConfigProvider.layered(List.of(labelledIntrinsic, composite));
+            // Override precedence: the node-composite (operator KV-overlay ⊕ node.toml) WINS over
+            // the slice's intrinsic resources.toml. The slice ships LOCAL defaults that each
+            // deployment overrides with environment-specific values (see the resources.toml header
+            // and logShadowedKeys above — "intrinsic shadowed by operator override"). Since
+            // LayeredConfigProvider is first-wins (index 0 = top priority), the composite must come
+            // FIRST; slice.toml is the fallback only for keys the deployment does not override.
+            // (Identical local/deployment values — e.g. docker's node aether.toml matching the
+            // slice — make the order moot, which is why this was latent until a divergent cloud
+            // deployment exercised it.)
+            return LayeredConfigProvider.layered(List.of(composite, labelledIntrinsic));
         }
 
         /// Emit one INFO log entry per intrinsic key whose value is shadowed by an existing
