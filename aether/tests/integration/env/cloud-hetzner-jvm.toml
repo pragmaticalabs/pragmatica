@@ -48,6 +48,11 @@ enabled = true
 retry_interval = "30s"
 startup_cooldown = "15s"
 
+# @PgSql slices read the FLAT [database] datasource (config="database"). databases.X
+# produces nested [database.X] the connector ignores; inject flat [database] via node_config.
+[source.hetzner-eu.node_config.database]
+async_url = "${env:PG_URL}"
+
 [runtime.default]
 type = "jvm"
 # Cluster version is 1.0.0 (strict semver); the JVM-mode URL deriver would

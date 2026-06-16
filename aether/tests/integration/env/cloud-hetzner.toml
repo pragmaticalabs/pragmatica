@@ -66,6 +66,16 @@ startup_cooldown = "15s"
 enabled = true
 security_mode = "NONE"
 
+# @PgSql slices resolve the FLAT datasource section named "database"
+# (@ResourceQualifier config = "database"). `databases.X` produces a NESTED
+# [database.X] table which the connector does NOT read; the connector reads the
+# flat [database] section. node_config injects it flat into every node's
+# aether.toml (mirrors docker's static node [database]). async_url carries the
+# PG VM connection (type is inferred from the postgres:// scheme); without this
+# the slice loads typeless → "Database type is required" → V900 never runs.
+[source.hetzner-eu.node_config.database]
+async_url = "${env:PG_URL}"
+
 [runtime.default]
 type = "container"
 image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc2-candidate"

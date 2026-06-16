@@ -51,7 +51,7 @@ test_inject_events_round_robin() {
 # Give the replicated log a moment to fan out + the materialised-view subscribers
 # on every node a chance to catch up.
 test_wait_for_replication() {
-    local deadline=$((SECONDS + 15))
+    local deadline=$((SECONDS + 15 * ${TIMEOUT_SCALE:-1}))
     while [ $SECONDS -lt $deadline ]; do
         local node0
         node0=$(node_base_url 0) || { sleep 1; continue; }
@@ -84,7 +84,7 @@ _count_marker_events() {
 }
 
 test_wait_for_marker_count_convergence() {
-    local deadline=$((SECONDS + 30))
+    local deadline=$((SECONDS + 30 * ${TIMEOUT_SCALE:-1}))
     local stable_count=0
     while [ $SECONDS -lt $deadline ]; do
         local first_count="" diverged=0

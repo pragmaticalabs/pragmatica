@@ -76,6 +76,11 @@ name = "integration-test"
 roles = ["service"]
 authorization_role = "ADMIN"
 
+# @PgSql slices read the FLAT [database] datasource (config="database"). databases.X
+# produces nested [database.X] the connector ignores; inject flat [database] via node_config.
+[source.hetzner-eu.node_config.database]
+async_url = "${env:PG_URL}"
+
 [runtime.default]
 type = "container"
 image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc2-candidate"
