@@ -15,6 +15,7 @@ import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.environment.ReadinessPolicy;
 import org.pragmatica.cloud.hetzner.HetznerClient;
+import org.pragmatica.cloud.hetzner.HetznerError;
 import org.pragmatica.cloud.hetzner.api.Server;
 import org.pragmatica.cloud.hetzner.api.Server.CreateServerRequest;
 import org.pragmatica.lang.Cause;
@@ -50,18 +51,19 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     @Override
     public Promise<InstanceInfo> provision(InstanceType instanceType) {
         var cluster = config.clusterName().or("unknown");
+        var location = config.region();
         var defaultLabels = buildLabels(cluster, "core", "");
 
         defaultLabels.put(NODE_ID_LABEL,
                           IdGenerator.generate(ProvisionContext.coreNodeNamePrefix(cluster)));
 
-        return client.createServer(buildCreateRequest(config.region(),
+        return client.createServer(buildCreateRequest(location,
                                                       defaultLabels,
                                                       config.userData())).map(HetznerComputeProvider::toInstanceInfo)
                                   .flatMap(info -> confirmRunning(info,
                                                                   ReadinessPolicy.cloudDefault()))
                                   .onFailure(HetznerComputeProvider::logProvisionFailureRollbackGap)
-                                  .mapError(HetznerComputeProvider::toProvisionError);
+                                  .mapError(cause -> toProvisionError(location, cause));
     }
 
     @Override
@@ -75,7 +77,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                      .flatMap(info -> confirmRunning(info,
                                                      ReadinessPolicy.cloudDefault()))
                      .onFailure(HetznerComputeProvider::logProvisionFailureRollbackGap)
-                     .mapError(HetznerComputeProvider::toProvisionError);
+                     .mapError(cause -> toProvisionError(location, cause));
     }
 
     /// Rollback acknowledgment for Hetzner provisions. `createServer` is atomic from
@@ -135,7 +137,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return serverId.async()
                        .flatMap(this::serverById)
                        .map(HetznerComputeProvider::toInstanceInfo)
-                       .mapError(HetznerComputeProvider::toProvisionError);
+                       .mapError(cause -> toProvisionError("", cause));
     }
 
     private Promise<Unit> destroyServer(long serverId) {
@@ -376,8 +378,14 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                    .toList();
     }
 
-    private static EnvironmentError toProvisionError(Cause cause) {
-        return EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
+    private static final String CAPACITY_UNAVAILABLE_CODE = "resource_unavailable";
+
+    private static EnvironmentError toProvisionError(String attemptedLocation, Cause cause) {
+        return switch (cause) {
+            case HetznerError.ApiError apiError when CAPACITY_UNAVAILABLE_CODE.equals(apiError.code()) ->
+                EnvironmentError.capacityUnavailable(attemptedLocation, new RuntimeException(cause.message()));
+            default -> EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
+        };
     }
 
     private static EnvironmentError toTerminateError(InstanceId instanceId, Cause cause) {

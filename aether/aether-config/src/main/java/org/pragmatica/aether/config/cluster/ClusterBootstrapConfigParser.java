@@ -178,6 +178,7 @@ public final class ClusterBootstrapConfigParser {
         var credentials = doc.getString(section, "credentials");
         var region = doc.getString(section, "region");
         var zone = doc.getString(section, "zone");
+        var zones = doc.getStringList(section, "zones").or(List.of());
         var user = doc.getString(section, "user");
         var key = doc.getString(section, "key");
         var sshPort = doc.getInt(section, "ssh_port");
@@ -195,6 +196,7 @@ public final class ClusterBootstrapConfigParser {
                                            credentials,
                                            region,
                                            zone,
+                                           zones,
                                            user,
                                            key,
                                            sshPort,

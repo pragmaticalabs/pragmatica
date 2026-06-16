@@ -12,6 +12,7 @@ import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.cloud.hetzner.HetznerClient;
@@ -66,6 +67,40 @@ class HetznerComputeProviderTest {
         @Test
         void provision_failure_mapsToEnvironmentError() {
             testClient.createServerResponse = new HetznerError.ApiError(500, "server_error", "Internal error").promise();
+
+            provider.provision(InstanceType.ON_DEMAND)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(HetznerComputeProviderTest::assertProvisionFailedError);
+        }
+
+        @Test
+        void provision_capacityUnavailable_mapsToCapacityUnavailableWithAttemptedZone() {
+            // Hetzner placement-capacity signal: 412 with code "resource_unavailable"
+            // ("error during placement"). Must surface as the RETRYABLE CapacityUnavailable
+            // carrying the attempted zone so the bootstrap can rotate to the next zone.
+            testClient.createServerResponse =
+                new HetznerError.ApiError(412, "resource_unavailable", "error during placement").promise();
+            var context = ProvisionContext.provisionContext("cluster-x",
+                                                             "core",
+                                                             "eu-1",
+                                                             ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context)
+                                    .unwrap()
+                                    .withPlacement(PlacementHint.zoneHint("nbg1"));
+
+            provider.provision(spec)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(HetznerComputeProviderTest::assertCapacityUnavailableInNbg1);
+        }
+
+        @Test
+        void provision_nonCapacityApiError_mapsToProvisionFailed() {
+            // A 412 with a DIFFERENT code (or any other status) is NOT a capacity signal —
+            // it must stay ProvisionFailed (non-retryable), so rotation does not waste attempts.
+            testClient.createServerResponse =
+                new HetznerError.ApiError(412, "uniqueness_error", "server name taken").promise();
 
             provider.provision(InstanceType.ON_DEMAND)
                     .await()
@@ -395,6 +430,11 @@ class HetznerComputeProviderTest {
 
     private static void assertProvisionFailedError(Cause cause) {
         assertThat(cause).isInstanceOf(EnvironmentError.ProvisionFailed.class);
+    }
+
+    private static void assertCapacityUnavailableInNbg1(Cause cause) {
+        assertThat(cause).isInstanceOf(EnvironmentError.CapacityUnavailable.class);
+        assertThat(((EnvironmentError.CapacityUnavailable) cause).zone()).isEqualTo("nbg1");
     }
 
     private static void assertTerminateFailedError(Cause cause) {

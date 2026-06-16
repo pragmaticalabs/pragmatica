@@ -18,8 +18,14 @@ max_unavailable = 1
 [source.hetzner-eu]
 type = "cloud"
 provider = "hetzner"
-zone = "fsn1"
-region = "fsn1"
+# `zones` is an ordered fallback list of Hetzner location codes. The bootstrap provisions
+# each node into the first zone with capacity, rotating to the next on a 412
+# `resource_unavailable` ("error during placement") response — so a single full zone no
+# longer aborts the whole cluster bootstrap. Different nodes may land in different zones
+# (cross-zone is desirable). A single `zone = "<loc>"` still works (treated as a 1-element
+# list); when neither `zone` nor `zones` is set the provider falls back to `region`.
+zones = ["fsn1", "nbg1", "hel1"]
+region = "fsn1"           # Default location used when no zone placement hint is set (single-attempt fallback).
 credentials = "${env:HCLOUD_TOKEN}"
 load_balancer = "none"
 databases.forge = "${env:PG_URL}"

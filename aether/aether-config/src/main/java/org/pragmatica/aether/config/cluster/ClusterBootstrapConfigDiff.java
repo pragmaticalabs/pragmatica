@@ -123,6 +123,7 @@ public final class ClusterBootstrapConfigDiff {
         checkSourceField(sourceName, "databases", stored.databases(), desired.databases(), modifications);
         checkSourceField(sourceName, "region", stored.region(), desired.region(), modifications);
         checkSourceField(sourceName, "zone", stored.zone(), desired.zone(), modifications);
+        checkSourceField(sourceName, "zones", stored.zones(), desired.zones(), modifications);
         checkSourceField(sourceName, "loadBalancer", stored.loadBalancer(), desired.loadBalancer(), modifications);
         checkSourceField(sourceName,
                          "loadBalancerIps",
