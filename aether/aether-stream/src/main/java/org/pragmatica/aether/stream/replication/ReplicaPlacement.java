@@ -108,16 +108,23 @@ public final class ReplicaPlacement {
         return clamp(requested, 1, clusterSize);
     }
 
-    /// Effective replication factor for a SYSTEM stream:
-    /// `min(max(3, N - 2), N)` where `N = clusterSize`. Returns 0 for an empty cluster.
+    /// Effective replication factor for a SYSTEM stream: the FULL cluster — every core node is a
+    /// replica (`RF = clusterSize`). Returns 0 for an empty cluster.
     ///
-    /// Examples: N=1→1, N=3→3, N=5→3, N=7→5, N=10→8.
+    /// System streams (e.g. `system:cluster-events`) are low-volume, operator-critical audit logs
+    /// whose value is being readable from ANY node. Making the replica set ≡ the core set means no
+    /// node is a non-replica that must forward-read, and there is no replica count to maintain as the
+    /// cluster scales: a core joins ⇒ it becomes a replica and backfills; a core leaves ⇒ one fewer
+    /// replica, no action. Durability then matches the cluster's own fault tolerance by construction —
+    /// the audit log survives exactly the failures the cluster survives.
+    ///
+    /// Examples: N=1→1, N=3→3, N=5→5, N=10→10.
     public static int systemReplicationFactor(int clusterSize) {
         if (clusterSize <= 0) {
             return 0;
         }
 
-        return Math.min(Math.max(3, clusterSize - 2), clusterSize);
+        return clusterSize;
     }
 
     /// Effective replication factor dispatched on [StreamClass]. For [StreamClass#APP] the

@@ -307,7 +307,7 @@ class ReplicaSetControllerTest {
 
         ctrl.reconcile();
 
-        var expectedRf = ReplicaPlacement.systemReplicationFactor(members.size()); // N=5 -> 3
+        var expectedRf = ReplicaPlacement.systemReplicationFactor(members.size()); // N=5 -> 5 (all cores)
         var actual = registry.replicasFor(systemStream, 0).size();
         assertThat(actual).isEqualTo(expectedRf);
         assertThat(actual).isNotEqualTo(1);

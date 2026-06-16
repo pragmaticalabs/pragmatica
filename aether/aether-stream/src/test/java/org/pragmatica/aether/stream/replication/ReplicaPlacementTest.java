@@ -168,16 +168,16 @@ class ReplicaPlacementTest {
     void systemReplicationFactorFormula() {
         assertThat(ReplicaPlacement.systemReplicationFactor(1)).isEqualTo(1);
         assertThat(ReplicaPlacement.systemReplicationFactor(3)).isEqualTo(3);
-        assertThat(ReplicaPlacement.systemReplicationFactor(5)).isEqualTo(3);
-        assertThat(ReplicaPlacement.systemReplicationFactor(7)).isEqualTo(5);
-        assertThat(ReplicaPlacement.systemReplicationFactor(10)).isEqualTo(8);
+        assertThat(ReplicaPlacement.systemReplicationFactor(5)).isEqualTo(5);
+        assertThat(ReplicaPlacement.systemReplicationFactor(7)).isEqualTo(7);
+        assertThat(ReplicaPlacement.systemReplicationFactor(10)).isEqualTo(10);
         assertThat(ReplicaPlacement.systemReplicationFactor(0)).isEqualTo(0);
     }
 
     @Test
     void streamClassDispatch() {
         assertThat(ReplicaPlacement.replicationFactor(StreamClass.APP, 2, 5)).isEqualTo(2);
-        assertThat(ReplicaPlacement.replicationFactor(StreamClass.SYSTEM, 2, 5)).isEqualTo(3);
+        assertThat(ReplicaPlacement.replicationFactor(StreamClass.SYSTEM, 2, 5)).isEqualTo(5);
     }
 
     @Test
