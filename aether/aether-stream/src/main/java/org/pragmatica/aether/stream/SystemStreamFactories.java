@@ -17,6 +17,7 @@ import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.Deserializer;
@@ -98,9 +99,9 @@ public final class SystemStreamFactories {
     /// `self` node id and pins a replica-routed read preference, so a node OUTSIDE the stream's replica
     /// set forwards reads to a caught-up replica (the owner) instead of reading its own empty local
     /// partition (returning `200 []`). Required for `system:cluster-events` observability reads to work
-    /// on a non-replica node. Fail-soft: until the replica registry reports a caught-up replica
-    /// (bootstrap window) the read lands locally rather than failing. The config's `name` must equal
-    /// `address.asString()`.
+    /// on a non-replica node. When no locally-known caught-up replica is visible yet (bootstrap window)
+    /// the read forwards to the deterministic HRW owner via `ownerResolver`, failing soft to the local
+    /// partition only when the owner is unknown/self. The config's `name` must equal `address.asString()`.
     public static <T> Result<FrameworkStreamConsumer<T>> systemStreamConsumer(ResourceAddress address,
                                                                               StreamPartitionManager partitionManager,
                                                                               Serializer serializer,
@@ -109,6 +110,7 @@ public final class SystemStreamFactories {
                                                                               ReplicaRegistry replicaRegistry,
                                                                               Option<StreamForwardClient> forwardClient,
                                                                               NodeId self,
+                                                                              Option<Fn0<Option<NodeId>>> ownerResolver,
                                                                               StreamReadForwardMetrics metrics) {
         ensureLocalPartition(partitionManager, config);
         var transport = PartitionedStreamAccess.<T> streamAccess(partitionManager,
@@ -121,6 +123,7 @@ public final class SystemStreamFactories {
                                                                  replicaRegistry,
                                                                  forwardClient,
                                                                  self,
+                                                                 ownerResolver,
                                                                  metrics);
 
         return FrameworkStreamConsumers.systemStreamConsumer(address, transport);

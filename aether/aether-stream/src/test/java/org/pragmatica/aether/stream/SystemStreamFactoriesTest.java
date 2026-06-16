@@ -76,6 +76,7 @@ class SystemStreamFactoriesTest {
                                                                           replicaRegistry,
                                                                           Option.some(forwardClient),
                                                                           SELF,
+                                                                          Option.none(),
                                                                           StreamReadForwardMetrics.NOOP)
                                             .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected consumer wiring success"))
                                             .unwrap();
@@ -91,8 +92,8 @@ class SystemStreamFactoriesTest {
 
     @Test
     void systemStreamConsumer_forwardCapable_bootstrapWindowFailsSoftToLocal() {
-        // No caught-up replica visible yet (bootstrap window): the read must fail soft to the local
-        // partition rather than fail/forward. SELF owns a local partition with one event.
+        // No caught-up replica visible yet AND no owner resolvable (bootstrap window): the read must fail
+        // soft to the local partition rather than fail/forward. SELF owns a local partition with one event.
         partitionManager.createStream(clusterEventsConfig());
         partitionManager.publishLocal(STREAM, 0, "local".getBytes(), 1_000L);
 
@@ -104,6 +105,7 @@ class SystemStreamFactoriesTest {
                                                                           replicaRegistry,
                                                                           Option.some(forwardClient),
                                                                           SELF,
+                                                                          Option.none(),
                                                                           StreamReadForwardMetrics.NOOP)
                                             .unwrap();
 

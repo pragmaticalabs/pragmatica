@@ -2507,6 +2507,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                streamReplicaRegistry,
                                                                                                Option.some(streamForwardClient),
                                                                                                config.self(),
+                                                                                               Option.some(() -> Option.option(clusterEventsControllerRef.get())
+                                                                                                                       .flatMap(clusterEventsController -> clusterEventsController.ownerFor(clusterEventsStreamName,
+                                                                                                                                                                                           0))),
                                                                                                streamReadForwardMetrics).onSuccess(clusterEventsConsumerRef::set).onFailure(cause -> LOG.warn("cluster-events stream consumer wiring failed: {} — events reads return empty",
                                                                                                                                                                                               cause.message()));
         var streamCatchupTransport = ForwardCatchupTransport.forwardCatchupTransport(streamForwardClient,
@@ -2617,6 +2620,7 @@ public interface AetherNode extends ManageableNode {
                                                                  Option.some(streamReplicaRegistry),
                                                                  Option.some(streamForwardClient),
                                                                  config.self(),
+                                                                 streamReplicaSetController::ownerFor,
                                                                  streamReadForwardMetrics);
 
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.PublishForward.class,

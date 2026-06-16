@@ -8,12 +8,9 @@ import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.StreamAccess;
 import org.pragmatica.aether.stream.forward.RawEventDto;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
-import org.pragmatica.aether.stream.forward.StreamForwardClient.ReadForwardResult;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
-import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
-import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.aether.stream.segment.CursorStore;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.consensus.NodeId;
@@ -31,7 +28,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.stream.IntStream;
@@ -175,9 +171,10 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     /// + forward client + self node id and pins a replica-routed `readPreference` (typically
     /// `ANY_REPLICA`) so a node OUTSIDE the stream's replica set forwards reads to a caught-up replica
     /// instead of reading its own empty local partition. When self IS a caught-up replica the read
-    /// lands locally; during the bootstrap window (no caught-up replica visible yet) it fails soft to
-    /// the local partition (see {@link #selectReplicaAndRead}). No cursor/tiered machinery is wired —
-    /// those are `Option.none()`.
+    /// lands locally; during the bootstrap window (no caught-up replica visible yet) the read forwards to
+    /// the deterministic HRW owner via `ownerResolver`, and fails soft to the local partition only when
+    /// the owner is unknown/self (see {@link ForwardingReadRouter}). No cursor/tiered machinery is wired
+    /// — those are `Option.none()`.
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
                                                               Serializer serializer,
                                                               Deserializer deserializer,
@@ -188,6 +185,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                               ReplicaRegistry replicaRegistry,
                                                               Option<StreamForwardClient> forwardClient,
                                                               NodeId selfNodeId,
+                                                              Option<Fn0<Option<NodeId>>> ownerResolver,
                                                               StreamReadForwardMetrics metrics) {
         return new PartitionedStreamAccess<>(partitionManager,
                                              serializer,
@@ -202,7 +200,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              Option.some(replicaRegistry),
                                              forwardClient,
                                              selfNodeId,
-                                             Option.none(),
+                                             ownerResolver,
                                              Option.none(),
                                              metrics,
                                              0);
@@ -531,129 +529,34 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     }
 
     private Promise<List<StreamEvent<T>>> readWithPreference(int partition, long fromOffset, int maxEvents) {
-        return switch (readPreference) {
-            case GOVERNOR -> readPartition(partition, fromOffset, maxEvents);
-            case ANY_REPLICA, NEAREST -> readFromReplicaOrLocal(partition, fromOffset, maxEvents);
-        };
+        return forwardingReadRouter().route(streamName, partition, fromOffset, maxEvents);
     }
 
-    private Promise<List<StreamEvent<T>>> readFromReplicaOrLocal(int partition, long fromOffset, int maxEvents) {
-        return replicaRegistry.map(registry -> selectReplicaAndRead(registry, partition, fromOffset, maxEvents))
-                              .or(() -> readPartition(partition, fromOffset, maxEvents));
-    }
-
-    private Promise<List<StreamEvent<T>>> selectReplicaAndRead(ReplicaRegistry registry,
-                                                               int partition,
-                                                               long fromOffset,
-                                                               int maxEvents) {
-        var caughtUp = registry.replicasFor(streamName, partition).stream().filter(PartitionedStreamAccess::isCaughtUp).toList();
-
-        if (caughtUp.isEmpty()) {
-            return readPartition(partition, fromOffset, maxEvents);
-        }
-
-        return readWithPrimaryAndRetry(caughtUp, partition, fromOffset, maxEvents);
-    }
-
-    private Promise<List<StreamEvent<T>>> readWithPrimaryAndRetry(List<ReplicaDescriptor> caughtUp,
-                                                                  int partition,
-                                                                  long fromOffset,
-                                                                  int maxEvents) {
-        var remote = caughtUp.stream().filter(r -> !r.nodeId()
-                                                     .equals(selfNodeId)).toList();
-
-        if (remote.isEmpty()) {
-            return readPartition(partition, fromOffset, maxEvents);
-        }
-
-        return forwardClient.map(client -> attemptPrimary(client, remote, partition, fromOffset, maxEvents))
-                            .or(() -> readPartition(partition, fromOffset, maxEvents));
-    }
-
-    private Promise<List<StreamEvent<T>>> attemptPrimary(StreamForwardClient client,
-                                                         List<ReplicaDescriptor> pool,
-                                                         int partition,
-                                                         long fromOffset,
-                                                         int maxEvents) {
-        var primary = pickReplica(pool);
-
-        LOG.log(System.Logger.Level.DEBUG,
-                "ReadPreference {0}: primary replica {1} for {2}[{3}]",
-                readPreference,
-                primary.nodeId(),
-                streamName,
-                partition);
-
-        return client.readRemote(primary.nodeId(),
-                                 streamName,
-                                 partition,
-                                 fromOffset,
-                                 maxEvents).map(result -> decodeAll(result.events(),
-                                                                    partition))
-                                .fold(result -> result.fold(cause -> retryOrFail(client,
-                                                                                 primary,
-                                                                                 pool,
-                                                                                 partition,
-                                                                                 fromOffset,
-                                                                                 maxEvents,
-                                                                                 cause),
-                                                            Promise::success));
-    }
-
-    private Promise<List<StreamEvent<T>>> retryOrFail(StreamForwardClient client,
-                                                      ReplicaDescriptor primary,
-                                                      List<ReplicaDescriptor> pool,
-                                                      int partition,
-                                                      long fromOffset,
-                                                      int maxEvents,
-                                                      Cause firstCause) {
-        var alternatives = pool.stream().filter(r -> !r.nodeId()
-                                                       .equals(primary.nodeId())).toList();
-
-        if (alternatives.isEmpty()) {
-            LOG.log(System.Logger.Level.DEBUG,
-                    "ReadPreference {0}: single-replica failure for {1}[{2}]: {3}",
-                    readPreference,
-                    streamName,
-                    partition,
-                    firstCause.message());
-
-            return firstCause.promise();
-        }
-
-        metrics.recordRetry();
-        var retry = pickReplica(alternatives);
-
-        LOG.log(System.Logger.Level.DEBUG,
-                "ReadPreference {0}: retry replica {1} for {2}[{3}] after primary {4} failed: {5}",
-                readPreference,
-                retry.nodeId(),
-                streamName,
-                partition,
-                primary.nodeId(),
-                firstCause.message());
-
-        return client.readRemote(retry.nodeId(),
-                                 streamName,
-                                 partition,
-                                 fromOffset,
-                                 maxEvents)
-                     .map(result -> decodeAll(result.events(),
-                                              partition));
-    }
-
-    private static ReplicaDescriptor pickReplica(List<ReplicaDescriptor> pool) {
-        return pool.get(ThreadLocalRandom.current().nextInt(pool.size()));
+    /// Fix #3 (forward-read): build the shared forward-read core for this stream's typed reads. The
+    /// routing ALGORITHM (caught-up-replica selection → owner-forward fallback) lives once in
+    /// {@link ForwardingReadRouter}; here we supply only the typed local-read ({@link #readPartition},
+    /// adapted to ignore the fixed stream name), the decode ({@link #decodeAll}) and the owner resolver
+    /// ({@link #resolveOwner}, which already blends the partition-aware HRW resolver + arg-less resolver).
+    /// A non-owner / still-catching-up node thus forwards to a caught-up replica or the deterministic HRW
+    /// owner instead of reading its own empty local partition (`200 []`); GOVERNOR / no-registry paths
+    /// stay byte-identical local reads.
+    private ForwardingReadRouter<StreamEvent<T>> forwardingReadRouter() {
+        return ForwardingReadRouter.forwardingReadRouter(replicaRegistry,
+                                                         selfNodeId,
+                                                         forwardClient,
+                                                         readPreference,
+                                                         (_, partition) -> resolveOwner(partition),
+                                                         (_, partition, fromOffset, maxEvents) -> readPartition(partition,
+                                                                                                                fromOffset,
+                                                                                                                maxEvents),
+                                                         this::decodeAll,
+                                                         metrics);
     }
 
     private List<StreamEvent<T>> decodeAll(List<RawEventDto> events, int partition) {
         return events.stream()
                      .map(dto -> toStreamEventFromDto(dto, partition))
                      .toList();
-    }
-
-    private static boolean isCaughtUp(ReplicaDescriptor descriptor) {
-        return descriptor.state() == ReplicationState.CAUGHT_UP;
     }
 
     private Promise<List<StreamEvent<T>>> readPartition(int partition, long fromOffset, int maxEvents) {
@@ -663,7 +566,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                      Promise::success);
     }
 
-    private Promise<List<StreamEvent<T>>> handleReadFailure(org.pragmatica.lang.Cause cause,
+    private Promise<List<StreamEvent<T>>> handleReadFailure(Cause cause,
                                                             int partition,
                                                             long fromOffset,
                                                             int maxEvents) {
