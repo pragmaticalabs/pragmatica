@@ -152,6 +152,14 @@ case "$ENV_TYPE" in
         # slower in the run-5 baseline, 09-artifacts ~9× slower. Scale every wait_for_*
         # / await_generation_quiesced timeout proportionally. Override via env if needed.
         export TIMEOUT_SCALE="${TIMEOUT_SCALE:-3}"
+        # Privileged ops (artifact publication, #282) require OPERATOR/ADMIN auth even under
+        # security_mode=NONE; the only bypass is AETHER_INSECURE_DEV_MODE on the node. The
+        # docker env bakes this into docker-compose-{a,b}.yml for every node; the cloud path
+        # has no TOML knob, so export it here for `aether cluster bootstrap` to read —
+        # NodeUserDataRenderer.emitIdentityEnv() propagates it into each provisioned node's
+        # cloud-init (docker run -e / JVM export). Without it, cluster A (security_mode=NONE)
+        # rejects blueprint pushes and the 00-smoke gate fails. Override to false to enforce.
+        export AETHER_INSECURE_DEV_MODE="${AETHER_INSECURE_DEV_MODE:-true}"
         case "$CLOUD_RUNTIME" in
             container) ;;
             jvm)
