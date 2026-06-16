@@ -425,6 +425,85 @@ class PartitionBackfillTest {
         }
     }
 
+    /// Fix B (owner-immediate cold-start break): the HRW owner of a partition is authoritative for its own
+    /// data, so when self IS the owner and no caught-up peer source exists it self-promotes IMMEDIATELY at
+    /// its local watermark — WITHOUT waiting out the source-wait bound. A non-owner still observes the
+    /// existing bounded-wait behavior. Membership is supplied via the explicit-member test factory so the
+    /// HRW owner can be computed deterministically.
+    @Nested
+    class OwnerImmediateSelfPromotion {
+        private static final NodeId NODE_AA = NodeId.nodeId("node-aa").unwrap();
+        private static final NodeId NODE_BB = NodeId.nodeId("node-bb").unwrap();
+        private static final NodeId NODE_CC = NodeId.nodeId("node-cc").unwrap();
+        private static final TimeSpan BOUND = TimeSpan.timeSpan(10).seconds();
+        private static final List<NodeId> MEMBERS = List.of(NODE_AA, NODE_BB, NODE_CC);
+        // HRW owner of (STREAM, PARTITION) across MEMBERS — deterministic, computed from the same ranking
+        // the production code uses. The owner self-promotes immediately; a NON-owner does not.
+        private static final NodeId OWNER = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS).getFirst();
+        private static final NodeId NON_OWNER = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS).getLast();
+
+        @Test
+        void backfill_selfIsOwner_noSource_selfPromotesImmediately_withoutAdvancingClock() {
+            // Owner is a SYNCING replica with NO caught-up peer source. Clock stays at 0 (bound NOT
+            // elapsed) — the owner must STILL promote immediately at its local watermark.
+            registry.registerReplica(STREAM, PARTITION, OWNER); // self == owner, SYNCING
+
+            var clock = new AtomicLong(0L);
+            ReplicaWatermarkProbe failIfProbed = (_, _, _) -> {
+                throw new AssertionError("owner must not probe peers — it self-promotes immediately");
+            };
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             CatchupTransport.NOOP,
+                                             failIfProbed,
+                                             selfWatermarkOf(7L),
+                                             OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> MEMBERS);
+
+            var applied = backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(applied.isSuccess()).isTrue();
+            // Clock never advanced past the bound, yet the owner is CAUGHT_UP at its local watermark.
+            assertThat(clock.get()).isZero();
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(descriptorFor(OWNER).confirmedOffset()).isEqualTo(7L);
+        }
+
+        @Test
+        void backfill_selfIsNonOwner_noSource_staysSyncingUntilBound() {
+            // A NON-owner replica with no source must NOT take the owner-immediate path: it stays SYNCING
+            // while the bound has not elapsed (existing bounded-wait behavior preserved). Both replicas are
+            // registered so the non-owner has a (SYNCING) peer but no caught-up source.
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self
+
+            var clock = new AtomicLong(0L);
+            ReplicaWatermarkProbe failIfProbed = (_, _, _) -> {
+                throw new AssertionError("non-owner must not probe before the bound elapses");
+            };
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             CatchupTransport.NOOP,
+                                             failIfProbed,
+                                             selfWatermarkOf(9L),
+                                             NON_OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> MEMBERS);
+
+            clock.set(BOUND.millis() - 1); // still inside the wait window
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            assertThat(descriptorFor(NON_OWNER).state()).isEqualTo(ReplicationState.SYNCING);
+            assertThat(descriptorFor(NON_OWNER).confirmedOffset()).isEqualTo(-1L);
+        }
+
+        private SelfWatermark selfWatermarkOf(long watermark) {
+            return (_, _) -> watermark;
+        }
+    }
+
     private ReplicaDescriptor descriptorFor(NodeId nodeId) {
         return registry.replicasFor(STREAM, PARTITION).stream()
                        .filter(d -> d.nodeId().equals(nodeId))

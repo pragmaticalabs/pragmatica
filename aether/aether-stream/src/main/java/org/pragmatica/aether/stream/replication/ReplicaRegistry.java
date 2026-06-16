@@ -65,6 +65,23 @@ public final class ReplicaRegistry {
                      .or(List.of());
     }
 
+    /// Partitions for which `nodeId` is a registered replica that has NOT yet reached
+    /// {@link ReplicationState#CAUGHT_UP}. Used by the periodic backfill re-drive to re-attempt
+    /// backfill (and the cold-start promotion seam) for exactly the partitions that are still SYNCING —
+    /// a CAUGHT_UP replica needs no further backfill and is skipped.
+    public List<PartitionKey> incompletePartitionsFor(NodeId nodeId) {
+        return replicas.entrySet()
+                       .stream()
+                       .filter(entry -> isIncompleteReplica(entry.getValue(), nodeId))
+                       .map(Map.Entry::getKey)
+                       .toList();
+    }
+
+    private static boolean isIncompleteReplica(Map<NodeId, ReplicaDescriptor> nodeMap, NodeId nodeId) {
+        return option(nodeMap.get(nodeId)).map(descriptor -> descriptor.state() != ReplicationState.CAUGHT_UP)
+                     .or(false);
+    }
+
     @Contract
     public void updateWatermark(String streamName, int partition, NodeId nodeId, long confirmedOffset) {
         updateWatermark(streamName, partition, nodeId, confirmedOffset, ReplicationState.CAUGHT_UP);

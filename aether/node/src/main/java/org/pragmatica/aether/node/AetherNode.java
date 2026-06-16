@@ -254,6 +254,7 @@ import java.util.List;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -636,6 +637,14 @@ public interface AetherNode extends ManageableNode {
     long DEFAULT_STREAM_MEMORY_BYTES = 16 * 1024 * 1024L;
     /// A4 catch-up: number of events pulled per forward-read page during partition backfill.
     int STREAM_CATCHUP_BATCH_SIZE = 256;
+    /// A4 periodic backfill re-drive interval. `reconcilePartition` fires `onBecameReplica → backfill`
+    /// ONCE per reconcile edge (no built-in retry), so a cold-start replica that observed NO_SOURCE on
+    /// its first attempt would never re-attempt and stay SYNCING forever. This periodic re-drive
+    /// re-invokes backfill for every partition where self is a registered, not-yet-CAUGHT_UP replica, so
+    /// the owner-immediate / bounded-wait cold-start promotion is actually reached and non-owners
+    /// re-attempt once the owner becomes CAUGHT_UP. Kept well under the backfill source-wait bound (20s)
+    /// so several attempts occur within one wait window; CAUGHT_UP partitions are skipped (no-op).
+    TimeSpan STREAM_BACKFILL_REDRIVE_INTERVAL = TimeSpan.timeSpan(5).seconds();
 
     private static StorageInstance createStreamStorage(Option<DHTClient> dhtClient) {
         var memoryTier = MemoryTier.memoryTier(DEFAULT_STREAM_MEMORY_BYTES);
@@ -658,7 +667,20 @@ public interface AetherNode extends ManageableNode {
         return thread;
     }
 
-    /// Cold-start backfill probe: resolve a peer replica's CURRENT local watermark (highest held offset,
+    /// Periodic backfill re-drive (A4): for every partition where self is a registered, not-yet-CAUGHT_UP
+    /// replica, re-submit `backfill` onto the dedicated backfill executor. Idempotent and bounded — the
+    /// registry enumeration naturally skips CAUGHT_UP partitions, so once everything has caught up this is
+    /// a no-op. Runs off the periodic scheduler tick; backfill itself stays on `backfillExecutor` (its
+    /// dedicated thread), so no competing thread pool is introduced.
+    @Contract
+    private static void redriveIncompleteBackfills(ReplicaRegistry registry,
+                                                   NodeId self,
+                                                   PartitionBackfill backfill,
+                                                   Executor backfillExecutor) {
+        registry.incompletePartitionsFor(self)
+                .forEach(key -> backfillExecutor.execute(() -> backfill.backfill(key.streamName(), key.partition())));
+    }
+
     /// `-1` for empty) by paging its partition over the forward-read transport, or FAIL when the peer is
     /// unreachable. The success/failure split is the data-safety signal the backfill deadlock-break needs:
     /// a reachable peer's watermark is comparable; an unreachable peer's is unknown (and might be ahead),
@@ -2509,7 +2531,9 @@ public interface AetherNode extends ManageableNode {
                                                                           streamWatermarkProbe,
                                                                           streamSelfWatermark,
                                                                           config.self(),
-                                                                          streamingConfig.backfillSourceWaitBound());
+                                                                          streamingConfig.backfillSourceWaitBound(),
+                                                                          () -> List.copyOf(clusterTopologyManager.observer()
+                                                                                                                  .coreNodes()));
         var streamBackfillExecutor = Executors.newSingleThreadExecutor(runnable -> daemonThread(runnable,
                                                                                                 "stream-partition-backfill"));
         // A2: per-node controller that reconciles the (previously never-populated) ReplicaRegistry
@@ -2538,6 +2562,16 @@ public interface AetherNode extends ManageableNode {
         // Initial reconcile once membership is available; serialized on the controller executor, so
         // this is a safe no-op until the topology observer reports core members.
         streamReplicaSetController.reconcile();
+        // A4 periodic backfill re-drive: reconcilePartition fires backfill ONCE per reconcile edge, so a
+        // cold-start replica that saw NO_SOURCE on its first attempt would never re-attempt and stay
+        // SYNCING forever (the system:cluster-events GET /api/events -> 200 [] deadlock). Re-drive every
+        // STREAM_BACKFILL_REDRIVE_INTERVAL onto the SAME backfill executor so the owner-immediate /
+        // bounded-wait cold-start promotion is actually reached; CAUGHT_UP partitions are skipped.
+        SharedScheduler.scheduleAtFixedRate(() -> redriveIncompleteBackfills(streamReplicaRegistry,
+                                                                             config.self(),
+                                                                             streamPartitionBackfill,
+                                                                             streamBackfillExecutor),
+                                            STREAM_BACKFILL_REDRIVE_INTERVAL);
         var streamingCoordinator = StreamingCoordinator.streamingCoordinator(streamFailoverHandler,
                                                                              streamRetentionEnforcer,
                                                                              streamPartitionManager,

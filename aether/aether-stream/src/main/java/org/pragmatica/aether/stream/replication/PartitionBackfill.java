@@ -15,6 +15,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,11 +38,17 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Catchu
 /// the highest `confirmedOffset`, excluding self. If there is no such source (no peer is caught up,
 /// or self is the only replica) backfill cannot proceed and the promise fails — self stays SYNCING.
 ///
-/// ## Cold-start deadlock break (bounded-wait then data-safe self-promote)
+/// ## Cold-start deadlock break (owner-immediate, else bounded-wait then data-safe self-promote)
 /// After a SIMULTANEOUS full-cluster restart EVERY replica is `SYNCING`, so no caught-up source can
 /// ever exist and each replica waits forever for one — a cluster-wide deadlock that prevents the node
 /// from ever reaching lifecycle READY. To break it WITHOUT serving stale state:
-///   1. the FIRST no-source observation for a partition is timestamped; while
+///   0. the HRW OWNER of the partition ({@link ReplicaPlacement#rank} index 0 over the current core
+///      members) is authoritative for its own data, so when self IS the owner it self-promotes
+///      IMMEDIATELY at its local watermark — it never waits on a peer source, because no peer can be a
+///      more authoritative source than the owner itself. This collapses the cold-start latency for the
+///      single-partition system streams (e.g. `system:cluster-events`) where the owner staying SYNCING
+///      until the bound elapses is the visible `GET /api/events → 200 []` deadlock,
+///   1. for a NON-owner replica the FIRST no-source observation for a partition is timestamped; while
 ///      `now - firstObserved < sourceWaitBound` the node simply stays SYNCING (the staggered-restart
 ///      case where a survivor is merely slow resolves itself here),
 ///   2. once the bound elapses the node PROBES every other registered replica via
@@ -80,6 +87,11 @@ public final class PartitionBackfill {
     private final NodeId self;
     private final TimeSpan sourceWaitBound;
     private final LongSupplier clock;
+    /// Current core members, used ONLY by the owner-immediate cold-start path to compute the HRW owner
+    /// ({@link ReplicaPlacement#rank} index 0). Defaults to {@link List#of()} in the backward-compat
+    /// factory, where an empty member view makes the owner check always false — so that orchestrator is
+    /// byte-identical to the original (no owner-immediate promotion).
+    private final Supplier<List<NodeId>> membersSupplier;
     /// First wall-clock instant (ms) at which each partition was observed to have NO caught-up source.
     /// `backfill` is invoked one-shot and retried by the reconcile / on-gap seams, so the bounded wait
     /// must persist across calls — this map is that cross-call memory.
@@ -92,7 +104,8 @@ public final class PartitionBackfill {
                               SelfWatermark selfWatermark,
                               NodeId self,
                               TimeSpan sourceWaitBound,
-                              LongSupplier clock) {
+                              LongSupplier clock,
+                              Supplier<List<NodeId>> membersSupplier) {
         this.registry = registry;
         this.partitionRecovery = partitionRecovery;
         this.transport = transport;
@@ -101,6 +114,7 @@ public final class PartitionBackfill {
         this.self = self;
         this.sourceWaitBound = sourceWaitBound;
         this.clock = clock;
+        this.membersSupplier = membersSupplier;
     }
 
     /// Backward-compatible factory: no cold-start self-promotion (probe is a no-op that never reports a
@@ -117,20 +131,23 @@ public final class PartitionBackfill {
                                      (_, _) -> - 1L,
                                      self,
                                      TimeSpan.timeSpan(Long.MAX_VALUE).nanos(),
-                                     System::currentTimeMillis);
+                                     System::currentTimeMillis,
+                                     List::of);
     }
 
     /// Cold-start-aware factory: after `sourceWaitBound` elapses with no caught-up source, the
     /// highest-watermark replica self-promotes (data-safe; see class doc). `probe` reports each peer's
     /// current watermark (success) or its unreachability (failure); `selfWatermark` reports self's local
-    /// tail offset for the promotion contest.
+    /// tail offset for the promotion contest. `membersSupplier` reports the current core members so the
+    /// HRW OWNER can self-promote immediately (owner-immediate path) without waiting for a peer source.
     public static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
                                                       StreamPartitionRecovery partitionRecovery,
                                                       CatchupTransport transport,
                                                       ReplicaWatermarkProbe probe,
                                                       SelfWatermark selfWatermark,
                                                       NodeId self,
-                                                      TimeSpan sourceWaitBound) {
+                                                      TimeSpan sourceWaitBound,
+                                                      Supplier<List<NodeId>> membersSupplier) {
         return new PartitionBackfill(registry,
                                      partitionRecovery,
                                      transport,
@@ -138,10 +155,13 @@ public final class PartitionBackfill {
                                      selfWatermark,
                                      self,
                                      sourceWaitBound,
-                                     System::currentTimeMillis);
+                                     System::currentTimeMillis,
+                                     membersSupplier);
     }
 
     /// Test factory: injects a deterministic clock so the bounded wait can be exercised without sleeping.
+    /// Defaults the member view to {@link List#of()} so existing tests exercise the non-owner bounded-wait
+    /// path unchanged (empty members ⇒ owner check is false).
     static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
                                                StreamPartitionRecovery partitionRecovery,
                                                CatchupTransport transport,
@@ -150,6 +170,28 @@ public final class PartitionBackfill {
                                                NodeId self,
                                                TimeSpan sourceWaitBound,
                                                LongSupplier clock) {
+        return partitionBackfill(registry,
+                                 partitionRecovery,
+                                 transport,
+                                 probe,
+                                 selfWatermark,
+                                 self,
+                                 sourceWaitBound,
+                                 clock,
+                                 List::of);
+    }
+
+    /// Test factory with an explicit member view, for exercising the owner-immediate cold-start path
+    /// with a deterministic clock.
+    static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
+                                               StreamPartitionRecovery partitionRecovery,
+                                               CatchupTransport transport,
+                                               ReplicaWatermarkProbe probe,
+                                               SelfWatermark selfWatermark,
+                                               NodeId self,
+                                               TimeSpan sourceWaitBound,
+                                               LongSupplier clock,
+                                               Supplier<List<NodeId>> membersSupplier) {
         return new PartitionBackfill(registry,
                                      partitionRecovery,
                                      transport,
@@ -157,7 +199,8 @@ public final class PartitionBackfill {
                                      selfWatermark,
                                      self,
                                      sourceWaitBound,
-                                     clock);
+                                     clock,
+                                     membersSupplier);
     }
 
     /// Backfill `(streamName, partition)` onto self from the best caught-up peer. Resolves with the
@@ -284,9 +327,48 @@ public final class PartitionBackfill {
         return cause.promise();
     }
 
-    /// No caught-up source exists. Stay SYNCING until the bounded wait elapses; once it does, attempt a
-    /// data-safe cold-start self-promotion (see class doc).
+    /// No caught-up source exists. The HRW owner is authoritative for its own data, so it self-promotes
+    /// IMMEDIATELY (owner-immediate path) rather than waiting on a peer that cannot be a more
+    /// authoritative source. A non-owner stays SYNCING until the bounded wait elapses; once it does, it
+    /// attempts a data-safe cold-start self-promotion (see class doc).
     private Promise<Long> handleNoSource(String streamName, int partition, List<ReplicaDescriptor> replicas) {
+        if (isSelfOwner(streamName, partition)) {
+            return ownerSelfPromote(streamName, partition);
+        }
+
+        return waitThenPromote(streamName, partition, replicas);
+    }
+
+    /// True when self is the HRW owner of `(streamName, partition)` under the current core members.
+    /// `ReplicaPlacement.rank` is owner-first (index 0 is the owner); an empty member view (e.g. the
+    /// backward-compat factory's `List::of`) yields no owner and reports false, leaving behavior
+    /// unchanged.
+    private boolean isSelfOwner(String streamName, int partition) {
+        var ranked = ReplicaPlacement.rank(streamName, partition, membersSupplier.get());
+
+        return Option.from(ranked.stream().findFirst()).map(self::equals).or(false);
+    }
+
+    /// Owner-immediate cold-start promotion: self IS the HRW owner and no caught-up peer source exists,
+    /// so promote to CAUGHT_UP at the local watermark without waiting. The owner is authoritative for its
+    /// own partition — no peer can hold newer authoritative state — so this is data-safe.
+    private Promise<Long> ownerSelfPromote(String streamName, int partition) {
+        var watermark = selfWatermark.localWatermark(streamName, partition);
+
+        log.warn("Backfill {}[{}]: owner self-promoting to CAUGHT_UP at watermark {} (cold-start, no peer source) "
+                + "[authoritative owner]",
+                 streamName,
+                 partition,
+                 watermark);
+        registry.updateWatermark(streamName, partition, self, watermark);
+        firstNoSourceMs.remove(partitionKey(streamName, partition));
+
+        return Promise.success(0L);
+    }
+
+    /// Non-owner cold-start path: stay SYNCING until the bounded wait elapses, then attempt a data-safe
+    /// promotion via the highest-watermark/all-reachable contest.
+    private Promise<Long> waitThenPromote(String streamName, int partition, List<ReplicaDescriptor> replicas) {
         var key = partitionKey(streamName, partition);
         var firstObserved = firstNoSourceMs.computeIfAbsent(key, _ -> clock.getAsLong());
         var waited = clock.getAsLong() - firstObserved;
