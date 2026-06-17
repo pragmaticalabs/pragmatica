@@ -645,6 +645,14 @@ public interface AetherNode extends ManageableNode {
     /// re-attempt once the owner becomes CAUGHT_UP. Kept well under the backfill source-wait bound (20s)
     /// so several attempts occur within one wait window; CAUGHT_UP partitions are skipped (no-op).
     TimeSpan STREAM_BACKFILL_REDRIVE_INTERVAL = TimeSpan.timeSpan(5).seconds();
+    /// Cadence for the NodeDeploymentManager activation level-heal. On a cold-start
+    /// `restart_all_nodes` the single CAS-latched `ClusterStateNotification.ACTIVE` edge can be
+    /// dropped while the message-router delegate is being rebuilt, leaving NDM stuck in `Dormant`
+    /// (never runs `Active.onEntry` → self-ready → `subsystemsReady`) so the node reports `SYNCING`
+    /// forever despite live consensus-active. A periodic tick gated on `clusterNode.isActive()`
+    /// re-dispatches `QuorumEstablished` only while still Dormant; matches the 5s reconcile cadence
+    /// and is a no-op on every healthy node thereafter.
+    TimeSpan NDM_ACTIVATION_RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
 
     private static StorageInstance createStreamStorage(Option<DHTClient> dhtClient) {
         var memoryTier = MemoryTier.memoryTier(DEFAULT_STREAM_MEMORY_BYTES);
@@ -679,6 +687,22 @@ public interface AetherNode extends ManageableNode {
                                                    Executor backfillExecutor) {
         registry.incompletePartitionsFor(self).forEach(key -> backfillExecutor.execute(() -> backfill.backfill(key.streamName(),
                                                                                                                key.partition())));
+    }
+
+    /// Periodic activation level-heal tick (see [#NDM_ACTIVATION_RECONCILE_INTERVAL]). Gated on a
+    /// LIVE consensus-active sample (`clusterNode::isActive`, the SAME accessor the readiness pong
+    /// and leader election use) so it only acts when this node IS in quorum: a dropped ACTIVE edge
+    /// then surfaces as NDM still Dormant, and `reconcileActivation()` re-dispatches the missing
+    /// `QuorumEstablished`. No-op when consensus is not active (correctly Dormant) or once NDM has
+    /// activated.
+    @Contract
+    private static void reconcileNodeActivation(BooleanSupplier consensusActive,
+                                                NodeDeploymentManager nodeDeploymentManager) {
+        if (!consensusActive.getAsBoolean()) {
+            return;
+        }
+
+        nodeDeploymentManager.reconcileActivation();
     }
 
     /// `-1` for empty) by paging its partition over the forward-read transport, or FAIL when the peer is
@@ -2738,6 +2762,13 @@ public interface AetherNode extends ManageableNode {
         nodeDeploymentManager.setShutdownCallback(node::stop);
         nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReady(nodeLifecycle::signalReady,
                                                                            nodeReportedStateHolder));
+        // Activation level-heal: a cold-start `restart_all_nodes` can drop the single CAS-latched
+        // ClusterStateNotification.ACTIVE edge while the router delegate is being rebuilt, leaving NDM
+        // stuck in Dormant (self-ready/subsystemsReady never fire) so the node reports SYNCING forever.
+        // This tick re-dispatches QuorumEstablished only while still Dormant AND consensus is live —
+        // a dropped edge self-heals within one interval; a no-op on every healthy node thereafter.
+        SharedScheduler.scheduleAtFixedRate(() -> reconcileNodeActivation(clusterNode::isActive, nodeDeploymentManager),
+                                            NDM_ACTIVATION_RECONCILE_INTERVAL);
         nodeLifecycle.subsystemsReady();
 
         return RabiaNode.buildAndWireRouter(delegateRouter, allEntries).map(_ -> {

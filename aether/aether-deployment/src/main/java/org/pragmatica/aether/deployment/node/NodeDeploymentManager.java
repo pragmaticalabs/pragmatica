@@ -95,6 +95,19 @@ public interface NodeDeploymentManager {
     void setSelfReadySignal(Runnable signal);
 
     boolean isActive();
+
+    /// Level-heal for a silently-dropped `ClusterStateNotification.ACTIVE` edge. The ACTIVE edge is
+    /// emitted once and CAS-latched by the emitter; on a cold-start `restart_all_nodes` it can be
+    /// dropped while the message-router delegate is quiesced/being-rebuilt, leaving this node's FSM
+    /// stuck in `Dormant` — so `Active.onEntry` (self-ready signal → `subsystemsReady`) never runs
+    /// and the node reports `SYNCING` forever despite live consensus-active. A periodic driver
+    /// (gated on live consensus-active) calls this; it re-dispatches `QuorumEstablished` ONLY while
+    /// the FSM is still `Dormant`, so it is a guarded no-op once Active/Leaving/Stopped (the FSM
+    /// ignores `QuorumEstablished` in those states anyway — this guard keeps it from churning and
+    /// scopes the heal log to the rare real recovery). Idempotent on every healthy node thereafter.
+    @Contract
+    void reconcileActivation();
+
     ConfigFacade NO_OP_CONFIG = new NoOpDeploymentConfigFacade();
 
     record NoOpDeploymentConfigFacade() implements ConfigFacade {
@@ -523,6 +536,19 @@ public interface NodeDeploymentManager {
         @Override
         public boolean isActive() {
             return ctx.isActive();
+        }
+
+        @Contract
+        @Override
+        public void reconcileActivation() {
+            if (!ctx.isDormant()) {
+                return;
+            }
+
+            log.info("Node {} still Dormant under live consensus-active — re-dispatching QuorumEstablished "
+                    + "(ACTIVE edge was dropped); healing activation",
+                     ctx.self().id());
+            dispatchQuorumEstablished();
         }
 
         /// RC1 Step 2: replaces the retired `onNodeLifecyclePut`. The self-shutdown

@@ -8,6 +8,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceActionConfig;
@@ -27,6 +28,7 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent.QuorumDisappeared;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.QuorumEstablished;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.Shutdown;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
@@ -262,6 +264,65 @@ class NodeDeploymentFsmTest {
         void onEntry_withoutCallbackRegistered_doesNotThrow() {
             harness.dispatch(new QuorumEstablished());
             assertThat(harness.state()).isInstanceOf(NodeDeploymentState.Active.class);
+        }
+    }
+
+    /// #210/S20 — dropped `ClusterStateNotification.ACTIVE` edge level-heal. On a cold-start
+    /// `restart_all_nodes` the single CAS-latched ACTIVE edge can be lost while the router delegate
+    /// is being rebuilt, leaving NDM stuck `Dormant` so the self-ready signal (→ `subsystemsReady`)
+    /// never fires and the node reports `SYNCING` forever. The periodic driver calls
+    /// `reconcileActivation()`; it must re-dispatch `QuorumEstablished` ONLY while Dormant (healing
+    /// activation + firing self-ready) and be a guarded no-op once already Active (no self-ready
+    /// re-fire / re-activation). Exercises the real `NodeDeploymentManager` adapter built through the
+    /// factory, since `reconcileActivation()` lives on the public surface, not the bare FSM state.
+    @Nested
+    class ActivationReconcile {
+        @Test
+        void reconcileActivation_inDormant_activatesAndFiresSelfReady() {
+            var selfReadyCalls = new AtomicLong(0);
+            var manager = buildManager();
+            manager.setSelfReadySignal(selfReadyCalls::incrementAndGet);
+
+            assertThat(manager.isActive()).as("manager starts Dormant").isFalse();
+
+            manager.reconcileActivation();
+
+            assertThat(manager.isActive())
+                    .as("dropped ACTIVE edge healed — Dormant re-dispatch drives the FSM to Active")
+                    .isTrue();
+            assertThat(selfReadyCalls.get())
+                    .as("Active.onEntry fired the self-ready signal exactly once")
+                    .isEqualTo(1L);
+        }
+
+        @Test
+        void reconcileActivation_whenAlreadyActive_isNoOp() {
+            var selfReadyCalls = new AtomicLong(0);
+            var manager = buildManager();
+            manager.setSelfReadySignal(selfReadyCalls::incrementAndGet);
+
+            manager.onQuorumStateChange(ClusterStateNotification.active());
+            assertThat(manager.isActive()).as("manager is Active after the ACTIVE edge").isTrue();
+            assertThat(selfReadyCalls.get()).isEqualTo(1L);
+
+            manager.reconcileActivation();
+
+            assertThat(manager.isActive()).as("still Active").isTrue();
+            assertThat(selfReadyCalls.get())
+                    .as("already-Active reconcile is a guarded no-op — self-ready is NOT re-fired")
+                    .isEqualTo(1L);
+        }
+
+        private NodeDeploymentManager buildManager() {
+            var router = MessageRouter.mutable();
+            var kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
+            ClusterNode<KVCommand<AetherKey>> cluster = stubClusterNode(SELF);
+            return NodeDeploymentManager.nodeDeploymentManager(SELF,
+                                                               router,
+                                                               stubSliceStore(),
+                                                               cluster,
+                                                               kvStore,
+                                                               stubInvocationHandler());
         }
     }
 

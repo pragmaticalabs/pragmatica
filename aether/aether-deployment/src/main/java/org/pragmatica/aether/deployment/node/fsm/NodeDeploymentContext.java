@@ -316,6 +316,10 @@ public final class NodeDeploymentContext {
         return fsm.current() instanceof NodeDeploymentState.Active;
     }
 
+    public boolean isDormant() {
+        return fsm.current() instanceof NodeDeploymentState.Dormant;
+    }
+
     public Supplier<Option<Epoch>> currentEpochSupplier() {
         return currentEpochSupplier;
     }
