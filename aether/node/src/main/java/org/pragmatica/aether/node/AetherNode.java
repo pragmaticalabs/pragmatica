@@ -2209,11 +2209,15 @@ public interface AetherNode extends ManageableNode {
         // would wait for the sampler's natural ~nttDepartureTimeout down-hysteresis crossing.
         Consumer<NodeId> dropDeadPeerLink = clusterNetworkRef::departurePermanent;
 
-        membershipFsm.onConfirmedDeparture(departed -> onMembershipDeath(departed,
-                                                                         dropDeadPeerLink,
-                                                                         quorumLossDetectorRef,
-                                                                         membershipFsmRef,
-                                                                         leaderReconcilerRef));
+        membershipFsm.onConfirmedDeparture(departed -> {
+            onMembershipDeath(departed, dropDeadPeerLink, quorumLossDetectorRef, membershipFsmRef, leaderReconcilerRef);
+            // #210: emit the user-facing NODE_FAILED from this ungated DEAD edge — the SAME confirmed-
+            // death signal that drives auto-heal above — instead of the quorum-gated
+            // MembershipDecision.NodeRemoved, which the MembershipDeltaProjector drops during the
+            // post-kill re-election window so the event never reached /api/events on cloud. Leader-gated
+            // inside the aggregator (fires on every node's FSM; only the leader publishes).
+            eventAggregator.onConfirmedDeparture(departed);
+        });
         // Join-grace leak fix: a CTM-provisioned replacement that boots but NEVER reaches
         // SWIM-healthy within the M10 join-grace window is reaped OBSERVED→DEAD by the FSM, but
         // nothing terminated its container/JVM — it ran on as a non-member zombie (Docker count
@@ -4019,8 +4023,11 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
                                               eventAggregator::onPeerJoined));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
-        // Membership-driven observable departure events (NODE_FAILED / NODE_LEFT). Re-sourced
-        // from MembershipDecision after the node-lifecycle atom was deleted (membership-v2).
+        // NODE_LEFT (graceful departures) is sourced from MembershipDecision. NODE_FAILED is NO LONGER
+        // sourced here (#210) — it now rides the ungated FSM DEAD edge (membershipFsm.onConfirmedDeparture
+        // → eventAggregator.onConfirmedDeparture, wired above) because the quorum-gated NodeRemoved
+        // decision is dropped by the projector during post-kill churn. The NodeRemoved route stays for the
+        // (now no-op) decision case; NodeDecommissioned still maps to NODE_LEFT.
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
                                               eventAggregator::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,

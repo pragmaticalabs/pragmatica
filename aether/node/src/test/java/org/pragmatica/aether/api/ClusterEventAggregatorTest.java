@@ -134,7 +134,7 @@ class ClusterEventAggregatorTest {
         // replay gate can suppress — proving the gate is independent of ownership.
         var h = Harness.create(Harness.defaultRetention(), OWNER, () -> true);
         h.aggregator().onPeerJoined(peerJoined("peer-1", List.of(SELF, new NodeId("peer-1"))));
-        h.aggregator().onMembershipDecision(MembershipDecision.nodeRemoved(new NodeId("dead-1"), List.of(SELF)));
+        h.aggregator().onConfirmedDeparture(new NodeId("dead-1"));
 
         assertThat(h.events()).isEmpty();
     }
@@ -142,6 +142,8 @@ class ClusterEventAggregatorTest {
     @Test
     void membershipDecision_mapsToDepartureEvents() {
         var h = Harness.create();
+        // #210: NodeRemoved is now a no-op here — NODE_FAILED moved to the FSM DEAD edge
+        // (onConfirmedDeparture). Only the graceful NODE_LEFT decisions emit from onMembershipDecision.
         h.aggregator().onMembershipDecision(MembershipDecision.nodeRemoved(new NodeId("dead-1"), List.of(SELF)));
         h.aggregator().onMembershipDecision(MembershipDecision.nodeDecommissioned(new NodeId("gone-2"), List.of(SELF)));
         h.aggregator().onMembershipDecision(MembershipDecision.nodeDraining(new NodeId("drain-3"), List.of(SELF)));
@@ -149,11 +151,26 @@ class ClusterEventAggregatorTest {
         h.aggregator().onMembershipDecision(MembershipDecision.nodeJoined(new NodeId("join-4"), List.of(SELF)));
 
         var events = h.events();
-        assertThat(events).hasSize(3);
-        assertThat(events.get(0)).isInstanceOf(ClusterEvent.NodeFailed.class);
-        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.NodeLeft.class);
+        assertThat(events.get(0).details()).containsEntry("nodeId", "gone-2");
         assertThat(events.get(1)).isInstanceOf(ClusterEvent.NodeLeft.class);
-        assertThat(events.get(2)).isInstanceOf(ClusterEvent.NodeLeft.class);
+        assertThat(events.get(1).details()).containsEntry("nodeId", "drain-3");
+    }
+
+    /// #210: NODE_FAILED is sourced from the ungated FSM DEAD edge (onConfirmedDeparture) — the same
+    /// confirmed-death signal that drives auto-heal — NOT the quorum-gated MembershipDecision.NodeRemoved,
+    /// which the projector drops during post-kill churn so the event never reached /api/events on cloud.
+    @Test
+    void confirmedDeparture_emitsNodeFailed() {
+        var h = Harness.create();
+        h.aggregator().onConfirmedDeparture(new NodeId("crashed-1"));
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.NodeFailed.class);
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
+        assertThat(events.getFirst().details()).containsEntry("nodeId", "crashed-1");
     }
 
     @Test
@@ -208,26 +225,28 @@ class ClusterEventAggregatorTest {
 
     // --- leader-gated departure emit (#94: NODE_FAILED delivery for replacement deaths) ----------
 
-    /// Membership DEPARTURES route through {@link ClusterEventAggregator#emitAsLeader}, gated on
-    /// `leaderCheck` rather than `ownerCheck`. The just-removed node is frequently the cluster-events
-    /// partition owner, so owner-gating would suppress its own `NODE_FAILED`. The leader — never the
-    /// removed node for its own committed decision — MUST emit even when it is NOT the partition owner.
+    /// Membership FAILURES route through {@link ClusterEventAggregator#onConfirmedDeparture} →
+    /// {@link ClusterEventAggregator#emitAsLeader}, gated on `leaderCheck` rather than `ownerCheck`. The
+    /// just-failed node is frequently the cluster-events partition owner, so owner-gating would suppress
+    /// its own `NODE_FAILED`. The leader — never the failed node for its own committed view — MUST emit
+    /// even when it is NOT the partition owner.
     @Test
     void leader_emitsDeparture_evenWhenNotOwner() {
         var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, LEADER);
-        h.aggregator().onMembershipDecision(MembershipDecision.nodeRemoved(new NodeId("dead"), List.of(SELF)));
+        h.aggregator().onConfirmedDeparture(new NodeId("dead"));
         var events = h.events();
         assertThat(events).hasSize(1);
         assertThat(events.getFirst()).isInstanceOf(ClusterEvent.NodeFailed.class);
         assertThat(events.getFirst().details()).containsEntry("nodeId", "dead");
     }
 
-    /// The leader-gate is a real gate: a non-leader observer must NOT advertise a membership departure
-    /// (the leader owns that cluster-canonical statement), even when it IS the partition owner.
+    /// The leader-gate is a real gate: a non-leader observer must NOT advertise a membership failure
+    /// (the leader owns that cluster-canonical statement), even when it IS the partition owner. The FSM
+    /// DEAD edge fires on EVERY node's FSM, so this gate is what collapses the fan-out to a single emit.
     @Test
     void nonLeader_suppressesDepartureEmit() {
         var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, NOT_LEADER);
-        h.aggregator().onMembershipDecision(MembershipDecision.nodeRemoved(new NodeId("dead"), List.of(SELF)));
+        h.aggregator().onConfirmedDeparture(new NodeId("dead"));
         assertThat(h.events()).isEmpty();
     }
 

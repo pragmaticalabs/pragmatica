@@ -494,23 +494,22 @@ public final class ClusterEventAggregator {
         }
     }
 
-    /// Subscriber hook for `MembershipDecision` — re-sources NODE_FAILED / NODE_LEFT that
-    /// previously came from the now-deleted node-lifecycle atom (membership-v2 finale).
-    /// `NodeRemoved` → NODE_FAILED (CRITICAL); `NodeDecommissioned` / `NodeDraining` → NODE_LEFT
-    /// (WARNING). LEADER-gated via {@link #emitAsLeader}: a committed membership departure's
-    /// authoritative emitter is the cluster leader. The owner-gate cannot be used here — for a
-    /// DEPARTURE the trigger IS the membership change, and the snapshot-updating reconcile is deferred
-    /// to an executor while this emit runs synchronously on the same `NodeRemoved` dispatch, so the
-    /// owner-check sees the PRE-removal placement; when the pre-removal owner is the removed node every
-    /// survivor suppresses and the event is lost with no replay.
+    /// Subscriber hook for `MembershipDecision` — re-sources the GRACEFUL departure event NODE_LEFT.
+    /// `NodeDecommissioned` / `NodeDraining` → NODE_LEFT (WARNING), genuine consensus-committed
+    /// scale-down/drain decisions. NODE_FAILED is NO LONGER sourced here (#210): `NodeRemoved` is a
+    /// quorum-gated, drainer-confined projection of the FSM DEAD edge, so on a multi-node cluster a
+    /// non-leader CRASH heals (the DEAD edge fires, auto-heal runs) but the `NodeRemoved` decision is
+    /// dropped by the projector's `inQuorum` gate / `announced` baseline during the post-kill churn
+    /// window — the failure event then never reached `/api/events`. NODE_FAILED is now emitted from the
+    /// ungated FSM DEAD edge (see {@link #onConfirmedDeparture}), the SAME signal that drives auto-heal.
+    /// LEADER-gated via {@link #emitAsLeader}: a committed membership departure's authoritative emitter
+    /// is the cluster leader.
     @Contract
     public void onMembershipDecision(MembershipDecision decision) {
         switch (decision) {
-            case MembershipDecision.NodeRemoved removed -> emitAsLeader(new NodeFailed(hlcClock.now(),
-                                                                                       Severity.CRITICAL,
-                                                                                       "Node " + removed.nodeId().id() + " removed from membership",
-                                                                                       Map.of("nodeId",
-                                                                                              removed.nodeId().id())));
+            // NODE_FAILED moved to the ungated FSM DEAD edge (#210) — the projector can drop this
+            // quorum-gated decision during post-kill churn, so it is no longer the failure source.
+            case MembershipDecision.NodeRemoved ignored -> {}
             case MembershipDecision.NodeDecommissioned decommissioned -> emitAsLeader(new NodeLeft(hlcClock.now(),
                                                                                                    Severity.WARNING,
                                                                                                    "Node " + decommissioned.nodeId().id() + " decommissioned",
@@ -527,13 +526,30 @@ public final class ClusterEventAggregator {
             // promotion, later than the handshake). The
             // authoritative join surface is the transport `PeerJoined` handshake (onPeerJoined), now
             // LEADER-gated (the leader dials every core member, so it observes the replacement's
-            // handshake). Departures differ — the delta DOES fire on the dead node leaving the counted
-            // set — which is why NodeRemoved/Decommissioned/Draining above emit from here.
+            // handshake).
             case MembershipDecision.NodeJoined ignored -> {}
             case MembershipDecision.NodeJoining ignored -> {}
             case MembershipDecision.NodeFailedDrain ignored -> {}
             case MembershipDecision.NodeShuttingDown ignored -> {}
         }
+    }
+
+    /// FSM DEAD-edge failure hook (#210): NODE_FAILED is sourced from the SAME ungated confirmed-death
+    /// edge that drives auto-heal ({@code MembershipFsm.onConfirmedDeparture}), NOT the quorum-gated
+    /// {@link MembershipDecision.NodeRemoved}. On a multi-node cluster a non-leader kill heals (the DEAD
+    /// edge fires on every node's FSM) but the `NodeRemoved` decision is dropped by the projector's
+    /// `inQuorum` gate / drainer-confined `announced` baseline during the post-kill re-election window,
+    /// so NODE_FAILED never reached `/api/events`. The DEAD edge is the reliable signal — the projector
+    /// derives `NodeRemoved` FROM it, so it is a strict superset — and whenever the cluster confirms a
+    /// death, the leader emits here. LEADER-gated via {@link #emitAsLeader}: the hook fires on every
+    /// node's FSM but only the leader publishes (no N-way fan-out). Mirrors the NODE_JOINED fix
+    /// (sourced from the ungated transport handshake, not the unreliable membership delta).
+    @Contract
+    public void onConfirmedDeparture(NodeId departed) {
+        emitAsLeader(new NodeFailed(hlcClock.now(),
+                                    Severity.CRITICAL,
+                                    "Node " + departed.id() + " failed (confirmed departure)",
+                                    Map.of("nodeId", departed.id())));
     }
 
     @Contract
