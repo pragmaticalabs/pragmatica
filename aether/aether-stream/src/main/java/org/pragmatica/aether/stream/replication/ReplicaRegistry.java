@@ -72,7 +72,8 @@ public final class ReplicaRegistry {
     public List<PartitionKey> incompletePartitionsFor(NodeId nodeId) {
         return replicas.entrySet()
                        .stream()
-                       .filter(entry -> isIncompleteReplica(entry.getValue(), nodeId))
+                       .filter(entry -> isIncompleteReplica(entry.getValue(),
+                                                            nodeId))
                        .map(Map.Entry::getKey)
                        .toList();
     }

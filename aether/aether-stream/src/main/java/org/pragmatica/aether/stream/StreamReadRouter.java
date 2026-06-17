@@ -51,12 +51,7 @@ public final class StreamReadRouter {
                                                     NodeId selfNodeId,
                                                     OwnerResolver ownerResolver,
                                                     StreamReadForwardMetrics metrics) {
-        return new StreamReadRouter(partitionManager,
-                                    replicaRegistry,
-                                    forwardClient,
-                                    selfNodeId,
-                                    ownerResolver,
-                                    metrics);
+        return new StreamReadRouter(partitionManager, replicaRegistry, forwardClient, selfNodeId, ownerResolver, metrics);
     }
 
     public static StreamReadRouter localOnly(StreamPartitionManager partitionManager) {
@@ -73,15 +68,17 @@ public final class StreamReadRouter {
                                                           long fromOffset,
                                                           int maxEvents,
                                                           ReadPreference preference) {
-        return ForwardingReadRouter.<OffHeapRingBuffer.RawEvent>forwardingReadRouter(replicaRegistry,
-                                                                                     selfNodeId,
-                                                                                     forwardClient,
-                                                                                     preference,
-                                                                                     ownerResolver,
-                                                                                     this::readLocal,
-                                                                                     StreamReadRouter::toRawEvents,
-                                                                                     metrics)
-                                   .route(streamName, partition, fromOffset, maxEvents);
+        return ForwardingReadRouter.<OffHeapRingBuffer.RawEvent> forwardingReadRouter(replicaRegistry,
+                                                                                      selfNodeId,
+                                                                                      forwardClient,
+                                                                                      preference,
+                                                                                      ownerResolver,
+                                                                                      this::readLocal,
+                                                                                      StreamReadRouter::toRawEvents,
+                                                                                      metrics).route(streamName,
+                                                                                                     partition,
+                                                                                                     fromOffset,
+                                                                                                     maxEvents);
     }
 
     private Promise<List<OffHeapRingBuffer.RawEvent>> readLocal(String streamName,

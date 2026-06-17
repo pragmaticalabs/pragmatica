@@ -119,11 +119,8 @@ public final class ForwardingReadRouter<E> {
                                            int partition,
                                            long fromOffset,
                                            int maxEvents) {
-        var caughtUpRemotes = reg.replicasFor(streamName, partition)
-                                 .stream()
-                                 .filter(ForwardingReadRouter::isCaughtUp)
-                                 .filter(r -> !r.nodeId().equals(selfNodeId))
-                                 .toList();
+        var caughtUpRemotes = reg.replicasFor(streamName, partition).stream().filter(ForwardingReadRouter::isCaughtUp).filter(r -> !r.nodeId()
+                                                                                                                                     .equals(selfNodeId)).toList();
 
         if (!caughtUpRemotes.isEmpty()) {
             return forwardClient.map(client -> attemptPrimary(client,
@@ -145,7 +142,8 @@ public final class ForwardingReadRouter<E> {
     private boolean selfCoversPartition(ReplicaRegistry reg, String streamName, int partition) {
         return reg.replicasFor(streamName, partition)
                   .stream()
-                  .filter(r -> r.nodeId().equals(selfNodeId))
+                  .filter(r -> r.nodeId()
+                                .equals(selfNodeId))
                   .anyMatch(ForwardingReadRouter::isCaughtUp);
     }
 
@@ -175,7 +173,8 @@ public final class ForwardingReadRouter<E> {
                 partition);
 
         return client.readRemote(owner, streamName, partition, fromOffset, maxEvents)
-                     .map(result -> remoteDecoder.decode(result.events(), partition))
+                     .map(result -> remoteDecoder.decode(result.events(),
+                                                         partition))
                      .fold(result -> result.fold(_ -> localReader.read(streamName, partition, fromOffset, maxEvents),
                                                  Promise::success));
     }
@@ -195,17 +194,21 @@ public final class ForwardingReadRouter<E> {
                 streamName,
                 partition);
 
-        return client.readRemote(primary.nodeId(), streamName, partition, fromOffset, maxEvents)
-                     .map(result -> remoteDecoder.decode(result.events(), partition))
-                     .fold(result -> result.fold(cause -> retryOrFail(client,
-                                                                      primary,
-                                                                      pool,
-                                                                      streamName,
-                                                                      partition,
-                                                                      fromOffset,
-                                                                      maxEvents,
-                                                                      cause),
-                                                 Promise::success));
+        return client.readRemote(primary.nodeId(),
+                                 streamName,
+                                 partition,
+                                 fromOffset,
+                                 maxEvents).map(result -> remoteDecoder.decode(result.events(),
+                                                                               partition))
+                                .fold(result -> result.fold(cause -> retryOrFail(client,
+                                                                                 primary,
+                                                                                 pool,
+                                                                                 streamName,
+                                                                                 partition,
+                                                                                 fromOffset,
+                                                                                 maxEvents,
+                                                                                 cause),
+                                                            Promise::success));
     }
 
     private Promise<List<E>> retryOrFail(StreamForwardClient client,
@@ -216,7 +219,8 @@ public final class ForwardingReadRouter<E> {
                                          long fromOffset,
                                          int maxEvents,
                                          Cause firstCause) {
-        var alternatives = pool.stream().filter(r -> !r.nodeId().equals(primary.nodeId())).toList();
+        var alternatives = pool.stream().filter(r -> !r.nodeId()
+                                                       .equals(primary.nodeId())).toList();
 
         if (alternatives.isEmpty()) {
             LOG.log(System.Logger.Level.DEBUG,
@@ -241,8 +245,13 @@ public final class ForwardingReadRouter<E> {
                 primary.nodeId(),
                 firstCause.message());
 
-        return client.readRemote(retry.nodeId(), streamName, partition, fromOffset, maxEvents)
-                     .map(result -> remoteDecoder.decode(result.events(), partition));
+        return client.readRemote(retry.nodeId(),
+                                 streamName,
+                                 partition,
+                                 fromOffset,
+                                 maxEvents)
+                     .map(result -> remoteDecoder.decode(result.events(),
+                                                         partition));
     }
 
     private static ReplicaDescriptor pickReplica(List<ReplicaDescriptor> pool) {
