@@ -51,6 +51,8 @@ import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import java.time.Instant;
 import java.util.HashMap;
@@ -333,10 +335,7 @@ public final class ClusterEventAggregator {
             return;
         }
 
-        Option.option(publisherSupplier.get()).onPresent(publisher -> {
-            Promise<?> ignored = publisher.publish(event);
-        }).onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)",
-                                  event));
+        publishSafely(event);
     }
 
     /// Leader-gated emit for consensus-committed membership-DEPARTURE facts (NODE_FAILED / NODE_LEFT).
@@ -362,10 +361,7 @@ public final class ClusterEventAggregator {
             return;
         }
 
-        Option.option(publisherSupplier.get()).onPresent(publisher -> {
-            Promise<?> ignored = publisher.publish(event);
-        }).onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)",
-                                  event));
+        publishSafely(event);
     }
 
     /// Owner-gate-bypassing emit for per-node facts (spec §4.5c). Identical to {@link #emit} except it
@@ -380,10 +376,23 @@ public final class ClusterEventAggregator {
             return;
         }
 
-        Option.option(publisherSupplier.get()).onPresent(publisher -> {
-            Promise<?> ignored = publisher.publish(event);
-        }).onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — local event {} dropped (bootstrap window)",
-                                  event));
+        publishSafely(event);
+    }
+
+    /// Publish `event` to the cluster-events stream, ISOLATING any synchronous throw from the publisher
+    /// so it can never propagate to the caller. {@link #onConfirmedDeparture} runs on the MembershipFsm
+    /// DEAD-edge chokepoint (`enteredDead`) BEFORE the FSM emits its REMOVED membership delta; a publish
+    /// that threw there (e.g. the leader's cluster-events partition not yet materialized mid-churn) would
+    /// abort the death edge and starve membership recovery. The async publish Promise is fire-and-forget
+    /// (observability); a synchronous failure is logged and dropped, never re-thrown.
+    @Contract
+    private void publishSafely(ClusterEvent event) {
+        Option.option(publisherSupplier.get()).onPresent(publisher -> Result.lift(Causes::fromThrowable,
+                                                                                  () -> publisher.publish(event))
+                                                                            .onFailure(cause -> LOG.warn("ClusterEventAggregator: publish of {} threw, dropped: {}",
+                                                                                                         event,
+                                                                                                         cause.message()))).onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)",
+                                                                                                                                                   event));
     }
 
     /// Budget-exhaustion sink entry point (spec §4.5c / reconciliation #13). Bound into the
