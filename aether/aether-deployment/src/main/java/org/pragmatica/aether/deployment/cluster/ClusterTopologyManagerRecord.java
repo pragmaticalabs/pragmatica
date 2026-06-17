@@ -13,6 +13,8 @@ import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.environment.AutoHealConfig;
+import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
@@ -39,6 +41,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
@@ -456,12 +459,104 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", contextSeeded).unwrap();
-        var placedSpec = computePlacementHint().map(baseSpec::withPlacement).or(baseSpec);
-        var spec = renderReplacementUserData(contextSeeded, intendedRole).map(placedSpec::withUserData).or(placedSpec);
+        var renderedSpec = renderReplacementUserData(contextSeeded, intendedRole).map(baseSpec::withUserData).or(baseSpec);
 
-        return lifecycleManager.provisionNode(spec)
-                               .onFailure(this::recordProvisioningFailure)
-                               .mapToUnit();
+        return provisionWithZoneRotation(renderedSpec,
+                                         replacementZones(intendedRole)).onFailure(this::recordProvisioningFailure)
+                                        .mapToUnit();
+    }
+
+    /// #334 — auto-heal zone rotation. Mirrors the bootstrap rotation (`BootstrapPhaseProvision`):
+    /// attempt each configured zone in order, pinning the spec to that zone via
+    /// [PlacementHint#zoneHint]; on [EnvironmentError.CapacityUnavailable] advance to the next zone,
+    /// on any OTHER failure propagate immediately (non-retryable), and when the list is exhausted
+    /// fail with a clear cause. When `zones` is EMPTY the cloud zone rotation does not apply: we
+    /// fall back to the existing zone-BALANCING [#computePlacementHint] path with a SINGLE attempt
+    /// (backward-compatible — non-cloud Docker/forge providers ignore placement entirely). The
+    /// `onFailure(recordProvisioningFailure)` in the caller fires only on the FINAL failure of this
+    /// fold. Fully async — no blocking `await`.
+    private Promise<InstanceInfo> provisionWithZoneRotation(ProvisionSpec renderedSpec, List<String> zones) {
+        if (zones.isEmpty()) {
+            var placedSpec = computePlacementHint().map(renderedSpec::withPlacement).or(renderedSpec);
+
+            return lifecycleManager.provisionNode(placedSpec);
+        }
+
+        return attemptZone(renderedSpec, zones, 0);
+    }
+
+    private Promise<InstanceInfo> attemptZone(ProvisionSpec renderedSpec, List<String> zones, int index) {
+        if (index >= zones.size()) {
+            return zonesExhausted(zones).promise();
+        }
+
+        var zone = zones.get(index);
+        var zonedSpec = renderedSpec.withPlacement(PlacementHint.zoneHint(zone));
+
+        return lifecycleManager.provisionNode(zonedSpec)
+                               .fold(result -> routeZoneAttempt(result, renderedSpec, zones, index, zone));
+    }
+
+    private Promise<InstanceInfo> routeZoneAttempt(Result<InstanceInfo> result,
+                                                   ProvisionSpec renderedSpec,
+                                                   List<String> zones,
+                                                   int index,
+                                                   String zone) {
+        return result.fold(cause -> rotateOrFail(renderedSpec, zones, index, zone, cause), Promise::success);
+    }
+
+    private Promise<InstanceInfo> rotateOrFail(ProvisionSpec renderedSpec,
+                                               List<String> zones,
+                                               int index,
+                                               String zone,
+                                               Cause cause) {
+        if (!isCapacityUnavailable(cause)) {
+            return cause.promise();
+        }
+
+        logZoneRotation(zone, nextZoneLabel(zones, index));
+
+        return attemptZone(renderedSpec, zones, index + 1);
+    }
+
+    private static boolean isCapacityUnavailable(Cause cause) {
+        return cause instanceof EnvironmentError.CapacityUnavailable;
+    }
+
+    private static String nextZoneLabel(List<String> zones, int currentIndex) {
+        var next = currentIndex + 1;
+
+        return next < zones.size()
+               ? zones.get(next)
+               : "(no more zones)";
+    }
+
+    @Contract
+    private void logZoneRotation(String fromZone, String toZone) {
+        log.warn("CTM v2: provisionReplacement zone '{}' capacity-unavailable — rotating to '{}'", fromZone, toZone);
+    }
+
+    private static Cause zonesExhausted(List<String> zones) {
+        return Causes.cause("CTM v2: provisionReplacement exhausted all configured zones on capacity unavailability: " + String.join(", ",
+                                                                                                                                     zones));
+    }
+
+    /// #334 — the ordered zone list to rotate over for a replacement of `intendedRole`, reusing the
+    /// SAME parse path as [#renderReplacementUserData]: the persisted cluster TOML re-parsed via
+    /// [ClusterBootstrapConfigParser], the cloud [SourceProfile] backing the role, and its
+    /// [SourceProfile#effectiveZones]. Empty (single-attempt, no zone pin) when the persisted TOML
+    /// is blank/unparseable, no cloud source backs the role, or that source declares no zones.
+    private List<String> replacementZones(NodeRole intendedRole) {
+        return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
+                     .filter(toml -> !toml.isBlank())
+                     .flatMap(ClusterTopologyManagerRecord::parseConfig)
+                     .flatMap(config -> cloudSourceFor(config, intendedRole))
+                     .map(SourceProfile::effectiveZones)
+                     .or(List.of());
+    }
+
+    private static Option<ClusterBootstrapConfig> parseConfig(String toml) {
+        return ClusterBootstrapConfigParser.parse(toml).option();
     }
 
     /// Render the replacement node's cloud-init user-data so a CTM-provisioned (cloud) replacement
