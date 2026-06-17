@@ -33,10 +33,17 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Catchu
 /// it must pull the partition's existing events from an up-to-date source and reach `CAUGHT_UP`
 /// before it is eligible to serve reads.
 ///
-/// ## Source selection
-/// From {@link ReplicaRegistry#replicasFor} it picks the `CAUGHT_UP` replica (owner or replica) with
-/// the highest `confirmedOffset`, excluding self. If there is no such source (no peer is caught up,
-/// or self is the only replica) backfill cannot proceed and the promise fails — self stays SYNCING.
+/// ## Source selection (#333)
+/// The backfill source is the DETERMINISTIC HRW owner of the partition (computed locally from the
+/// member view — every node agrees), NOT the local registry's `CAUGHT_UP` set. Peer `CAUGHT_UP`/
+/// watermark state is never propagated cross-node (the production {@link ReplicaRegistry} uses
+/// {@link WatermarkStore#NOOP}), so a registry-selected source can report a stale/behind watermark and
+/// drive a false `CAUGHT_UP`-with-a-hole. The owner holds the complete partition history, so its
+/// reported tail is the true watermark — the same owner-forward principle the read path uses
+/// ({@link org.pragmatica.aether.stream.ForwardingReadRouter}). The owner itself self-promotes at its
+/// local watermark (it is authoritative for its own data). Only when the owner is unknown (empty member
+/// view / bootstrap window) does it fall back to the registry `CAUGHT_UP` source with the highest
+/// `confirmedOffset`, then the cold-start deadlock-break.
 ///
 /// ## Cold-start deadlock break (owner-immediate, else bounded-wait then data-safe self-promote)
 /// After a SIMULTANEOUS full-cluster restart EVERY replica is `SYNCING`, so no caught-up source can
@@ -86,7 +93,9 @@ public final class PartitionBackfill {
     private final SelfWatermark selfWatermark;
     private final NodeId self;
     private final TimeSpan sourceWaitBound;
+
     private final LongSupplier clock;
+
     /// Current core members, used ONLY by the owner-immediate cold-start path to compute the HRW owner
     /// ({@link ReplicaPlacement#rank} index 0). Defaults to {@link List#of()} in the backward-compat
     /// factory, where an empty member view makes the owner check always false — so that orchestrator is
@@ -203,14 +212,63 @@ public final class PartitionBackfill {
                                      membersSupplier);
     }
 
-    /// Backfill `(streamName, partition)` onto self from the best caught-up peer. Resolves with the
-    /// number of events applied on success; fails (leaving self SYNCING) when no source is available
-    /// or the source/apply path fails.
+    /// Backfill `(streamName, partition)` onto self. Resolves with the number of events applied on
+    /// success; fails (leaving self SYNCING) when no source is available or the source/apply path fails.
+    ///
+    /// ## Source precedence (#333)
+    ///   1. self IS the HRW owner → owner-immediate self-promote at the local watermark (authoritative),
+    ///   2. self is a NON-owner and the HRW owner is known → pull catch-up from the DETERMINISTIC HRW
+    ///      OWNER (computed locally from the member view), NOT the blind registry `CAUGHT_UP` set. Peer
+    ///      `CAUGHT_UP`/watermark state is never propagated cross-node (the production registry uses
+    ///      {@link WatermarkStore#NOOP}), so a registry-selected source can report a stale/behind
+    ///      watermark and drive a FALSE `CAUGHT_UP`-with-a-hole, after which every live batch is rejected
+    ///      as a gap forever. The owner holds the complete partition history, so its reported tail
+    ///      ({@link ReplicationMessage.CatchupResponse#toOffset}) is the TRUE watermark — this mirrors the
+    ///      read path's owner-forward ({@link org.pragmatica.aether.stream.ForwardingReadRouter}),
+    ///   3. owner unknown (bootstrap window, empty member view) → the registry `CAUGHT_UP` source / the
+    ///      cold-start deadlock-break path, unchanged.
     public Promise<Long> backfill(String streamName, int partition) {
         var replicas = registry.replicasFor(streamName, partition);
 
+        if (isSelfOwner(streamName, partition)) {
+            return ownerSelfPromote(streamName, partition);
+        }
+
+        return hrwOwner(streamName, partition).filter(owner -> !owner.equals(self))
+                       .fold(() -> backfillViaRegistryOrColdStart(streamName, partition, replicas),
+                             owner -> backfillFromOwner(streamName, partition, owner));
+    }
+
+    /// Owner unknown (bootstrap) or no authoritative owner source: fall back to the registry `CAUGHT_UP`
+    /// source, else the cold-start no-source path. This is the pre-#333 source-selection behavior.
+    private Promise<Long> backfillViaRegistryOrColdStart(String streamName,
+                                                         int partition,
+                                                         List<ReplicaDescriptor> replicas) {
         return selectSource(replicas).fold(() -> handleNoSource(streamName, partition, replicas),
                                            source -> backfillFromCaughtUpSource(streamName, partition, replicas, source));
+    }
+
+    /// Non-owner catch-up from the authoritative HRW owner (#333). `fromOffset` is the LOCAL ring head + 1
+    /// ({@link SelfWatermark#localWatermark} + 1) so the owner-frame offsets land CONTIGUOUSLY in the
+    /// local ring — {@link StreamPartitionRecovery#appendRecoveredEvent} assigns sequential offsets, so a
+    /// `fromOffset` below the local head would shift every subsequent offset. The promotion watermark is
+    /// the owner's true tail (`response.toOffset()`); no local descriptor watermark is held for the owner,
+    /// so `sourceConfirmedOffset` is `-1` (it must not inflate the watermark past what the owner returned).
+    private Promise<Long> backfillFromOwner(String streamName, int partition, NodeId owner) {
+        // An authoritative owner source exists: clear any cold-start wait memory so a later transient
+        // no-source observation re-arms the bound from scratch.
+        firstNoSourceMs.remove(partitionKey(streamName, partition));
+        var fromOffset = selfWatermark.localWatermark(streamName, partition) + 1;
+        var request = catchupRequest(owner, streamName, partition, fromOffset);
+
+        log.debug("Backfill {}[{}]: owner source={} from offset {} [authoritative HRW owner]",
+                  streamName,
+                  partition,
+                  owner,
+                  fromOffset);
+
+        return transport.requestCatchup(owner, request)
+                        .flatMap(response -> applyAndPromote(streamName, partition, -1L, response));
     }
 
     private Promise<Long> backfillFromCaughtUpSource(String streamName,
@@ -237,15 +295,18 @@ public final class PartitionBackfill {
 
         return transport.requestCatchup(source.nodeId(),
                                         request)
-                        .flatMap(response -> applyAndPromote(streamName, partition, source, response));
+                        .flatMap(response -> applyAndPromote(streamName,
+                                                             partition,
+                                                             source.confirmedOffset(),
+                                                             response));
     }
 
     private Promise<Long> applyAndPromote(String streamName,
                                           int partition,
-                                          ReplicaDescriptor source,
+                                          long sourceConfirmedOffset,
                                           ReplicationMessage.CatchupResponse response) {
         var fromOffset = response.fromOffset();
-        var watermark = Math.max(response.toOffset(), source.confirmedOffset());
+        var watermark = Math.max(response.toOffset(), sourceConfirmedOffset);
 
         return applyEvents(streamName, partition, response).fold(cause -> failApply(streamName, partition, cause),
                                                                  applied -> promote(streamName,
@@ -339,14 +400,21 @@ public final class PartitionBackfill {
         return waitThenPromote(streamName, partition, replicas);
     }
 
-    /// True when self is the HRW owner of `(streamName, partition)` under the current core members.
+    /// True when self is the HRW owner of `(streamName, partition)` under the current member view.
     /// `ReplicaPlacement.rank` is owner-first (index 0 is the owner); an empty member view (e.g. the
     /// backward-compat factory's `List::of`) yields no owner and reports false, leaving behavior
     /// unchanged.
     private boolean isSelfOwner(String streamName, int partition) {
-        var ranked = ReplicaPlacement.rank(streamName, partition, membersSupplier.get());
+        return hrwOwner(streamName, partition).map(self::equals)
+                       .or(false);
+    }
 
-        return Option.from(ranked.stream().findFirst()).map(self::equals).or(false);
+    /// The deterministic HRW owner of `(streamName, partition)` under the current member view — index 0
+    /// of {@link ReplicaPlacement#rank}, the SAME owner the read path forwards to and the publish path
+    /// routes to. {@link Option#none()} when the member view is empty (backward-compat factory / bootstrap
+    /// window before members are visible), where the registry / cold-start source path takes over.
+    private Option<NodeId> hrwOwner(String streamName, int partition) {
+        return Option.from(ReplicaPlacement.rank(streamName, partition, membersSupplier.get()).stream().findFirst());
     }
 
     /// Owner-immediate cold-start promotion: self IS the HRW owner and no caught-up peer source exists,

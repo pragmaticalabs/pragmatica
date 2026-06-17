@@ -677,8 +677,8 @@ public interface AetherNode extends ManageableNode {
                                                    NodeId self,
                                                    PartitionBackfill backfill,
                                                    Executor backfillExecutor) {
-        registry.incompletePartitionsFor(self)
-                .forEach(key -> backfillExecutor.execute(() -> backfill.backfill(key.streamName(), key.partition())));
+        registry.incompletePartitionsFor(self).forEach(key -> backfillExecutor.execute(() -> backfill.backfill(key.streamName(),
+                                                                                                               key.partition())));
     }
 
     /// `-1` for empty) by paging its partition over the forward-read transport, or FAIL when the peer is
@@ -2507,9 +2507,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                streamReplicaRegistry,
                                                                                                Option.some(streamForwardClient),
                                                                                                config.self(),
-                                                                                               Option.some(() -> Option.option(clusterEventsControllerRef.get())
-                                                                                                                       .flatMap(clusterEventsController -> clusterEventsController.ownerFor(clusterEventsStreamName,
-                                                                                                                                                                                           0))),
+                                                                                               Option.some(() -> Option.option(clusterEventsControllerRef.get()).flatMap(clusterEventsController -> clusterEventsController.ownerFor(clusterEventsStreamName,
+                                                                                                                                                                                                                                     0))),
                                                                                                streamReadForwardMetrics).onSuccess(clusterEventsConsumerRef::set).onFailure(cause -> LOG.warn("cluster-events stream consumer wiring failed: {} — events reads return empty",
                                                                                                                                                                                               cause.message()));
         var streamCatchupTransport = ForwardCatchupTransport.forwardCatchupTransport(streamForwardClient,
@@ -2522,11 +2521,15 @@ public interface AetherNode extends ManageableNode {
                                                                                                            target,
                                                                                                            streamName,
                                                                                                            partition);
-        // Self's local watermark for the cold-start promotion contest: the local partition's tail offset
-        // (-1 when the partition is absent/empty). Read locally — this is the SAME notion the peer probe
-        // computes remotely, so the highest-watermark comparison is symmetric.
+        // Self's local watermark: the local partition's HIGHEST held offset (ring head; -1 when the
+        // partition is absent/empty). Read locally — this is the SAME notion the peer probe computes
+        // remotely (its highest offset), so the highest-watermark contest is symmetric, AND it is the
+        // base for the #333 owner-source backfill `fromOffset` (head + 1 = next-expected, contiguous).
+        // NOTE: this is `headOffset` (highest), NOT `tailOffset` (earliest retained) — using the tail
+        // understated self's position, breaking both the cold-start contest symmetry and the owner-source
+        // contiguous fromOffset.
         SelfWatermark streamSelfWatermark = (streamName, partition) -> streamPartitionManager.partitionInfo(streamName,
-                                                                                                            partition).map(StreamPartitionManager.PartitionInfo::tailOffset)
+                                                                                                            partition).map(StreamPartitionManager.PartitionInfo::headOffset)
                                                                                                            .or(-1L);
         var streamPartitionBackfill = PartitionBackfill.partitionBackfill(streamReplicaRegistry,
                                                                           streamPartitionRecovery,

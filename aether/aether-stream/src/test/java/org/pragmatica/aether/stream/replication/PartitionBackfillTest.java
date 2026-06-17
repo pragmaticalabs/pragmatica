@@ -473,15 +473,18 @@ class PartitionBackfillTest {
 
         @Test
         void backfill_selfIsNonOwner_noSource_staysSyncingUntilBound() {
-            // A NON-owner replica with no source must NOT take the owner-immediate path: it stays SYNCING
-            // while the bound has not elapsed (existing bounded-wait behavior preserved). Both replicas are
-            // registered so the non-owner has a (SYNCING) peer but no caught-up source.
+            // A NON-owner replica must NOT take the owner-immediate path. Here the owner source is a NOOP
+            // transport (returns nothing past fromOffset), so backfill fails-soft to SYNCING — the highest
+            // applied offset stays below the response watermark, so there is NO false-promote, and the
+            // cold-start probe path is never consulted. (Pre-#333 this asserted a pure bounded-wait; the
+            // non-owner now attempts the authoritative owner source first, but still stays SYNCING when the
+            // owner yields nothing.)
             registry.registerReplica(STREAM, PARTITION, OWNER);
             registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self
 
             var clock = new AtomicLong(0L);
             ReplicaWatermarkProbe failIfProbed = (_, _, _) -> {
-                throw new AssertionError("non-owner must not probe before the bound elapses");
+                throw new AssertionError("non-owner must not probe peers on the owner-source path");
             };
             var backfill = partitionBackfill(registry,
                                              recovery,
@@ -501,6 +504,134 @@ class PartitionBackfillTest {
 
         private SelfWatermark selfWatermarkOf(long watermark) {
             return (_, _) -> watermark;
+        }
+    }
+
+    /// #333: a NON-owner backfills from the DETERMINISTIC HRW OWNER (computed locally from the member
+    /// view), NOT the blind local registry `CAUGHT_UP` set. Peer watermark state is never propagated
+    /// cross-node (production registry uses `WatermarkStore.NOOP`), so a registry-selected source can be
+    /// stale/behind and drive a false `CAUGHT_UP`-with-a-hole, after which every live batch is rejected as
+    /// a gap forever. Pulling from the owner (whose reported tail is the true watermark) closes the wedge —
+    /// the same owner-forward principle the read path uses.
+    @Nested
+    class OwnerSourceBackfill {
+        private static final NodeId NODE_AA = NodeId.nodeId("node-aa").unwrap();
+        private static final NodeId NODE_BB = NodeId.nodeId("node-bb").unwrap();
+        private static final NodeId NODE_CC = NodeId.nodeId("node-cc").unwrap();
+        private static final TimeSpan BOUND = TimeSpan.timeSpan(10).seconds();
+        private static final List<NodeId> MEMBERS = List.of(NODE_AA, NODE_BB, NODE_CC);
+        private static final NodeId OWNER = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS).getFirst();
+        private static final NodeId NON_OWNER = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS).getLast();
+
+        @Test
+        void backfill_nonOwnerBehindOwner_pullsFromHrwOwner_reachesCaughtUpAtOwnerTail() {
+            // self (non-owner) holds offsets 0..1 locally; the HRW owner holds 0..15. Backfill must request
+            // the missing suffix 2..15 FROM THE OWNER, contiguous from local head + 1 (= 2), and reach
+            // CAUGHT_UP@15 — never a false CAUGHT_UP@0 from a blind/behind source (#333).
+            seedLocal(2); // local offsets 0,1
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self, SYNCING
+
+            var transport = ownerSource(OWNER, 2L, eventsFrom(2, 14)); // owner returns offsets 2..15
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             transport,
+                                             failIfProbed(),
+                                             localHeadWatermark(),
+                                             NON_OWNER,
+                                             BOUND,
+                                             new AtomicLong(0L)::get,
+                                             () -> MEMBERS);
+
+            var applied = backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(applied.isSuccess()).isTrue();
+            assertThat(applied.or(-1L)).isEqualTo(14L);
+            var self = descriptorFor(NON_OWNER);
+            assertThat(self.state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(self.confirmedOffset()).isEqualTo(15L);
+            // Local ring now holds 0..15 contiguously (offsets preserved, no shift).
+            var local = manager.readLocal(STREAM, PARTITION, 0, 100).or(List.of());
+            assertThat(local).hasSize(16);
+            for (var i = 0; i < 16; i++) {
+                assertThat(local.get(i).offset()).isEqualTo((long) i);
+            }
+        }
+
+        @Test
+        void backfill_staleCaughtUpRegistryPeer_ignored_pullsFromAuthoritativeOwner() {
+            // A blind/stale registry peer is marked CAUGHT_UP at a behind offset 0 (the cross-node watermark
+            // NOOP trap) AND the HRW owner holds 0..15. Backfill must IGNORE the blind peer and pull from
+            // the owner — the transport asserts its target IS the owner — reaching CAUGHT_UP@15, not a false
+            // CAUGHT_UP@0. Under the pre-#333 registry source-selection this peer would have been chosen.
+            seedLocal(2); // local offsets 0,1
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self
+            var blind = NodeId.nodeId("node-blind").unwrap();
+            registry.registerReplica(STREAM, PARTITION, blind);
+            registry.updateWatermark(STREAM, PARTITION, blind, 0L); // stale CAUGHT_UP @ 0
+
+            var transport = ownerSource(OWNER, 2L, eventsFrom(2, 14));
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             transport,
+                                             failIfProbed(),
+                                             localHeadWatermark(),
+                                             NON_OWNER,
+                                             BOUND,
+                                             new AtomicLong(0L)::get,
+                                             () -> MEMBERS);
+
+            var applied = backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(applied.isSuccess()).isTrue();
+            assertThat(descriptorFor(NON_OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(descriptorFor(NON_OWNER).confirmedOffset()).isEqualTo(15L);
+        }
+
+        private void seedLocal(int count) {
+            for (var i = 0; i < count; i++) {
+                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+            }
+        }
+
+        // Self's local watermark = the local ring HEAD (highest offset held), the base for the contiguous
+        // owner-source fromOffset (head + 1). Backed by the same manager the recovery seam writes into.
+        private SelfWatermark localHeadWatermark() {
+            return (stream, partition) -> manager.partitionInfo(stream, partition)
+                                                 .map(StreamPartitionManager.PartitionInfo::headOffset)
+                                                 .or(-1L);
+        }
+
+        // The owner-source path never probes peers — a probe call is a regression.
+        private ReplicaWatermarkProbe failIfProbed() {
+            return (_, _, _) -> {
+                throw new AssertionError("owner-source backfill must not probe peers");
+            };
+        }
+
+        // A catch-up source that asserts it is targeted at the HRW owner from the expected (contiguous)
+        // offset, then returns `events` (toOffset = last event offset, or fromOffset-1 when empty).
+        private CatchupTransport ownerSource(NodeId expectedOwner, long expectedFrom, List<EventData> events) {
+            return (target, request) -> {
+                assertThat(target).as("backfill must target the HRW owner").isEqualTo(expectedOwner);
+                assertThat(request.fromOffset()).as("fromOffset must be local head + 1 (contiguous)")
+                                                .isEqualTo(expectedFrom);
+                var payloads = new ArrayList<byte[]>();
+                var timestamps = new ArrayList<Long>();
+                events.forEach(event -> {
+                    payloads.add(event.data());
+                    timestamps.add(event.timestamp());
+                });
+                var toOffset = events.isEmpty() ? request.fromOffset() - 1 : events.getLast().offset();
+                return Promise.success(catchupResponse(target,
+                                                       request.streamName(),
+                                                       request.partition(),
+                                                       request.fromOffset(),
+                                                       toOffset,
+                                                       payloads,
+                                                       timestamps));
+            };
         }
     }
 
